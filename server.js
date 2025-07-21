@@ -93,6 +93,52 @@ app.post("/api/acheter", verifyAuth, async (req, res) => {
   }
 });
 
+// ✅ Route pour simuler un callback de MVola (test uniquement)
+app.post("/api/simulate-callback", async (req, res) => {
+  const { phone, plan } = req.body;
+
+  if (!phone || !plan) {
+    return res.status(400).json({ error: "Paramètres manquants." });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from("vouchers")
+      .select("*")
+      .eq("plan", plan)
+      .is("paid_by", null)
+      .limit(1);
+
+    if (error || !data || data.length === 0) {
+      return res.status(404).json({ error: "Aucun voucher disponible." });
+    }
+
+    const voucher = data[0];
+
+    const mgTime = new Date().toLocaleString("sv-SE", {
+      timeZone: "Indian/Antananarivo",
+    }).replace(" ", "T");
+
+    const { error: updateError } = await supabase
+      .from("vouchers")
+      .update({
+        paid_by: phone,
+        assigned_at: mgTime,
+      })
+      .eq("id", voucher.id);
+
+    if (updateError) {
+      return res.status(500).json({ error: "Erreur lors de la mise à jour." });
+    }
+
+    return res.json({ success: true, code: voucher.code });
+  } catch (err) {
+    console.error("Erreur simulation callback:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+
 app.listen(PORT, () => {
   console.log(`✅ Backend sécurisé en ligne sur http://localhost:${PORT}`);
 });
