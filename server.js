@@ -12,6 +12,8 @@ app.use(cors({
     if (
       !origin ||
       origin === "https://wifi.razafistore.com" ||
+      origin === "https://wifi-admin-pi.vercel.app" ||
+      origin === "https://admin-wifi.razafistore.com" ||
       origin.endsWith(".vercel.app")
     ) {
       return callback(null, true);
