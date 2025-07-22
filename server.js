@@ -164,13 +164,6 @@ app.post("/api/simulate-callback", async (req, res) => {
   }
 });
 
-
-const express = require("express");
-const cors = require("cors");
-const nodemailer = require("nodemailer");
-const { createClient } = require("@supabase/supabase-js");
-require("dotenv").config();
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 
