@@ -9,18 +9,20 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (
-      !origin ||
-      origin === "https://wifi.razafistore.com" ||
-      origin === "https://wifi-admin-pi.vercel.app" ||
-      origin === "https://admin-wifi.razafistore.com" ||
-      origin.endsWith(".vercel.app")
-    ) {
+    const allowedOrigins = [
+      "https://wifi.razafistore.com",
+      "https://wifi-admin-pi.vercel.app",
+      "https://admin-wifi.razafistore.com",
+      "https://admin-wifi-razafistore.vercel.app"
+    ];
+    if (!origin || allowedOrigins.includes(origin) || origin.endsWith(".vercel.app")) {
       return callback(null, true);
     }
+    console.log("⛔ Requête bloquée par CORS depuis:", origin);
     return callback(new Error("Not allowed by CORS"));
   }
 }));
+
 
 app.use(express.json());
 
