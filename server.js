@@ -194,6 +194,64 @@ app.get("/api/admin-stats", verifyAuth, async (req, res) => {
   }
 });
 
+// ✅ Authentification admin sécurisée par mot de passe (POST)
+app.post("/api/admin-stats", async (req, res) => {
+  const { password } = req.body;
+  if (password !== process.env.API_SECRET) {
+    return res.status(401).json({ error: "Mot de passe incorrect" });
+  }
+
+  try {
+    const { data: metrics, error: metricsError } = await supabase
+      .from("metrics")
+      .select("*")
+      .single();
+
+    const { data: transactions, error: txError } = await supabase
+      .from("transactions")
+      .select("*")
+      .order("paid_at", { ascending: false })
+      .limit(20);
+
+    if (metricsError || txError) {
+      return res.status(500).json({ error: "Erreur lors de la récupération des stats." });
+    }
+
+    res.json({
+      total_gb: metrics.total_gb,
+      total_ariary: metrics.total_ariary,
+      transaction_count: transactions.length,
+      recent: transactions
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// ✅ Changer le mot de passe admin de manière sécurisée
+app.post("/api/change-password", async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+
+  // Vérifie l'ancien mot de passe
+  if (currentPassword !== process.env.API_SECRET) {
+    return res.status(401).json({ error: "Ancien mot de passe incorrect" });
+  }
+
+  // Vérifie que le nouveau mot de passe est valide
+  if (!newPassword || newPassword.length < 6) {
+    return res.status(400).json({ error: "Nouveau mot de passe trop court" });
+  }
+
+  // ❗️IMPORTANT : Render n’autorise pas de changer process.env à chaud.
+  // On envoie un email à l’admin pour qu’il le fasse manuellement.
+  await sendEmail(
+    "🔐 Demande de changement de mot de passe",
+    `Un changement de mot de passe a été demandé.\n\nNouveau mot de passe proposé : ${newPassword}\n\nTu dois le copier dans Render > Environment > API_SECRET`
+  );
+
+  res.json({ success: true, message: "Mot de passe envoyé par email. Mets-le à jour manuellement dans Render." });
+});
+
 
 app.listen(PORT, () => {
   console.log(`✅ Backend sécurisé en ligne sur http://localhost:${PORT}`);
