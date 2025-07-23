@@ -7,33 +7,32 @@ require("dotenv").config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ✅ Liste des origines autorisées pour CORS
 const allowedOrigins = [
   "https://wifi.razafistore.com",
   "https://wifi-admin-pi.vercel.app",
   "https://admin-wifi.razafistore.com",
   "https://admin-wifi-razafistore.vercel.app",
-  "http://localhost:3000", // Pour tests locaux
+  "http://localhost:3000", // pour tests locaux
 ];
 
-// ✅ Configuration CORS propre
 app.use(cors({
   origin: (origin, callback) => {
-    console.log("Requête CORS reçue de l'origine:", origin);
+    console.log("🌍 Requête CORS reçue depuis l'origine :", origin);
 
     if (!origin) {
-      // Requête directe (curl, Postman...) autorisée
+      // Pas d'origine (ex: Postman, curl) - autorisé
       return callback(null, true);
     }
 
-    if (
-      allowedOrigins.includes(origin) ||
-      origin.endsWith(".vercel.app")
-    ) {
+    if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
 
-    const msg = `Requête CORS bloquée pour origine non autorisée : ${origin}`;
+    if (origin.endsWith(".vercel.app")) {
+      return callback(null, true);
+    }
+
+    const msg = `⛔ Requête CORS bloquée pour origine non autorisée : ${origin}`;
     console.warn(msg);
     callback(new Error(msg));
   },
@@ -94,6 +93,11 @@ async function updateMetrics(plan, amount) {
 
 app.get("/", (req, res) => {
   res.json({ message: "✅ Backend en ligne, accès non autorisé." });
+});
+
+// Route test CORS
+app.get("/test-cors", (req, res) => {
+  res.json({ message: "Test CORS OK" });
 });
 
 async function processPayment(phone, plan, simulated = false) {
@@ -179,7 +183,7 @@ app.post("/api/simulate-callback", async (req, res) => {
   }
 });
 
-// ✅ Route admin GET protégée
+// Route admin GET protégée
 app.get("/api/admin-stats", (req, res) => {
   const auth = req.headers.authorization;
   if (!auth || auth !== `Bearer ${process.env.API_SECRET}`) {
@@ -215,7 +219,7 @@ app.get("/api/admin-stats", (req, res) => {
   })();
 });
 
-// ✅ Route POST admin login (alternative)
+// Route POST admin login (alternative)
 app.post("/api/admin-stats", async (req, res) => {
   const { password } = req.body;
   if (password !== process.env.API_SECRET) {
@@ -249,7 +253,7 @@ app.post("/api/admin-stats", async (req, res) => {
   }
 });
 
-// ✅ Mot de passe admin : changement manuel
+// Mot de passe admin : changement manuel
 app.post("/api/change-password", async (req, res) => {
   const { currentPassword, newPassword } = req.body;
 
