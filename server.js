@@ -22,14 +22,16 @@ app.use(cors({
     console.log("🔄 Requête CORS reçue depuis :", origin);
 
     if (!origin) {
-      return callback(null, true); // ex: Postman
+      return callback(null, true); // ex: Postman ou curl sans origin
     }
 
-    if (allowedOrigins.has(origin) || origin.endsWith(".vercel.app")) {
+    const cleanOrigin = origin.replace(/\/$/, ""); // retire slash final s’il y en a
+
+    if (allowedOrigins.has(cleanOrigin) || cleanOrigin.endsWith(".vercel.app")) {
       return callback(null, true);
     }
 
-    const msg = `⛔ Requête CORS refusée. Origine non autorisée : ${origin}`;
+    const msg = `⛔ Requête CORS refusée. Origine non autorisée : ${cleanOrigin}`;
     console.warn(msg);
     callback(new Error(msg));
   },
@@ -109,4 +111,5 @@ app.post("/send-email", verifyAuth, async (req, res) => {
 // LANCEMENT DU SERVEUR
 app.listen(PORT, () => {
   console.log(`🚀 Serveur lancé sur le port ${PORT}`);
+  console.log("🌐 Origines autorisées :", Array.from(allowedOrigins));
 });
