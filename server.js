@@ -20,8 +20,7 @@ app.use(cors({
     if (!origin || allowedOrigins.includes(origin) || origin.endsWith(".vercel.app")) {
       return callback(null, true);
     }
-    // 🧩 AJOUTER CETTE LIGNE :
-    console.log("⛔ Requête bloquée par CORS depuis:", origin);
+    console.log("⛔ Requête bloquée par CORS depuis:", origin); // <== LIGNE À AJOUTER
     return callback(new Error("Not allowed by CORS"));
   },
   methods: ["GET", "POST", "OPTIONS"],
