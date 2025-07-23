@@ -7,8 +7,8 @@ require("dotenv").config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ✅ CORS amélioré pour autoriser les origines spécifiques + OPTIONS + headers personnalisés
-app.use(cors({
+// ✅ CORS ajusté pour inclure les requêtes prévol (« preflight »)
+et app.use(cors({
   origin: (origin, callback) => {
     const allowedOrigins = [
       "https://wifi.razafistore.com",
@@ -19,13 +19,15 @@ app.use(cors({
     if (!origin || allowedOrigins.includes(origin) || origin.endsWith(".vercel.app")) {
       return callback(null, true);
     }
-    console.log("⛔ Requête bloquée par CORS depuis:", origin);
+    console.log("❌ Requête bloquée par CORS depuis:", origin);
     return callback(new Error("Not allowed by CORS"));
   },
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
+// ✅ Middleware pour OPTIONS (important pour les preflight requests)
+app.options("*", cors());
 app.use(express.json());
 
 const supabase = createClient(
@@ -35,7 +37,7 @@ const supabase = createClient(
 
 function verifyAuth(req, res, next) {
   const authHeader = req.headers.authorization;
-  const expectedToken = "Bearer Mananjary.317";
+  const expectedToken = `Bearer ${process.env.API_SECRET}`;
   if (!authHeader || authHeader !== expectedToken) {
     return res.status(401).json({ error: "Accès non autorisé" });
   }
@@ -170,43 +172,34 @@ app.post("/api/simulate-callback", async (req, res) => {
   }
 });
 
-// ✅ Route admin GET protégée
-app.get("/api/admin-stats", (req, res) => {
-  const auth = req.headers.authorization;
-  if (!auth || auth !== `Bearer ${process.env.API_SECRET}`) {
-    return res.status(401).json({ error: "Mot de passe incorrect" });
-  }
+app.get("/api/admin-stats", verifyAuth, async (req, res) => {
+  try {
+    const { data: metrics, error: metricsError } = await supabase
+      .from("metrics")
+      .select("*")
+      .single();
 
-  (async () => {
-    try {
-      const { data: metrics, error: metricsError } = await supabase
-        .from("metrics")
-        .select("*")
-        .single();
+    const { data: transactions, error: txError } = await supabase
+      .from("transactions")
+      .select("*")
+      .order("paid_at", { ascending: false })
+      .limit(20);
 
-      const { data: transactions, error: txError } = await supabase
-        .from("transactions")
-        .select("*")
-        .order("paid_at", { ascending: false })
-        .limit(20);
-
-      if (metricsError || txError) {
-        return res.status(500).json({ error: "Erreur lors de la récupération des stats." });
-      }
-
-      res.json({
-        total_gb: metrics.total_gb,
-        total_ariary: metrics.total_ariary,
-        transaction_count: transactions.length,
-        recent: transactions
-      });
-    } catch (err) {
-      res.status(500).json({ error: "Erreur serveur." });
+    if (metricsError || txError) {
+      return res.status(500).json({ error: "Erreur lors de la récupération des stats." });
     }
-  })();
+
+    res.json({
+      total_gb: metrics.total_gb,
+      total_ariary: metrics.total_ariary,
+      transaction_count: transactions.length,
+      recent: transactions
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur." });
+  }
 });
 
-// ✅ Route admin POST alternative
 app.post("/api/admin-stats", async (req, res) => {
   const { password } = req.body;
   if (password !== process.env.API_SECRET) {
@@ -240,7 +233,6 @@ app.post("/api/admin-stats", async (req, res) => {
   }
 });
 
-// ✅ Changer mot de passe admin
 app.post("/api/change-password", async (req, res) => {
   const { currentPassword, newPassword } = req.body;
 
