@@ -7,27 +7,26 @@ require("dotenv").config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ✅ CORS ajusté pour inclure les requêtes prévol (« preflight »)
-et app.use(cors({
-  origin: (origin, callback) => {
-    const allowedOrigins = [
-      "https://wifi.razafistore.com",
-      "https://wifi-admin-pi.vercel.app",
-      "https://admin-wifi.razafistore.com",
-      "https://admin-wifi-razafistore.vercel.app"
-    ];
+// ✅ CORS configuré proprement
+const allowedOrigins = [
+  "https://wifi.razafistore.com",
+  "https://wifi-admin-pi.vercel.app",
+  "https://admin-wifi.razafistore.com",
+  "https://admin-wifi-razafistore.vercel.app"
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
     if (!origin || allowedOrigins.includes(origin) || origin.endsWith(".vercel.app")) {
       return callback(null, true);
     }
-    console.log("❌ Requête bloquée par CORS depuis:", origin);
+    console.error("❌ Requête bloquée par CORS depuis :", origin);
     return callback(new Error("Not allowed by CORS"));
   },
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
-// ✅ Middleware pour OPTIONS (important pour les preflight requests)
-app.options("*", cors());
 app.use(express.json());
 
 const supabase = createClient(
@@ -37,7 +36,7 @@ const supabase = createClient(
 
 function verifyAuth(req, res, next) {
   const authHeader = req.headers.authorization;
-  const expectedToken = `Bearer ${process.env.API_SECRET}`;
+  const expectedToken = "Bearer Mananjary.317";
   if (!authHeader || authHeader !== expectedToken) {
     return res.status(401).json({ error: "Accès non autorisé" });
   }
@@ -63,11 +62,7 @@ function sendEmail(subject, text) {
 
 async function updateMetrics(plan, amount) {
   const gb = plan.includes("1 Go") ? 1 : plan.includes("5 Go") ? 5 : 20;
-  const { data, error } = await supabase
-    .from("metrics")
-    .select("*")
-    .limit(1)
-    .single();
+  const { data, error } = await supabase.from("metrics").select("*").limit(1).single();
 
   let totalGb = gb, totalAmount = amount, notify = false;
   if (data) {
@@ -97,9 +92,7 @@ async function processPayment(phone, plan, simulated = false) {
 
   if (error || !data || data.length === 0) {
     const msg = "Aucun voucher disponible ou erreur Supabase.";
-    await supabase.from("transactions").insert({
-      phone, plan, status: "failed", error: msg
-    });
+    await supabase.from("transactions").insert({ phone, plan, status: "failed", error: msg });
     await sendEmail("❌ Paiement échoué", `${phone} – ${plan} – ${msg}`);
     throw new Error(msg);
   }
@@ -172,34 +165,43 @@ app.post("/api/simulate-callback", async (req, res) => {
   }
 });
 
-app.get("/api/admin-stats", verifyAuth, async (req, res) => {
-  try {
-    const { data: metrics, error: metricsError } = await supabase
-      .from("metrics")
-      .select("*")
-      .single();
-
-    const { data: transactions, error: txError } = await supabase
-      .from("transactions")
-      .select("*")
-      .order("paid_at", { ascending: false })
-      .limit(20);
-
-    if (metricsError || txError) {
-      return res.status(500).json({ error: "Erreur lors de la récupération des stats." });
-    }
-
-    res.json({
-      total_gb: metrics.total_gb,
-      total_ariary: metrics.total_ariary,
-      transaction_count: transactions.length,
-      recent: transactions
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur serveur." });
+// ✅ Route admin GET protégée
+app.get("/api/admin-stats", (req, res) => {
+  const auth = req.headers.authorization;
+  if (!auth || auth !== `Bearer ${process.env.API_SECRET}`) {
+    return res.status(401).json({ error: "Mot de passe incorrect" });
   }
+
+  (async () => {
+    try {
+      const { data: metrics, error: metricsError } = await supabase
+        .from("metrics")
+        .select("*")
+        .single();
+
+      const { data: transactions, error: txError } = await supabase
+        .from("transactions")
+        .select("*")
+        .order("paid_at", { ascending: false })
+        .limit(20);
+
+      if (metricsError || txError) {
+        return res.status(500).json({ error: "Erreur lors de la récupération des stats." });
+      }
+
+      res.json({
+        total_gb: metrics.total_gb,
+        total_ariary: metrics.total_ariary,
+        transaction_count: transactions.length,
+        recent: transactions
+      });
+    } catch (err) {
+      res.status(500).json({ error: "Erreur serveur." });
+    }
+  })();
 });
 
+// ✅ Route POST admin login (alternative)
 app.post("/api/admin-stats", async (req, res) => {
   const { password } = req.body;
   if (password !== process.env.API_SECRET) {
@@ -233,6 +235,7 @@ app.post("/api/admin-stats", async (req, res) => {
   }
 });
 
+// ✅ Mot de passe admin : changement manuel
 app.post("/api/change-password", async (req, res) => {
   const { currentPassword, newPassword } = req.body;
 
