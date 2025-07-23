@@ -7,27 +7,39 @@ require("dotenv").config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ✅ CORS configuré proprement
+// ✅ Liste des origines autorisées pour CORS
+const allowedOrigins = [
+  "https://wifi.razafistore.com",
+  "https://wifi-admin-pi.vercel.app",
+  "https://admin-wifi.razafistore.com",
+  "https://admin-wifi-razafistore.vercel.app",
+  "http://localhost:3000", // Pour tests locaux
+];
 
+// ✅ Configuration CORS propre
 app.use(cors({
   origin: (origin, callback) => {
-    const allowedOrigins = [
-      "https://wifi.razafistore.com",
-      "https://wifi-admin-pi.vercel.app",
-      "https://admin-wifi.razafistore.com",
-      "https://admin-wifi-razafistore.vercel.app"
-    ];
-    if (!origin || allowedOrigins.includes(origin) || origin.endsWith(".vercel.app")) {
+    console.log("Requête CORS reçue de l'origine:", origin);
+
+    if (!origin) {
+      // Requête directe (curl, Postman...) autorisée
       return callback(null, true);
     }
-    console.log("⛔ Requête bloquée par CORS depuis:", origin); // <== LIGNE À AJOUTER
-    return callback(new Error("Not allowed by CORS"));
+
+    if (
+      allowedOrigins.includes(origin) ||
+      origin.endsWith(".vercel.app")
+    ) {
+      return callback(null, true);
+    }
+
+    const msg = `Requête CORS bloquée pour origine non autorisée : ${origin}`;
+    console.warn(msg);
+    callback(new Error(msg));
   },
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
-
-
 
 app.use(express.json());
 
