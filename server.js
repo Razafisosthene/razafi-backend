@@ -8,24 +8,27 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ✅ CORS configuré proprement
-const allowedOrigins = [
-  "https://wifi.razafistore.com",
-  "https://wifi-admin-pi.vercel.app",
-  "https://admin-wifi.razafistore.com",
-  "https://admin-wifi-razafistore.vercel.app"
-];
 
 app.use(cors({
-  origin: function (origin, callback) {
+  origin: (origin, callback) => {
+    const allowedOrigins = [
+      "https://wifi.razafistore.com",
+      "https://wifi-admin-pi.vercel.app",
+      "https://admin-wifi.razafistore.com",
+      "https://admin-wifi-razafistore.vercel.app"
+    ];
     if (!origin || allowedOrigins.includes(origin) || origin.endsWith(".vercel.app")) {
       return callback(null, true);
     }
-    console.error("❌ Requête bloquée par CORS depuis :", origin);
+    // 🧩 AJOUTER CETTE LIGNE :
+    console.log("⛔ Requête bloquée par CORS depuis:", origin);
     return callback(new Error("Not allowed by CORS"));
   },
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
+
+
 
 app.use(express.json());
 
