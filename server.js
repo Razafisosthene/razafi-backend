@@ -1,115 +1,87 @@
-const express = require("express");
-const cors = require("cors");
-const nodemailer = require("nodemailer");
-const { createClient } = require("@supabase/supabase-js");
-require("dotenv").config();
+// server.js
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import nodemailer from "nodemailer";
+import { createClient } from "@supabase/supabase-js";
+
+dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-// Liste des origines autorisées
-const allowedOrigins = new Set([
-  "https://wifi.razafistore.com",
-  "https://admin-wifi.razafistore.com",
-  "https://wifi-admin-pi.vercel.app",
-  "https://admin-wifi-razafistore.vercel.app",
-  "http://localhost:3000"
-]);
-
-// Middleware CORS dynamique
-app.use(cors({
-  origin: (origin, callback) => {
-    console.log("🔄 Requête CORS reçue depuis :", origin);
-
-    if (!origin) {
-      return callback(null, true); // ex: Postman ou curl sans origin
-    }
-
-    const cleanOrigin = origin.replace(/\/$/, ""); // retire slash final s’il y en a
-
-    if (allowedOrigins.has(cleanOrigin) || cleanOrigin.endsWith(".vercel.app")) {
-      return callback(null, true);
-    }
-
-    const msg = `⛔ Requête CORS refusée. Origine non autorisée : ${cleanOrigin}`;
-    console.warn(msg);
-    callback(new Error(msg));
-  },
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: true
-}));
-
+app.use(cors());
 app.use(express.json());
 
-// INITIALISATION SUPABASE
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+const PORT = process.env.PORT || 3000;
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-// VÉRIFICATION DU TOKEN BEARER
-async function verifyAuth(req, res, next) {
-  const token = req.headers.authorization?.split(" ")[1];
-  if (!token) {
-    return res.status(401).json({ error: "Token manquant" });
+// Configuration MVola (sandbox)
+const MVOLA_CREDENTIALS = {
+  consumerKey: "fxwJql1yzvY9k9npeMLgbWZamkIa",
+  consumerSecret: "fv0AkeX9wAdDvC9b8zeYZPrZA_Ia",
+  apiUser: "sosthenet@gmail.com@carbon.super",
+  apiKey: "eyJ4NXQiOiJaREUzWW1RNFkyRmtZekprTmpNMk5EVmtZVE5oTkRSak16azFObVEyWXprelkyUTFaVFZqWVEiLCJraWQiOiJNVGRsTXpneFpqZGtNakk0WmpKbVlUZ3dNRFJpWWpNMU1tUmhOamxoTUdNME1XTmtPV05tT1RobU16VXlNMlUxTkRZNE5UWXhOMk01TW1SbU5XUTRPQV9SUzI1NiIsInR5cCI6ImF0K2p3dCIsImFsZyI6IlJTMjU2In0.eyJzdWIiOiJzb3N0aGVuZXRAZ21haWwuY29tIiwiYXV0IjoiQVBQTElDQVRJT04iLCJhdWQiOiJmeHdKcWwxeXp2WTlrOW5wZU1MZ2JXWmFta0lhIiwibmJmIjoxNzUzNzc5NjA4LCJhenAiOiJmeHdKcWwxeXp2WTlrOW5wZU1MZ2JXWmFta0lhIiwic2NvcGUiOiJkZWZhdWx0IiwiaXNzIjoiaHR0cHM6XC9cL2RldmVsb3Blci5tdm9sYS5tZ1wvb2F1dGgyXC90b2tlbiIsInJlYWxtIjp7InNpZ25pbmdfdGVuYW50IjoiY2FyYm9uLnN1cGVyIn0sImV4cCI6MTc1Mzc4MzIwOCwiaWF0IjoxNzUzNzc5NjA4LCJqdGkiOiI5ZmVmNzY5My05MjJiLTQ4MzEtYTc0Zi0yMzU4YmZlOTQyN2IifQ.mVHXxQI9nduW_tyZK0HmVsvPfcKkgZfR_m9YioE-MQOOBvcY5fRGRWRwqN4BLP8UgTuP3z7z1QEXP3iduUl0sX9OOEbqkUrf_CUfWPHPsL7njtCAblt3sy_VNBM0jOGyGpQZvgFXCnXPYuKf_WNfnjV9LO_sUwMdofmoBYX7nzp431-PD5trXZGxHbvlmMxIAcIal5033plk9W0wvcrN6z97fVTjzK-YYAehWfGenteJ2bpTpk4xktol8fPClNjuZnjtsL4hDZak9uHkX4YAsoD11n4YLq8Ni-v_JT838SyqSOJoAC56q3mXJs2MKXkdr_mty5KmqiejpRt-TcsPMw"
+};
+
+// Route de test paiement MVola
+app.post("/api/test-payment", async (req, res) => {
+  const { phone, amount, plan } = req.body;
+
+  if (!phone || !amount || !plan) return res.status(400).json({ error: "Paramètres manquants" });
+
+  const dataPerPlan = { "1 jour": 1, "7 jours": 5, "30 jours": 20 };
+  const expectedAmount = { "1 jour": 1000, "7 jours": 5000, "30 jours": 15000 }[plan];
+
+  if (!expectedAmount || parseInt(amount) !== expectedAmount) {
+    return res.status(400).json({ error: "Montant invalide pour ce plan" });
   }
 
-  const { data, error } = await supabase.auth.getUser(token);
-  if (error || !data.user) {
-    return res.status(401).json({ error: "Token invalide" });
-  }
+  const { data: voucher, error } = await supabase
+    .from("vouchers")
+    .select("*")
+    .eq("plan", plan)
+    .is("paid_by", null)
+    .limit(1)
+    .single();
 
-  req.user = data.user;
-  next();
-}
+  if (error || !voucher) return res.status(500).json({ error: "Aucun code disponible" });
 
-// CONFIGURATION NODEMAILER
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 587,
-  secure: false,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
-});
+  const update = await supabase
+    .from("vouchers")
+    .update({ paid_by: phone, assigned_at: new Date().toISOString() })
+    .eq("id", voucher.id);
 
-// ROUTE PRINCIPALE D'ENVOI
-app.post("/send-email", verifyAuth, async (req, res) => {
-  const { email, name, code, duration } = req.body;
+  await supabase.from("transactions").insert({
+    phone,
+    amount,
+    plan,
+    code: voucher.code,
+    status: "success",
+    created_at: new Date().toISOString()
+  });
 
-  if (!email || !name || !code || !duration) {
-    return res.status(400).json({ error: "Champs manquants" });
-  }
+  await supabase.rpc("increment_metrics", { gb: dataPerPlan[plan], ar: amount });
 
-  const mailOptions = {
-    from: process.env.EMAIL_USER,
-    to: email,
-    subject: "🎉 Votre code Wi-Fi est prêt !",
-    html: `
-      <div style="font-family: Arial, sans-serif; font-size: 16px;">
-        <h2>Bonjour ${name},</h2>
-        <p>Voici votre code Wi-Fi :</p>
-        <p><strong style="font-size: 20px;">${code}</strong></p>
-        <p>Validité : <strong>${duration}</strong></p>
-        <br>
-        <p>Merci de votre confiance,<br>L’équipe RazafiStore</p>
-      </div>
-    `
-  };
-
+  // Envoi email (optionnel)
   try {
-    await transporter.sendMail(mailOptions);
-    res.status(200).json({ message: "Email envoyé avec succès" });
-  } catch (error) {
-    console.error("Erreur d'envoi d'email:", error);
-    res.status(500).json({ error: "Échec de l'envoi de l'email" });
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.EMAIL_SENDER,
+        pass: process.env.EMAIL_PASSWORD,
+      },
+    });
+
+    await transporter.sendMail({
+      from: process.env.EMAIL_SENDER,
+      to: "sosthenet@gmail.com",
+      subject: `Paiement TEST WiFi (${plan}) - ${phone}`,
+      text: `Montant: ${amount} Ar\nPlan: ${plan}\nCode: ${voucher.code}`,
+    });
+  } catch (e) {
+    console.error("Erreur envoi email:", e.message);
   }
+
+  res.json({ success: true, code: voucher.code });
 });
 
-// LANCEMENT DU SERVEUR
-app.listen(PORT, () => {
-  console.log(`🚀 Serveur lancé sur le port ${PORT}`);
-  console.log("🌐 Origines autorisées :", Array.from(allowedOrigins));
-});
+app.listen(PORT, () => console.log("Server running on port", PORT));
