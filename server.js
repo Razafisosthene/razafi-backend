@@ -14,19 +14,24 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-const dataPerPlan = { "1 jour": 1, "7 jours": 5, "30 jours": 20 };
-const pricePerPlan = { "1 jour": 1000, "7 jours": 5000, "30 jours": 15000 };
+const dataPerPlan = {
+  "1 Jour - 1 Go - 1000 Ar": 1,
+  "7 Jours - 5 Go - 5000 Ar": 5,
+  "30 Jours - 20 Go - 15000 Ar": 20
+};
 
-function detectPlan(amount) {
-  return Object.keys(pricePerPlan).find(plan => pricePerPlan[plan] === parseInt(amount));
-}
+const planByAmount = {
+  "1000": "1 Jour - 1 Go - 1000 Ar",
+  "5000": "7 Jours - 5 Go - 5000 Ar",
+  "15000": "30 Jours - 20 Go - 15000 Ar"
+};
 
 // === MVola SANDBOX CALLBACK ROUTE ===
 app.post("/api/mvola-callback", async (req, res) => {
   const body = req.body;
   const msisdn = body?.debitParty?.[0]?.value;
   const amount = body?.amount;
-  const plan = detectPlan(amount);
+  const plan = planByAmount[amount];
 
   if (!msisdn || !amount || !plan) {
     console.error("Données manquantes ou plan introuvable");
@@ -34,7 +39,6 @@ app.post("/api/mvola-callback", async (req, res) => {
   }
 
   try {
-    // 1. Find a free voucher for the plan
     const { data: voucher, error } = await supabase
       .from("vouchers")
       .select("*")
@@ -45,13 +49,11 @@ app.post("/api/mvola-callback", async (req, res) => {
 
     if (error || !voucher) throw new Error("Aucun voucher disponible");
 
-    // 2. Assign the voucher
     await supabase
       .from("vouchers")
       .update({ paid_by: msisdn, assigned_at: new Date().toISOString() })
       .eq("id", voucher.id);
 
-    // 3. Log the transaction
     await supabase.from("transactions").insert({
       phone: msisdn,
       amount,
@@ -61,10 +63,8 @@ app.post("/api/mvola-callback", async (req, res) => {
       created_at: new Date().toISOString()
     });
 
-    // 4. Update metrics
     await supabase.rpc("increment_metrics", { gb: dataPerPlan[plan], ar: parseInt(amount) });
 
-    // 5. Send notification email
     try {
       const transporter = nodemailer.createTransport({
         service: "gmail",
@@ -88,7 +88,6 @@ app.post("/api/mvola-callback", async (req, res) => {
   } catch (err) {
     console.error("Erreur callback:", err.message);
 
-    // Log failed transaction
     await supabase.from("transactions").insert({
       phone: msisdn,
       amount,
@@ -97,7 +96,6 @@ app.post("/api/mvola-callback", async (req, res) => {
       created_at: new Date().toISOString()
     });
 
-    // Send failure email
     try {
       const transporter = nodemailer.createTransport({
         service: "gmail",
@@ -127,7 +125,7 @@ app.post("/api/test-payment", async (req, res) => {
 
   if (!phone || !amount || !plan) return res.status(400).json({ error: "Paramètres manquants" });
 
-  const expectedAmount = pricePerPlan[plan];
+  const expectedAmount = parseInt(Object.keys(planByAmount).find(key => planByAmount[key] === plan) || "0");
 
   if (!expectedAmount || parseInt(amount) !== expectedAmount) {
     return res.status(400).json({ error: "Montant invalide pour ce plan" });
@@ -143,7 +141,7 @@ app.post("/api/test-payment", async (req, res) => {
 
   if (error || !voucher) return res.status(500).json({ error: "Aucun code disponible" });
 
-  const update = await supabase
+  await supabase
     .from("vouchers")
     .update({ paid_by: phone, assigned_at: new Date().toISOString() })
     .eq("id", voucher.id);
