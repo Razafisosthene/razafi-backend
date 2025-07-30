@@ -14,30 +14,26 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-// ✅ Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-// ✅ Nodemailer
 const transporter = nodemailer.createTransport({
   host: process.env.EMAIL_SERVICE,
   port: parseInt(process.env.EMAIL_PORT) || 587,
   secure: false,
   auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
+    user: process.env.GMAIL_USER,
+    pass: process.env.GMAIL_APP_PASSWORD
   }
 });
 
-// 🔐 Route test GET
 app.get('/', (req, res) => {
   res.send('✅ RAZAFI Backend est en ligne !');
 });
 
-// 🔔 Email helper
 async function sendNotification(subject, html) {
   try {
     await transporter.sendMail({
-      from: `"RAZAFI WIFI" <${process.env.EMAIL_USER}>`,
+      from: `"RAZAFI WIFI" <${process.env.GMAIL_USER}>`,
       to: 'sosthenet@gmail.com',
       subject,
       html
@@ -47,38 +43,36 @@ async function sendNotification(subject, html) {
   }
 }
 
-// ✅ MVola Sandbox Test (conforme au guide officiel)
+// ✅ ROUTE DE TEST OFFICIEL MVOLA SANDBOX
 app.post('/api/test-payment', async (req, res) => {
   try {
-    const tokenResponse = await fetch(`${process.env.MVOLA_BASE_URL}/oauth2/token`, {
+    const tokenResponse = await fetch(`${process.env.MVOLA_BASE_URL}/token`, {
       method: 'POST',
       headers: {
         Authorization: 'Basic ' + Buffer.from(`${process.env.MVOLA_CONSUMER_KEY}:${process.env.MVOLA_CONSUMER_SECRET}`).toString('base64'),
-        'Content-Type': 'application/x-www-form-urlencoded'
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Cache-Control': 'no-cache'
       },
-      body: 'grant_type=client_credentials'
+      body: 'grant_type=client_credentials&scope=EXT_INT_MVOLA_SCOPE'
     });
 
     const tokenData = await tokenResponse.json();
-    const accessToken = tokenData.access_token;
+    console.log("🎫 Token response:", tokenData);
 
+    const accessToken = tokenData.access_token;
     if (!accessToken) {
       return res.status(500).send('❌ Token MVola non reçu');
     }
 
-    const transactionPayload = {
+    const payload = {
       amount: "1000",
       currency: "Ar",
       descriptionText: "Client test 0349262379 Tasty Plastic Bacon",
       requestingOrganisationTransactionReference: "61120259",
       requestDate: new Date().toISOString(),
       originalTransactionReference: "MVOLA_" + Date.now(),
-      debitParty: [
-        { key: "msisdn", value: "0343500003" }
-      ],
-      creditParty: [
-        { key: "msisdn", value: "0343500004" }
-      ],
+      debitParty: [{ key: "msisdn", value: "0343500003" }],
+      creditParty: [{ key: "msisdn", value: "0343500004" }],
       metadata: [
         { key: "partnerName", value: "0343500004" },
         { key: "fc", value: "USD" },
@@ -88,29 +82,30 @@ app.post('/api/test-payment', async (req, res) => {
 
     const referenceId = uuidv4();
 
-    const mvolaResponse = await fetch(`${process.env.MVOLA_BASE_URL}/v1_0/transfer`, {
+    const mvolaResponse = await fetch(`${process.env.MVOLA_BASE_URL}/mvola/mm/transactions/type/merchantpay/1.0.0/`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'X-Reference-Id': referenceId,
-        'X-Target-Environment': process.env.MVOLA_TARGET_ENVIRONMENT || 'sandbox',
+        'X-Target-Environment': process.env.MVOLA_TARGET_ENV || 'sandbox',
+        'Ocp-Apim-Subscription-Key': process.env.MVOLA_API_KEY,
         'Content-Type': 'application/json',
-        'Ocp-Apim-Subscription-Key': process.env.MVOLA_API_KEY
+        'Cache-Control': 'no-cache'
       },
-      body: JSON.stringify(transactionPayload)
+      body: JSON.stringify(payload)
     });
 
     const result = await mvolaResponse.text();
-    console.log('✅ Réponse MVola :', result);
+    console.log("📦 MVola response:", result);
 
-    res.status(mvolaResponse.status).send(result);
+    return res.status(mvolaResponse.status).send(result);
   } catch (error) {
     console.error('❌ Erreur test-payment:', error.message);
-    res.status(500).send('Erreur interne');
+    return res.status(500).send('Erreur interne');
   }
 });
 
-// === Route de traitement réel du callback MVola ===
+// 🧾 ROUTE CALLBACK (mvola-callback) : inchangé
 app.post('/api/mvola-callback', async (req, res) => {
   try {
     const { amount, payer, metadata } = req.body;
