@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
 import { createClient } from '@supabase/supabase-js';
+import fetch from 'node-fetch';
 
 dotenv.config();
 
@@ -13,16 +14,19 @@ app.use(express.json());
 const PORT = process.env.PORT || 10000;
 
 // Supabase
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 // Nodemailer
 const transporter = nodemailer.createTransport({
-  host: process.env.EMAIL_SERVICE, // ex: smtp.gmail.com ou mail.gandi.net
+  host: process.env.EMAIL_SERVICE,
   port: parseInt(process.env.EMAIL_PORT) || 587,
   secure: false,
   auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
+    user: process.env.GMAIL_USER,
+    pass: process.env.GMAIL_APP_PASSWORD
   }
 });
 
@@ -30,7 +34,7 @@ const transporter = nodemailer.createTransport({
 async function sendNotification(subject, html) {
   try {
     await transporter.sendMail({
-      from: `"RAZAFI WIFI" <${process.env.EMAIL_USER}>`,
+      from: `"RAZAFI WIFI" <${process.env.GMAIL_USER}>`,
       to: 'sosthenet@gmail.com',
       subject,
       html
@@ -51,7 +55,7 @@ app.post('/api/mvola-test', async (req, res) => {
     payeeNote: 'RAZAFI WIFI',
     payerMessage: 'test',
     externalId: 'TEST123456',
-    callbackUrl: 'https://razafi-backend.onrender.com/api/mvola-callback',
+    callbackUrl: process.env.MVOLA_CALLBACK_URL,
     metadata: {
       partnerName: 'RAZAFI WIFI',
       fc: 'AR',
@@ -59,7 +63,7 @@ app.post('/api/mvola-test', async (req, res) => {
     }
   };
 
-  const response = await fetch('https://razafi-backend.onrender.com/api/mvola-callback', {
+  const response = await fetch(process.env.MVOLA_CALLBACK_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(testData)
@@ -79,7 +83,6 @@ app.post('/api/mvola-callback', async (req, res) => {
       return res.status(400).send('Données manquantes');
     }
 
-    // 1. Trouver un voucher libre correspondant au montant
     const { data: voucher, error } = await supabase
       .from('vouchers')
       .select('*')
@@ -93,7 +96,6 @@ app.post('/api/mvola-callback', async (req, res) => {
       return res.status(500).send('Aucun voucher disponible');
     }
 
-    // 2. Marquer le voucher comme payé
     await supabase
       .from('vouchers')
       .update({
@@ -102,7 +104,6 @@ app.post('/api/mvola-callback', async (req, res) => {
       })
       .eq('id', voucher.id);
 
-    // 3. Insertion transaction
     await supabase
       .from('transactions')
       .insert({
@@ -112,8 +113,7 @@ app.post('/api/mvola-callback', async (req, res) => {
         created_at: new Date().toISOString()
       });
 
-    // 4. Mettre à jour les metrics
-    const plan = voucher.plan; // '1 jour', '7 jours', '30 jours'
+    const plan = voucher.plan;
     const planToGB = { '1 jour': 1, '7 jours': 5, '30 jours': 20 };
     const gb = planToGB[plan] || 0;
 
@@ -129,14 +129,12 @@ app.post('/api/mvola-callback', async (req, res) => {
       })
       .eq('id', metricsRow.id);
 
-    // 5. Email de notification
     await sendNotification('✅ Paiement MVola Réussi', `
       <p><strong>Client :</strong> ${payerPhone}</p>
       <p><strong>Montant :</strong> ${amount} Ar</p>
       <p><strong>Code :</strong> ${voucher.code}</p>
     `);
 
-    // 6. Alerte palier tous les 100GB
     if (Math.floor(newGbSold / 100) > Math.floor((metricsRow?.gb_sold || 0) / 100)) {
       await sendNotification('🎉 Seuil 100GB Atteint', `<p>Un nouveau palier de 100GB a été franchi. Total vendu : ${newGbSold} GB</p>`);
     }
