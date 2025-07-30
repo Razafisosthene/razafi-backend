@@ -3,6 +3,8 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
 import { createClient } from '@supabase/supabase-js';
+import { v4 as uuidv4 } from 'uuid';
+import fetch from 'node-fetch';
 
 dotenv.config();
 
@@ -12,10 +14,10 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-// ✅ Supabase : correction ici
+// ✅ Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-// Nodemailer
+// ✅ Nodemailer
 const transporter = nodemailer.createTransport({
   host: process.env.EMAIL_SERVICE,
   port: parseInt(process.env.EMAIL_PORT) || 587,
@@ -26,12 +28,12 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// 🔐 Route GET pour test Render
+// 🔐 Route test GET
 app.get('/', (req, res) => {
   res.send('✅ RAZAFI Backend est en ligne !');
 });
 
-// 🔔 Helper pour envoyer un e-mail
+// 🔔 Email helper
 async function sendNotification(subject, html) {
   try {
     await transporter.sendMail({
@@ -45,36 +47,70 @@ async function sendNotification(subject, html) {
   }
 }
 
-// === Route de test MVola ===
-app.post('/api/mvola-test', async (req, res) => {
-  const testData = {
-    amount: '1000',
-    currency: 'Ar',
-    descriptionText: 'Test MVola Payment',
-    requestDate: new Date().toISOString(),
-    payer: { partyIdType: 'MSISDN', partyId: '0343500003' },
-    payeeNote: 'RAZAFI WIFI',
-    payerMessage: 'test',
-    externalId: 'TEST123456',
-    callbackUrl: 'https://razafi-backend.onrender.com/api/mvola-callback',
-    metadata: {
-      partnerName: 'RAZAFI WIFI',
-      fc: 'AR',
-      amountFc: '1000'
+// ✅ MVola Sandbox Test (conforme au guide officiel)
+app.post('/api/test-payment', async (req, res) => {
+  try {
+    const tokenResponse = await fetch(`${process.env.MVOLA_BASE_URL}/oauth2/token`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Basic ' + Buffer.from(`${process.env.MVOLA_CONSUMER_KEY}:${process.env.MVOLA_CONSUMER_SECRET}`).toString('base64'),
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: 'grant_type=client_credentials'
+    });
+
+    const tokenData = await tokenResponse.json();
+    const accessToken = tokenData.access_token;
+
+    if (!accessToken) {
+      return res.status(500).send('❌ Token MVola non reçu');
     }
-  };
 
-  const response = await fetch('https://razafi-backend.onrender.com/api/mvola-callback', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(testData)
-  });
+    const transactionPayload = {
+      amount: "1000",
+      currency: "Ar",
+      descriptionText: "Client test 0349262379 Tasty Plastic Bacon",
+      requestingOrganisationTransactionReference: "61120259",
+      requestDate: new Date().toISOString(),
+      originalTransactionReference: "MVOLA_" + Date.now(),
+      debitParty: [
+        { key: "msisdn", value: "0343500003" }
+      ],
+      creditParty: [
+        { key: "msisdn", value: "0343500004" }
+      ],
+      metadata: [
+        { key: "partnerName", value: "0343500004" },
+        { key: "fc", value: "USD" },
+        { key: "amountFc", value: "1" }
+      ]
+    };
 
-  const result = await response.text();
-  res.send(result);
+    const referenceId = uuidv4();
+
+    const mvolaResponse = await fetch(`${process.env.MVOLA_BASE_URL}/v1_0/transfer`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'X-Reference-Id': referenceId,
+        'X-Target-Environment': process.env.MVOLA_TARGET_ENVIRONMENT || 'sandbox',
+        'Content-Type': 'application/json',
+        'Ocp-Apim-Subscription-Key': process.env.MVOLA_API_KEY
+      },
+      body: JSON.stringify(transactionPayload)
+    });
+
+    const result = await mvolaResponse.text();
+    console.log('✅ Réponse MVola :', result);
+
+    res.status(mvolaResponse.status).send(result);
+  } catch (error) {
+    console.error('❌ Erreur test-payment:', error.message);
+    res.status(500).send('Erreur interne');
+  }
 });
 
-// === Callback principal ===
+// === Route de traitement réel du callback MVola ===
 app.post('/api/mvola-callback', async (req, res) => {
   try {
     const { amount, payer, metadata } = req.body;
