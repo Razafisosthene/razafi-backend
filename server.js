@@ -1,125 +1,94 @@
-// server.js
-import express from "express";
-import cors from "cors";
-import dotenv from "dotenv";
-import nodemailer from "nodemailer";
-import { createClient } from "@supabase/supabase-js";
+import express from 'express';
+import dotenv from 'dotenv';
+import cors from 'cors';
+import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
 
 const app = express();
+const port = process.env.PORT || 3000;
+
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 3000;
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-const dataPerPlan = {
-  "1 Jour - 1 Go - 1000 Ar": 1,
-  "7 Jours - 5 Go - 5000 Ar": 5,
-  "30 Jours - 20 Go - 15000 Ar": 20
-};
-
-const planByAmount = {
-  "1000": "1 Jour - 1 Go - 1000 Ar",
-  "5000": "7 Jours - 5 Go - 5000 Ar",
-  "15000": "30 Jours - 20 Go - 15000 Ar"
-};
-
-app.post("/api/mvola-callback", async (req, res) => {
-  const body = req.body;
-  const msisdn = body?.debitParty?.[0]?.value;
-  const amount = body?.amount;
-  const plan = planByAmount[amount];
-
-  if (!msisdn || !amount || !plan) {
-    console.error("Données manquantes ou plan introuvable");
-    return res.status(400).json({ error: "Callback invalide" });
-  }
-
+// ✅ Route Mvola Callback
+app.post('/api/mvola-callback', async (req, res) => {
   try {
-    const { data: voucher, error } = await supabase
-      .from("vouchers")
-      .select("*")
-      .eq("plan", plan)
-      .is("paid_by", null)
+    const metadata = req.body.metadata || [];
+    const mvolaNumber = metadata.find((item) => item.key === 'partnerName')?.value;
+    const amountAr = parseInt(req.body.amount || '0', 10);
+
+    if (!mvolaNumber || !amountAr) {
+      return res.status(400).json({ error: 'Invalid payment data' });
+    }
+
+    // 🎯 Déduction du plan acheté
+    const planGbMap = { 1000: 1, 5000: 5, 15000: 20 };
+    const gb = planGbMap[amountAr];
+    if (!gb) return res.status(400).json({ error: 'Montant invalide' });
+
+    // 🎟️ Trouver un voucher non assigné
+    const { data: freeVoucher, error: findError } = await supabase
+      .from('vouchers')
+      .select('*')
+      .eq('paid_by', null)
       .limit(1)
-      .single();
+      .maybeSingle();
 
-    if (error || !voucher) throw new Error("Aucun voucher disponible");
-
-    const now = new Date().toISOString();
-
-    await supabase
-      .from("vouchers")
-      .update({ paid_by: msisdn, assigned_at: now })
-      .eq("id", voucher.id);
-
-    await supabase.from("transactions").insert({
-      phone: msisdn,
-      plan,
-      code: voucher.code,
-      status: "success",
-      paid_at: now
-    });
-
-    await supabase.rpc("increment_metrics", {
-      gb: dataPerPlan[plan],
-      ar: parseInt(amount)
-    });
-
-    try {
-      const transporter = nodemailer.createTransport({
-        service: "gmail",
-        auth: {
-          user: process.env.EMAIL_SENDER,
-          pass: process.env.EMAIL_PASSWORD,
-        },
-      });
-
-      await transporter.sendMail({
-        from: process.env.EMAIL_SENDER,
-        to: "sosthenet@gmail.com",
-        subject: `✔️ Paiement MVola Sandbox - ${plan} - ${msisdn}`,
-        text: `Montant: ${amount} Ar\nPlan: ${plan}\nCode: ${voucher.code}`,
-      });
-    } catch (e) {
-      console.error("Erreur email:", e.message);
+    if (findError || !freeVoucher) {
+      return res.status(404).json({ error: 'Aucun voucher disponible' });
     }
 
-    res.status(200).json({ success: true });
+    // 💾 Mettre à jour le voucher
+    const { error: updateVoucherError } = await supabase
+      .from('vouchers')
+      .update({
+        paid_by: mvolaNumber,
+        assigned_at: new Date().toISOString()
+      })
+      .eq('id', freeVoucher.id);
+
+    if (updateVoucherError) {
+      return res.status(500).json({ error: 'Échec de l’assignation du voucher' });
+    }
+
+    // 💰 Mettre à jour la table metrics
+    const { data: metricsRow, error: metricsError } = await supabase
+      .from('metrics')
+      .select('*')
+      .eq('id', 1)
+      .maybeSingle();
+
+    if (!metricsRow) {
+      return res.status(500).json({ error: 'Ligne metrics non trouvée' });
+    }
+
+    const newTotalGb = (metricsRow.total_gb || 0) + gb;
+    const newTotalAr = (metricsRow.total_ariary || 0) + amountAr;
+
+    const { error: updateMetricsError } = await supabase
+      .from('metrics')
+      .update({
+        total_gb: newTotalGb,
+        total_ariary: newTotalAr
+      })
+      .eq('id', 1);
+
+    if (updateMetricsError) {
+      return res.status(500).json({ error: 'Échec mise à jour metrics' });
+    }
+
+    // ✅ Succès
+    res.json({ success: true, code: freeVoucher.code });
+
   } catch (err) {
-    console.error("Erreur callback:", err.message);
-
-    await supabase.from("transactions").insert({
-      phone: msisdn,
-      plan: plan || "inconnu",
-      status: "failed",
-      error: err.message,
-      paid_at: new Date().toISOString()
-    });
-
-    try {
-      const transporter = nodemailer.createTransport({
-        service: "gmail",
-        auth: {
-          user: process.env.EMAIL_SENDER,
-          pass: process.env.EMAIL_PASSWORD,
-        },
-      });
-
-      await transporter.sendMail({
-        from: process.env.EMAIL_SENDER,
-        to: "sosthenet@gmail.com",
-        subject: `❌ ECHEC Paiement MVola - ${msisdn}`,
-        text: `Erreur: ${err.message}\nMontant: ${amount} Ar\nPlan: ${plan || "inconnu"}`,
-      });
-    } catch (e) {
-      console.error("Erreur email (échec):", e.message);
-    }
-
-    res.status(500).json({ error: "Erreur traitement paiement" });
+    console.error('Callback error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
-app.listen(PORT, () => console.log("✅ Server running on port", PORT));
+app.listen(port, () => {
+  console.log(`✅ Backend sécurisé en ligne sur http://localhost:${port}`);
+});
