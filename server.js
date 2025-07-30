@@ -1,180 +1,203 @@
-require("dotenv").config();
-const express = require("express");
-const cors = require("cors");
-const nodemailer = require("nodemailer");
-const { createClient } = require("@supabase/supabase-js");
-const { v4: uuidv4 } = require("uuid");
-const fetch = require("node-fetch");
+// server.js (ES Module)
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import { createClient } from '@supabase/supabase-js';
+import fetch from 'node-fetch';
+import nodemailer from 'nodemailer';
+import { v4 as uuidv4 } from 'uuid';
+
+dotenv.config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const {
-  SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY,
-  API_SECRET,
-  API_TOKEN,
-  GMAIL_USER,
-  GMAIL_APP_PASSWORD,
-  EMAIL_PORT,
-  EMAIL_SERVICE,
-  MVOLA_CONSUMER_KEY,
-  MVOLA_CONSUMER_SECRET,
-  MVOLA_API_USER,
-  MVOLA_API_KEY,
-  MVOLA_BASE_URL,
-  MVOLA_TOKEN_URL,
-  MVOLA_TARGET_ENV,
-  MVOLA_CALLBACK_URL
-} = process.env;
+const PORT = process.env.PORT || 10000;
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
+// Middleware d'authentification simple
+function verifyAuth(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (authHeader === `Bearer ${process.env.API_TOKEN}`) {
+    next();
+  } else {
+    res.status(401).json({ error: 'Unauthorized' });
+  }
+}
+
+// =============== EMAIL SETUP ===============
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  service: 'gmail',
   auth: {
-    user: GMAIL_USER,
-    pass: GMAIL_APP_PASSWORD,
-  },
+    user: process.env.GMAIL_USER,
+    pass: process.env.GMAIL_APP_PASSWORD
+  }
 });
 
-function sendEmail(subject, html) {
-  return transporter.sendMail({
-    from: GMAIL_USER,
-    to: GMAIL_USER,
-    subject,
-    html,
-  });
-}
+// =============== ROUTES ===================
 
-function verifyAuth(req, res, next) {
-  const auth = req.headers.authorization || "";
-  if (!auth.startsWith("Bearer ") || auth.split(" ")[1] !== API_TOKEN) {
-    return res.status(403).json({ error: "Unauthorized" });
+// Test route
+app.get('/api/ping', (req, res) => {
+  res.send('✅ Backend opérationnel');
+});
+
+// Simuler un paiement test MVola (sandbox uniquement)
+app.post('/api/test-payment', verifyAuth, async (req, res) => {
+  const { plan } = req.body;
+  const prix = {
+    '1 jour': 1000,
+    '7 jours': 5000,
+    '30 jours': 15000
+  }[plan];
+
+  if (!prix) {
+    return res.status(400).json({ error: 'Plan invalide' });
   }
-  next();
-}
-
-async function getAccessToken() {
-  const res = await fetch(MVOLA_TOKEN_URL, {
-    method: "POST",
-    headers: {
-      Authorization: "Basic " + Buffer.from(`${MVOLA_CONSUMER_KEY}:${MVOLA_CONSUMER_SECRET}`).toString("base64"),
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      grant_type: "client_credentials",
-      scope: "EXT_INT_MVOLA_SCOPE"
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    console.error("❌ MVola Token Error:", err);
-    throw new Error("Erreur token MVola");
-  }
-
-  const json = await res.json();
-  console.log("🎫 Token response:", json);
-  return json.access_token;
-}
-
-app.post("/api/test-payment", verifyAuth, async (req, res) => {
-  const { phone, amount, plan } = req.body;
-  const idempotency = uuidv4();
-  const correlation = uuidv4();
 
   try {
-    const token = await getAccessToken();
+    const token = await getMvolaToken();
+    console.log('🎫 Token reçu :', token);
 
-    const payer = { partyIdType: "MSISDN", partyId: phone };
-    const receiver = { partyIdType: "MSISDN", partyId: "0343500004" };
-
-    const body = {
-      amount: amount.toString(),
-      currency: "Ar",
-      descriptionText: `Achat WiFi ${plan}`,
-      requestDate: new Date().toISOString(),
-      debitParty: [payer],
-      creditParty: [receiver],
-      metadata: {
-        partnerName: "RAZAFI",
-        fc: "mg",
-        amountFc: amount.toString(),
-      },
-      requestingOrganisationTransactionReference: correlation,
-      originalTransactionReference: correlation,
-      callbackUrl: MVOLA_CALLBACK_URL,
-    };
-
-    const response = await fetch(`${MVOLA_BASE_URL}/mvola/v1/transactions/type/merchantpay/1.0.0`, {
-      method: "POST",
+    const transactionId = uuidv4();
+    const response = await fetch(`${process.env.MVOLA_BASE_URL}/mvola/mm/transactions/type/merchantpay/1.0.0`, {
+      method: 'POST',
       headers: {
-        Authorization: "Bearer " + token,
-        "X-USER-ID": MVOLA_API_USER,
-        "X-APP-Key": MVOLA_API_KEY,
-        "X-CorrelationID": correlation,
-        "X-Reference-Id": idempotency,
-        "Content-Type": "application/json",
-        "X-Target-Environment": MVOLA_TARGET_ENV,
-        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+        'X-REF-Id': transactionId,
+        'X-Target-Environment': process.env.MVOLA_TARGET_ENV,
+        'X-Callback-Url': process.env.MVOLA_CALLBACK_URL,
+        'Content-Type': 'application/json',
+        'UserLanguage': 'FR',
+        'partnerName': 'RAZAFI_WIFI'
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        amount: prix.toString(),
+        currency: 'Ar',
+        descriptionText: plan,
+        requestDate: new Date().toISOString(),
+        debitParty: [{ key: 'msisdn', value: '0343500003' }],
+        creditParty: [{ key: 'msisdn', value: '0343500004' }],
+        metadata: [
+          { key: 'partnerName', value: 'RAZAFI_WIFI' },
+          { key: 'fc', value: 'MG' },
+          { key: 'amountFc', value: prix.toString() }
+        ]
+      })
     });
 
-    const json = await response.json();
-    console.log("📦 MVola response:", json);
+    const data = await response.json();
+    console.log('📦 Réponse MVola:', data);
+    res.json({ status: 'sent', response: data });
+  } catch (error) {
+    console.error('❌ Erreur test-payment:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
 
-    if (!response.ok || json.status === "FAILED" || json.code) {
-      await sendEmail("❌ Paiement échoué", `<pre>${JSON.stringify(json, null, 2)}</pre>`);
-      return res.status(500).json({ error: json.message || "Paiement échoué" });
-    }
+// =============== OBTENTION TOKEN MVOLA ===================
+async function getMvolaToken() {
+  const basic = Buffer.from(`${process.env.MVOLA_CONSUMER_KEY}:${process.env.MVOLA_CONSUMER_SECRET}`).toString('base64');
 
-    // ✅ Paiement réussi → attribuer un code
-    const { data: voucher } = await supabase
-      .from("vouchers")
-      .select("*")
-      .is("paid_by", null)
+  const response = await fetch(process.env.MVOLA_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${basic}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: new URLSearchParams({
+      grant_type: 'client_credentials',
+      scope: 'EXT_INT_MVOLA_SCOPE'
+    })
+  });
+
+  const data = await response.json();
+  if (!data.access_token) throw new Error('Impossible d’obtenir le token MVola');
+  return data.access_token;
+}
+
+// =============== ROUTE CALLBACK MVOLA ===================
+app.post('/api/mvola-callback', async (req, res) => {
+  const { amount, currency, payer, descriptionText } = req.body;
+
+  try {
+    // Vérifier un voucher disponible
+    const { data: voucher, error: selectError } = await supabase
+      .from('vouchers')
+      .select('*')
+      .eq('plan', descriptionText)
+      .is('paid_by', null)
       .limit(1)
       .single();
 
-    if (!voucher) {
-      await sendEmail("❌ Plus de vouchers", "Aucun voucher disponible.");
-      return res.status(500).json({ error: "Aucun voucher disponible" });
+    if (selectError || !voucher) {
+      throw new Error('Aucun voucher disponible');
     }
 
-    await supabase
-      .from("vouchers")
-      .update({ paid_by: phone, assigned_at: new Date().toISOString() })
-      .eq("id", voucher.id);
+    // Mettre à jour le voucher
+    const { error: updateError } = await supabase
+      .from('vouchers')
+      .update({
+        paid_by: payer,
+        assigned_at: new Date().toISOString()
+      })
+      .eq('id', voucher.id);
 
-    await supabase.from("transactions").insert({
-      phone,
-      amount,
-      plan,
-      voucher_code: voucher.code,
-      status: "SUCCESS",
-      idempotency_key: idempotency,
+    // Insérer la transaction
+    await supabase.from('transactions').insert([{
+      phone: payer,
+      plan: descriptionText,
+      code: voucher.code,
+      status: updateError ? 'error' : 'success',
+      paid_at: new Date().toISOString(),
+      error: updateError?.message || null
+    }]);
+
+    // Statistiques
+    if (!updateError) {
+      const gb = { '1 jour': 1, '7 jours': 5, '30 jours': 20 }[descriptionText] || 0;
+      await supabase.rpc('increment_metrics', {
+        gb_to_add: gb,
+        ariary_to_add: parseInt(amount)
+      });
+    }
+
+    // Email
+    await transporter.sendMail({
+      from: `"RAZAFI WiFi" <${process.env.GMAIL_USER}>`,
+      to: 'sosthenet@gmail.com',
+      subject: updateError ? '❌ Échec de paiement WiFi' : '✅ Paiement WiFi réussi',
+      text: `Client: ${payer}\nPlan: ${descriptionText}\nMontant: ${amount} ${currency}\nCode: ${voucher.code || 'Erreur'}\nStatut: ${updateError ? 'Erreur' : 'Succès'}`
     });
 
-    await supabase.rpc("update_metrics", { gb_sold: plan.startsWith("1") ? 1 : plan.startsWith("7") ? 5 : 20, ar_paid: amount });
-
-    await sendEmail("✅ Paiement réussi", `
-      <p><strong>Montant :</strong> ${amount} Ar</p>
-      <p><strong>Plan :</strong> ${plan}</p>
-      <p><strong>Téléphone :</strong> ${phone}</p>
-      <p><strong>Code :</strong> ${voucher.code}</p>
-    `);
-
-    res.json({ code: voucher.code });
+    res.json({ ok: true });
   } catch (err) {
-    console.error("❌ Erreur test-payment:", err.message);
-    await sendEmail("❌ Erreur serveur paiement", `<pre>${err.stack}</pre>`);
-    res.status(500).json({ error: "Erreur serveur" });
+    console.error('❌ Callback error:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
-app.listen(10000, () => {
-  console.log("✅ Backend sécurisé en ligne sur http://localhost:10000");
+// =============== STATS ADMIN ===================
+app.get('/api/admin-stats', verifyAuth, async (req, res) => {
+  try {
+    const { data: metrics } = await supabase.from('metrics').select('*').single();
+    const { data: transactions } = await supabase
+      .from('transactions')
+      .select('*')
+      .order('paid_at', { ascending: false })
+      .limit(10);
+
+    res.json({ metrics, transactions });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =============== LANCEMENT DU SERVEUR ===================
+app.listen(PORT, () => {
+  console.log(`✅ Backend sécurisé en ligne sur http://localhost:${PORT}`);
 });
