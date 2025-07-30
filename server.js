@@ -3,7 +3,6 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
 import { createClient } from '@supabase/supabase-js';
-import fetch from 'node-fetch';
 
 dotenv.config();
 
@@ -14,10 +13,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 10000;
 
 // Supabase
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
 // Nodemailer
 const transporter = nodemailer.createTransport({
@@ -25,16 +21,21 @@ const transporter = nodemailer.createTransport({
   port: parseInt(process.env.EMAIL_PORT) || 587,
   secure: false,
   auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_APP_PASSWORD
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
   }
 });
 
-// Helper: envoyer un e-mail
+// 🔐 Route GET pour test Render
+app.get('/', (req, res) => {
+  res.send('✅ RAZAFI Backend est en ligne !');
+});
+
+// 🔔 Helper pour envoyer un e-mail
 async function sendNotification(subject, html) {
   try {
     await transporter.sendMail({
-      from: `"RAZAFI WIFI" <${process.env.GMAIL_USER}>`,
+      from: `"RAZAFI WIFI" <${process.env.EMAIL_USER}>`,
       to: 'sosthenet@gmail.com',
       subject,
       html
@@ -44,7 +45,7 @@ async function sendNotification(subject, html) {
   }
 }
 
-// === TEST MVOLA (injection locale de données simulées) ===
+// === Route de test MVola ===
 app.post('/api/mvola-test', async (req, res) => {
   const testData = {
     amount: '1000',
@@ -55,7 +56,7 @@ app.post('/api/mvola-test', async (req, res) => {
     payeeNote: 'RAZAFI WIFI',
     payerMessage: 'test',
     externalId: 'TEST123456',
-    callbackUrl: process.env.MVOLA_CALLBACK_URL,
+    callbackUrl: 'https://razafi-backend.onrender.com/api/mvola-callback',
     metadata: {
       partnerName: 'RAZAFI WIFI',
       fc: 'AR',
@@ -63,7 +64,7 @@ app.post('/api/mvola-test', async (req, res) => {
     }
   };
 
-  const response = await fetch(process.env.MVOLA_CALLBACK_URL, {
+  const response = await fetch('https://razafi-backend.onrender.com/api/mvola-callback', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(testData)
@@ -73,7 +74,7 @@ app.post('/api/mvola-test', async (req, res) => {
   res.send(result);
 });
 
-// === MVOLA CALLBACK PRINCIPAL ===
+// === Callback principal ===
 app.post('/api/mvola-callback', async (req, res) => {
   try {
     const { amount, payer, metadata } = req.body;
@@ -147,7 +148,6 @@ app.post('/api/mvola-callback', async (req, res) => {
   }
 });
 
-// === LANCEMENT DU SERVEUR ===
 app.listen(PORT, () => {
   console.log(`✅ Backend sécurisé en ligne sur http://localhost:${PORT}`);
 });
