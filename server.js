@@ -51,7 +51,7 @@ app.post('/api/test-mvola-officiel', verifyAuth, async (req, res) => {
       'X-Callback-Url': process.env.MVOLA_CALLBACK_URL,
       'Content-Type': 'application/json',
       'UserLanguage': 'FR',
-      'UserAccountIdentifier': 'msisdn:0343500003', // ✔ payeur correct
+      'UserAccountIdentifier': 'msisdn;0343500004',
       'partnerName': 'RAZAFI_WIFI'
     },
     body: JSON.stringify({
@@ -93,7 +93,7 @@ app.post('/api/mvola-callback', async (req, res) => {
     const { data: voucher, error: selectError } = await supabase
       .from('vouchers')
       .select('*')
-      .eq('plan', descriptionText)
+      .ilike('plan', `%${descriptionText}%`) // ✅ partial match on plan
       .is('paid_by', null)
       .limit(1)
       .single();
