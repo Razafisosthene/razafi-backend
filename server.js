@@ -40,10 +40,11 @@ app.get('/api/ping', (req, res) => {
   res.send('✅ Backend opérationnel');
 });
 
-// 🧪 Route de test MVola officielle
+// 🧪 Route de test MVola officielle (corrigée pour prendre plan et montant dynamiques)
 app.post('/api/test-mvola-officiel', verifyAuth, async (req, res) => {
   const token = await getMvolaToken();
   const transactionId = uuidv4();
+  const { plan, amount } = req.body;
 
   const response = await fetch(`${process.env.MVOLA_BASE_URL}/mvola/mm/transactions/type/merchantpay/1.0.0`, {
     method: 'POST',
@@ -58,16 +59,16 @@ app.post('/api/test-mvola-officiel', verifyAuth, async (req, res) => {
       'partnerName': 'RAZAFI_WIFI'
     },
     body: JSON.stringify({
-      amount: "1000",
+      amount: String(amount),
       currency: "Ar",
-      descriptionText: "1 jour",
+      descriptionText: plan,
       requestDate: new Date().toISOString(),
       debitParty: [{ key: 'msisdn', value: '0343500003' }],
       creditParty: [{ key: 'msisdn', value: '0343500004' }],
       metadata: [
         { key: 'partnerName', value: 'RAZAFI_WIFI' },
         { key: 'fc', value: 'MG' },
-        { key: 'amountFc', value: "1000" }
+        { key: 'amountFc', value: String(amount) }
       ]
     })
   });
