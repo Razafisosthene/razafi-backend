@@ -40,7 +40,7 @@ app.get('/api/ping', (req, res) => {
   res.send('✅ Backend opérationnel');
 });
 
-// 🧪 Route de test MVola officielle (corrigée pour prendre plan et montant dynamiques)
+// 🧪 Route de test MVola officielle
 app.post('/api/test-mvola-officiel', verifyAuth, async (req, res) => {
   const token = await getMvolaToken();
   const transactionId = uuidv4();
@@ -63,6 +63,7 @@ app.post('/api/test-mvola-officiel', verifyAuth, async (req, res) => {
       currency: "Ar",
       descriptionText: plan,
       requestDate: new Date().toISOString(),
+      requestingOrganisationTransactionReference: transactionId,
       debitParty: [{ key: 'msisdn', value: '0343500003' }],
       creditParty: [{ key: 'msisdn', value: '0343500004' }],
       metadata: [
