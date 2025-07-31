@@ -16,7 +16,6 @@ app.use(express.json());
 const PORT = process.env.PORT;
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-// Auth simple avec token API
 function verifyAuth(req, res, next) {
   const authHeader = req.headers.authorization;
   if (authHeader === `Bearer ${process.env.API_TOKEN}`) {
@@ -26,7 +25,6 @@ function verifyAuth(req, res, next) {
   }
 }
 
-// Nodemailer
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -35,12 +33,10 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// 🟢 PING
 app.get('/api/ping', (req, res) => {
   res.send('✅ Backend opérationnel');
 });
 
-// 🧪 Route de test MVola officielle
 app.post('/api/test-mvola-officiel', verifyAuth, async (req, res) => {
   const token = await getMvolaToken();
   const transactionId = uuidv4();
@@ -55,7 +51,7 @@ app.post('/api/test-mvola-officiel', verifyAuth, async (req, res) => {
       'X-Callback-Url': process.env.MVOLA_CALLBACK_URL,
       'Content-Type': 'application/json',
       'UserLanguage': 'FR',
-      'UserAccountIdentifier': 'msisdn;0343500004',
+      'UserAccountIdentifier': 'msisdn;0343500003', // ✔ payeur correct
       'partnerName': 'RAZAFI_WIFI'
     },
     body: JSON.stringify({
@@ -64,6 +60,7 @@ app.post('/api/test-mvola-officiel', verifyAuth, async (req, res) => {
       descriptionText: plan,
       requestDate: new Date().toISOString(),
       requestingOrganisationTransactionReference: transactionId,
+      originalTransactionReference: "",
       debitParty: [{ key: 'msisdn', value: '0343500003' }],
       creditParty: [{ key: 'msisdn', value: '0343500004' }],
       metadata: [
@@ -75,11 +72,10 @@ app.post('/api/test-mvola-officiel', verifyAuth, async (req, res) => {
   });
 
   const data = await response.json();
-  console.log("📡 Réponse test MVola :", data);
+  console.log("📱 Réponse test MVola :", data);
   res.json(data);
 });
 
-// 🆕 Dernier callback reçu
 let dernierCallback = null;
 
 app.get('/api/dernier-callback', (req, res) => {
@@ -89,7 +85,6 @@ app.get('/api/dernier-callback', (req, res) => {
   res.json(dernierCallback);
 });
 
-// ✅ Callback officiel de MVola
 app.post('/api/mvola-callback', async (req, res) => {
   const { amount, currency, payer, descriptionText } = req.body;
   dernierCallback = { amount, currency, payer, descriptionText };
@@ -144,7 +139,6 @@ app.post('/api/mvola-callback', async (req, res) => {
   }
 });
 
-// 📊 Admin Stats
 app.get('/api/admin-stats', verifyAuth, async (req, res) => {
   try {
     const { data: metrics } = await supabase.from('metrics').select('*').single();
@@ -159,7 +153,6 @@ app.get('/api/admin-stats', verifyAuth, async (req, res) => {
   }
 });
 
-// 🛠 Obtenir un token MVola
 async function getMvolaToken() {
   const basic = Buffer.from(`${process.env.MVOLA_CONSUMER_KEY}:${process.env.MVOLA_CONSUMER_SECRET}`).toString('base64');
   const response = await fetch(process.env.MVOLA_TOKEN_URL, {
@@ -179,7 +172,6 @@ async function getMvolaToken() {
   return data.access_token;
 }
 
-// 🚀 Start
 app.listen(PORT, () => {
   console.log(`✅ Backend prêt sur http://localhost:${PORT}`);
 });
