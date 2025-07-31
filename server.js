@@ -60,7 +60,6 @@ app.post('/api/test-mvola-officiel', verifyAuth, async (req, res) => {
       descriptionText: plan,
       requestDate: new Date().toISOString(),
       requestingOrganisationTransactionReference: transactionId,
-      originalTransactionReference: "",
       debitParty: [{ key: 'msisdn', value: '0343500003' }],
       creditParty: [{ key: 'msisdn', value: '0343500004' }],
       metadata: [
@@ -93,7 +92,7 @@ app.post('/api/mvola-callback', async (req, res) => {
     const { data: voucher, error: selectError } = await supabase
       .from('vouchers')
       .select('*')
-      .ilike('plan', `%${descriptionText}%`) // ✅ partial match on plan
+      .ilike('plan', `%${descriptionText}%`)
       .is('paid_by', null)
       .limit(1)
       .single();
