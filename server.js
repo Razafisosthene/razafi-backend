@@ -52,8 +52,7 @@ app.post('/api/test-mvola-officiel', verifyAuth, async (req, res) => {
       'Content-Type': 'application/json',
       'UserLanguage': 'FR',
       'UserAccountIdentifier': 'msisdn;0343500004',
-      'partnerName': 'RAZAFI_WIFI'
-    },
+        },
     body: JSON.stringify({
       amount: String(amount),
       currency: "Ar",
