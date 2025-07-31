@@ -20,3 +20,4 @@ yarn-error.log*
 dist/
 build/
 .bfg-report/
+.env 
