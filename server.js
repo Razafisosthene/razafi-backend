@@ -1,4 +1,3 @@
-// 📦 Dependencies
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -14,10 +13,7 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 const transporter = nodemailer.createTransport({
   service: "gmail",
@@ -60,7 +56,7 @@ app.post("/api/acheter", async (req, res) => {
   if (!planData) return res.status(400).json({ error: "Plan invalide" });
 
   const token = await getAccessToken();
-  if (!token) return res.status(500).json({ error: "Impossible d'obtenir le token MVola" });
+  if (!token) return res.status(500).json({ error: "Token invalide" });
 
   const now = DateTime.now().setZone("Africa/Nairobi");
   const debitMsisdn = "0343500003";
@@ -69,15 +65,15 @@ app.post("/api/acheter", async (req, res) => {
     amount: planData.amount.toString(),
     currency: "Ar",
     descriptionText: `Client test ${debitMsisdn} ${plan}`,
-    requestingOrganisationTransactionReference: now.toFormat("HHmmssSSS"),
-    requestDate: now.toISO(),
-    originalTransactionReference: `MVOLA_${now.toFormat("yyyyMMddHHmmssSSS")}`,
     payerMessage: `Paiement ${plan}`,
     payeeNote: `RAZAFI_WIFI_${now.toFormat("HHmmss")}`,
+    requestingOrganisationTransactionReference: now.toFormat("HHmmssSSS"),
+    originalTransactionReference: `MVOLA_${now.toFormat("yyyyMMddHHmmssSSS")}`,
+    requestDate: now.toISO(),
     debitParty: [{ key: "msisdn", value: debitMsisdn }],
-    creditParty: [{ key: "msisdn", value: process.env.MVOLA_PARTNER_MSISDN }],
+    creditParty: [{ key: "msisdn", value: "0343500004" }],
     metadata: [
-      { key: "partnerName", value: process.env.MVOLA_PARTNER_MSISDN },
+      { key: "partnerName", value: process.env.MVOLA_PARTNER_NAME },
       { key: "fc", value: "USD" },
       { key: "amountFc", value: "1" }
     ]
@@ -93,7 +89,7 @@ app.post("/api/acheter", async (req, res) => {
         "X-CorrelationID": uuidv4(),
         "UserLanguage": "FR",
         "UserAccountIdentifier": `msisdn;${debitMsisdn}`,
-        partnerName: process.env.MVOLA_PARTNER_MSISDN,
+        partnerName: process.env.MVOLA_PARTNER_NAME,
         "Content-Type": "application/json",
         "X-Callback-URL": process.env.MVOLA_CALLBACK_URL,
         "Cache-Control": "no-cache"
@@ -107,15 +103,13 @@ app.post("/api/acheter", async (req, res) => {
   }
 });
 
-// 🔁 MVola Callback : attribution du code WiFi
 app.post("/api/mvola-callback", async (req, res) => {
   const tx = req.body;
   const now = DateTime.now().setZone("Africa/Nairobi").toFormat("yyyy-MM-dd HH:mm:ss");
   const phone = tx.debitParty?.[0]?.value;
   const plan = tx.descriptionText?.split("Client test ")[1]?.split(" ").slice(1).join(" ").trim();
 
-  if (tx.transactionStatus !== "completed" || !phone || !plan)
-    return res.status(400).end();
+  if (tx.transactionStatus !== "completed" || !phone || !plan) return res.status(400).end();
 
   const dataPerPlan = {
     "1 Jour - 1 Go - 1000 Ar": 1,
@@ -140,10 +134,12 @@ app.post("/api/mvola-callback", async (req, res) => {
 
   if (voucherError || !voucher) {
     await supabase.from("transactions").insert({ phone, plan, status: "failed", error: "Aucun code disponible", paid_at: now });
-    await transporter.sendMail({ from: process.env.GMAIL_USER, to: "sosthenet@gmail.com", subject: `❌ Paiement échoué - Pas de code dispo`, text: `Téléphone: ${phone}
-Plan: ${plan}
-Date: ${now}
-Erreur: Aucun code disponible` });
+    await transporter.sendMail({
+      from: process.env.GMAIL_USER,
+      to: "sosthenet@gmail.com",
+      subject: `❌ Paiement échoué - Pas de code dispo`,
+      text: `Téléphone: ${phone}\nPlan: ${plan}\nDate: ${now}\nErreur: Aucun code disponible`,
+    });
     return res.status(500).end();
   }
 
@@ -153,13 +149,7 @@ Erreur: Aucun code disponible` });
 
   const { data: metricsData } = await supabase.from("metrics").select("total_gb").single();
   const subject = `Paiement WiFi (${plan}) - ${phone}`;
-  const message = `✔️ Nouveau paiement WiFi
-
-Téléphone: ${phone}
-Montant: ${amount} Ar
-Plan: ${plan}
-Code: ${voucher.code}
-Date (MG): ${now}`;
+  const message = `✔️ Nouveau paiement WiFi\n\nTéléphone: ${phone}\nMontant: ${amount} Ar\nPlan: ${plan}\nCode: ${voucher.code}\nDate (MG): ${now}`;
   await transporter.sendMail({ from: process.env.GMAIL_USER, to: "sosthenet@gmail.com", subject, text: message });
 
   if (metricsData) {
@@ -167,28 +157,48 @@ Date (MG): ${now}`;
     const prevBlock = Math.floor((totalGb - gb) / 100);
     const newBlock = Math.floor(totalGb / 100);
     if (newBlock > prevBlock) {
-      await transporter.sendMail({ from: process.env.GMAIL_USER, to: "sosthenet@gmail.com", subject: `🎯 Objectif atteint : ${newBlock * 100} Go vendus`, text: `🚀 Nouveau palier franchi : ${totalGb} Go vendus cumulés (heure MG : ${now})` });
+      await transporter.sendMail({
+        from: process.env.GMAIL_USER,
+        to: "sosthenet@gmail.com",
+        subject: `🎯 Objectif atteint : ${newBlock * 100} Go vendus`,
+        text: `🚀 Nouveau palier franchi : ${totalGb} Go vendus cumulés (heure MG : ${now})`,
+      });
     }
   }
   res.status(200).end();
 });
 
-// 🧾 Dernier code reçu par téléphone
 app.get("/api/dernier-code", async (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: "Téléphone requis" });
-  const { data, error } = await supabase.from("transactions").select("code, plan").eq("phone", phone).eq("status", "success").order("paid_at", { ascending: false }).limit(1).single();
+
+  const { data, error } = await supabase
+    .from("transactions")
+    .select("code, plan")
+    .eq("phone", phone)
+    .eq("status", "success")
+    .order("paid_at", { ascending: false })
+    .limit(1)
+    .single();
+
   if (error || !data || !data.code) return res.status(404).json({ error: "Aucun code disponible" });
   res.json(data);
 });
 
-// 📊 Rapport admin filtré par date
 app.get("/api/admin-report", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (token !== process.env.API_SECRET) return res.status(401).json({ error: "Non autorisé" });
+
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: "start/end requis" });
-  const { data: transactions } = await supabase.from("transactions").select("paid_at, phone, plan, code, status").gte("paid_at", `${start} 00:00:00`).lte("paid_at", `${end} 23:59:59`).order("paid_at", { ascending: false });
+
+  const { data: transactions } = await supabase
+    .from("transactions")
+    .select("paid_at, phone, plan, code, status")
+    .gte("paid_at", `${start} 00:00:00`)
+    .lte("paid_at", `${end} 23:59:59`)
+    .order("paid_at", { ascending: false });
+
   const gbMap = {
     "1 Jour - 1 Go - 1000 Ar": 1,
     "7 Jours - 5 Go - 5000 Ar": 5,
@@ -199,13 +209,16 @@ app.get("/api/admin-report", async (req, res) => {
     "7 Jours - 5 Go - 5000 Ar": 5000,
     "30 Jours - 20 Go - 15000 Ar": 15000
   };
+
   let total_gb = 0;
   let total_ariary = 0;
   const filtered = transactions.filter(tx => tx.status === "success");
+
   filtered.forEach(tx => {
     total_gb += gbMap[tx.plan] || 0;
     total_ariary += arMap[tx.plan] || 0;
   });
+
   res.json({ total_gb, total_ariary, transactions });
 });
 
