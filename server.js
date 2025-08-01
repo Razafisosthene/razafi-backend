@@ -75,6 +75,7 @@ app.post("/api/acheter", async (req, res) => {
     receivingInstitutionId: "RAZAFI",
     transactionType: "merchantpay",
     initiator: process.env.MVOLA_API_USER,
+    initiatorIdentifier: `msisdn;${debitMsisdn}`,
     debitParty: [{ key: "msisdn", value: debitMsisdn }],
     creditParty: [{ key: "msisdn", value: "0343500004" }],
     metadata: [
