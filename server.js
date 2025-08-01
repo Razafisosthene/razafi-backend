@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
 import { createClient } from "@supabase/supabase-js";
+import { DateTime } from "luxon"; // ✅ import luxon
 
 dotenv.config();
 
@@ -10,13 +11,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT; // ✅ REQUIRED by Render
+const PORT = process.env.PORT;
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Email transporter (via Gmail)
+// Gmail transporter
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
@@ -25,7 +26,6 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// Main endpoint used by HTML
 app.post("/api/simulate-callback", async (req, res) => {
   const { phone, plan } = req.body;
 
@@ -51,7 +51,10 @@ app.post("/api/simulate-callback", async (req, res) => {
     return res.status(400).json({ error: "Plan invalide" });
   }
 
-  // 1. Find an available voucher
+  // ✅ Use Madagascar timezone
+  const now = DateTime.now().setZone("Africa/Nairobi").toISO();
+
+  // 1. Get voucher
   const { data: voucher, error: voucherError } = await supabase
     .from("vouchers")
     .select("*")
@@ -64,9 +67,7 @@ app.post("/api/simulate-callback", async (req, res) => {
     return res.status(500).json({ error: "Aucun code disponible" });
   }
 
-  const now = new Date().toISOString();
-
-  // 2. Update voucher
+  // 2. Mark voucher as paid
   await supabase
     .from("vouchers")
     .update({ paid_by: phone, assigned_at: now })
@@ -84,17 +85,17 @@ app.post("/api/simulate-callback", async (req, res) => {
   // 4. Update metrics
   await supabase.rpc("increment_metrics", { gb, ar: amount });
 
-  // 5. Fetch updated total_gb
+  // 5. Fetch metrics to check 100GB milestone
   const { data: metricsData, error: metricsError } = await supabase
     .from("metrics")
     .select("total_gb")
     .single();
 
   const subject = `Paiement WiFi (${plan}) - ${phone}`;
-  const message = `✔️ Nouveau paiement WiFi\n\nTéléphone: ${phone}\nMontant: ${amount} Ar\nPlan: ${plan}\nCode: ${voucher.code}\nDate: ${now}`;
+  const message = `✔️ Nouveau paiement WiFi\n\nTéléphone: ${phone}\nMontant: ${amount} Ar\nPlan: ${plan}\nCode: ${voucher.code}\nDate (heure Madagascar): ${now}`;
 
   try {
-    // Email notification: transaction
+    // Transaction email
     await transporter.sendMail({
       from: process.env.GMAIL_USER,
       to: "sosthenet@gmail.com",
@@ -102,7 +103,7 @@ app.post("/api/simulate-callback", async (req, res) => {
       text: message,
     });
 
-    // Email notification: milestone
+    // Milestone email
     if (!metricsError && metricsData) {
       const totalGb = metricsData.total_gb;
       const previousGb = totalGb - gb;
@@ -114,7 +115,7 @@ app.post("/api/simulate-callback", async (req, res) => {
           from: process.env.GMAIL_USER,
           to: "sosthenet@gmail.com",
           subject: `🎯 Objectif atteint : ${newBlock * 100} Go vendus`,
-          text: `🚀 Vous avez franchi un nouveau palier de données vendues : ${totalGb} Go cumulés.`,
+          text: `🚀 Nouveau palier franchi : ${totalGb} Go de données vendues cumulées (heure MG : ${now})`,
         });
       }
     }
