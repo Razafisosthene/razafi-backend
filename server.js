@@ -1,4 +1,3 @@
-// 📦 Dependencies
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -28,18 +27,25 @@ const transporter = nodemailer.createTransport({
 });
 
 async function getAccessToken() {
-  const auth = Buffer.from(`${process.env.MVOLA_CONSUMER_KEY}:${process.env.MVOLA_CONSUMER_SECRET}`).toString("base64");
+  const auth = Buffer.from(
+    `${process.env.MVOLA_CONSUMER_KEY}:${process.env.MVOLA_CONSUMER_SECRET}`
+  ).toString("base64");
+
   try {
-    const res = await axios.post(process.env.MVOLA_TOKEN_URL, new URLSearchParams({
-      grant_type: "client_credentials",
-      scope: "EXT_INT_MVOLA_SCOPE"
-    }), {
-      headers: {
-        Authorization: `Basic ${auth}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Cache-Control": "no-cache"
+    const res = await axios.post(
+      process.env.MVOLA_TOKEN_URL,
+      new URLSearchParams({
+        grant_type: "client_credentials",
+        scope: "EXT_INT_MVOLA_SCOPE",
+      }),
+      {
+        headers: {
+          Authorization: `Basic ${auth}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Cache-Control": "no-cache",
+        },
       }
-    });
+    );
     return res.data.access_token;
   } catch (err) {
     console.error("❌ MVola token error:", err.response?.data || err.message);
@@ -49,21 +55,23 @@ async function getAccessToken() {
 
 app.post("/api/acheter", async (req, res) => {
   const { phone, plan } = req.body;
-  if (!phone || !plan) return res.status(400).json({ error: "Paramètres manquants" });
+  if (!phone || !plan)
+    return res.status(400).json({ error: "Paramètres manquants" });
 
   const gbMap = {
     "1 Jour - 1 Go - 1000 Ar": { gb: 1, amount: 1000 },
     "7 Jours - 5 Go - 5000 Ar": { gb: 5, amount: 5000 },
-    "30 Jours - 20 Go - 15000 Ar": { gb: 20, amount: 15000 }
+    "30 Jours - 20 Go - 15000 Ar": { gb: 20, amount: 15000 },
   };
   const planData = gbMap[plan];
   if (!planData) return res.status(400).json({ error: "Plan invalide" });
 
   const token = await getAccessToken();
-  if (!token) return res.status(500).json({ error: "Impossible d'obtenir le token MVola" });
+  if (!token)
+    return res.status(500).json({ error: "Impossible d'obtenir le token MVola" });
 
   const now = DateTime.now().setZone("Africa/Nairobi");
-  const debitMsisdn = "0343500003";
+  const debitMsisdn = "0343500003"; // Numéro test MVola
 
   const body = {
     amount: planData.amount.toString(),
@@ -73,29 +81,36 @@ app.post("/api/acheter", async (req, res) => {
     requestDate: now.toISO(),
     originalTransactionReference: `MVOLA_${now.toFormat("yyyyMMddHHmmssSSS")}`,
     debitParty: [{ key: "msisdn", value: debitMsisdn }],
-    creditParty: [{ key: "msisdn", value: process.env.MVOLA_PARTNER_MSISDN }],
+    creditParty: [
+      { key: "msisdn", value: process.env.MVOLA_PARTNER_MSISDN },
+    ],
     metadata: [
       { key: "partnerName", value: process.env.MVOLA_PARTNER_MSISDN },
       { key: "fc", value: "USD" },
-      { key: "amountFc", value: "1" }
-    ]
+      { key: "amountFc", value: "1" },
+    ],
   };
 
+  console.log("🔍 Payload MVola:", JSON.stringify(body, null, 2));
+
   try {
-    console.log("🔍 Payload MVola:", JSON.stringify(body, null, 2));
-    await axios.post(`${process.env.MVOLA_BASE_URL}/mvola/mm/transactions/type/merchantpay/1.0.0/`, body, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Version: "1.0",
-        "X-CorrelationID": uuidv4(),
-        "UserLanguage": "FR",
-        "UserAccountIdentifier": `msisdn;${debitMsisdn}`,
-        partnerName: process.env.MVOLA_PARTNER_MSISDN,
-        "Content-Type": "application/json",
-        "X-Callback-URL": process.env.MVOLA_CALLBACK_URL,
-        "Cache-Control": "no-cache"
+    await axios.post(
+      `${process.env.MVOLA_BASE_URL}/mvola/mm/transactions/type/merchantpay/1.0.0/`,
+      body,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Version: "1.0",
+          "X-CorrelationID": uuidv4(),
+          UserLanguage: "FR",
+          UserAccountIdentifier: `msisdn;${debitMsisdn}`,
+          partnerName: process.env.MVOLA_PARTNER_MSISDN,
+          "Content-Type": "application/json",
+          "X-Callback-URL": process.env.MVOLA_CALLBACK_URL,
+          "Cache-Control": "no-cache",
+        },
       }
-    });
+    );
     res.json({ success: true });
   } catch (err) {
     const e = err.response?.data || err.message;
@@ -110,7 +125,8 @@ app.post("/api/mvola-callback", async (req, res) => {
   const phone = tx.debitParty?.[0]?.value;
   const plan = tx.descriptionText?.split("Client test ")[1]?.split(" ").slice(1).join(" ").trim();
 
-  if (tx.transactionStatus !== "completed" || !phone || !plan) return res.status(400).end();
+  if (tx.transactionStatus !== "completed" || !phone || !plan)
+    return res.status(400).end();
 
   const dataPerPlan = {
     "1 Jour - 1 Go - 1000 Ar": 1,
@@ -134,62 +150,115 @@ app.post("/api/mvola-callback", async (req, res) => {
     .single();
 
   if (voucherError || !voucher) {
-    await supabase.from("transactions").insert({ phone, plan, status: "failed", error: "Aucun code disponible", paid_at: now });
-    await transporter.sendMail({ from: process.env.GMAIL_USER, to: "sosthenet@gmail.com", subject: `❌ Paiement échoué - Pas de code dispo`, text: `Téléphone: ${phone}\nPlan: ${plan}\nDate: ${now}\nErreur: Aucun code disponible` });
+    await supabase
+      .from("transactions")
+      .insert({ phone, plan, status: "failed", error: "Aucun code disponible", paid_at: now });
+    await transporter.sendMail({
+      from: process.env.GMAIL_USER,
+      to: "sosthenet@gmail.com",
+      subject: `❌ Paiement échoué - Pas de code dispo`,
+      text: `Téléphone: ${phone}\nPlan: ${plan}\nDate: ${now}\nErreur: Aucun code disponible`,
+    });
     return res.status(500).end();
   }
 
-  await supabase.from("vouchers").update({ paid_by: phone, assigned_at: now }).eq("id", voucher.id);
-  await supabase.from("transactions").insert({ phone, plan, code: voucher.code, status: "success", paid_at: now });
+  await supabase
+    .from("vouchers")
+    .update({ paid_by: phone, assigned_at: now })
+    .eq("id", voucher.id);
+
+  await supabase
+    .from("transactions")
+    .insert({ phone, plan, code: voucher.code, status: "success", paid_at: now });
+
   await supabase.rpc("increment_metrics", { gb, ar: amount });
 
-  const { data: metricsData } = await supabase.from("metrics").select("total_gb").single();
+  const { data: metricsData } = await supabase
+    .from("metrics")
+    .select("total_gb")
+    .single();
+
   const subject = `Paiement WiFi (${plan}) - ${phone}`;
   const message = `✔️ Nouveau paiement WiFi\n\nTéléphone: ${phone}\nMontant: ${amount} Ar\nPlan: ${plan}\nCode: ${voucher.code}\nDate (MG): ${now}`;
-  await transporter.sendMail({ from: process.env.GMAIL_USER, to: "sosthenet@gmail.com", subject, text: message });
+
+  await transporter.sendMail({
+    from: process.env.GMAIL_USER,
+    to: "sosthenet@gmail.com",
+    subject,
+    text: message,
+  });
 
   if (metricsData) {
     const totalGb = metricsData.total_gb;
     const prevBlock = Math.floor((totalGb - gb) / 100);
     const newBlock = Math.floor(totalGb / 100);
     if (newBlock > prevBlock) {
-      await transporter.sendMail({ from: process.env.GMAIL_USER, to: "sosthenet@gmail.com", subject: `🎯 Objectif atteint : ${newBlock * 100} Go vendus`, text: `🚀 Nouveau palier franchi : ${totalGb} Go vendus cumulés (heure MG : ${now})` });
+      await transporter.sendMail({
+        from: process.env.GMAIL_USER,
+        to: "sosthenet@gmail.com",
+        subject: `🎯 Objectif atteint : ${newBlock * 100} Go vendus`,
+        text: `🚀 Nouveau palier franchi : ${totalGb} Go vendus cumulés (heure MG : ${now})`,
+      });
     }
   }
+
   res.status(200).end();
 });
 
 app.get("/api/dernier-code", async (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: "Téléphone requis" });
-  const { data, error } = await supabase.from("transactions").select("code, plan").eq("phone", phone).eq("status", "success").order("paid_at", { ascending: false }).limit(1).single();
-  if (error || !data || !data.code) return res.status(404).json({ error: "Aucun code disponible" });
+
+  const { data, error } = await supabase
+    .from("transactions")
+    .select("code, plan")
+    .eq("phone", phone)
+    .eq("status", "success")
+    .order("paid_at", { ascending: false })
+    .limit(1)
+    .single();
+
+  if (error || !data || !data.code)
+    return res.status(404).json({ error: "Aucun code disponible" });
+
   res.json(data);
 });
 
 app.get("/api/admin-report", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
-  if (token !== process.env.API_SECRET) return res.status(401).json({ error: "Non autorisé" });
+  if (token !== process.env.API_SECRET)
+    return res.status(401).json({ error: "Non autorisé" });
+
   const { start, end } = req.query;
-  if (!start || !end) return res.status(400).json({ error: "start/end requis" });
-  const { data: transactions } = await supabase.from("transactions").select("paid_at, phone, plan, code, status").gte("paid_at", `${start} 00:00:00`).lte("paid_at", `${end} 23:59:59`).order("paid_at", { ascending: false });
+  if (!start || !end)
+    return res.status(400).json({ error: "start/end requis" });
+
+  const { data: transactions } = await supabase
+    .from("transactions")
+    .select("paid_at, phone, plan, code, status")
+    .gte("paid_at", `${start} 00:00:00`)
+    .lte("paid_at", `${end} 23:59:59`)
+    .order("paid_at", { ascending: false });
+
   const gbMap = {
     "1 Jour - 1 Go - 1000 Ar": 1,
     "7 Jours - 5 Go - 5000 Ar": 5,
-    "30 Jours - 20 Go - 15000 Ar": 20
+    "30 Jours - 20 Go - 15000 Ar": 20,
   };
   const arMap = {
     "1 Jour - 1 Go - 1000 Ar": 1000,
     "7 Jours - 5 Go - 5000 Ar": 5000,
-    "30 Jours - 20 Go - 15000 Ar": 15000
+    "30 Jours - 20 Go - 15000 Ar": 15000,
   };
+
   let total_gb = 0;
   let total_ariary = 0;
-  const filtered = transactions.filter(tx => tx.status === "success");
-  filtered.forEach(tx => {
+  const filtered = transactions.filter((tx) => tx.status === "success");
+  filtered.forEach((tx) => {
     total_gb += gbMap[tx.plan] || 0;
     total_ariary += arMap[tx.plan] || 0;
   });
+
   res.json({ total_gb, total_ariary, transactions });
 });
 
