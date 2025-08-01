@@ -17,7 +17,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Email setup
+// Email transporter
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
@@ -26,13 +26,10 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// 🟢 Simulated callback endpoint for frontend
+// ✅ Simulate callback with success/failure logic
 app.post("/api/simulate-callback", async (req, res) => {
   const { phone, plan } = req.body;
-
-  if (!phone || !plan) {
-    return res.status(400).json({ error: "Paramètres manquants" });
-  }
+  if (!phone || !plan) return res.status(400).json({ error: "Paramètres manquants" });
 
   const dataPerPlan = {
     "1 Jour - 1 Go - 1000 Ar": 1,
@@ -47,13 +44,11 @@ app.post("/api/simulate-callback", async (req, res) => {
 
   const gb = dataPerPlan[plan];
   const amount = pricePerPlan[plan];
-
-  if (!gb || !amount) {
-    return res.status(400).json({ error: "Plan invalide" });
-  }
+  if (!gb || !amount) return res.status(400).json({ error: "Plan invalide" });
 
   const now = DateTime.now().setZone("Africa/Nairobi").toFormat("yyyy-MM-dd HH:mm:ss");
 
+  // 🔴 Try to get an available voucher
   const { data: voucher, error: voucherError } = await supabase
     .from("vouchers")
     .select("*")
@@ -62,10 +57,31 @@ app.post("/api/simulate-callback", async (req, res) => {
     .limit(1)
     .single();
 
+  // ❌ No voucher available — log as failed
   if (voucherError || !voucher) {
+    await supabase.from("transactions").insert({
+      phone,
+      plan,
+      status: "failed",
+      error: "Aucun code disponible",
+      paid_at: now,
+    });
+
+    try {
+      await transporter.sendMail({
+        from: process.env.GMAIL_USER,
+        to: "sosthenet@gmail.com",
+        subject: `❌ Paiement échoué - Pas de code dispo`,
+        text: `Téléphone: ${phone}\nPlan: ${plan}\nDate: ${now}\nErreur: Aucun code disponible`,
+      });
+    } catch (e) {
+      console.error("Erreur email échec:", e.message);
+    }
+
     return res.status(500).json({ error: "Aucun code disponible" });
   }
 
+  // ✅ Voucher found — proceed as usual
   await supabase
     .from("vouchers")
     .update({ paid_by: phone, assigned_at: now })
@@ -119,7 +135,7 @@ app.post("/api/simulate-callback", async (req, res) => {
   res.json({ success: true, code: voucher.code });
 });
 
-// 🔒 Admin report route
+// 🔐 Admin report route
 app.get("/api/admin-report", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (token !== process.env.API_SECRET) {
@@ -133,7 +149,7 @@ app.get("/api/admin-report", async (req, res) => {
 
   const { data: transactions, error } = await supabase
     .from("transactions")
-    .select("paid_at, phone, plan, code")
+    .select("paid_at, phone, plan, code, status")
     .gte("paid_at", `${start} 00:00:00`)
     .lte("paid_at", `${end} 23:59:59`)
     .order("paid_at", { ascending: false });
@@ -154,16 +170,17 @@ app.get("/api/admin-report", async (req, res) => {
   let total_gb = 0;
   let total_ariary = 0;
 
-  const formatted = transactions.map(tx => {
+  const filtered = transactions.filter(tx => tx.status === "success");
+
+  filtered.forEach(tx => {
     total_gb += gbPerPlan[tx.plan] || 0;
     total_ariary += arPerPlan[tx.plan] || 0;
-    return tx;
   });
 
   res.json({
     total_gb,
     total_ariary,
-    transactions: formatted
+    transactions
   });
 });
 
