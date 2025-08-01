@@ -103,7 +103,7 @@ app.post("/api/acheter", async (req, res) => {
       { key: "msisdn", value: process.env.MVOLA_PARTNER_MSISDN }
     ],
     metadata: [
-      { key: "partnerName", value: process.env.MVOLA_PARTNER_MSISDN },
+      { key: "partnerName", value: "RAZAFI_WIFI" },
       { key: "fc", value: "USD" },
       { key: "amountFc", value: "1" }
     ]
