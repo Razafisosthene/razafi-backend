@@ -3,7 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
 import { createClient } from "@supabase/supabase-js";
-import { DateTime } from "luxon"; // ✅ import luxon
+import { DateTime } from "luxon"; // ✅ Luxon for Madagascar time
 
 dotenv.config();
 
@@ -51,10 +51,10 @@ app.post("/api/simulate-callback", async (req, res) => {
     return res.status(400).json({ error: "Plan invalide" });
   }
 
-  // ✅ Use Madagascar timezone
-  const now = DateTime.now().setZone("Africa/Nairobi").toISO();
+  // ✅ Generate Madagascar local time (stored exactly as-is)
+  const now = DateTime.now().setZone("Africa/Nairobi").toFormat("yyyy-MM-dd HH:mm:ss");
 
-  // 1. Get voucher
+  // 1. Find a free voucher
   const { data: voucher, error: voucherError } = await supabase
     .from("vouchers")
     .select("*")
@@ -67,7 +67,7 @@ app.post("/api/simulate-callback", async (req, res) => {
     return res.status(500).json({ error: "Aucun code disponible" });
   }
 
-  // 2. Mark voucher as paid
+  // 2. Assign voucher
   await supabase
     .from("vouchers")
     .update({ paid_by: phone, assigned_at: now })
@@ -85,14 +85,15 @@ app.post("/api/simulate-callback", async (req, res) => {
   // 4. Update metrics
   await supabase.rpc("increment_metrics", { gb, ar: amount });
 
-  // 5. Fetch metrics to check 100GB milestone
+  // 5. Get total GB sold
   const { data: metricsData, error: metricsError } = await supabase
     .from("metrics")
     .select("total_gb")
     .single();
 
+  // Email body
   const subject = `Paiement WiFi (${plan}) - ${phone}`;
-  const message = `✔️ Nouveau paiement WiFi\n\nTéléphone: ${phone}\nMontant: ${amount} Ar\nPlan: ${plan}\nCode: ${voucher.code}\nDate (heure Madagascar): ${now}`;
+  const message = `✔️ Nouveau paiement WiFi\n\nTéléphone: ${phone}\nMontant: ${amount} Ar\nPlan: ${plan}\nCode: ${voucher.code}\nDate (MG): ${now}`;
 
   try {
     // Transaction email
@@ -103,7 +104,7 @@ app.post("/api/simulate-callback", async (req, res) => {
       text: message,
     });
 
-    // Milestone email
+    // Milestone alert
     if (!metricsError && metricsData) {
       const totalGb = metricsData.total_gb;
       const previousGb = totalGb - gb;
@@ -115,7 +116,7 @@ app.post("/api/simulate-callback", async (req, res) => {
           from: process.env.GMAIL_USER,
           to: "sosthenet@gmail.com",
           subject: `🎯 Objectif atteint : ${newBlock * 100} Go vendus`,
-          text: `🚀 Nouveau palier franchi : ${totalGb} Go de données vendues cumulées (heure MG : ${now})`,
+          text: `🚀 Nouveau palier franchi : ${totalGb} Go vendus cumulés (heure MG : ${now})`,
         });
       }
     }
