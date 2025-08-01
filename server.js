@@ -69,6 +69,7 @@ app.post("/api/acheter", async (req, res) => {
     payeeNote: `RAZAFI_WIFI_${now.toFormat("HHmmss")}`,
     requestingOrganisationTransactionReference: now.toFormat("HHmmssSSS"),
     originalTransactionReference: `MVOLA_${now.toFormat("yyyyMMddHHmmssSSS")}`,
+    paymentReference: now.toFormat("yyyyMMddHHmmssSSS"),
     requestDate: now.toISO(),
     sendingInstitutionId: "RAZAFI",
     receivingInstitutionId: "RAZAFI",
