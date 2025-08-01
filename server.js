@@ -100,6 +100,7 @@ app.post("/api/acheter", async (req, res) => {
     requestingOrganisationTransactionReference: now.toFormat("HHmmssSSS"),
     requestDate: now.toISO(),
     originalTransactionReference: `MVOLA_${timestamp}`,
+    transactionType: "merchantPay", // ✅ requis
     debitParty: [
       { key: "msisdn", value: debitMsisdn }
     ],
