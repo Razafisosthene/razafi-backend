@@ -3,7 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
 import { createClient } from "@supabase/supabase-js";
-import { DateTime } from "luxon"; // ✅ Luxon for Madagascar time
+import { DateTime } from "luxon";
 
 dotenv.config();
 
@@ -17,7 +17,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Gmail transporter
+// Email setup
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
@@ -26,6 +26,7 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// 🟢 Simulated callback endpoint for frontend
 app.post("/api/simulate-callback", async (req, res) => {
   const { phone, plan } = req.body;
 
@@ -51,10 +52,8 @@ app.post("/api/simulate-callback", async (req, res) => {
     return res.status(400).json({ error: "Plan invalide" });
   }
 
-  // ✅ Generate Madagascar local time (stored exactly as-is)
   const now = DateTime.now().setZone("Africa/Nairobi").toFormat("yyyy-MM-dd HH:mm:ss");
 
-  // 1. Find a free voucher
   const { data: voucher, error: voucherError } = await supabase
     .from("vouchers")
     .select("*")
@@ -67,13 +66,11 @@ app.post("/api/simulate-callback", async (req, res) => {
     return res.status(500).json({ error: "Aucun code disponible" });
   }
 
-  // 2. Assign voucher
   await supabase
     .from("vouchers")
     .update({ paid_by: phone, assigned_at: now })
     .eq("id", voucher.id);
 
-  // 3. Insert transaction
   await supabase.from("transactions").insert({
     phone,
     plan,
@@ -82,21 +79,17 @@ app.post("/api/simulate-callback", async (req, res) => {
     paid_at: now,
   });
 
-  // 4. Update metrics
   await supabase.rpc("increment_metrics", { gb, ar: amount });
 
-  // 5. Get total GB sold
   const { data: metricsData, error: metricsError } = await supabase
     .from("metrics")
     .select("total_gb")
     .single();
 
-  // Email body
   const subject = `Paiement WiFi (${plan}) - ${phone}`;
   const message = `✔️ Nouveau paiement WiFi\n\nTéléphone: ${phone}\nMontant: ${amount} Ar\nPlan: ${plan}\nCode: ${voucher.code}\nDate (MG): ${now}`;
 
   try {
-    // Transaction email
     await transporter.sendMail({
       from: process.env.GMAIL_USER,
       to: "sosthenet@gmail.com",
@@ -104,7 +97,6 @@ app.post("/api/simulate-callback", async (req, res) => {
       text: message,
     });
 
-    // Milestone alert
     if (!metricsError && metricsData) {
       const totalGb = metricsData.total_gb;
       const previousGb = totalGb - gb;
@@ -125,6 +117,54 @@ app.post("/api/simulate-callback", async (req, res) => {
   }
 
   res.json({ success: true, code: voucher.code });
+});
+
+// 🔒 Admin report route
+app.get("/api/admin-report", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (token !== process.env.API_SECRET) {
+    return res.status(401).json({ error: "Non autorisé" });
+  }
+
+  const { start, end } = req.query;
+  if (!start || !end) {
+    return res.status(400).json({ error: "Paramètres requis : start et end" });
+  }
+
+  const { data: transactions, error } = await supabase
+    .from("transactions")
+    .select("paid_at, phone, plan, code")
+    .gte("paid_at", `${start} 00:00:00`)
+    .lte("paid_at", `${end} 23:59:59`)
+    .order("paid_at", { ascending: false });
+
+  if (error) return res.status(500).json({ error: "Erreur Supabase" });
+
+  const gbPerPlan = {
+    "1 Jour - 1 Go - 1000 Ar": 1,
+    "7 Jours - 5 Go - 5000 Ar": 5,
+    "30 Jours - 20 Go - 15000 Ar": 20,
+  };
+  const arPerPlan = {
+    "1 Jour - 1 Go - 1000 Ar": 1000,
+    "7 Jours - 5 Go - 5000 Ar": 5000,
+    "30 Jours - 20 Go - 15000 Ar": 15000,
+  };
+
+  let total_gb = 0;
+  let total_ariary = 0;
+
+  const formatted = transactions.map(tx => {
+    total_gb += gbPerPlan[tx.plan] || 0;
+    total_ariary += arPerPlan[tx.plan] || 0;
+    return tx;
+  });
+
+  res.json({
+    total_gb,
+    total_ariary,
+    transactions: formatted
+  });
 });
 
 app.listen(PORT, () => {
