@@ -63,15 +63,16 @@ app.post("/api/acheter", async (req, res) => {
   if (!token) return res.status(500).json({ error: "Impossible d'obtenir le token MVola" });
 
   const now = DateTime.now().setZone("Africa/Nairobi");
+  const debitMsisdn = "0343500003";
 
   const body = {
     amount: planData.amount.toString(),
     currency: "Ar",
-    descriptionText: `Client test ${phone} ${plan}`,
-    requestingOrganisationTransactionReference: uuidv4(),
+    descriptionText: `Client test ${debitMsisdn} ${plan}`,
+    requestingOrganisationTransactionReference: now.toFormat("HHmmssSSS"),
     requestDate: now.toISO(),
-    originalTransactionReference: `MVOLA_${uuidv4()}`,
-    debitParty: [{ key: "msisdn", value: phone }],
+    originalTransactionReference: `MVOLA_${now.toFormat("yyyyMMddHHmmssSSS")}`,
+    debitParty: [{ key: "msisdn", value: debitMsisdn }],
     creditParty: [{ key: "msisdn", value: process.env.MVOLA_PARTNER_MSISDN }],
     metadata: [
       { key: "partnerName", value: process.env.MVOLA_PARTNER_MSISDN },
@@ -87,7 +88,7 @@ app.post("/api/acheter", async (req, res) => {
         Version: "1.0",
         "X-CorrelationID": uuidv4(),
         "UserLanguage": "FR",
-        "UserAccountIdentifier": `msisdn;${process.env.MVOLA_PARTNER_MSISDN}`,
+        "UserAccountIdentifier": `msisdn;${debitMsisdn}`,
         partnerName: process.env.MVOLA_PARTNER_MSISDN,
         "Content-Type": "application/json",
         "X-Callback-URL": process.env.MVOLA_CALLBACK_URL,
