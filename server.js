@@ -88,6 +88,10 @@ app.post("/api/acheter", async (req, res) => {
     initiatorIdentifier: `msisdn;${debitMsisdn}`,
     debitParty: [{ key: "msisdn", value: debitMsisdn }],
     creditParty: [{ key: "msisdn", value: process.env.MVOLA_PARTNER_MSISDN }],
+    payer: {
+      partyIdType: "MSISDN",
+      partyId: debitMsisdn
+    },
     metadata: {
       partnerName: process.env.MVOLA_PARTNER_NAME,
       fc: "USD",
