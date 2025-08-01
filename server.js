@@ -67,24 +67,17 @@ async function getAccessToken() {
   }
 }
 
-// 📲 Route paiement MVola
+// 📲 Route paiement MVola (TEST FIXÉ À 1000 Ar)
 app.post("/api/acheter", async (req, res) => {
-  const { phone, plan } = req.body;
-  if (!phone || !plan) {
-    logger.warn("⛔ Paramètres manquants", { body: req.body });
-    return res.status(400).json({ error: "Paramètres manquants" });
+  const { phone } = req.body;
+  const plan = "1 Jour - 1 Go - 1000 Ar"; // fixé pour sandbox
+
+  if (!phone) {
+    logger.warn("⛔ Numéro manquant", { body: req.body });
+    return res.status(400).json({ error: "Numéro manquant" });
   }
 
-  const gbMap = {
-    "1 Jour - 1 Go - 1000 Ar": { gb: 1, amount: 1000 },
-    "7 Jours - 5 Go - 5000 Ar": { gb: 5, amount: 5000 },
-    "30 Jours - 20 Go - 15000 Ar": { gb: 20, amount: 15000 }
-  };
-  const planData = gbMap[plan];
-  if (!planData) {
-    logger.warn("⛔ Plan invalide", { plan });
-    return res.status(400).json({ error: "Plan invalide" });
-  }
+  const planData = { gb: 1, amount: 1000 }; // obligatoire en sandbox
 
   const token = await getAccessToken();
   if (!token) return res.status(500).json({ error: "Impossible d'obtenir le token MVola" });
@@ -100,10 +93,10 @@ app.post("/api/acheter", async (req, res) => {
     requestingOrganisationTransactionReference: now.toFormat("HHmmssSSS"),
     requestDate: now.toISO(),
     originalTransactionReference: `MVOLA_${timestamp}`,
-    transactionType: "merchantPay", // ✅ requis
-    sendingInstitutionId: "RAZAFI",               // ✅ AJOUT
-    receivingInstitutionId: "RAZAFI",             // ✅ AJOUT
-        debitParty: [
+    transactionType: "merchantPay",
+    sendingInstitutionId: "RAZAFI",
+    receivingInstitutionId: "RAZAFI",
+    debitParty: [
       { key: "msisdn", value: debitMsisdn }
     ],
     creditParty: [
@@ -141,7 +134,7 @@ app.post("/api/acheter", async (req, res) => {
   }
 });
 
-// 🔁 Callback MVola
+// 🔁 Callback MVola (inchangé)
 app.post("/api/mvola-callback", async (req, res) => {
   const tx = req.body;
   logger.info("📥 Callback MVola reçu", tx);
@@ -152,18 +145,8 @@ app.post("/api/mvola-callback", async (req, res) => {
   if (tx.transactionStatus !== "completed" || !phone || !plan)
     return res.status(400).end();
 
-  const dataPerPlan = {
-    "1 Jour - 1 Go - 1000 Ar": 1,
-    "7 Jours - 5 Go - 5000 Ar": 5,
-    "30 Jours - 20 Go - 15000 Ar": 20,
-  };
-  const pricePerPlan = {
-    "1 Jour - 1 Go - 1000 Ar": 1000,
-    "7 Jours - 5 Go - 5000 Ar": 5000,
-    "30 Jours - 20 Go - 15000 Ar": 15000,
-  };
-  const gb = dataPerPlan[plan];
-  const amount = pricePerPlan[plan];
+  const gb = 1;
+  const amount = 1000;
 
   const { data: voucher, error: voucherError } = await supabase
     .from("vouchers")
