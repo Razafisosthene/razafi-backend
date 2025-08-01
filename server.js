@@ -92,28 +92,24 @@ app.post("/api/acheter", async (req, res) => {
   const now = DateTime.now().setZone("Africa/Nairobi");
   const debitMsisdn = phone;
   const timestamp = now.toFormat("yyyyMMddHHmmssSSS");
-  const externalId = `TXN_${timestamp}`;
 
   const body = {
     amount: planData.amount.toString(),
     currency: "Ar",
     descriptionText: `Client test ${debitMsisdn} ${plan}`,
-    payerMessage: `Paiement ${plan}`,
-    payeeNote: `RAZAFI_WIFI_${now.toFormat("HHmmss")}`,
     requestingOrganisationTransactionReference: now.toFormat("HHmmssSSS"),
-    originalTransactionReference: `MVOLA_${timestamp}`,
-    paymentReference: timestamp,
-    externalId: externalId,
     requestDate: now.toISO(),
-    sendingInstitutionId: "RAZAFI",
-    receivingInstitutionId: "RAZAFI",
-    transactionType: "merchantPay",
-    initiator: process.env.MVOLA_API_USER,
-    initiatorIdentifier: `msisdn;${debitMsisdn}`,
-    debitParty: [{ key: "msisdn", value: debitMsisdn }],
-    creditParty: [{ key: "msisdn", value: process.env.MVOLA_PARTNER_MSISDN }],
+    originalTransactionReference: `MVOLA_${timestamp}`,
+    debitParty: [
+      { key: "msisdn", value: debitMsisdn }
+    ],
+    creditParty: [
+      { key: "msisdn", value: process.env.MVOLA_PARTNER_MSISDN }
+    ],
     metadata: [
-      { key: "partnerName", value: process.env.MVOLA_PARTNER_NAME }
+      { key: "partnerName", value: process.env.MVOLA_PARTNER_MSISDN },
+      { key: "fc", value: "USD" },
+      { key: "amountFc", value: "1" }
     ]
   };
 
