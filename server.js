@@ -82,6 +82,7 @@ app.post("/api/acheter", async (req, res) => {
   };
 
   try {
+    console.log("🔍 Payload MVola:", JSON.stringify(body, null, 2));
     await axios.post(`${process.env.MVOLA_BASE_URL}/mvola/mm/transactions/type/merchantpay/1.0.0/`, body, {
       headers: {
         Authorization: `Bearer ${token}`,
