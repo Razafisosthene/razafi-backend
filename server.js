@@ -101,7 +101,9 @@ app.post("/api/acheter", async (req, res) => {
     requestDate: now.toISO(),
     originalTransactionReference: `MVOLA_${timestamp}`,
     transactionType: "merchantPay", // ✅ requis
-    debitParty: [
+    sendingInstitutionId: "RAZAFI",               // ✅ AJOUT
+    receivingInstitutionId: "RAZAFI",             // ✅ AJOUT
+        debitParty: [
       { key: "msisdn", value: debitMsisdn }
     ],
     creditParty: [
