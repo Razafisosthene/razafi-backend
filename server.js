@@ -63,13 +63,14 @@ app.post("/api/acheter", async (req, res) => {
   if (!token) return res.status(500).json({ error: "Impossible d'obtenir le token MVola" });
 
   const now = DateTime.now().setZone("Africa/Nairobi");
+
   const body = {
     amount: planData.amount.toString(),
     currency: "Ar",
     descriptionText: `Client test ${phone} ${plan}`,
     requestingOrganisationTransactionReference: uuidv4(),
     requestDate: now.toISO(),
-    originalTransactionReference: `MVOLA_${now.toFormat("yyyyMMddHHmmssSSS")}`,
+    originalTransactionReference: `MVOLA_${uuidv4()}`,
     debitParty: [{ key: "msisdn", value: phone }],
     creditParty: [{ key: "msisdn", value: process.env.MVOLA_PARTNER_MSISDN }],
     metadata: [
