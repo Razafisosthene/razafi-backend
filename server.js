@@ -7,6 +7,7 @@ import { createClient } from "@supabase/supabase-js";
 import { DateTime } from "luxon";
 import axios from "axios";
 import { v4 as uuidv4 } from "uuid";
+import winston from "winston";
 
 dotenv.config();
 const app = express();
@@ -28,6 +29,22 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// 📋 Winston Logger configuration
+const logger = winston.createLogger({
+  level: "info",
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.printf(({ timestamp, level, message, ...meta }) => {
+      return `${timestamp} [${level.toUpperCase()}]: ${message} ${Object.keys(meta).length ? JSON.stringify(meta) : ""}`;
+    })
+  ),
+  transports: [
+    new winston.transports.Console(),
+    new winston.transports.File({ filename: "logs/error.log", level: "error" }),
+    new winston.transports.File({ filename: "logs/combined.log" })
+  ]
+});
+
 // 🔐 Token MVola
 async function getAccessToken() {
   const auth = Buffer.from(`${process.env.MVOLA_CONSUMER_KEY}:${process.env.MVOLA_CONSUMER_SECRET}`).toString("base64");
@@ -42,9 +59,10 @@ async function getAccessToken() {
         "Cache-Control": "no-cache"
       }
     });
+    logger.info("✅ Token MVola obtenu");
     return res.data.access_token;
   } catch (err) {
-    console.error("❌ MVola token error:", err.response?.data || err.message);
+    logger.error("❌ MVola token error", { error: err.response?.data || err.message });
     return null;
   }
 }
@@ -52,7 +70,10 @@ async function getAccessToken() {
 // 📲 Route paiement MVola
 app.post("/api/acheter", async (req, res) => {
   const { phone, plan } = req.body;
-  if (!phone || !plan) return res.status(400).json({ error: "Paramètres manquants" });
+  if (!phone || !plan) {
+    logger.warn("⛔ Paramètres manquants", { body: req.body });
+    return res.status(400).json({ error: "Paramètres manquants" });
+  }
 
   const gbMap = {
     "1 Jour - 1 Go - 1000 Ar": { gb: 1, amount: 1000 },
@@ -60,7 +81,10 @@ app.post("/api/acheter", async (req, res) => {
     "30 Jours - 20 Go - 15000 Ar": { gb: 20, amount: 15000 }
   };
   const planData = gbMap[plan];
-  if (!planData) return res.status(400).json({ error: "Plan invalide" });
+  if (!planData) {
+    logger.warn("⛔ Plan invalide", { plan });
+    return res.status(400).json({ error: "Plan invalide" });
+  }
 
   const token = await getAccessToken();
   if (!token) return res.status(500).json({ error: "Impossible d'obtenir le token MVola" });
@@ -72,7 +96,7 @@ app.post("/api/acheter", async (req, res) => {
 
   const body = {
     amount: planData.amount.toString(),
-    currency: "Ar",
+    currency: "MGA",
     descriptionText: `Client test ${debitMsisdn} ${plan}`,
     payerMessage: `Paiement ${plan}`,
     payeeNote: `RAZAFI_WIFI_${now.toFormat("HHmmss")}`,
@@ -83,22 +107,20 @@ app.post("/api/acheter", async (req, res) => {
     requestDate: now.toISO(),
     sendingInstitutionId: "RAZAFI",
     receivingInstitutionId: "RAZAFI",
-    transactionType: "merchantpay",
+    transactionType: "merchantPay",
     initiator: process.env.MVOLA_API_USER,
     initiatorIdentifier: `msisdn;${debitMsisdn}`,
     debitParty: [{ key: "msisdn", value: debitMsisdn }],
     creditParty: [{ key: "msisdn", value: process.env.MVOLA_PARTNER_MSISDN }],
     metadata: [
-      { key: "partnerName", value: process.env.MVOLA_PARTNER_NAME },
-      { key: "fc", value: "USD" },
-      { key: "amountFc", value: "1" }
+      { key: "partnerName", value: process.env.MVOLA_PARTNER_NAME }
     ]
   };
 
-  console.log("🔍 Payload MVola:", JSON.stringify(body, null, 2));
+  logger.info("📤 Envoi de paiement MVola", { phone, plan, body });
 
   try {
-    await axios.post(`${process.env.MVOLA_BASE_URL}/mvola/mm/transactions/type/merchantpay/1.0.0/`, body, {
+    const response = await axios.post(`${process.env.MVOLA_BASE_URL}/mvola/mm/transactions/type/merchantpay/1.0.0/`, body, {
       headers: {
         Authorization: `Bearer ${token}`,
         Version: "1.0",
@@ -111,10 +133,11 @@ app.post("/api/acheter", async (req, res) => {
         "Cache-Control": "no-cache"
       }
     });
+    logger.info("✅ Paiement MVola accepté", { status: response.status, data: response.data });
     res.json({ success: true });
   } catch (err) {
     const e = err.response?.data || err.message;
-    console.error("❌ Paiement échoué:", e);
+    logger.error("❌ Paiement échoué", { status: err.response?.status, data: e });
     res.status(500).json({ error: "Paiement échoué", detail: e });
   }
 });
@@ -122,6 +145,7 @@ app.post("/api/acheter", async (req, res) => {
 // 🔁 Callback MVola
 app.post("/api/mvola-callback", async (req, res) => {
   const tx = req.body;
+  logger.info("📥 Callback MVola reçu", tx);
   const now = DateTime.now().setZone("Africa/Nairobi").toFormat("yyyy-MM-dd HH:mm:ss");
   const phone = tx.debitParty?.[0]?.value;
   const plan = tx.descriptionText?.split("Client test ")[1]?.split(" ").slice(1).join(" ").trim();
@@ -153,6 +177,7 @@ app.post("/api/mvola-callback", async (req, res) => {
   if (voucherError || !voucher) {
     await supabase.from("transactions").insert({ phone, plan, status: "failed", error: "Aucun code disponible", paid_at: now });
     await transporter.sendMail({ from: process.env.GMAIL_USER, to: "sosthenet@gmail.com", subject: `❌ Paiement échoué - Pas de code dispo`, text: `Client: ${phone}\nPlan: ${plan}\nDate: ${now}` });
+    logger.warn("🚫 Aucun code disponible", { phone, plan });
     return res.status(200).end();
   }
 
@@ -185,10 +210,11 @@ app.post("/api/mvola-callback", async (req, res) => {
     });
   }
 
+  logger.info("🎉 Paiement traité et code attribué", { phone, plan, code: voucher.code });
   res.status(200).end();
 });
 
 // 🚀 Start
 app.listen(PORT, () => {
-  console.log(`✅ Backend sécurisé en ligne sur http://localhost:${PORT}`);
+  logger.info(`✅ Backend sécurisé en ligne sur http://localhost:${PORT}`);
 });
