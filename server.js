@@ -70,6 +70,8 @@ app.post("/api/acheter", async (req, res) => {
     requestingOrganisationTransactionReference: now.toFormat("HHmmssSSS"),
     originalTransactionReference: `MVOLA_${now.toFormat("yyyyMMddHHmmssSSS")}`,
     requestDate: now.toISO(),
+    sendingInstitutionId: "RAZAFI",
+    receivingInstitutionId: "RAZAFI",
     debitParty: [{ key: "msisdn", value: debitMsisdn }],
     creditParty: [{ key: "msisdn", value: "0343500004" }],
     metadata: [
