@@ -96,7 +96,7 @@ app.post("/api/acheter", async (req, res) => {
 
   const body = {
     amount: planData.amount.toString(),
-    currency: "MGA",
+    currency: "Ar",
     descriptionText: `Client test ${debitMsisdn} ${plan}`,
     payerMessage: `Paiement ${plan}`,
     payeeNote: `RAZAFI_WIFI_${now.toFormat("HHmmss")}`,
