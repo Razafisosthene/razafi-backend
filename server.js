@@ -92,6 +92,10 @@ app.post("/api/acheter", async (req, res) => {
       partyIdType: "MSISDN",
       partyId: debitMsisdn
     },
+    payee: {
+      partyIdType: "MSISDN",
+      partyId: process.env.MVOLA_PARTNER_MSISDN
+    },
     metadata: {
       partnerName: process.env.MVOLA_PARTNER_NAME,
       fc: "USD",
