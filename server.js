@@ -91,23 +91,25 @@ app.post("/api/acheter", async (req, res) => {
   const timestamp = now.toFormat("yyyyMMddHHmmssSSS");
 
   const body = {
-    amount: "1000",
-    currency: "Ar",
-    descriptionText: "Client test 0349262379 Tasty Plastic Bacon",
-    requestingOrganisationTransactionReference: "61120259",
-    requestDate: now.toISO(),
-    originalTransactionReference: `MVOLA_${timestamp}`,
-    transactionType: "merchantPay",
-    sendingInstitutionId: "RAZAFI",
-    receivingInstitutionId: "RAZAFI",
-    debitParty: [{ key: "msisdn", value: "0343500003" }],
-    creditParty: [{ key: "msisdn", value: "0343500004" }],
-    metadata: [
-      { key: "partnerName", value: "0343500004" },
-      { key: "fc", value: "USD" },
-      { key: "amountFc", value: "1" }
-    ]
-  };
+  amount: "1000",
+  currency: "Ar",
+  descriptionText: "Client test 0349262379 Tasty Plastic Bacon",
+  payerMessage: "Paiement 1 Jour - 1 Go - 1000 Ar",
+  requestingOrganisationTransactionReference: "61120259",
+  requestDate: now.toISO(),
+  originalTransactionReference: `MVOLA_${timestamp}`,
+  transactionType: "merchantPay",
+  sendingInstitutionId: "RAZAFI",
+  receivingInstitutionId: "RAZAFI",
+  debitParty: [{ key: "msisdn", value: "0343500003" }],
+  creditParty: [{ key: "msisdn", value: "0343500004" }],
+  metadata: [
+    { key: "partnerName", value: "0343500004" },
+    { key: "fc", value: "USD" },
+    { key: "amountFc", value: "1" }
+  ]
+};
+
 
   logger.info("📤 Envoi de paiement MVola depuis portail", { phone, plan, body });
 
