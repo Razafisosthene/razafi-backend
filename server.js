@@ -29,7 +29,7 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// 📋 Winston Logger configuration
+// 📋 Winston Logger
 const logger = winston.createLogger({
   level: "info",
   format: winston.format.combine(
@@ -38,14 +38,25 @@ const logger = winston.createLogger({
       return `${timestamp} [${level.toUpperCase()}]: ${message} ${Object.keys(meta).length ? JSON.stringify(meta) : ""}`;
     })
   ),
-  transports: [
-    new winston.transports.Console(),
-    new winston.transports.File({ filename: "logs/error.log", level: "error" }),
-    new winston.transports.File({ filename: "logs/combined.log" })
-  ]
+  transports: [new winston.transports.Console()]
 });
 
-// 🔐 Token MVola
+// 📤 Envoi email
+async function sendEmail(subject, html) {
+  try {
+    await transporter.sendMail({
+      from: process.env.GMAIL_USER,
+      to: "sosthenet@gmail.com",
+      subject,
+      html,
+    });
+    logger.info(`📧 Email envoyé : ${subject}`);
+  } catch (err) {
+    logger.error("❌ Erreur envoi email", { error: err.message });
+  }
+}
+
+// 🔐 Obtenir le token MVola
 async function getAccessToken() {
   const auth = Buffer.from(`${process.env.MVOLA_CONSUMER_KEY}:${process.env.MVOLA_CONSUMER_SECRET}`).toString("base64");
   try {
@@ -67,22 +78,17 @@ async function getAccessToken() {
   }
 }
 
-// 📲 Route paiement MVola
+// 📲 Route de paiement MVola
 app.post("/api/acheter", async (req, res) => {
   const { phone, plan } = req.body;
 
   if (!phone || !plan) {
-    logger.warn("⛔ Paramètres manquants", { body: req.body });
     return res.status(400).json({ error: "Paramètres manquants" });
   }
 
-  // 🔒 Sandbox only accepts this plan
   if (plan !== "1 Jour - 1 Go - 1000 Ar") {
     return res.status(400).json({ error: "MVola sandbox: seul le plan 1000 Ar est autorisé" });
   }
-
-  const gb = 1;
-  const amount = 1000;
 
   const token = await getAccessToken();
   if (!token) return res.status(500).json({ error: "Impossible d'obtenir le token MVola" });
@@ -91,27 +97,28 @@ app.post("/api/acheter", async (req, res) => {
   const timestamp = now.toFormat("yyyyMMddHHmmssSSS");
 
   const body = {
-  amount: "1000",
-  currency: "Ar",
-  descriptionText: "Client test 0349262379 Tasty Plastic Bacon",
-  payerMessage: "Paiement 1 Jour - 1 Go - 1000 Ar",
-  requestingOrganisationTransactionReference: "61120259",
-  requestDate: now.toISO(),
-  originalTransactionReference: `MVOLA_${timestamp}`,
-  transactionType: "merchantPay",
-  sendingInstitutionId: "RAZAFI",
-  receivingInstitutionId: "RAZAFI",
-  debitParty: [{ key: "msisdn", value: "0343500003" }],
-  creditParty: [{ key: "msisdn", value: "0343500004" }],
-  metadata: [
-    { key: "partnerName", value: "0343500004" },
-    { key: "fc", value: "USD" },
-    { key: "amountFc", value: "1" }
-  ]
-};
-
-
-  logger.info("📤 Envoi de paiement MVola depuis portail", { phone, plan, body });
+    amount: "1000",
+    currency: "Ar",
+    descriptionText: "Client test 0349262379 Tasty Plastic Bacon",
+    payerMessage: "Paiement 1 Jour - 1 Go - 1000 Ar",
+    requestingOrganisationTransactionReference: "61120259",
+    requestDate: now.toISO(),
+    originalTransactionReference: `MVOLA_${timestamp}`,
+    transactionType: "merchantPay",
+    sendingInstitutionId: "RAZAFI",
+    receivingInstitutionId: "RAZAFI",
+    debitParty: [{ key: "msisdn", value: "0343500003" }],
+    creditParty: [{ key: "msisdn", value: "0343500004" }],
+    payer: {
+      partyIdType: "MSISDN",
+      partyId: "0343500003"
+    },
+    metadata: [
+      { key: "partnerName", value: "0343500004" },
+      { key: "fc", value: "USD" },
+      { key: "amountFc", value: "1" }
+    ]
+  };
 
   try {
     const response = await axios.post(`${process.env.MVOLA_BASE_URL}/mvola/mm/transactions/type/merchantpay/1.0.0/`, body, {
@@ -127,16 +134,17 @@ app.post("/api/acheter", async (req, res) => {
         "Cache-Control": "no-cache"
       }
     });
-    logger.info("✅ Paiement MVola accepté", { status: response.status, data: response.data });
+    logger.info("✅ Paiement MVola accepté", { status: response.status });
     res.json({ success: true });
   } catch (err) {
     const e = err.response?.data || err.message;
     logger.error("❌ Paiement échoué", { status: err.response?.status, data: e });
+    await sendEmail("❌ Paiement MVola échoué", `<pre>${JSON.stringify(e, null, 2)}</pre>`);
     res.status(500).json({ error: "Paiement échoué", detail: e });
   }
 });
 
-// 🔁 Traitement du callback MVola
+// 🔁 Callback de paiement MVola
 app.post("/api/mvola-callback", async (req, res) => {
   const tx = req.body;
   logger.info("📥 Callback MVola reçu", tx);
@@ -151,9 +159,8 @@ app.post("/api/mvola-callback", async (req, res) => {
   };
 
   const match = planMap[amount];
-
   if (!match) {
-    logger.warn("⛔ Montant inconnu", { amount });
+    await sendEmail("❌ Paiement rejeté", `Montant inconnu : ${amount}`);
     return res.status(400).json({ error: "Montant invalide" });
   }
 
@@ -169,6 +176,7 @@ app.post("/api/mvola-callback", async (req, res) => {
 
   if (error || !voucher) {
     logger.warn(`❌ Aucun voucher disponible pour ${plan}`);
+    await sendEmail("❌ Paiement échoué : plus de code WiFi", `Plan demandé : ${plan} / Client : ${phone}`);
     return res.status(400).json({ error: "Aucun voucher disponible" });
   }
 
@@ -176,10 +184,7 @@ app.post("/api/mvola-callback", async (req, res) => {
 
   await supabase
     .from("vouchers")
-    .update({
-      paid_by: phone,
-      assigned_at: now,
-    })
+    .update({ paid_by: phone, assigned_at: now })
     .eq("id", voucher.id);
 
   await supabase.from("transactions").insert({
@@ -191,11 +196,37 @@ app.post("/api/mvola-callback", async (req, res) => {
     timestamp: now,
   });
 
-  logger.info(`✅ Transaction complétée pour ${phone} → ${voucher.code}`);
-  res.status(200).json({ status: "completed", code: voucher.code, phone, plan });
+  logger.info(`✅ Transaction complétée : ${phone} → ${voucher.code}`);
+  await sendEmail("✅ Transaction réussie",
+    `Téléphone : ${phone}<br>Plan : ${plan}<br>Code WiFi : <b>${voucher.code}</b>`);
+
+  // 🔁 Update metrics
+  const { data: metricsData, error: metricsError } = await supabase
+    .from("metrics")
+    .select("*")
+    .single();
+
+  if (!metricsError && metricsData) {
+    const updatedGb = metricsData.total_gb + gb;
+    const updatedAr = metricsData.total_ariary + amount;
+
+    await supabase
+      .from("metrics")
+      .update({ total_gb: updatedGb, total_ariary: updatedAr })
+      .eq("id", metricsData.id);
+
+    // ✅ Alerte tous les 100 Go
+    const lastAlert = metricsData.last_alert_gb || 0;
+    if (Math.floor(updatedGb / 100) > Math.floor(lastAlert / 100)) {
+      await sendEmail("📊 Palier atteint", `🎉 Nouveau total : ${updatedGb} Go vendus`);
+      await supabase.from("metrics").update({ last_alert_gb: updatedGb }).eq("id", metricsData.id);
+    }
+  }
+
+  res.status(200).json({ status: "completed", code: voucher.code });
 });
 
-// 🚀 Start
+// 🚀 Lancement serveur
 app.listen(PORT, () => {
-  logger.info(`✅ Serveur prêt pour test portail → MVola sandbox : http://localhost:${PORT}`);
+  logger.info(`✅ Serveur en ligne : http://localhost:${PORT}`);
 });
