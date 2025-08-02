@@ -95,17 +95,13 @@ app.post("/api/acheter", async (req, res) => {
     currency: "Ar",
     descriptionText: "Client test 0349262379 Tasty Plastic Bacon",
     requestingOrganisationTransactionReference: "61120259",
-    requestDate: "2025-07-04T09:55:39.458Z",
-    originalTransactionReference: "MVOLA_20250704095539457",
+    requestDate: now.toISO(),
+    originalTransactionReference: `MVOLA_${timestamp}`,
     transactionType: "merchantPay",
     sendingInstitutionId: "RAZAFI",
     receivingInstitutionId: "RAZAFI",
-    debitParty: [
-      { key: "msisdn", value: "0343500003" }
-    ],
-    creditParty: [
-      { key: "msisdn", value: "0343500004" }
-    ],
+    debitParty: [{ key: "msisdn", value: "0343500003" }],
+    creditParty: [{ key: "msisdn", value: "0343500004" }],
     metadata: [
       { key: "partnerName", value: "0343500004" },
       { key: "fc", value: "USD" },
@@ -138,11 +134,63 @@ app.post("/api/acheter", async (req, res) => {
   }
 });
 
-// 🔁 Callback (inchangé)
+// 🔁 Traitement du callback MVola
 app.post("/api/mvola-callback", async (req, res) => {
   const tx = req.body;
   logger.info("📥 Callback MVola reçu", tx);
-  res.status(200).end(); // on ne traite rien ici pour l’instant
+
+  const phone = tx.payer?.partyId;
+  const amount = parseInt(tx.amount);
+
+  const planMap = {
+    1000: { plan: "1 Jour - 1 Go - 1000 Ar", gb: 1 },
+    5000: { plan: "7 Jours - 5 Go - 5000 Ar", gb: 5 },
+    15000: { plan: "30 Jours - 20 Go - 15000 Ar", gb: 20 }
+  };
+
+  const match = planMap[amount];
+
+  if (!match) {
+    logger.warn("⛔ Montant inconnu", { amount });
+    return res.status(400).json({ error: "Montant invalide" });
+  }
+
+  const { plan, gb } = match;
+
+  const { data: voucher, error } = await supabase
+    .from("vouchers")
+    .select("*")
+    .eq("plan", plan)
+    .is("paid_by", null)
+    .limit(1)
+    .single();
+
+  if (error || !voucher) {
+    logger.warn(`❌ Aucun voucher disponible pour ${plan}`);
+    return res.status(400).json({ error: "Aucun voucher disponible" });
+  }
+
+  const now = DateTime.now().setZone("Africa/Nairobi").toISO();
+
+  await supabase
+    .from("vouchers")
+    .update({
+      paid_by: phone,
+      assigned_at: now,
+    })
+    .eq("id", voucher.id);
+
+  await supabase.from("transactions").insert({
+    phone,
+    code: voucher.code,
+    plan,
+    gb,
+    amount,
+    timestamp: now,
+  });
+
+  logger.info(`✅ Transaction complétée pour ${phone} → ${voucher.code}`);
+  res.status(200).json({ status: "completed", code: voucher.code, phone, plan });
 });
 
 // 🚀 Start
