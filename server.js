@@ -128,6 +128,10 @@ app.post("/api/acheter", async (req, res) => {
 // 🔁 Traitement Callback MVola
 app.post("/api/mvola-callback", async (req, res) => {
   const data = req.body;
+
+  // 🔍 Logs visibles dans Render
+  console.log("📞 ✅ Callback MVola reçu !");
+  console.log("📦 Contenu reçu : ", JSON.stringify(data, null, 2));
   logger.info("📥 Callback MVola reçu", data);
 
   const phone = data.debitParty?.find((p) => p.key === "msisdn")?.value || "Inconnu";
@@ -163,14 +167,12 @@ app.post("/api/mvola-callback", async (req, res) => {
     .update({ paid_by: phone, assigned_at: now })
     .eq("id", voucher.id);
 
-  await supabase.from("transactions").insert([
-    {
-      phone,
-      plan: `${gb} Go - ${montant} Ar`,
-      code: voucher.code,
-      created_at: now,
-    },
-  ]);
+  await supabase.from("transactions").insert([{
+    phone,
+    plan: `${gb} Go - ${montant} Ar`,
+    code: voucher.code,
+    created_at: now,
+  }]);
 
   const { data: metrics } = await supabase.from("metrics").select("*").single();
   const newGB = (metrics?.total_gb || 0) + gb;
