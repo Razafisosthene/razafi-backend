@@ -39,6 +39,8 @@ const logger = winston.createLogger({
   transports: [new winston.transports.Console()],
 });
 
+console.log("🔐 API_SECRET (env):", process.env.API_SECRET); // ← DEBUG SECRET
+
 // 🔐 Token MVola
 async function getAccessToken() {
   const auth = Buffer.from(`${process.env.MVOLA_CONSUMER_KEY}:${process.env.MVOLA_CONSUMER_SECRET}`).toString("base64");
@@ -128,8 +130,6 @@ app.post("/api/acheter", async (req, res) => {
 // 🔁 Traitement Callback MVola
 app.post("/api/mvola-callback", async (req, res) => {
   const data = req.body;
-
-  // 🔍 Logs visibles dans Render
   console.log("📞 ✅ Callback MVola reçu !");
   console.log("📦 Contenu reçu : ", JSON.stringify(data, null, 2));
   logger.info("📥 Callback MVola reçu", data);
@@ -140,7 +140,6 @@ app.post("/api/mvola-callback", async (req, res) => {
 
   if (gb === 0) return res.status(400).send("❌ Plan non reconnu");
 
-  // 🎟️ Sélection d’un code libre
   const { data: voucher, error } = await supabase
     .from("vouchers")
     .select("*")
@@ -161,35 +160,29 @@ app.post("/api/mvola-callback", async (req, res) => {
   }
 
   const now = DateTime.now().setZone("Africa/Nairobi").toISO();
-
   await supabase
     .from("vouchers")
     .update({ paid_by: phone, assigned_at: now })
     .eq("id", voucher.id);
-
   await supabase.from("transactions").insert([{
     phone,
     plan: `${gb} Go - ${montant} Ar`,
     code: voucher.code,
     created_at: now,
   }]);
-
   const { data: metrics } = await supabase.from("metrics").select("*").single();
   const newGB = (metrics?.total_gb || 0) + gb;
   const newAriary = (metrics?.total_ariary || 0) + montant;
-
   await supabase.from("metrics").update({
     total_gb: newGB,
     total_ariary: newAriary,
   });
-
   await transporter.sendMail({
     from: process.env.GMAIL_USER,
     to: "sosthenet@gmail.com",
     subject: `✅ Code livré à ${phone}`,
     text: `✅ ${voucher.code} pour ${gb} Go / ${montant} Ar`,
   });
-
   if (Math.floor(metrics.total_gb / 100) < Math.floor(newGB / 100)) {
     await transporter.sendMail({
       from: process.env.GMAIL_USER,
@@ -198,7 +191,6 @@ app.post("/api/mvola-callback", async (req, res) => {
       text: `🎉 Nouveau palier atteint : ${newGB} Go vendus`,
     });
   }
-
   res.status(200).send("✅ Callback traité");
 });
 
@@ -208,12 +200,12 @@ const otpStore = {};
 // 🔐 MFA - Générer et envoyer OTP
 app.post("/api/request-otp", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
+  console.log("🔐 TOKEN reçu:", token);
+  console.log("🟡 API_SECRET attendu:", process.env.API_SECRET);
   if (token !== process.env.API_SECRET) return res.status(403).json({ error: "Accès refusé" });
-
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
   const expiresAt = Date.now() + 5 * 60 * 1000; // 5 min
   otpStore[token] = { otp, expiresAt };
-
   try {
     await transporter.sendMail({
       from: process.env.GMAIL_USER,
@@ -229,16 +221,13 @@ app.post("/api/request-otp", async (req, res) => {
   }
 });
 
-
 // 🔐 MFA - Vérifier OTP
 app.post("/api/verify-otp", (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
   const { otp } = req.body;
   const record = otpStore[token];
-
   if (!record || Date.now() > record.expiresAt) return res.status(403).json({ error: "OTP expiré ou invalide" });
   if (otp !== record.otp) return res.status(403).json({ error: "OTP incorrect" });
-
   otpStore[token].verified = true;
   res.json({ success: true });
 });
@@ -259,16 +248,13 @@ app.get("/api/admin-stats", verifyMFA, async (req, res) => {
     .select("created_at, phone, plan, code")
     .order("created_at", { ascending: false })
     .limit(10);
-
   if (error) return res.status(500).json({ error: "Erreur récupération stats" });
-
   res.json({ 
     total_gb: metrics.total_gb,
     total_ariary: metrics.total_ariary,
     recent: transactions 
   });
 });
-
 
 // 🚀 Démarrage serveur
 app.listen(PORT, () => {
