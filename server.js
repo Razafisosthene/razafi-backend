@@ -202,6 +202,68 @@ app.post("/api/mvola-callback", async (req, res) => {
   res.status(200).send("✅ Callback traité");
 });
 
+// 📌 OTP Store (en mémoire)
+const otpStore = {};
+
+// 🔐 MFA - Générer et envoyer OTP
+app.post("/api/request-otp", (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (token !== process.env.API_SECRET) return res.status(403).json({ error: "Accès refusé" });
+
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  const expiresAt = Date.now() + 5 * 60 * 1000; // 5 min
+  otpStore[token] = { otp, expiresAt };
+
+  transporter.sendMail({
+    from: process.env.GMAIL_USER,
+    to: "sosthenet@gmail.com",
+    subject: "🔐 Code de connexion admin",
+    text: `Votre code MFA est : ${otp} (valide 5 minutes)`
+  });
+
+  res.json({ success: true, message: "OTP envoyé par email" });
+});
+
+// 🔐 MFA - Vérifier OTP
+app.post("/api/verify-otp", (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  const { otp } = req.body;
+  const record = otpStore[token];
+
+  if (!record || Date.now() > record.expiresAt) return res.status(403).json({ error: "OTP expiré ou invalide" });
+  if (otp !== record.otp) return res.status(403).json({ error: "OTP incorrect" });
+
+  otpStore[token].verified = true;
+  res.json({ success: true });
+});
+
+// ✅ Middleware pour protéger les routes admin
+function verifyMFA(req, res, next) {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (token !== process.env.API_SECRET || !otpStore[token]?.verified) {
+    return res.status(403).json({ error: "Authentification MFA requise" });
+  }
+  next();
+}
+
+app.get("/api/admin-stats", verifyMFA, async (req, res) => {
+  const { data: metrics, error } = await supabase.from("metrics").select("*").single();
+  const { data: transactions } = await supabase
+    .from("transactions")
+    .select("created_at, phone, plan, code")
+    .order("created_at", { ascending: false })
+    .limit(10);
+
+  if (error) return res.status(500).json({ error: "Erreur récupération stats" });
+
+  res.json({ 
+    total_gb: metrics.total_gb,
+    total_ariary: metrics.total_ariary,
+    recent: transactions 
+  });
+});
+
+
 // 🚀 Démarrage serveur
 app.listen(PORT, () => {
   logger.info(`✅ Serveur actif → http://localhost:${PORT}`);
