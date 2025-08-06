@@ -214,6 +214,7 @@ app.post("/api/request-otp", async (req, res) => {
       text: `Votre code MFA est : ${otp} (valide 5 minutes)`
     });
     logger.info("📧 Code OTP envoyé avec succès !");
+    await logEvent("otp_request", { token }, req.ip); // Log OTP request
     res.json({ success: true, message: "OTP envoyé par email" });
   } catch (err) {
     logger.error("❌ Erreur envoi email OTP", { error: err.message });
@@ -229,6 +230,7 @@ app.post("/api/verify-otp", (req, res) => {
   if (!record || Date.now() > record.expiresAt) return res.status(403).json({ error: "OTP expiré ou invalide" });
   if (otp !== record.otp) return res.status(403).json({ error: "OTP incorrect" });
   otpStore[token].verified = true;
+  await logEvent("otp_verified", { token }, req.ip); // Log OTP verification
   res.json({ success: true });
 });
 
@@ -249,10 +251,11 @@ app.get("/api/admin-stats", verifyMFA, async (req, res) => {
     .order("created_at", { ascending: false })
     .limit(10);
   if (error) return res.status(500).json({ error: "Erreur récupération stats" });
-  res.json({ 
+  await logEvent("admin_report_viewed", { start: req.query.start, end: req.query.end }, req.ip); // Log report view
+  res.json({
     total_gb: metrics.total_gb,
     total_ariary: metrics.total_ariary,
-    recent: transactions 
+    recent: transactions
   });
 });
 
