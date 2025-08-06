@@ -206,7 +206,7 @@ app.post("/api/mvola-callback", async (req, res) => {
 const otpStore = {};
 
 // 🔐 MFA - Générer et envoyer OTP
-app.post("/api/request-otp", (req, res) => {
+app.post("/api/request-otp", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (token !== process.env.API_SECRET) return res.status(403).json({ error: "Accès refusé" });
 
@@ -214,15 +214,21 @@ app.post("/api/request-otp", (req, res) => {
   const expiresAt = Date.now() + 5 * 60 * 1000; // 5 min
   otpStore[token] = { otp, expiresAt };
 
-  transporter.sendMail({
-    from: process.env.GMAIL_USER,
-    to: "sosthenet@gmail.com",
-    subject: "🔐 Code de connexion admin",
-    text: `Votre code MFA est : ${otp} (valide 5 minutes)`
-  });
-
-  res.json({ success: true, message: "OTP envoyé par email" });
+  try {
+    await transporter.sendMail({
+      from: process.env.GMAIL_USER,
+      to: "sosthenet@gmail.com",
+      subject: "🔐 Code de connexion admin",
+      text: `Votre code MFA est : ${otp} (valide 5 minutes)`
+    });
+    logger.info("📧 Code OTP envoyé avec succès !");
+    res.json({ success: true, message: "OTP envoyé par email" });
+  } catch (err) {
+    logger.error("❌ Erreur envoi email OTP", { error: err.message });
+    res.status(500).json({ error: "Échec envoi OTP" });
+  }
 });
+
 
 // 🔐 MFA - Vérifier OTP
 app.post("/api/verify-otp", (req, res) => {
