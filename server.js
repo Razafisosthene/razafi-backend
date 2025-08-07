@@ -123,6 +123,7 @@ app.post("/api/acheter", async (req, res) => {
       subject: "❌ Paiement MVola échoué",
       text: JSON.stringify(e, null, 2),
     });
+    await logEvent("payment_failed", { error: e }, req.ip);
     res.status(500).json({ error: "Paiement échoué", detail: e });
   }
 });
@@ -130,15 +131,16 @@ app.post("/api/acheter", async (req, res) => {
 // 🔁 Traitement Callback MVola
 app.post("/api/mvola-callback", async (req, res) => {
   const data = req.body;
-  console.log("📞 ✅ Callback MVola reçu !");
-  console.log("📦 Contenu reçu : ", JSON.stringify(data, null, 2));
   logger.info("📥 Callback MVola reçu", data);
 
   const phone = data.debitParty?.find((p) => p.key === "msisdn")?.value || "Inconnu";
   const montant = parseInt(data.amount || "0");
   const gb = montant === 1000 ? 1 : montant === 5000 ? 5 : montant === 15000 ? 20 : 0;
 
-  if (gb === 0) return res.status(400).send("❌ Plan non reconnu");
+  if (gb === 0) {
+    await logEvent("invalid_plan", { phone, montant }, req.ip);
+    return res.status(400).send("❌ Plan non reconnu");
+  }
 
   const { data: voucher, error } = await supabase
     .from("vouchers")
@@ -149,13 +151,13 @@ app.post("/api/mvola-callback", async (req, res) => {
     .single();
 
   if (!voucher) {
-    logger.warn("❌ Aucun code disponible");
     await transporter.sendMail({
       from: process.env.GMAIL_USER,
       to: "sosthenet@gmail.com",
       subject: "❌ Pas de code dispo",
       text: `Aucun code pour ${gb} Go / ${montant} Ar. Acheteur: ${phone}`,
     });
+    await logEvent("no_voucher_available", { phone, gb, montant }, req.ip);
     return res.status(500).send("❌ Aucun voucher disponible");
   }
 
@@ -183,6 +185,8 @@ app.post("/api/mvola-callback", async (req, res) => {
     subject: `✅ Code livré à ${phone}`,
     text: `✅ ${voucher.code} pour ${gb} Go / ${montant} Ar`,
   });
+  await logEvent("code_delivered", { phone, montant, gb, code: voucher.code }, req.ip);
+
   if (Math.floor(metrics.total_gb / 100) < Math.floor(newGB / 100)) {
     await transporter.sendMail({
       from: process.env.GMAIL_USER,
@@ -194,14 +198,14 @@ app.post("/api/mvola-callback", async (req, res) => {
   res.status(200).send("✅ Callback traité");
 });
 
-// 📌 OTP Store (en mémoire)
 const otpStore = {};
 
-// 🔐 MFA - Générer et envoyer OTP
 app.post("/api/request-otp", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
-  if (token !== process.env.API_SECRET) return res.status(403).json({ error: "Accès refusé" });
-
+  if (token !== process.env.API_SECRET) {
+    await logEvent("unauthorized_otp_request", {}, req.ip);
+    return res.status(403).json({ error: "Accès refusé" });
+  }
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
   const expiresAt = Date.now() + 5 * 60 * 1000;
   otpStore[token] = { otp, expiresAt };
@@ -213,33 +217,35 @@ app.post("/api/request-otp", async (req, res) => {
       subject: "🔐 Code de connexion admin",
       text: `Votre code MFA est : ${otp} (valide 5 minutes)`
     });
-
     logger.info("📧 Code OTP envoyé avec succès !", { messageId: info.messageId });
     res.json({ success: true, message: "OTP envoyé par email" });
-
   } catch (err) {
     logger.error("❌ Erreur envoi email OTP", { error: err.message });
     res.status(500).json({ error: "Échec envoi OTP", detail: err.message });
   }
 });
 
-
-// 🔐 MFA - Vérifier OTP
 app.post("/api/verify-otp", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
   const { otp } = req.body;
   const record = otpStore[token];
-  if (!record || Date.now() > record.expiresAt) return res.status(403).json({ error: "OTP expiré ou invalide" });
-  if (otp !== record.otp) return res.status(403).json({ error: "OTP incorrect" });
+  if (!record || Date.now() > record.expiresAt) {
+    await logEvent("otp_invalid_or_expired", { otp }, req.ip);
+    return res.status(403).json({ error: "OTP expiré ou invalide" });
+  }
+  if (otp !== record.otp) {
+    await logEvent("otp_incorrect", { otp }, req.ip);
+    return res.status(403).json({ error: "OTP incorrect" });
+  }
   otpStore[token].verified = true;
-  await logEvent("otp_verified", { token }, req.ip); // Log OTP verification
+  await logEvent("otp_verified", { token }, req.ip);
   res.json({ success: true });
 });
 
-// ✅ Middleware pour protéger les routes admin
 function verifyMFA(req, res, next) {
   const token = req.headers.authorization?.split(" ")[1];
   if (token !== process.env.API_SECRET || !otpStore[token]?.verified) {
+    logEvent("unauthorized_admin_access", {}, req.ip);
     return res.status(403).json({ error: "Authentification MFA requise" });
   }
   next();
@@ -253,7 +259,7 @@ app.get("/api/admin-stats", verifyMFA, async (req, res) => {
     .order("created_at", { ascending: false })
     .limit(10);
   if (error) return res.status(500).json({ error: "Erreur récupération stats" });
-  await logEvent("admin_report_viewed", { start: req.query.start, end: req.query.end }, req.ip); // Log report view
+  await logEvent("admin_report_viewed", { start: req.query.start, end: req.query.end }, req.ip);
   res.json({
     total_gb: metrics.total_gb,
     total_ariary: metrics.total_ariary,
@@ -261,12 +267,11 @@ app.get("/api/admin-stats", verifyMFA, async (req, res) => {
   });
 });
 
-// 📚 Fonction pour logger un événement dans la table Supabase 'logs'
 async function logEvent(event, details, ip) {
   const now = DateTime.now().setZone("Africa/Nairobi").toISO();
   await supabase.from("logs").insert([
     {
-      event_type: event,             // ✅ corrige ici
+      event_type: event,
       ip_address: ip || "inconnue",
       details: JSON.stringify(details),
       created_at: now,
@@ -274,9 +279,6 @@ async function logEvent(event, details, ip) {
   ]);
 }
 
-
-
-// 🚀 Démarrage serveur
 app.listen(PORT, () => {
   logger.info(`✅ Serveur actif → http://localhost:${PORT}`);
 });
