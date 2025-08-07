@@ -266,13 +266,14 @@ async function logEvent(event, details, ip) {
   const now = DateTime.now().setZone("Africa/Nairobi").toISO();
   await supabase.from("logs").insert([
     {
-      event,
+      event_type: event,             // ✅ corrige ici
       ip_address: ip || "inconnue",
       details: JSON.stringify(details),
       created_at: now,
     }
   ]);
 }
+
 
 
 // 🚀 Démarrage serveur
