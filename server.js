@@ -200,27 +200,29 @@ const otpStore = {};
 // 🔐 MFA - Générer et envoyer OTP
 app.post("/api/request-otp", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
-  console.log("🔐 TOKEN reçu:", token);
-  console.log("🟡 API_SECRET attendu:", process.env.API_SECRET);
   if (token !== process.env.API_SECRET) return res.status(403).json({ error: "Accès refusé" });
+
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  const expiresAt = Date.now() + 5 * 60 * 1000; // 5 min
+  const expiresAt = Date.now() + 5 * 60 * 1000;
   otpStore[token] = { otp, expiresAt };
+
   try {
-    await transporter.sendMail({
+    const info = await transporter.sendMail({
       from: process.env.GMAIL_USER,
       to: "sosthenet@gmail.com",
       subject: "🔐 Code de connexion admin",
       text: `Votre code MFA est : ${otp} (valide 5 minutes)`
     });
-    logger.info("📧 Code OTP envoyé avec succès !");
-    await logEvent("otp_request", { token }, req.ip); // Log OTP request
+
+    logger.info("📧 Code OTP envoyé avec succès !", { messageId: info.messageId });
     res.json({ success: true, message: "OTP envoyé par email" });
+
   } catch (err) {
     logger.error("❌ Erreur envoi email OTP", { error: err.message });
-    res.status(500).json({ error: "Échec envoi OTP" });
+    res.status(500).json({ error: "Échec envoi OTP", detail: err.message });
   }
 });
+
 
 // 🔐 MFA - Vérifier OTP
 app.post("/api/verify-otp", async (req, res) => {
@@ -258,6 +260,20 @@ app.get("/api/admin-stats", verifyMFA, async (req, res) => {
     recent: transactions
   });
 });
+
+// 📚 Fonction pour logger un événement dans la table Supabase 'logs'
+async function logEvent(event, details, ip) {
+  const now = DateTime.now().setZone("Africa/Nairobi").toISO();
+  await supabase.from("logs").insert([
+    {
+      event,
+      ip_address: ip || "inconnue",
+      details: JSON.stringify(details),
+      created_at: now,
+    }
+  ]);
+}
+
 
 // 🚀 Démarrage serveur
 app.listen(PORT, () => {
