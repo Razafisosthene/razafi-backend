@@ -223,7 +223,7 @@ app.post("/api/request-otp", async (req, res) => {
 });
 
 // 🔐 MFA - Vérifier OTP
-app.post("/api/verify-otp", (req, res) => {
+app.post("/api/verify-otp", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
   const { otp } = req.body;
   const record = otpStore[token];
