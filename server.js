@@ -1,4 +1,3 @@
-
 // 📦 Dépendances
 import express from "express";
 import cors from "cors";
@@ -34,13 +33,15 @@ const logger = winston.createLogger({
   format: winston.format.combine(
     winston.format.timestamp(),
     winston.format.printf(({ timestamp, level, message, ...meta }) =>
-      `${timestamp} [${level.toUpperCase()}]: ${message} ${Object.keys(meta).length ? JSON.stringify(meta) : ""}`
+      `${timestamp} [${level.toUpperCase()}]: ${message} ${
+        Object.keys(meta).length ? JSON.stringify(meta) : ""
+      }`
     )
   ),
   transports: [new winston.transports.Console()],
 });
 
-// 📚 Fonction pour logger un événement dans Supabase et envoyer un email
+// 📚 Logger + email vers Supabase
 async function logEvent(event, details, ip) {
   const now = DateTime.now().setZone("Africa/Nairobi").toISO();
   await supabase.from("logs").insert([
@@ -49,7 +50,7 @@ async function logEvent(event, details, ip) {
       ip_address: ip || "inconnue",
       details: JSON.stringify(details),
       created_at: now,
-    }
+    },
   ]);
   const notifyEvents = [
     "otp_invalid_or_expired",
@@ -65,18 +66,23 @@ async function logEvent(event, details, ip) {
       subject: `🔔 [${event}]`,
       text: `🕒 ${now}
 📍 IP: ${ip}
-📋 Détails: ${JSON.stringify(details, null, 2)}`
+📋 Détails: ${JSON.stringify(details, null, 2)}`,
     });
   }
 }
 
 // 🔐 Token MVola
 async function getAccessToken() {
-  const auth = Buffer.from(`${process.env.MVOLA_CONSUMER_KEY}:${process.env.MVOLA_CONSUMER_SECRET}`).toString("base64");
+  const auth = Buffer.from(
+    `${process.env.MVOLA_CONSUMER_KEY}:${process.env.MVOLA_CONSUMER_SECRET}`
+  ).toString("base64");
   try {
     const res = await axios.post(
       process.env.MVOLA_TOKEN_URL,
-      new URLSearchParams({ grant_type: "client_credentials", scope: "EXT_INT_MVOLA_SCOPE" }),
+      new URLSearchParams({
+        grant_type: "client_credentials",
+        scope: "EXT_INT_MVOLA_SCOPE",
+      }),
       {
         headers: {
           Authorization: `Basic ${auth}`,
@@ -85,7 +91,7 @@ async function getAccessToken() {
         },
       }
     );
-    logger.info("✅ Token MVola obtenu ");
+    logger.info("✅ Token MVola obtenu");
     return res.data.access_token;
   } catch (err) {
     logger.error("❌ MVola token error", { error: err.response?.data || err.message });
@@ -97,11 +103,13 @@ async function getAccessToken() {
 app.post("/api/acheter", async (req, res) => {
   const { phone, plan } = req.body;
   if (!phone || !plan) return res.status(400).json({ error: "Paramètres manquants" });
-  if (plan !== "1 Jour - 1 Go - 1000 Ar") return res.status(400).json({ error: "Plan non autorisé en sandbox" });
+  if (plan !== "1 Jour - 1 Go - 1000 Ar")
+    return res.status(400).json({ error: "Plan non autorisé en sandbox" });
 
   const token = await getAccessToken();
   if (!token) return res.status(500).json({ error: "Token MVola introuvable" });
 
+  // --- Corps de requête MVola (sandbox) ---
   const body = {
     amount: "1000",
     currency: "Ar",
@@ -121,6 +129,26 @@ app.post("/api/acheter", async (req, res) => {
     ],
   };
 
+  // IDs requis/courants pour le traçage
+  const correlationId = uuidv4();
+  const referenceId = uuidv4();
+
+  // 🔎 LOG 1: le payload exact envoyé à MVola (sans token)
+  logger.info("📤 Envoi de paiement MVola depuis portail", {
+    phone,
+    plan,
+    body,
+    headersPreview: {
+      Version: "1.0",
+      "X-CorrelationID": correlationId,
+      "X-Reference-Id": referenceId,
+      UserLanguage: "FR",
+      UserAccountIdentifier: "msisdn;0343500003",
+      partnerName: "0343500004",
+      "X-Callback-URL": process.env.MVOLA_CALLBACK_URL,
+    },
+  });
+
   try {
     const response = await axios.post(
       `${process.env.MVOLA_BASE_URL}/mvola/mm/transactions/type/merchantpay/1.0.0/`,
@@ -129,21 +157,40 @@ app.post("/api/acheter", async (req, res) => {
         headers: {
           Authorization: `Bearer ${token}`,
           Version: "1.0",
-          "X-CorrelationID": uuidv4(),
+          "X-CorrelationID": correlationId,
+          "X-Reference-Id": referenceId, // utile pour suivi côté MVola
           UserLanguage: "FR",
           UserAccountIdentifier: "msisdn;0343500003",
           partnerName: "0343500004",
           "Content-Type": "application/json",
           "X-Callback-URL": process.env.MVOLA_CALLBACK_URL,
           "Cache-Control": "no-cache",
+          // Si votre abonnement MVola l'exige, décommentez:
+          // "Ocp-Apim-Subscription-Key": process.env.MVOLA_SUBSCRIPTION_KEY,
         },
+        timeout: 30000,
       }
     );
-    res.json({ success: true });
+
+    // 🔎 LOG 2: acceptation MVola (status + body complet)
+    logger.info("✅ Paiement MVola accepté", {
+      status: response.status,
+      data: response.data,
+    });
+
+    res.json({
+      success: true,
+      status: response.status,
+      data: response.data,
+    });
   } catch (err) {
+    const status = err.response?.status;
     const e = err.response?.data || err.message;
-    await logEvent("mvola_payment_failed", { error: e }, req.ip);
-    res.status(500).json({ error: "Paiement échoué", detail: e });
+
+    logger.error("❌ Échec /transactions MVola", { status, error: e });
+    await logEvent("mvola_payment_failed", { status, error: e }, req.ip);
+
+    res.status(500).json({ error: "Paiement échoué", detail: e, status });
   }
 });
 
@@ -170,16 +217,15 @@ app.post("/api/mvola-callback", async (req, res) => {
     return res.status(500).send("❌ Aucun voucher disponible");
   }
 
-  await supabase
-    .from("vouchers")
-    .update({ paid_by: phone, assigned_at: now })
-    .eq("id", voucher.id);
-  await supabase.from("transactions").insert([{
-    phone,
-    plan: `${gb} Go - ${montant} Ar`,
-    code: voucher.code,
-    created_at: now,
-  }]);
+  await supabase.from("vouchers").update({ paid_by: phone, assigned_at: now }).eq("id", voucher.id);
+  await supabase.from("transactions").insert([
+    {
+      phone,
+      plan: `${gb} Go - ${montant} Ar`,
+      code: voucher.code,
+      created_at: now,
+    },
+  ]);
   const { data: metrics } = await supabase.from("metrics").select("*").single();
   await supabase.from("metrics").update({
     total_gb: (metrics?.total_gb || 0) + gb,
@@ -204,7 +250,7 @@ app.post("/api/request-otp", async (req, res) => {
     from: process.env.GMAIL_USER,
     to: "sosthenet@gmail.com",
     subject: "🔐 Code de connexion admin",
-    text: `Votre code MFA est : ${otp} (valide 5 minutes)`
+    text: `Votre code MFA est : ${otp} (valide 5 minutes)`,
   });
   res.json({ success: true, message: "OTP envoyé par email" });
 });
@@ -248,7 +294,7 @@ app.get("/api/admin-stats", verifyMFA, async (req, res) => {
   res.json({
     total_gb: metrics.total_gb,
     total_ariary: metrics.total_ariary,
-    recent: transactions
+    recent: transactions,
   });
 });
 
