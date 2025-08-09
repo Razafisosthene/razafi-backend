@@ -41,6 +41,23 @@ const logger = winston.createLogger({
   transports: [new winston.transports.Console()],
 });
 
+// 🗂️ Liens temporaire: ref → correlationId / serverCorrelationId / phone / plan
+// (mémoire uniquement; redémarrage = purge naturelle)
+const pendingByReferenceId = new Map();
+const pendingByOrgRef = new Map();
+const pendingByOrigRef = new Map();
+
+// 👷 utilitaire: générer les refs MVola propres à chaque requête
+function makeTxnIds() {
+  const correlationId = uuidv4();
+  const referenceId = uuidv4();
+  // on fabrique des refs lisibles et uniques (préfixe + horodatage)
+  const nowIso = DateTime.now().toUTC().toISO();
+  const requestingOrganisationTransactionReference = `RAZAFI_${Date.now()}`;
+  const originalTransactionReference = `MVOLA_${DateTime.now().toUTC().toFormat("yyyyLLdd'T'HHmmss'Z'")}_${referenceId.slice(0,8)}`;
+  return { correlationId, referenceId, requestingOrganisationTransactionReference, originalTransactionReference, nowIso };
+}
+
 // 📚 Logger + email vers Supabase
 async function logEvent(event, details, ip) {
   const now = DateTime.now().setZone("Africa/Nairobi").toISO();
@@ -60,14 +77,18 @@ async function logEvent(event, details, ip) {
     "mvola_payment_failed",
   ];
   if (notifyEvents.includes(event)) {
-    await transporter.sendMail({
-      from: process.env.GMAIL_USER,
-      to: "sosthenet@gmail.com",
-      subject: `🔔 [${event}]`,
-      text: `🕒 ${now}
+    try {
+      await transporter.sendMail({
+        from: process.env.GMAIL_USER,
+        to: "sosthenet@gmail.com",
+        subject: `🔔 [${event}]`,
+        text: `🕒 ${now}
 📍 IP: ${ip}
 📋 Détails: ${JSON.stringify(details, null, 2)}`,
-    });
+      });
+    } catch (e) {
+      logger.error("❌ Email notification error", { error: e?.message });
+    }
   }
 }
 
@@ -99,7 +120,7 @@ async function getAccessToken() {
   }
 }
 
-// 📲 Paiement (1000 Ar uniquement)
+// 📲 Paiement
 app.post("/api/acheter", async (req, res) => {
   const { phone, plan } = req.body;
   if (!phone || !plan) return res.status(400).json({ error: "Paramètres manquants" });
@@ -109,14 +130,23 @@ app.post("/api/acheter", async (req, res) => {
   const token = await getAccessToken();
   if (!token) return res.status(500).json({ error: "Token MVola introuvable" });
 
-  // --- Corps de requête MVola (sandbox) ---
+  // IDs uniques pour ce paiement
+  const {
+    correlationId,
+    referenceId,
+    requestingOrganisationTransactionReference,
+    originalTransactionReference,
+    nowIso,
+  } = makeTxnIds();
+
+  // Corps de requête MVola (sandbox)
   const body = {
     amount: "1000",
     currency: "Ar",
     descriptionText: "Client test 0349262379 Tasty Plastic Bacon",
-    requestingOrganisationTransactionReference: "61120259",
-    requestDate: "2025-07-04T09:55:39.458Z",
-    originalTransactionReference: "MVOLA_20250704095539457",
+    requestingOrganisationTransactionReference,
+    requestDate: nowIso,
+    originalTransactionReference,
     transactionType: "merchantPay",
     sendingInstitutionId: "RAZAFI",
     receivingInstitutionId: "RAZAFI",
@@ -129,11 +159,7 @@ app.post("/api/acheter", async (req, res) => {
     ],
   };
 
-  // IDs requis/courants pour le traçage
-  const correlationId = uuidv4();
-  const referenceId = uuidv4();
-
-  // 🔎 LOG 1: le payload exact envoyé à MVola (sans token)
+  // 🔎 LOG 1: payload + entêtes utiles
   logger.info("📤 Envoi de paiement MVola depuis portail", {
     phone,
     plan,
@@ -158,30 +184,57 @@ app.post("/api/acheter", async (req, res) => {
           Authorization: `Bearer ${token}`,
           Version: "1.0",
           "X-CorrelationID": correlationId,
-          "X-Reference-Id": referenceId, // utile pour suivi côté MVola
+          "X-Reference-Id": referenceId,
           UserLanguage: "FR",
           UserAccountIdentifier: "msisdn;0343500003",
           partnerName: "0343500004",
           "Content-Type": "application/json",
           "X-Callback-URL": process.env.MVOLA_CALLBACK_URL,
           "Cache-Control": "no-cache",
-          // Si votre abonnement MVola l'exige, décommentez:
-          // "Ocp-Apim-Subscription-Key": process.env.MVOLA_SUBSCRIPTION_KEY,
+          // "Ocp-Apim-Subscription-Key": process.env.MVOLA_SUBSCRIPTION_KEY, // si requis
         },
         timeout: 30000,
       }
     );
 
-    // 🔎 LOG 2: acceptation MVola (status + body complet)
+    // Réponse acceptée → status 202 + serverCorrelationId
     logger.info("✅ Paiement MVola accepté", {
       status: response.status,
       data: response.data,
     });
 
+    // 🧩 Indexer pour le callback
+    const serverCorrelationId = response?.data?.serverCorrelationId || null;
+    const linkPayload = {
+      serverCorrelationId,
+      referenceId,
+      requestingOrganisationTransactionReference,
+      originalTransactionReference,
+      phone,
+      plan,
+      createdAt: nowIso,
+    };
+    pendingByReferenceId.set(referenceId, linkPayload);
+    pendingByOrgRef.set(requestingOrganisationTransactionReference, linkPayload);
+    pendingByOrigRef.set(originalTransactionReference, linkPayload);
+
+    // auto-purge après 2h pour éviter la croissance mémoire
+    setTimeout(() => {
+      pendingByReferenceId.delete(referenceId);
+      pendingByOrgRef.delete(requestingOrganisationTransactionReference);
+      pendingByOrigRef.delete(originalTransactionReference);
+    }, 2 * 60 * 60 * 1000);
+
     res.json({
       success: true,
       status: response.status,
       data: response.data,
+      refs: {
+        serverCorrelationId,
+        referenceId,
+        requestingOrganisationTransactionReference,
+        originalTransactionReference,
+      },
     });
   } catch (err) {
     const status = err.response?.status;
@@ -196,13 +249,28 @@ app.post("/api/acheter", async (req, res) => {
 
 // 🔁 Traitement Callback MVola
 app.post("/api/mvola-callback", async (req, res) => {
-  const data = req.body;
-  const phone = data.debitParty?.find((p) => p.key === "msisdn")?.value || "Inconnu";
+  const data = req.body || {};
+  // Tenter d'extraire des IDs côté callback (headers + body)
+  const hdrRef = req.headers["x-reference-id"] || req.headers["x-reference-id".toLowerCase()];
+  const hdrCorr = req.headers["x-correlationid"] || req.headers["x-correlationid".toLowerCase()];
+  const bodyOrgRef = data.requestingOrganisationTransactionReference;
+  const bodyOrigRef = data.originalTransactionReference;
+
+  // retrouver notre lien initial
+  let link =
+    (hdrRef && pendingByReferenceId.get(hdrRef)) ||
+    (bodyOrgRef && pendingByOrgRef.get(bodyOrgRef)) ||
+    (bodyOrigRef && pendingByOrigRef.get(bodyOrigRef)) ||
+    null;
+
+  const phoneFromBody =
+    data.debitParty?.find((p) => p.key === "msisdn")?.value || link?.phone || "Inconnu";
+
   const montant = parseInt(data.amount || "0");
   const gb = montant === 1000 ? 1 : montant === 5000 ? 5 : montant === 15000 ? 20 : 0;
-
   if (gb === 0) return res.status(400).send("❌ Plan non reconnu");
 
+  // sélectionner voucher
   const { data: voucher } = await supabase
     .from("vouchers")
     .select("*")
@@ -213,26 +281,68 @@ app.post("/api/mvola-callback", async (req, res) => {
 
   const now = DateTime.now().setZone("Africa/Nairobi").toISO();
   if (!voucher) {
-    await logEvent("no_voucher_available", { phone, gb }, req.ip);
+    await logEvent(
+      "no_voucher_available",
+      {
+        phone: phoneFromBody,
+        gb,
+        serverCorrelationId: link?.serverCorrelationId || null,
+        referenceId: link?.referenceId || hdrRef || null,
+        requestingOrganisationTransactionReference: link?.requestingOrganisationTransactionReference || bodyOrgRef || null,
+        originalTransactionReference: link?.originalTransactionReference || bodyOrigRef || null,
+        correlationIdHeader: hdrCorr || null,
+      },
+      req.ip
+    );
     return res.status(500).send("❌ Aucun voucher disponible");
   }
 
-  await supabase.from("vouchers").update({ paid_by: phone, assigned_at: now }).eq("id", voucher.id);
+  await supabase
+    .from("vouchers")
+    .update({ paid_by: phoneFromBody, assigned_at: now })
+    .eq("id", voucher.id);
+
   await supabase.from("transactions").insert([
     {
-      phone,
+      phone: phoneFromBody,
       plan: `${gb} Go - ${montant} Ar`,
       code: voucher.code,
       created_at: now,
     },
   ]);
+
+  // metrics
   const { data: metrics } = await supabase.from("metrics").select("*").single();
   await supabase.from("metrics").update({
     total_gb: (metrics?.total_gb || 0) + gb,
     total_ariary: (metrics?.total_ariary || 0) + montant,
   });
 
-  await logEvent("voucher_delivered", { phone, code: voucher.code, gb }, req.ip);
+  // 🔎 log enrichi avec tous les IDs pour traçabilité
+  await logEvent(
+    "voucher_delivered",
+    {
+      phone: phoneFromBody,
+      code: voucher.code,
+      gb,
+      amount: montant,
+      serverCorrelationId: link?.serverCorrelationId || null,
+      referenceId: link?.referenceId || hdrRef || null,
+      requestingOrganisationTransactionReference:
+        link?.requestingOrganisationTransactionReference || bodyOrgRef || null,
+      originalTransactionReference: link?.originalTransactionReference || bodyOrigRef || null,
+      correlationIdHeader: hdrCorr || null,
+    },
+    req.ip
+  );
+
+  // nettoyer si on a pu faire le lien
+  if (link) {
+    pendingByReferenceId.delete(link.referenceId);
+    pendingByOrgRef.delete(link.requestingOrganisationTransactionReference);
+    pendingByOrigRef.delete(link.originalTransactionReference);
+  }
+
   res.status(200).send("✅ Callback traité");
 });
 
