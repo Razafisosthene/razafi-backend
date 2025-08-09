@@ -41,21 +41,28 @@ const logger = winston.createLogger({
   transports: [new winston.transports.Console()],
 });
 
-// 🗂️ Liens temporaire: ref → correlationId / serverCorrelationId / phone / plan
-// (mémoire uniquement; redémarrage = purge naturelle)
+// 🗂️ Liens temporaires: ref → correlationId / serverCorrelationId / phone / plan
+// (en mémoire; purge naturelle au redémarrage)
 const pendingByReferenceId = new Map();
 const pendingByOrgRef = new Map();
 const pendingByOrigRef = new Map();
 
-// 👷 utilitaire: générer les refs MVola propres à chaque requête
+// 👷 utilitaire: générer les refs MVola par requête
 function makeTxnIds() {
   const correlationId = uuidv4();
   const referenceId = uuidv4();
-  // on fabrique des refs lisibles et uniques (préfixe + horodatage)
   const nowIso = DateTime.now().toUTC().toISO();
   const requestingOrganisationTransactionReference = `RAZAFI_${Date.now()}`;
-  const originalTransactionReference = `MVOLA_${DateTime.now().toUTC().toFormat("yyyyLLdd'T'HHmmss'Z'")}_${referenceId.slice(0,8)}`;
-  return { correlationId, referenceId, requestingOrganisationTransactionReference, originalTransactionReference, nowIso };
+  const originalTransactionReference = `MVOLA_${DateTime.now()
+    .toUTC()
+    .toFormat("yyyyLLdd'T'HHmmss'Z'")}_${referenceId.slice(0, 8)}`;
+  return {
+    correlationId,
+    referenceId,
+    requestingOrganisationTransactionReference,
+    originalTransactionReference,
+    nowIso,
+  };
 }
 
 // 📚 Logger + email vers Supabase
@@ -120,7 +127,7 @@ async function getAccessToken() {
   }
 }
 
-// 📲 Paiement
+// 📲 Paiement (sandbox demo: 1 Go)
 app.post("/api/acheter", async (req, res) => {
   const { phone, plan } = req.body;
   if (!phone || !plan) return res.status(400).json({ error: "Paramètres manquants" });
@@ -130,7 +137,6 @@ app.post("/api/acheter", async (req, res) => {
   const token = await getAccessToken();
   if (!token) return res.status(500).json({ error: "Token MVola introuvable" });
 
-  // IDs uniques pour ce paiement
   const {
     correlationId,
     referenceId,
@@ -139,7 +145,6 @@ app.post("/api/acheter", async (req, res) => {
     nowIso,
   } = makeTxnIds();
 
-  // Corps de requête MVola (sandbox)
   const body = {
     amount: "1000",
     currency: "Ar",
@@ -197,13 +202,13 @@ app.post("/api/acheter", async (req, res) => {
       }
     );
 
-    // Réponse acceptée → status 202 + serverCorrelationId
+    // 🔎 LOG 2: acceptation MVola
     logger.info("✅ Paiement MVola accepté", {
       status: response.status,
       data: response.data,
     });
 
-    // 🧩 Indexer pour le callback
+    // Indexer pour le callback
     const serverCorrelationId = response?.data?.serverCorrelationId || null;
     const linkPayload = {
       serverCorrelationId,
@@ -218,7 +223,7 @@ app.post("/api/acheter", async (req, res) => {
     pendingByOrgRef.set(requestingOrganisationTransactionReference, linkPayload);
     pendingByOrigRef.set(originalTransactionReference, linkPayload);
 
-    // auto-purge après 2h pour éviter la croissance mémoire
+    // purge auto après 2h
     setTimeout(() => {
       pendingByReferenceId.delete(referenceId);
       pendingByOrgRef.delete(requestingOrganisationTransactionReference);
@@ -247,12 +252,15 @@ app.post("/api/acheter", async (req, res) => {
   }
 });
 
-// 🔁 Traitement Callback MVola
+// 🔁 Callback MVola → délivrer le code
 app.post("/api/mvola-callback", async (req, res) => {
   const data = req.body || {};
-  // Tenter d'extraire des IDs côté callback (headers + body)
-  const hdrRef = req.headers["x-reference-id"] || req.headers["x-reference-id".toLowerCase()];
-  const hdrCorr = req.headers["x-correlationid"] || req.headers["x-correlationid".toLowerCase()];
+
+  // IDs côté callback (headers + body)
+  const hdrRef =
+    req.headers["x-reference-id"] || req.headers["x-reference-id".toLowerCase()];
+  const hdrCorr =
+    req.headers["x-correlationid"] || req.headers["x-correlationid".toLowerCase()];
   const bodyOrgRef = data.requestingOrganisationTransactionReference;
   const bodyOrigRef = data.originalTransactionReference;
 
@@ -270,7 +278,7 @@ app.post("/api/mvola-callback", async (req, res) => {
   const gb = montant === 1000 ? 1 : montant === 5000 ? 5 : montant === 15000 ? 20 : 0;
   if (gb === 0) return res.status(400).send("❌ Plan non reconnu");
 
-  // sélectionner voucher
+  // choisir un voucher
   const { data: voucher } = await supabase
     .from("vouchers")
     .select("*")
@@ -288,8 +296,10 @@ app.post("/api/mvola-callback", async (req, res) => {
         gb,
         serverCorrelationId: link?.serverCorrelationId || null,
         referenceId: link?.referenceId || hdrRef || null,
-        requestingOrganisationTransactionReference: link?.requestingOrganisationTransactionReference || bodyOrgRef || null,
-        originalTransactionReference: link?.originalTransactionReference || bodyOrigRef || null,
+        requestingOrganisationTransactionReference:
+          link?.requestingOrganisationTransactionReference || bodyOrgRef || null,
+        originalTransactionReference:
+          link?.originalTransactionReference || bodyOrigRef || null,
         correlationIdHeader: hdrCorr || null,
       },
       req.ip
@@ -308,6 +318,7 @@ app.post("/api/mvola-callback", async (req, res) => {
       plan: `${gb} Go - ${montant} Ar`,
       code: voucher.code,
       created_at: now,
+      amount: montant, // utile pour le rapport si présent
     },
   ]);
 
@@ -318,7 +329,7 @@ app.post("/api/mvola-callback", async (req, res) => {
     total_ariary: (metrics?.total_ariary || 0) + montant,
   });
 
-  // 🔎 log enrichi avec tous les IDs pour traçabilité
+  // 🔎 log enrichi traçabilité complète
   await logEvent(
     "voucher_delivered",
     {
@@ -330,7 +341,8 @@ app.post("/api/mvola-callback", async (req, res) => {
       referenceId: link?.referenceId || hdrRef || null,
       requestingOrganisationTransactionReference:
         link?.requestingOrganisationTransactionReference || bodyOrgRef || null,
-      originalTransactionReference: link?.originalTransactionReference || bodyOrigRef || null,
+      originalTransactionReference:
+        link?.originalTransactionReference || bodyOrigRef || null,
       correlationIdHeader: hdrCorr || null,
     },
     req.ip
@@ -346,7 +358,7 @@ app.post("/api/mvola-callback", async (req, res) => {
   res.status(200).send("✅ Callback traité");
 });
 
-// 📌 OTP Store
+// 📌 OTP Store (MFA admin)
 const otpStore = {};
 
 // 🔐 MFA - Générer OTP
@@ -382,7 +394,7 @@ app.post("/api/verify-otp", async (req, res) => {
   res.json({ success: true });
 });
 
-// ✅ Middleware MFA
+// ✅ Middleware MFA requis (admin-stats)
 function verifyMFA(req, res, next) {
   const token = req.headers.authorization?.split(" ")[1];
   if (token !== process.env.API_SECRET || !otpStore[token]?.verified) {
@@ -392,7 +404,16 @@ function verifyMFA(req, res, next) {
   next();
 }
 
-// 📊 Admin stats
+// 🔒 Middleware token-only (legacy admin-report)
+function verifyToken(req, res, next) {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (token !== process.env.API_SECRET) {
+    return res.status(403).json({ error: "Accès refusé" });
+  }
+  next();
+}
+
+// 📊 Admin stats (MFA)
 app.get("/api/admin-stats", verifyMFA, async (req, res) => {
   const { data: metrics, error } = await supabase.from("metrics").select("*").single();
   const { data: transactions } = await supabase
@@ -406,6 +427,52 @@ app.get("/api/admin-stats", verifyMFA, async (req, res) => {
     total_ariary: metrics.total_ariary,
     recent: transactions,
   });
+});
+
+// 📈 Legacy admin report (token-only) — compatible avec votre UI actuelle
+app.get("/api/admin-report", verifyToken, async (req, res) => {
+  try {
+    const { start, end } = req.query; // YYYY-MM-DD
+    if (!start || !end) {
+      return res.status(400).json({ error: "start et end requis (YYYY-MM-DD)" });
+    }
+    const startIso = `${start}T00:00:00.000Z`;
+    const endIso = `${end}T23:59:59.999Z`;
+
+    const { data: txs, error: txErr } = await supabase
+      .from("transactions")
+      .select("created_at, phone, plan, code, amount")
+      .gte("created_at", startIso)
+      .lte("created_at", endIso)
+      .order("created_at", { ascending: false });
+
+    if (txErr) return res.status(500).json({ error: "Erreur transactions" });
+
+    // Totaux
+    const totalGb = (txs || []).reduce((n, t) => {
+      if (t.plan?.includes("1 Go")) return n + 1;
+      if (t.plan?.includes("5 Go")) return n + 5;
+      if (t.plan?.includes("20 Go")) return n + 20;
+      if (t.amount === 1000) return n + 1;
+      if (t.amount === 5000) return n + 5;
+      if (t.amount === 15000) return n + 20;
+      return n;
+    }, 0);
+
+    const totalAr = (txs || []).reduce((n, t) => n + (t.amount || 0), 0);
+
+    // Forme attendue par votre HTML (champ paid_at)
+    const transactions = (txs || []).map((t) => ({
+      paid_at: t.created_at,
+      phone: t.phone,
+      plan: t.plan,
+      code: t.code,
+    }));
+
+    res.json({ total_gb: totalGb, total_ariary: totalAr, transactions });
+  } catch (e) {
+    res.status(500).json({ error: "Erreur du rapport", detail: e?.message });
+  }
 });
 
 // 🚀 Start server
