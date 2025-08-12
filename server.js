@@ -8,6 +8,8 @@ import { DateTime } from "luxon";
 import axios from "axios";
 import { v4 as uuidv4 } from "uuid";
 import winston from "winston";
+// ✅ Render test log
+console.log("🚀 Server.js updated test at", new Date().toISOString());
 
 dotenv.config();
 const app = express();
