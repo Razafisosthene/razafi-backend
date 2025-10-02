@@ -119,6 +119,7 @@ async function getAccessToken() {
           "Content-Type": "application/x-www-form-urlencoded",
           "Cache-Control": "no-cache",
         },
+        timeout: 15000,
       }
     );
     logger.info("✅ Token MVola obtenu");
@@ -129,12 +130,23 @@ async function getAccessToken() {
   }
 }
 
-// 📲 Paiement (sandbox demo: 1 Go)
+// 🧮 mapping plan -> montant Ar (prod)
+function amountFromPlan(plan) {
+  if (!plan) return null;
+  const p = plan.toLowerCase();
+  if (p.includes("1 go") || p.includes("1 jour")) return "1000";
+  if (p.includes("5 go")) return "5000";
+  if (p.includes("20 go")) return "15000";
+  return null;
+}
+
+// 📲 Paiement (PROD): client paye → on initie chez MVola
 app.post("/api/acheter", async (req, res) => {
   const { phone, plan } = req.body;
   if (!phone || !plan) return res.status(400).json({ error: "Paramètres manquants" });
-  if (plan !== "1 Jour - 1 Go - 1000 Ar")
-    return res.status(400).json({ error: "Plan non autorisé en sandbox" });
+
+  const amount = amountFromPlan(plan);
+  if (!amount) return res.status(400).json({ error: "Plan non reconnu" });
 
   const token = await getAccessToken();
   if (!token) return res.status(500).json({ error: "Token MVola introuvable" });
@@ -148,19 +160,17 @@ app.post("/api/acheter", async (req, res) => {
   } = makeTxnIds();
 
   const body = {
-    amount: "1000",
+    amount, // dynamique
     currency: "Ar",
-    descriptionText: "Client test 0349262379 Tasty Plastic Bacon",
+    descriptionText: `Achat WiFi ${plan}`.slice(0, 50),
     requestingOrganisationTransactionReference,
     requestDate: nowIso,
     originalTransactionReference,
-    transactionType: "merchantPay",
-    sendingInstitutionId: "RAZAFI",
-    receivingInstitutionId: "RAZAFI",
-    debitParty: [{ key: "msisdn", value: "0343500003" }],
-    creditParty: [{ key: "msisdn", value: "0343500004" }],
+    // Client = débité ; Merchant = crédité
+    debitParty: [{ key: "msisdn", value: phone }],
+    creditParty: [{ key: "msisdn", value: process.env.MVOLA_PARTNER_MSISDN }],
     metadata: [
-      { key: "partnerName", value: "0343500004" },
+      { key: "partnerName", value: process.env.MVOLA_PARTNER_NAME },
       { key: "fc", value: "USD" },
       { key: "amountFc", value: "1" },
     ],
@@ -174,10 +184,9 @@ app.post("/api/acheter", async (req, res) => {
     headersPreview: {
       Version: "1.0",
       "X-CorrelationID": correlationId,
-      "X-Reference-Id": referenceId,
       UserLanguage: "FR",
-      UserAccountIdentifier: "msisdn;0343500003",
-      partnerName: "0343500004",
+      UserAccountIdentifier: `msisdn;${process.env.MVOLA_PARTNER_MSISDN}`,
+      partnerName: process.env.MVOLA_PARTNER_NAME,
       "X-Callback-URL": process.env.MVOLA_CALLBACK_URL,
     },
   });
@@ -191,16 +200,15 @@ app.post("/api/acheter", async (req, res) => {
           Authorization: `Bearer ${token}`,
           Version: "1.0",
           "X-CorrelationID": correlationId,
-          "X-Reference-Id": referenceId,
           UserLanguage: "FR",
-          UserAccountIdentifier: "msisdn;0343500003",
-          partnerName: "0343500004",
+          UserAccountIdentifier: `msisdn;${process.env.MVOLA_PARTNER_MSISDN}`,
+          partnerName: process.env.MVOLA_PARTNER_NAME,
           "Content-Type": "application/json",
           "X-Callback-URL": process.env.MVOLA_CALLBACK_URL,
           "Cache-Control": "no-cache",
-          // "Ocp-Apim-Subscription-Key": process.env.MVOLA_SUBSCRIPTION_KEY, // si requis
         },
         timeout: 30000,
+        validateStatus: () => true,
       }
     );
 
@@ -254,8 +262,8 @@ app.post("/api/acheter", async (req, res) => {
   }
 });
 
-// 🔁 Callback MVola → délivrer le code
-app.post("/api/mvola-callback", async (req, res) => {
+// ♻️ Handler commun callback (POST/PUT)
+async function handleMvolaCallback(req, res) {
   const data = req.body || {};
 
   // IDs côté callback (headers + body)
@@ -276,9 +284,18 @@ app.post("/api/mvola-callback", async (req, res) => {
   const phoneFromBody =
     data.debitParty?.find((p) => p.key === "msisdn")?.value || link?.phone || "Inconnu";
 
-  const montant = parseInt(data.amount || "0");
-  const gb = montant === 1000 ? 1 : montant === 5000 ? 5 : montant === 15000 ? 20 : 0;
-  if (gb === 0) return res.status(400).send("❌ Plan non reconnu");
+  // montant réellement payé par le client
+  const montant = parseInt(data.amount || "0", 10);
+
+  // ✅ Mapping montant → Go
+  let gb = 0;
+  if (montant === 1000) gb = 1;
+  else if (montant === 5000) gb = 5;
+  else if (montant === 15000) gb = 20;
+
+  if (gb === 0) {
+    return res.status(400).send("❌ Plan non reconnu");
+  }
 
   // choisir un voucher
   const { data: voucher } = await supabase
@@ -296,6 +313,7 @@ app.post("/api/mvola-callback", async (req, res) => {
       {
         phone: phoneFromBody,
         gb,
+        montant,
         serverCorrelationId: link?.serverCorrelationId || null,
         referenceId: link?.referenceId || hdrRef || null,
         requestingOrganisationTransactionReference:
@@ -320,7 +338,7 @@ app.post("/api/mvola-callback", async (req, res) => {
       plan: `${gb} Go - ${montant} Ar`,
       code: voucher.code,
       created_at: now,
-      amount: montant, // utile pour le rapport si présent
+      amount: montant,
     },
   ]);
 
@@ -331,7 +349,6 @@ app.post("/api/mvola-callback", async (req, res) => {
     total_ariary: (metrics?.total_ariary || 0) + montant,
   });
 
-  // 🔎 log enrichi traçabilité complète
   await logEvent(
     "voucher_delivered",
     {
@@ -350,7 +367,6 @@ app.post("/api/mvola-callback", async (req, res) => {
     req.ip
   );
 
-  // nettoyer si on a pu faire le lien
   if (link) {
     pendingByReferenceId.delete(link.referenceId);
     pendingByOrgRef.delete(link.requestingOrganisationTransactionReference);
@@ -358,7 +374,11 @@ app.post("/api/mvola-callback", async (req, res) => {
   }
 
   res.status(200).send("✅ Callback traité");
-});
+}
+
+// 🔁 Callback MVola (POST et PUT pour compatibilité prod)
+app.post("/api/mvola-callback", handleMvolaCallback);
+app.put("/api/mvola-callback", handleMvolaCallback);
 
 // 📌 OTP Store (MFA admin)
 const otpStore = {};
@@ -476,6 +496,33 @@ app.get("/api/admin-report", verifyToken, async (req, res) => {
     res.status(500).json({ error: "Erreur du rapport", detail: e?.message });
   }
 });
+
+// 📡 Récupérer le dernier code attribué à un numéro MVola
+app.get("/api/dernier-code", async (req, res) => {
+  const { phone } = req.query;
+  if (!phone) return res.status(400).json({ error: "Téléphone requis" });
+
+  try {
+    const { data, error } = await supabase
+      .from("transactions")
+      .select("code, plan")
+      .eq("phone", phone)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
+
+    if (error || !data) {
+      return res.json({});
+    }
+
+    res.json(data);
+  } catch (err) {
+    console.error("❌ Erreur dernier-code:", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+
 
 // 🚀 Start server
 app.listen(PORT, () => {
