@@ -1,25 +1,25 @@
-# ✅ Empêche de commit des secrets ou fichiers sensibles
-.env
-.env.local
-.env.*.local
+# ===========================================
+# .gitignore optimisé pour projet Node.js + MVola
+# ===========================================
 
-# ✅ Empêche de commit des modules installés
+# 🔒 Empêcher de commit des secrets (tous les .env)
+.env
+.env.*
+
+# 📦 Modules installés
 node_modules/
 
-# ✅ Fichiers système inutiles
+# 🖥️ Fichiers système inutiles
 .DS_Store
 Thumbs.db
 
-# ✅ Logs
+# 📝 Logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# ✅ Caches & build
+# ⚡ Caches & build
 .cache/
 dist/
 build/
 .bfg-report/
-.env 
-.env 
-.env 

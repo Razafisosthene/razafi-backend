@@ -13,7 +13,21 @@ console.log("🚀 Server.js updated test at", new Date().toISOString());
 
 dotenv.config();
 const app = express();
-app.use(cors());
+
+
+const allowedOrigins = process.env.CORS_ORIGINS?.split(",") || [];
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("CORS non autorisé pour cette origine."));
+    }
+  },
+}));
+
+
+
 app.use(express.json());
 const PORT = process.env.PORT || 10000;
 
@@ -43,8 +57,7 @@ const logger = winston.createLogger({
   transports: [new winston.transports.Console()],
 });
 
-// 🗂️ Liens temporaires: ref → correlationId / serverCorrelationId / phone / plan
-// (en mémoire; purge naturelle au redémarrage)
+// 🗂️ Liens temporaires
 const pendingByReferenceId = new Map();
 const pendingByOrgRef = new Map();
 const pendingByOrigRef = new Map();
@@ -119,7 +132,6 @@ async function getAccessToken() {
           "Content-Type": "application/x-www-form-urlencoded",
           "Cache-Control": "no-cache",
         },
-        timeout: 15000,
       }
     );
     logger.info("✅ Token MVola obtenu");
@@ -130,23 +142,17 @@ async function getAccessToken() {
   }
 }
 
-// 🧮 mapping plan -> montant Ar (prod)
-function amountFromPlan(plan) {
-  if (!plan) return null;
-  const p = plan.toLowerCase();
-  if (p.includes("1 go") || p.includes("1 jour")) return "1000";
-  if (p.includes("5 go")) return "5000";
-  if (p.includes("20 go")) return "15000";
-  return null;
-}
-
-// 📲 Paiement (PROD): client paye → on initie chez MVola
+// 📲 Paiement MVola
 app.post("/api/acheter", async (req, res) => {
   const { phone, plan } = req.body;
   if (!phone || !plan) return res.status(400).json({ error: "Paramètres manquants" });
 
-  const amount = amountFromPlan(plan);
-  if (!amount) return res.status(400).json({ error: "Plan non reconnu" });
+  const montant =
+    plan.includes("1 Go") ? "1000" :
+    plan.includes("5 Go") ? "5000" :
+    plan.includes("20 Go") ? "15000" : null;
+
+  if (!montant) return res.status(400).json({ error: "Plan non reconnu" });
 
   const token = await getAccessToken();
   if (!token) return res.status(500).json({ error: "Token MVola introuvable" });
@@ -160,23 +166,25 @@ app.post("/api/acheter", async (req, res) => {
   } = makeTxnIds();
 
   const body = {
-    amount, // dynamique
+    amount: montant,
     currency: "Ar",
-    descriptionText: `Achat WiFi ${plan}`.slice(0, 50),
+    descriptionText: `Achat WiFi ${plan}`,
     requestingOrganisationTransactionReference,
     requestDate: nowIso,
     originalTransactionReference,
-    // Client = débité ; Merchant = crédité
+    transactionType: "merchantPay",
+    sendingInstitutionId: "RAZAFI",
+    receivingInstitutionId: "RAZAFI",
     debitParty: [{ key: "msisdn", value: phone }],
     creditParty: [{ key: "msisdn", value: process.env.MVOLA_PARTNER_MSISDN }],
     metadata: [
-      { key: "partnerName", value: process.env.MVOLA_PARTNER_NAME },
+      { key: "partnerName", value: process.env.MVOLA_PARTNER_NAME || "RAZAFI WIFI App" },
       { key: "fc", value: "USD" },
       { key: "amountFc", value: "1" },
     ],
   };
 
-  // 🔎 LOG 1: payload + entêtes utiles
+  // 🔎 LOG 1
   logger.info("📤 Envoi de paiement MVola depuis portail", {
     phone,
     plan,
@@ -184,6 +192,7 @@ app.post("/api/acheter", async (req, res) => {
     headersPreview: {
       Version: "1.0",
       "X-CorrelationID": correlationId,
+      "X-Reference-Id": referenceId,
       UserLanguage: "FR",
       UserAccountIdentifier: `msisdn;${process.env.MVOLA_PARTNER_MSISDN}`,
       partnerName: process.env.MVOLA_PARTNER_NAME,
@@ -200,6 +209,7 @@ app.post("/api/acheter", async (req, res) => {
           Authorization: `Bearer ${token}`,
           Version: "1.0",
           "X-CorrelationID": correlationId,
+          "X-Reference-Id": referenceId, // ✅ Added for MVola compliance
           UserLanguage: "FR",
           UserAccountIdentifier: `msisdn;${process.env.MVOLA_PARTNER_MSISDN}`,
           partnerName: process.env.MVOLA_PARTNER_NAME,
@@ -212,13 +222,25 @@ app.post("/api/acheter", async (req, res) => {
       }
     );
 
-    // 🔎 LOG 2: acceptation MVola
+    // ✅ Only proceed if MVola accepted
+    if (response.status < 200 || response.status >= 300) {
+      logger.error("❌ MVola a rejeté la requête", {
+        status: response.status,
+        data: response.data,
+      });
+      await logEvent("mvola_payment_failed", { status: response.status, error: response.data }, req.ip);
+      return res.status(502).json({
+        error: "MVola a rejeté la requête",
+        status: response.status,
+        detail: response.data,
+      });
+    }
+
     logger.info("✅ Paiement MVola accepté", {
       status: response.status,
       data: response.data,
     });
 
-    // Indexer pour le callback
     const serverCorrelationId = response?.data?.serverCorrelationId || null;
     const linkPayload = {
       serverCorrelationId,
@@ -233,7 +255,6 @@ app.post("/api/acheter", async (req, res) => {
     pendingByOrgRef.set(requestingOrganisationTransactionReference, linkPayload);
     pendingByOrigRef.set(originalTransactionReference, linkPayload);
 
-    // purge auto après 2h
     setTimeout(() => {
       pendingByReferenceId.delete(referenceId);
       pendingByOrgRef.delete(requestingOrganisationTransactionReference);
@@ -254,27 +275,20 @@ app.post("/api/acheter", async (req, res) => {
   } catch (err) {
     const status = err.response?.status;
     const e = err.response?.data || err.message;
-
     logger.error("❌ Échec /transactions MVola", { status, error: e });
     await logEvent("mvola_payment_failed", { status, error: e }, req.ip);
-
     res.status(500).json({ error: "Paiement échoué", detail: e, status });
   }
 });
 
-// ♻️ Handler commun callback (POST/PUT)
-async function handleMvolaCallback(req, res) {
+// 🔁 Callback MVola
+app.post("/api/mvola-callback", async (req, res) => {
   const data = req.body || {};
-
-  // IDs côté callback (headers + body)
-  const hdrRef =
-    req.headers["x-reference-id"] || req.headers["x-reference-id".toLowerCase()];
-  const hdrCorr =
-    req.headers["x-correlationid"] || req.headers["x-correlationid".toLowerCase()];
+  const hdrRef = req.headers["x-reference-id"];
+  const hdrCorr = req.headers["x-correlationid"];
   const bodyOrgRef = data.requestingOrganisationTransactionReference;
   const bodyOrigRef = data.originalTransactionReference;
 
-  // retrouver notre lien initial
   let link =
     (hdrRef && pendingByReferenceId.get(hdrRef)) ||
     (bodyOrgRef && pendingByOrgRef.get(bodyOrgRef)) ||
@@ -284,20 +298,10 @@ async function handleMvolaCallback(req, res) {
   const phoneFromBody =
     data.debitParty?.find((p) => p.key === "msisdn")?.value || link?.phone || "Inconnu";
 
-  // montant réellement payé par le client
-  const montant = parseInt(data.amount || "0", 10);
+  const montant = parseInt(data.amount || "0");
+  const gb = montant === 1000 ? 1 : montant === 5000 ? 5 : montant === 15000 ? 20 : 0;
+  if (gb === 0) return res.status(400).send("❌ Plan non reconnu");
 
-  // ✅ Mapping montant → Go
-  let gb = 0;
-  if (montant === 1000) gb = 1;
-  else if (montant === 5000) gb = 5;
-  else if (montant === 15000) gb = 20;
-
-  if (gb === 0) {
-    return res.status(400).send("❌ Plan non reconnu");
-  }
-
-  // choisir un voucher
   const { data: voucher } = await supabase
     .from("vouchers")
     .select("*")
@@ -308,22 +312,7 @@ async function handleMvolaCallback(req, res) {
 
   const now = DateTime.now().setZone("Africa/Nairobi").toISO();
   if (!voucher) {
-    await logEvent(
-      "no_voucher_available",
-      {
-        phone: phoneFromBody,
-        gb,
-        montant,
-        serverCorrelationId: link?.serverCorrelationId || null,
-        referenceId: link?.referenceId || hdrRef || null,
-        requestingOrganisationTransactionReference:
-          link?.requestingOrganisationTransactionReference || bodyOrgRef || null,
-        originalTransactionReference:
-          link?.originalTransactionReference || bodyOrigRef || null,
-        correlationIdHeader: hdrCorr || null,
-      },
-      req.ip
-    );
+    await logEvent("no_voucher_available", { phone: phoneFromBody, gb }, req.ip);
     return res.status(500).send("❌ Aucun voucher disponible");
   }
 
@@ -342,30 +331,13 @@ async function handleMvolaCallback(req, res) {
     },
   ]);
 
-  // metrics
   const { data: metrics } = await supabase.from("metrics").select("*").single();
   await supabase.from("metrics").update({
     total_gb: (metrics?.total_gb || 0) + gb,
     total_ariary: (metrics?.total_ariary || 0) + montant,
   });
 
-  await logEvent(
-    "voucher_delivered",
-    {
-      phone: phoneFromBody,
-      code: voucher.code,
-      gb,
-      amount: montant,
-      serverCorrelationId: link?.serverCorrelationId || null,
-      referenceId: link?.referenceId || hdrRef || null,
-      requestingOrganisationTransactionReference:
-        link?.requestingOrganisationTransactionReference || bodyOrgRef || null,
-      originalTransactionReference:
-        link?.originalTransactionReference || bodyOrigRef || null,
-      correlationIdHeader: hdrCorr || null,
-    },
-    req.ip
-  );
+  await logEvent("voucher_delivered", { phone: phoneFromBody, code: voucher.code, gb }, req.ip);
 
   if (link) {
     pendingByReferenceId.delete(link.referenceId);
@@ -374,155 +346,7 @@ async function handleMvolaCallback(req, res) {
   }
 
   res.status(200).send("✅ Callback traité");
-}
-
-// 🔁 Callback MVola (POST et PUT pour compatibilité prod)
-app.post("/api/mvola-callback", handleMvolaCallback);
-app.put("/api/mvola-callback", handleMvolaCallback);
-
-// 📌 OTP Store (MFA admin)
-const otpStore = {};
-
-// 🔐 MFA - Générer OTP
-app.post("/api/request-otp", async (req, res) => {
-  const token = req.headers.authorization?.split(" ")[1];
-  if (token !== process.env.API_SECRET) return res.status(403).json({ error: "Accès refusé" });
-
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  otpStore[token] = { otp, expiresAt: Date.now() + 5 * 60 * 1000 };
-  await transporter.sendMail({
-    from: process.env.GMAIL_USER,
-    to: "sosthenet@gmail.com",
-    subject: "🔐 Code de connexion admin",
-    text: `Votre code MFA est : ${otp} (valide 5 minutes)`,
-  });
-  res.json({ success: true, message: "OTP envoyé par email" });
 });
-
-// 🔐 MFA - Vérifier OTP
-app.post("/api/verify-otp", async (req, res) => {
-  const token = req.headers.authorization?.split(" ")[1];
-  const { otp } = req.body;
-  const record = otpStore[token];
-  if (!record || Date.now() > record.expiresAt) {
-    await logEvent("otp_invalid_or_expired", { token }, req.ip);
-    return res.status(403).json({ error: "OTP expiré ou invalide" });
-  }
-  if (otp !== record.otp) {
-    await logEvent("otp_invalid_or_expired", { token }, req.ip);
-    return res.status(403).json({ error: "OTP incorrect" });
-  }
-  otpStore[token].verified = true;
-  res.json({ success: true });
-});
-
-// ✅ Middleware MFA requis (admin-stats)
-function verifyMFA(req, res, next) {
-  const token = req.headers.authorization?.split(" ")[1];
-  if (token !== process.env.API_SECRET || !otpStore[token]?.verified) {
-    logEvent("admin_access_denied", { token }, req.ip);
-    return res.status(403).json({ error: "Authentification MFA requise" });
-  }
-  next();
-}
-
-// 🔒 Middleware token-only (legacy admin-report)
-function verifyToken(req, res, next) {
-  const token = req.headers.authorization?.split(" ")[1];
-  if (token !== process.env.API_SECRET) {
-    return res.status(403).json({ error: "Accès refusé" });
-  }
-  next();
-}
-
-// 📊 Admin stats (MFA)
-app.get("/api/admin-stats", verifyMFA, async (req, res) => {
-  const { data: metrics, error } = await supabase.from("metrics").select("*").single();
-  const { data: transactions } = await supabase
-    .from("transactions")
-    .select("created_at, phone, plan, code")
-    .order("created_at", { ascending: false })
-    .limit(10);
-  if (error) return res.status(500).json({ error: "Erreur récupération stats" });
-  res.json({
-    total_gb: metrics.total_gb,
-    total_ariary: metrics.total_ariary,
-    recent: transactions,
-  });
-});
-
-// 📈 Legacy admin report (token-only) — compatible avec votre UI actuelle
-app.get("/api/admin-report", verifyToken, async (req, res) => {
-  try {
-    const { start, end } = req.query; // YYYY-MM-DD
-    if (!start || !end) {
-      return res.status(400).json({ error: "start et end requis (YYYY-MM-DD)" });
-    }
-    const startIso = `${start}T00:00:00.000Z`;
-    const endIso = `${end}T23:59:59.999Z`;
-
-    const { data: txs, error: txErr } = await supabase
-      .from("transactions")
-      .select("created_at, phone, plan, code, amount")
-      .gte("created_at", startIso)
-      .lte("created_at", endIso)
-      .order("created_at", { ascending: false });
-
-    if (txErr) return res.status(500).json({ error: "Erreur transactions" });
-
-    // Totaux
-    const totalGb = (txs || []).reduce((n, t) => {
-      if (t.plan?.includes("1 Go")) return n + 1;
-      if (t.plan?.includes("5 Go")) return n + 5;
-      if (t.plan?.includes("20 Go")) return n + 20;
-      if (t.amount === 1000) return n + 1;
-      if (t.amount === 5000) return n + 5;
-      if (t.amount === 15000) return n + 20;
-      return n;
-    }, 0);
-
-    const totalAr = (txs || []).reduce((n, t) => n + (t.amount || 0), 0);
-
-    // Forme attendue par votre HTML (champ paid_at)
-    const transactions = (txs || []).map((t) => ({
-      paid_at: t.created_at,
-      phone: t.phone,
-      plan: t.plan,
-      code: t.code,
-    }));
-
-    res.json({ total_gb: totalGb, total_ariary: totalAr, transactions });
-  } catch (e) {
-    res.status(500).json({ error: "Erreur du rapport", detail: e?.message });
-  }
-});
-
-// 📡 Récupérer le dernier code attribué à un numéro MVola
-app.get("/api/dernier-code", async (req, res) => {
-  const { phone } = req.query;
-  if (!phone) return res.status(400).json({ error: "Téléphone requis" });
-
-  try {
-    const { data, error } = await supabase
-      .from("transactions")
-      .select("code, plan")
-      .eq("phone", phone)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .single();
-
-    if (error || !data) {
-      return res.json({});
-    }
-
-    res.json(data);
-  } catch (err) {
-    console.error("❌ Erreur dernier-code:", err);
-    res.status(500).json({ error: "Erreur serveur" });
-  }
-});
-
-
 
 // 🚀 Start server
 app.listen(PORT, () => {
