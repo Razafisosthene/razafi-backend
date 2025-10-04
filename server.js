@@ -184,7 +184,8 @@ app.post("/api/acheter", async (req, res) => {
     });
 
     const response = await axios.post(
-      process.env.MVOLA_BASE_URL + "/merchantpay",
+      process.env.MVOLA_BASE_URL + "/mvola/mm/transactions/type/merchantpay",
+
       body,
       {
         headers: {
