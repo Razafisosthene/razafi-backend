@@ -1,12 +1,13 @@
-// =============================
-// ✅ RAZAFI BACKEND (Production)
-// =============================
+// =========================================
+// ✅ RAZAFI BACKEND – MVola PRODUCTION FIXED
+// =========================================
 
 import express from "express";
 import axios from "axios";
 import cors from "cors";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
+import crypto from "crypto";
 
 dotenv.config();
 
@@ -18,6 +19,7 @@ const PORT = process.env.PORT || 10000;
 // =============================
 const allowedOrigins = [
   "https://wifi-razafistore.vercel.app",
+  "https://wifi-razafistore-git-main-razafisosthene.vercel.app",
   "https://wifi.razafistore.com",
   "http://localhost:3000",
 ];
@@ -76,15 +78,12 @@ async function sendEmailNotification(subject, message) {
 // ✅ MVola API ROUTES
 // =============================
 
-// === 1. Generate MVola token ===
+// === 1. Generate MVola token (Production compliant)
 app.get("/api/token", async (req, res) => {
   try {
     const response = await axios.post(
       process.env.MVOLA_BASE_URL + "/token",
-      {
-        username: process.env.MVOLA_CONSUMER_KEY,
-        password: process.env.MVOLA_CONSUMER_SECRET,
-      },
+      new URLSearchParams({ grant_type: "client_credentials" }).toString(),
       {
         headers: {
           Authorization:
@@ -94,7 +93,7 @@ app.get("/api/token", async (req, res) => {
                 ":" +
                 process.env.MVOLA_CONSUMER_SECRET
             ).toString("base64"),
-          "Content-Type": "application/json",
+          "Content-Type": "application/x-www-form-urlencoded",
         },
       }
     );
@@ -116,10 +115,7 @@ app.post("/api/acheter", async (req, res) => {
 
     const tokenResponse = await axios.post(
       process.env.MVOLA_BASE_URL + "/token",
-      {
-        username: process.env.MVOLA_CONSUMER_KEY,
-        password: process.env.MVOLA_CONSUMER_SECRET,
-      },
+      new URLSearchParams({ grant_type: "client_credentials" }).toString(),
       {
         headers: {
           Authorization:
@@ -129,7 +125,7 @@ app.post("/api/acheter", async (req, res) => {
                 ":" +
                 process.env.MVOLA_CONSUMER_SECRET
             ).toString("base64"),
-          "Content-Type": "application/json",
+          "Content-Type": "application/x-www-form-urlencoded",
         },
       }
     );
@@ -161,7 +157,7 @@ app.post("/api/acheter", async (req, res) => {
       creditParty: [
         {
           key: "msisdn",
-          value: "0340500592", // your merchant account number
+          value: "0340500592", // Merchant number
         },
       ],
       metadata: [
@@ -227,7 +223,7 @@ app.post("/api/mvola-callback", (req, res) => {
   res.status(200).send("✅ Callback reçu");
 });
 
-// === 4. Dernier code (optional API endpoint) ===
+// === 4. Dernier code (optional test endpoint) ===
 app.get("/api/dernier-code", (req, res) => {
   res.json({ code: "EXAMPLE-CODE-123", validUntil: new Date().toISOString() });
 });
@@ -239,4 +235,5 @@ app.listen(PORT, () => {
   const now = new Date().toISOString();
   console.log(`🚀 Server.js updated at ${now}`);
   console.log(`[INFO]: ✅ Serveur actif → http://localhost:${PORT}`);
+  console.log(`[INFO]: ✅ Production payment endpoint ready`);
 });
