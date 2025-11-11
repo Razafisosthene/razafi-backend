@@ -45,14 +45,13 @@ if (!SMTP_USER || !SMTP_PASS) {
 }
 
 // ---------- CORS configuration ----------
-// ---------- CORS configuration ----------
 const allowedOrigins = [
   "https://wifi-razafistore.vercel.app",
   "https://wifi-razafistore-git-main-razafisosthene.vercel.app",
   "https://wifi.razafistore.com",
   "http://localhost:3000",
 
-  // 👇 Ajout de ton interface d’administration Vercel (preview)
+  // Ajout admin preview Vercel
   "https://wifi-admin-ac5h7jar8-sosthenes-projects-9d6688ec.vercel.app",
 ];
 
@@ -71,7 +70,6 @@ app.use(
   })
 );
 
-
 app.use(express.json());
 
 // ---------- Supabase client (service role) ----------
@@ -88,7 +86,7 @@ function createMailer() {
   return nodemailer.createTransport({
     host: SMTP_HOST,
     port: SMTP_PORT,
-    secure: SMTP_PORT === 465, // true for 465, false for 587
+    secure: SMTP_PORT === 465,
     auth: {
       user: SMTP_USER,
       pass: SMTP_PASS,
@@ -118,7 +116,7 @@ async function sendEmailNotification(subject, message) {
 // ---------- Token cache and fetcher (auto-refresh) ----------
 let tokenCache = {
   access_token: null,
-  expires_at: 0, // epoch ms
+  expires_at: 0,
 };
 
 async function fetchNewToken() {
@@ -156,7 +154,7 @@ function mvolaHeaders(accessToken, correlationId) {
     Authorization: `Bearer ${accessToken}`,
     Version: "1.0",
     "X-CorrelationID": correlationId || crypto.randomUUID(),
-    UserLanguage: USER_LANGUAGE, // FR
+    UserLanguage: USER_LANGUAGE,
     UserAccountIdentifier: `msisdn;${PARTNER_MSISDN}`,
     partnerName: PARTNER_NAME,
     "Cache-Control": "no-cache",
@@ -246,19 +244,19 @@ async function pollTransactionStatus({
       if (status === "completed" || status === "success") {
         // SUCCESS: assign voucher atomically
         console.info("🔔 MVola status completed for", requestRef, serverCorrelationId);
-        // call RPC assign_voucher_atomic
+        // call RPC assign_voucher_atomic (robust handling)
         try {
           if (!supabase) throw new Error("Supabase not configured");
-          const rpc = await supabase.rpc("assign_voucher_atomic", {
+
+          const { data: rpcData, error: rpcError } = await supabase.rpc("assign_voucher_atomic", {
             p_request_ref: requestRef,
             p_server_corr: serverCorrelationId,
             p_plan: plan ?? null,
             p_assign_to: phone ?? null,
           });
 
-          if (rpc.error) {
-            console.error("⚠️ assign_voucher_atomic error", rpc.error);
-            // Insert log and notify ops
+          if (rpcError) {
+            console.error("⚠️ assign_voucher_atomic error", rpcError);
             await insertLog({
               request_ref: requestRef,
               server_correlation_id: serverCorrelationId,
@@ -268,37 +266,43 @@ async function pollTransactionStatus({
               amount,
               attempt,
               short_message: "assign_voucher_atomic failed",
-              payload: rpc.error,
+              payload: rpcError,
             });
 
-            // mark transaction as no_voucher_pending to let ops intervene
             await supabase
               .from("transactions")
-              .update({ status: "no_voucher_pending", metadata: { assign_error: truncate(rpc.error, 2000) } })
+              .update({ status: "no_voucher_pending", metadata: { assign_error: truncate(rpcError, 2000) } })
               .eq("request_ref", requestRef);
 
-            // notify ops
             await sendEmailNotification(`[RAZAFI WIFI] ⚠️ No Voucher Available – RequestRef ${requestRef}`, {
               RequestRef: requestRef,
               ServerCorrelationId: serverCorrelationId,
               Phone: maskPhone(phone),
               Amount: amount,
               Message: "assign_voucher_atomic returned an error, intervention required.",
-              rpc_error: rpc.error,
+              rpc_error: rpcError,
             });
 
             return;
           }
 
-          const assigned = rpc.data && rpc.data.length ? rpc.data[0] : rpc.data || null;
+          // Normalize the RPC result (support multiple possible column names)
+          const assigned = Array.isArray(rpcData) && rpcData.length ? rpcData[0] : rpcData || null;
+          const voucherCode = assigned?.voucher_code || assigned?.code || assigned?.voucher || assigned?.voucherCode || null;
+          const voucherId = assigned?.voucher_id || assigned?.id || null;
 
-          if (!assigned || !assigned.code) {
+          if (!assigned || !voucherCode) {
             // No voucher available
             console.warn("⚠️ No voucher available for", requestRef);
-            await supabase
-              .from("transactions")
-              .update({ status: "no_voucher_pending", metadata: { mvolaResponse: truncate(sdata, 2000) } })
-              .eq("request_ref", requestRef);
+
+            try {
+              await supabase
+                .from("transactions")
+                .update({ status: "no_voucher_pending", metadata: { mvolaResponse: truncate(sdata, 2000) } })
+                .eq("request_ref", requestRef);
+            } catch (e) {
+              console.error("⚠️ Failed updating transaction to no_voucher_pending:", e?.message || e);
+            }
 
             await insertLog({
               request_ref: requestRef,
@@ -323,10 +327,10 @@ async function pollTransactionStatus({
             return;
           }
 
-          // Voucher assigned successfully
-          const voucherCode = assigned.code;
+          // Voucher assigned successfully (voucherCode is set)
+          console.info("✅ Voucher assigned:", voucherCode, voucherId || "(no id)");
 
-          // Update transactions row
+          // Update transactions row (RPC already updated it, but mirror here)
           try {
             await supabase
               .from("transactions")
@@ -351,10 +355,10 @@ async function pollTransactionStatus({
             amount,
             attempt,
             short_message: "Paiement confirmé et voucher attribué",
-            payload: { mvolaResponse: truncate(sdata, 2000), voucher: voucherCode },
+            payload: { mvolaResponse: truncate(sdata, 2000), voucher: voucherCode, voucher_id: voucherId },
           });
 
-          // Send final OPS email (plain-text, FR)
+          // Send final OPS email (FR)
           const emailBody = [
             `RequestRef: ${requestRef}`,
             `ServerCorrelationId: ${serverCorrelationId}`,
@@ -363,6 +367,7 @@ async function pollTransactionStatus({
             `Plan: ${plan || "—"}`,
             `Status: completed`,
             `Voucher: ${voucherCode}`,
+            `VoucherId: ${voucherId || "—"}`,
             `TransactionReference: ${sdata.transactionReference || "—"}`,
             `Timestamp: ${new Date().toISOString()}`,
           ].join("\n");
@@ -512,12 +517,11 @@ app.get("/api/dernier-code", (req, res) => {
 
 // ---------- Main route: /api/send-payment ----------
 app.post("/api/send-payment", async (req, res) => {
-  // ✅ Protection : si le corps JSON est manquant ou mal formé
+  // Protection : si le corps JSON est manquant ou mal formé
   const body = req.body || {};
   const phone = body.phone;
   const plan = body.plan;
 
-  // Vérification simple des champs requis
   if (!phone || !plan) {
     console.warn("⚠️ Mauvais appel /api/send-payment — phone ou plan manquant. body:", body);
     return res.status(400).json({
@@ -529,8 +533,25 @@ app.post("/api/send-payment", async (req, res) => {
   // Créer une référence unique pour cette transaction
   const requestRef = `RAZAFI_${Date.now()}`;
 
-  // Déterminer le montant selon le plan
-  const amount = String(plan).includes("5000") ? 5000 : 1000;
+  // ----- Extraction robuste du montant depuis 'plan' -----
+  let amount = null;
+  if (plan && typeof plan === "string") {
+    try {
+      const matches = Array.from(plan.matchAll(/(\d+)/g)).map(m => m[1]);
+      if (matches.length > 0) {
+        const candidates = matches.filter(x => parseInt(x, 10) >= 1000);
+        const choice = (candidates.length ? candidates[candidates.length - 1] : matches[matches.length - 1]);
+        amount = parseInt(choice, 10);
+      }
+    } catch (e) {
+      amount = null;
+    }
+  }
+  // fallback to previous simple rule
+  if (!amount) {
+    amount = String(plan).includes("5000") ? 5000 : 1000;
+  }
+  // -------------------------------------------------------
 
   // Persist initial transaction row (initiated)
   try {
@@ -674,7 +695,6 @@ app.get("/api/tx/:requestRef", async (req, res) => {
       .single();
 
     if (error && error.code === "PGRST116") {
-      // no rows
       return res.status(404).json({ error: "not found" });
     }
     if (error) {
