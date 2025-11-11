@@ -1,5 +1,5 @@
 // server.js
-// RAZAFI BACKEND – MVola (production) - corrected
+// RAZAFI BACKEND – MVola (production) - polling + voucher assignment + logs + OPS email
 import express from "express";
 import axios from "axios";
 import cors from "cors";
@@ -44,7 +44,7 @@ if (!SMTP_USER || !SMTP_PASS) {
   console.warn("⚠️ SMTP credentials not set (SMTP_USER / SMTP_PASS). Email alerts will fail without them.");
 }
 
-// ---------- CORS configuration (kept from your original) ----------
+// ---------- CORS configuration ----------
 const allowedOrigins = [
   "https://wifi-razafistore.vercel.app",
   "https://wifi-razafistore-git-main-razafisosthene.vercel.app",
@@ -131,10 +131,8 @@ async function fetchNewToken() {
 
   const resp = await axios.post(tokenUrl, body, { headers, timeout: 10000 });
   const data = resp.data;
-  // expires_in is usually seconds
   const expiresInSec = data.expires_in || 300;
   tokenCache.access_token = data.access_token;
-  // subtract small buffer (e.g. 60s) to refresh before expiry
   tokenCache.expires_at = Date.now() + (expiresInSec - 60) * 1000;
   console.info("✅ Token MVola obtenu, expires_in:", expiresInSec);
   return tokenCache.access_token;
@@ -161,17 +159,353 @@ function mvolaHeaders(accessToken, correlationId) {
   };
 }
 
+// ---------- Utility helpers ----------
+function maskPhone(phone) {
+  if (!phone) return null;
+  const s = String(phone);
+  if (s.length <= 4) return s;
+  const first = s.slice(0, 3);
+  const last = s.slice(-3);
+  return `${first}****${last}`;
+}
+
+function truncate(str, n = 2000) {
+  if (!str && str !== 0) return null;
+  const s = typeof str === "string" ? str : JSON.stringify(str);
+  if (s.length <= n) return s;
+  return s.slice(0, n);
+}
+
+async function insertLog({
+  request_ref,
+  server_correlation_id,
+  event_type,
+  status,
+  masked_phone,
+  amount,
+  attempt,
+  short_message,
+  payload,
+  meta,
+}) {
+  try {
+    if (!supabase) return;
+    await supabase.from("logs").insert([
+      {
+        request_ref,
+        server_correlation_id,
+        event_type,
+        status,
+        masked_phone,
+        amount,
+        attempt,
+        short_message,
+        payload: truncate(payload, 2000),
+        meta,
+      },
+    ]);
+  } catch (e) {
+    console.error("⚠️ Failed to insert log:", e?.message || e);
+  }
+}
+
+// ---------- Polling logic (background) ----------
+async function pollTransactionStatus({
+  serverCorrelationId,
+  requestRef,
+  phone,
+  amount,
+  plan,
+}) {
+  const start = Date.now();
+  const timeoutMs = 3 * 60 * 1000; // 3 minutes
+  let backoff = 1000; // start 1s
+  const maxBackoff = 10000; // cap 10s
+  let attempt = 0;
+
+  while (Date.now() - start < timeoutMs) {
+    attempt++;
+    try {
+      const token = await getAccessToken();
+      const statusUrl = `${MVOLA_BASE}/mvola/mm/transactions/type/merchantpay/1.0.0/status/${serverCorrelationId}`;
+
+      const statusResp = await axios.get(statusUrl, {
+        headers: mvolaHeaders(token, crypto.randomUUID()),
+        timeout: 10000,
+      });
+
+      const sdata = statusResp.data || {};
+      const status = (sdata.status || sdata.transactionStatus || "").toLowerCase();
+
+      // Log polling attempt only on errors or important transitions
+      if (status === "completed" || status === "success") {
+        // SUCCESS: assign voucher atomically
+        console.info("🔔 MVola status completed for", requestRef, serverCorrelationId);
+        // call RPC assign_voucher_atomic
+        try {
+          if (!supabase) throw new Error("Supabase not configured");
+          const rpc = await supabase.rpc("assign_voucher_atomic", {
+            p_request_ref: requestRef,
+            p_server_corr: serverCorrelationId,
+            p_plan: plan ?? null,
+            p_assign_to: phone ?? null,
+          });
+
+          if (rpc.error) {
+            console.error("⚠️ assign_voucher_atomic error", rpc.error);
+            // Insert log and notify ops
+            await insertLog({
+              request_ref: requestRef,
+              server_correlation_id: serverCorrelationId,
+              event_type: "assign_error",
+              status: "failed",
+              masked_phone: maskPhone(phone),
+              amount,
+              attempt,
+              short_message: "assign_voucher_atomic failed",
+              payload: rpc.error,
+            });
+
+            // mark transaction as no_voucher_pending to let ops intervene
+            await supabase
+              .from("transactions")
+              .update({ status: "no_voucher_pending", metadata: { assign_error: truncate(rpc.error, 2000) } })
+              .eq("request_ref", requestRef);
+
+            // notify ops
+            await sendEmailNotification(`[RAZAFI WIFI] ⚠️ No Voucher Available – RequestRef ${requestRef}`, {
+              RequestRef: requestRef,
+              ServerCorrelationId: serverCorrelationId,
+              Phone: maskPhone(phone),
+              Amount: amount,
+              Message: "assign_voucher_atomic returned an error, intervention required.",
+              rpc_error: rpc.error,
+            });
+
+            return;
+          }
+
+          const assigned = rpc.data && rpc.data.length ? rpc.data[0] : rpc.data || null;
+
+          if (!assigned || !assigned.code) {
+            // No voucher available
+            console.warn("⚠️ No voucher available for", requestRef);
+            await supabase
+              .from("transactions")
+              .update({ status: "no_voucher_pending", metadata: { mvolaResponse: truncate(sdata, 2000) } })
+              .eq("request_ref", requestRef);
+
+            await insertLog({
+              request_ref: requestRef,
+              server_correlation_id: serverCorrelationId,
+              event_type: "no_voucher_pending",
+              status: "no_voucher",
+              masked_phone: maskPhone(phone),
+              amount,
+              attempt,
+              short_message: "Aucun voucher disponible lors de l'assignation",
+              payload: sdata,
+            });
+
+            await sendEmailNotification(`[RAZAFI WIFI] ⚠️ No Voucher Available – RequestRef ${requestRef}`, {
+              RequestRef: requestRef,
+              ServerCorrelationId: serverCorrelationId,
+              Phone: maskPhone(phone),
+              Amount: amount,
+              Message: "Payment completed but no voucher available. OPS intervention required.",
+            });
+
+            return;
+          }
+
+          // Voucher assigned successfully
+          const voucherCode = assigned.code;
+
+          // Update transactions row
+          try {
+            await supabase
+              .from("transactions")
+              .update({
+                status: "completed",
+                voucher: voucherCode,
+                transaction_reference: sdata.transactionReference || sdata.objectReference || null,
+                metadata: { mvolaResponse: truncate(sdata, 2000) },
+              })
+              .eq("request_ref", requestRef);
+          } catch (e) {
+            console.error("⚠️ Failed updating transaction after voucher assign:", e?.message || e);
+          }
+
+          // Insert a completed log
+          await insertLog({
+            request_ref: requestRef,
+            server_correlation_id: serverCorrelationId,
+            event_type: "completed",
+            status: "completed",
+            masked_phone: maskPhone(phone),
+            amount,
+            attempt,
+            short_message: "Paiement confirmé et voucher attribué",
+            payload: { mvolaResponse: truncate(sdata, 2000), voucher: voucherCode },
+          });
+
+          // Send final OPS email (plain-text, FR)
+          const emailBody = [
+            `RequestRef: ${requestRef}`,
+            `ServerCorrelationId: ${serverCorrelationId}`,
+            `Téléphone (masqué): ${maskPhone(phone)}`,
+            `Montant: ${amount} Ar`,
+            `Plan: ${plan || "—"}`,
+            `Status: completed`,
+            `Voucher: ${voucherCode}`,
+            `TransactionReference: ${sdata.transactionReference || "—"}`,
+            `Timestamp: ${new Date().toISOString()}`,
+          ].join("\n");
+
+          await sendEmailNotification(`[RAZAFI WIFI] ✅ Payment Completed – RequestRef ${requestRef}`, emailBody);
+
+          return;
+        } catch (assignErr) {
+          console.error("❌ Error during voucher assignment flow", assignErr?.message || assignErr);
+          await insertLog({
+            request_ref: requestRef,
+            server_correlation_id: serverCorrelationId,
+            event_type: "assign_exception",
+            status: "failed",
+            masked_phone: maskPhone(phone),
+            amount,
+            attempt,
+            short_message: "Exception pendant assignation voucher",
+            payload: truncate(assignErr?.message || assignErr, 2000),
+          });
+
+          await supabase
+            .from("transactions")
+            .update({ status: "no_voucher_pending", metadata: { assign_exception: truncate(assignErr?.message || assignErr, 2000) } })
+            .eq("request_ref", requestRef);
+
+          await sendEmailNotification(`[RAZAFI WIFI] ⚠️ No Voucher Available – RequestRef ${requestRef}`, {
+            RequestRef: requestRef,
+            ServerCorrelationId: serverCorrelationId,
+            Phone: maskPhone(phone),
+            Amount: amount,
+            Message: "Erreur système lors de l'attribution du voucher. Intervention requise.",
+            error: truncate(assignErr?.message || assignErr, 2000),
+          });
+
+          return;
+        }
+      }
+
+      if (status === "failed" || status === "rejected" || status === "declined") {
+        console.warn("MVola reports failed for", requestRef, serverCorrelationId);
+        // mark failed
+        try {
+          if (supabase) {
+            await supabase
+              .from("transactions")
+              .update({ status: "failed", metadata: { mvolaResponse: truncate(sdata, 2000) } })
+              .eq("request_ref", requestRef);
+          }
+        } catch (e) {
+          console.error("⚠️ Failed updating transaction to failed:", e?.message || e);
+        }
+
+        await insertLog({
+          request_ref: requestRef,
+          server_correlation_id: serverCorrelationId,
+          event_type: "failed",
+          status: "failed",
+          masked_phone: maskPhone(phone),
+          amount,
+          attempt,
+          short_message: "Paiement échoué selon MVola",
+          payload: sdata,
+        });
+
+        // notify ops
+        const emailBody = [
+          `RequestRef: ${requestRef}`,
+          `ServerCorrelationId: ${serverCorrelationId}`,
+          `Téléphone (masqué): ${maskPhone(phone)}`,
+          `Montant: ${amount} Ar`,
+          `Plan: ${plan || "—"}`,
+          `Status: failed`,
+          `Timestamp: ${new Date().toISOString()}`,
+        ].join("\n");
+
+        await sendEmailNotification(`[RAZAFI WIFI] ❌ Payment Failed – RequestRef ${requestRef}`, emailBody);
+        return;
+      }
+
+      // Otherwise it's pending or unknown — continue polling
+    } catch (err) {
+      console.error("Poll attempt error", err?.response?.data || err?.message || err);
+      await insertLog({
+        request_ref: requestRef,
+        server_correlation_id: serverCorrelationId,
+        event_type: "poll_error",
+        status: "error",
+        masked_phone: maskPhone(phone),
+        amount,
+        attempt,
+        short_message: "Erreur lors du polling MVola",
+        payload: truncate(err?.response?.data || err?.message || err, 2000),
+      });
+      // continue to retry
+    }
+
+    // wait with backoff
+    await new Promise((resolve) => setTimeout(resolve, backoff));
+    backoff = Math.min(backoff * 2, maxBackoff);
+  }
+
+  // Timeout reached
+  console.error("⏰ Polling timeout for", requestRef, serverCorrelationId);
+  try {
+    if (supabase) {
+      await supabase
+        .from("transactions")
+        .update({ status: "timeout", metadata: { note: "poll_timeout" } })
+        .eq("request_ref", requestRef);
+    }
+  } catch (e) {
+    console.error("⚠️ Failed updating transaction to timeout:", e?.message || e);
+  }
+
+  await insertLog({
+    request_ref: requestRef,
+    server_correlation_id: serverCorrelationId,
+    event_type: "timeout",
+    status: "timeout",
+    masked_phone: maskPhone(phone),
+    amount,
+    attempt,
+    short_message: "Temps d'attente dépassé lors du polling MVola",
+    payload: null,
+  });
+
+  // notify ops
+  await sendEmailNotification(`[RAZAFI WIFI] ⚠️ Payment Timeout – RequestRef ${requestRef}`, {
+    RequestRef: requestRef,
+    ServerCorrelationId: serverCorrelationId,
+    Phone: maskPhone(phone),
+    Amount: amount,
+    Message: "Polling timeout: MVola did not return a final status within 3 minutes.",
+  });
+}
+
 // ---------- Root / health ----------
 app.get("/", (req, res) => {
   res.send("RAZAFI MVola Backend is running 🚀");
 });
 
-// ---------- Keep your test endpoint if you want ----------
+// ---------- Test endpoint ----------
 app.get("/api/dernier-code", (req, res) => {
   res.json({ code: "EXAMPLE-CODE-123", validUntil: new Date().toISOString() });
 });
 
-// ---------- Main route: KEEP /api/send-payment (your frontend calls this) ----------
+// ---------- Main route: /api/send-payment ----------
 app.post("/api/send-payment", async (req, res) => {
   const { phone, plan } = req.body;
 
@@ -179,13 +513,10 @@ app.post("/api/send-payment", async (req, res) => {
     return res.status(400).json({ error: "phone and plan are required" });
   }
 
-  // Create a local request reference so we can persist it before/after MVola call
   const requestRef = `RAZAFI_${Date.now()}`;
+  const amount = plan.includes("5000") ? 5000 : 1000;
 
-  // Determine amount (simple parsing like your original)
-  const amount = plan.includes("5000") ? "5000" : "1000";
-
-  // Prepare an initial DB row (if Supabase available) with status = initiated
+  // Persist initial transaction row (initiated)
   try {
     if (supabase) {
       await supabase.from("transactions").insert([
@@ -203,39 +534,27 @@ app.post("/api/send-payment", async (req, res) => {
     }
   } catch (dbErr) {
     console.error("⚠️ Warning: unable to insert initial transaction row:", dbErr?.message || dbErr);
-    // do not fail — continue to attempt payment
   }
 
   // Build MVola payload
   const payload = {
-    amount: amount,
+    amount: String(amount),
     currency: "Ar",
     descriptionText: `Achat WiFi ${plan}`,
     requestingOrganisationTransactionReference: requestRef,
     requestDate: new Date().toISOString(),
-    // keep transactionType/requestingOrganisation fields minimal (MVola accepts the minimal required)
     debitParty: [{ key: "msisdn", value: phone }],
     creditParty: [{ key: "msisdn", value: PARTNER_MSISDN }],
     metadata: [{ key: "partnerName", value: PARTNER_NAME }],
   };
 
-  // Generate correlation ID for tracing
   const correlationId = crypto.randomUUID();
 
   try {
-    // Get token (auto)
     const token = await getAccessToken();
-
-    // Correct MVola initiate endpoint (include version)
     const initiateUrl = `${MVOLA_BASE}/mvola/mm/transactions/type/merchantpay/1.0.0/`;
 
-    // Log sanitized request (no token printed)
-    console.info("📤 Initiating MVola payment", {
-      requestRef,
-      phone,
-      amount,
-      correlationId,
-    });
+    console.info("📤 Initiating MVola payment", { requestRef, phone, amount, correlationId });
 
     const resp = await axios.post(initiateUrl, payload, {
       headers: mvolaHeaders(token, correlationId),
@@ -244,20 +563,19 @@ app.post("/api/send-payment", async (req, res) => {
 
     const data = resp.data || {};
     const serverCorrelationId = data.serverCorrelationId || data.serverCorrelationID || data.serverCorrelationid || null;
-    const notificationMethod = data.notificationMethod || null;
 
-    console.info("✅ MVola initiate response", { requestRef, serverCorrelationId, notificationMethod });
+    console.info("✅ MVola initiate response", { requestRef, serverCorrelationId });
 
-    // Persist serverCorrelationId & status -> 'pending' if we got accepted
+    // Persist serverCorrelationId & status -> 'pending'
     try {
       if (supabase) {
         await supabase
           .from("transactions")
           .update({
-            serverCorrelationId: serverCorrelationId,
+            server_correlation_id: serverCorrelationId,
             status: "pending",
-            transactionReference: data.transactionReference || null,
-            metadata: { ...payload.metadata, mvolaResponse: data },
+            transaction_reference: data.transactionReference || null,
+            metadata: { ...payload.metadata, mvolaResponse: truncate(data, 2000) },
           })
           .eq("request_ref", requestRef);
       }
@@ -265,10 +583,39 @@ app.post("/api/send-payment", async (req, res) => {
       console.error("⚠️ Failed to update transaction row after initiate:", dbErr?.message || dbErr);
     }
 
-    // Return MVola response to caller
-    return res.json({ ok: true, requestRef, serverCorrelationId, mvola: data });
+    // Log initiation
+    await insertLog({
+      request_ref: requestRef,
+      server_correlation_id: serverCorrelationId,
+      event_type: "initiate",
+      status: "initiated",
+      masked_phone: maskPhone(phone),
+      amount,
+      attempt: 0,
+      short_message: "Initiation de la transaction auprès de MVola",
+      payload: data,
+    });
+
+    // Respond immediately to frontend
+    res.json({ ok: true, requestRef, serverCorrelationId, mvola: data });
+
+    // Launch background poll (do not await)
+    (async () => {
+      try {
+        await pollTransactionStatus({
+          serverCorrelationId,
+          requestRef,
+          phone,
+          amount,
+          plan,
+        });
+      } catch (bgErr) {
+        console.error("Background poll job error", bgErr?.message || bgErr);
+      }
+    })();
+
+    return;
   } catch (err) {
-    // Log and persist failure
     console.error("❌ MVola a rejeté la requête", err.response?.data || err?.message || err);
 
     // Update DB status = failed
@@ -276,32 +623,60 @@ app.post("/api/send-payment", async (req, res) => {
       if (supabase) {
         await supabase
           .from("transactions")
-          .update({ status: "failed", metadata: { error: err.response?.data || err?.message } })
+          .update({ status: "failed", metadata: { error: truncate(err.response?.data || err?.message, 2000) } })
           .eq("request_ref", requestRef);
       }
     } catch (dbErr) {
       console.error("⚠️ Failed to mark transaction failed in DB:", dbErr?.message || dbErr);
     }
 
-    // Send email alert
-    await sendEmailNotification("❌ Erreur MVola sur RAZAFI WIFI", {
-      requestRef,
-      phone,
-      plan,
-      error: err.response?.data || err?.message || err,
+    // Send email alert (final-state email)
+    await sendEmailNotification(`[RAZAFI WIFI] ❌ Payment Failed – RequestRef ${requestRef}`, {
+      RequestRef: requestRef,
+      Phone: maskPhone(phone),
+      Amount: amount,
+      Error: truncate(err.response?.data || err?.message, 2000),
     });
 
-    // Respond with a safe error to frontend
     const statusCode = err.response?.status || 502;
     return res.status(400).json({ error: "Erreur lors du paiement MVola", details: err.response?.data || err.message });
   }
 });
 
-// ---------- Optional: callback route (kept for compatibility but not used for polling) ----------
-app.post("/api/mvola-callback", (req, res) => {
-  console.info("📥 Callback MVola reçu:", JSON.stringify(req.body, null, 2));
-  // If you later decide to use callbacks, validate and update the DB here.
-  res.status(200).send("✅ Callback reçu");
+// ---------- Endpoint: fetch transaction details (for frontend "check status") ----------
+app.get("/api/tx/:requestRef", async (req, res) => {
+  const requestRef = req.params.requestRef;
+  if (!requestRef) return res.status(400).json({ error: "requestRef required" });
+
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const { data, error } = await supabase
+      .from("transactions")
+      .select("request_ref, phone, amount, currency, plan, status, voucher, transaction_reference, server_correlation_id, metadata, created_at, updated_at")
+      .eq("request_ref", requestRef)
+      .limit(1)
+      .single();
+
+    if (error && error.code === "PGRST116") {
+      // no rows
+      return res.status(404).json({ error: "not found" });
+    }
+    if (error) {
+      console.error("Supabase error fetching transaction:", error);
+      return res.status(500).json({ error: "db error" });
+    }
+
+    // mask phone before returning
+    const row = {
+      ...data,
+      phone: maskPhone(data.phone),
+    };
+
+    return res.json({ ok: true, transaction: row });
+  } catch (e) {
+    console.error("Error in /api/tx/:", e?.message || e);
+    return res.status(500).json({ error: "internal error" });
+  }
 });
 
 // ---------- Start server ----------
