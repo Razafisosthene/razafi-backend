@@ -507,14 +507,25 @@ app.get("/api/dernier-code", (req, res) => {
 
 // ---------- Main route: /api/send-payment ----------
 app.post("/api/send-payment", async (req, res) => {
-  const { phone, plan } = req.body;
+  // ✅ Protection : si le corps JSON est manquant ou mal formé
+  const body = req.body || {};
+  const phone = body.phone;
+  const plan = body.plan;
 
+  // Vérification simple des champs requis
   if (!phone || !plan) {
-    return res.status(400).json({ error: "phone and plan are required" });
+    console.warn("⚠️ Mauvais appel /api/send-payment — phone ou plan manquant. body:", body);
+    return res.status(400).json({
+      error: "Champs manquants. Le corps de la requête doit être en JSON avec 'phone' et 'plan'.",
+      exemple: { phone: "0340123456", plan: "5000" }
+    });
   }
 
+  // Créer une référence unique pour cette transaction
   const requestRef = `RAZAFI_${Date.now()}`;
-  const amount = plan.includes("5000") ? 5000 : 1000;
+
+  // Déterminer le montant selon le plan
+  const amount = String(plan).includes("5000") ? 5000 : 1000;
 
   // Persist initial transaction row (initiated)
   try {
