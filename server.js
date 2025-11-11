@@ -45,11 +45,15 @@ if (!SMTP_USER || !SMTP_PASS) {
 }
 
 // ---------- CORS configuration ----------
+// ---------- CORS configuration ----------
 const allowedOrigins = [
   "https://wifi-razafistore.vercel.app",
   "https://wifi-razafistore-git-main-razafisosthene.vercel.app",
   "https://wifi.razafistore.com",
   "http://localhost:3000",
+
+  // 👇 Ajout de ton interface d’administration Vercel (preview)
+  "https://wifi-admin-ac5h7jar8-sosthenes-projects-9d6688ec.vercel.app",
 ];
 
 app.use(
@@ -66,6 +70,7 @@ app.use(
     credentials: true,
   })
 );
+
 
 app.use(express.json());
 
