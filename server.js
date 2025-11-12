@@ -511,8 +511,84 @@ app.get("/", (req, res) => {
 });
 
 // ---------- Test endpoint ----------
-app.get("/api/dernier-code", (req, res) => {
-  res.json({ code: "EXAMPLE-CODE-123", validUntil: new Date().toISOString() });
+app.get("/api/dernier-code", async (req, res) => {
+  try {
+    const phone = (req.query.phone || "").trim();
+    if (!phone) return res.status(400).json({ error: "phone query param required" });
+
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    // 1) Cherche dans transactions la dernière transaction complétée avec voucher non null
+    let code = null;
+    let plan = null;
+
+    try {
+      const { data: tx, error: txErr } = await supabase
+        .from("transactions")
+        .select("voucher, plan, amount, status, created_at")
+        .eq("phone", phone)
+        .not("voucher", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(1);
+
+      if (txErr) {
+        console.warn("warning fetching transactions for dernier-code:", txErr);
+      } else if (tx && tx.length) {
+        code = tx[0].voucher;
+        plan = tx[0].plan || tx[0].amount || null;
+      }
+    } catch (e) {
+      console.warn("exception fetching transactions for dernier-code:", e?.message || e);
+    }
+
+    // 2) If no code found in transactions, fallback to vouchers table (assigned_to or reserved_by)
+    if (!code) {
+      try {
+        const { data: vData, error: vErr } = await supabase
+          .from("vouchers")
+          .select("code, plan, assigned_at, assigned_to, valid_until, used")
+          .or(`assigned_to.eq.${phone},reserved_by.eq.${phone}`)
+          .order("assigned_at", { ascending: false })
+          .limit(1);
+
+        if (vErr) {
+          console.warn("warning fetching vouchers fallback:", vErr);
+        } else if (vData && vData.length) {
+          code = vData[0].code;
+          plan = vData[0].plan || null;
+        }
+      } catch (e) {
+        console.warn("exception fetching vouchers for dernier-code:", e?.message || e);
+      }
+    }
+
+    // 3) If still no code, return 204 (no content) to let frontend keep polling gracefully
+    if (!code) {
+      return res.status(204).send();
+    }
+
+    // Insert a log entry that we delivered the code (optional, useful for audit)
+    try {
+      await supabase.from("logs").insert([
+        {
+          event_type: "delivered_voucher_to_client",
+          request_ref: null,
+          server_correlation_id: null,
+          status: "delivered",
+          masked_phone: maskPhone(phone),
+          payload: { delivered_code: truncate(code, 2000) },
+        },
+      ]);
+    } catch (logErr) {
+      console.warn("Unable to write delivery log:", logErr?.message || logErr);
+    }
+
+    // Final response expected by your index.html
+    return res.json({ code, plan });
+  } catch (err) {
+    console.error("/api/dernier-code error:", err?.message || err);
+    return res.status(500).json({ error: "internal_error" });
+  }
 });
 
 // ---------- Main route: /api/send-payment ----------
