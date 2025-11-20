@@ -71,6 +71,149 @@ app.use(
 
 app.use(express.json());
 
+// -------------------------------------------------------
+// ADMIN REPORT (GROUPED BY DATE MADAGASCAR + sorted newest->oldest)
+// Replace existing /api/admin-report endpoint with this block
+// -------------------------------------------------------
+
+/**
+ * parseAriaryFromString, localDayToUtcRange, localRangeToUtcBounds,
+ * nowMadagascarDate, monthBoundsMadagascar, yearBoundsMadagascar
+ * must be present in the file (from the previous block).
+ * If not, include them exactly as provided earlier.
+ */
+
+app.get("/api/admin-report", async (req, res) => {
+  try {
+    if (!req.session?.isAdmin) {
+      return res.status(401).json({ error: "not_authenticated" });
+    }
+
+    const start = (req.query.start || "").trim();
+    const end = (req.query.end || "").trim();
+    if (!start || !end) {
+      return res.status(400).json({ error: "start and end required (YYYY-MM-DD)" });
+    }
+
+    // convert requested local MADAGASCAR range to UTC bounds
+    const bounds = localRangeToUtcBounds(start, end, 3);
+    if (!bounds) {
+      return res.status(400).json({ error: "invalid_date_format" });
+    }
+
+    // Fetch rows ordered by created_at DESC (newest first)
+    const { data: rows, error: rowsError } = await supabase
+      .from("view_user_history_completed")
+      .select("id, phone, created_at, plan, voucher")
+      .gte("created_at", bounds.startIso)
+      .lte("created_at", bounds.endIso)
+      .order("created_at", { ascending: false }); // newest -> oldest
+
+    if (rowsError) {
+      console.error("admin-report error:", rowsError);
+      return res.status(500).json({ error: "db_error" });
+    }
+
+    // Helper: convert UTC created_at to Madagascar local date/time and date key
+    const toMadagascar = (utcIso) => {
+      if (!utcIso) return { paid_at_utc: null, paid_at_mad: null, date_mad: null };
+      const dUtc = new Date(utcIso);
+      const dMadMs = dUtc.getTime() + 3 * 60 * 60 * 1000; // shift +3h
+      const dMad = new Date(dMadMs);
+      // Format local datetime and date
+      const pad = (n) => String(n).padStart(2, "0");
+      const YYYY = dMad.getUTCFullYear();
+      const MM = pad(dMad.getUTCMonth() + 1);
+      const DD = pad(dMad.getUTCDate());
+      const hh = pad(dMad.getUTCHours());
+      const mm = pad(dMad.getUTCMinutes());
+      const ss = pad(dMad.getUTCSeconds());
+      const date_mad = `${YYYY}-${MM}-${DD}`;
+      const paid_at_mad = `${YYYY}-${MM}-${DD} ${hh}:${mm}:${ss}`; // human-friendly
+      return { paid_at_utc: utcIso, paid_at_mad, date_mad };
+    };
+
+    // Build transactions list (flat, newest->oldest) and a map grouped by date_mad
+    const groupsMap = new Map();
+    const flat = (rows || []).map(r => {
+      const { paid_at_utc, paid_at_mad, date_mad } = toMadagascar(r.created_at);
+      const tx = {
+        id: r.id,
+        paid_at_utc,
+        paid_at_mad,
+        date_mad,
+        phone: r.phone,
+        plan: r.plan,
+        voucher: r.voucher,
+        amount_ariary: parseAriaryFromString(r.voucher) || parseAriaryFromString(r.plan) || 0
+      };
+      // push into groups map
+      if (!groupsMap.has(date_mad)) groupsMap.set(date_mad, []);
+      groupsMap.get(date_mad).push(tx);
+      return tx;
+    });
+
+    // Create groups array sorted by date desc (newest date first). Each group's transactions already in newest->oldest.
+    const groups = Array.from(groupsMap.entries())
+      .map(([date, txs]) => ({ date, transactions: txs }))
+      .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)); // sort desc
+
+    // Compute total ariary for the period (sum of amounts in flat)
+    const total_ariary_period = flat.reduce((s, t) => s + (Number(t.amount_ariary) || 0), 0);
+
+    // Compute daily / month / year totals (Madagascar timezone) using existing helpers
+    const nowMad = nowMadagascarDate();
+
+    // Today
+    const todayYmd = `${nowMad.getUTCFullYear()}-${String(nowMad.getUTCMonth() + 1).padStart(2, "0")}-${String(nowMad.getUTCDate()).padStart(2, "0")}`;
+    const todayBounds = localRangeToUtcBounds(todayYmd, todayYmd, 3);
+
+    // Month
+    const mb = monthBoundsMadagascar(nowMad);
+    const monthBounds = localRangeToUtcBounds(mb.first, mb.last, 3);
+
+    // Year
+    const yb = yearBoundsMadagascar(nowMad);
+    const yearBounds = localRangeToUtcBounds(yb.first, yb.last, 3);
+
+    async function sumAriaryRange(startIso, endIso) {
+      const { data, error } = await supabase
+        .from("view_user_history_completed")
+        .select("plan, voucher")
+        .gte("created_at", startIso)
+        .lte("created_at", endIso);
+      if (error) {
+        console.error("sumAriaryRange error", error);
+        throw error;
+      }
+      return (data || []).reduce(
+        (s, r) => s + (parseAriaryFromString(r.voucher) || parseAriaryFromString(r.plan)),
+        0
+      );
+    }
+
+    const [daily, month, year] = await Promise.all([
+      sumAriaryRange(todayBounds.startIso, todayBounds.endIso),
+      sumAriaryRange(monthBounds.startIso, monthBounds.endIso),
+      sumAriaryRange(yearBounds.startIso, yearBounds.endIso),
+    ]);
+
+    // Response includes both a flat list (newest->oldest) and grouped view by date
+    return res.json({
+      total_gb: null,
+      total_ariary: total_ariary_period,
+      transactions: flat,   // newest -> oldest
+      groups: groups,       // [{ date: 'YYYY-MM-DD', transactions: [...] }, ...] newest date first
+      totals: { daily, month, year }
+    });
+
+  } catch (err) {
+    console.error("/api/admin-report failure:", err);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
+
+
 // ---------- Supabase client (service role) ----------
 let supabase = null;
 if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
