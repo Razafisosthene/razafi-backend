@@ -59,6 +59,7 @@ const allowedOrigins = rawCors.length ? rawCors : [
   "https://wifi-razafistore.vercel.app",
   "https://wifi-razafistore-git-main-razafisosthene.vercel.app",
   "https://wifi.razafistore.com",
+  "https://admin-wifi.razafistore.com",
   "http://localhost:3000",
   // admin preview fallback
   "https://wifi-admin-ac5h7jar8-sosthenes-projects-9d6688ec.vercel.app",
