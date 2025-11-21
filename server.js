@@ -55,15 +55,16 @@ if (!SESSION_SECRET || SESSION_SECRET.length < 16) {
 
 // ---------- CORS configuration (use env CORS_ORIGINS) ----------
 const rawCors = (process.env.CORS_ORIGINS || "").split(",").map(s => s.trim()).filter(Boolean);
-const allowedOrigins = rawCors.length ? rawCors : [
+const allowedOrigins = [
   "https://wifi-razafistore.vercel.app",
   "https://wifi-razafistore-git-main-razafisosthene.vercel.app",
   "https://wifi.razafistore.com",
-  "https://admin-wifi.razafistore.com",
+  "https://admin-wifi.razafistore.com",   // <-- AJOUTÉ
   "http://localhost:3000",
-  // admin preview fallback
+  // Ajout admin preview Vercel
   "https://wifi-admin-ac5h7jar8-sosthenes-projects-9d6688ec.vercel.app",
 ];
+
 
 const corsOptions = {
   origin: function (origin, callback) {
