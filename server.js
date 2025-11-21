@@ -1,4 +1,3 @@
-// server.js (part 1/2)
 // RAZAFI BACKEND – MVola (production) - polling + voucher assignment + logs + OPS email
 import express from "express";
 import axios from "axios";
@@ -6,6 +5,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
 import crypto from "crypto";
+import session from "express-session";
 import { createClient } from "@supabase/supabase-js";
 dotenv.config();
 
@@ -32,6 +32,10 @@ const SMTP_PASS = process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD;
 const MAIL_FROM = process.env.MAIL_FROM || SMTP_USER;
 const OPS_EMAIL = process.env.OPS_EMAIL || process.env.GMAIL_TO || "sosthenet@gmail.com";
 
+// Admin auth
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || null;
+const SESSION_SECRET = process.env.SESSION_SECRET || "change_this_session_secret_in_env";
+
 // --------- Basic checks for required server-side secrets (log friendly) ----------
 if (!MVOLA_CLIENT_ID || !MVOLA_CLIENT_SECRET) {
   console.warn("⚠️ MVOLA client credentials are not set (MVOLA_CLIENT_ID / MVOLA_CLIENT_SECRET). Token fetch will fail without them.");
@@ -42,46 +46,254 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 if (!SMTP_USER || !SMTP_PASS) {
   console.warn("⚠️ SMTP credentials not set (SMTP_USER / SMTP_PASS). Email alerts will fail without them.");
 }
+if (!ADMIN_PASSWORD) {
+  console.warn("⚠️ ADMIN_PASSWORD is not set. Admin login will not work until you set ADMIN_PASSWORD in environment.");
+}
+if (!SESSION_SECRET || SESSION_SECRET.length < 16) {
+  console.warn("⚠️ SESSION_SECRET is missing or short. Set a long random SESSION_SECRET in environment for secure sessions.");
+}
 
-// ---------- CORS configuration ----------
-const allowedOrigins = [
+// ---------- CORS configuration (use env CORS_ORIGINS) ----------
+const rawCors = (process.env.CORS_ORIGINS || "").split(",").map(s => s.trim()).filter(Boolean);
+const allowedOrigins = rawCors.length ? rawCors : [
   "https://wifi-razafistore.vercel.app",
   "https://wifi-razafistore-git-main-razafisosthene.vercel.app",
   "https://wifi.razafistore.com",
   "http://localhost:3000",
-  // Ajout admin preview Vercel
+  // admin preview fallback
   "https://wifi-admin-ac5h7jar8-sosthenes-projects-9d6688ec.vercel.app",
 ];
 
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      // allow non-browser requests (e.g., server-side) when origin is undefined
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        console.error("❌ CORS non autorisé pour cette origine:", origin);
-        callback(new Error("CORS non autorisé pour cette origine."));
-      }
-    },
-    methods: ["GET", "POST"],
-    credentials: true,
-  })
-);
+const corsOptions = {
+  origin: function (origin, callback) {
+    // allow non-browser requests (server-side) when origin is undefined
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      console.error("❌ CORS non autorisé pour cette origine:", origin);
+      return callback(new Error("CORS non autorisé pour cette origine."));
+    }
+  },
+  methods: ["GET", "POST", "OPTIONS"],
+  credentials: true,
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  exposedHeaders: ["Set-Cookie"]
+};
 
+// Apply CORS early
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+
+// Body parser
 app.use(express.json());
+
+// ---------- Session (for Admin OTP auth) ----------
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production', // ensure HTTPS in production
+    sameSite: 'none' // allow cross-site cookie for admin usage
+  }
+}));
+
+// ---------- Supabase client (service role) ----------
+let supabase = null;
+if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
+  supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false },
+  });
+}
+
+// ---------- Mailer (SMTP) ----------
+function createMailer() {
+  if (!SMTP_USER || !SMTP_PASS) return null;
+  return nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_PORT === 465,
+    auth: {
+      user: SMTP_USER,
+      pass: SMTP_PASS,
+    },
+  });
+}
+const mailer = createMailer();
+
+async function sendEmailNotification(subject, message) {
+  if (!mailer) {
+    console.error("Mailer not configured, cannot send email:", subject);
+    return;
+  }
+  try {
+    await mailer.sendMail({
+      from: MAIL_FROM,
+      to: OPS_EMAIL,
+      subject,
+      text: typeof message === "string" ? message : JSON.stringify(message, null, 2),
+    });
+    console.info("📩 Email envoyé avec succès à", OPS_EMAIL);
+  } catch (err) {
+    console.error("❌ Email notification error", err?.message || err);
+  }
+}
+
+/* -------------------------
+   Helper functions needed by admin-report
+   (parseAriaryFromString, localRangeToUtcBounds, nowMadagascarDate, monthBoundsMadagascar, yearBoundsMadagascar)
+   Recreated here to ensure admin-report works unchanged.
+----------------------------*/
+
+function parseAriaryFromString(s){
+  if (!s) return 0;
+  const str = String(s);
+  const m1 = str.match(/([\d\s\.,]+)\s*(?:Ar|AR|ariary|ARIARY)\b/);
+  if (m1 && m1[1]) return parseInt(m1[1].replace(/[^\d]/g,''),10) || 0;
+  const all = str.match(/(\d[\d\s\.,]*)/g);
+  if (all && all.length>0) return parseInt(all[all.length-1].replace(/[^\d]/g,''),10) || 0;
+  return 0;
+}
+
+// convert a local date string YYYY-MM-DD for timezoneOffsetHours (e.g., +3) into UTC ISO range start/end
+function localRangeToUtcBounds(startLocalYmd, endLocalYmd, tzOffsetHours = 3) {
+  try {
+    // startLocalYmd 00:00:00 local -> to UTC
+    const startParts = startLocalYmd.split('-').map(Number);
+    const endParts = endLocalYmd.split('-').map(Number);
+    if (startParts.length !== 3 || endParts.length !== 3) return null;
+    const startLocal = new Date(Date.UTC(startParts[0], startParts[1]-1, startParts[2], 0, 0, 0));
+    const endLocal = new Date(Date.UTC(endParts[0], endParts[1]-1, endParts[2], 23, 59, 59, 999));
+    // local -> UTC by subtracting tzOffsetHours
+    const startUtc = new Date(startLocal.getTime() - tzOffsetHours*3600*1000);
+    const endUtc = new Date(endLocal.getTime() - tzOffsetHours*3600*1000);
+    return {
+      startIso: startUtc.toISOString(),
+      endIso: endUtc.toISOString()
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+function nowMadagascarDate() {
+  const now = new Date();
+  // shift +3h to get MAD local equivalent in UTC-based date
+  return new Date(now.getTime() + 3*3600*1000);
+}
+
+function monthBoundsMadagascar(dateObjMad) {
+  const year = dateObjMad.getUTCFullYear();
+  const month = dateObjMad.getUTCMonth() + 1;
+  const first = `${year}-${String(month).padStart(2,'0')}-01`;
+  const lastDate = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const last = `${year}-${String(month).padStart(2,'0')}-${String(lastDate).padStart(2,'0')}`;
+  return { first, last };
+}
+
+function yearBoundsMadagascar(dateObjMad) {
+  const year = dateObjMad.getUTCFullYear();
+  return { first: `${year}-01-01`, last: `${year}-12-31` };
+}
+
+/* -------------------------
+   Admin OTP endpoints
+   - POST /admin-login   { password, email }
+   - POST /verify-otp    { otp }
+   - POST /logout
+   Implementation: sends a 6-digit OTP email and stores OTP in session with short TTL
+----------------------------*/
+
+function generateOtp() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+app.post("/admin-login", async (req, res) => {
+  try {
+    const { password, email } = req.body || {};
+    if (!password || !email) return res.status(400).json({ error: "password and email required" });
+
+    if (!ADMIN_PASSWORD) return res.status(500).json({ error: "admin_not_configured" });
+    if (password !== ADMIN_PASSWORD) return res.status(401).json({ error: "invalid_password" });
+
+    // generate OTP and save to session
+    const otp = generateOtp();
+    req.session.adminOtp = otp;
+    req.session.adminOtpEmail = email;
+    req.session.adminOtpExpiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
+
+    // send OTP by email
+    if (mailer) {
+      try {
+        await mailer.sendMail({
+          from: MAIL_FROM,
+          to: String(email),
+          subject: "[RAZAFI] Code OTP admin",
+          text: `Votre code OTP: ${otp}\nIl expire dans 5 minutes.`,
+        });
+        return res.json({ ok: true, message: "otp_sent" });
+      } catch (e) {
+        console.error("Error sending admin OTP email:", e?.message || e);
+        return res.status(500).json({ error: "email_failed" });
+      }
+    } else {
+      console.warn("No mailer configured - returning OTP in response for debug (not for prod).");
+      return res.json({ ok: true, otp });
+    }
+  } catch (e) {
+    console.error("/admin-login error", e?.message || e);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
+
+app.post("/verify-otp", (req, res) => {
+  try {
+    const { otp } = req.body || {};
+    if (!otp) return res.status(400).json({ error: "otp_required" });
+
+    const savedOtp = req.session.adminOtp;
+    const expiresAt = req.session.adminOtpExpiresAt || 0;
+    if (!savedOtp || Date.now() > expiresAt) {
+      return res.status(400).json({ error: "otp_expired" });
+    }
+    if (String(otp) !== String(savedOtp)) {
+      return res.status(401).json({ error: "otp_invalid" });
+    }
+
+    // success — mark session as admin
+    req.session.isAdmin = true;
+    // remove OTP
+    delete req.session.adminOtp;
+    delete req.session.adminOtpExpiresAt;
+    delete req.session.adminOtpEmail;
+
+    return res.json({ ok: true, message: "authenticated" });
+  } catch (e) {
+    console.error("/verify-otp error", e?.message || e);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
+
+app.post("/logout", (req, res) => {
+  try {
+    req.session.regenerate(err => {
+      if (err) {
+        return res.status(200).json({ ok: true, message: "logout" });
+      }
+      return res.json({ ok: true, message: "logout" });
+    });
+  } catch (e) {
+    console.error("/logout error", e?.message || e);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
 
 // -------------------------------------------------------
 // ADMIN REPORT (GROUPED BY DATE MADAGASCAR + sorted newest->oldest)
 // Replace existing /api/admin-report endpoint with this block
 // -------------------------------------------------------
-
-/**
- * parseAriaryFromString, localDayToUtcRange, localRangeToUtcBounds,
- * nowMadagascarDate, monthBoundsMadagascar, yearBoundsMadagascar
- * must be present in the file (from the previous block).
- * If not, include them exactly as provided earlier.
- */
 
 app.get("/api/admin-report", async (req, res) => {
   try {
@@ -213,48 +425,6 @@ app.get("/api/admin-report", async (req, res) => {
   }
 });
 
-
-// ---------- Supabase client (service role) ----------
-let supabase = null;
-if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
-  supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false },
-  });
-}
-
-// ---------- Mailer (SMTP) ----------
-function createMailer() {
-  if (!SMTP_USER || !SMTP_PASS) return null;
-  return nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_PORT === 465,
-    auth: {
-      user: SMTP_USER,
-      pass: SMTP_PASS,
-    },
-  });
-}
-const mailer = createMailer();
-
-async function sendEmailNotification(subject, message) {
-  if (!mailer) {
-    console.error("Mailer not configured, cannot send email:", subject);
-    return;
-  }
-  try {
-    await mailer.sendMail({
-      from: MAIL_FROM,
-      to: OPS_EMAIL,
-      subject,
-      text: typeof message === "string" ? message : JSON.stringify(message, null, 2),
-    });
-    console.info("📩 Email envoyé avec succès à", OPS_EMAIL);
-  } catch (err) {
-    console.error("❌ Email notification error", err?.message || err);
-  }
-}
-
 // ---------- Token cache and fetcher (auto-refresh) ----------
 let tokenCache = {
   access_token: null,
@@ -354,14 +524,6 @@ async function insertLog({
 }
 
 // ---------- Polling logic (background) ----------
-/*
-  Part 2/2 will continue from here:
-   - pollTransactionStatus implementation
-   - endpoints (/, /api/dernier-code, /api/send-payment, /api/tx/:requestRef, /api/history)
-   - server start
-*/
-// server.js (part 2/2) — continue from part 1/2
-// ---------- Polling logic (background) continued ----------
 async function pollTransactionStatus({
   serverCorrelationId,
   requestRef,
