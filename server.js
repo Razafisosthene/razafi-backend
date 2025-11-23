@@ -64,6 +64,7 @@ const allowedOrigins = allowedFromEnv.length ? allowedFromEnv : [
   "https://wifi-razafistore.vercel.app",
   "https://wifi-razafistore-git-main-razafisosthene.vercel.app",
   "https://wifi.razafistore.com",
+  "https://admin-wifi.razafistore.com", // <-- IMPORTANT: ton admin
   "http://localhost:3000",
   // Ajout admin preview Vercel
   "https://wifi-admin-ac5h7jar8-sosthenes-projects-9d6688ec.vercel.app",
@@ -88,16 +89,21 @@ app.use(
 app.use(express.json());
 
 // ---------- Session middleware (for admin) ----------
+app.set('trust proxy', 1); // ensure this is set once before session middleware
+
 app.use(session({
   name: "razafi_admin_sid",
-  secret: SESSION_SECRET,
+  secret: SESSION_SECRET || 'dev-session-secret',
   resave: false,
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: NODE_ENV === "production",
-    maxAge: 24 * 60 * 60 * 1000, // 1 day by default; we set isAdmin until logout
-    sameSite: "lax",
+    // NOTE:
+    // - En production (HTTPS) secure MUST be true to allow sameSite: 'none'
+    // - En dev local (http://localhost) met secure: false pour les tests locaux
+    secure: (NODE_ENV === "production"),
+    maxAge: 24 * 60 * 60 * 1000, // 1 day
+    sameSite: (NODE_ENV === "production") ? "none" : "lax" // none en prod pour cross-site, lax en dev
   }
 }));
 
