@@ -53,7 +53,7 @@ const allowedOrigins = [
   "https://wifi-razafistore-git-main-razafisosthene.vercel.app",
   "https://wifi.razafistore.com",
   "http://localhost:3000",
-  // Ajout admin preview Vercel / admin domain
+  // Admin domains (ajout)
   "https://admin-wifi.razafistore.com",
   "https://wifi-admin-ac5h7jar8-sosthenes-projects-9d6688ec.vercel.app",
 ];
@@ -62,7 +62,20 @@ app.use(
   cors({
     origin: function (origin, callback) {
       // allow non-browser requests (e.g., server-side) when origin is undefined
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (!origin) {
+        // origin === undefined -> allow (e.g. curl, server-to-server)
+        callback(null, true);
+        return;
+      }
+
+      // some browsers / webviews send the string "null" as Origin -> allow if you trust these clients
+      if (origin === "null") {
+        console.warn("Origin is the literal string 'null' — allowing (check client).");
+        callback(null, true);
+        return;
+      }
+
+      if (allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
         console.error("❌ CORS non autorisé pour cette origine:", origin);
@@ -73,6 +86,7 @@ app.use(
     credentials: true,
   })
 );
+
 
 app.use(express.json());
 
