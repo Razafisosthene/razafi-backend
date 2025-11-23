@@ -1,6 +1,5 @@
-// server.js
-// RAZAFI BACKEND – MVola (production) - polling + voucher assignment + logs + OPS email
-
+// server.js - merged (full, copy-paste ready)
+// RAZAFI BACKEND – MVola (production) - polling + voucher assignment + logs + OPS email + Admin OTP/session
 import express from "express";
 import axios from "axios";
 import cors from "cors";
@@ -9,7 +8,6 @@ import nodemailer from "nodemailer";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import session from "express-session";
-
 dotenv.config();
 
 const app = express();
@@ -23,9 +21,11 @@ const PARTNER_NAME = process.env.PARTNER_NAME || "RAZAFI";
 const PARTNER_MSISDN = process.env.PARTNER_MSISDN || "0340500592";
 const USER_LANGUAGE = process.env.USER_LANGUAGE || "FR";
 
+// Supabase (server-side service role)
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+// SMTP / Email
 const SMTP_HOST = process.env.SMTP_HOST || "smtp.gmail.com";
 const SMTP_PORT = parseInt(process.env.SMTP_PORT || "587", 10);
 const SMTP_USER = process.env.SMTP_USER || process.env.GMAIL_USER;
@@ -33,8 +33,13 @@ const SMTP_PASS = process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD;
 const MAIL_FROM = process.env.MAIL_FROM || SMTP_USER;
 const OPS_EMAIL = process.env.OPS_EMAIL || process.env.GMAIL_TO || "sosthenet@gmail.com";
 
-const SESSION_SECRET = process.env.SESSION_SECRET || "CHANGE_ME_SESSION_SECRET";
-const NODE_ENV = process.env.NODE_ENV || "development";
+// Admin / Session / OTP
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || ""; // must be set
+const SESSION_SECRET = process.env.SESSION_SECRET || "please-set-session-secret";
+const OTP_TTL_MS = 5 * 60 * 1000; // OTP validity: 5 minutes
+
+// NODE env
+const NODE_ENV = process.env.NODE_ENV || "production";
 
 // --------- Basic checks for required server-side secrets (log friendly) ----------
 if (!MVOLA_CLIENT_ID || !MVOLA_CLIENT_SECRET) {
@@ -46,275 +51,79 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 if (!SMTP_USER || !SMTP_PASS) {
   console.warn("⚠️ SMTP credentials not set (SMTP_USER / SMTP_PASS). Email alerts will fail without them.");
 }
+if (!SESSION_SECRET || SESSION_SECRET === "please-set-session-secret") {
+  console.warn("⚠️ SESSION_SECRET not set or using default — set SESSION_SECRET in .env for secure admin sessions.");
+}
+if (!ADMIN_PASSWORD) {
+  console.warn("⚠️ ADMIN_PASSWORD not set — admin login will fail until it's set in .env.");
+}
 
 // ---------- CORS configuration ----------
-const allowedOrigins = [
+const allowedFromEnv = (process.env.CORS_ORIGINS || "").split(",").map(s => s.trim()).filter(Boolean);
+const allowedOrigins = allowedFromEnv.length ? allowedFromEnv : [
   "https://wifi-razafistore.vercel.app",
   "https://wifi-razafistore-git-main-razafisosthene.vercel.app",
   "https://wifi.razafistore.com",
+  "https://admin-wifi.razafistore.com", // <-- IMPORTANT: ton admin
   "http://localhost:3000",
-  // Admin domains (ajout)
-  "https://admin-wifi.razafistore.com",
+  // Ajout admin preview Vercel
   "https://wifi-admin-ac5h7jar8-sosthenes-projects-9d6688ec.vercel.app",
 ];
 
-// ---------- CORS dynamique + robust (colle à la place de ton bloc existant) ----------
-const raw = process.env.CORS_ORIGINS || '';
-const configured = raw.split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
-
-function isAllowedOrigin(origin) {
-  if (!origin) return false;
-  if (configured.includes(origin)) return true;
-
-  try {
-    const u = new URL(origin);
-    const host = u.hostname;
-
-    for (const cand of configured) {
-      if (cand.startsWith('*.')) {
-        const base = cand.slice(2);
-        if (host === base || host.endsWith('.' + base)) return true;
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // allow non-browser requests (e.g., server-side) when origin is undefined
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        console.error("❌ CORS non autorisé pour cette origine:", origin);
+        callback(new Error("CORS non autorisé pour cette origine."));
       }
-      if (cand.startsWith('.')) {
-        const base = cand.slice(1);
-        if (host === base || host.endsWith('.' + base)) return true;
-      }
-    }
-  } catch (e) {}
-
-  return false;
-}
-
-app.use((req, res, next) => {
-  const origin = req.get('Origin');
-  console.log('CORS incoming origin ->', origin);
-
-  if (!origin) {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    return next();
-  }
-
-  if (origin === 'null') {
-    console.warn('Origin "null" allowed');
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Access-Control-Allow-Credentials', 'true');
-    return next();
-  }
-
-  if (isAllowedOrigin(origin)) {
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-    res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-    if (req.method === 'OPTIONS') return res.sendStatus(204);
-    return next();
-  }
-
-  console.error('❌ CORS non autorisé pour cette origine:', origin);
-  return res.status(403).json({ error: 'CORS non autorisé pour cette origine.' });
-});
-
-
+    },
+    methods: ["GET", "POST"],
+    credentials: true,
+  })
+);
 
 app.use(express.json());
 
-// ----------------- TRUST PROXY (important when behind Render / Vercel / reverse proxies) -----------------
-if (NODE_ENV === "production") {
-  // permet au cookie secure/samesite=None de fonctionner correctement derrière un proxy
-  app.set("trust proxy", 1);
-}
-
 // ---------- Session middleware (for admin) ----------
-// IMPORTANT: sameSite = "none" & secure = true to allow cross-site cookie from admin domain to backend domain.
-// Keep values minimal and compatible with your existing setup.
+app.set('trust proxy', 1); // ensure this is set once before session middleware
+
 app.use(session({
   name: "razafi_admin_sid",
-  secret: SESSION_SECRET || "CHANGE_ME_SESSION_SECRET",
+  secret: SESSION_SECRET || 'dev-session-secret',
   resave: false,
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: true,       // must be true in production (HTTPS)
-    sameSite: "none",   // allow cross-site cookie (admin domain -> backend domain)
-    maxAge: 24 * 60 * 60 * 1000 // 1 day
+    // NOTE:
+    // - En production (HTTPS) secure MUST be true to allow sameSite: 'none'
+    // - En dev local (http://localhost) met secure: false pour les tests locaux
+    secure: (NODE_ENV === "production"),
+    maxAge: 24 * 60 * 60 * 1000, // 1 day
+    sameSite: (NODE_ENV === "production") ? "none" : "lax" // none en prod pour cross-site, lax en dev
   }
 }));
 
-// -------------------------------------------------------
-// Helpers used by admin-report block and others
-// -------------------------------------------------------
-function parseAriaryFromString(str) {
-  try {
-    if (!str) return 0;
-    // find numbers and choose candidate >= 1000 (common for Ariary); fallback to last number
-    const matches = Array.from(String(str).matchAll(/(\d[\d\s\.,]*)/g)).map(m => m[1].replace(/[^\d]/g, ""));
-    if (!matches.length) return 0;
-    const nums = matches.map(s => parseInt(s, 10) || 0).filter(n => n > 0);
-    if (!nums.length) return 0;
-    const big = nums.filter(n => n >= 1000);
-    return big.length ? big[big.length - 1] : nums[nums.length - 1];
-  } catch (e) {
-    return 0;
+// ---------- In-memory OTP store (simple) ----------
+/**
+ * adminOtpStore: Map<otpId, { email, otp, createdAt }>
+ * - otpId is a uuid stored as cookie 'admin_otp_id'
+ * - OTP is 6-digit string
+ *
+ * NOTE: This is in-memory. For persistence across restarts use DB/Redis.
+ */
+const adminOtpStore = new Map();
+function cleanupOtpStore() {
+  const now = Date.now();
+  for (const [k, v] of adminOtpStore.entries()) {
+    if (!v || (now - v.createdAt) > OTP_TTL_MS) adminOtpStore.delete(k);
   }
 }
-
-function localRangeToUtcBounds(startYmd, endYmd, offsetHours = 3) {
-  // startYmd, endYmd are YYYY-MM-DD (Madagascar local). Returns {startIso, endIso} in UTC.
-  try {
-    // start at 00:00 local -> UTC = local - offset
-    const startLocal = new Date(`${startYmd}T00:00:00`);
-    const endLocal = new Date(`${endYmd}T23:59:59.999`);
-    const startUtcMs = startLocal.getTime() - offsetHours * 3600 * 1000;
-    const endUtcMs = endLocal.getTime() - offsetHours * 3600 * 1000;
-    return { startIso: new Date(startUtcMs).toISOString(), endIso: new Date(endUtcMs).toISOString() };
-  } catch (e) {
-    return null;
-  }
-}
-
-function nowMadagascarDate() {
-  // returns Date object shifted to Madagascar local time (UTC+3) but as UTC-based Date for computations
-  const now = new Date();
-  return new Date(now.getTime() + 3 * 3600 * 1000);
-}
-
-function monthBoundsMadagascar(dMad) {
-  const yyyy = dMad.getUTCFullYear();
-  const mm = String(dMad.getUTCMonth() + 1).padStart(2, "0");
-  const first = `${yyyy}-${mm}-01`;
-  const lastDate = new Date(Date.UTC(yyyy, dMad.getUTCMonth() + 1, 0));
-  const last = `${yyyy}-${mm}-${String(lastDate.getUTCDate()).padStart(2, "0")}`;
-  return { first, last };
-}
-
-function yearBoundsMadagascar(dMad) {
-  const yyyy = dMad.getUTCFullYear();
-  return { first: `${yyyy}-01-01`, last: `${yyyy}-12-31` };
-}
-
-// -------------------------------------------------------
-// ADMIN REPORT (GROUPED BY DATE MADAGASCAR + sorted newest->oldest)
-// -------------------------------------------------------
-app.get("/api/admin-report", async (req, res) => {
-  try {
-    if (!req.session?.isAdmin) {
-      return res.status(401).json({ error: "not_authenticated" });
-    }
-
-    const start = (req.query.start || "").trim();
-    const end = (req.query.end || "").trim();
-    if (!start || !end) {
-      return res.status(400).json({ error: "start and end required (YYYY-MM-DD)" });
-    }
-
-    const bounds = localRangeToUtcBounds(start, end, 3);
-    if (!bounds) {
-      return res.status(400).json({ error: "invalid_date_format" });
-    }
-
-    if (!supabase) {
-      return res.status(500).json({ error: "supabase_not_configured" });
-    }
-
-    const { data: rows, error: rowsError } = await supabase
-      .from("view_user_history_completed_normalized")
-      .select("id, phone, created_at, plan, voucher")
-      .gte("created_at", bounds.startIso)
-      .lte("created_at", bounds.endIso)
-      .order("created_at", { ascending: false });
-
-    if (rowsError) {
-      console.error("admin-report error:", rowsError);
-      return res.status(500).json({ error: "db_error" });
-    }
-
-    const toMadagascar = (utcIso) => {
-      if (!utcIso) return { paid_at_utc: null, paid_at_mad: null, date_mad: null };
-      const dUtc = new Date(utcIso);
-      const dMadMs = dUtc.getTime() + 3 * 60 * 60 * 1000;
-      const dMad = new Date(dMadMs);
-      const pad = (n) => String(n).padStart(2, "0");
-      const YYYY = dMad.getUTCFullYear();
-      const MM = pad(dMad.getUTCMonth() + 1);
-      const DD = pad(dMad.getUTCDate());
-      const hh = pad(dMad.getUTCHours());
-      const mm = pad(dMad.getUTCMinutes());
-      const ss = pad(dMad.getUTCSeconds());
-      const date_mad = `${YYYY}-${MM}-${DD}`;
-      const paid_at_mad = `${YYYY}-${MM}-${DD} ${hh}:${mm}:${ss}`;
-      return { paid_at_utc: utcIso, paid_at_mad, date_mad };
-    };
-
-    const groupsMap = new Map();
-    const flat = (rows || []).map(r => {
-      const { paid_at_utc, paid_at_mad, date_mad } = toMadagascar(r.created_at);
-      const tx = {
-        id: r.id,
-        paid_at_utc,
-        paid_at_mad,
-        date_mad,
-        phone: r.phone,
-        plan: r.plan,
-        voucher: r.voucher,
-        amount_ariary: parseAriaryFromString(r.plan) || parseAriaryFromString(r.voucher) || 0
-      };
-      if (!groupsMap.has(date_mad)) groupsMap.set(date_mad, []);
-      groupsMap.get(date_mad).push(tx);
-      return tx;
-    });
-
-    const groups = Array.from(groupsMap.entries())
-      .map(([date, txs]) => ({ date, transactions: txs }))
-      .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
-
-    const total_ariary_period = flat.reduce((s, t) => s + (Number(t.amount_ariary) || 0), 0);
-
-    const nowMad = nowMadagascarDate();
-    const todayYmd = `${nowMad.getUTCFullYear()}-${String(nowMad.getUTCMonth() + 1).padStart(2, "0")}-${String(nowMad.getUTCDate()).padStart(2, "0")}`;
-    const todayBounds = localRangeToUtcBounds(todayYmd, todayYmd, 3);
-    const mb = monthBoundsMadagascar(nowMad);
-    const monthBounds = localRangeToUtcBounds(mb.first, mb.last, 3);
-    const yb = yearBoundsMadagascar(nowMad);
-    const yearBounds = localRangeToUtcBounds(yb.first, yb.last, 3);
-
-    async function sumAriaryRange(startIso, endIso) {
-      const { data, error } = await supabase
-        .from("view_user_history_completed_normalized")
-        .select("plan, voucher")
-        .gte("created_at", startIso)
-        .lte("created_at", endIso);
-      if (error) {
-        console.error("sumAriaryRange error", error);
-        throw error;
-      }
-      return (data || []).reduce(
-        (s, r) => s + (parseAriaryFromString(r.plan) || parseAriaryFromString(r.voucher)),
-        0
-      );
-    }
-
-    const [daily, month, year] = await Promise.all([
-      sumAriaryRange(todayBounds.startIso, todayBounds.endIso),
-      sumAriaryRange(monthBounds.startIso, monthBounds.endIso),
-      sumAriaryRange(yearBounds.startIso, yearBounds.endIso),
-    ]);
-
-    return res.json({
-      total_gb: null,
-      total_ariary: total_ariary_period,
-      transactions: flat,
-      groups: groups,
-      totals: { daily, month, year }
-    });
-
-  } catch (err) {
-    console.error("/api/admin-report failure:", err);
-    return res.status(500).json({ error: "internal_error" });
-  }
-});
+// run cleanup every minute
+setInterval(cleanupOtpStore, 60 * 1000);
 
 // ---------- Supabase client (service role) ----------
 let supabase = null;
@@ -354,6 +163,38 @@ async function sendEmailNotification(subject, message) {
     console.info("📩 Email envoyé avec succès à", OPS_EMAIL);
   } catch (err) {
     console.error("❌ Email notification error", err?.message || err);
+  }
+}
+
+// ---------- Helper: send admin OTP by email ----------
+async function sendAdminOtpEmail(toEmail, otp, otpId) {
+  if (!mailer) {
+    console.warn("No mailer configured; cannot send OTP email to", toEmail);
+    return;
+  }
+  const subject = "[RAZAFI] Code OTP pour l'accès admin";
+  const body = `Bonjour,
+
+Voici votre code OTP pour l'accès admin RAZAFI.
+
+Code : ${otp}
+
+Ce code est valide pendant ${Math.round(OTP_TTL_MS / 60000)} minutes.
+
+Si vous n'avez pas demandé ce code, ignorez ce message.
+
+Cordialement,
+RAZAFI`;
+  try {
+    await mailer.sendMail({
+      from: MAIL_FROM,
+      to: toEmail,
+      subject,
+      text: body,
+    });
+    console.info("OTP email envoyé à", toEmail);
+  } catch (e) {
+    console.error("Erreur envoi OTP mail:", e?.message || e);
   }
 }
 
@@ -455,7 +296,71 @@ async function insertLog({
   }
 }
 
-// ---------- Polling logic (background) ----------
+// ---------- Helper: Extract ariary from strings (plan text) ----------
+function parseAriaryFromString(s) {
+  try {
+    if (!s) return 0;
+    const str = String(s);
+    // Typical patterns: "2000 Ar", "2000Ar", "15 000 Ar", "15000", "15000 Ar"
+    const match = str.match(/(\d{3,3}(?:[\s\.,]\d{3})+|\d{3,})/g); // matches groups of digits and thousands
+    if (!match || !match.length) return 0;
+    // choose the largest plausible candidate >= 1000 (prefer last)
+    const nums = match.map(m => parseInt(m.replace(/[^\d]/g, ""), 10)).filter(Boolean);
+    if (!nums.length) return 0;
+    // prefer the largest (handles "30 000" vs "30000")
+    const candidate = nums.reduce((a, b) => Math.max(a, b), 0);
+    return candidate || 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+// ---------- Date helpers for Madagascar conversions (UTC+3) ----------
+function nowMadagascarDate() {
+  // returns a Date object shifted to Madagascar local time (using UTC fields for consistency)
+  const nowUtc = new Date();
+  const ms = nowUtc.getTime() + 3 * 3600 * 1000;
+  return new Date(ms);
+}
+
+function localRangeToUtcBounds(startLocalYMD, endLocalYMD, offsetHours = 3) {
+  // startLocalYMD, endLocalYMD are strings "YYYY-MM-DD" representing dates in local timezone (Madagascar)
+  // returns { startIso, endIso } in UTC to query DB created_at timestamps.
+  try {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startLocalYMD) || !/^\d{4}-\d{2}-\d{2}$/.test(endLocalYMD)) return null;
+    const startParts = startLocalYMD.split("-").map(Number);
+    const endParts = endLocalYMD.split("-").map(Number);
+    // local start: YYYY-MM-DD 00:00:00 (local) => subtract offset to get UTC
+    const startLocal = Date.UTC(startParts[0], startParts[1] - 1, startParts[2], 0, 0, 0);
+    const endLocal = Date.UTC(endParts[0], endParts[1] - 1, endParts[2], 23, 59, 59, 999);
+    const startUtcMs = startLocal - (offsetHours * 3600 * 1000);
+    const endUtcMs = endLocal - (offsetHours * 3600 * 1000);
+    return { startIso: new Date(startUtcMs).toISOString(), endIso: new Date(endUtcMs).toISOString() };
+  } catch (e) {
+    return null;
+  }
+}
+
+function monthBoundsMadagascar(dateObjMad) {
+  // expects a Date already shifted to Madagascar local time (use nowMadagascarDate())
+  const Y = dateObjMad.getUTCFullYear();
+  const M = dateObjMad.getUTCMonth() + 1;
+  const first = `${Y}-${String(M).padStart(2, "0")}-01`;
+  // compute last day
+  const nextMonth = new Date(Date.UTC(Y, dateObjMad.getUTCMonth() + 1, 1));
+  const lastDayDate = new Date(nextMonth.getTime() - (24 * 3600 * 1000));
+  const last = `${Y}-${String(M).padStart(2, "0")}-${String(lastDayDate.getUTCDate()).padStart(2, "0")}`;
+  return { first, last };
+}
+
+function yearBoundsMadagascar(dateObjMad) {
+  const Y = dateObjMad.getUTCFullYear();
+  const first = `${Y}-01-01`;
+  const last = `${Y}-12-31`;
+  return { first, last };
+}
+
+// ---------- Polling logic (background) continued (unchanged from your code) ----------
 async function pollTransactionStatus({
   serverCorrelationId,
   requestRef,
@@ -465,8 +370,8 @@ async function pollTransactionStatus({
 }) {
   const start = Date.now();
   const timeoutMs = 3 * 60 * 1000; // 3 minutes
-  let backoff = 1000;
-  const maxBackoff = 10000;
+  let backoff = 1000; // start 1s
+  const maxBackoff = 10000; // cap 10s
   let attempt = 0;
   while (Date.now() - start < timeoutMs) {
     attempt++;
@@ -542,7 +447,7 @@ async function pollTransactionStatus({
               masked_phone: maskPhone(phone),
               amount,
               attempt,
-              short_message: "Aucun voucher disponible lors de l'attribution",
+              short_message: "Aucun voucher disponible lors de l'assignation",
               payload: sdata,
             });
             await sendEmailNotification(`[RAZAFI WIFI] ⚠️ No Voucher Available – RequestRef ${requestRef}`, {
@@ -675,12 +580,14 @@ async function pollTransactionStatus({
         short_message: "Erreur lors du polling MVola",
         payload: truncate(err?.response?.data || err?.message || err, 2000),
       });
+      // continue to retry
     }
 
     await new Promise((resolve) => setTimeout(resolve, backoff));
     backoff = Math.min(backoff * 2, maxBackoff);
   }
 
+  // Timeout
   console.error("⏰ Polling timeout for", requestRef, serverCorrelationId);
   try {
     if (supabase) {
@@ -717,7 +624,225 @@ app.get("/", (req, res) => {
   res.send("RAZAFI MVola Backend is running 🚀");
 });
 
-// ---------- Endpoint: /api/dernier-code ----------
+
+// ----------------- ADMIN: /admin-login & /verify-otp -----------------
+
+/**
+ * POST /admin-login
+ * body: { password, email }
+ * - verifies ADMIN_PASSWORD
+ * - issues temporary otpId stored in cookie 'admin_otp_id' and stores otp in adminOtpStore
+ * - sends OTP by email to provided email (using nodemailer)
+ */
+app.post("/admin-login", async (req, res) => {
+  try {
+    const { password, email } = req.body || {};
+    if (!password || !email) return res.status(400).json({ error: "password and email required" });
+    if (password !== ADMIN_PASSWORD) {
+      return res.status(401).json({ error: "invalid_password" });
+    }
+    // generate OTP
+    const otp = String(Math.floor(100000 + Math.random() * 900000));
+    const otpId = crypto.randomUUID();
+    adminOtpStore.set(otpId, { email, otp, createdAt: Date.now() });
+
+    // send OTP email asynchronously
+    sendAdminOtpEmail(email, otp, otpId).catch(e => console.warn("sendAdminOtpEmail error", e?.message || e));
+
+    // set cookie (httpOnly)
+    res.cookie("admin_otp_id", otpId, {
+      httpOnly: true,
+      secure: NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: OTP_TTL_MS,
+    });
+
+    return res.json({ ok: true, message: "otp_sent" });
+  } catch (e) {
+    console.error("/admin-login error", e?.message || e);
+    return res.status(500).json({ error: "internal" });
+  }
+});
+
+/**
+ * POST /verify-otp
+ * body: { otp }
+ * cookie: admin_otp_id set by /admin-login
+ * - if ok => sets req.session.isAdmin = true
+ */
+app.post("/verify-otp", (req, res) => {
+  try {
+    const otp = String((req.body || {}).otp || "").trim();
+    const otpId = req.cookies ? req.cookies["admin_otp_id"] : null;
+    if (!otpId) return res.status(400).json({ error: "otp_session_missing" });
+    const entry = adminOtpStore.get(otpId);
+    if (!entry) return res.status(400).json({ error: "otp_not_found_or_expired" });
+
+    // check TTL
+    if (Date.now() - entry.createdAt > OTP_TTL_MS) {
+      adminOtpStore.delete(otpId);
+      return res.status(400).json({ error: "otp_expired" });
+    }
+
+    if (otp !== String(entry.otp)) {
+      return res.status(401).json({ error: "invalid_otp" });
+    }
+
+    // success => mark session as admin
+    req.session.isAdmin = true;
+    req.session.adminEmail = entry.email || null;
+
+    // cleanup
+    adminOtpStore.delete(otpId);
+    // remove cookie by setting expired
+    res.cookie("admin_otp_id", "", { maxAge: 0 });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("/verify-otp error", e?.message || e);
+    return res.status(500).json({ error: "internal" });
+  }
+});
+
+// ----------------- ADMIN REPORT endpoint (protected) -----------------
+
+/**
+ * GET /api/admin-report?start=YYYY-MM-DD&end=YYYY-MM-DD
+ * - requires session isAdmin
+ * - returns totals, flat transactions, grouped by date (Madagascar timezone UTC+3)
+ */
+app.get("/api/admin-report", async (req, res) => {
+  try {
+    if (!req.session?.isAdmin) {
+      return res.status(401).json({ error: "not_authenticated" });
+    }
+
+    const start = (req.query.start || "").trim();
+    const end = (req.query.end || "").trim();
+    if (!start || !end) {
+      return res.status(400).json({ error: "start and end required (YYYY-MM-DD)" });
+    }
+
+    // convert requested local MADAGASCAR range to UTC bounds
+    const bounds = localRangeToUtcBounds(start, end, 3);
+    if (!bounds) {
+      return res.status(400).json({ error: "invalid_date_format" });
+    }
+
+    // Fetch rows ordered by created_at DESC (newest first)
+    const viewName = process.env.ADMIN_REPORT_VIEW || "view_user_history_completed"; // keep configurable
+    const { data: rows, error: rowsError } = await supabase
+      .from(viewName)
+      .select("id, phone, created_at, plan, voucher")
+      .gte("created_at", bounds.startIso)
+      .lte("created_at", bounds.endIso)
+      .order("created_at", { ascending: false }); // newest -> oldest
+
+    if (rowsError) {
+      console.error("admin-report error:", rowsError);
+      return res.status(500).json({ error: "db_error" });
+    }
+
+    // Helper: convert UTC created_at to Madagascar local date/time and date key
+    const toMadagascar = (utcIso) => {
+      if (!utcIso) return { paid_at_utc: null, paid_at_mad: null, date_mad: null };
+      const dUtc = new Date(utcIso);
+      const dMadMs = dUtc.getTime() + 3 * 60 * 60 * 1000; // shift +3h
+      const dMad = new Date(dMadMs);
+      // Format local datetime and date
+      const pad = (n) => String(n).padStart(2, "0");
+      const YYYY = dMad.getUTCFullYear();
+      const MM = pad(dMad.getUTCMonth() + 1);
+      const DD = pad(dMad.getUTCDate());
+      const hh = pad(dMad.getUTCHours());
+      const mm = pad(dMad.getUTCMinutes());
+      const ss = pad(dMad.getUTCSeconds());
+      const date_mad = `${YYYY}-${MM}-${DD}`;
+      const paid_at_mad = `${YYYY}-${MM}-${DD} ${hh}:${mm}:${ss}`; // human-friendly
+      return { paid_at_utc: utcIso, paid_at_mad, date_mad };
+    };
+
+    // Build transactions list (flat, newest->oldest) and a map grouped by date_mad
+    const groupsMap = new Map();
+    const flat = (rows || []).map(r => {
+      const { paid_at_utc, paid_at_mad, date_mad } = toMadagascar(r.created_at);
+      const tx = {
+        id: r.id,
+        paid_at_utc,
+        paid_at_mad,
+        date_mad,
+        phone: r.phone,
+        plan: r.plan,
+        voucher: r.voucher,
+        amount_ariary: parseAriaryFromString(r.plan) || 0
+      };
+      // push into groups map
+      if (!groupsMap.has(date_mad)) groupsMap.set(date_mad, []);
+      groupsMap.get(date_mad).push(tx);
+      return tx;
+    });
+
+    // Create groups array sorted by date desc (newest date first). Each group's transactions already in newest->oldest.
+    const groups = Array.from(groupsMap.entries())
+      .map(([date, txs]) => ({ date, transactions: txs }))
+      .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)); // sort desc
+
+    // Compute total ariary for the period (sum of amounts in flat)
+    const total_ariary_period = flat.reduce((s, t) => s + (Number(t.amount_ariary) || 0), 0);
+
+    // Compute daily / month / year totals (Madagascar timezone) using existing helpers
+    const nowMad = nowMadagascarDate();
+
+    // Today
+    const todayYmd = `${nowMad.getUTCFullYear()}-${String(nowMad.getUTCMonth() + 1).padStart(2, "0")}-${String(nowMad.getUTCDate()).padStart(2, "0")}`;
+    const todayBounds = localRangeToUtcBounds(todayYmd, todayYmd, 3);
+
+    // Month
+    const mb = monthBoundsMadagascar(nowMad);
+    const monthBounds = localRangeToUtcBounds(mb.first, mb.last, 3);
+
+    // Year
+    const yb = yearBoundsMadagascar(nowMad);
+    const yearBounds = localRangeToUtcBounds(yb.first, yb.last, 3);
+
+    async function sumAriaryRange(startIso, endIso) {
+      const { data, error } = await supabase
+        .from(viewName)
+        .select("plan, voucher")
+        .gte("created_at", startIso)
+        .lte("created_at", endIso);
+      if (error) {
+        console.error("sumAriaryRange error", error);
+        throw error;
+      }
+      return (data || []).reduce(
+        (s, r) => s + (parseAriaryFromString(r.plan) || 0),
+        0
+      );
+    }
+
+    const [daily, month, year] = await Promise.all([
+      sumAriaryRange(todayBounds.startIso, todayBounds.endIso),
+      sumAriaryRange(monthBounds.startIso, monthBounds.endIso),
+      sumAriaryRange(yearBounds.startIso, yearBounds.endIso),
+    ]);
+
+    // Response includes both a flat list (newest->oldest) and grouped view by date
+    return res.json({
+      total_gb: null,
+      total_ariary: total_ariary_period,
+      transactions: flat,   // newest -> oldest
+      groups: groups,       // [{ date: 'YYYY-MM-DD', transactions: [...] }, ...] newest date first
+      totals: { daily, month, year }
+    });
+
+  } catch (err) {
+    console.error("/api/admin-report failure:", err);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
+
+// ---------- Endpoint: /api/dernier-code (unchanged) ----------
 app.get("/api/dernier-code", async (req, res) => {
   try {
     const phone = (req.query.phone || "").trim();
@@ -790,7 +915,7 @@ app.get("/api/dernier-code", async (req, res) => {
   }
 });
 
-// ---------- Main route: /api/send-payment ----------
+// ---------- Main route: /api/send-payment (unchanged) ----------
 app.post("/api/send-payment", async (req, res) => {
   const body = req.body || {};
   const phone = body.phone;
