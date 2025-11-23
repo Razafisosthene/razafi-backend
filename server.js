@@ -92,18 +92,15 @@ app.use(express.json());
 app.set('trust proxy', 1); // ensure this is set once before session middleware
 
 app.use(session({
-  name: "razafi_admin_sid",
-  secret: SESSION_SECRET || 'dev-session-secret',
+  name: 'razafi_admin_sid',
+  secret: process.env.SESSION_SECRET || "dev-session-secret",
   resave: false,
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    // NOTE:
-    // - En production (HTTPS) secure MUST be true to allow sameSite: 'none'
-    // - En dev local (http://localhost) met secure: false pour les tests locaux
-    secure: (NODE_ENV === "production"),
+    secure: (process.env.NODE_ENV === "production"),
     maxAge: 24 * 60 * 60 * 1000, // 1 day
-    sameSite: (NODE_ENV === "production") ? "none" : "lax" // none en prod pour cross-site, lax en dev
+    sameSite: (process.env.NODE_ENV === "production") ? "none" : "lax"
   }
 }));
 
