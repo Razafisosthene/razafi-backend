@@ -58,34 +58,65 @@ const allowedOrigins = [
   "https://wifi-admin-ac5h7jar8-sosthenes-projects-9d6688ec.vercel.app",
 ];
 
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      // allow non-browser requests (e.g., server-side) when origin is undefined
-      if (!origin) {
-        // origin === undefined -> allow (e.g. curl, server-to-server)
-        callback(null, true);
-        return;
-      }
+// ---------- CORS dynamique + robust (colle à la place de ton bloc existant) ----------
+const raw = process.env.CORS_ORIGINS || '';
+const configured = raw.split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
 
-      // some browsers / webviews send the string "null" as Origin -> allow if you trust these clients
-      if (origin === "null") {
-        console.warn("Origin is the literal string 'null' — allowing (check client).");
-        callback(null, true);
-        return;
-      }
+function isAllowedOrigin(origin) {
+  if (!origin) return false;
+  if (configured.includes(origin)) return true;
 
-      if (allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        console.error("❌ CORS non autorisé pour cette origine:", origin);
-        callback(new Error("CORS non autorisé pour cette origine."));
+  try {
+    const u = new URL(origin);
+    const host = u.hostname;
+
+    for (const cand of configured) {
+      if (cand.startsWith('*.')) {
+        const base = cand.slice(2);
+        if (host === base || host.endsWith('.' + base)) return true;
       }
-    },
-    methods: ["GET", "POST"],
-    credentials: true,
-  })
-);
+      if (cand.startsWith('.')) {
+        const base = cand.slice(1);
+        if (host === base || host.endsWith('.' + base)) return true;
+      }
+    }
+  } catch (e) {}
+
+  return false;
+}
+
+app.use((req, res, next) => {
+  const origin = req.get('Origin');
+  console.log('CORS incoming origin ->', origin);
+
+  if (!origin) {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    return next();
+  }
+
+  if (origin === 'null') {
+    console.warn('Origin "null" allowed');
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    return next();
+  }
+
+  if (isAllowedOrigin(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    return next();
+  }
+
+  console.error('❌ CORS non autorisé pour cette origine:', origin);
+  return res.status(403).json({ error: 'CORS non autorisé pour cette origine.' });
+});
+
 
 
 app.use(express.json());
