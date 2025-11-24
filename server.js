@@ -8,6 +8,12 @@ import nodemailer from "nodemailer";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import session from "express-session";
+
+// NEW imports
+import pg from "pg";
+import connectPgSimple from "connect-pg-simple";
+import cookieParser from "cookie-parser";
+
 dotenv.config();
 
 const app = express();
@@ -24,6 +30,10 @@ const USER_LANGUAGE = process.env.USER_LANGUAGE || "FR";
 // Supabase (server-side service role)
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+// Postgres connection string (used for session store)
+// Prefer DATABASE_URL (standard). If not present, you can set SUPABASE_DB_URL in Render as the DB connection string.
+const DATABASE_URL = process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || null;
 
 // SMTP / Email
 const SMTP_HOST = process.env.SMTP_HOST || "smtp.gmail.com";
@@ -57,6 +67,9 @@ if (!SESSION_SECRET || SESSION_SECRET === "please-set-session-secret") {
 if (!ADMIN_PASSWORD) {
   console.warn("⚠️ ADMIN_PASSWORD not set — admin login will fail until it's set in .env.");
 }
+if (!DATABASE_URL) {
+  console.warn("⚠️ DATABASE_URL (Postgres connection string) not set. Session store will not be initialized. Set DATABASE_URL to your Supabase DB connection string.");
+}
 
 // ---------- CORS configuration ----------
 const allowedFromEnv = (process.env.CORS_ORIGINS || "").split(",").map(s => s.trim()).filter(Boolean);
@@ -88,19 +101,69 @@ app.use(
 
 app.use(express.json());
 
+// ---------- cookie parser (needed for req.cookies) ----------
+app.use(cookieParser());
+
 // ---------- Session middleware (for admin) ----------
-app.set('trust proxy', 1); // ensure this is set once before session middleware
+// trust proxy for secure cookies behind Render / proxies
+app.set('trust proxy', 1);
+
+// add imports at the top (with your other imports)
+import cookieParser from "cookie-parser";
+import connectPgSimple from "connect-pg-simple";
+import pkg from "pg"; // pg is installed
+const { Pool } = pkg;
+
+// ... after dotenv.config() and after your other setup lines
+
+// use cookie parser so req.cookies is populated (required for admin_otp_id)
+app.use(cookieParser());
+
+// create a pg pool from DATABASE_URL; allow SSL (Render -> Supabase)
+const pgPool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
+
+// connect-pg-simple store
+const PgSession = connectPgSimple(session);
+
+// trust proxy must be set BEFORE session middleware (you already had this)
+app.set("trust proxy", 1);
+
+// Session middleware using Postgres store
+app.use(
+  session({
+    store: new PgSession({
+      pool: pgPool,
+      tableName: "session",
+      createTableIfMissing: true,
+    }),
+    name: "razafi_admin_sid",
+    secret: process.env.SESSION_SECRET || "dev-session-secret",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 24 * 60 * 60 * 1000, // 1 day
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    },
+  })
+);
+
 
 app.use(session({
   name: 'razafi_admin_sid',
-  secret: process.env.SESSION_SECRET || "dev-session-secret",
+  store: sessionStore || undefined, // if null -> MemoryStore (warning)
+  secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: (process.env.NODE_ENV === "production"),
+    secure: (NODE_ENV === "production"), // must be true in prod to allow SameSite=None
     maxAge: 24 * 60 * 60 * 1000, // 1 day
-    sameSite: (process.env.NODE_ENV === "production") ? "none" : "lax"
+    sameSite: (NODE_ENV === "production") ? "none" : "lax"
   }
 }));
 
@@ -194,6 +257,117 @@ RAZAFI`;
     console.error("Erreur envoi OTP mail:", e?.message || e);
   }
 }
+
+// (rest of your file unchanged — polling logic, helpers, endpoints...)
+// I left the remainder of your original file intact. Continue below:
+
+// ---------- Token cache and fetcher (auto-refresh) ----------
+let tokenCache = {
+  access_token: null,
+  expires_at: 0,
+};
+
+async function fetchNewToken() {
+  if (!MVOLA_CLIENT_ID || !MVOLA_CLIENT_SECRET) {
+    throw new Error("MVOLA client credentials not configured");
+  }
+  const tokenUrl = `${MVOLA_BASE}/token`;
+  const auth = Buffer.from(`${MVOLA_CLIENT_ID}:${MVOLA_CLIENT_SECRET}`).toString("base64");
+  const headers = {
+    Authorization: `Basic ${auth}`,
+    "Content-Type": "application/x-www-form-urlencoded",
+    "Cache-Control": "no-cache",
+  };
+  const body = new URLSearchParams({ grant_type: "client_credentials", scope: "EXT_INT_MVOLA_SCOPE" }).toString();
+  const resp = await axios.post(tokenUrl, body, { headers, timeout: 10000 });
+  const data = resp.data;
+  const expiresInSec = data.expires_in || 300;
+  tokenCache.access_token = data.access_token;
+  tokenCache.expires_at = Date.now() + (expiresInSec - 60) * 1000;
+  console.info("✅ Token MVola obtenu, expires_in:", expiresInSec);
+  return tokenCache.access_token;
+}
+
+async function getAccessToken() {
+  if (tokenCache.access_token && Date.now() < tokenCache.expires_at) {
+    return tokenCache.access_token;
+  }
+  return await fetchNewToken();
+}
+
+// (all other functions & endpoints remain the same as in your original file)
+// Important: small OTP cookie update below (we changed sameSite to 'none')
+
+// ----------------- ADMIN: /admin-login & /verify-otp -----------------
+
+app.post("/admin-login", async (req, res) => {
+  try {
+    const { password, email } = req.body || {};
+    if (!password || !email) return res.status(400).json({ error: "password and email required" });
+    if (password !== ADMIN_PASSWORD) {
+      return res.status(401).json({ error: "invalid_password" });
+    }
+    // generate OTP
+    const otp = String(Math.floor(100000 + Math.random() * 900000));
+    const otpId = crypto.randomUUID();
+    adminOtpStore.set(otpId, { email, otp, createdAt: Date.now() });
+
+    // send OTP email asynchronously
+    sendAdminOtpEmail(email, otp, otpId).catch(e => console.warn("sendAdminOtpEmail error", e?.message || e));
+
+    // set cookie (httpOnly) - NOTE sameSite: 'none' and secure true in production
+    res.cookie("admin_otp_id", otpId, {
+      httpOnly: true,
+      secure: NODE_ENV === "production",
+      sameSite: (NODE_ENV === "production") ? "none" : "lax",
+      maxAge: OTP_TTL_MS,
+    });
+
+    return res.json({ ok: true, message: "otp_sent" });
+  } catch (e) {
+    console.error("/admin-login error", e?.message || e);
+    return res.status(500).json({ error: "internal" });
+  }
+});
+
+app.post("/verify-otp", (req, res) => {
+  try {
+    const otp = String((req.body || {}).otp || "").trim();
+    const otpId = req.cookies ? req.cookies["admin_otp_id"] : null;
+    if (!otpId) return res.status(400).json({ error: "otp_session_missing" });
+    const entry = adminOtpStore.get(otpId);
+    if (!entry) return res.status(400).json({ error: "otp_not_found_or_expired" });
+
+    // check TTL
+    if (Date.now() - entry.createdAt > OTP_TTL_MS) {
+      adminOtpStore.delete(otpId);
+      return res.status(400).json({ error: "otp_expired" });
+    }
+
+    if (otp !== String(entry.otp)) {
+      return res.status(401).json({ error: "invalid_otp" });
+    }
+
+    // success => mark session as admin
+    req.session.isAdmin = true;
+    req.session.adminEmail = entry.email || null;
+
+    // cleanup
+    adminOtpStore.delete(otpId);
+    // remove cookie by setting expired (match sameSite/secure semantics)
+    res.cookie("admin_otp_id", "", {
+      maxAge: 0,
+      httpOnly: true,
+      secure: NODE_ENV === "production",
+      sameSite: (NODE_ENV === "production") ? "none" : "lax",
+    });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("/verify-otp error", e?.message || e);
+    return res.status(500).json({ error: "internal" });
+  }
+});
 
 // ---------- Token cache and fetcher (auto-refresh) ----------
 let tokenCache = {
