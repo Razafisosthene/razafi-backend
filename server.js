@@ -32,7 +32,6 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 // Postgres connection string (used for session store)
-// Prefer DATABASE_URL (standard). If not present, you can set SUPABASE_DB_URL in Render as the DB connection string.
 const DATABASE_URL = process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || null;
 
 // SMTP / Email
@@ -102,65 +101,62 @@ app.use(
 app.use(express.json());
 
 // ---------- Session middleware (for admin) ----------
-// trust proxy for secure cookies behind Render / proxies
+// trust proxy for secure cookies behind Render / proxies (should be set before session)
 app.set('trust proxy', 1);
 
-// add imports at the top (with your other imports)
-import pkg from "pg"; // pg is installed
-const { Pool } = pkg;
-
-// ... after dotenv.config() and after your other setup lines
-
-// use cookie parser so req.cookies is populated (required for admin_otp_id)
+// cookie parser (ensure this is before routes that read req.cookies)
 app.use(cookieParser());
 
-// create a pg pool from DATABASE_URL; allow SSL (Render -> Supabase)
-const pgPool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
+// create a pg pool from DATABASE_URL (Supabase requires SSL)
+const { Pool } = pg;
+const pgPool = DATABASE_URL ? new Pool({
+  connectionString: DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+}) : null;
 
-// connect-pg-simple store
-const PgSession = connectPgSimple(session);
-
-// trust proxy must be set BEFORE session middleware (you already had this)
-app.set("trust proxy", 1);
-
-// Session middleware using Postgres store
-app.use(
-  session({
-    store: new PgSession({
+// create pg session store (only if pgPool is available)
+let pgSessionStore = null;
+if (pgPool) {
+  try {
+    const PgSession = connectPgSimple(session);
+    pgSessionStore = new PgSession({
       pool: pgPool,
       tableName: "session",
       createTableIfMissing: true,
-    }),
+    });
+    console.info("✅ Session store configured with Postgres pool (connect-pg-simple).");
+  } catch (e) {
+    console.error("❌ Failed configuring Postgres session store:", e?.message || e);
+    pgSessionStore = null;
+  }
+} else {
+  console.warn("⚠️ No DATABASE_URL: falling back to MemoryStore for sessions (development only).");
+}
+
+// Session middleware using Postgres store when available
+app.use(
+  session({
+    store: pgSessionStore || undefined, // undefined => express-session MemoryStore (warning)
     name: "razafi_admin_sid",
-    secret: process.env.SESSION_SECRET || "dev-session-secret",
+    secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: NODE_ENV === "production",
       maxAge: 24 * 60 * 60 * 1000, // 1 day
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      sameSite: NODE_ENV === "production" ? "none" : "lax",
     },
   })
 );
 
-
-app.use(session({
-  name: 'razafi_admin_sid',
-  store: sessionStore || undefined, // if null -> MemoryStore (warning)
-  secret: SESSION_SECRET,
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    httpOnly: true,
-    secure: (NODE_ENV === "production"), // must be true in prod to allow SameSite=None
-    maxAge: 24 * 60 * 60 * 1000, // 1 day
-    sameSite: (NODE_ENV === "production") ? "none" : "lax"
-  }
-}));
+// Optional debug pool check (prints friendly success/error in logs)
+if (pgPool) {
+  pgPool
+    .query("SELECT 1")
+    .then(() => console.info("✅ Postgres pool connected for session store"))
+    .catch((e) => console.error("❌ Postgres pool connection error:", e.message || e));
+}
 
 // ---------- In-memory OTP store (simple) ----------
 /**
@@ -252,117 +248,6 @@ RAZAFI`;
     console.error("Erreur envoi OTP mail:", e?.message || e);
   }
 }
-
-// (rest of your file unchanged — polling logic, helpers, endpoints...)
-// I left the remainder of your original file intact. Continue below:
-
-// ---------- Token cache and fetcher (auto-refresh) ----------
-let tokenCache = {
-  access_token: null,
-  expires_at: 0,
-};
-
-async function fetchNewToken() {
-  if (!MVOLA_CLIENT_ID || !MVOLA_CLIENT_SECRET) {
-    throw new Error("MVOLA client credentials not configured");
-  }
-  const tokenUrl = `${MVOLA_BASE}/token`;
-  const auth = Buffer.from(`${MVOLA_CLIENT_ID}:${MVOLA_CLIENT_SECRET}`).toString("base64");
-  const headers = {
-    Authorization: `Basic ${auth}`,
-    "Content-Type": "application/x-www-form-urlencoded",
-    "Cache-Control": "no-cache",
-  };
-  const body = new URLSearchParams({ grant_type: "client_credentials", scope: "EXT_INT_MVOLA_SCOPE" }).toString();
-  const resp = await axios.post(tokenUrl, body, { headers, timeout: 10000 });
-  const data = resp.data;
-  const expiresInSec = data.expires_in || 300;
-  tokenCache.access_token = data.access_token;
-  tokenCache.expires_at = Date.now() + (expiresInSec - 60) * 1000;
-  console.info("✅ Token MVola obtenu, expires_in:", expiresInSec);
-  return tokenCache.access_token;
-}
-
-async function getAccessToken() {
-  if (tokenCache.access_token && Date.now() < tokenCache.expires_at) {
-    return tokenCache.access_token;
-  }
-  return await fetchNewToken();
-}
-
-// (all other functions & endpoints remain the same as in your original file)
-// Important: small OTP cookie update below (we changed sameSite to 'none')
-
-// ----------------- ADMIN: /admin-login & /verify-otp -----------------
-
-app.post("/admin-login", async (req, res) => {
-  try {
-    const { password, email } = req.body || {};
-    if (!password || !email) return res.status(400).json({ error: "password and email required" });
-    if (password !== ADMIN_PASSWORD) {
-      return res.status(401).json({ error: "invalid_password" });
-    }
-    // generate OTP
-    const otp = String(Math.floor(100000 + Math.random() * 900000));
-    const otpId = crypto.randomUUID();
-    adminOtpStore.set(otpId, { email, otp, createdAt: Date.now() });
-
-    // send OTP email asynchronously
-    sendAdminOtpEmail(email, otp, otpId).catch(e => console.warn("sendAdminOtpEmail error", e?.message || e));
-
-    // set cookie (httpOnly) - NOTE sameSite: 'none' and secure true in production
-    res.cookie("admin_otp_id", otpId, {
-      httpOnly: true,
-      secure: NODE_ENV === "production",
-      sameSite: (NODE_ENV === "production") ? "none" : "lax",
-      maxAge: OTP_TTL_MS,
-    });
-
-    return res.json({ ok: true, message: "otp_sent" });
-  } catch (e) {
-    console.error("/admin-login error", e?.message || e);
-    return res.status(500).json({ error: "internal" });
-  }
-});
-
-app.post("/verify-otp", (req, res) => {
-  try {
-    const otp = String((req.body || {}).otp || "").trim();
-    const otpId = req.cookies ? req.cookies["admin_otp_id"] : null;
-    if (!otpId) return res.status(400).json({ error: "otp_session_missing" });
-    const entry = adminOtpStore.get(otpId);
-    if (!entry) return res.status(400).json({ error: "otp_not_found_or_expired" });
-
-    // check TTL
-    if (Date.now() - entry.createdAt > OTP_TTL_MS) {
-      adminOtpStore.delete(otpId);
-      return res.status(400).json({ error: "otp_expired" });
-    }
-
-    if (otp !== String(entry.otp)) {
-      return res.status(401).json({ error: "invalid_otp" });
-    }
-
-    // success => mark session as admin
-    req.session.isAdmin = true;
-    req.session.adminEmail = entry.email || null;
-
-    // cleanup
-    adminOtpStore.delete(otpId);
-    // remove cookie by setting expired (match sameSite/secure semantics)
-    res.cookie("admin_otp_id", "", {
-      maxAge: 0,
-      httpOnly: true,
-      secure: NODE_ENV === "production",
-      sameSite: (NODE_ENV === "production") ? "none" : "lax",
-    });
-
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error("/verify-otp error", e?.message || e);
-    return res.status(500).json({ error: "internal" });
-  }
-});
 
 // ---------- Token cache and fetcher (auto-refresh) ----------
 let tokenCache = {
@@ -467,13 +352,10 @@ function parseAriaryFromString(s) {
   try {
     if (!s) return 0;
     const str = String(s);
-    // Typical patterns: "2000 Ar", "2000Ar", "15 000 Ar", "15000", "15000 Ar"
-    const match = str.match(/(\d{3,3}(?:[\s\.,]\d{3})+|\d{3,})/g); // matches groups of digits and thousands
+    const match = str.match(/(\d{3,3}(?:[\s\.,]\d{3})+|\d{3,})/g);
     if (!match || !match.length) return 0;
-    // choose the largest plausible candidate >= 1000 (prefer last)
     const nums = match.map(m => parseInt(m.replace(/[^\d]/g, ""), 10)).filter(Boolean);
     if (!nums.length) return 0;
-    // prefer the largest (handles "30 000" vs "30000")
     const candidate = nums.reduce((a, b) => Math.max(a, b), 0);
     return candidate || 0;
   } catch (e) {
@@ -483,20 +365,16 @@ function parseAriaryFromString(s) {
 
 // ---------- Date helpers for Madagascar conversions (UTC+3) ----------
 function nowMadagascarDate() {
-  // returns a Date object shifted to Madagascar local time (using UTC fields for consistency)
   const nowUtc = new Date();
   const ms = nowUtc.getTime() + 3 * 3600 * 1000;
   return new Date(ms);
 }
 
 function localRangeToUtcBounds(startLocalYMD, endLocalYMD, offsetHours = 3) {
-  // startLocalYMD, endLocalYMD are strings "YYYY-MM-DD" representing dates in local timezone (Madagascar)
-  // returns { startIso, endIso } in UTC to query DB created_at timestamps.
   try {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(startLocalYMD) || !/^\d{4}-\d{2}-\d{2}$/.test(endLocalYMD)) return null;
     const startParts = startLocalYMD.split("-").map(Number);
     const endParts = endLocalYMD.split("-").map(Number);
-    // local start: YYYY-MM-DD 00:00:00 (local) => subtract offset to get UTC
     const startLocal = Date.UTC(startParts[0], startParts[1] - 1, startParts[2], 0, 0, 0);
     const endLocal = Date.UTC(endParts[0], endParts[1] - 1, endParts[2], 23, 59, 59, 999);
     const startUtcMs = startLocal - (offsetHours * 3600 * 1000);
@@ -508,11 +386,9 @@ function localRangeToUtcBounds(startLocalYMD, endLocalYMD, offsetHours = 3) {
 }
 
 function monthBoundsMadagascar(dateObjMad) {
-  // expects a Date already shifted to Madagascar local time (use nowMadagascarDate())
   const Y = dateObjMad.getUTCFullYear();
   const M = dateObjMad.getUTCMonth() + 1;
   const first = `${Y}-${String(M).padStart(2, "0")}-01`;
-  // compute last day
   const nextMonth = new Date(Date.UTC(Y, dateObjMad.getUTCMonth() + 1, 1));
   const lastDayDate = new Date(nextMonth.getTime() - (24 * 3600 * 1000));
   const last = `${Y}-${String(M).padStart(2, "0")}-${String(lastDayDate.getUTCDate()).padStart(2, "0")}`;
@@ -790,7 +666,6 @@ app.get("/", (req, res) => {
   res.send("RAZAFI MVola Backend is running 🚀");
 });
 
-
 // ----------------- ADMIN: /admin-login & /verify-otp -----------------
 
 /**
@@ -815,11 +690,11 @@ app.post("/admin-login", async (req, res) => {
     // send OTP email asynchronously
     sendAdminOtpEmail(email, otp, otpId).catch(e => console.warn("sendAdminOtpEmail error", e?.message || e));
 
-    // set cookie (httpOnly)
+    // set cookie (httpOnly) - NOTE sameSite: 'none' and secure true in production
     res.cookie("admin_otp_id", otpId, {
       httpOnly: true,
       secure: NODE_ENV === "production",
-      sameSite: "lax",
+      sameSite: (NODE_ENV === "production") ? "none" : "lax",
       maxAge: OTP_TTL_MS,
     });
 
@@ -830,12 +705,6 @@ app.post("/admin-login", async (req, res) => {
   }
 });
 
-/**
- * POST /verify-otp
- * body: { otp }
- * cookie: admin_otp_id set by /admin-login
- * - if ok => sets req.session.isAdmin = true
- */
 app.post("/verify-otp", (req, res) => {
   try {
     const otp = String((req.body || {}).otp || "").trim();
@@ -860,8 +729,13 @@ app.post("/verify-otp", (req, res) => {
 
     // cleanup
     adminOtpStore.delete(otpId);
-    // remove cookie by setting expired
-    res.cookie("admin_otp_id", "", { maxAge: 0 });
+    // remove cookie by setting expired (match sameSite/secure semantics)
+    res.cookie("admin_otp_id", "", {
+      maxAge: 0,
+      httpOnly: true,
+      secure: NODE_ENV === "production",
+      sameSite: (NODE_ENV === "production") ? "none" : "lax",
+    });
 
     return res.json({ ok: true });
   } catch (e) {
