@@ -106,7 +106,6 @@ app.use(express.json());
 app.set('trust proxy', 1);
 
 // add imports at the top (with your other imports)
-import connectPgSimple from "connect-pg-simple";
 import pkg from "pg"; // pg is installed
 const { Pool } = pkg;
 
