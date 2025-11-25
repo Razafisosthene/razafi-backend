@@ -1,5 +1,6 @@
-// server.js - merged (full, copy-paste ready)
-// RAZAFI BACKEND – MVola (production) - polling + voucher assignment + logs + OPS email + Admin OTP/session
+// server.js - SECURED VERSION (password + TOTP, rate-limits, secure cookies, helmet, origin checks)
+// Based on your original code; preserves MVola logic, polling, voucher assignment, logs & notifications.
+
 import express from "express";
 import axios from "axios";
 import cors from "cors";
@@ -8,8 +9,9 @@ import nodemailer from "nodemailer";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import session from "express-session";
-
-// NEW imports
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import speakeasy from "speakeasy";
 import pg from "pg";
 import connectPgSimple from "connect-pg-simple";
 import cookieParser from "cookie-parser";
@@ -19,7 +21,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// ---------- Environment & required vars (no secrets here) ----------
+// ---------- Environment & required vars ----------
 const MVOLA_BASE = process.env.MVOLA_BASE || "https://api.mvola.mg";
 const MVOLA_CLIENT_ID = process.env.MVOLA_CLIENT_ID || process.env.MVOLA_CONSUMER_KEY;
 const MVOLA_CLIENT_SECRET = process.env.MVOLA_CLIENT_SECRET || process.env.MVOLA_CONSUMER_SECRET;
@@ -27,14 +29,11 @@ const PARTNER_NAME = process.env.PARTNER_NAME || "RAZAFI";
 const PARTNER_MSISDN = process.env.PARTNER_MSISDN || "0340500592";
 const USER_LANGUAGE = process.env.USER_LANGUAGE || "FR";
 
-// Supabase (server-side service role)
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-// Postgres connection string (used for session store)
 const DATABASE_URL = process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || null;
 
-// SMTP / Email
 const SMTP_HOST = process.env.SMTP_HOST || "smtp.gmail.com";
 const SMTP_PORT = parseInt(process.env.SMTP_PORT || "587", 10);
 const SMTP_USER = process.env.SMTP_USER || process.env.GMAIL_USER;
@@ -42,15 +41,16 @@ const SMTP_PASS = process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD;
 const MAIL_FROM = process.env.MAIL_FROM || SMTP_USER;
 const OPS_EMAIL = process.env.OPS_EMAIL || process.env.GMAIL_TO || "sosthenet@gmail.com";
 
-// Admin / Session / OTP
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || ""; // must be set
+// Admin / Session / Auth
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || ""; // keep for compatibility
 const SESSION_SECRET = process.env.SESSION_SECRET || "please-set-session-secret";
-const OTP_TTL_MS = 5 * 60 * 1000; // OTP validity: 5 minutes
+const OTP_TTL_MS = 5 * 60 * 1000; // OTP validity for email fallback
+const ADMIN_TOTP_SECRET = process.env.ADMIN_TOTP_SECRET || null; // base32 TOTP secret for admin (preferred)
+const ADMIN_COOKIE_DOMAIN = process.env.ADMIN_COOKIE_DOMAIN || "admin-wifi.razafistore.com"; // important
 
-// NODE env
 const NODE_ENV = process.env.NODE_ENV || "production";
 
-// --------- Basic checks for required server-side secrets (log friendly) ----------
+// ---------- Startup checks ----------
 if (!MVOLA_CLIENT_ID || !MVOLA_CLIENT_SECRET) {
   console.warn("⚠️ MVOLA client credentials are not set (MVOLA_CLIENT_ID / MVOLA_CLIENT_SECRET). Token fetch will fail without them.");
 }
@@ -63,58 +63,54 @@ if (!SMTP_USER || !SMTP_PASS) {
 if (!SESSION_SECRET || SESSION_SECRET === "please-set-session-secret") {
   console.warn("⚠️ SESSION_SECRET not set or using default — set SESSION_SECRET in .env for secure admin sessions.");
 }
-if (!ADMIN_PASSWORD) {
-  console.warn("⚠️ ADMIN_PASSWORD not set — admin login will fail until it's set in .env.");
+if (!ADMIN_PASSWORD && !ADMIN_TOTP_SECRET) {
+  console.warn("⚠️ No ADMIN_PASSWORD or ADMIN_TOTP_SECRET set — admin auth will not work until at least one is configured.");
 }
-if (!DATABASE_URL) {
-  console.warn("⚠️ DATABASE_URL (Postgres connection string) not set. Session store will not be initialized. Set DATABASE_URL to your Supabase DB connection string.");
+if (NODE_ENV === "production" && !DATABASE_URL) {
+  console.error("FATAL: DATABASE_URL missing in production - aborting. Please set DATABASE_URL to your Postgres connection string.");
+  process.exit(1);
 }
 
 // ---------- CORS configuration ----------
 const allowedFromEnv = (process.env.CORS_ORIGINS || "").split(",").map(s => s.trim()).filter(Boolean);
 const allowedOrigins = allowedFromEnv.length ? allowedFromEnv : [
-  "https://wifi-razafistore.vercel.app",
-  "https://wifi-razafistore-git-main-razafisosthene.vercel.app",
   "https://wifi.razafistore.com",
-  "https://admin-wifi.razafistore.com", // <-- IMPORTANT: ton admin
-  "http://localhost:3000",
-  // Ajout admin preview Vercel
-  "https://wifi-admin-ac5h7jar8-sosthenes-projects-9d6688ec.vercel.app",
+  "https://admin-wifi.razafistore.com",
 ];
 
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      // allow non-browser requests (e.g., server-side) when origin is undefined
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        console.error("❌ CORS non autorisé pour cette origine:", origin);
-        callback(new Error("CORS non autorisé pour cette origine."));
-      }
-    },
-    methods: ["GET", "POST"],
-    credentials: true,
-  })
-);
+app.use(cors({
+  origin: function (origin, callback) {
+    // allow non-browser requests (origin === undefined) for server-to-server
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    console.error("❌ CORS not allowed for origin:", origin);
+    return callback(new Error("CORS not allowed for this origin."));
+  },
+  methods: ["GET", "POST"],
+  credentials: true,
+}));
 
 app.use(express.json());
-
-// ---------- Session middleware (for admin) ----------
-// trust proxy for secure cookies behind Render / proxies (should be set before session)
 app.set('trust proxy', 1);
-
-// cookie parser (ensure this is before routes that read req.cookies)
 app.use(cookieParser());
 
-// create a pg pool from DATABASE_URL (Supabase requires SSL)
+// ---------- Security headers ----------
+app.use(helmet({
+  contentSecurityPolicy: false, // we'll configure CSP at proxy / static host as needed
+}));
+app.use((req, res, next) => {
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  next();
+});
+
+// ---------- Postgres pool & session store ----------
 const { Pool } = pg;
 const pgPool = DATABASE_URL ? new Pool({
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 }) : null;
 
-// create pg session store (only if pgPool is available)
 let pgSessionStore = null;
 if (pgPool) {
   try {
@@ -129,43 +125,30 @@ if (pgPool) {
     console.error("❌ Failed configuring Postgres session store:", e?.message || e);
     pgSessionStore = null;
   }
-} else {
-  console.warn("⚠️ No DATABASE_URL: falling back to MemoryStore for sessions (development only).");
 }
 
-// Session middleware using Postgres store when available
-app.use(
-  session({
-    store: pgSessionStore || undefined, // undefined => express-session MemoryStore (warning)
-    name: "razafi_admin_sid",
-    secret: SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      secure: NODE_ENV === "production",
-      maxAge: 24 * 60 * 60 * 1000, // 1 day
-      sameSite: NODE_ENV === "production" ? "none" : "lax",
-    },
-  })
-);
+// ---------- Session middleware (strict admin cookie) ----------
+app.use(session({
+  store: pgSessionStore || undefined,
+  name: "razafi_admin_sid",
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    secure: NODE_ENV === "production",
+    maxAge: 30 * 60 * 1000, // 30 minutes
+    sameSite: 'strict',
+    domain: ADMIN_COOKIE_DOMAIN, // ensure admin cookie scoped to admin subdomain
+  },
+}));
 
-// Optional debug pool check (prints friendly success/error in logs)
 if (pgPool) {
-  pgPool
-    .query("SELECT 1")
-    .then(() => console.info("✅ Postgres pool connected for session store"))
+  pgPool.query("SELECT 1").then(() => console.info("✅ Postgres pool connected for session store"))
     .catch((e) => console.error("❌ Postgres pool connection error:", e.message || e));
 }
 
-// ---------- In-memory OTP store (simple) ----------
-/**
- * adminOtpStore: Map<otpId, { email, otp, createdAt }>
- * - otpId is a uuid stored as cookie 'admin_otp_id'
- * - OTP is 6-digit string
- *
- * NOTE: This is in-memory. For persistence across restarts use DB/Redis.
- */
+// ---------- In-memory OTP store (fallback; prefer TOTP) ----------
 const adminOtpStore = new Map();
 function cleanupOtpStore() {
   const now = Date.now();
@@ -173,28 +156,22 @@ function cleanupOtpStore() {
     if (!v || (now - v.createdAt) > OTP_TTL_MS) adminOtpStore.delete(k);
   }
 }
-// run cleanup every minute
 setInterval(cleanupOtpStore, 60 * 1000);
 
 // ---------- Supabase client (service role) ----------
 let supabase = null;
 if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
-  supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false },
-  });
+  supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 }
 
-// ---------- Mailer (SMTP) ----------
+// ---------- Mailer ----------
 function createMailer() {
   if (!SMTP_USER || !SMTP_PASS) return null;
   return nodemailer.createTransport({
     host: SMTP_HOST,
     port: SMTP_PORT,
     secure: SMTP_PORT === 465,
-    auth: {
-      user: SMTP_USER,
-      pass: SMTP_PASS,
-    },
+    auth: { user: SMTP_USER, pass: SMTP_PASS },
   });
 }
 const mailer = createMailer();
@@ -211,79 +188,45 @@ async function sendEmailNotification(subject, message) {
       subject,
       text: typeof message === "string" ? message : JSON.stringify(message, null, 2),
     });
-    console.info("📩 Email envoyé avec succès à", OPS_EMAIL);
+    console.info("📩 Email sent to", OPS_EMAIL);
   } catch (err) {
     console.error("❌ Email notification error", err?.message || err);
   }
 }
 
-// ---------- Helper: send admin OTP by email ----------
-async function sendAdminOtpEmail(toEmail, otp, otpId) {
-  if (!mailer) {
-    console.warn("No mailer configured; cannot send OTP email to", toEmail);
-    return;
-  }
+// ---------- Helper: send admin OTP by email (fallback) ----------
+async function sendAdminOtpEmail(toEmail, otp) {
+  if (!mailer) { console.warn("No mailer configured; cannot send OTP email to", toEmail); return; }
   const subject = "[RAZAFI] Code OTP pour l'accès admin";
-  const body = `Bonjour,
-
-Voici votre code OTP pour l'accès admin RAZAFI.
-
-Code : ${otp}
-
-Ce code est valide pendant ${Math.round(OTP_TTL_MS / 60000)} minutes.
-
-Si vous n'avez pas demandé ce code, ignorez ce message.
-
-Cordialement,
-RAZAFI`;
+  const body = `Bonjour,\n\nVoici votre code OTP pour l'accès admin RAZAFI.\n\nCode : ${otp}\n\nCe code est valide pendant ${Math.round(OTP_TTL_MS / 60000)} minutes.\n\nSi vous n'avez pas demandé ce code, ignorez ce message.\n\nCordialement,\nRAZAFI`;
   try {
-    await mailer.sendMail({
-      from: MAIL_FROM,
-      to: toEmail,
-      subject,
-      text: body,
-    });
-    console.info("OTP email envoyé à", toEmail);
+    await mailer.sendMail({ from: MAIL_FROM, to: toEmail, subject, text: body });
+    console.info("OTP email sent to", toEmail);
   } catch (e) {
-    console.error("Erreur envoi OTP mail:", e?.message || e);
+    console.error("Error sending OTP mail:", e?.message || e);
   }
 }
 
-// ---------- Token cache and fetcher (auto-refresh) ----------
-let tokenCache = {
-  access_token: null,
-  expires_at: 0,
-};
-
+// ---------- Token management for MVOLA ----------
+let tokenCache = { access_token: null, expires_at: 0 };
 async function fetchNewToken() {
-  if (!MVOLA_CLIENT_ID || !MVOLA_CLIENT_SECRET) {
-    throw new Error("MVOLA client credentials not configured");
-  }
+  if (!MVOLA_CLIENT_ID || !MVOLA_CLIENT_SECRET) throw new Error("MVOLA client credentials not configured");
   const tokenUrl = `${MVOLA_BASE}/token`;
   const auth = Buffer.from(`${MVOLA_CLIENT_ID}:${MVOLA_CLIENT_SECRET}`).toString("base64");
-  const headers = {
-    Authorization: `Basic ${auth}`,
-    "Content-Type": "application/x-www-form-urlencoded",
-    "Cache-Control": "no-cache",
-  };
+  const headers = { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded", "Cache-Control": "no-cache" };
   const body = new URLSearchParams({ grant_type: "client_credentials", scope: "EXT_INT_MVOLA_SCOPE" }).toString();
   const resp = await axios.post(tokenUrl, body, { headers, timeout: 10000 });
   const data = resp.data;
   const expiresInSec = data.expires_in || 300;
   tokenCache.access_token = data.access_token;
   tokenCache.expires_at = Date.now() + (expiresInSec - 60) * 1000;
-  console.info("✅ Token MVola obtenu, expires_in:", expiresInSec);
+  console.info("✅ Token MVola obtained, expires_in:", expiresInSec);
   return tokenCache.access_token;
 }
-
 async function getAccessToken() {
-  if (tokenCache.access_token && Date.now() < tokenCache.expires_at) {
-    return tokenCache.access_token;
-  }
+  if (tokenCache.access_token && Date.now() < tokenCache.expires_at) return tokenCache.access_token;
   return await fetchNewToken();
 }
-
-// ---------- Helpers for MVola headers ----------
 function mvolaHeaders(accessToken, correlationId) {
   return {
     Authorization: `Bearer ${accessToken}`,
@@ -297,57 +240,39 @@ function mvolaHeaders(accessToken, correlationId) {
   };
 }
 
-// ---------- Utility helpers ----------
+// ---------- Utilities ----------
 function maskPhone(phone) {
   if (!phone) return null;
   const s = String(phone).trim();
   if (s.length <= 4) return s;
-  const first = s.slice(0, 3);
-  const last = s.slice(-3);
+  const first = s.slice(0, 3), last = s.slice(-3);
   return `${first}****${last}`;
 }
-
 function truncate(str, n = 2000) {
   if (!str && str !== 0) return null;
   const s = typeof str === "string" ? str : JSON.stringify(str);
   if (s.length <= n) return s;
   return s.slice(0, n);
 }
-
-async function insertLog({
-  request_ref,
-  server_correlation_id,
-  event_type,
-  status,
-  masked_phone,
-  amount,
-  attempt,
-  short_message,
-  payload,
-  meta,
-}) {
+async function insertLog({ request_ref, server_correlation_id, event_type, status, masked_phone, amount, attempt, short_message, payload, meta }) {
   try {
     if (!supabase) return;
-    await supabase.from("logs").insert([
-      {
-        request_ref,
-        server_correlation_id,
-        event_type,
-        status,
-        masked_phone,
-        amount,
-        attempt,
-        short_message,
-        payload: truncate(payload, 2000),
-        meta,
-      },
-    ]);
+    await supabase.from("logs").insert([{
+      request_ref,
+      server_correlation_id,
+      event_type,
+      status,
+      masked_phone,
+      amount,
+      attempt,
+      short_message,
+      payload: truncate(payload, 2000),
+      meta,
+    }]);
   } catch (e) {
     console.error("⚠️ Failed to insert log:", e?.message || e);
   }
 }
-
-// ---------- Helper: Extract ariary from strings (plan text) ----------
 function parseAriaryFromString(s) {
   try {
     if (!s) return 0;
@@ -356,80 +281,54 @@ function parseAriaryFromString(s) {
     if (!match || !match.length) return 0;
     const nums = match.map(m => parseInt(m.replace(/[^\d]/g, ""), 10)).filter(Boolean);
     if (!nums.length) return 0;
-    const candidate = nums.reduce((a, b) => Math.max(a, b), 0);
-    return candidate || 0;
-  } catch (e) {
-    return 0;
-  }
+    return nums.reduce((a,b) => Math.max(a,b), 0) || 0;
+  } catch (e) { return 0; }
 }
-
-// ---------- Date helpers for Madagascar conversions (UTC+3) ----------
 function nowMadagascarDate() {
   const nowUtc = new Date();
-  const ms = nowUtc.getTime() + 3 * 3600 * 1000;
-  return new Date(ms);
+  return new Date(nowUtc.getTime() + 3 * 3600 * 1000);
 }
-
 function localRangeToUtcBounds(startLocalYMD, endLocalYMD, offsetHours = 3) {
   try {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(startLocalYMD) || !/^\d{4}-\d{2}-\d{2}$/.test(endLocalYMD)) return null;
     const startParts = startLocalYMD.split("-").map(Number);
     const endParts = endLocalYMD.split("-").map(Number);
-    const startLocal = Date.UTC(startParts[0], startParts[1] - 1, startParts[2], 0, 0, 0);
-    const endLocal = Date.UTC(endParts[0], endParts[1] - 1, endParts[2], 23, 59, 59, 999);
+    const startLocal = Date.UTC(startParts[0], startParts[1]-1, startParts[2], 0, 0, 0);
+    const endLocal = Date.UTC(endParts[0], endParts[1]-1, endParts[2], 23, 59, 59, 999);
     const startUtcMs = startLocal - (offsetHours * 3600 * 1000);
     const endUtcMs = endLocal - (offsetHours * 3600 * 1000);
     return { startIso: new Date(startUtcMs).toISOString(), endIso: new Date(endUtcMs).toISOString() };
-  } catch (e) {
-    return null;
-  }
+  } catch (e) { return null; }
 }
-
 function monthBoundsMadagascar(dateObjMad) {
-  const Y = dateObjMad.getUTCFullYear();
-  const M = dateObjMad.getUTCMonth() + 1;
-  const first = `${Y}-${String(M).padStart(2, "0")}-01`;
-  const nextMonth = new Date(Date.UTC(Y, dateObjMad.getUTCMonth() + 1, 1));
+  const Y = dateObjMad.getUTCFullYear(); const M = dateObjMad.getUTCMonth() + 1;
+  const first = `${Y}-${String(M).padStart(2,"0")}-01`;
+  const nextMonth = new Date(Date.UTC(Y, dateObjMad.getUTCMonth()+1, 1));
   const lastDayDate = new Date(nextMonth.getTime() - (24 * 3600 * 1000));
-  const last = `${Y}-${String(M).padStart(2, "0")}-${String(lastDayDate.getUTCDate()).padStart(2, "0")}`;
+  const last = `${Y}-${String(M).padStart(2,"0")}-${String(lastDayDate.getUTCDate()).padStart(2,"0")}`;
   return { first, last };
 }
-
 function yearBoundsMadagascar(dateObjMad) {
   const Y = dateObjMad.getUTCFullYear();
-  const first = `${Y}-01-01`;
-  const last = `${Y}-12-31`;
-  return { first, last };
+  return { first: `${Y}-01-01`, last: `${Y}-12-31` };
 }
 
-// ---------- Polling logic (background) continued (unchanged from your code) ----------
-async function pollTransactionStatus({
-  serverCorrelationId,
-  requestRef,
-  phone,
-  amount,
-  plan,
-}) {
+// ---------- Polling logic (keeps original behavior) ----------
+async function pollTransactionStatus({ serverCorrelationId, requestRef, phone, amount, plan }) {
   const start = Date.now();
   const timeoutMs = 3 * 60 * 1000; // 3 minutes
-  let backoff = 1000; // start 1s
-  const maxBackoff = 10000; // cap 10s
-  let attempt = 0;
+  let backoff = 1000; let maxBackoff = 10000; let attempt = 0;
   while (Date.now() - start < timeoutMs) {
     attempt++;
     try {
       const token = await getAccessToken();
       const statusUrl = `${MVOLA_BASE}/mvola/mm/transactions/type/merchantpay/1.0.0/status/${serverCorrelationId}`;
-      const statusResp = await axios.get(statusUrl, {
-        headers: mvolaHeaders(token, crypto.randomUUID()),
-        timeout: 10000,
-      });
+      const statusResp = await axios.get(statusUrl, { headers: mvolaHeaders(token, crypto.randomUUID()), timeout: 10000 });
       const sdata = statusResp.data || {};
       const status = (sdata.status || sdata.transactionStatus || "").toLowerCase();
 
       if (status === "completed" || status === "success") {
         console.info("🔔 MVola status completed for", requestRef, serverCorrelationId);
-
         try {
           if (!supabase) throw new Error("Supabase not configured");
           const { data: rpcData, error: rpcError } = await supabase.rpc("assign_voucher_atomic", {
@@ -452,10 +351,7 @@ async function pollTransactionStatus({
               short_message: "assign_voucher_atomic failed",
               payload: rpcError,
             });
-            await supabase
-              .from("transactions")
-              .update({ status: "no_voucher_pending", metadata: { assign_error: truncate(rpcError, 2000) } })
-              .eq("request_ref", requestRef);
+            await supabase.from("transactions").update({ status: "no_voucher_pending", metadata: { assign_error: truncate(rpcError, 2000) } }).eq("request_ref", requestRef);
             await sendEmailNotification(`[RAZAFI WIFI] ⚠️ No Voucher Available – RequestRef ${requestRef}`, {
               RequestRef: requestRef,
               ServerCorrelationId: serverCorrelationId,
@@ -473,31 +369,13 @@ async function pollTransactionStatus({
 
           if (!assigned || !voucherCode) {
             console.warn("⚠️ No voucher available for", requestRef);
-            try {
-              await supabase
-                .from("transactions")
-                .update({ status: "no_voucher_pending", metadata: { mvolaResponse: truncate(sdata, 2000) } })
-                .eq("request_ref", requestRef);
-            } catch (e) {
-              console.error("⚠️ Failed updating transaction to no_voucher_pending:", e?.message || e);
-            }
+            try { await supabase.from("transactions").update({ status: "no_voucher_pending", metadata: { mvolaResponse: truncate(sdata, 2000) } }).eq("request_ref", requestRef); } catch (e) { console.error("⚠️ Failed updating transaction to no_voucher_pending:", e?.message || e); }
             await insertLog({
-              request_ref: requestRef,
-              server_correlation_id: serverCorrelationId,
-              event_type: "no_voucher_pending",
-              status: "no_voucher",
-              masked_phone: maskPhone(phone),
-              amount,
-              attempt,
-              short_message: "Aucun voucher disponible lors de l'assignation",
-              payload: sdata,
+              request_ref: requestRef, server_correlation_id: serverCorrelationId, event_type: "no_voucher_pending", status: "no_voucher",
+              masked_phone: maskPhone(phone), amount, attempt, short_message: "Aucun voucher disponible lors de l'attribution", payload: sdata,
             });
             await sendEmailNotification(`[RAZAFI WIFI] ⚠️ No Voucher Available – RequestRef ${requestRef}`, {
-              RequestRef: requestRef,
-              ServerCorrelationId: serverCorrelationId,
-              Phone: maskPhone(phone),
-              Amount: amount,
-              Message: "Payment completed but no voucher available. OPS intervention required.",
+              RequestRef: requestRef, ServerCorrelationId: serverCorrelationId, Phone: maskPhone(phone), Amount: amount, Message: "Payment completed but no voucher available. OPS intervention required.",
             });
             return;
           }
@@ -505,29 +383,17 @@ async function pollTransactionStatus({
           console.info("✅ Voucher assigned:", voucherCode, voucherId || "(no id)");
 
           try {
-            await supabase
-              .from("transactions")
-              .update({
-                status: "completed",
-                voucher: voucherCode,
-                transaction_reference: sdata.transactionReference || sdata.objectReference || null,
-                metadata: { mvolaResponse: truncate(sdata, 2000) },
-              })
-              .eq("request_ref", requestRef);
-          } catch (e) {
-            console.error("⚠️ Failed updating transaction after voucher assign:", e?.message || e);
-          }
+            await supabase.from("transactions").update({
+              status: "completed",
+              voucher: voucherCode,
+              transaction_reference: sdata.transactionReference || sdata.objectReference || null,
+              metadata: { mvolaResponse: truncate(sdata, 2000) },
+            }).eq("request_ref", requestRef);
+          } catch (e) { console.error("⚠️ Failed updating transaction after voucher assign:", e?.message || e); }
 
           await insertLog({
-            request_ref: requestRef,
-            server_correlation_id: serverCorrelationId,
-            event_type: "completed",
-            status: "completed",
-            masked_phone: maskPhone(phone),
-            amount,
-            attempt,
-            short_message: "Paiement confirmé et voucher attribué",
-            payload: { mvolaResponse: truncate(sdata, 2000), voucher: voucherCode, voucher_id: voucherId },
+            request_ref: requestRef, server_correlation_id: serverCorrelationId, event_type: "completed", status: "completed",
+            masked_phone: maskPhone(phone), amount, attempt, short_message: "Paiement confirmé et voucher attribué", payload: { mvolaResponse: truncate(sdata,2000), voucher: voucherCode, voucher_id: voucherId },
           });
 
           const emailBody = [
@@ -547,27 +413,12 @@ async function pollTransactionStatus({
         } catch (assignErr) {
           console.error("❌ Error during voucher assignment flow", assignErr?.message || assignErr);
           await insertLog({
-            request_ref: requestRef,
-            server_correlation_id: serverCorrelationId,
-            event_type: "assign_exception",
-            status: "failed",
-            masked_phone: maskPhone(phone),
-            amount,
-            attempt,
-            short_message: "Exception pendant assignation voucher",
-            payload: truncate(assignErr?.message || assignErr, 2000),
+            request_ref: requestRef, server_correlation_id: serverCorrelationId, event_type: "assign_exception", status: "failed",
+            masked_phone: maskPhone(phone), amount, attempt, short_message: "Exception pendant assignation voucher", payload: truncate(assignErr?.message || assignErr, 2000),
           });
-          await supabase
-            .from("transactions")
-            .update({ status: "no_voucher_pending", metadata: { assign_exception: truncate(assignErr?.message || assignErr, 2000) } })
-            .eq("request_ref", requestRef);
+          await supabase.from("transactions").update({ status: "no_voucher_pending", metadata: { assign_exception: truncate(assignErr?.message || assignErr,2000) } }).eq("request_ref", requestRef);
           await sendEmailNotification(`[RAZAFI WIFI] ⚠️ No Voucher Available – RequestRef ${requestRef}`, {
-            RequestRef: requestRef,
-            ServerCorrelationId: serverCorrelationId,
-            Phone: maskPhone(phone),
-            Amount: amount,
-            Message: "Erreur système lors de l'attribution du voucher. Intervention requise.",
-            error: truncate(assignErr?.message || assignErr, 2000),
+            RequestRef: requestRef, ServerCorrelationId: serverCorrelationId, Phone: maskPhone(phone), Amount: amount, Message: "Erreur système lors de l'attribution du voucher. Intervention requise.", error: truncate(assignErr?.message || assignErr, 2000),
           });
           return;
         }
@@ -575,168 +426,141 @@ async function pollTransactionStatus({
 
       if (status === "failed" || status === "rejected" || status === "declined") {
         console.warn("MVola reports failed for", requestRef, serverCorrelationId);
-        try {
-          if (supabase) {
-            await supabase
-              .from("transactions")
-              .update({ status: "failed", metadata: { mvolaResponse: truncate(sdata, 2000) } })
-              .eq("request_ref", requestRef);
-          }
-        } catch (e) {
-          console.error("⚠️ Failed updating transaction to failed:", e?.message || e);
-        }
+        try { if (supabase) await supabase.from("transactions").update({ status: "failed", metadata: { mvolaResponse: truncate(sdata,2000) } }).eq("request_ref", requestRef); } catch (e) { console.error("⚠️ Failed updating transaction to failed:", e?.message || e); }
         await insertLog({
-          request_ref: requestRef,
-          server_correlation_id: serverCorrelationId,
-          event_type: "failed",
-          status: "failed",
-          masked_phone: maskPhone(phone),
-          amount,
-          attempt,
-          short_message: "Paiement échoué selon MVola",
-          payload: sdata,
+          request_ref: requestRef, server_correlation_id: serverCorrelationId, event_type: "failed", status: "failed",
+          masked_phone: maskPhone(phone), amount, attempt, short_message: "Paiement échoué selon MVola", payload: sdata,
         });
         const emailBody = [
-          `RequestRef: ${requestRef}`,
-          `ServerCorrelationId: ${serverCorrelationId}`,
-          `Téléphone (masqué): ${maskPhone(phone)}`,
-          `Montant: ${amount} Ar`,
-          `Plan: ${plan || "—"}`,
-          `Status: failed`,
-          `Timestamp: ${new Date().toISOString()}`,
+          `RequestRef: ${requestRef}`, `ServerCorrelationId: ${serverCorrelationId}`, `Téléphone (masqué): ${maskPhone(phone)}`,
+          `Montant: ${amount} Ar`, `Plan: ${plan || "—"}`, `Status: failed`, `Timestamp: ${new Date().toISOString()}`,
         ].join("\n");
         await sendEmailNotification(`[RAZAFI WIFI] ❌ Payment Failed – RequestRef ${requestRef}`, emailBody);
         return;
       }
-      // otherwise pending -> continue
     } catch (err) {
       console.error("Poll attempt error", err?.response?.data || err?.message || err);
       await insertLog({
-        request_ref: requestRef,
-        server_correlation_id: serverCorrelationId,
-        event_type: "poll_error",
-        status: "error",
-        masked_phone: maskPhone(phone),
-        amount,
-        attempt,
-        short_message: "Erreur lors du polling MVola",
-        payload: truncate(err?.response?.data || err?.message || err, 2000),
+        request_ref: requestRef, server_correlation_id: serverCorrelationId, event_type: "poll_error", status: "error",
+        masked_phone: maskPhone(phone), amount, attempt, short_message: "Erreur lors du polling MVola", payload: truncate(err?.response?.data || err?.message || err, 2000),
       });
-      // continue to retry
     }
-
     await new Promise((resolve) => setTimeout(resolve, backoff));
     backoff = Math.min(backoff * 2, maxBackoff);
   }
 
   // Timeout
   console.error("⏰ Polling timeout for", requestRef, serverCorrelationId);
-  try {
-    if (supabase) {
-      await supabase
-        .from("transactions")
-        .update({ status: "timeout", metadata: { note: "poll_timeout" } })
-        .eq("request_ref", requestRef);
-    }
-  } catch (e) {
-    console.error("⚠️ Failed updating transaction to timeout:", e?.message || e);
-  }
-  await insertLog({
-    request_ref: requestRef,
-    server_correlation_id: serverCorrelationId,
-    event_type: "timeout",
-    status: "timeout",
-    masked_phone: maskPhone(phone),
-    amount,
-    attempt,
-    short_message: "Temps d'attente dépassé lors du polling MVola",
-    payload: null,
-  });
+  try { if (supabase) await supabase.from("transactions").update({ status: "timeout", metadata: { note: "poll_timeout" } }).eq("request_ref", requestRef); } catch (e) { console.error("⚠️ Failed updating transaction to timeout:", e?.message || e); }
+  await insertLog({ request_ref: requestRef, server_correlation_id: serverCorrelationId, event_type: "timeout", status: "timeout", masked_phone: maskPhone(phone), amount, attempt, short_message: "Temps d'attente dépassé lors du polling MVola", payload: null });
   await sendEmailNotification(`[RAZAFI WIFI] ⚠️ Payment Timeout – RequestRef ${requestRef}`, {
-    RequestRef: requestRef,
-    ServerCorrelationId: serverCorrelationId,
-    Phone: maskPhone(phone),
-    Amount: amount,
-    Message: "Polling timeout: MVola did not return a final status within 3 minutes.",
+    RequestRef: requestRef, ServerCorrelationId: serverCorrelationId, Phone: maskPhone(phone), Amount: amount, Message: "Polling timeout: MVola did not return a final status within 3 minutes.",
   });
 }
 
-// ---------- Root / health ----------
-app.get("/", (req, res) => {
-  res.send("RAZAFI MVola Backend is running 🚀");
-});
+// ---------- Health ----------
+app.get("/", (req, res) => res.send("RAZAFI MVola Backend is running 🚀"));
 
-// ----------------- ADMIN: /admin-login & /verify-otp -----------------
+// ---------- Rate limiters ----------
+const authLimiter = rateLimit({ windowMs: 15*60*1000, max: 10, standardHeaders: true, legacyHeaders: false });
+const strictAuthLimiter = rateLimit({ windowMs: 15*60*1000, max: 6, standardHeaders: true, legacyHeaders: false });
+const paymentLimiter = rateLimit({ windowMs: 60*1000, max: 6, standardHeaders: true, legacyHeaders: false });
 
-/**
- * POST /admin-login
- * body: { password, email }
- * - verifies ADMIN_PASSWORD
- * - issues temporary otpId stored in cookie 'admin_otp_id' and stores otp in adminOtpStore
- * - sends OTP by email to provided email (using nodemailer)
- */
-app.post("/admin-login", async (req, res) => {
+// ---------- Helper middleware ----------
+function requireAdminSession(req, res, next) {
+  if (req.session && req.session.isAdmin) return next();
+  return res.status(401).json({ error: "not_authenticated" });
+}
+function requireAdminOrigin(req, res, next) {
+  const origin = req.get('origin') || req.get('referer') || '';
+  if (!origin || origin.startsWith(`https://${ADMIN_COOKIE_DOMAIN}`) || origin.startsWith('https://admin-wifi.razafistore.com')) return next();
+  return res.status(403).json({ error: 'forbidden_origin' });
+}
+
+// ---------- ADMIN: /admin-login (password -> show TOTP prompt or send OTP fallback) ----------
+app.post('/admin-login', authLimiter, requireAdminOrigin, async (req, res) => {
   try {
     const { password, email } = req.body || {};
-    if (!password || !email) return res.status(400).json({ error: "password and email required" });
-    if (password !== ADMIN_PASSWORD) {
-      return res.status(401).json({ error: "invalid_password" });
+    if (!password) return res.status(400).json({ error: "password required" });
+
+    // verify password by env value (backwards compatible). If you migrate to DB users, replace this.
+    if (ADMIN_PASSWORD && password !== ADMIN_PASSWORD) return res.status(401).json({ error: "invalid_password" });
+
+    // If TOTP is configured (preferred), mark that client should show TOTP prompt (no OTP cookie)
+    if (ADMIN_TOTP_SECRET) {
+      // set a short session flag to track "password validated" before TOTP
+      req.session.__pwValidated = true;
+      req.session.adminEmail = (email || null);
+      return res.json({ ok: true, method: "totp" });
     }
-    // generate OTP
+
+    // Fallback: email OTP flow (existing): generate and store OTP and set cookie
     const otp = String(Math.floor(100000 + Math.random() * 900000));
     const otpId = crypto.randomUUID();
-    adminOtpStore.set(otpId, { email, otp, createdAt: Date.now() });
+    adminOtpStore.set(otpId, { email: email || null, otp, createdAt: Date.now(), attempts: 0 });
 
-    // send OTP email asynchronously
-    sendAdminOtpEmail(email, otp, otpId).catch(e => console.warn("sendAdminOtpEmail error", e?.message || e));
+    // send OTP email (async)
+    sendAdminOtpEmail(email, otp).catch(e => console.warn("sendAdminOtpEmail error", e?.message || e));
 
-    // set cookie (httpOnly) - NOTE sameSite: 'none' and secure true in production
     res.cookie("admin_otp_id", otpId, {
       httpOnly: true,
       secure: NODE_ENV === "production",
-      sameSite: (NODE_ENV === "production") ? "none" : "lax",
+      sameSite: 'strict',
       maxAge: OTP_TTL_MS,
+      domain: ADMIN_COOKIE_DOMAIN,
     });
-
-    return res.json({ ok: true, message: "otp_sent" });
+    return res.json({ ok: true, method: "email_otp" });
   } catch (e) {
     console.error("/admin-login error", e?.message || e);
     return res.status(500).json({ error: "internal" });
   }
 });
 
-app.post("/verify-otp", (req, res) => {
+// ---------- ADMIN: /verify-otp (TOTP or email OTP fallback) ----------
+app.post('/verify-otp', strictAuthLimiter, requireAdminOrigin, async (req, res) => {
   try {
-    const otp = String((req.body || {}).otp || "").trim();
-    const otpId = req.cookies ? req.cookies["admin_otp_id"] : null;
+    const otp = String((req.body || {}).otp || '').trim();
+
+    // If TOTP configured, require password-validated session prior to TOTP
+    if (ADMIN_TOTP_SECRET) {
+      if (!req.session || !req.session.__pwValidated) {
+        return res.status(401).json({ error: "password_not_validated" });
+      }
+      // verify TOTP against ADMIN_TOTP_SECRET (base32)
+      const ok = speakeasy.totp.verify({ secret: ADMIN_TOTP_SECRET, encoding: 'base32', token: otp, window: 1 });
+      if (!ok) {
+        // optional: increment failure counter and lock after N attempts (not implemented here)
+        return res.status(401).json({ error: "invalid_totp" });
+      }
+      // success: establish admin session
+      req.session.isAdmin = true;
+      req.session.adminEmail = req.session.adminEmail || null;
+      // clear pwValidated flag
+      delete req.session.__pwValidated;
+      return res.json({ ok: true });
+    }
+
+    // Fallback: email OTP flow (cookie-based)
+    const otpId = req.cookies ? req.cookies['admin_otp_id'] : null;
     if (!otpId) return res.status(400).json({ error: "otp_session_missing" });
     const entry = adminOtpStore.get(otpId);
     if (!entry) return res.status(400).json({ error: "otp_not_found_or_expired" });
 
-    // check TTL
-    if (Date.now() - entry.createdAt > OTP_TTL_MS) {
-      adminOtpStore.delete(otpId);
-      return res.status(400).json({ error: "otp_expired" });
-    }
+    // check TTL and attempts
+    if (Date.now() - entry.createdAt > OTP_TTL_MS) { adminOtpStore.delete(otpId); return res.status(400).json({ error: "otp_expired" }); }
+    if (entry.attempts && entry.attempts >= 6) { adminOtpStore.delete(otpId); return res.status(429).json({ error: "otp_attempts_exceeded" }); }
 
     if (otp !== String(entry.otp)) {
+      entry.attempts = (entry.attempts || 0) + 1;
+      adminOtpStore.set(otpId, entry);
       return res.status(401).json({ error: "invalid_otp" });
     }
 
-    // success => mark session as admin
+    // success
     req.session.isAdmin = true;
     req.session.adminEmail = entry.email || null;
-
-    // cleanup
     adminOtpStore.delete(otpId);
-    // remove cookie by setting expired (match sameSite/secure semantics)
-    res.cookie("admin_otp_id", "", {
-      maxAge: 0,
-      httpOnly: true,
-      secure: NODE_ENV === "production",
-      sameSite: (NODE_ENV === "production") ? "none" : "lax",
-    });
-
+    res.cookie("admin_otp_id", "", { maxAge: 0, httpOnly: true, secure: NODE_ENV === "production", sameSite: 'strict', domain: ADMIN_COOKIE_DOMAIN });
     return res.json({ ok: true });
   } catch (e) {
     console.error("/verify-otp error", e?.message || e);
@@ -744,209 +568,97 @@ app.post("/verify-otp", (req, res) => {
   }
 });
 
-// ----------------- ADMIN REPORT endpoint (protected) -----------------
-
-/**
- * GET /api/admin-report?start=YYYY-MM-DD&end=YYYY-MM-DD
- * - requires session isAdmin
- * - returns totals, flat transactions, grouped by date (Madagascar timezone UTC+3)
- */
-app.get("/api/admin-report", async (req, res) => {
+// ---------- ADMIN REPORT endpoint ----------
+app.get('/api/admin-report', requireAdminSession, requireAdminOrigin, async (req, res) => {
   try {
-    if (!req.session?.isAdmin) {
-      return res.status(401).json({ error: "not_authenticated" });
-    }
-
     const start = (req.query.start || "").trim();
     const end = (req.query.end || "").trim();
-    if (!start || !end) {
-      return res.status(400).json({ error: "start and end required (YYYY-MM-DD)" });
-    }
-
-    // convert requested local MADAGASCAR range to UTC bounds
+    if (!start || !end) return res.status(400).json({ error: "start and end required (YYYY-MM-DD)" });
     const bounds = localRangeToUtcBounds(start, end, 3);
-    if (!bounds) {
-      return res.status(400).json({ error: "invalid_date_format" });
-    }
+    if (!bounds) return res.status(400).json({ error: "invalid_date_format" });
 
-    // Fetch rows ordered by created_at DESC (newest first)
-    const viewName = process.env.ADMIN_REPORT_VIEW || "view_user_history_completed"; // keep configurable
+    const viewName = process.env.ADMIN_REPORT_VIEW || "view_user_history_completed";
     const { data: rows, error: rowsError } = await supabase
       .from(viewName)
       .select("id, phone, created_at, plan, voucher")
       .gte("created_at", bounds.startIso)
       .lte("created_at", bounds.endIso)
-      .order("created_at", { ascending: false }); // newest -> oldest
+      .order("created_at", { ascending: false });
 
     if (rowsError) {
       console.error("admin-report error:", rowsError);
       return res.status(500).json({ error: "db_error" });
     }
 
-    // Helper: convert UTC created_at to Madagascar local date/time and date key
     const toMadagascar = (utcIso) => {
       if (!utcIso) return { paid_at_utc: null, paid_at_mad: null, date_mad: null };
       const dUtc = new Date(utcIso);
-      const dMadMs = dUtc.getTime() + 3 * 60 * 60 * 1000; // shift +3h
+      const dMadMs = dUtc.getTime() + 3 * 60 * 60 * 1000;
       const dMad = new Date(dMadMs);
-      // Format local datetime and date
       const pad = (n) => String(n).padStart(2, "0");
-      const YYYY = dMad.getUTCFullYear();
-      const MM = pad(dMad.getUTCMonth() + 1);
-      const DD = pad(dMad.getUTCDate());
-      const hh = pad(dMad.getUTCHours());
-      const mm = pad(dMad.getUTCMinutes());
-      const ss = pad(dMad.getUTCSeconds());
+      const YYYY = dMad.getUTCFullYear(); const MM = pad(dMad.getUTCMonth()+1); const DD = pad(dMad.getUTCDate());
+      const hh = pad(dMad.getUTCHours()); const mm = pad(dMad.getUTCMinutes()); const ss = pad(dMad.getUTCSeconds());
       const date_mad = `${YYYY}-${MM}-${DD}`;
-      const paid_at_mad = `${YYYY}-${MM}-${DD} ${hh}:${mm}:${ss}`; // human-friendly
+      const paid_at_mad = `${YYYY}-${MM}-${DD} ${hh}:${mm}:${ss}`;
       return { paid_at_utc: utcIso, paid_at_mad, date_mad };
     };
 
-    // Build transactions list (flat, newest->oldest) and a map grouped by date_mad
     const groupsMap = new Map();
     const flat = (rows || []).map(r => {
       const { paid_at_utc, paid_at_mad, date_mad } = toMadagascar(r.created_at);
-      const tx = {
-        id: r.id,
-        paid_at_utc,
-        paid_at_mad,
-        date_mad,
-        phone: r.phone,
-        plan: r.plan,
-        voucher: r.voucher,
-        amount_ariary: parseAriaryFromString(r.plan) || 0
-      };
-      // push into groups map
+      const tx = { id: r.id, paid_at_utc, paid_at_mad, date_mad, phone: r.phone, plan: r.plan, voucher: r.voucher, amount_ariary: parseAriaryFromString(r.plan) || 0 };
       if (!groupsMap.has(date_mad)) groupsMap.set(date_mad, []);
       groupsMap.get(date_mad).push(tx);
       return tx;
     });
 
-    // Create groups array sorted by date desc (newest date first). Each group's transactions already in newest->oldest.
-    const groups = Array.from(groupsMap.entries())
-      .map(([date, txs]) => ({ date, transactions: txs }))
-      .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)); // sort desc
+    const groups = Array.from(groupsMap.entries()).map(([date, txs]) => ({ date, transactions: txs })).sort((a,b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
+    const total_ariary_period = flat.reduce((s,t) => s + (Number(t.amount_ariary) || 0), 0);
 
-    // Compute total ariary for the period (sum of amounts in flat)
-    const total_ariary_period = flat.reduce((s, t) => s + (Number(t.amount_ariary) || 0), 0);
-
-    // Compute daily / month / year totals (Madagascar timezone) using existing helpers
     const nowMad = nowMadagascarDate();
-
-    // Today
-    const todayYmd = `${nowMad.getUTCFullYear()}-${String(nowMad.getUTCMonth() + 1).padStart(2, "0")}-${String(nowMad.getUTCDate()).padStart(2, "0")}`;
+    const todayYmd = `${nowMad.getUTCFullYear()}-${String(nowMad.getUTCMonth()+1).padStart(2,"0")}-${String(nowMad.getUTCDate()).padStart(2,"0")}`;
     const todayBounds = localRangeToUtcBounds(todayYmd, todayYmd, 3);
-
-    // Month
-    const mb = monthBoundsMadagascar(nowMad);
-    const monthBounds = localRangeToUtcBounds(mb.first, mb.last, 3);
-
-    // Year
-    const yb = yearBoundsMadagascar(nowMad);
-    const yearBounds = localRangeToUtcBounds(yb.first, yb.last, 3);
+    const mb = monthBoundsMadagascar(nowMad); const monthBounds = localRangeToUtcBounds(mb.first, mb.last, 3);
+    const yb = yearBoundsMadagascar(nowMad); const yearBounds = localRangeToUtcBounds(yb.first, yb.last, 3);
 
     async function sumAriaryRange(startIso, endIso) {
-      const { data, error } = await supabase
-        .from(viewName)
-        .select("plan, voucher")
-        .gte("created_at", startIso)
-        .lte("created_at", endIso);
-      if (error) {
-        console.error("sumAriaryRange error", error);
-        throw error;
-      }
-      return (data || []).reduce(
-        (s, r) => s + (parseAriaryFromString(r.plan) || 0),
-        0
-      );
+      const { data, error } = await supabase.from(viewName).select("plan, voucher").gte("created_at", startIso).lte("created_at", endIso);
+      if (error) { console.error("sumAriaryRange error", error); throw error; }
+      return (data || []).reduce((s, r) => s + (parseAriaryFromString(r.plan) || 0), 0);
     }
 
-    const [daily, month, year] = await Promise.all([
-      sumAriaryRange(todayBounds.startIso, todayBounds.endIso),
-      sumAriaryRange(monthBounds.startIso, monthBounds.endIso),
-      sumAriaryRange(yearBounds.startIso, yearBounds.endIso),
-    ]);
+    const [daily, month, year] = await Promise.all([ sumAriaryRange(todayBounds.startIso, todayBounds.endIso), sumAriaryRange(monthBounds.startIso, monthBounds.endIso), sumAriaryRange(yearBounds.startIso, yearBounds.endIso) ]);
 
-    // Response includes both a flat list (newest->oldest) and grouped view by date
-    return res.json({
-      total_gb: null,
-      total_ariary: total_ariary_period,
-      transactions: flat,   // newest -> oldest
-      groups: groups,       // [{ date: 'YYYY-MM-DD', transactions: [...] }, ...] newest date first
-      totals: { daily, month, year }
-    });
-
+    return res.json({ total_gb: null, total_ariary: total_ariary_period, transactions: flat, groups: groups, totals: { daily, month, year } });
   } catch (err) {
     console.error("/api/admin-report failure:", err);
     return res.status(500).json({ error: "internal_error" });
   }
 });
 
-// ---------- Endpoint: /api/dernier-code (unchanged) ----------
+// ---------- /api/dernier-code ----------
 app.get("/api/dernier-code", async (req, res) => {
   try {
     const phone = (req.query.phone || "").trim();
     if (!phone) return res.status(400).json({ error: "phone query param required" });
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-    let code = null;
-    let plan = null;
-
+    let code = null; let plan = null;
     try {
-      const { data: tx, error: txErr } = await supabase
-        .from("transactions")
-        .select("voucher, plan, amount, status, created_at")
-        .eq("phone", phone)
-        .not("voucher", "is", null)
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (txErr) {
-        console.warn("warning fetching transactions for dernier-code:", txErr);
-      } else if (tx && tx.length) {
-        code = tx[0].voucher;
-        plan = tx[0].plan || tx[0].amount || null;
-      }
-    } catch (e) {
-      console.warn("exception fetching transactions for dernier-code:", e?.message || e);
-    }
+      const { data: tx, error: txErr } = await supabase.from("transactions").select("voucher, plan, amount, status, created_at").eq("phone", phone).not("voucher", "is", null).order("created_at", { ascending: false }).limit(1);
+      if (!txErr && tx && tx.length) { code = tx[0].voucher; plan = tx[0].plan || tx[0].amount || null; }
+    } catch (e) { console.warn("exception fetching transactions for dernier-code:", e?.message || e); }
 
     if (!code) {
       try {
-        const { data: vData, error: vErr } = await supabase
-          .from("vouchers")
-          .select("code, plan, assigned_at, assigned_to, valid_until, used")
-          .or(`assigned_to.eq.${phone},reserved_by.eq.${phone}`)
-          .order("assigned_at", { ascending: false })
-          .limit(1);
-        if (vErr) {
-          console.warn("warning fetching vouchers fallback:", vErr);
-        } else if (vData && vData.length) {
-          code = vData[0].code;
-          plan = vData[0].plan || null;
-        }
-      } catch (e) {
-        console.warn("exception fetching vouchers for dernier-code:", e?.message || e);
-      }
+        const { data: vData, error: vErr } = await supabase.from("vouchers").select("code, plan, assigned_at, assigned_to, valid_until, used").or(`assigned_to.eq.${phone},reserved_by.eq.${phone}`).order("assigned_at", { ascending: false }).limit(1);
+        if (!vErr && vData && vData.length) { code = vData[0].code; plan = vData[0].plan || null; }
+      } catch (e) { console.warn("exception fetching vouchers for dernier-code:", e?.message || e); }
     }
 
-    if (!code) {
-      return res.status(204).send();
-    }
+    if (!code) return res.status(204).send();
 
-    try {
-      await supabase.from("logs").insert([
-        {
-          event_type: "delivered_voucher_to_client",
-          request_ref: null,
-          server_correlation_id: null,
-          status: "delivered",
-          masked_phone: maskPhone(phone),
-          payload: { delivered_code: truncate(code, 2000) },
-        },
-      ]);
-    } catch (logErr) {
-      console.warn("Unable to write delivery log:", logErr?.message || logErr);
-    }
+    try { await supabase.from("logs").insert([{ event_type: "delivered_voucher_to_client", request_ref: null, server_correlation_id: null, status: "delivered", masked_phone: maskPhone(phone), payload: { delivered_code: truncate(code,2000) } }]); } catch (logErr) { console.warn("Unable to write delivery log:", logErr?.message || logErr); }
 
     return res.json({ code, plan });
   } catch (err) {
@@ -955,21 +667,12 @@ app.get("/api/dernier-code", async (req, res) => {
   }
 });
 
-// ---------- Main route: /api/send-payment (unchanged) ----------
-app.post("/api/send-payment", async (req, res) => {
-  const body = req.body || {};
-  const phone = body.phone;
-  const plan = body.plan;
-  if (!phone || !plan) {
-    console.warn("⚠️ Mauvais appel /api/send-payment — phone ou plan manquant. body:", body);
-    return res.status(400).json({
-      error: "Champs manquants. Le corps de la requête doit être en JSON avec 'phone' et 'plan'.",
-      exemple: { phone: "0340123456", plan: "5000" }
-    });
-  }
+// ---------- /api/send-payment ----------
+app.post("/api/send-payment", paymentLimiter, async (req, res) => {
+  const body = req.body || {}; const phone = body.phone; const plan = body.plan;
+  if (!phone || !plan) return res.status(400).json({ error: "phone and plan required" });
 
   const requestRef = `RAZAFI_${Date.now()}`;
-
   let amount = null;
   if (plan && typeof plan === "string") {
     try {
@@ -979,43 +682,13 @@ app.post("/api/send-payment", async (req, res) => {
         const choice = (candidates.length ? candidates[candidates.length - 1] : matches[matches.length - 1]);
         amount = parseInt(choice, 10);
       }
-    } catch (e) {
-      amount = null;
-    }
+    } catch (e) { amount = null; }
   }
-  if (!amount) {
-    amount = String(plan).includes("5000") ? 5000 : 1000;
-  }
+  if (!amount) amount = String(plan).includes("5000") ? 5000 : 1000;
 
-  try {
-    if (supabase) {
-      await supabase.from("transactions").insert([
-        {
-          phone,
-          plan,
-          amount,
-          currency: "Ar",
-          description: `Achat WiFi ${plan}`,
-          request_ref: requestRef,
-          status: "initiated",
-          metadata: { source: "portal" },
-        },
-      ]);
-    }
-  } catch (dbErr) {
-    console.error("⚠️ Warning: unable to insert initial transaction row:", dbErr?.message || dbErr);
-  }
+  try { if (supabase) await supabase.from("transactions").insert([{ phone, plan, amount, currency: "Ar", description: `Achat WiFi ${plan}`, request_ref: requestRef, status: "initiated", metadata: { source: "portal" }, }]); } catch (dbErr) { console.error("⚠️ Warning: unable to insert initial transaction row:", dbErr?.message || dbErr); }
 
-  const payload = {
-    amount: String(amount),
-    currency: "Ar",
-    descriptionText: `Achat WiFi ${plan}`,
-    requestingOrganisationTransactionReference: requestRef,
-    requestDate: new Date().toISOString(),
-    debitParty: [{ key: "msisdn", value: phone }],
-    creditParty: [{ key: "msisdn", value: PARTNER_MSISDN }],
-    metadata: [{ key: "partnerName", value: PARTNER_NAME }],
-  };
+  const payload = { amount: String(amount), currency: "Ar", descriptionText: `Achat WiFi ${plan}`, requestingOrganisationTransactionReference: requestRef, requestDate: new Date().toISOString(), debitParty: [{ key: "msisdn", value: phone }], creditParty: [{ key: "msisdn", value: PARTNER_MSISDN }], metadata: [{ key: "partnerName", value: PARTNER_NAME }] };
 
   const correlationId = crypto.randomUUID();
 
@@ -1023,53 +696,20 @@ app.post("/api/send-payment", async (req, res) => {
     const token = await getAccessToken();
     const initiateUrl = `${MVOLA_BASE}/mvola/mm/transactions/type/merchantpay/1.0.0/`;
     console.info("📤 Initiating MVola payment", { requestRef, phone, amount, correlationId });
-    const resp = await axios.post(initiateUrl, payload, {
-      headers: mvolaHeaders(token, correlationId),
-      timeout: 20000,
-    });
+    const resp = await axios.post(initiateUrl, payload, { headers: mvolaHeaders(token, correlationId), timeout: 20000 });
     const data = resp.data || {};
     const serverCorrelationId = data.serverCorrelationId || data.serverCorrelationID || data.serverCorrelationid || null;
     console.info("✅ MVola initiate response", { requestRef, serverCorrelationId });
 
-    try {
-      if (supabase) {
-        await supabase
-          .from("transactions")
-          .update({
-            server_correlation_id: serverCorrelationId,
-            status: "pending",
-            transaction_reference: data.transactionReference || null,
-            metadata: { ...payload.metadata, mvolaResponse: truncate(data, 2000) },
-          })
-          .eq("request_ref", requestRef);
-      }
-    } catch (dbErr) {
-      console.error("⚠️ Failed to update transaction row after initiate:", dbErr?.message || dbErr);
-    }
+    try { if (supabase) await supabase.from("transactions").update({ server_correlation_id: serverCorrelationId, status: "pending", transaction_reference: data.transactionReference || null, metadata: { ...payload.metadata, mvolaResponse: truncate(data, 2000) } }).eq("request_ref", requestRef); } catch (dbErr) { console.error("⚠️ Failed to update transaction row after initiate:", dbErr?.message || dbErr); }
 
-    await insertLog({
-      request_ref: requestRef,
-      server_correlation_id: serverCorrelationId,
-      event_type: "initiate",
-      status: "initiated",
-      masked_phone: maskPhone(phone),
-      amount,
-      attempt: 0,
-      short_message: "Initiation de la transaction auprès de MVola",
-      payload: data,
-    });
+    await insertLog({ request_ref: requestRef, server_correlation_id: serverCorrelationId, event_type: "initiate", status: "initiated", masked_phone: maskPhone(phone), amount, attempt: 0, short_message: "Initiation de la transaction auprès de MVola", payload: data });
 
     res.json({ ok: true, requestRef, serverCorrelationId, mvola: data });
 
     (async () => {
       try {
-        await pollTransactionStatus({
-          serverCorrelationId,
-          requestRef,
-          phone,
-          amount,
-          plan,
-        });
+        await pollTransactionStatus({ serverCorrelationId, requestRef, phone, amount, plan });
       } catch (bgErr) {
         console.error("Background poll job error", bgErr?.message || bgErr);
       }
@@ -1077,89 +717,60 @@ app.post("/api/send-payment", async (req, res) => {
 
     return;
   } catch (err) {
-    console.error("❌ MVola a rejeté la requête", err.response?.data || err?.message || err);
-    try {
-      if (supabase) {
-        await supabase
-          .from("transactions")
-          .update({ status: "failed", metadata: { error: truncate(err.response?.data || err?.message, 2000) } })
-          .eq("request_ref", requestRef);
-      }
-    } catch (dbErr) {
-      console.error("⚠️ Failed to mark transaction failed in DB:", dbErr?.message || dbErr);
-    }
-    await sendEmailNotification(`[RAZAFI WIFI] ❌ Payment Failed – RequestRef ${requestRef}`, {
-      RequestRef: requestRef,
-      Phone: maskPhone(phone),
-      Amount: amount,
-      Error: truncate(err.response?.data || err?.message, 2000),
-    });
+    console.error("❌ MVola rejected the request", err.response?.data || err?.message || err);
+    try { if (supabase) await supabase.from("transactions").update({ status: "failed", metadata: { error: truncate(err.response?.data || err?.message, 2000) } }).eq("request_ref", requestRef); } catch (dbErr) { console.error("⚠️ Failed to mark transaction failed in DB:", dbErr?.message || dbErr); }
+    await sendEmailNotification(`[RAZAFI WIFI] ❌ Payment Failed – RequestRef ${requestRef}`, { RequestRef: requestRef, Phone: maskPhone(phone), Amount: amount, Error: truncate(err.response?.data || err?.message, 2000) });
     return res.status(400).json({ error: "Erreur lors du paiement MVola", details: err.response?.data || err.message });
   }
 });
 
-// ---------- Endpoint: fetch transaction details (for frontend "check status") ----------
+// ---------- /api/tx/:requestRef ----------
 app.get("/api/tx/:requestRef", async (req, res) => {
   const requestRef = req.params.requestRef;
   if (!requestRef) return res.status(400).json({ error: "requestRef required" });
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
-    const { data, error } = await supabase
-      .from("transactions")
-      .select("request_ref, phone, amount, currency, plan, status, voucher, transaction_reference, server_correlation_id, metadata, created_at, updated_at")
-      .eq("request_ref", requestRef)
-      .limit(1)
-      .single();
-    if (error && error.code === "PGRST116") {
-      return res.status(404).json({ error: "not found" });
-    }
-    if (error) {
-      console.error("Supabase error fetching transaction:", error);
-      return res.status(500).json({ error: "db error" });
-    }
-    const row = {
-      ...data,
-      phone: maskPhone(data.phone),
-    };
+    const { data, error } = await supabase.from("transactions").select("request_ref, phone, amount, currency, plan, status, voucher, transaction_reference, server_correlation_id, metadata, created_at, updated_at").eq("request_ref", requestRef).limit(1).single();
+    if (error && error.code === "PGRST116") return res.status(404).json({ error: "not found" });
+    if (error) { console.error("Supabase error fetching transaction:", error); return res.status(500).json({ error: "db error" }); }
+    const row = { ...data, phone: maskPhone(data.phone) };
     return res.json({ ok: true, transaction: row });
   } catch (e) {
-    console.error("Error in /api/tx/:", e?.message || e);
-    return res.status(500).json({ error: "internal error" });
+    console.error("Error in /api/tx/:", e?.message || e); return res.status(500).json({ error: "internal error" });
   }
 });
 
-// ---------- NEW: History endpoint (returns only completed purchases for a phone) ----------
+// ---------- /api/history ----------
 app.get("/api/history", async (req, res) => {
   try {
     const phoneRaw = String(req.query.phone || "").trim();
     if (!phoneRaw || phoneRaw.length < 6) return res.status(400).json({ error: "phone required" });
     const limit = Math.min(parseInt(req.query.limit || "10", 10), 50);
-
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-    const { data, error } = await supabase
-      .from("transactions")
-      .select("id, created_at, plan, voucher, status")
-      .eq("phone", phoneRaw)
-      .eq("status", "completed")
-      .not("voucher", "is", null)
-      .order("created_at", { ascending: false })
-      .limit(limit);
-
-    if (error) {
-      console.error("/api/history db error", error);
-      return res.status(500).json({ error: "db_error" });
-    }
+    const { data, error } = await supabase.from("transactions").select("id, created_at, plan, voucher, status").eq("phone", phoneRaw).eq("status", "completed").not("voucher", "is", null).order("created_at", { ascending: false }).limit(limit);
+    if (error) { console.error("/api/history db error", error); return res.status(500).json({ error: "db_error" }); }
     return res.json(data || []);
   } catch (e) {
-    console.error("/api/history exception", e?.message || e);
-    return res.status(500).json({ error: "internal" });
+    console.error("/api/history exception", e?.message || e); return res.status(500).json({ error: "internal" });
   }
 });
 
-// ---------- Start server ----------
+// ---------- Logout ----------
+app.post("/logout", requireAdminSession, requireAdminOrigin, (req, res) => {
+  try {
+    req.session.destroy(err => {
+      if (err) console.error("Error destroying session:", err);
+      res.clearCookie("razafi_admin_sid", { domain: ADMIN_COOKIE_DOMAIN, path: '/' });
+      return res.json({ ok: true });
+    });
+  } catch (e) {
+    console.error("logout error", e); return res.status(500).json({ error: "internal" });
+  }
+});
+
+// ---------- Start ----------
 app.listen(PORT, () => {
-  const now = new Date().toISOString();
-  console.log(`🚀 Server started at ${now} on port ${PORT}`);
+  console.log(`🚀 Server started at ${new Date().toISOString()} on port ${PORT}`);
   console.log(`[INFO] Endpoint ready: POST /api/send-payment`);
 });
