@@ -104,15 +104,17 @@ app.use((req, res, next) => {
   next();
 });
 
-// ---------- Postgres pool & session store ----------
+// ---------- Postgres pool & session store (with fallback) ----------
 const { Pool } = pg;
 const pgPool = DATABASE_URL ? new Pool({
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 }) : null;
 
+// session store: attempt Postgres store, but gracefully fall back to MemoryStore
 let pgSessionStore = null;
-if (pgPool) {
+
+if (pgPool && process.env.USE_MEMORY_SESSION !== 'true') {
   try {
     const PgSession = connectPgSimple(session);
     pgSessionStore = new PgSession({
@@ -122,12 +124,17 @@ if (pgPool) {
     });
     console.info("✅ Session store configured with Postgres pool (connect-pg-simple).");
   } catch (e) {
-    console.error("❌ Failed configuring Postgres session store:", e?.message || e);
+    console.error("❌ Failed configuring Postgres session store (will use MemoryStore):", e?.message || e);
     pgSessionStore = null;
   }
+} else {
+  // Either no DATABASE_URL, or explicit env to force memory store
+  console.warn("⚠️ DATABASE_URL not present or USE_MEMORY_SESSION=true — using MemoryStore for sessions.");
 }
 
 // ---------- Session middleware (strict admin cookie) ----------
+
+
 app.use(session({
   store: pgSessionStore || undefined,
   name: "razafi_admin_sid",
