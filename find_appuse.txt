@@ -1,0 +1,76 @@
+node_modules\axios\README.md:  app.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
+node_modules\body-parser\README.md:app.use(bodyParser.urlencoded())
+node_modules\body-parser\README.md:app.use(bodyParser.json())
+node_modules\body-parser\README.md:app.use(function (req, res) {
+node_modules\body-parser\README.md:app.use(bodyParser.json({ type: 'application/*+json' }))
+node_modules\body-parser\README.md:app.use(bodyParser.raw({ type: 'application/vnd.custom-type' }))
+node_modules\body-parser\README.md:app.use(bodyParser.text({ type: 'text/html' }))
+node_modules\cors\README.md:app.use(cors())
+node_modules\express\History.md:  * support mounted app as any argument to `app.use()`
+node_modules\express\History.md:  * fix `subapp.mountpath` regression for `app.use(subapp)`
+node_modules\express\History.md:  * accept multiple callbacks to `app.use()`
+node_modules\express\History.md:  * support non-string `path` in `app.use(path, fn)`
+node_modules\express\History.md:  * router: speed up standard `app.use(fn)`
+node_modules\express\History.md:   - deprecate `connect(middleware)` -- use `app.use(middleware)` instead
+node_modules\express\lib\application.js:  // disambiguate app.use([fn])
+node_modules\express\lib\application.js:    throw new TypeError('app.use() requires a middleware function')
+node_modules\express-session\README.md:app.use(session({
+node_modules\express-session\README.md:app.use(session(sess))
+node_modules\express-session\README.md:app.use(session({
+node_modules\express-session\README.md:app.use(session({ secret: 'keyboard cat', cookie: { maxAge: 60000 }}))
+node_modules\express-session\README.md:app.use(session({
+node_modules\express-session\README.md:app.use(function (req, res, next) {
+node_modules\express-session\README.md:app.use(session({
+node_modules\http-errors\README.md:app.use(function (req, res, next) {
+node_modules\raw-body\README.md:app.use(function (req, res, next) {
+node_modules\raw-body\README.md:app.use(function * (next) {
+node_modules\serve-static\README.md:app.use(serveStatic('public/ftp', { index: ['default.html', 'default.htm'] }))
+node_modules\serve-static\README.md:app.use(serveStatic(path.join(__dirname, 'public-optimized')))
+node_modules\serve-static\README.md:app.use(serveStatic(path.join(__dirname, 'public')))
+node_modules\serve-static\README.md:app.use(serveStatic(path.join(__dirname, 'public'), {
+node_modules\type-is\README.md:app.use(function bodyParser (req, res, next) {
+server.js:app.use(cors(corsOptions));
+server.js:app.use(express.json());
+server.js:app.use(session({
+node_modules\async\dist\async.js:     * app.get('/cats', function(request, response) {
+node_modules\async\dist\async.mjs: * app.get('/cats', function(request, response) {
+node_modules\async\seq.js: * app.get('/cats', function(request, response) {
+node_modules\cors\README.md:app.get('/products/:id', function (req, res, next) {
+node_modules\cors\README.md:app.get('/products/:id', cors(), function (req, res, next) {
+node_modules\cors\README.md:app.get('/products/:id', cors(corsOptions), function (req, res, next) {
+node_modules\cors\README.md:app.get('/products/:id', cors(corsOptions), function (req, res, next) {
+node_modules\cors\README.md:app.get('/products/:id', cors(corsOptionsDelegate), function (req, res, next) {
+node_modules\express\History.md:  * use app.get() for x-powered-by setting for inheritance
+node_modules\express\History.md:  * Fixed: use app.get() for all core settings
+node_modules\express\History.md:  * Added `app.get(setting)`. Closes #842
+node_modules\express\History.md:  * Added route `Collection`, ex: `app.get('/user/:id').remove();`
+node_modules\express\lib\application.js:    // app.get(setting)
+node_modules\express\lib\application.js:      // app.get(setting)
+node_modules\express\lib\request.js:  var queryparse = this.app.get('query parser fn');
+node_modules\express\lib\request.js:  var trust = this.app.get('trust proxy fn');
+node_modules\express\lib\request.js:  var trust = this.app.get('trust proxy fn');
+node_modules\express\lib\request.js:  var trust = this.app.get('trust proxy fn');
+node_modules\express\lib\request.js:  var offset = this.app.get('subdomain offset');
+node_modules\express\lib\request.js:  var trust = this.app.get('trust proxy fn');
+node_modules\express\lib\response.js:  var etagFn = app.get('etag fn')
+node_modules\express\lib\response.js:  var escape = app.get('json escape')
+node_modules\express\lib\response.js:  var replacer = app.get('json replacer');
+node_modules\express\lib\response.js:  var spaces = app.get('json spaces');
+node_modules\express\lib\response.js:  var escape = app.get('json escape')
+node_modules\express\lib\response.js:  var replacer = app.get('json replacer');
+node_modules\express\lib\response.js:  var spaces = app.get('json spaces');
+node_modules\express\lib\response.js:  var callback = this.req.query[app.get('jsonp callback name')];
+node_modules\express\lib\response.js: *     app.get('/user/:uid/photos/:file', function(req, res){
+node_modules\express\Readme.md:app.get('/', (req, res) => {
+node_modules\express-session\README.md:if (app.get('env') === 'production') {
+node_modules\express-session\README.md:app.get('/', function(req, res, next) {
+node_modules\express-session\README.md:app.get('/foo', function (req, res, next) {
+node_modules\express-session\README.md:app.get('/bar', function (req, res, next) {
+node_modules\express-session\README.md:app.get('/', isAuthenticated, function (req, res) {
+node_modules\express-session\README.md:app.get('/', function (req, res) {
+node_modules\express-session\README.md:app.get('/logout', function (req, res, next) {
+server.js:app.get("/api/admin-report", async (req, res) => {
+server.js:app.get("/", (req, res) => {
+server.js:app.get("/api/dernier-code", async (req, res) => {
+server.js:app.get("/api/tx/:requestRef", async (req, res) => {
+server.js:app.get("/api/history", async (req, res) => {
