@@ -80,8 +80,9 @@ app.use(express.json());
 // 1) Anti-bruteforce: slow down repeated requests
 const speedLimiter = slowDown({
   windowMs: 60 * 1000,
-  delayAfter: 3,     // first 3 are normal
-  delayMs: 500,      // each extra adds 0.5s delay
+  delayAfter: 3,        // first 3 are normal
+  delayMs: () => 500,   // express-slow-down v2 compliant
+  maxDelayMs: 2000,
 });
 
 // 2) Hard limit for payment endpoint
