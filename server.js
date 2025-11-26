@@ -1,5 +1,5 @@
 // server.js - cleaned for user-only (MVola + voucher + OPS email)
-// Based on your original merged file (admin removed). See original for reference. :contentReference[oaicite:3]{index=3}
+// Based on your original merged file (admin removed).
 
 import express from "express";
 import axios from "axios";
@@ -177,9 +177,38 @@ function parseAriaryFromString(s) {
   }
 }
 
+// ---------- Madagascar time helpers ----------
+const MADAGASCAR_OFFSET_MS = 3 * 3600 * 1000; // UTC+3
+
+// Return a Date adjusted to Madagascar time as a Date object
+function toMadagascarDate(dateOrIso) {
+  const d = dateOrIso ? new Date(dateOrIso) : new Date();
+  return new Date(d.getTime() + MADAGASCAR_OFFSET_MS);
+}
+
+// Return an ISO-like string including +03:00 zone (example: 2025-11-26T12:34:56+03:00)
+function toMadagascarISO(dateOrIso) {
+  const md = toMadagascarDate(dateOrIso);
+  // produce ISO with timezone +03:00
+  const iso = md.toISOString().replace("Z", "+03:00");
+  return iso;
+}
+
+// Return a human readable string in French locale (Antananarivo timezone if available)
+function toMadagascarReadable(dateOrIso) {
+  try {
+    const md = toMadagascarDate(dateOrIso);
+    // prefer explicit timezone name if Node supports it
+    return md.toLocaleString("fr-FR", { timeZone: "Indian/Antananarivo" });
+  } catch (e) {
+    // fallback
+    return toMadagascarISO(dateOrIso);
+  }
+}
+
 function nowMadagascarDate() {
   const nowUtc = new Date();
-  const ms = nowUtc.getTime() + 3 * 3600 * 1000;
+  const ms = nowUtc.getTime() + MADAGASCAR_OFFSET_MS;
   return new Date(ms);
 }
 
@@ -294,7 +323,7 @@ async function pollTransactionStatus({
             });
             await supabase
               .from("transactions")
-              .update({ status: "no_voucher_pending", metadata: { assign_error: truncate(rpcError, 2000) } })
+              .update({ status: "no_voucher_pending", metadata: { assign_error: truncate(rpcError, 2000), updated_at_local: toMadagascarISO(new Date().toISOString()) } })
               .eq("request_ref", requestRef);
             await sendEmailNotification(`[RAZAFI WIFI] ⚠️ No Voucher Available – RequestRef ${requestRef}`, {
               RequestRef: requestRef,
@@ -303,6 +332,7 @@ async function pollTransactionStatus({
               Amount: amount,
               Message: "assign_voucher_atomic returned an error, intervention required.",
               rpc_error: rpcError,
+              TimestampMadagascar: toMadagascarISO(new Date().toISOString()),
             });
             return;
           }
@@ -316,7 +346,7 @@ async function pollTransactionStatus({
             try {
               await supabase
                 .from("transactions")
-                .update({ status: "no_voucher_pending", metadata: { mvolaResponse: truncate(sdata, 2000) } })
+                .update({ status: "no_voucher_pending", metadata: { mvolaResponse: truncate(sdata, 2000), updated_at_local: toMadagascarISO(new Date().toISOString()) } })
                 .eq("request_ref", requestRef);
             } catch (e) {
               console.error("⚠️ Failed updating transaction to no_voucher_pending:", e?.message || e);
@@ -338,6 +368,7 @@ async function pollTransactionStatus({
               Phone: maskPhone(phone),
               Amount: amount,
               Message: "Payment completed but no voucher available. OPS intervention required.",
+              TimestampMadagascar: toMadagascarISO(new Date().toISOString()),
             });
             return;
           }
@@ -351,7 +382,10 @@ async function pollTransactionStatus({
                 status: "completed",
                 voucher: voucherCode,
                 transaction_reference: sdata.transactionReference || sdata.objectReference || null,
-                metadata: { mvolaResponse: truncate(sdata, 2000) },
+                metadata: {
+                  mvolaResponse: truncate(sdata, 2000),
+                  completed_at_local: toMadagascarISO(new Date().toISOString()),
+                },
               })
               .eq("request_ref", requestRef);
           } catch (e) {
@@ -380,7 +414,7 @@ async function pollTransactionStatus({
             `Voucher: ${voucherCode}`,
             `VoucherId: ${voucherId || "—"}`,
             `TransactionReference: ${sdata.transactionReference || "—"}`,
-            `Timestamp: ${new Date().toISOString()}`,
+            `Timestamp (Madagascar): ${toMadagascarISO(new Date().toISOString())}`,
           ].join("\n");
           await sendEmailNotification(`[RAZAFI WIFI] ✅ Payment Completed – RequestRef ${requestRef}`, emailBody);
           return;
@@ -399,7 +433,7 @@ async function pollTransactionStatus({
           });
           await supabase
             .from("transactions")
-            .update({ status: "no_voucher_pending", metadata: { assign_exception: truncate(assignErr?.message || assignErr, 2000) } })
+            .update({ status: "no_voucher_pending", metadata: { assign_exception: truncate(assignErr?.message || assignErr, 2000), updated_at_local: toMadagascarISO(new Date().toISOString()) } })
             .eq("request_ref", requestRef);
           await sendEmailNotification(`[RAZAFI WIFI] ⚠️ No Voucher Available – RequestRef ${requestRef}`, {
             RequestRef: requestRef,
@@ -408,6 +442,7 @@ async function pollTransactionStatus({
             Amount: amount,
             Message: "Erreur système lors de l'attribution du voucher. Intervention requise.",
             error: truncate(assignErr?.message || assignErr, 2000),
+            TimestampMadagascar: toMadagascarISO(new Date().toISOString()),
           });
           return;
         }
@@ -419,7 +454,7 @@ async function pollTransactionStatus({
           if (supabase) {
             await supabase
               .from("transactions")
-              .update({ status: "failed", metadata: { mvolaResponse: truncate(sdata, 2000) } })
+              .update({ status: "failed", metadata: { mvolaResponse: truncate(sdata, 2000), updated_at_local: toMadagascarISO(new Date().toISOString()) } })
               .eq("request_ref", requestRef);
           }
         } catch (e) {
@@ -443,7 +478,7 @@ async function pollTransactionStatus({
           `Montant: ${amount} Ar`,
           `Plan: ${plan || "—"}`,
           `Status: failed`,
-          `Timestamp: ${new Date().toISOString()}`,
+          `Timestamp (Madagascar): ${toMadagascarISO(new Date().toISOString())}`,
         ].join("\n");
         await sendEmailNotification(`[RAZAFI WIFI] ❌ Payment Failed – RequestRef ${requestRef}`, emailBody);
         return;
@@ -475,7 +510,7 @@ async function pollTransactionStatus({
     if (supabase) {
       await supabase
         .from("transactions")
-        .update({ status: "timeout", metadata: { note: "poll_timeout" } })
+        .update({ status: "timeout", metadata: { note: "poll_timeout", updated_at_local: toMadagascarISO(new Date().toISOString()) } })
         .eq("request_ref", requestRef);
     }
   } catch (e) {
@@ -498,6 +533,7 @@ async function pollTransactionStatus({
     Phone: maskPhone(phone),
     Amount: amount,
     Message: "Polling timeout: MVola did not return a final status within 3 minutes.",
+    TimestampMadagascar: toMadagascarISO(new Date().toISOString()),
   });
 }
 
@@ -564,7 +600,7 @@ app.get("/api/dernier-code", async (req, res) => {
         server_correlation_id: null,
         status: "delivered",
         masked_phone: maskPhone(phone),
-        payload: { delivered_code: truncate(code, 2000) },
+        payload: { delivered_code: truncate(code, 2000), timestamp_madagascar: toMadagascarISO(new Date().toISOString()) },
       }]);
     } catch (logErr) {
       console.warn("Unable to write delivery log:", logErr?.message || logErr);
@@ -610,6 +646,12 @@ app.post("/api/send-payment", async (req, res) => {
   }
 
   try {
+    // build metadata with Madagascar creation timestamp
+    const metadataForInsert = {
+      source: "portal",
+      created_at_local: toMadagascarISO(new Date().toISOString()),
+    };
+
     if (supabase) {
       await supabase.from("transactions").insert([{
         phone,
@@ -619,7 +661,7 @@ app.post("/api/send-payment", async (req, res) => {
         description: `Achat WiFi ${plan}`,
         request_ref: requestRef,
         status: "initiated",
-        metadata: { source: "portal" },
+        metadata: metadataForInsert,
       }]);
     }
   } catch (dbErr) {
@@ -659,7 +701,7 @@ app.post("/api/send-payment", async (req, res) => {
             server_correlation_id: serverCorrelationId,
             status: "pending",
             transaction_reference: data.transactionReference || null,
-            metadata: { ...payload.metadata, mvolaResponse: truncate(data, 2000) },
+            metadata: { ...{ mvolaResponse: truncate(data, 2000) }, updated_at_local: toMadagascarISO(new Date().toISOString()) },
           })
           .eq("request_ref", requestRef);
       }
@@ -702,7 +744,7 @@ app.post("/api/send-payment", async (req, res) => {
       if (supabase) {
         await supabase
           .from("transactions")
-          .update({ status: "failed", metadata: { error: truncate(err.response?.data || err?.message, 2000) } })
+          .update({ status: "failed", metadata: { error: truncate(err.response?.data || err?.message, 2000), updated_at_local: toMadagascarISO(new Date().toISOString()) } })
           .eq("request_ref", requestRef);
       }
     } catch (dbErr) {
@@ -713,6 +755,7 @@ app.post("/api/send-payment", async (req, res) => {
       Phone: maskPhone(phone),
       Amount: amount,
       Error: truncate(err.response?.data || err?.message, 2000),
+      TimestampMadagascar: toMadagascarISO(new Date().toISOString()),
     });
     return res.status(400).json({ error: "Erreur lors du paiement MVola", details: err.response?.data || err.message });
   }
@@ -737,7 +780,25 @@ app.get("/api/tx/:requestRef", async (req, res) => {
       console.error("Supabase error fetching transaction:", error);
       return res.status(500).json({ error: "db error" });
     }
+
     const row = { ...data, phone: maskPhone(data.phone) };
+
+    try {
+      row.created_at_local = data.created_at ? toMadagascarISO(data.created_at) : null;
+      row.created_at_local_readable = data.created_at ? toMadagascarReadable(data.created_at) : null;
+      row.updated_at_local = data.updated_at ? toMadagascarISO(data.updated_at) : null;
+      row.updated_at_local_readable = data.updated_at ? toMadagascarReadable(data.updated_at) : null;
+
+      // also convert any metadata timestamps if present (non-destructive)
+      if (row.metadata && typeof row.metadata === "object") {
+        row.metadata = { ...row.metadata };
+        row.metadata.created_at_local = row.metadata.created_at_local || toMadagascarISO(data.created_at || new Date().toISOString());
+        // keep other metadata keys intact
+      }
+    } catch (e) {
+      // ignore conversion errors; return original UTC fields if needed
+    }
+
     return res.json({ ok: true, transaction: row });
   } catch (e) {
     console.error("Error in /api/tx/:", e?.message || e);
@@ -767,7 +828,16 @@ app.get("/api/history", async (req, res) => {
       console.error("/api/history db error", error);
       return res.status(500).json({ error: "db_error" });
     }
-    return res.json(data || []);
+
+    const mapped = (data || []).map(row => {
+      return {
+        ...row,
+        created_at_local: row.created_at ? toMadagascarISO(row.created_at) : null,
+        created_at_local_readable: row.created_at ? toMadagascarReadable(row.created_at) : null,
+      };
+    });
+
+    return res.json(mapped);
   } catch (e) {
     console.error("/api/history exception", e?.message || e);
     return res.status(500).json({ error: "internal" });
