@@ -1,5 +1,6 @@
-// server.js - cleaned for public user backend (RAZAFI MVola)
-// Admin & session code removed. Email notifications to OPS kept.
+// server.js - cleaned for user-only (MVola + voucher + OPS email)
+// Based on your original merged file (admin removed). See original for reference. :contentReference[oaicite:3]{index=3}
+
 import express from "express";
 import axios from "axios";
 import cors from "cors";
@@ -17,13 +18,11 @@ const PORT = process.env.PORT || 10000;
 const MVOLA_BASE = process.env.MVOLA_BASE || "https://api.mvola.mg";
 const MVOLA_CLIENT_ID = process.env.MVOLA_CLIENT_ID || process.env.MVOLA_CONSUMER_KEY;
 const MVOLA_CLIENT_SECRET = process.env.MVOLA_CLIENT_SECRET || process.env.MVOLA_CONSUMER_SECRET;
-
-// Accept partner info from .env names used in your file
-const PARTNER_MSISDN = process.env.MVOLA_PARTNER_MSISDN || process.env.PARTNER_MSISDN || "0340500592";
 const PARTNER_NAME = process.env.MVOLA_PARTNER_NAME || process.env.PARTNER_NAME || "RAZAFI";
+const PARTNER_MSISDN = process.env.MVOLA_PARTNER_MSISDN || process.env.PARTNER_MSISDN || "0340500592";
 const USER_LANGUAGE = process.env.USER_LANGUAGE || "FR";
 
-// Supabase (server-side service role)
+// Supabase (service role)
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -35,9 +34,10 @@ const SMTP_PASS = process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD;
 const MAIL_FROM = process.env.MAIL_FROM || SMTP_USER;
 const OPS_EMAIL = process.env.OPS_EMAIL || process.env.GMAIL_TO || "sosthenet@gmail.com";
 
+// NODE env
 const NODE_ENV = process.env.NODE_ENV || "production";
 
-// Basic secret checks (log-friendly)
+// ---------- Basic checks (info-only) ----------
 if (!MVOLA_CLIENT_ID || !MVOLA_CLIENT_SECRET) {
   console.warn("⚠️ MVOLA client credentials are not set (MVOLA_CLIENT_ID / MVOLA_CLIENT_SECRET). Token fetch will fail without them.");
 }
@@ -48,11 +48,9 @@ if (!SMTP_USER || !SMTP_PASS) {
   console.warn("⚠️ SMTP credentials not set (SMTP_USER / SMTP_PASS). Email alerts will fail without them.");
 }
 
-// ---------- CORS configuration ----------
+// ---------- CORS configuration (from CORS_ORIGINS .env) ----------
 const allowedFromEnv = (process.env.CORS_ORIGINS || "").split(",").map(s => s.trim()).filter(Boolean);
 const allowedOrigins = allowedFromEnv.length ? allowedFromEnv : [
-  "https://wifi-razafistore.vercel.app",
-  "https://wifi-razafistore-git-main-razafisosthene.vercel.app",
   "https://wifi.razafistore.com",
   "http://localhost:3000",
 ];
@@ -60,6 +58,7 @@ const allowedOrigins = allowedFromEnv.length ? allowedFromEnv : [
 app.use(
   cors({
     origin: function (origin, callback) {
+      // allow non-browser requests (e.g., server-side) when origin is undefined
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
@@ -68,7 +67,7 @@ app.use(
       }
     },
     methods: ["GET", "POST"],
-    credentials: false,
+    credentials: true,
   })
 );
 
@@ -115,54 +114,6 @@ async function sendEmailNotification(subject, message) {
   }
 }
 
-// ---------- Token cache and fetcher (auto-refresh) ----------
-let tokenCache = {
-  access_token: null,
-  expires_at: 0,
-};
-
-async function fetchNewToken() {
-  if (!MVOLA_CLIENT_ID || !MVOLA_CLIENT_SECRET) {
-    throw new Error("MVOLA client credentials not configured");
-  }
-  const tokenUrl = `${MVOLA_BASE}/token`;
-  const auth = Buffer.from(`${MVOLA_CLIENT_ID}:${MVOLA_CLIENT_SECRET}`).toString("base64");
-  const headers = {
-    Authorization: `Basic ${auth}`,
-    "Content-Type": "application/x-www-form-urlencoded",
-    "Cache-Control": "no-cache",
-  };
-  const body = new URLSearchParams({ grant_type: "client_credentials", scope: "EXT_INT_MVOLA_SCOPE" }).toString();
-  const resp = await axios.post(tokenUrl, body, { headers, timeout: 10000 });
-  const data = resp.data;
-  const expiresInSec = data.expires_in || 300;
-  tokenCache.access_token = data.access_token;
-  tokenCache.expires_at = Date.now() + (expiresInSec - 60) * 1000;
-  console.info("✅ Token MVola obtenu, expires_in:", expiresInSec);
-  return tokenCache.access_token;
-}
-
-async function getAccessToken() {
-  if (tokenCache.access_token && Date.now() < tokenCache.expires_at) {
-    return tokenCache.access_token;
-  }
-  return await fetchNewToken();
-}
-
-// ---------- Helpers for MVola headers ----------
-function mvolaHeaders(accessToken, correlationId) {
-  return {
-    Authorization: `Bearer ${accessToken}`,
-    Version: "1.0",
-    "X-CorrelationID": correlationId || crypto.randomUUID(),
-    UserLanguage: USER_LANGUAGE,
-    UserAccountIdentifier: `msisdn;${PARTNER_MSISDN}`,
-    partnerName: PARTNER_NAME,
-    "Cache-Control": "no-cache",
-    "Content-Type": "application/json",
-  };
-}
-
 // ---------- Utility helpers ----------
 function maskPhone(phone) {
   if (!phone) return null;
@@ -194,20 +145,18 @@ async function insertLog({
 }) {
   try {
     if (!supabase) return;
-    await supabase.from("logs").insert([
-      {
-        request_ref,
-        server_correlation_id,
-        event_type,
-        status,
-        masked_phone,
-        amount,
-        attempt,
-        short_message,
-        payload: truncate(payload, 2000),
-        meta,
-      },
-    ]);
+    await supabase.from("logs").insert([{
+      request_ref,
+      server_correlation_id,
+      event_type,
+      status,
+      masked_phone,
+      amount,
+      attempt,
+      short_message,
+      payload: truncate(payload, 2000),
+      meta,
+    }]);
   } catch (e) {
     console.error("⚠️ Failed to insert log:", e?.message || e);
   }
@@ -249,24 +198,51 @@ function localRangeToUtcBounds(startLocalYMD, endLocalYMD, offsetHours = 3) {
   }
 }
 
-function monthBoundsMadagascar(dateObjMad) {
-  const Y = dateObjMad.getUTCFullYear();
-  const M = dateObjMad.getUTCMonth() + 1;
-  const first = `${Y}-${String(M).padStart(2, "0")}-01`;
-  const nextMonth = new Date(Date.UTC(Y, dateObjMad.getUTCMonth() + 1, 1));
-  const lastDayDate = new Date(nextMonth.getTime() - (24 * 3600 * 1000));
-  const last = `${Y}-${String(M).padStart(2, "0")}-${String(lastDayDate.getUTCDate()).padStart(2, "0")}`;
-  return { first, last };
+// ---------- Token cache & MVola token logic ----------
+let tokenCache = { access_token: null, expires_at: 0 };
+
+async function fetchNewToken() {
+  if (!MVOLA_CLIENT_ID || !MVOLA_CLIENT_SECRET) {
+    throw new Error("MVOLA client credentials not configured");
+  }
+  const tokenUrl = `${MVOLA_BASE}/token`;
+  const auth = Buffer.from(`${MVOLA_CLIENT_ID}:${MVOLA_CLIENT_SECRET}`).toString("base64");
+  const headers = {
+    Authorization: `Basic ${auth}`,
+    "Content-Type": "application/x-www-form-urlencoded",
+    "Cache-Control": "no-cache",
+  };
+  const body = new URLSearchParams({ grant_type: "client_credentials", scope: "EXT_INT_MVOLA_SCOPE" }).toString();
+  const resp = await axios.post(tokenUrl, body, { headers, timeout: 10000 });
+  const data = resp.data;
+  const expiresInSec = data.expires_in || 300;
+  tokenCache.access_token = data.access_token;
+  tokenCache.expires_at = Date.now() + (expiresInSec - 60) * 1000;
+  console.info("✅ Token MVola obtenu, expires_in:", expiresInSec);
+  return tokenCache.access_token;
 }
 
-function yearBoundsMadagascar(dateObjMad) {
-  const Y = dateObjMad.getUTCFullYear();
-  const first = `${Y}-01-01`;
-  const last = `${Y}-12-31`;
-  return { first, last };
+async function getAccessToken() {
+  if (tokenCache.access_token && Date.now() < tokenCache.expires_at) {
+    return tokenCache.access_token;
+  }
+  return await fetchNewToken();
 }
 
-// ---------- Polling logic (unchanged) ----------
+function mvolaHeaders(accessToken, correlationId) {
+  return {
+    Authorization: `Bearer ${accessToken}`,
+    Version: "1.0",
+    "X-CorrelationID": correlationId || crypto.randomUUID(),
+    UserLanguage: USER_LANGUAGE,
+    UserAccountIdentifier: `msisdn;${PARTNER_MSISDN}`,
+    partnerName: PARTNER_NAME,
+    "Cache-Control": "no-cache",
+    "Content-Type": "application/json",
+  };
+}
+
+// ---------- Polling logic (kept) ----------
 async function pollTransactionStatus({
   serverCorrelationId,
   requestRef,
@@ -275,9 +251,9 @@ async function pollTransactionStatus({
   plan,
 }) {
   const start = Date.now();
-  const timeoutMs = 3 * 60 * 1000;
-  let backoff = 1000;
-  const maxBackoff = 10000;
+  const timeoutMs = 3 * 60 * 1000; // 3 minutes
+  let backoff = 1000; // start 1s
+  const maxBackoff = 10000; // cap 10s
   let attempt = 0;
   while (Date.now() - start < timeoutMs) {
     attempt++;
@@ -527,7 +503,7 @@ async function pollTransactionStatus({
 
 // ---------- Root / health ----------
 app.get("/", (req, res) => {
-  res.send("RAZAFI MVola Backend is running 🚀");
+  res.type("text/plain").send("RAZAFI MVola Backend is running 🚀");
 });
 
 // ---------- Endpoint: /api/dernier-code ----------
@@ -582,16 +558,14 @@ app.get("/api/dernier-code", async (req, res) => {
     }
 
     try {
-      await supabase.from("logs").insert([
-        {
-          event_type: "delivered_voucher_to_client",
-          request_ref: null,
-          server_correlation_id: null,
-          status: "delivered",
-          masked_phone: maskPhone(phone),
-          payload: { delivered_code: truncate(code, 2000) },
-        },
-      ]);
+      await supabase.from("logs").insert([{
+        event_type: "delivered_voucher_to_client",
+        request_ref: null,
+        server_correlation_id: null,
+        status: "delivered",
+        masked_phone: maskPhone(phone),
+        payload: { delivered_code: truncate(code, 2000) },
+      }]);
     } catch (logErr) {
       console.warn("Unable to write delivery log:", logErr?.message || logErr);
     }
@@ -637,18 +611,16 @@ app.post("/api/send-payment", async (req, res) => {
 
   try {
     if (supabase) {
-      await supabase.from("transactions").insert([
-        {
-          phone,
-          plan,
-          amount,
-          currency: "Ar",
-          description: `Achat WiFi ${plan}`,
-          request_ref: requestRef,
-          status: "initiated",
-          metadata: { source: "portal" },
-        },
-      ]);
+      await supabase.from("transactions").insert([{
+        phone,
+        plan,
+        amount,
+        currency: "Ar",
+        description: `Achat WiFi ${plan}`,
+        request_ref: requestRef,
+        status: "initiated",
+        metadata: { source: "portal" },
+      }]);
     }
   } catch (dbErr) {
     console.error("⚠️ Warning: unable to insert initial transaction row:", dbErr?.message || dbErr);
@@ -765,10 +737,7 @@ app.get("/api/tx/:requestRef", async (req, res) => {
       console.error("Supabase error fetching transaction:", error);
       return res.status(500).json({ error: "db error" });
     }
-    const row = {
-      ...data,
-      phone: maskPhone(data.phone),
-    };
+    const row = { ...data, phone: maskPhone(data.phone) };
     return res.json({ ok: true, transaction: row });
   } catch (e) {
     console.error("Error in /api/tx/:", e?.message || e);
