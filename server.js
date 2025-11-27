@@ -24,6 +24,31 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// ------------------ WIFI ACCESS PROTECTION ------------------
+
+const allowedPublicIP = "197.158.240.188";
+
+app.use((req, res, next) => {
+  // Behind a proxy, true client IP is in x-forwarded-for
+  const xff = req.headers["x-forwarded-for"];
+
+  // Extract first IP if multiple
+  const clientIP = (xff ? xff.split(",")[0].trim() : req.ip).replace("::ffff:", "");
+
+  console.log("Client IP:", clientIP);
+
+  // If client is NOT from your WiFi → redirect to bloque.html
+  if (clientIP !== allowedPublicIP) {
+    return res.redirect("https://wifi.razafistore.com/bloque.html");
+  }
+
+  // Otherwise, allow
+  next();
+});
+
+// -------------------------------------------------------------
+
+
 // ---------------------------------------------------------------------------
 // ENVIRONMENT VARIABLES
 // ---------------------------------------------------------------------------
