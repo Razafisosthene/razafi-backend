@@ -1,0 +1,161 @@
+body {
+  font-family: 'Inter', sans-serif;
+  background-color: #f3f4f6;
+  color: #1f2937;
+  margin: 0;
+  padding: 0;
+}
+
+header {
+  background-color: white;
+  padding: 24px;
+  text-align: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+
+header h1 {
+  font-size: 24px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+header p {
+  font-size: 14px;
+  color: #4b5563;
+}
+
+.section {
+  padding: 24px 16px;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.section h2 {
+  font-size: 20px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  text-align: center;
+}
+
+.section p {
+  font-size: 14px;
+  color: #374151;
+}
+
+.plans-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: center;
+}
+
+.plan {
+  background-color: white;
+  padding: 24px;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  width: 100%;
+}
+
+.plan h3 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.plan p {
+  font-size: 14px;
+  color: #6b7280;
+}
+
+.plan button {
+  margin-top: 16px;
+  padding: 8px 16px;
+  background-color: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.plan button:hover {
+  background-color: #1d4ed8;
+}
+
+.code-box {
+  background-color: white;
+  padding: 24px;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  margin-top: 24px;
+}
+
+.code-box h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.code-box p {
+  font-size: 14px;
+  margin: 6px 0;
+}
+
+.code-box button {
+  margin-top: 12px;
+  padding: 8px 16px;
+  background-color: #16a34a;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.code-box button:hover {
+  background-color: #15803d;
+}
+
+.hint {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 8px;
+}
+
+.warning {
+  background-color: #fee2e2;
+  color: #b91c1c;
+  font-weight: bold;
+  border: 1px solid #fca5a5;
+  border-radius: 8px;
+  padding: 12px;
+  margin: 16px auto;
+  max-width: 600px;
+}
+
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background-color: #111827;
+  color: white;
+  font-size: 14px;
+  padding: 8px 16px;
+  border-radius: 6px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+  opacity: 0;
+  transition: opacity 0.3s ease-in-out;
+}
+
+.toast.show {
+  opacity: 1;
+}
+
+.hidden {
+  display: none;
+}
+
+a {
+  color: #2563eb;
+  text-decoration: underline;
+}

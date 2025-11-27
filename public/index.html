@@ -1,0 +1,2063 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Achat code WiFi RAZAFI</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    .toast.show {
+      visibility: visible;
+      animation: slidein 0.5s ease-out, fadeout 0.5s ease-in 4s;
+    }
+    @keyframes slidein {
+      from { transform: translateX(100%); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+    @keyframes fadeout {
+      from { opacity: 1; }
+      to { opacity: 0; }
+    }
+    @keyframes slideFromTop {
+      from { opacity: 0; transform: translateY(-40px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-slide { animation: slideFromTop 2.1s ease-out; }
+    .plan-card:hover { transform: translateY(-3px); box-shadow: 0 6px 18px rgba(16,24,40,0.08); }
+    .choose-btn { display: none; }
+    .plan-card:focus-within .choose-btn,
+    .plan-card:hover .choose-btn { display: inline-block; }
+
+    /* --- Color system for Limited vs Unlimited --- */
+    /* LIMITED (keep pastel family like before) */
+    .plan-limited {
+      background: linear-gradient(180deg,#eef6ff 0%, #eef6ff 100%);
+      border: 1px solid rgba(59,130,246,0.08);
+      color: #1e3a8a;
+    }
+    .plan-limited-warm {
+      background: linear-gradient(180deg,#fff8f1 0%, #fff4e6 100%);
+      border: 1px solid rgba(234,88,12,0.06);
+      color: #7c2d12;
+    }
+    .plan-limited-purple {
+      background: linear-gradient(180deg,#f6f3ff 0%, #f6f3ff 100%);
+      border: 1px solid rgba(139,92,246,0.06);
+      color: #5b21b6;
+    }
+
+    /* UNLIMITED (new palette chosen for good contrast on light + dark) */
+    .plan-unlimited-2h {
+      background: linear-gradient(180deg, #DFFFE6 0%, #EAFEF1 100%);
+      border: 1px solid rgba(34,197,94,0.12);
+      color: #0b6b3a;
+    }
+    .plan-unlimited-4h {
+      background: linear-gradient(180deg, #D9FFF8 0%, #E9FFFB 100%);
+      border: 1px solid rgba(14,165,233,0.12);
+      color: #03636b;
+    }
+    .plan-unlimited-6h {
+      background: linear-gradient(180deg, #E9FFE0 0%, #F3FFF0 100%);
+      border: 1px solid rgba(34,197,94,0.08);
+      color: #165a2f;
+    }
+
+    /* Dark mode adjustments */
+    @media (prefers-color-scheme: dark) {
+      body { background: #0b1220; color: #e6eef8; }
+      header { background: #071022; color: #e6eef8; }
+      .plan-limited {
+        background: linear-gradient(180deg,#0f1724 0%, #0b1220 100%);
+        border: 1px solid rgba(99,102,241,0.12);
+        color: #cfe3ff;
+      }
+      .plan-limited-warm {
+        background: linear-gradient(180deg,#26160c 0%, #140a05 100%);
+        border: 1px solid rgba(234,88,12,0.08);
+        color: #ffd9bf;
+      }
+      .plan-limited-purple {
+        background: linear-gradient(180deg,#191023 0%, #0f0712 100%);
+        border: 1px solid rgba(139,92,246,0.08);
+        color: #e9ddff;
+      }
+      .plan-unlimited-2h {
+        background: linear-gradient(180deg,#07361a 0%, #052516 100%);
+        border: 1px solid rgba(34,197,94,0.18);
+        color: #dfffe6;
+      }
+      .plan-unlimited-4h {
+        background: linear-gradient(180deg,#053b3a 0%, #032a29 100%);
+        border: 1px solid rgba(14,165,233,0.18);
+        color: #d9fff8;
+      }
+      .plan-unlimited-6h {
+        background: linear-gradient(180deg,#0a2d14 0%, #051a0b 100%);
+        border: 1px solid rgba(34,197,94,0.14);
+        color: #e6ffdf;
+      }
+
+      /* toast and small elements for dark */
+      .toast { background: rgba(10, 10, 10, 0.88); color: #e6eef8; }
+
+      .code-card { background: #062226; color: #dfffe6; }
+    }
+
+    /* Modal small rules */
+
+    .hidden { display:none; }
+
+    /* Spinner fallback */
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    /* small responsive tweaks */
+    @media (max-width:420px){
+      .plan-card { padding: 1rem; }
+    }
+ /* Floating toggle styles + minimal dark-mode overrides (fixed & left-aligned under header) */
+.floating-toggle-wrapper {
+  position: fixed;              /* stay visible while scrolling */
+  left: 16px;                   /* default left; JS will compute precise left to match your centered container */
+  top: 80px;                    /* default top; JS will set exact value based on header height */
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;  /* left-aligned */
+  pointer-events: auto;
+  transition: top 180ms ease;
+}
+
+/* Button visuals (Size M: 54x30) - neumorphic look */
+.floating-toggle {
+  width: 54px;
+  height: 30px;
+  padding: 3px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #f7f8fb 0%, #f0f2f6 100%);
+  border: none;
+  cursor: pointer;
+  position: relative;
+  box-shadow: 0 6px 14px rgba(15,23,42,0.12), inset 0 1px 0 rgba(255,255,255,0.7);
+  -webkit-tap-highlight-color: transparent;
+  display: inline-block;
+}
+
+/* track */
+.floating-toggle .toggle-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  display: block;
+  background: transparent;
+  transition: background 220ms ease, box-shadow 220ms ease;
+}
+
+/* knob */
+.floating-toggle .toggle-knob {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #ffffff;
+  top: 50%;
+  transform: translateY(-50%) translateX(0);
+  box-shadow: 0 6px 16px rgba(16,24,40,0.18);
+  transition: transform 220ms cubic-bezier(.2,.9,.2,1);
+  z-index: 2;
+  border: 1px solid rgba(8,10,12,0.06);
+}
+
+/* icons */
+.floating-toggle .icon-sun,
+.floating-toggle .icon-moon {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  transition: opacity 180ms ease, transform 180ms ease;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 0 rgba(255,255,255,0.25));
+}
+
+.floating-toggle .icon-sun { left: 8px; opacity: 1; }
+.floating-toggle .icon-moon { right: 8px; opacity: 0; }
+
+/* Mode visuals (translate value tuned for 54x30 track and 22px knob => 26px) */
+html:not(.dark-mode) .floating-toggle { background: linear-gradient(180deg,#f7f8fb 0%,#f0f2f6 100%); }
+html:not(.dark-mode) .floating-toggle .icon-sun { opacity: 1; transform: scale(1); }
+html:not(.dark-mode) .floating-toggle .icon-moon { opacity: 0; transform: scale(0.88); }
+html:not(.dark-mode) .floating-toggle .toggle-knob { transform: translateY(-50%) translateX(0); }
+
+html.dark-mode .floating-toggle { background: linear-gradient(180deg,#0d1722 0%,#071022 100%); }
+html.dark-mode .floating-toggle .icon-sun { opacity: 0; transform: scale(0.88); }
+html.dark-mode .floating-toggle .icon-moon { opacity: 1; transform: scale(1); }
+html.dark-mode .floating-toggle .toggle-knob { transform: translateY(-50%) translateX(26px); }
+
+/* keep small smooth transitions for theme change */
+html, body, header, .plan-card { transition: background 240ms ease, color 240ms ease; }
+
+</style>
+<!-- Paste this CSS right after the toggle block (or in <head>) -->
+<style id="razafi-contrast-fixes">
+  /* Improve readability for the plans intro line */
+  #plans p.text-center.text-sm {
+    color: #374151 !important;                /* darker on light bg */
+    background: rgba(255,255,255,0.0);        /* keep transparent by default */
+    padding: 6px 10px;
+    border-radius: 8px;
+    line-height: 1.35;
+  }
+
+  /* In dark forced mode (injected by the toggle), make the plans intro pop */
+  .razafi-force-dark #plans p.text-center.text-sm {
+    color: #e6eef8 !important;                /* light readable text */
+    background: rgba(255,255,255,0.03) !important; /* tiny subtle surface */
+    -webkit-font-smoothing:antialiased;
+    text-shadow: 0 1px 0 rgba(2,6,23,0.25);
+  }
+
+  /* If page uses tailwind-like classes but different order, catch simple selector too */
+  #plans p.text-center { color: inherit; } /* fallback */
+
+  /* FAQ: make titles and content clearer and add subtle surface */
+  /* target both inline-styled FAQ blocks and general .faq-item structure */
+  .faq-item .faq-title {
+    color: #111827;              /* dark on light */
+    background: transparent;
+    padding: 6px 8px;
+    border-radius: 6px;
+  }
+  .faq-item .faq-content ol li {
+    color: #374151;
+    font-size: 0.95rem;
+    line-height: 1.45;
+  }
+
+  /* Dark-mode overrides for FAQ (when toggle injects razafi-force-dark) */
+  .razafi-force-dark .faq-item .faq-title {
+    color: #e6eef8 !important;
+    background: rgba(255,255,255,0.02) !important;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.45);
+  }
+  .razafi-force-dark .faq-item .faq-content,
+  .razafi-force-dark .faq-item .faq-content ol li {
+    color: #dbeafe !important;
+  }
+
+  /* FAQ container surface (for the section that uses background: #f1f5f9) */
+  section[style*="background: #f1f5f9"] {
+    background: linear-gradient(180deg,#f8fafc,#f1f5f9) !important;
+    padding: 1rem;
+    border-radius: 10px;
+  }
+  .razafi-force-dark section[style*="background: #f1f5f9"] {
+    background: linear-gradient(180deg,#071022,#061018) !important;
+    border-top: 1px solid rgba(255,255,255,0.04) !important;
+  }
+
+  /* Buttons text contrast (Choisir) - ensure buttons remain visible in dark */
+  .razafi-force-dark .choose-btn, .razafi-force-dark button.choose-btn {
+    box-shadow: 0 6px 18px rgba(2,6,23,0.45);
+  }
+
+  /* Accessibility: increase contrast when user prefers higher contrast */
+  @media (prefers-contrast: more) {
+    #plans p.text-center.text-sm,
+    .faq-item .faq-title,
+    .faq-item .faq-content ol li {
+      color: #0b1220 !important;
+      background: rgba(255,255,255,0.06) !important;
+    }
+    .razafi-force-dark #plans p.text-center.text-sm,
+    .razafi-force-dark .faq-item .faq-title,
+    .razafi-force-dark .faq-item .faq-content ol li {
+      color: #ffffff !important;
+      background: rgba(255,255,255,0.04) !important;
+    }
+  }
+</style>
+
+
+<!-- Center modal dialog: responsive sizing -->
+<style>
+  /* Target the dialog inside transactionsModalFinal */
+  #transactionsModalFinal > div > .transactions-dialog,
+  #transactionsModalFinal .transactions-dialog {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(90%, 650px);
+    min-width: 350px;
+    max-width: 650px;
+  }
+  @media (max-width: 420px){
+    #transactionsModalFinal > div > .transactions-dialog,
+    #transactionsModalFinal .transactions-dialog {
+      width: calc(100% - 24px);
+      min-width: auto;
+      left: 50%;
+      transform: translate(-50%, -45%);
+    }
+  }
+</style>
+
+</head>
+<body class="bg-gray-100 text-gray-800">
+
+<header class="bg-white shadow p-6 text-center" style="position: sticky; top: 0; z-index: 60; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);box-shadow: 0 6px 18px rgba(0,0,0,0.06);">
+  <h1 class="text-2xl font-semibold">Achat code WiFi RAZAFI</h1>
+  <p class="text-sm mt-2">Choisissez un plan, entrez votre numéro MVola, et obtenez votre code WiFi.</p>
+</header>
+
+<!-- RAZAFI LOGO (left aligned, same vertical position as toggle) -->
+<div id="razafiLogo" style="
+  position: fixed;
+  left: 18px;
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+">
+  <img src="RAZAFI.png" alt="RAZAFI Logo" style="height: 38px;">
+</div>
+
+<!-- START: iOS PRO Floating Toggle (paste after </header>) -->
+<style>
+  :root { --transition: 280ms cubic-bezier(.25,.9,.25,1); }
+  :root {
+    --switch-bg-light: linear-gradient(180deg,#fdfdfd,#e7e9ec);
+    --switch-bg-dark: linear-gradient(180deg,#d0d3d8,#b9bec5);
+    --knob-light: linear-gradient(180deg,#ffffff,#e8ecf2);
+    --knob-dark: linear-gradient(180deg,#f5f7fa,#e5e7eb);
+    --visibility-dark-shadow: rgba(0,0,0,0.24);
+    --visibility-light-halo: rgba(255,255,255,0.18);
+  }
+  [data-theme="dark"] {
+    --switch-bg-light: linear-gradient(180deg,#1f242d,#151a20);
+    --switch-bg-dark: linear-gradient(180deg,#0f1319,#090c10);
+    --knob-light: linear-gradient(180deg,#d7dbe0,#f0f2f6);
+    --knob-dark: linear-gradient(180deg,#c2c5cc,#e9ebef);
+    --visibility-dark-shadow: rgba(0,0,0,0.55);
+    --visibility-light-halo: rgba(255,255,255,0.10);
+  }
+
+  .razafi-toggle-float {
+    position: fixed;
+    right: 18px;
+    z-index: 99999;
+    display: inline-flex;
+    align-items: center;
+    pointer-events: auto;
+  }
+
+  .ios-pro-switch {
+    width: 51px;
+    height: 31px;
+    border-radius: 999px;
+    padding: 2px;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+    position: relative;
+    background: var(--switch-bg-light);
+    transition: background var(--transition), box-shadow var(--transition), transform 120ms;
+    box-shadow: inset 0 1px 1px rgba(255,255,255,0.6), inset 0 -1px 2px rgba(0,0,0,0.1), 0 2px 4px rgba(0,0,0,0.08);
+    user-select: none;
+    z-index: 1000;
+  }
+  [data-theme="dark"] .ios-pro-switch {
+    background: var(--switch-bg-dark);
+    box-shadow: inset 0 1px 1px rgba(255,255,255,0.08), inset 0 -1px 2px rgba(0,0,0,0.6), 0 2px 6px rgba(0,0,0,0.4);
+  }
+
+  .ios-pro-switch::before{
+    content:"";
+    position:absolute;
+    left:-6px; right:-6px; top:-6px; bottom:-6px;
+    border-radius:999px;
+    pointer-events:none;
+    z-index:-1;
+    transition: box-shadow 260ms, opacity 220ms;
+    box-shadow:
+      0 10px 24px var(--visibility-dark-shadow),
+      0 0 10px var(--visibility-light-halo);
+    opacity:1;
+  }
+  .ios-pro-switch:hover::before,
+  .ios-pro-switch:active::before {
+    box-shadow:
+      0 14px 34px var(--visibility-dark-shadow),
+      0 0 14px var(--visibility-light-halo);
+  }
+
+  .ios-pro-switch:active { transform: scale(0.99); }
+
+  .ios-pro-switch::after {
+    content: "";
+    position: absolute;
+    left: 6%;
+    top: 6%;
+    width: 88%;
+    height: 40%;
+    border-radius: 999px;
+    pointer-events: none;
+    background: linear-gradient(180deg, rgba(255,255,255,0.55), rgba(255,255,255,0.04));
+    mix-blend-mode: overlay;
+    transition: opacity var(--transition);
+    opacity: 0.95;
+  }
+  [data-theme="dark"] .ios-pro-switch::after {
+    background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.0));
+    opacity: 0.6;
+  }
+
+  .ios-pro-knob {
+    width: 27px; height: 27px; border-radius: 50%;
+    background: var(--knob-light);
+    display: inline-grid; place-items: center; position: relative; z-index: 2;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15), inset 0 1px 1px rgba(255,255,255,0.6);
+    transition: box-shadow 180ms, background 200ms;
+    will-change: transform;
+  }
+  [data-theme="dark"] .ios-pro-knob {
+    background: var(--knob-dark);
+    box-shadow: 0 4px 12px rgba(2,6,23,0.5), inset 0 1px 1px rgba(255,255,255,0.04);
+  }
+  .knob-pressed { transform: scale(0.92) !important; }
+</style>
+
+<!-- Floating toggle (paste after your header) -->
+<div id="razafiIosToggleFloat" class="razafi-toggle-float" aria-hidden="false">
+  <div id="iosProSwitchFloat" class="ios-pro-switch" role="switch" tabindex="0" aria-checked="false" aria-label="Basculer thème">
+    <div id="iosProKnobFloat" class="ios-pro-knob" aria-hidden="true" style="transform: translateX(0px);">
+      <svg id="razafiKnobSVG" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:85%; height:85%;">
+        <circle cx="12" cy="12" r="3.5"></circle>
+        <path d="M12 1.75v1.5M12 20.75v1.5M4.22 4.22l1.06 1.06M18.72 18.72l1.06 1.06M1.75 12h1.5M20.75 12h1.5M4.22 19.78l1.06-1.06M18.72 5.28l1.06-1.06"></path>
+      </svg>
+    </div>
+  </div>
+</div>
+
+<script>
+/* Unified iOS Pro switch with spring engine and robust theme application
+   - master of truth for theme state
+   - dispatches 'themechange' custom event used by other parts
+*/
+(function(){
+  const wrapper = document.getElementById('razafiIosToggleFloat');
+  const switchEl = document.getElementById('iosProSwitchFloat');
+  const knobEl = document.getElementById('iosProKnobFloat');
+
+  if (!wrapper || !switchEl || !knobEl) return;
+
+  function positionUnderHeader() {
+    const header = document.querySelector('header');
+    if (!header) return;
+    const rect = header.getBoundingClientRect();
+    const spacing = 12;
+    wrapper.style.top = Math.round(rect.bottom + spacing) + 'px';
+  }
+
+  const SPRING = { k:220, c:28, mass:1, dt:1/60 };
+  const KNOB_TRAVEL = 20;
+  let pos = 0, vel = 0, target = 0, rafId = null;
+
+  const KEY_PRIMARY = 'ios-pro-theme';
+  const KEY_LEGACY  = 'razafi_theme';
+  const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+
+  function readPref(){
+    try { return localStorage.getItem(KEY_PRIMARY) || localStorage.getItem(KEY_LEGACY) || 'auto'; } catch { return 'auto'; }
+  }
+  function savePref(v){
+    try { localStorage.setItem(KEY_PRIMARY, v); localStorage.setItem(KEY_LEGACY, (v==='dark'?'dark':(v==='light'?'light':'auto'))); } catch(e){}
+  }
+  function effective(pref){ if (pref === 'auto') return (mq && mq.matches) ? 'dark' : 'light'; return pref; }
+
+  function step() {
+    const a = (-SPRING.k * (pos - target) - SPRING.c * vel) / SPRING.mass;
+    vel += a * SPRING.dt;
+    pos += vel * SPRING.dt;
+    knobEl.style.transform = `translateX(${pos.toFixed(2)}px)`;
+    if (Math.abs(vel) < 0.02 && Math.abs(pos - target) < 0.05) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+      pos = target; vel = 0;
+      knobEl.style.transform = `translateX(${target}px)`;
+      return;
+    }
+    rafId = requestAnimationFrame(step);
+  }
+  function animateTo(x) { target = x; if (!rafId) rafId = requestAnimationFrame(step); }
+
+  const SVG_SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="width:70%;height:70%"><circle cx="12" cy="12" r="3.5"></circle><path d="M12 1.75v1.5M12 20.75v1.5M4.22 4.22l1.06 1.06M18.72 18.72l1.06 1.06M1.75 12h1.5M20.75 12h1.5M4.22 19.78l1.06-1.06M18.72 5.28l1.06-1.06"></path></svg>';
+  const SVG_MOON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="width:70%;height:70%"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"></path></svg>';
+
+  function ensureDarkOverrides() {
+    let el = document.getElementById('razafi-dark-overrides');
+    if (!el) {
+      el = document.createElement('style');
+      el.id = 'razafi-dark-overrides';
+      el.textContent = `
+html.razafi-force-dark, html.razafi-force-dark body { color: #e6eef8 !important; background: #0b1220 !important; }
+html.razafi-force-dark header, html.razafi-force-dark header * { background: #071022 !important; color: #e6eef8 !important; }
+html.razafi-force-dark .plan-limited {
+  background: linear-gradient(180deg,#0f1724 0%, #0b1220 100%) !important;
+  border: 1px solid rgba(99,102,241,0.12) !important;
+  color: #cfe3ff !important;
+}
+html.razafi-force-dark .plan-limited-warm {
+  background: linear-gradient(180deg,#26160c 0%, #140a05 100%) !important;
+  border: 1px solid rgba(234,88,12,0.08) !important;
+  color: #ffd9bf !important;
+}
+html.razafi-force-dark .plan-limited-purple {
+  background: linear-gradient(180deg,#191023 0%, #0f0712 100%) !important;
+  border: 1px solid rgba(139,92,246,0.08) !important;
+  color: #e9ddff !important;
+}
+html.razafi-force-dark .plan-unlimited-2h {
+  background: linear-gradient(180deg,#07361a 0%, #052516 100%) !important;
+  border: 1px solid rgba(34,197,94,0.18) !important;
+  color: #dfffe6 !important;
+}
+html.razafi-force-dark .plan-unlimited-4h {
+  background: linear-gradient(180deg,#053b3a 0%, #032a29 100%) !important;
+  border: 1px solid rgba(14,165,233,0.18) !important;
+  color: #d9fff8 !important;
+}
+html.razafi-force-dark .plan-unlimited-6h {
+  background: linear-gradient(180deg,#0a2d14 0%, #051a0b 100%) !important;
+  border: 1px solid rgba(34,197,94,0.14) !important;
+  color: #e6ffdf !important;
+}
+html.razafi-force-dark .toast { background: rgba(10,10,10,0.88) !important; color: #e6eef8 !important; }
+html.razafi-force-dark .code-card { background: #062226 !important; color: #dfffe6 !important; }
+html.razafi-force-dark.html.dark-mode, html.razafi-force-dark.dark, html.razafi-force-dark.theme-dark { color: #e6eef8 !important; background: #0b1220 !important; }
+`;
+      document.head.appendChild(el);
+    }
+    return el;
+  }
+  function removeDarkOverrides() {
+    const el = document.getElementById('razafi-dark-overrides');
+    if (el) el.parentNode.removeChild(el);
+  }
+
+  function apply(pref, animate = true) {
+    const eff = effective(pref);
+    if (eff === 'dark') {
+      document.documentElement.setAttribute('data-theme','dark');
+      document.body && document.body.setAttribute('data-theme','dark');
+      document.documentElement.classList.add('dark-mode','theme-dark','dark','razafi-force-dark');
+      document.body && document.body.classList.add('dark-mode','theme-dark','dark','razafi-force-dark');
+      ensureDarkOverrides();
+      switchEl.setAttribute('aria-checked','true');
+      if (animate) animateTo(KNOB_TRAVEL); else { pos = KNOB_TRAVEL; knobEl.style.transform = `translateX(${pos}px)`; }
+      knobEl.innerHTML = SVG_MOON;
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+      document.body && document.body.removeAttribute('data-theme');
+      document.documentElement.classList.remove('dark-mode','theme-dark','dark','razafi-force-dark');
+      document.body && document.body.classList.remove('dark-mode','theme-dark','dark','razafi-force-dark');
+      removeDarkOverrides();
+      switchEl.setAttribute('aria-checked','false');
+      if (animate) animateTo(0); else { pos = 0; knobEl.style.transform = `translateX(0px)`; }
+      knobEl.innerHTML = SVG_SUN;
+    }
+    savePref(pref);
+    try { window.dispatchEvent(new CustomEvent('themechange',{detail:{theme:eff}})); } catch(e){}
+  }
+
+  (function init(){
+    positionUnderHeader();
+    const saved = readPref();
+    pos = effective(saved) === 'dark' ? KNOB_TRAVEL : 0;
+    target = pos; vel = 0;
+    knobEl.style.transform = `translateX(${pos}px)`;
+    knobEl.innerHTML = effective(saved) === 'dark' ? SVG_MOON : SVG_SUN;
+    if (effective(saved) === 'dark') {
+      document.documentElement.setAttribute('data-theme','dark');
+      document.body && document.body.setAttribute('data-theme','dark');
+      document.documentElement.classList.add('dark-mode','theme-dark','dark','razafi-force-dark');
+      document.body && document.body.classList.add('dark-mode','theme-dark','dark','razafi-force-dark');
+      ensureDarkOverrides();
+      switchEl.setAttribute('aria-checked','true');
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+      document.body && document.body.removeAttribute('data-theme');
+      document.documentElement.classList.remove('dark-mode','theme-dark','dark','razafi-force-dark');
+      document.body && document.body.classList.remove('dark-mode','theme-dark','dark','razafi-force-dark');
+      removeDarkOverrides();
+      switchEl.setAttribute('aria-checked','false');
+    }
+  })();
+
+  switchEl.addEventListener('click', () => {
+    const current = effective(readPref());
+    knobEl.classList.add('knob-pressed');
+    setTimeout(()=>knobEl.classList.remove('knob-pressed'),140);
+    apply(current === 'dark' ? 'light' : 'dark', true);
+  });
+  switchEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchEl.click(); }
+  });
+
+  window.addEventListener('resize', positionUnderHeader);
+  window.addEventListener('scroll', () => { window.requestAnimationFrame(positionUnderHeader); });
+
+  if (mq && mq.addEventListener) mq.addEventListener('change', () => { if (readPref() === 'auto') apply('auto', true); });
+
+  window.iosProSwitch = {
+    set: (t) => { if (['light','dark','auto'].includes(t)) apply(t, true); },
+    get: () => readPref()
+  };
+})();
+</script>
+
+<script>
+/* Position RAZAFI logo to align vertically with toggle + swap PNG for dark mode
+   -> unchanged logic but kept local
+*/
+(function(){
+  const logo = document.getElementById("razafiLogo");
+  const logoImg = document.querySelector("#razafiLogo img");
+  const toggle = document.getElementById("razafiIosToggleFloat");
+  const LIGHT_SRC = "RAZAFI.png";
+  const DARK_SRC  = "RAZAFI-dark.png"; // optional
+
+  if (!logo || !toggle || !logoImg) return;
+
+  const BASE_SPACING = 12;
+  const MIN_TOP_DESKTOP = 60;
+  const MIN_TOP_MOBILE  = 26;
+  const AVOID_GAP = 8;
+
+  function isVisible(el) {
+    if (!el) return false;
+    const style = getComputedStyle(el);
+    return style && style.display !== 'none' && style.visibility !== 'hidden' && el.offsetHeight > 0;
+  }
+
+  function getViewportWidth() {
+    return Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+  }
+
+  function computeMinTop() {
+    return getViewportWidth() <= 420 ? MIN_TOP_MOBILE : MIN_TOP_DESKTOP;
+  }
+
+  function alignLogoAndToggle() {
+    const header = document.querySelector('header');
+    const copyWarning = document.getElementById('copyWarning');
+    const headerRect = header ? header.getBoundingClientRect() : { bottom: 0 };
+    const toggleRect = toggle.getBoundingClientRect();
+    const logoRect = logo.getBoundingClientRect();
+
+    const desiredTop = Math.round((headerRect.bottom || 0) + BASE_SPACING);
+    const minTop = computeMinTop();
+    let finalTop = Math.max(desiredTop, minTop);
+
+    if (isVisible(copyWarning)) {
+      const copyRect = copyWarning.getBoundingClientRect();
+      const wouldOverlap = (finalTop + Math.max(toggleRect.height, logoRect.height)) > (copyRect.top - AVOID_GAP);
+      if (wouldOverlap) {
+        finalTop = Math.max(minTop, Math.round(copyRect.top - Math.max(toggleRect.height, logoRect.height) - AVOID_GAP));
+      }
+    }
+
+    logo.style.top = finalTop + 'px';
+    try { toggle.style.top = finalTop + 'px'; } catch(e){}
+
+    if (!isFinite(finalTop) || finalTop < 0) {
+      const fallback = computeMinTop();
+      logo.style.top = fallback + 'px';
+      try { toggle.style.top = fallback + 'px'; } catch(e){}
+    }
+  }
+
+  function applyLogoForTheme(isDark) {
+    if (!logoImg) return;
+    if (isDark) {
+      fetch(DARK_SRC, { method: "HEAD" }).then(r => {
+        if (r.ok) { logoImg.src = DARK_SRC; logoImg.style.filter = ""; }
+        else      { logoImg.src = LIGHT_SRC; logoImg.style.filter = "invert(1) brightness(1.6)"; }
+      }).catch(() => {
+        logoImg.src = LIGHT_SRC;
+        logoImg.style.filter = "invert(1) brightness(1.6)";
+      });
+    } else {
+      logoImg.src = LIGHT_SRC;
+      logoImg.style.filter = "";
+    }
+  }
+
+  function isDarkNow() {
+    return document.documentElement.classList.contains("dark-mode")
+        || document.documentElement.classList.contains("razafi-force-dark")
+        || document.documentElement.getAttribute("data-theme") === "dark";
+  }
+
+  function init() {
+    alignLogoAndToggle();
+    applyLogoForTheme(isDarkNow());
+  }
+
+  window.addEventListener("themechange", (e) => {
+    const eff = e?.detail?.theme;
+    applyLogoForTheme(eff ? eff === 'dark' : isDarkNow());
+  });
+
+  const mo = new MutationObserver(() => {
+    applyLogoForTheme(isDarkNow());
+    alignLogoAndToggle();
+  });
+  mo.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme"] });
+
+  window.addEventListener('scroll', () => requestAnimationFrame(alignLogoAndToggle));
+  window.addEventListener('resize', () => requestAnimationFrame(alignLogoAndToggle));
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+
+  setTimeout(() => requestAnimationFrame(alignLogoAndToggle), 450);
+})();
+</script>
+
+<div id="copyWarning" class="max-w-md mx-auto mt-4 bg-red-100 text-red-700 font-bold border border-red-300 rounded px-4 py-2 hidden">
+  👇 Votre code WiFi est affiché plus bas. Faites défiler et copiez-le avant de quitter.
+</div>
+
+<!-- Payment pending message -->
+<div id="paymentPending" class="max-w-md mx-auto mt-4 bg-yellow-100 text-yellow-800 font-semibold border border-yellow-300 rounded px-4 py-3 hidden">
+  📱 Une demande de paiement a été envoyée sur votre téléphone MVola.<br/>
+  Veuillez ouvrir la notification MVola, confirmer le paiement et saisir votre code PIN pour valider la transaction.<br/>
+  ⏳ Une fois le paiement confirmé, votre code WiFi apparaîtra automatiquement ici.
+</div>
+
+<!-- Spinner -->
+<div id="spinner" class="flex flex-col items-center justify-center mt-6 hidden">
+  <div class="w-10 h-10 border-4 border-blue-300 border-t-blue-600 rounded-full" style="animation: spin 1s linear infinite;"></div>
+  <p class="mt-3 text-blue-700 font-semibold text-sm">Transaction en cours...</p>
+</div>
+
+<section id="plans" class="py-6" style="padding-top: 4.5rem;">
+  <h2 class="text-xl font-semibold text-center mb-2">📦 Plans WiFi disponibles</h2>
+  <p class="text-center text-sm text-gray-600 mb-4">Paiement sécurisé via <strong>MVola</strong> • Cliquez sur “Choisir” pour acheter un code.</p>
+<div class="flex justify-center mt-2 mb-4">
+  <img src="mvola.png" alt="Logo MVola" style="height: 54px; display: block;" />
+</div>
+
+  <div class="flex flex-col items-center gap-4 px-4">
+
+    <!-- LIMITED: 1 Jour – 1 Go -->
+    <div class="plan-card plan-limited p-6 rounded-xl w-full max-w-sm">
+      <h3 class="font-semibold text-lg">📆 1 Jour – 1 Go</h3>
+      <p class="text-sm text-blue-700">1000 Ar – Pour une utilisation rapide.</p>
+      <button class="choose-btn mt-4 px-4 py-2 bg-blue-600 text-white rounded" onclick="handlePayment('1 Jour - 1 Go - 1000 Ar')">Choisir</button>
+    </div>
+
+    <!-- LIMITED: 7 Jours – 5 Go -->
+    <div class="plan-card plan-limited-warm p-6 rounded-xl w-full max-w-sm">
+      <h3 class="font-semibold text-lg">📆 7 Jours – 5 Go</h3>
+      <p class="text-sm text-orange-700">5000 Ar – Pour une semaine complète.</p>
+      <button class="choose-btn mt-4 px-4 py-2 bg-orange-600 text-white rounded" onclick="handlePayment('7 Jours - 5 Go - 5000 Ar')">Choisir</button>
+    </div>
+
+    <!-- LIMITED: 30 Jours – 20 Go -->
+    <div class="plan-card plan-limited-purple p-6 rounded-xl w-full max-w-sm">
+      <h3 class="font-semibold text-lg">📆 30 Jours – 20 Go</h3>
+      <p class="text-sm text-purple-700">15000 Ar – Pour le mois entier.</p>
+      <button class="choose-btn mt-4 px-4 py-2 bg-purple-600 text-white rounded" onclick="handlePayment('30 Jours - 20 Go - 15000 Ar')">Choisir</button>
+    </div>
+
+    <!-- UNLIMITED: 2 Heures – Illimité (Mint Soft Green) -->
+    <div class="plan-card plan-unlimited-2h p-6 rounded-xl w-full max-w-sm">
+      <h3 class="font-semibold text-lg">⏱️ 2 Heures – Illimité</h3>
+      <p class="text-sm">2000 Ar – Accès illimité pendant 2 heures.</p>
+      <button class="choose-btn mt-4 px-4 py-2 bg-green-600 text-white rounded" onclick="handlePayment('2 Heures - ILLIMITE - 2000 Ar')">Choisir</button>
+    </div>
+
+    <!-- UNLIMITED: 4 Heures – Illimité (Aqua Pastel) -->
+    <div class="plan-card plan-unlimited-4h p-6 rounded-xl w-full max-w-sm">
+      <h3 class="font-semibold text-lg">⏱️ 4 Heures – Illimité</h3>
+      <p class="text-sm">3500 Ar – Accès illimité pendant 4 heures.</p>
+      <button class="choose-btn mt-4 px-4 py-2 bg-teal-600 text-white rounded" onclick="handlePayment('4 Heures - ILLIMITE - 3500 Ar')">Choisir</button>
+    </div>
+
+    <!-- UNLIMITED: 6 Heures – Illimité (Sage Green) -->
+    <div class="plan-card plan-unlimited-6h p-6 rounded-xl w-full max-w-sm">
+      <h3 class="font-semibold text-lg">⏱️ 6 Heures – Illimité</h3>
+      <p class="text-sm">7000 Ar – Accès illimité pendant 6 heures.</p>
+      <button class="choose-btn mt-4 px-4 py-2 bg-emerald-600 text-white rounded" onclick="handlePayment('6 Heures - ILLIMITE - 7000 Ar')">Choisir</button>
+    </div>
+
+  </div>
+</section>
+
+<!-- Code display section (persistent) -->
+<section id="codeSection" class="max-w-md mx-auto hidden">
+  <div id="codeCard" class="bg-green-100 p-6 rounded-xl shadow text-green-900 border border-green-400">
+    <h2 class="text-lg font-semibold mb-2" id="codeSectionTitle"></h2>
+    <p><strong>Plan :</strong> <span id="codePlan"></span></p>
+    <p><strong>Code :</strong> <span id="codeValue"></span></p>
+    <div class="mt-3 flex gap-3">
+      <button id="copyBtn" class="px-4 py-2 bg-green-600 text-white rounded" onclick="copySavedCode()">Copier le code</button>
+      <button id="historyBtn" class="px-4 py-2 border rounded" onclick="openHistory()">Transactions</button>
+    </div>
+    <p class="text-xs mt-2">💡 Utilisez ce code sur le portail WiFi RAZAFI pour vous connecter à Internet.</p>
+  </div>
+</section>
+
+<!-- Toast -->
+<div id="toast" aria-live="polite" role="status" class="toast fixed bottom-5 right-5 bg-gray-900 text-white text-sm py-2 px-4 rounded shadow-lg hidden"></div>
+
+<!-- History modal (legacy hidden; we'll populate new modal) -->
+<div id="historyModal" class="hidden">
+  <div class="modal-backdrop" onclick="closeHistory(event)">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-xl font-semibold">Historique des achats</h3>
+        <button onclick="closeHistory()" class="text-sm text-gray-600">Fermer</button>
+      </div>
+      <div id="historyList" class="space-y-3 max-h-64 overflow-auto">
+      </div>
+      <div class="mt-3 flex items-center justify-between">
+        <div id="historyPager">Page 1 • 0 résultats</div>
+        <div class="flex gap-2">
+          <button class="px-3 py-1 border rounded" id="prevPage" onclick="changePage(-1)">Prev</button>
+          <button class="px-3 py-1 border rounded" id="nextPage" onclick="changePage(1)">Next</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Configuration
+  const BACKEND_URL = "https://razafi-backend.onrender.com";
+
+  // Small helpers
+  function showToast(msg) {
+    const toast = document.getElementById("toast");
+    toast.textContent = msg;
+    toast.classList.remove("hidden");
+    toast.classList.add("show");
+    setTimeout(() => {
+      toast.classList.add("hidden");
+    }, 4500);
+  }
+
+  function maskPhone(phone) {
+    if (!phone) return null;
+    const s = String(phone);
+    if (s.length <= 4) return s;
+    const first = s.slice(0, 3);
+    const last = s.slice(-3);
+    return `${first}****${last}`;
+  }
+  /* ======= MAIN: handlePayment & polling logic (compatible with your server) ======= */
+  async function handlePayment(plan) {
+  // récupère le dernier numéro stocké pour préremplir le prompt (compatibilité legacy)
+  const storedPhone = localStorage.getItem("voucher_phone") || localStorage.getItem("voucher_phone_full") || "";
+
+  // Prompt pré-rempli (affiche le numéro en clair ici)
+  const entered = prompt(`Vous avez choisi : ${plan}\n🔒 Paiement sécurisé via MVola\nEntrez votre numéro MVola :`, storedPhone || "");
+  if (!entered) {
+    showToast("❌ Vous avez annulé… choisissez un autre plan ou réessayez plus tard.");
+    return;
+  }
+
+  // Nettoyage initial : enlever espaces & caractères non numériques sauf le '+' en début
+  let cleaned = String(entered).trim().replace(/\s+/g, '');
+
+  // 1) Conversion automatique +261xxxxxxx ou 261xxxxxxx -> 0xxxxxxxxx (si préfixe MVola)
+  // Exemples acceptés : +261341234567, 261341234567, 0341234567
+  const intRegex = /^(?:\+?261)(34|37|38)(\d{7})$/;
+  if (intRegex.test(cleaned)) {
+    cleaned = cleaned.replace(intRegex, "0$1$2");
+  }
+
+  // 2) Validation stricte MVola (format local) : commence par 0(34|37|38) + 7 chiffres -> total 10 chiffres
+  const isMvola = /^0(34|37|38)\d{7}$/.test(cleaned);
+  if (!isMvola) {
+    showToast("❌ Numéro MVola invalide. Entrez 034xxxxxxx ou +26134xxxxxxx (ex : 0341234567).");
+    return;
+  }
+
+  const phone = cleaned; // numéro validé (format local 0XXXXXXXXX)
+
+  // UI feedback (identique à ton flux actuel)
+  showToast("⏳ Paiement lancé. Merci de valider la transaction sur votre mobile MVola.");
+  document.getElementById("paymentPending").classList.remove("hidden");
+  document.getElementById("spinner").classList.remove("hidden");
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
+
+    const response = await fetch(`${BACKEND_URL}/api/send-payment`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, plan }),
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+
+    const result = await response.json();
+    if (!response.ok) {
+      showToast("❌ Erreur : " + (result.detail || result.error || "inconnue."));
+      document.getElementById("paymentPending").classList.add("hidden");
+      document.getElementById("spinner").classList.add("hidden");
+      return;
+    }
+
+    // Stockage client — **DEUXIEME CHANGEMENT** : on stocke le plan *en attente*
+    // pour éviter d'afficher un plan sélectionné sans code confirmé.
+    try {
+      localStorage.setItem("voucher_pending_plan", plan);
+    } catch (e) { /* ignore storage errors */ }
+
+    // Stocke le téléphone (compat legacy)
+    localStorage.setItem("voucher_phone_full", phone);
+    localStorage.setItem("voucher_phone", phone); // legacy key (utilisée ailleurs)
+    localStorage.setItem("code_not_copied", "yes");
+
+    // Démarrer le polling (conserve ton comportement existant)
+    const requestRef = result?.requestRef || result?.request_ref || null;
+    if (requestRef) {
+      localStorage.setItem("razafi_requestRef", requestRef);
+      pollForTx(requestRef);
+    } else {
+      pollForCode(phone);
+    }
+  } catch (err) {
+    console.error("Erreur:", err);
+    if (err.name === "AbortError") {
+      showToast("⚠️ Serveur injoignable. Réessayez plus tard.");
+    } else {
+      showToast("❌ Erreur réseau.");
+    }
+    try { document.getElementById("paymentPending").classList.add("hidden"); document.getElementById("spinner").classList.add("hidden"); } catch(e){}
+  }
+}
+
+  // Poll server /api/tx/:requestRef to check transaction & voucher
+  async function pollForTx(requestRef) {
+    if (!requestRef) return;
+    const BACKEND = BACKEND_URL.replace(/\/$/, "");
+    const start = Date.now();
+    const timeoutMs = 3 * 60 * 1000; // 3 minutes
+    const intervalMs = 2000; // 2s
+
+    try {
+      document.getElementById("paymentPending").classList.remove("hidden");
+      document.getElementById("spinner").classList.remove("hidden");
+    } catch (e) {}
+
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const resp = await fetch(`${BACKEND}/api/tx/${encodeURIComponent(requestRef)}`);
+        if (!resp.ok) {
+          // keep trying
+        } else {
+          const data = await resp.json();
+          if (data?.ok && data.transaction) {
+            const tx = data.transaction;
+            if (tx.status === "completed" && tx.voucher) {
+              const code = tx.voucher;
+              // determine plan: prefer tx.plan, otherwise previously pending plan
+              const plan = tx.plan || localStorage.getItem("voucher_pending_plan") || localStorage.getItem("voucher_plan") || "";
+              try { localStorage.setItem("voucher_code", code); } catch(e){}
+              try { localStorage.setItem("voucher_plan", plan); } catch(e){}
+              try { localStorage.removeItem("voucher_pending_plan"); } catch(e){}
+              
+if (typeof window.saveTransactionLocally === 'function') {
+  try {
+    const phoneForHistory = (tx && tx.phone) || localStorage.getItem('voucher_phone') || '';
+    saveTransactionLocally(plan, phoneForHistory, code);
+  } catch (e) { console.error('saveHistory error', e); }
+}
+              try { localStorage.setItem("voucher_phone", tx.phone || localStorage.getItem("voucher_phone") || ""); } catch(e){}
+              try { localStorage.setItem("code_not_copied", "yes"); } catch(e){}
+              showCodeSection(code, plan, true);
+              showCopyWarning();
+              showToast("✅ Code WiFi reçu !");
+              try { document.getElementById("paymentPending").classList.add("hidden"); document.getElementById("spinner").classList.add("hidden"); } catch(e){}
+              return;
+            }
+            if (tx.status === "no_voucher_pending") {
+              try { document.getElementById("paymentPending").classList.add("hidden"); document.getElementById("spinner").classList.add("hidden"); } catch(e){}
+              showToast("Paiement reçu — votre code sera généré dans les prochaines minutes.");
+              return;
+            }
+            if (tx.status === "failed") {
+              try { document.getElementById("paymentPending").classList.add("hidden"); document.getElementById("spinner").classList.add("hidden"); } catch(e){}
+              showToast("Le paiement a échoué. Veuillez réessayer ou contacter l'assistance.");
+              return;
+            }
+          }
+        }
+      } catch (err) {
+        console.error("pollForTx erreur:", err);
+      }
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+
+    try { document.getElementById("paymentPending").classList.add("hidden"); document.getElementById("spinner").classList.add("hidden"); } catch(e){}
+    showToast("Délai dépassé — nous n'avons pas reçu la confirmation du paiement. Veuillez vérifier plus tard.");
+  }
+
+  // Fallback polling by phone (older behaviour)
+  async function pollForCode(phone) {
+    let tries = 0;
+    const maxTries = 20; // ~100s
+    const intervalMs = 5000;
+    while (tries < maxTries) {
+      tries++;
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/dernier-code?phone=${encodeURIComponent(phone)}`);
+        if (res.status === 200) {
+          const data = await res.json();
+          if (data?.code) {
+            const plan = data.plan || localStorage.getItem("voucher_pending_plan") || localStorage.getItem("voucher_plan") || "";
+            try { localStorage.setItem("voucher_code", data.code); } catch(e){}
+            
+if (typeof window.saveTransactionLocally === 'function') {
+  try {
+    const phoneForHistory = phone || localStorage.getItem('voucher_phone') || '';
+    saveTransactionLocally(plan, phoneForHistory, data.code || '');
+  } catch (e) { console.error('saveHistory error', e); }
+}
+            try { localStorage.setItem("voucher_plan", plan); } catch(e){}
+            try { localStorage.removeItem("voucher_pending_plan"); } catch(e){}
+            showCodeSection(data.code, plan, true);
+            showCopyWarning();
+            showToast("✅ Code WiFi reçu !");
+            document.getElementById("paymentPending").classList.add("hidden");
+            document.getElementById("spinner").classList.add("hidden");
+            return;
+          }
+        } else if (res.status === 204) {
+          // still pending
+        } else {
+          console.warn("dernier-code unexpected", res.status);
+        }
+      } catch (err) {
+        console.warn("Polling error:", err);
+      }
+      await new Promise(r => setTimeout(r, intervalMs));
+    }
+    showToast("⏳ Le code n'est pas encore disponible. Veuillez réessayer plus tard.");
+    try { document.getElementById("paymentPending").classList.add("hidden"); document.getElementById("spinner").classList.add("hidden"); } catch(e){}
+  }
+
+  /* ======= UI helpers for showing code section and copy flow ======= */
+  function showCodeSection(code, plan, isNew) {
+    document.getElementById('codeValue').textContent = code;
+    document.getElementById('codePlan').textContent = plan || '—';
+    document.getElementById('codeSectionTitle').textContent = isNew ? '🎉 Paiement réussi' : '🔐 Votre code WiFi';
+    const card = document.getElementById('codeCard');
+    card.classList.remove('animate-slide');
+    void card.offsetWidth;
+    card.classList.add('animate-slide');
+    document.getElementById('codeSection').classList.remove('hidden');
+  }
+
+  function copySavedCode() {
+    const code = localStorage.getItem('voucher_code') || document.getElementById('codeValue').textContent || '';
+    if (!code) {
+      showToast("Aucun code à copier.");
+      return;
+    }
+    navigator.clipboard.writeText(code).then(() => {
+      showToast("📋 Code copié !");
+      localStorage.removeItem('code_not_copied');
+      hideCopyWarning();
+    }).catch((e) => {
+      showToast("Erreur copier le code.");
+      console.error(e);
+    });
+  }
+// ====== Safe show/hide copy warning: only show when a code exists ======
+function showCopyWarning() {
+  try {
+    // Accept either localStorage or the on-page value
+    const storedCode = (localStorage.getItem('voucher_code') || '').trim();
+    const pageCodeEl = document.getElementById('codeValue');
+    const pageCode = (pageCodeEl && (pageCodeEl.textContent || pageCodeEl.innerText) || '').trim();
+    const code = storedCode || pageCode;
+    if (!code) {
+      // no code available -> do nothing (avoid showing warning)
+      return;
+    }
+    const w = document.getElementById('copyWarning');
+    if (w) w.classList.remove('hidden');
+  } catch (e) {
+    console.error('showCopyWarning error', e);
+  }
+}
+function hideCopyWarning() {
+  try {
+    const w = document.getElementById('copyWarning');
+    if (w) w.classList.add('hidden');
+  } catch (e) {
+    console.error('hideCopyWarning error', e);
+  }
+}
+
+// ====== On load: only show warning if code exists AND code_not_copied flag set ======
+window.onload = () => {
+  try {
+    // Read both confirmed and pending plan keys to restore display safely
+    const savedCode = (localStorage.getItem('voucher_code') || '').trim();
+    const savedPlan = (localStorage.getItem('voucher_plan') || '').trim();
+    const pendingPlan = (localStorage.getItem('voucher_pending_plan') || '').trim();
+
+    if (savedCode) {
+      // If we have a saved code, always show the code section.
+      // Prefer confirmed plan, otherwise use pending plan, otherwise empty placeholder.
+      const planToShow = savedPlan || pendingPlan || '';
+      showCodeSection(savedCode, planToShow, false);
+    }
+
+    // Only show the copy-warning if there is a code AND the "not copied" flag
+    if (localStorage.getItem('code_not_copied') && savedCode) {
+      showCopyWarning();
+    } else {
+      hideCopyWarning();
+    }
+  } catch (e) {
+    console.error('onload restore error', e);
+  }
+};
+
+
+  window.addEventListener('beforeunload', (e) => {
+    if (localStorage.getItem('code_not_copied')) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
+
+  /* ======= Simple Transactions history modal (client paging) ======= */
+  let historyPage = 1;
+  const pageSize = 5;
+
+// ---- Safe, idempotent local saver for voucher history ----
+function saveTransactionLocally(plan, phone, code) {
+  try {
+    // Do not save incomplete records (prevents malformed entries)
+    if (!code || String(code).trim() === '') return;
+
+    // Normalize values
+    const entry = {
+      plan: plan || "",
+      phone: phone || "",
+      code: String(code).trim(),
+      datetime: new Date().toLocaleString("fr-FR", { timeZone: "Indian/Antananarivo" })
+    };
+
+    // Load existing history safely
+    const raw = localStorage.getItem("voucher_history");
+    let history = [];
+    try {
+      history = JSON.parse(raw || "[]");
+      if (!Array.isArray(history)) history = [];
+    } catch (e) {
+      history = [];
+    }
+
+    // Dedupe: if the same code already exists, do nothing
+    const already = history.some(h => {
+      try {
+        return h && String(h.code || "").trim() === entry.code;
+      } catch (_) { return false; }
+    });
+    if (already) return;
+
+    // Insert newest first
+    history.unshift(entry);
+
+    // Keep history size bounded (prevent uncontrolled growth)
+    const MAX_HISTORY = 100;
+    if (history.length > MAX_HISTORY) history = history.slice(0, MAX_HISTORY);
+
+    // Persist
+    localStorage.setItem("voucher_history", JSON.stringify(history));
+  } catch (err) {
+    console.error("saveTransactionLocally failed:", err);
+  }
+}
+
+
+  async function openHistory() {
+    historyPage = 1;
+    await loadHistoryPage(historyPage);
+    document.getElementById('historyModal').classList.remove('hidden');
+  }
+
+  function closeHistory(e) {
+    if (e && e.target && e.target.classList && e.target.classList.contains('modal-backdrop')) {
+      document.getElementById('historyModal').classList.add('hidden');
+      return;
+    }
+    document.getElementById('historyModal').classList.add('hidden');
+  }
+
+  function changePage(delta) {
+    historyPage = Math.max(1, historyPage + delta);
+    loadHistoryPage(historyPage);
+  }
+
+  async function loadHistoryPage(page = 1) {
+    try {
+        const elList = document.getElementById('historyList');
+        const elPager = document.getElementById('historyPager');
+        if (!elList) return;
+        const localRaw = localStorage.getItem('voucher_history');
+        let localHistory = [];
+        try { localHistory = JSON.parse(localRaw || '[]'); if(!Array.isArray(localHistory)) localHistory = []; } catch(e){ localHistory = []; }
+        if (localHistory && localHistory.length > 0) {
+            const _page = page || 1;
+            const pageSizeLocal = 5;
+            const start = (_page - 1) * pageSizeLocal;
+            const pageItems = localHistory.slice(start, start + pageSizeLocal);
+            elList.innerHTML = '';
+            pageItems.forEach(item => {
+                const row = document.createElement('div');
+                row.className = "p-3 bg-gray-50 dark:bg-gray-800 rounded-xl shadow-sm";
+                const dt = String(item.datetime || "");
+                const plan = String(item.plan || "");
+                const phone = String(item.phone || "");
+                const code = String(item.code || "");
+                row.innerHTML = `
+                  <div class="flex items-start justify-between gap-3">
+                    <div class="flex-1">
+                      <div class="text-xs text-gray-500 dark:text-gray-400">${dt}</div>
+                      <div class="mt-1 text-sm text-gray-700 dark:text-gray-200"><strong>Plan:</strong> ${plan}</div>
+                      <div class="mt-1 text-sm text-gray-700 dark:text-gray-200"><strong>Téléphone:</strong> ${phone}</div>
+                    </div>
+                    <div class="flex flex-col items-end gap-2">
+                      <div class="font-mono text-sm text-gray-900 dark:text-gray-100 break-all">${code}</div>
+                      <div class="flex gap-2">
+                        <button class="copyCodeBtn text-sm px-3 py-1 rounded-md bg-white border border-gray-200 dark:bg-gray-700 dark:border-gray-600">Copier</button>
+                      </div>
+                    </div>
+                  </div>
+                `;
+                row.querySelectorAll('.copyCodeBtn').forEach(function(btn){
+                    btn.addEventListener('click', function(){
+                        navigator.clipboard.writeText(code).then(function(){
+                            var old = btn.innerText;
+                            btn.innerText='Copié';
+                            setTimeout(function(){ btn.innerText=old; },1200);
+                        }).catch(function(){
+                            var ta=document.createElement('textarea');
+                            ta.value=code;
+                            document.body.appendChild(ta);
+                            ta.select();
+                            try{ document.execCommand('copy'); }catch(e){}
+                            ta.remove();
+                            var old = btn.innerText;
+                            btn.innerText='Copié';
+                            setTimeout(function(){ btn.innerText=old; },1200);
+                        });
+                    });
+                });
+                elList.appendChild(row);
+            });
+            var total = localHistory.length;
+            if(elPager) elPager.textContent = 'Page ' + _page + ' • ' + total + ' résultats';
+            return;
+        }
+    } catch(e){ console.error('Local history render failed', e); }
+
+    const phone = localStorage.getItem('voucher_phone') || '';
+    const elList = document.getElementById('historyList');
+    const elPager = document.getElementById('historyPager');
+    if (!elList || !phone) {
+      elList.innerHTML = '<div class="text-sm text-gray-600">Aucun historique disponible.</div>';
+      elPager.textContent = 'Page 1 • 0 résultats';
+      return;
+    }
+    try {
+      const resp = await fetch(`${BACKEND_URL}/api/history?phone=${encodeURIComponent(phone)}&page=${page}&size=${pageSize}`);
+      if (!resp.ok) {
+        const last = await fetch(`${BACKEND_URL}/api/dernier-code?phone=${encodeURIComponent(phone)}`);
+        elList.innerHTML = '';
+        if (last.status === 200) {
+          const j = await last.json();
+          elList.innerHTML = `<div class="p-3 border rounded"><strong>Plan:</strong> ${j.plan || '—'}<br><strong>Code:</strong> ${j.code || '—'}</div>`;
+          elPager.textContent = 'Page 1 • 1 résultat';
+        } else {
+          elList.innerHTML = '<div class="text-sm text-gray-600">Aucun historique disponible.</div>';
+          elPager.textContent = 'Page 1 • 0 résultats';
+        }
+        return;
+      }
+      const data = await resp.json();
+      elList.innerHTML = '';
+      const items = Array.isArray(data.items) ? data.items : [];
+      if (!items.length) {
+        elList.innerHTML = '<div class="text-sm text-gray-600">Aucun achat complet trouvé.</div>';
+      } else {
+        items.forEach(it => {
+          const when = it.created_at ? new Date(it.created_at).toLocaleString("fr-FR", { timeZone: "Indian/Antananarivo" }) : '';
+          const html = `<div class="p-3 border rounded">
+            <div class="font-semibold">Plan: ${it.plan || '—'}</div>
+            <div>Code: ${it.code || '—'}</div>
+            <div class="text-xs text-gray-500 mt-1">${when}</div>
+            <div class="mt-2"><button class="px-3 py-1 border rounded" onclick="copyFromHistory('${it.code || ''}')">Copier</button></div>
+          </div>`;
+          elList.insertAdjacentHTML('beforeend', html);
+        });
+      }
+      const total = data.total || items.length;
+      elPager.textContent = `Page ${page} • ${total} résultats`;
+    } catch (e) {
+      console.error("loadHistoryPage", e);
+      elList.innerHTML = '<div class="text-sm text-gray-600">Erreur lors de la récupération.</div>';
+      elPager.textContent = `Page ${page} • 0 résultats`;
+    }
+  
+}
+
+  function copyFromHistory(code) {
+    if (!code) return;
+    navigator.clipboard.writeText(code).then(() => {
+      showToast("📋 Code copié !");
+    });
+  }
+
+  /* Optional helper for dev: force refresh last voucher */
+  async function refreshLastVoucher() {
+    const phone = localStorage.getItem('voucher_phone');
+    if (!phone) return;
+    try {
+      const resp = await fetch(`${BACKEND_URL}/api/dernier-code?phone=${encodeURIComponent(phone)}`);
+      if (resp.status === 200) {
+        const j = await resp.json();
+        try { localStorage.setItem('voucher_code', j.code); } catch(e){}
+        // Use server plan or pending plan fallback, then remove pending
+        const plan = j.plan || localStorage.getItem('voucher_pending_plan') || '';
+        try { localStorage.setItem('voucher_plan', plan); } catch(e){}
+        try { localStorage.removeItem('voucher_pending_plan'); } catch(e){}
+        showCodeSection(j.code, plan, true);
+        showCopyWarning();
+        showToast("✅ Dernier voucher rafraîchi.");
+      } else {
+        showToast("Aucun voucher trouvé.");
+      }
+    } catch (e) {
+      showToast("Erreur rafraîchissement voucher.");
+    }
+  }
+
+  // Expose to console for debugging
+  window.pollForTx = pollForTx;
+  window.pollForCode = pollForCode;
+  window.refreshLastVoucher = refreshLastVoucher;
+  window.openHistory = openHistory;
+  window.closeHistory = closeHistory;
+
+</script>
+
+<section style="padding: 1rem; background: #f1f5f9; border-top: 1px solid #ccc;">
+
+  <div class="faq-item" style="margin-bottom: 0.5rem;">
+    <h2 class="faq-title" style="font-size: 1rem; font-weight: 600; margin-bottom: 0.25rem; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
+      ❓ Acheter un code
+      <span class="faq-arrow" style="transition: transform 0.18s; font-size: 0.95rem; line-height: 1;">▼</span>
+    </h2>
+    <div class="faq-content" style="max-height: 0; overflow: hidden; transition: max-height 0.35s ease;">
+      <ol style="padding-left: 0.8rem; margin-bottom: 0.8rem; line-height: 1.35; font-size: 0.92rem;">
+        <li>1️⃣ Choisissez le plan WiFi qui vous convient</li>
+        <li>2️⃣ Entrez votre numéro MVola lorsqu'on vous le demande</li>
+        <li>3️⃣ Validez la transaction MVola sur votre téléphone</li>
+        <li>4️⃣ Le code WiFi apparaîtra automatiquement</li>
+        <li>5️⃣ Ne quittez pas la page sans copier le code !</li>
+      </ol>
+    </div>
+  </div>
+
+ <div class="faq-item" style="margin-bottom: 0.5rem;">
+    <h2 class="faq-title" style="font-size: 1rem; font-weight: 600; margin-bottom: 0.25rem; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
+      🌐 Se connecter
+      <span class="faq-arrow" style="transition: transform 0.18s; font-size: 0.95rem; line-height: 1;">▼</span>
+    </h2>
+    <div class="faq-content" style="max-height: 0; overflow: hidden; transition: max-height 0.35s ease;">
+    <ol style="padding-left: 0.8rem; margin-bottom: 0.8rem; line-height: 1.35; font-size: 0.92rem;">
+        <li>1️⃣ Activez le WiFi sur votre téléphone ou ordinateur</li>
+        <li>2️⃣ Connectez-vous au réseau <strong>WiFi RAZAFI</strong></li>
+        <li>3️⃣ Une page s’ouvrira automatiquement</li>
+        <li>4️⃣ Entrez votre code WiFi reçu précédemment</li>
+        <li>5️⃣ Profitez de votre connexion Internet ✅</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="faq-item" style="margin-bottom: 0.5rem;">
+    <h2 class="faq-title" style="font-size: 1rem; font-weight: 600; margin-bottom: 0.25rem; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
+      ⏳ Code non reçu après paiement
+      <span class="faq-arrow" style="transition: transform 0.18s; font-size: 0.95rem; line-height: 1;">▼</span>
+    </h2>
+    <div class="faq-content" style="max-height: 0; overflow: hidden; transition: max-height 0.35s ease;">
+   <ol style="padding-left: 0.8rem; margin-bottom: 0.8rem; line-height: 1.35; font-size: 0.92rem;">
+        <li>1️⃣ Pas de panique : si MVola a confirmé le paiement mais aucun code n’apparaît, cela peut venir d’un léger retard, d’un manque temporaire de stock ou d’un souci technique.</li>
+        <li>2️⃣ Patientez quelques instants : le code WiFi se génère automatiquement dans la plupart des cas.</li>
+        <li>3️⃣ Si le code n’apparaît toujours pas, contactez-nous : nous vérifierons votre paiement et vous enverrons votre code manuellement.</li>
+        <li>4️⃣ Remboursement garanti : si aucun code ne peut être généré, vous serez remboursé sous 24 heures.</li>
+      </ol>
+    </div>
+  </div>
+
+  <div style="margin-top: 30px;">
+    <p style="font-size: 1rem; font-weight: bold; margin-bottom: 10px;">📩 Besoin d’aide ?</p>
+    <ol style="list-style: none; padding-left: 0; margin: 0; font-size: 0.9rem;">
+      <li style="margin-bottom: 5px;">✉️ Contactez-nous à : 
+        <a href="mailto:contact@razafistore.com" style="color: #007BFF; text-decoration: none;">
+          contact@razafistore.com
+        </a>
+      </li>
+    </ol>
+  </div>
+
+</section>
+
+<script>
+/* Robust collapsible FAQ script (unchanged) */
+document.addEventListener('DOMContentLoaded', function () {
+  const items = Array.from(document.querySelectorAll('.faq-item'));
+  if (!items.length) return;
+  items.forEach(item => {
+    const content = item.querySelector('.faq-content');
+    const title = item.querySelector('.faq-title');
+    const arrow = item.querySelector('.faq-arrow');
+    if (!content || !title) return;
+    content.style.overflow = 'hidden';
+    content.style.transition = 'max-height 0.22s ease';
+    content.style.maxHeight = '0px';
+    if (arrow) arrow.style.transition = 'transform 0.18s';
+    title.style.cursor = 'pointer';
+    title.setAttribute('role', 'button');
+    title.setAttribute('aria-expanded', 'false');
+    title.addEventListener('click', () => {
+      const isOpen = content.style.maxHeight && content.style.maxHeight !== '0px';
+      items.forEach(other => {
+        const otherContent = other.querySelector('.faq-content');
+        const otherTitle = other.querySelector('.faq-title');
+        const otherArrow = other.querySelector('.faq-arrow');
+        if (otherContent) {
+          otherContent.style.maxHeight = '0px';
+        }
+        if (otherTitle) otherTitle.setAttribute('aria-expanded', 'false');
+        if (otherArrow) otherArrow.style.transform = 'rotate(0deg)';
+      });
+      if (!isOpen) {
+        content.style.maxHeight = '0px';
+        void content.offsetWidth;
+        content.style.maxHeight = content.scrollHeight + 'px';
+        title.setAttribute('aria-expanded', 'true');
+        if (arrow) arrow.style.transform = 'rotate(180deg)';
+      } else {
+        content.style.maxHeight = '0px';
+        title.setAttribute('aria-expanded', 'false');
+        if (arrow) arrow.style.transform = 'rotate(0deg)';
+      }
+    });
+    title.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        title.click();
+      }
+    });
+  });
+});
+</script>
+
+<!-- SYNC BRIDGE: Keep legacy floating toggle visuals in sync with iOS Pro master (non-destructive) -->
+<script>
+(function(){
+  // This small script updates any existing legacy floating toggle visuals (if present)
+  // to follow the iosProSwitch state, instead of providing its own conflicting logic.
+  function updateLegacyToggle(isDark){
+    try {
+      const legacy = document.querySelector('.floating-toggle');
+      if (!legacy) return;
+      if (isDark) legacy.classList.add('legacy-dark-mode'); else legacy.classList.remove('legacy-dark-mode');
+      // also update knob position if structure similar to .floating-toggle .toggle-knob exists
+      const knob = legacy.querySelector('.toggle-knob');
+      if (knob) {
+        knob.style.transform = isDark ? 'translateY(-50%) translateX(26px)' : 'translateY(-50%) translateX(0)';
+      }
+      const sun = legacy.querySelector('.icon-sun');
+      const moon = legacy.querySelector('.icon-moon');
+      if (sun) { sun.style.opacity = isDark ? '0' : '1'; sun.style.transform = isDark ? 'scale(0.88)' : 'scale(1)'; }
+      if (moon) { moon.style.opacity = isDark ? '1' : '0'; moon.style.transform = isDark ? 'scale(1)' : 'scale(0.88)'; }
+    } catch(e){ console.warn('legacy toggle sync failed', e); }
+  }
+
+  // Listen to global themechange event dispatched by iosProSwitch
+  window.addEventListener('themechange', (e) => {
+    const eff = e?.detail?.theme;
+    updateLegacyToggle(eff === 'dark');
+    // also keep legacy localStorage key in sync (for older code expecting razafi_theme)
+    try { localStorage.setItem('razafi_theme', eff === 'dark' ? 'dark' : 'light'); } catch(e){}
+  });
+
+  // initial sync
+  const initialIsDark = document.documentElement.classList.contains('dark-mode') || document.documentElement.getAttribute('data-theme') === 'dark';
+  updateLegacyToggle(initialIsDark);
+
+})();
+</script>
+
+<!-- SAFETY: Ensure saveTransactionLocally is available globally for payments to call -->
+<script>
+(function(){
+  if(window.saveTransactionLocally) return;
+  const STORAGE_KEY = "voucher_history";
+  function saveTransactionLocally(plan, phone, code){
+    try{
+      const entry = {
+        plan: String(plan || ""),
+        phone: String(phone || ""),
+        code: String(code || ""),
+        datetime: new Date().toLocaleString("fr-FR", { timeZone: "Indian/Antananarivo" })
+      };
+      const raw = localStorage.getItem(STORAGE_KEY) || "[]";
+      let history = JSON.parse(raw);
+      if(!Array.isArray(history)) history = [];
+      history.unshift(entry);
+      if(history.length > 500) history = history.slice(0,500);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+      console.info("Local transaction saved");
+    }catch(e){
+      console.error("saveTransactionLocally error", e);
+    }
+  }
+  window.saveTransactionLocally = saveTransactionLocally;
+})();
+</script>
+
+<!-- TRANSACTIONS MODAL START -->
+<div id="transactionsModalFinal" class="fixed inset-0 bg-black/40 backdrop-blur-sm hidden z-[9999] flex items-center justify-center" aria-hidden="true" role="dialog" aria-labelledby="transactionsTitle">
+  <div class="bg-white dark:bg-[#0b1220] w-11/12 max-w-lg rounded-2xl shadow-xl p-5 relative animate-[fadeIn_.18s_ease] transactions-dialog">
+    <div class="flex items-start justify-between mb-3">
+      <h2 id="transactionsTitle" class="text-lg font-semibold text-gray-800 dark:text-gray-100">Historique des transactions </h2>
+      </div>
+
+    <div id="transactionsList" class="space-y-3 max-h-80 overflow-y-auto pr-2">
+      <!-- items injected here -->
+    </div>
+
+    <p id="transactionsEmpty" class="text-center text-gray-500 dark:text-gray-400 mt-4 hidden">
+      Aucune transaction enregistrée pour le moment.
+    </p>
+
+    <div class="mt-4 flex justify-end">
+      <button id="transactionsClose" class="py-2 px-4 rounded-xl bg-gray-900 text-white dark:bg-gray-100 dark:text-black text-sm">Fermer</button>
+    </div>
+  </div>
+</div>
+
+<style>
+@keyframes fadeIn { from {opacity:0; transform:translateY(6px);} to {opacity:1; transform:translateY(0);} }
+</style>
+
+<!-- Fixed/corrected modal logic (replaces the broken try/catch snippet) -->
+<script>
+(function(){
+  function positionModalBelowLogo() {
+    try {
+      const overlay = document.getElementById('transactionsModalFinal');
+      const dialog = overlay ? overlay.querySelector('.transactions-dialog') : null;
+      if (!overlay || !dialog) return;
+      let anchor = document.getElementById('razafiLogo') || document.querySelector('header') || document.querySelector('nav');
+      if (!anchor) {
+        dialog.style.position = 'absolute';
+        dialog.style.left = '50%';
+        dialog.style.top = '50%';
+        dialog.style.transform = 'translate(-50%, -50%)';
+        return;
+      }
+      const rect = anchor.getBoundingClientRect();
+      const offset = 12;
+      let top = Math.round(rect.bottom + offset);
+      const maxTop = Math.max(20, window.innerHeight - dialog.offsetHeight - 20);
+      if (top > maxTop) {
+        top = Math.max(20, Math.round((window.innerHeight - dialog.offsetHeight) / 2));
+      }
+      dialog.style.position = 'absolute';
+      dialog.style.left = '50%';
+      dialog.style.transform = 'translateX(-50%)';
+      dialog.style.top = top + 'px';
+    } catch (err) {
+      try {
+        const dialog = document.querySelector('#transactionsModalFinal .transactions-dialog');
+        if (dialog) {
+          dialog.style.position = 'absolute';
+          dialog.style.left = '50%';
+          dialog.style.top = '50%';
+          dialog.style.transform = 'translate(-50%, -50%)';
+        }
+      } catch (e){}
+      console.error('positionModalBelowLogo error', err);
+    }
+  }
+
+  const KEY = "voucher_history";
+  function getHistory(){
+    try{
+      const raw = localStorage.getItem(KEY) || "[]";
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    }catch(e){ return []; }
+  }
+  function renderTransactions(){
+    const list = document.getElementById('transactionsList');
+    const empty = document.getElementById('transactionsEmpty');
+    if(!list || !empty) return;
+    const history = getHistory();
+    list.innerHTML = "";
+    if(history.length === 0){
+      empty.classList.remove('hidden');
+      return;
+    } else {
+      empty.classList.add('hidden');
+    }
+    history.forEach(item=>{
+      const row = document.createElement('div');
+      row.className = "p-3 bg-gray-50 dark:bg-gray-800 rounded-xl shadow-sm flex items-start justify-between gap-3";
+      const dt = String(item.datetime_display || item.datetime || "");
+      const plan = String(item.plan || "");
+      const phone = String(item.phone || "");
+      const code = String(item.code || "");
+      row.innerHTML = `
+        <div class="flex-1">
+          <div class="text-xs text-gray-500 dark:text-gray-400">${dt}</div>
+          <div class="mt-1 text-sm text-gray-700 dark:text-gray-200"><strong>Plan:</strong> ${plan}</div>
+          <div class="mt-1 text-sm text-gray-700 dark:text-gray-200"><strong>Téléphone:</strong> ${phone}</div>
+        </div>
+        <div class="flex flex-col items-end gap-2">
+          <div class="font-mono text-sm text-gray-900 dark:text-gray-100 break-all">${code}</div>
+          <div>
+            <button class="txnCopyBtn text-sm px-3 py-1 rounded-md bg-white border border-gray-200 dark:bg-gray-700 dark:border-gray-600">Copier</button>
+          </div>
+        </div>
+      `;
+      list.appendChild(row);
+    });
+    document.querySelectorAll('.txnCopyBtn').forEach((btn, idx)=>{
+      btn.addEventListener('click', function(){
+        const hist = getHistory();
+        const item = hist[idx];
+        if(!item) return;
+        const text = String(item.code || "");
+        navigator.clipboard.writeText(text).then(()=> {
+          const prev = btn.innerText;
+          btn.innerText = "Copié";
+          setTimeout(()=> btn.innerText = prev, 1200);
+        }).catch(()=> {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          try{ document.execCommand('copy'); }catch(e){}
+          ta.remove();
+          const prev = btn.innerText;
+          btn.innerText = "Copié";
+          setTimeout(()=> btn.innerText = prev, 1200);
+        });
+      });
+    });
+  }
+
+  function openModal(){
+    const m = document.getElementById('transactionsModalFinal');
+    if(!m) return;
+    m.classList.remove('hidden');
+    m.setAttribute('aria-hidden','false');
+    positionModalBelowLogo();
+    renderTransactions();
+    const btn = document.getElementById('transactionsClose');
+    if(btn) btn.focus();
+  }
+  function closeModal(){
+    const m = document.getElementById('transactionsModalFinal');
+    if(!m) return;
+    m.classList.add('hidden');
+    m.setAttribute('aria-hidden','true');
+  }
+
+  document.addEventListener('click', function(e){
+    if(e.target && e.target.id === 'transactionsClose') closeModal();
+  });
+
+  document.addEventListener('click', function(e){
+    const m = document.getElementById('transactionsModalFinal');
+    if(!m) return;
+    if(e.target === m) closeModal();
+  });
+
+  document.addEventListener('keydown', function(e){
+    if(e.key === 'Escape') closeModal();
+  });
+
+  if(!window.saveTransactionLocally){
+    window.saveTransactionLocally = function(plan, phone, code){
+      try{
+        const entry = { plan: String(plan||''), phone: String(phone||''), code: String(code||''), datetime_display: new Date().toLocaleString("fr-FR", { timeZone: "Indian/Antananarivo" }), datetime_iso: new Date().toISOString() };
+        const raw = localStorage.getItem(KEY) || '[]';
+        let arr = JSON.parse(raw);
+        if(!Array.isArray(arr)) arr = [];
+        arr.unshift(entry);
+        if(arr.length>500) arr = arr.slice(0,500);
+        localStorage.setItem(KEY, JSON.stringify(arr));
+        console.info('saved local txn');
+      }catch(e){ console.error(e); }
+    };
+  }
+
+  document.addEventListener('DOMContentLoaded', function(){
+    let btn = document.getElementById('historyBtn');
+    if(btn){
+      btn.removeAttribute('onclick');
+      btn.addEventListener('click', function(e){ e.preventDefault(); openModal(); });
+    }
+  });
+
+  let resizeTimeout = null;
+  window.addEventListener('resize', ()=> { clearTimeout(resizeTimeout); resizeTimeout = setTimeout(positionModalBelowLogo, 120); });
+  window.addEventListener('scroll', ()=> { window.requestAnimationFrame(positionModalBelowLogo); });
+
+})();
+</script>
+<!-- TRANSACTIONS MODAL END -->
+
+<!-- OLD HISTORY DISABLE & BRIDGE: ensure old modal does not show and old functions use new modal -->
+<style>
+  #historyModal { display: none !important; visibility: hidden !important; pointer-events: none !important; }
+</style>
+<script>
+(function(){
+  function renderLocalToTransactionsModal(){
+    try{
+      const KEY = "voucher_history";
+      const list = document.getElementById('transactionsList');
+      const empty = document.getElementById('transactionsEmpty');
+      if(!list || !empty) return;
+      const raw = localStorage.getItem(KEY) || '[]';
+      let history = [];
+      try{ history = JSON.parse(raw); if(!Array.isArray(history)) history = []; }catch(e){ history = []; }
+      list.innerHTML = '';
+      if(history.length === 0){
+        empty.classList.remove('hidden');
+        return;
+      } else {
+        empty.classList.add('hidden');
+      }
+      history.forEach(function(item, idx){
+        const row = document.createElement('div');
+        row.className = "p-3 bg-gray-50 dark:bg-gray-800 rounded-xl shadow-sm flex items-start justify-between gap-3";
+        const dt = String(item.datetime || "");
+        const plan = String(item.plan || "");
+        const phone = String(item.phone || "");
+        const code = String(item.code || "");
+        row.innerHTML = '<div class="flex-1">' +
+                        '<div class="text-xs text-gray-500 dark:text-gray-400">' + dt + '</div>' +
+                        '<div class="mt-1 text-sm text-gray-700 dark:text-gray-200"><strong>Plan:</strong> ' + plan + '</div>' +
+                        '<div class="mt-1 text-sm text-gray-700 dark:text-gray-200"><strong>Téléphone:</strong> ' + phone + '</div>' +
+                        '</div>' +
+                        '<div class="flex flex-col items-end gap-2">' +
+                        '<div class="font-mono text-sm text-gray-900 dark:text-gray-100 break-all">' + code + '</div>' +
+                        '<div><button class="txnCopyBtn text-sm px-3 py-1 rounded-md bg-white border border-gray-200 dark:bg-gray-700 dark:border-gray-600">Copier</button></div>' +
+                        '</div>';
+        list.appendChild(row);
+      });
+      document.querySelectorAll('.txnCopyBtn').forEach(function(btn, idx){
+        btn.addEventListener('click', function(){
+          const raw2 = localStorage.getItem('voucher_history')||'[]';
+          let h = [];
+          try{ h = JSON.parse(raw2); if(!Array.isArray(h)) h = []; }catch(e){ h = []; }
+          const it = h[idx];
+          if(!it) return;
+          const text = String(it.code || "");
+          navigator.clipboard.writeText(text).then(function(){
+            const prev = btn.innerText;
+            btn.innerText = "Copié";
+            setTimeout(function(){ btn.innerText = prev; }, 1200);
+          }).catch(function(){
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            try{ document.execCommand('copy'); }catch(e){}
+            ta.remove();
+            var prev = btn.innerText;
+            btn.innerText = "Copié";
+            setTimeout(function(){ btn.innerText = prev; }, 1200);
+          });
+        });
+      });
+      var pager = document.getElementById('historyPager');
+      if(pager){
+        pager.textContent = 'Page 1 • ' + history.length + ' résultats';
+      }
+    }catch(e){
+      console.error('renderLocalToTransactionsModal error', e);
+    }
+  }
+
+  window.openHistory = function(){
+    try{
+      var m = document.getElementById('transactionsModalFinal');
+      if(!m) return;
+      m.classList.remove('hidden');
+      m.setAttribute('aria-hidden','false');
+      renderLocalToTransactionsModal();
+      var closeBtn = document.getElementById('transactionsClose');
+      if(closeBtn) closeBtn.focus();
+    }catch(e){ console.error(e); }
+  };
+  window.closeHistory = function(){
+    try{
+      var m = document.getElementById('transactionsModalFinal');
+      if(!m) return;
+      m.classList.add('hidden');
+      m.setAttribute('aria-hidden','true');
+    }catch(e){ console.error(e); }
+  };
+
+  document.addEventListener('DOMContentLoaded', function(){
+    var hb = document.getElementById('historyBtn');
+    if(hb){
+      hb.removeAttribute('onclick');
+      hb.addEventListener('click', function(e){ e.preventDefault(); window.openHistory(); });
+    }
+    document.querySelectorAll('button').forEach(function(b){
+      try{
+        if(b.textContent && b.textContent.trim().toLowerCase() === 'transactions'){
+          b.removeAttribute('onclick');
+          b.addEventListener('click', function(e){ e.preventDefault(); window.openHistory(); });
+        }
+      }catch(e){}
+    });
+  });
+
+})();
+</script>
+
+<script>
+document.addEventListener('DOMContentLoaded', function(){
+  var closeBtn = document.getElementById('transactionsClose');
+  if(closeBtn){
+    closeBtn.addEventListener('click', function(e){
+      e.preventDefault();
+      var m = document.getElementById('transactionsModalFinal');
+      if(m){
+        m.classList.add('hidden');
+        m.setAttribute('aria-hidden','true');
+      }
+    });
+  }
+});
+</script>
+
+<!-- GROUPED TRANSACTIONS (limit 60, French full-date grouping) -->
+<script>
+(function(){
+  const STORAGE_KEY = "voucher_history";
+  const MAX_ENTRIES = 60;
+
+  const previousSave = window.saveTransactionLocally;
+
+  window.saveTransactionLocally = function(plan, phone, code){
+    try {
+      const now = new Date();
+      const entry = {
+        plan: String(plan || ""),
+        phone: String(phone || ""),
+        code: String(code || ""),
+        datetime_display: now.toLocaleString(),
+        datetime_iso: now.toISOString()
+      };
+      let history = [];
+      try { history = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); if(!Array.isArray(history)) history = []; } catch(e){ history = []; }
+      history.unshift(entry);
+      if(history.length > MAX_ENTRIES) history = history.slice(0, MAX_ENTRIES);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+      try { if(typeof previousSave === 'function') previousSave(plan, phone, code); } catch(e){}
+      return entry;
+    } catch(e){
+      console.error("saveTransactionLocally error:", e);
+    }
+  };
+
+  function entryDate(entry){
+    if(entry && entry.datetime_iso){
+      const d = new Date(entry.datetime_iso);
+      if(!isNaN(d)) return d;
+    }
+    if(entry && entry.datetime_display){
+      const parsed = Date.parse(entry.datetime_display);
+      if(!isNaN(parsed)) return new Date(parsed);
+    }
+    if(entry && entry.datetime){
+      const parsed2 = Date.parse(entry.datetime);
+      if(!isNaN(parsed2)) return new Date(parsed2);
+    }
+    return new Date();
+  }
+
+  function formatDateLabel(date){
+    try {
+      const today = new Date();
+      const oneDay = 24*60*60*1000;
+      const diffDays = Math.floor((new Date(today.getFullYear(), today.getMonth(), today.getDate()) - new Date(date.getFullYear(), date.getMonth(), date.getDate())) / oneDay);
+      if(diffDays === 0) return "Aujourd'hui";
+      if(diffDays === 1) return "Hier";
+      const df = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+      return df.format(date);
+    } catch(e){
+      return date.toLocaleDateString();
+    }
+  }
+
+  function formatTime(date){
+    try {
+      return new Intl.DateTimeFormat('fr-FR', { hour: '2-digit', minute: '2-digit' }).format(date);
+    } catch(e){
+      return date.toLocaleTimeString();
+    }
+  }
+
+  function groupEntries(entries){
+    const map = new Map();
+    entries.forEach(ent=>{
+      const d = entryDate(ent);
+      const key = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+      if(!map.has(key)) map.set(key, []);
+      map.get(key).push({ entry: ent, dateObj: d });
+    });
+    const groups = Array.from(map.entries()).sort((a,b)=> b[0].localeCompare(a[0]));
+    return groups.map(([key, items])=>{
+      items.sort((x,y)=> y.dateObj - x.dateObj);
+      return { key, items };
+    });
+  }
+
+  function escapeHtml(str){
+    return String(str||'').replace(/[&<>"']/g, function(m){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]; });
+  }
+
+  function renderGrouped(){
+    const listEl = document.getElementById('transactionsList') || document.getElementById('historyList');
+    const emptyEl = document.getElementById('transactionsEmpty') || document.getElementById('historyEmpty');
+    if(!listEl || !emptyEl) return;
+    let history = [];
+    try { history = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); if(!Array.isArray(history)) history = []; } catch(e){ history = []; }
+    if(history.length === 0){
+      listEl.innerHTML = '';
+      emptyEl.classList.remove('hidden');
+      return;
+    } else {
+      emptyEl.classList.add('hidden');
+    }
+    const grouped = groupEntries(history);
+    let html = '';
+    grouped.forEach(group=>{
+      const firstDate = group.items[0].dateObj;
+      const label = formatDateLabel(firstDate);
+      html += `<div class="pt-2 pb-1"><h3 class="text-sm font-semibold text-gray-700 dark:text-gray-200">${label}</h3></div>`;
+      group.items.forEach(obj=>{
+        const ent = obj.entry;
+        const d = obj.dateObj;
+        const time = formatTime(d);
+        const plan = ent.plan || '';
+        const phone = ent.phone || '';
+        const code = ent.code || '';
+        html += `
+          <div class="p-3 bg-gray-50 dark:bg-gray-800 rounded-xl shadow-sm flex items-start justify-between gap-3 mt-2">
+            <div class="flex-1">
+              <div class="text-xs text-gray-500 dark:text-gray-400">${time}</div>
+              <div class="mt-1 text-sm text-gray-700 dark:text-gray-200"><strong>Plan:</strong> ${escapeHtml(plan)}</div>
+              <div class="mt-1 text-sm text-gray-700 dark:text-gray-200"><strong>Téléphone:</strong> ${escapeHtml(phone)}</div>
+            </div>
+            <div class="flex flex-col items-end gap-2">
+              <div class="font-mono text-sm text-gray-900 dark:text-gray-100 break-all">${escapeHtml(code)}</div>
+              <div>
+                <button class="txnCopyBtn text-sm px-3 py-1 rounded-md bg-white border border-gray-200 dark:bg-gray-700 dark:border-gray-600">Copier</button>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+    });
+    listEl.innerHTML = html;
+    document.querySelectorAll('#transactionsList .txnCopyBtn, #historyList .txnCopyBtn').forEach((btn, idx)=>{
+      btn.addEventListener('click', function(){
+        const flat = [];
+        grouped.forEach(g=> g.items.forEach(it=> flat.push(it.entry)));
+        const item = flat[idx];
+        if(!item) return;
+        const text = String(item.code || '');
+        navigator.clipboard.writeText(text).then(()=>{
+          const prev = btn.innerText;
+          btn.innerText = "Copié";
+          setTimeout(()=> btn.innerText = prev, 1200);
+        }).catch(()=>{
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          try{ document.execCommand('copy'); }catch(e){}
+          ta.remove();
+          const prev = btn.innerText;
+          btn.innerText = "Copié";
+          setTimeout(()=> btn.innerText = prev, 1200);
+        });
+      });
+    });
+  }
+
+  window.renderTransactionsGrouped = renderGrouped;
+
+  document.addEventListener('DOMContentLoaded', function(){
+    window.openHistory = function(){
+      const m = document.getElementById('transactionsModalFinal') || document.getElementById('historyModal') || document.getElementById('transactionsModalFinal');
+      if(!m) return;
+      m.classList.remove('hidden');
+      m.setAttribute('aria-hidden','false');
+      renderGrouped();
+      const closeBtn = document.getElementById('transactionsClose');
+      if(closeBtn) closeBtn.focus();
+    };
+    let btn = document.getElementById('historyBtn');
+    if(!btn){
+      document.querySelectorAll('button').forEach(b=>{
+        try{
+          if(b.textContent && b.textContent.trim().toLowerCase() === 'transactions'){
+            btn = b;
+          }
+        }catch(e){}
+      });
+    }
+    if(btn) btn.addEventListener('click', function(e){ e.preventDefault(); window.openHistory(); });
+  });
+
+})();
+</script>
+<!-- END GROUPED TRANSACTIONS -->
+
+</body>
+
+</html>

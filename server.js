@@ -24,30 +24,65 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+
 // ------------------ WIFI ACCESS PROTECTION ------------------
+// Requires: npm install ip-range-check
 
-const allowedPublicIP = "197.158.240.188";
+import ipRangeCheck from "ip-range-check";
 
+// Allowed ranges can be extended or moved to an env var if needed.
+// We allow the whole /24 subnet for your ISP so dynamic WAN IPs won't break access.
+const allowedRanges = process.env.ALLOWED_WIFI_RANGES
+  ? process.env.ALLOWED_WIFI_RANGES.split(",") // e.g. "197.158.240.0/24,102.46.33.0/24"
+  : ["197.158.240.0/24"];
+
+// Always allow local development addresses
+const extraAllowed = ["127.0.0.1", "::1"];
+
+// Middleware to restrict access to clients coming from the allowed ranges
 app.use((req, res, next) => {
-  // Behind a proxy, true client IP is in x-forwarded-for
   const xff = req.headers["x-forwarded-for"];
+  // x-forwarded-for may contain a list like "ip1, ip2, ...". Use the first.
+  let clientIP = xff ? xff.split(",")[0].trim() : req.ip;
 
-  // Extract first IP if multiple
-  const clientIP = (xff ? xff.split(",")[0].trim() : req.ip).replace("::ffff:", "");
+  // strip IPv4-mapped IPv6 prefix if present
+  if (clientIP.startsWith("::ffff:")) {
+    clientIP = clientIP.replace("::ffff:", "");
+  }
 
   console.log("Client IP:", clientIP);
 
-  // If client is NOT from your WiFi → redirect to bloque.html
-  if (clientIP !== allowedPublicIP) {
+  // allow localhost during dev
+  if (extraAllowed.includes(clientIP)) {
+    return next();
+  }
+
+  // Check against allowed ranges
+  const allowed = allowedRanges.some(range => ipRangeCheck(clientIP, range));
+  if (!allowed) {
+    // Redirect blocked users to the public bloque page
     return res.redirect("https://wifi.razafistore.com/bloque.html");
   }
 
-  // Otherwise, allow
+  // allowed — continue processing
   next();
 });
-
 // -------------------------------------------------------------
+// static serve — put AFTER your IP-check middleware
+import path from "path";
+import { fileURLToPath } from "url";
 
+// fix __dirname in ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// serve static frontend from /public
+app.use(express.static(path.join(__dirname, "public")));
+
+// optional SPA fallback (uncomment if your app uses client-side routing)
+// app.get("*", (req, res) => {
+//   res.sendFile(path.join(__dirname, "public", "index.html"));
+//});
 
 // ---------------------------------------------------------------------------
 // ENVIRONMENT VARIABLES
