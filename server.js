@@ -32,8 +32,12 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cors());
 const PORT = process.env.PORT || 10000;
 
-// ------------------ WIFI ACCESS PROTECTION (REPLACEMENT) ------------------
+// ------------------ WIFI ACCESS PROTECTION ------------------
 // Requires: npm install ip-range-check
+// This middleware restricts access to only allowed IP ranges and
+// ensures the bloque page (/bloque.html) and its assets remain reachable.
+
+const ipRangeCheck = (await import("ip-range-check")).default; // lazy import safe for ESM/CommonJS differences
 
 // Allowed ranges (ENV var or fallback)
 const allowedRanges = process.env.ALLOWED_WIFI_RANGES
@@ -42,12 +46,15 @@ const allowedRanges = process.env.ALLOWED_WIFI_RANGES
 
 const extraAllowed = ["127.0.0.1", "::1"];
 
-// Simple rate limiter (optional)
+// rate limiter — make sure express-rate-limit is imported once at top of file.
+// If you already have it imported, keep this limiter definition only.
 const limiter = rateLimit({
   windowMs: 60_000,
   max: 200,
   standardHeaders: true,
   legacyHeaders: false,
+  // acknowledge we trust proxy (Render / Cloudflare) — prevents express-rate-limit errors
+  trustProxy: true,
 });
 app.use(limiter);
 
@@ -103,7 +110,7 @@ app.use((req, res, next) => {
 
   next();
 });
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------
 
 
 // static serve — put AFTER your IP-check middleware
