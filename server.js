@@ -19,7 +19,7 @@ dotenv.config();
 
 const app = express();
 // allow Express to trust X-Forwarded-For (Render / Cloudflare / proxies)
-app.set("trust proxy", true);
+app.set("trust proxy", 1);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cors());
@@ -35,13 +35,23 @@ const extraAllowed = ["127.0.0.1", "::1"];
 
 // rate limiter
 const limiter = rateLimit({
-  windowMs: 60_000,
+  windowMs: 60_000, // 1 minute
   max: 200,
   standardHeaders: true,
   legacyHeaders: false,
-  trustProxy: true,
+  // keyGenerator: explicit function to extract client IP from headers reliably.
+  // It prefers CF header when present, then X-Forwarded-For, then req.ip.
+  keyGenerator: (req, res) => {
+    // Cloudflare sets cf-connecting-ip; many proxies set x-forwarded-for
+    const cf = req.headers["cf-connecting-ip"];
+    if (cf) return cf;
+    const xff = req.headers["x-forwarded-for"];
+    if (xff) return xff.split(",")[0].trim();
+    return req.ip || req.socket.remoteAddress || "unknown";
+  },
 });
 app.use(limiter);
+
 
 // Helper: allow requests that must be reachable even when blocked
 const isBlockedPageRequest = (req) => {
