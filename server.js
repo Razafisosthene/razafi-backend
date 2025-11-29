@@ -1,12 +1,5 @@
-// ---------------------------------------------------------------------------
 // RAZAFI MVola Backend (User-side only) — Hardened Security Edition
-// ---------------------------------------------------------------------------
-// Features added without changing your working logic:
-// - Secure MVola phone validation
-// - Rate limiting (anti-bot & anti-abuse)
-// - Slowdown protection (anti-bruteforce)
-// - Abuse protection for read endpoints
-// - Your MVola logic, polling, voucher assignment remain EXACTLY the same
+// Corrected version: STATIC import for ip-range-check (Option A).
 // ---------------------------------------------------------------------------
 
 import express from "express";
@@ -18,9 +11,9 @@ import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import rateLimit from "express-rate-limit";
 import slowDown from "express-slow-down";
-import ipRangeCheck from "ip-range-check";
 import path from "path";
 import { fileURLToPath } from "url";
+import ipRangeCheck from "ip-range-check";   // <-- STATIC IMPORT (Option A)
 
 dotenv.config();
 
@@ -33,27 +26,19 @@ app.use(cors());
 const PORT = process.env.PORT || 10000;
 
 // ------------------ WIFI ACCESS PROTECTION ------------------
-// Requires: npm install ip-range-check
-// This middleware restricts access to only allowed IP ranges and
-// ensures the bloque page (/bloque.html) and its assets remain reachable.
-
-const ipRangeCheck = (await import("ip-range-check")).default; // lazy import safe for ESM/CommonJS differences
-
 // Allowed ranges (ENV var or fallback)
 const allowedRanges = process.env.ALLOWED_WIFI_RANGES
-  ? process.env.ALLOWED_WIFI_RANGES.split(",")
+  ? process.env.ALLOWED_WIFI_RANGES.split(",").map(s => s.trim()).filter(Boolean)
   : ["197.158.240.0/24"];
 
 const extraAllowed = ["127.0.0.1", "::1"];
 
-// rate limiter — make sure express-rate-limit is imported once at top of file.
-// If you already have it imported, keep this limiter definition only.
+// rate limiter
 const limiter = rateLimit({
   windowMs: 60_000,
   max: 200,
   standardHeaders: true,
   legacyHeaders: false,
-  // acknowledge we trust proxy (Render / Cloudflare) — prevents express-rate-limit errors
   trustProxy: true,
 });
 app.use(limiter);
@@ -80,7 +65,6 @@ app.use((req, res, next) => {
     return next();
   }
 
-  // Because we set trust proxy above, req.ip should be the client's IP (from X-Forwarded-For)
   let clientIP = req.ip || null;
 
   // fallback: parse X-Forwarded-For manually if req.ip is missing
@@ -100,21 +84,23 @@ app.use((req, res, next) => {
     return next();
   }
 
-  // check allowed ranges
-  const allowed = clientIP && allowedRanges.some((range) => ipRangeCheck(clientIP, range));
+  // STATIC import ensures ipRangeCheck is ALWAYS available.
+  let allowed = false;
+  try {
+    allowed = clientIP && allowedRanges.some(range => ipRangeCheck(clientIP, range));
+  } catch (e) {
+    console.error("⚠️ ip-range-check error:", e?.message || e);
+    // fail-closed for security:
+    return res.redirect(302, "/bloque.html");
+  }
 
   if (!allowed) {
-    // relative redirect to /bloque.html (avoids cross-host redirect loops)
     return res.redirect(302, "/bloque.html");
   }
 
   next();
 });
 // -------------------------------------------------------------
-
-
-// static serve — put AFTER your IP-check middleware
-
 
 // fix __dirname in ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -123,10 +109,6 @@ const __dirname = path.dirname(__filename);
 // serve static frontend from /public
 app.use(express.static(path.join(__dirname, "public")));
 
-// optional SPA fallback (uncomment if your app uses client-side routing)
-// app.get("*", (req, res) => {
-//   res.sendFile(path.join(__dirname, "public", "index.html"));
-//});
 
 // ---------------------------------------------------------------------------
 // ENVIRONMENT VARIABLES
