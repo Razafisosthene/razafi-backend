@@ -50,7 +50,9 @@ const limiter = rateLimit({
     return req.ip || req.socket.remoteAddress || "unknown";
   },
 });
-app.use(limiter);
+// Protect API endpoints with the global limiter, but allow static pages (index / bloque) without being counted
+app.use("/api", limiter);
+
 
 
 // Helper: allow requests that must be reachable even when blocked
@@ -166,8 +168,6 @@ app.use(
     credentials: true,
   })
 );
-
-app.use(express.json());
 
 // ---------------------------------------------------------------------------
 // SECURITY MIDDLEWARE
