@@ -14,6 +14,8 @@ import slowDown from "express-slow-down";
 import path from "path";
 import { fileURLToPath } from "url";
 import ipRangeCheck from "ip-range-check";   // <-- STATIC IMPORT (Option A)
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
+
 
 dotenv.config();
 
@@ -39,17 +41,31 @@ const limiter = rateLimit({
   max: 200,
   standardHeaders: true,
   legacyHeaders: false,
-  // keyGenerator: explicit function to extract client IP from headers reliably.
-  // It prefers CF header when present, then X-Forwarded-For, then req.ip.
   keyGenerator: (req, res) => {
-    // Cloudflare sets cf-connecting-ip; many proxies set x-forwarded-for
+    // Prefer CF header, then X-Forwarded-For, then req.ip
     const cf = req.headers["cf-connecting-ip"];
-    if (cf) return cf;
+    if (cf) {
+      // Cloudflare returns IPv4 or IPv6 -> rely on helper for IPv6 safety
+      if (cf.includes(":")) return ipKeyGenerator(req);
+      return cf;
+    }
+
     const xff = req.headers["x-forwarded-for"];
-    if (xff) return xff.split(",")[0].trim();
-    return req.ip || req.socket.remoteAddress || "unknown";
+    if (xff) {
+      const ipFromXff = xff.split(",")[0].trim();
+      if (ipFromXff.includes(":")) return ipKeyGenerator(req);
+      return ipFromXff;
+    }
+
+    // fallback to req.ip; if IPv6, use helper
+    const ip = req.ip || req.socket?.remoteAddress || "unknown";
+    if (String(ip).includes(":")) {
+      return ipKeyGenerator(req);
+    }
+    return ip;
   },
 });
+
 // Protect API endpoints with the global limiter, but allow static pages (index / bloque) without being counted
 app.use("/api", limiter);
 
