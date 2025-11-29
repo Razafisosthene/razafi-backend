@@ -22,52 +22,86 @@ import slowDown from "express-slow-down";
 dotenv.config();
 
 const app = express();
+// allow Express to trust X-Forwarded-For (Render / Cloudflare / proxies)
+app.set("trust proxy", true);
 const PORT = process.env.PORT || 10000;
 
-
-// ------------------ WIFI ACCESS PROTECTION ------------------
+// ------------------ WIFI ACCESS PROTECTION (REPLACEMENT) ------------------
 // Requires: npm install ip-range-check
-
 import ipRangeCheck from "ip-range-check";
+import rateLimit from "express-rate-limit"; // optional but recommended
 
-// Allowed ranges can be extended or moved to an env var if needed.
-// We allow the whole /24 subnet for your ISP so dynamic WAN IPs won't break access.
+// Allowed ranges (ENV var or fallback)
 const allowedRanges = process.env.ALLOWED_WIFI_RANGES
-  ? process.env.ALLOWED_WIFI_RANGES.split(",") // e.g. "197.158.240.0/24,102.46.33.0/24"
+  ? process.env.ALLOWED_WIFI_RANGES.split(",")
   : ["197.158.240.0/24"];
 
-// Always allow local development addresses
 const extraAllowed = ["127.0.0.1", "::1"];
 
-// Middleware to restrict access to clients coming from the allowed ranges
-app.use((req, res, next) => {
-  const xff = req.headers["x-forwarded-for"];
-  // x-forwarded-for may contain a list like "ip1, ip2, ...". Use the first.
-  let clientIP = xff ? xff.split(",")[0].trim() : req.ip;
+// Simple rate limiter (optional)
+const limiter = rateLimit({
+  windowMs: 60_000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use(limiter);
 
-  // strip IPv4-mapped IPv6 prefix if present
-  if (clientIP.startsWith("::ffff:")) {
+// Helper: allow requests that must be reachable even when blocked
+const isBlockedPageRequest = (req) => {
+  const p = req.path || "";
+
+  // allow the block page itself
+  if (p === "/bloque.html" || p === "/bloque") return true;
+
+  // allow any files under /bloque/ (images / css / js)
+  if (p.startsWith("/bloque/")) return true;
+
+  // allow common static assets used by bloque page
+  if (p.match(/\.(png|jpg|jpeg|svg|css|js|ico|map)$/i)) return true;
+
+  return false;
+};
+
+app.use((req, res, next) => {
+  // if the request is for the bloque page or its assets, let it through
+  if (isBlockedPageRequest(req)) {
+    return next();
+  }
+
+  // Because we set trust proxy above, req.ip should be the client's IP (from X-Forwarded-For)
+  let clientIP = req.ip || null;
+
+  // fallback: parse X-Forwarded-For manually if req.ip is missing
+  if (!clientIP) {
+    const xff = req.headers["x-forwarded-for"];
+    clientIP = xff ? xff.split(",")[0].trim() : null;
+  }
+
+  if (clientIP && clientIP.startsWith("::ffff:")) {
     clientIP = clientIP.replace("::ffff:", "");
   }
 
   console.log("Client IP:", clientIP);
 
-  // allow localhost during dev
+  // allow dev/local
   if (extraAllowed.includes(clientIP)) {
     return next();
   }
 
-  // Check against allowed ranges
-  const allowed = allowedRanges.some(range => ipRangeCheck(clientIP, range));
+  // check allowed ranges
+  const allowed = clientIP && allowedRanges.some((range) => ipRangeCheck(clientIP, range));
+
   if (!allowed) {
-    // Redirect blocked users to the public bloque page
-    return res.redirect("https://wifi.razafistore.com/bloque.html");
+    // relative redirect to /bloque.html (avoids cross-host redirect loops)
+    return res.redirect(302, "/bloque.html");
   }
 
-  // allowed — continue processing
   next();
 });
-// -------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+
 // static serve — put AFTER your IP-check middleware
 import path from "path";
 import { fileURLToPath } from "url";
