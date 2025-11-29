@@ -18,18 +18,22 @@ import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import rateLimit from "express-rate-limit";
 import slowDown from "express-slow-down";
+import ipRangeCheck from "ip-range-check";
+import path from "path";
+import { fileURLToPath } from "url";
 
 dotenv.config();
 
 const app = express();
 // allow Express to trust X-Forwarded-For (Render / Cloudflare / proxies)
 app.set("trust proxy", true);
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(cors());
 const PORT = process.env.PORT || 10000;
 
 // ------------------ WIFI ACCESS PROTECTION (REPLACEMENT) ------------------
 // Requires: npm install ip-range-check
-import ipRangeCheck from "ip-range-check";
-import rateLimit from "express-rate-limit"; // optional but recommended
 
 // Allowed ranges (ENV var or fallback)
 const allowedRanges = process.env.ALLOWED_WIFI_RANGES
@@ -103,8 +107,7 @@ app.use((req, res, next) => {
 
 
 // static serve — put AFTER your IP-check middleware
-import path from "path";
-import { fileURLToPath } from "url";
+
 
 // fix __dirname in ES modules
 const __filename = fileURLToPath(import.meta.url);
