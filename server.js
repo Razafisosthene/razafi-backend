@@ -1,5 +1,4 @@
 // RAZAFI MVola Backend (User-side only) — Hardened Security Edition
-// Corrected version: STATIC import for ip-range-check (Option A).
 // ---------------------------------------------------------------------------
 
 import express from "express";
@@ -12,7 +11,6 @@ import { createClient } from "@supabase/supabase-js";
 import slowDown from "express-slow-down";
 import path from "path";
 import { fileURLToPath } from "url";
-import ipRangeCheck from "ip-range-check";   // <-- STATIC IMPORT (Option A)
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 
 dotenv.config();
@@ -25,13 +23,6 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cors());
 const PORT = process.env.PORT || 10000;
-
-// ------------------ WIFI ACCESS PROTECTION ------------------
-// Allowed ranges (ENV var or fallback)
-const allowedRanges = process.env.ALLOWED_WIFI_RANGES
-  ? process.env.ALLOWED_WIFI_RANGES.split(",").map(s => s.trim()).filter(Boolean)
-  : [];
-console.log("[INFO] Allowed Wi-Fi ranges:", allowedRanges.length ? allowedRanges : "(none - none allowed until ALLOWED_WIFI_RANGES is set)");
 
 const extraAllowed = (process.env.EXTRA_ALLOWED || "127.0.0.1,::1").split(",").map(s => s.trim()).filter(Boolean);
 
@@ -88,53 +79,44 @@ const isBlockedPageRequest = (req) => {
   return false;
 };
 
-// --- BLOCKING MIDDLEWARE (sendFile version) ---
+// --- BLOCKING MIDDLEWARE (AP-MAC only - Option A) ---
 app.use((req, res, next) => {
+  // Allow static requests needed for the bloque page and its assets
   if (isBlockedPageRequest(req)) return next();
 
-  // Prefer Cloudflare header, then X-Forwarded-For, then req.ip, then socket address
-  const cfIp = req.headers["cf-connecting-ip"];
-  const xff = req.headers["x-forwarded-for"];
-  let clientIP = null;
+  // --- AP MAC VALIDATION (Tanaza) ---
+  // Use ALLOWED_AP_MACS env var (comma separated). Defaults to your AP.
+  // Example: ALLOWED_AP_MACS=E0:E1:A9:B0:5B:51,AA:BB:CC:DD:EE:FF
+  const allowedApMacs = (process.env.ALLOWED_AP_MACS || "E0:E1:A9:B0:5B:51")
+    .split(",")
+    .map(s => s.trim().toUpperCase())
+    .filter(Boolean);
 
-  if (cfIp && String(cfIp).trim()) clientIP = String(cfIp).trim();
-  else if (xff && String(xff).trim()) clientIP = String(xff).split(",")[0].trim();
-  else if (req.ip) clientIP = String(req.ip).trim();
-  else clientIP = req.socket?.remoteAddress || null;
-
-  if (!clientIP) {
-    console.warn("⚠️ No client IP available -> serving bloque.html");
-    return res.sendFile(path.join(__dirname, "public", "bloque.html"));
+  if (req.query && req.query.ap_mac) {
+    const incomingAp = String(req.query.ap_mac || "").trim().toUpperCase();
+    if (allowedApMacs.includes(incomingAp)) {
+      console.log("✅ Allowed by AP MAC:", incomingAp);
+      return next(); // allowed — bypass any IP checks
+    } else {
+      console.log("❌ AP MAC present but mismatch:", incomingAp);
+      // fall through to blocked response
+    }
   }
 
-  // Normalize IPv4-mapped IPv6 addresses
-  if (clientIP.startsWith("::ffff:")) clientIP = clientIP.replace("::ffff:", "");
-
-  console.log("Client IP:", clientIP);
-
-  // Allow local/dev IPs
-  if (extraAllowed.includes(clientIP)) return next();
-
-  // Check ranges (ip-range-check already statically imported)
-  let allowed = false;
-  try {
-    allowed = clientIP && allowedRanges.some(range => ipRangeCheck(clientIP, range));
-  } catch (err) {
-    console.error("ip-range-check error:", err?.message || err);
-    // Fail-closed: serve bloque page
-    return res.sendFile(path.join(__dirname, "public", "bloque.html"));
+  // Allow local/dev IPs (EXTRA_ALLOWED) to reach the site for testing
+  const clientIP = (req.headers["cf-connecting-ip"] || (req.headers["x-forwarded-for"] ? String(req.headers["x-forwarded-for"]).split(",")[0].trim() : null) || req.ip || req.socket?.remoteAddress || "").toString();
+  const extraAllowedList = (process.env.EXTRA_ALLOWED || "127.0.0.1,::1").split(",").map(s => s.trim()).filter(Boolean);
+  if (extraAllowedList.includes(clientIP)) {
+    console.log("✅ Allowed by EXTRA_ALLOWED:", clientIP);
+    return next();
   }
 
-  if (!allowed) {
-    console.info("❌ BLOCKED (not in allowed ranges):", clientIP);
-    return res.sendFile(path.join(__dirname, "public", "bloque.html"));
-  }
-
-  // Allowed -> continue
-  return next();
+  // If we reach here, the request is not from an allowed AP and not from an extra allowed IP
+  console.info("❌ BLOCKED (no valid ap_mac) - serving bloque.html for request from", clientIP || "unknown");
+  return res.sendFile(path.join(__dirname, "public", "bloque.html"));
 });
+// --- end BLOCKING MIDDLEWARE ---
 
-// -------------------------------------------------------------
 
 // serve static frontend from /public
 app.use(express.static(path.join(__dirname, "public")));
