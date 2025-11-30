@@ -12,6 +12,8 @@ import slowDown from "express-slow-down";
 import path from "path";
 import { fileURLToPath } from "url";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
+import cookieParser from "cookie-parser";
+
 
 dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
@@ -20,6 +22,7 @@ const app = express();
 // allow Express to trust X-Forwarded-For (Render / Cloudflare / proxies)
 app.set("trust proxy", 1);
 app.use(express.json());
+app.use(cookieParser());
 app.use(express.urlencoded({ extended: true }));
 app.use(cors());
 const PORT = process.env.PORT || 10000;
@@ -84,33 +87,66 @@ app.use((req, res, next) => {
   // Allow static requests needed for the bloque page and its assets
   if (isBlockedPageRequest(req)) return next();
 
-  // --- AP MAC VALIDATION (Tanaza) robust version ---
-  // Accept requests that include the AP MAC from Tanaza redirect.
-  // ALLOWED_AP_MACS env var: comma-separated list (e.g. E0:E1:A9:B0:5B:51)
+  // --- AP MAC VALIDATION (robust) + cookie persistence ---
+  // 1) If client already has the ap_allowed cookie, allow it immediately
+  try {
+    if (req.cookies && req.cookies.ap_allowed === "1") {
+      // cookie present -> treat as allowed
+      return next();
+    }
+  } catch (e) {
+    // ignore cookie parse errors and continue
+  }
+
+  // 2) Prepare allowed AP list
   const allowedApMacs = (process.env.ALLOWED_AP_MACS || "E0:E1:A9:B0:5B:51")
     .split(",")
     .map(s => s.trim().toUpperCase())
     .filter(Boolean);
 
+  // 3) If Tanaza can send X-AP-MAC header, accept it too (more robust)
+  const headerAp = (req.headers["x-ap-mac"] || "").toString().trim().toUpperCase();
+  if (headerAp) {
+    if (allowedApMacs.includes(headerAp)) {
+      // set cookie for subsequent requests
+      res.cookie("ap_allowed", "1", {
+        maxAge: 5 * 60 * 1000, // 5 minutes
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax",
+      });
+      console.log("✅ Allowed by X-AP-MAC header:", headerAp);
+      return next();
+    } else {
+      console.log("❌ X-AP-MAC header mismatch:", headerAp);
+    }
+  }
+
+  // 4) Extract MAC from query param (handles messy values like "{ap_mac},E0:...")
   if (req.query && req.query.ap_mac) {
     const raw = String(req.query.ap_mac || "").trim();
-
-    // Find the first occurrence of a MAC-like token (XX:XX:XX:XX:XX:XX)
     const macMatch = raw.match(/([0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5})/);
     if (macMatch && macMatch[1]) {
       const incomingAp = macMatch[1].toUpperCase();
       if (allowedApMacs.includes(incomingAp)) {
+        // set cookie for subsequent requests
+        res.cookie("ap_allowed", "1", {
+          maxAge: 5 * 60 * 1000, // 5 minutes
+          httpOnly: true,
+          secure: true,
+          sameSite: "Lax",
+        });
         console.log("✅ Allowed by AP MAC (extracted):", incomingAp, "raw:", raw);
         return next(); // bypass IP checks
       } else {
         console.log("❌ AP MAC present but mismatch (extracted):", incomingAp, "raw:", raw);
       }
     } else {
-      // No MAC-like token found in the raw input
       console.log("❌ AP MAC param present but no valid MAC found in:", raw);
     }
   }
-  // --- end AP MAC VALIDATION ---
+  // --- end AP MAC validation + cookie persistence ---
+
 
   // Allow local/dev IPs (EXTRA_ALLOWED) to reach the site for testing
   const clientIP = (req.headers["cf-connecting-ip"] || (req.headers["x-forwarded-for"] ? String(req.headers["x-forwarded-for"]).split(",")[0].trim() : null) || req.ip || req.socket?.remoteAddress || "").toString();
