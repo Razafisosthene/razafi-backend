@@ -70,23 +70,17 @@ function normalizeApMac(req, res, next) {
     let raw = req.query.ap_mac || req.query.apMac || '';
     if (!raw) { req.ap_mac = null; return next(); }
 
-    // If value contains comma (e.g. "ap_mac,E0:E1:..."), take last token
     if (raw.indexOf(',') !== -1) {
       const parts = String(raw).split(',');
       raw = parts[parts.length - 1];
     }
 
-    // Remove any accidental "ap_mac=" left in value and trim punctuation/spaces
     raw = String(raw).trim().replace(/^ap_mac=/i, '').replace(/^,+|,+$/g, '');
-
-    // Normalize separators: allow ":" or "-" or no separators
     raw = raw.replace(/-/g, ':');
 
-    // Extract hex groups
     const groups = raw.match(/[0-9A-Fa-f]{2}/g);
     if (!groups || groups.length < 6) { req.ap_mac = null; return next(); }
 
-    // Canonicalize to 6 groups uppercase with colons
     req.ap_mac = groups.slice(0,6).map(g => g.toUpperCase()).join(':');
 
   } catch (e) {
@@ -100,51 +94,47 @@ function normalizeApMac(req, res, next) {
 const isBlockedPageRequest = (req) => {
   const p = req.path || "";
 
-  // allow the block page itself
   if (p === "/bloque.html" || p === "/bloque") return true;
-
-  // allow any files under /bloque/ (images / css / js)
   if (p.startsWith("/bloque/")) return true;
-
-  // allow common static assets used by bloque page
   if (p.match(/\.(png|jpg|jpeg|svg|css|js|ico|map)$/i)) return true;
 
   return false;
 };
 
 // --- BLOCKING MIDDLEWARE (AP-MAC only - Option A) ---
-// Note: this middleware must be placed BEFORE `app.use(express.static(...))`
-// so blocked clients get redirected before static files are served.
+// IMPORTANT: this middleware should be placed BEFORE express.static(...) so blocked clients are redirected first.
 app.use((req, res, next) => {
   try {
-    // 1) allow safe static / bloque pages
+    // --- EARLY ALLOW LIST ---
+    // 1) Allow all API calls (so payment endpoints, AJAX, webhooks, etc. are reachable)
+    if (req.path && req.path.startsWith("/api/")) return next();
+
+    // 2) Allow requests for the block page assets or static files used by bloque page
     if (isBlockedPageRequest(req)) return next();
 
-    // 2) allow requests from extraAllowed IPs (render / healthchecks / admin)
-    const remote = (req.headers['x-forwarded-for'] || req.headers['X-Forwarded-For'] || req.ip || req.socket?.remoteAddress || '').toString();
+    // 3) Allow specific IPs (healthchecks, admin IPs) defined in EXTRA_ALLOWED
+    const remote = (req.headers['x-forwarded-for'] || req.ip || req.socket?.remoteAddress || '').toString();
     const remoteFirst = remote.split(',')[0].trim();
-    if (extraAllowed.includes(remoteFirst) || extraAllowed.includes(req.ip)) {
-      return next();
-    }
+    if (extraAllowed.includes(remoteFirst) || extraAllowed.includes(req.ip)) return next();
 
-    // 3) allow when ap_allowed cookie already set (handshake previously succeeded)
+    // 4) Allow if ap_allowed cookie previously set
     try {
       if (req.cookies && req.cookies.ap_allowed === "1") {
         return next();
       }
     } catch (e) { /* ignore cookie parse errors */ }
 
-    // 4) ensure ap_mac is normalized on this request
+    // 5) Normalize query value and allow if ap_mac present
     normalizeApMac(req, res, () => {
-      // If AP MAC available -> allow and set a short cookie so client-side UI can show allowed state
       if (req.ap_mac) {
         try {
+          // set short-lived cookie so subsequent client requests show allowed state
           res.cookie('ap_allowed', '1', { maxAge: 5 * 60 * 1000, httpOnly: true, secure: true, sameSite: 'lax' });
-        } catch (e) { /* ignore cookie errors */ }
+        } catch (e) {}
         return next();
       }
 
-      // No AP mac and not a permitted path -> block / redirect to block page
+      // No AP MAC and not permitted -> redirect or 403
       if (req.accepts && req.accepts('html')) {
         return res.redirect('/bloque.html');
       } else {
@@ -154,7 +144,7 @@ app.use((req, res, next) => {
 
   } catch (err) {
     console.error('AP-MAC blocking middleware error', err);
-    // fail-safe: allow request (avoid taking whole site down)
+    // fail open to avoid taking the app down
     return next();
   }
 });
