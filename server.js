@@ -84,24 +84,33 @@ app.use((req, res, next) => {
   // Allow static requests needed for the bloque page and its assets
   if (isBlockedPageRequest(req)) return next();
 
-  // --- AP MAC VALIDATION (Tanaza) ---
-  // Use ALLOWED_AP_MACS env var (comma separated). Defaults to your AP.
-  // Example: ALLOWED_AP_MACS=E0:E1:A9:B0:5B:51,AA:BB:CC:DD:EE:FF
+  // --- AP MAC VALIDATION (Tanaza) robust version ---
+  // Accept requests that include the AP MAC from Tanaza redirect.
+  // ALLOWED_AP_MACS env var: comma-separated list (e.g. E0:E1:A9:B0:5B:51)
   const allowedApMacs = (process.env.ALLOWED_AP_MACS || "E0:E1:A9:B0:5B:51")
     .split(",")
     .map(s => s.trim().toUpperCase())
     .filter(Boolean);
 
   if (req.query && req.query.ap_mac) {
-    const incomingAp = String(req.query.ap_mac || "").trim().toUpperCase();
-    if (allowedApMacs.includes(incomingAp)) {
-      console.log("✅ Allowed by AP MAC:", incomingAp);
-      return next(); // allowed — bypass any IP checks
+    const raw = String(req.query.ap_mac || "").trim();
+
+    // Find the first occurrence of a MAC-like token (XX:XX:XX:XX:XX:XX)
+    const macMatch = raw.match(/([0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5})/);
+    if (macMatch && macMatch[1]) {
+      const incomingAp = macMatch[1].toUpperCase();
+      if (allowedApMacs.includes(incomingAp)) {
+        console.log("✅ Allowed by AP MAC (extracted):", incomingAp, "raw:", raw);
+        return next(); // bypass IP checks
+      } else {
+        console.log("❌ AP MAC present but mismatch (extracted):", incomingAp, "raw:", raw);
+      }
     } else {
-      console.log("❌ AP MAC present but mismatch:", incomingAp);
-      // fall through to blocked response
+      // No MAC-like token found in the raw input
+      console.log("❌ AP MAC param present but no valid MAC found in:", raw);
     }
   }
+  // --- end AP MAC VALIDATION ---
 
   // Allow local/dev IPs (EXTRA_ALLOWED) to reach the site for testing
   const clientIP = (req.headers["cf-connecting-ip"] || (req.headers["x-forwarded-for"] ? String(req.headers["x-forwarded-for"]).split(",")[0].trim() : null) || req.ip || req.socket?.remoteAddress || "").toString();
