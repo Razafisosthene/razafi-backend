@@ -9,19 +9,18 @@ import dotenv from "dotenv";
 import nodemailer from "nodemailer";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
-import rateLimit from "express-rate-limit";
 import slowDown from "express-slow-down";
 import path from "path";
 import { fileURLToPath } from "url";
 import ipRangeCheck from "ip-range-check";   // <-- STATIC IMPORT (Option A)
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 
-
 dotenv.config();
-
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const app = express();
 // allow Express to trust X-Forwarded-For (Render / Cloudflare / proxies)
-app.set("trust proxy", 1);
+app.set("trust proxy", true);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cors());
@@ -31,9 +30,11 @@ const PORT = process.env.PORT || 10000;
 // Allowed ranges (ENV var or fallback)
 const allowedRanges = process.env.ALLOWED_WIFI_RANGES
   ? process.env.ALLOWED_WIFI_RANGES.split(",").map(s => s.trim()).filter(Boolean)
-  : ["197.158.240.0/24"];
+  : [];
+console.log("[INFO] Allowed Wi-Fi ranges:", allowedRanges.length ? allowedRanges : "(none - none allowed until ALLOWED_WIFI_RANGES is set)");
 
-const extraAllowed = ["127.0.0.1", "::1"];
+const extraAllowed = (process.env.EXTRA_ALLOWED || "127.0.0.1,::1").split(",").map(s => s.trim()).filter(Boolean);
+
 
 // rate limiter
 const limiter = rateLimit({
@@ -87,52 +88,53 @@ const isBlockedPageRequest = (req) => {
   return false;
 };
 
+// --- BLOCKING MIDDLEWARE (sendFile version) ---
 app.use((req, res, next) => {
-  // if the request is for the bloque page or its assets, let it through
-  if (isBlockedPageRequest(req)) {
-    return next();
-  }
+  if (isBlockedPageRequest(req)) return next();
 
-  let clientIP = req.ip || null;
+  // Prefer Cloudflare header, then X-Forwarded-For, then req.ip, then socket address
+  const cfIp = req.headers["cf-connecting-ip"];
+  const xff = req.headers["x-forwarded-for"];
+  let clientIP = null;
 
-  // fallback: parse X-Forwarded-For manually if req.ip is missing
+  if (cfIp && String(cfIp).trim()) clientIP = String(cfIp).trim();
+  else if (xff && String(xff).trim()) clientIP = String(xff).split(",")[0].trim();
+  else if (req.ip) clientIP = String(req.ip).trim();
+  else clientIP = req.socket?.remoteAddress || null;
+
   if (!clientIP) {
-    const xff = req.headers["x-forwarded-for"];
-    clientIP = xff ? xff.split(",")[0].trim() : null;
+    console.warn("⚠️ No client IP available -> serving bloque.html");
+    return res.sendFile(path.join(__dirname, "public", "bloque.html"));
   }
 
-  if (clientIP && clientIP.startsWith("::ffff:")) {
-    clientIP = clientIP.replace("::ffff:", "");
-  }
+  // Normalize IPv4-mapped IPv6 addresses
+  if (clientIP.startsWith("::ffff:")) clientIP = clientIP.replace("::ffff:", "");
 
   console.log("Client IP:", clientIP);
 
-  // allow dev/local
-  if (extraAllowed.includes(clientIP)) {
-    return next();
-  }
+  // Allow local/dev IPs
+  if (extraAllowed.includes(clientIP)) return next();
 
-  // STATIC import ensures ipRangeCheck is ALWAYS available.
+  // Check ranges (ip-range-check already statically imported)
   let allowed = false;
   try {
     allowed = clientIP && allowedRanges.some(range => ipRangeCheck(clientIP, range));
-  } catch (e) {
-    console.error("⚠️ ip-range-check error:", e?.message || e);
-    // fail-closed for security:
-    return res.redirect(302, "/bloque.html");
+  } catch (err) {
+    console.error("ip-range-check error:", err?.message || err);
+    // Fail-closed: serve bloque page
+    return res.sendFile(path.join(__dirname, "public", "bloque.html"));
   }
 
   if (!allowed) {
-    return res.redirect(302, "/bloque.html");
+    console.info("❌ BLOCKED (not in allowed ranges):", clientIP);
+    return res.sendFile(path.join(__dirname, "public", "bloque.html"));
   }
 
-  next();
+  // Allowed -> continue
+  return next();
 });
-// -------------------------------------------------------------
 
-// fix __dirname in ES modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// -------------------------------------------------------------
 
 // serve static frontend from /public
 app.use(express.static(path.join(__dirname, "public")));
