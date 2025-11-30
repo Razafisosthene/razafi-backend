@@ -96,8 +96,6 @@ function normalizeApMac(req, res, next) {
 }
 // --- END: ap_mac normalizer middleware ---
 
-
-
 // Helper: allow requests that must be reachable even when blocked
 const isBlockedPageRequest = (req) => {
   const p = req.path || "";
@@ -115,6 +113,8 @@ const isBlockedPageRequest = (req) => {
 };
 
 // --- BLOCKING MIDDLEWARE (AP-MAC only - Option A) ---
+// Note: this middleware must be placed BEFORE `app.use(express.static(...))`
+// so blocked clients get redirected before static files are served.
 app.use((req, res, next) => {
   try {
     // 1) allow safe static / bloque pages
@@ -127,22 +127,25 @@ app.use((req, res, next) => {
       return next();
     }
 
-    // 3) ensure ap_mac is normalized on this request
-    // normalizeApMac is synchronous and sets req.ap_mac (or null)
+    // 3) allow when ap_allowed cookie already set (handshake previously succeeded)
+    try {
+      if (req.cookies && req.cookies.ap_allowed === "1") {
+        return next();
+      }
+    } catch (e) { /* ignore cookie parse errors */ }
+
+    // 4) ensure ap_mac is normalized on this request
     normalizeApMac(req, res, () => {
       // If AP MAC available -> allow and set a short cookie so client-side UI can show allowed state
       if (req.ap_mac) {
         try {
-          // short-lived cookie so client JS can detect allowed clients (same settings as your front-end used earlier)
           res.cookie('ap_allowed', '1', { maxAge: 5 * 60 * 1000, httpOnly: true, secure: true, sameSite: 'lax' });
         } catch (e) { /* ignore cookie errors */ }
         return next();
       }
 
       // No AP mac and not a permitted path -> block / redirect to block page
-      // You can respond with res.status(403).send('blocked') if you prefer JSON
       if (req.accepts && req.accepts('html')) {
-        // keep the block page under /bloque.html so static assets still load
         return res.redirect('/bloque.html');
       } else {
         return res.status(403).send('Access blocked: connect to WiFi RAZAFI to continue.');
@@ -151,7 +154,7 @@ app.use((req, res, next) => {
 
   } catch (err) {
     console.error('AP-MAC blocking middleware error', err);
-    // if anything goes wrong, fail-safe: allow request (avoid taking whole site down)
+    // fail-safe: allow request (avoid taking whole site down)
     return next();
   }
 });
