@@ -64,6 +64,38 @@ const limiter = rateLimit({
 // Protect API endpoints with the global limiter, but allow static pages (index / bloque) without being counted
 app.use("/api", limiter);
 
+// --- START: ap_mac normalizer middleware ---
+function normalizeApMac(req, res, next) {
+  try {
+    let raw = req.query.ap_mac || req.query.apMac || '';
+    if (!raw) { req.ap_mac = null; return next(); }
+
+    // If value contains comma (e.g. "ap_mac,E0:E1:..."), take last token
+    if (raw.indexOf(',') !== -1) {
+      const parts = String(raw).split(',');
+      raw = parts[parts.length - 1];
+    }
+
+    // Remove any accidental "ap_mac=" left in value and trim punctuation/spaces
+    raw = String(raw).trim().replace(/^ap_mac=/i, '').replace(/^,+|,+$/g, '');
+
+    // Normalize separators: allow ":" or "-" or no separators
+    raw = raw.replace(/-/g, ':');
+
+    // Extract hex groups
+    const groups = raw.match(/[0-9A-Fa-f]{2}/g);
+    if (!groups || groups.length < 6) { req.ap_mac = null; return next(); }
+
+    // Canonicalize to 6 groups uppercase with colons
+    req.ap_mac = groups.slice(0,6).map(g => g.toUpperCase()).join(':');
+
+  } catch (e) {
+    req.ap_mac = null;
+  }
+  return next();
+}
+// --- END: ap_mac normalizer middleware ---
+
 
 
 // Helper: allow requests that must be reachable even when blocked
@@ -84,83 +116,46 @@ const isBlockedPageRequest = (req) => {
 
 // --- BLOCKING MIDDLEWARE (AP-MAC only - Option A) ---
 app.use((req, res, next) => {
-  // Allow static requests needed for the bloque page and its assets
-  if (isBlockedPageRequest(req)) return next();
-
-  // --- AP MAC VALIDATION (robust) + cookie persistence ---
-  // 1) If client already has the ap_allowed cookie, allow it immediately
   try {
-    if (req.cookies && req.cookies.ap_allowed === "1") {
-      // cookie present -> treat as allowed
+    // 1) allow safe static / bloque pages
+    if (isBlockedPageRequest(req)) return next();
+
+    // 2) allow requests from extraAllowed IPs (render / healthchecks / admin)
+    const remote = (req.headers['x-forwarded-for'] || req.headers['X-Forwarded-For'] || req.ip || req.socket?.remoteAddress || '').toString();
+    const remoteFirst = remote.split(',')[0].trim();
+    if (extraAllowed.includes(remoteFirst) || extraAllowed.includes(req.ip)) {
       return next();
     }
-  } catch (e) {
-    // ignore cookie parse errors and continue
-  }
 
-  // 2) Prepare allowed AP list
-  const allowedApMacs = (process.env.ALLOWED_AP_MACS || "E0:E1:A9:B0:5B:51")
-    .split(",")
-    .map(s => s.trim().toUpperCase())
-    .filter(Boolean);
-
-  // 3) If Tanaza can send X-AP-MAC header, accept it too (more robust)
-  const headerAp = (req.headers["x-ap-mac"] || "").toString().trim().toUpperCase();
-  if (headerAp) {
-    if (allowedApMacs.includes(headerAp)) {
-      // set cookie for subsequent requests
-      res.cookie("ap_allowed", "1", {
-        maxAge: 5 * 60 * 1000, // 5 minutes
-        httpOnly: true,
-        secure: true,
-        sameSite: "Lax",
-      });
-      console.log("✅ Allowed by X-AP-MAC header:", headerAp);
-      return next();
-    } else {
-      console.log("❌ X-AP-MAC header mismatch:", headerAp);
-    }
-  }
-
-  // 4) Extract MAC from query param (handles messy values like "{ap_mac},E0:...")
-  if (req.query && req.query.ap_mac) {
-    const raw = String(req.query.ap_mac || "").trim();
-    const macMatch = raw.match(/([0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5})/);
-    if (macMatch && macMatch[1]) {
-      const incomingAp = macMatch[1].toUpperCase();
-      if (allowedApMacs.includes(incomingAp)) {
-        // set cookie for subsequent requests
-        res.cookie("ap_allowed", "1", {
-          maxAge: 5 * 60 * 1000, // 5 minutes
-          httpOnly: true,
-          secure: true,
-          sameSite: "Lax",
-        });
-        console.log("✅ Allowed by AP MAC (extracted):", incomingAp, "raw:", raw);
-        return next(); // bypass IP checks
-      } else {
-        console.log("❌ AP MAC present but mismatch (extracted):", incomingAp, "raw:", raw);
+    // 3) ensure ap_mac is normalized on this request
+    // normalizeApMac is synchronous and sets req.ap_mac (or null)
+    normalizeApMac(req, res, () => {
+      // If AP MAC available -> allow and set a short cookie so client-side UI can show allowed state
+      if (req.ap_mac) {
+        try {
+          // short-lived cookie so client JS can detect allowed clients (same settings as your front-end used earlier)
+          res.cookie('ap_allowed', '1', { maxAge: 5 * 60 * 1000, httpOnly: true, secure: true, sameSite: 'lax' });
+        } catch (e) { /* ignore cookie errors */ }
+        return next();
       }
-    } else {
-      console.log("❌ AP MAC param present but no valid MAC found in:", raw);
-    }
-  }
-  // --- end AP MAC validation + cookie persistence ---
 
+      // No AP mac and not a permitted path -> block / redirect to block page
+      // You can respond with res.status(403).send('blocked') if you prefer JSON
+      if (req.accepts && req.accepts('html')) {
+        // keep the block page under /bloque.html so static assets still load
+        return res.redirect('/bloque.html');
+      } else {
+        return res.status(403).send('Access blocked: connect to WiFi RAZAFI to continue.');
+      }
+    });
 
-  // Allow local/dev IPs (EXTRA_ALLOWED) to reach the site for testing
-  const clientIP = (req.headers["cf-connecting-ip"] || (req.headers["x-forwarded-for"] ? String(req.headers["x-forwarded-for"]).split(",")[0].trim() : null) || req.ip || req.socket?.remoteAddress || "").toString();
-  const extraAllowedList = (process.env.EXTRA_ALLOWED || "127.0.0.1,::1").split(",").map(s => s.trim()).filter(Boolean);
-  if (extraAllowedList.includes(clientIP)) {
-    console.log("✅ Allowed by EXTRA_ALLOWED:", clientIP);
+  } catch (err) {
+    console.error('AP-MAC blocking middleware error', err);
+    // if anything goes wrong, fail-safe: allow request (avoid taking whole site down)
     return next();
   }
-
-  // If we reach here, the request is not from an allowed AP and not from an extra allowed IP
-  console.info("❌ BLOCKED (no valid ap_mac) - serving bloque.html for request from", clientIP || "unknown");
-  return res.sendFile(path.join(__dirname, "public", "bloque.html"));
 });
-// --- end BLOCKING MIDDLEWARE ---
+// --- END BLOCKING MIDDLEWARE ---
 
 
 // serve static frontend from /public
