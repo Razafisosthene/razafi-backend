@@ -66,45 +66,7 @@
     }
 
     /* Dark mode adjustments */
-    @media (prefers-color-scheme: dark) {
-      body { background: #0b1220; color: #e6eef8; }
-      header { background: #071022; color: #e6eef8; }
-      .plan-limited {
-        background: linear-gradient(180deg,#0f1724 0%, #0b1220 100%);
-        border: 1px solid rgba(99,102,241,0.12);
-        color: #cfe3ff;
-      }
-      .plan-limited-warm {
-        background: linear-gradient(180deg,#26160c 0%, #140a05 100%);
-        border: 1px solid rgba(234,88,12,0.08);
-        color: #ffd9bf;
-      }
-      .plan-limited-purple {
-        background: linear-gradient(180deg,#191023 0%, #0f0712 100%);
-        border: 1px solid rgba(139,92,246,0.08);
-        color: #e9ddff;
-      }
-      .plan-unlimited-2h {
-        background: linear-gradient(180deg,#07361a 0%, #052516 100%);
-        border: 1px solid rgba(34,197,94,0.18);
-        color: #dfffe6;
-      }
-      .plan-unlimited-4h {
-        background: linear-gradient(180deg,#053b3a 0%, #032a29 100%);
-        border: 1px solid rgba(14,165,233,0.18);
-        color: #d9fff8;
-      }
-      .plan-unlimited-6h {
-        background: linear-gradient(180deg,#0a2d14 0%, #051a0b 100%);
-        border: 1px solid rgba(34,197,94,0.14);
-        color: #e6ffdf;
-      }
-
-      /* toast and small elements for dark */
-      .toast { background: rgba(10, 10, 10, 0.88); color: #e6eef8; }
-
-      .code-card { background: #062226; color: #dfffe6; }
-    }
+    
 
     /* Modal small rules */
 
@@ -309,6 +271,76 @@ html, body, header, .plan-card { transition: background 240ms ease, color 240ms 
   }
 </style>
 
+
+<!-- START: razafi manual dark overrides (scoped to .razafi-force-dark) -->
+<style id="razafi-force-dark-injected">
+/* Global surfaces */
+.razafi-force-dark body { background: #0b1220 !important; color: #e6eef8 !important; }
+.razafi-force-dark header { background: #071022 !important; color: #e6eef8 !important; box-shadow: none; }
+
+/* Plan cards - dark variants */
+.razafi-force-dark .plan-limited {
+  background: linear-gradient(180deg,#0f1724 0%, #0b1220 100%) !important;
+  border: 1px solid rgba(99,102,241,0.12) !important;
+  color: #cfe3ff !important;
+}
+.razafi-force-dark .plan-limited-warm {
+  background: linear-gradient(180deg,#26160c 0%, #140a05 100%) !important;
+  border: 1px solid rgba(234,88,12,0.08) !important;
+  color: #ffd9bf !important;
+}
+.razafi-force-dark .plan-limited-purple {
+  background: linear-gradient(180deg,#191023 0%, #0f0712 100%) !important;
+  border: 1px solid rgba(139,92,246,0.08) !important;
+  color: #e9ddff !important;
+}
+.razafi-force-dark .plan-unlimited-2h {
+  background: linear-gradient(180deg,#07361a 0%, #052516 100%) !important;
+  border: 1px solid rgba(34,197,94,0.18) !important;
+  color: #dfffe6 !important;
+}
+.razafi-force-dark .plan-unlimited-4h {
+  background: linear-gradient(180deg,#053b3a 0%, #032a29 100%) !important;
+  border: 1px solid rgba(14,165,233,0.18) !important;
+  color: #d9fff8 !important;
+}
+.razafi-force-dark .plan-unlimited-6h {
+  background: linear-gradient(180deg,#0a2d14 0%, #051a0b 100%) !important;
+  border: 1px solid rgba(34,197,94,0.14) !important;
+  color: #e6ffdf !important;
+}
+
+/* toast and small elements for dark */
+.razafi-force-dark .toast { background: rgba(10, 10, 10, 0.88) !important; color: #e6eef8 !important; }
+
+/* code card */
+.razafi-force-dark .code-card { background: #062226 !important; color: #dfffe6 !important; }
+
+/* plans intro line readability */
+.razafi-force-dark #plans p.text-center.text-sm {
+  color: #e6eef8 !important;
+  background: rgba(255,255,255,0.03) !important;
+  -webkit-font-smoothing:antialiased;
+  text-shadow: 0 1px 0 rgba(2,6,23,0.25);
+}
+
+/* FAQ */
+.razafi-force-dark .faq-item .faq-title { color: #e6eef8 !important; background: rgba(255,255,255,0.02) !important; box-shadow: 0 4px 16px rgba(0,0,0,0.45); }
+.razafi-force-dark .faq-item .faq-content,
+.razafi-force-dark .faq-item .faq-content ol li { color: #dbeafe !important; }
+
+/* buttons contrast */
+.razafi-force-dark .choose-btn, .razafi-force-dark button.choose-btn { box-shadow: 0 6px 18px rgba(2,6,23,0.45) !important; }
+
+/* history entries backgrounds */
+.razafi-force-dark .p-3.bg-gray-50 { background: rgba(255,255,255,0.02) !important; color: #e6eef8 !important; }
+.razafi-force-dark .text-gray-700 { color: #d1d9e6 !important; }
+.razafi-force-dark .text-gray-900 { color: #e6eef8 !important; }
+
+/* modal/backdrop tweaks to ensure visibility */
+.razafi-force-dark .modal-backdrop { background: rgba(0,0,0,0.6) !important; }
+</style>
+<!-- END: razafi manual dark overrides -->
 </head>
 <body class="bg-gray-100 text-gray-800">
 
@@ -447,9 +479,10 @@ html, body, header, .plan-card { transition: background 240ms ease, color 240ms 
 </div>
 
 <script>
-/* Unified iOS Pro switch with spring engine and robust theme application
-   - master of truth for theme state
-   - dispatches 'themechange' custom event used by other parts
+/* iOS Pro switch — VERSION SIMPLIFIÉE (BIMODE SEULEMENT)
+   - gère uniquement 'light' et 'dark'
+   - supprime toute logique 'auto' / prefers-color-scheme
+   - conservation des animations et classes existantes
 */
 (function(){
   const wrapper = document.getElementById('razafiIosToggleFloat');
@@ -470,17 +503,23 @@ html, body, header, .plan-card { transition: background 240ms ease, color 240ms 
   const KNOB_TRAVEL = 20;
   let pos = 0, vel = 0, target = 0, rafId = null;
 
-  const KEY_PRIMARY = 'ios-pro-theme';
-  const KEY_LEGACY  = 'razafi_theme';
-  const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+  const KEY_PRIMARY = 'ios-pro-theme'; // stockage unique (light/dark)
 
   function readPref(){
-    try { return localStorage.getItem(KEY_PRIMARY) || localStorage.getItem(KEY_LEGACY) || 'auto'; } catch { return 'auto'; }
+    try { 
+      const v = localStorage.getItem(KEY_PRIMARY);
+      return (v === 'dark') ? 'dark' : (v === 'light') ? 'light' : 'light'; // default = light
+    } catch { return 'light'; }
   }
   function savePref(v){
-    try { localStorage.setItem(KEY_PRIMARY, v); localStorage.setItem(KEY_LEGACY, (v==='dark'?'dark':(v==='light'?'light':'auto'))); } catch(e){}
+    try { 
+      if (v === 'dark' || v === 'light') localStorage.setItem(KEY_PRIMARY, v);
+    } catch(e){}
   }
-  function effective(pref){ if (pref === 'auto') return (mq && mq.matches) ? 'dark' : 'light'; return pref; }
+  function effective(pref){
+    // No 'auto' branch — just return pref normalized
+    return (pref === 'dark') ? 'dark' : 'light';
+  }
 
   function step() {
     const a = (-SPRING.k * (pos - target) - SPRING.c * vel) / SPRING.mass;
@@ -507,41 +546,11 @@ html, body, header, .plan-card { transition: background 240ms ease, color 240ms 
       el = document.createElement('style');
       el.id = 'razafi-dark-overrides';
       el.textContent = `
+/* kept dark overrides used elsewhere in the page */
 html.razafi-force-dark, html.razafi-force-dark body { color: #e6eef8 !important; background: #0b1220 !important; }
 html.razafi-force-dark header, html.razafi-force-dark header * { background: #071022 !important; color: #e6eef8 !important; }
-html.razafi-force-dark .plan-limited {
-  background: linear-gradient(180deg,#0f1724 0%, #0b1220 100%) !important;
-  border: 1px solid rgba(99,102,241,0.12) !important;
-  color: #cfe3ff !important;
-}
-html.razafi-force-dark .plan-limited-warm {
-  background: linear-gradient(180deg,#26160c 0%, #140a05 100%) !important;
-  border: 1px solid rgba(234,88,12,0.08) !important;
-  color: #ffd9bf !important;
-}
-html.razafi-force-dark .plan-limited-purple {
-  background: linear-gradient(180deg,#191023 0%, #0f0712 100%) !important;
-  border: 1px solid rgba(139,92,246,0.08) !important;
-  color: #e9ddff !important;
-}
-html.razafi-force-dark .plan-unlimited-2h {
-  background: linear-gradient(180deg,#07361a 0%, #052516 100%) !important;
-  border: 1px solid rgba(34,197,94,0.18) !important;
-  color: #dfffe6 !important;
-}
-html.razafi-force-dark .plan-unlimited-4h {
-  background: linear-gradient(180deg,#053b3a 0%, #032a29 100%) !important;
-  border: 1px solid rgba(14,165,233,0.18) !important;
-  color: #d9fff8 !important;
-}
-html.razafi-force-dark .plan-unlimited-6h {
-  background: linear-gradient(180deg,#0a2d14 0%, #051a0b 100%) !important;
-  border: 1px solid rgba(34,197,94,0.14) !important;
-  color: #e6ffdf !important;
-}
+html.razafi-force-dark .plan-limited { background: linear-gradient(180deg,#0f1724 0%, #0b1220 100%) !important; border: 1px solid rgba(99,102,241,0.12) !important; color: #cfe3ff !important; }
 html.razafi-force-dark .toast { background: rgba(10,10,10,0.88) !important; color: #e6eef8 !important; }
-html.razafi-force-dark .code-card { background: #062226 !important; color: #dfffe6 !important; }
-html.razafi-force-dark.html.dark-mode, html.razafi-force-dark.dark, html.razafi-force-dark.theme-dark { color: #e6eef8 !important; background: #0b1220 !important; }
 `;
       document.head.appendChild(el);
     }
@@ -573,18 +582,18 @@ html.razafi-force-dark.html.dark-mode, html.razafi-force-dark.dark, html.razafi-
       if (animate) animateTo(0); else { pos = 0; knobEl.style.transform = `translateX(0px)`; }
       knobEl.innerHTML = SVG_SUN;
     }
-    savePref(pref);
+    savePref(eff);
     try { window.dispatchEvent(new CustomEvent('themechange',{detail:{theme:eff}})); } catch(e){}
   }
 
   (function init(){
     positionUnderHeader();
-    const saved = readPref();
-    pos = effective(saved) === 'dark' ? KNOB_TRAVEL : 0;
+    const saved = readPref(); // WILL return 'light' or 'dark' only
+    pos = (saved === 'dark') ? KNOB_TRAVEL : 0;
     target = pos; vel = 0;
     knobEl.style.transform = `translateX(${pos}px)`;
-    knobEl.innerHTML = effective(saved) === 'dark' ? SVG_MOON : SVG_SUN;
-    if (effective(saved) === 'dark') {
+    knobEl.innerHTML = (saved === 'dark') ? SVG_MOON : SVG_SUN;
+    if (saved === 'dark') {
       document.documentElement.setAttribute('data-theme','dark');
       document.body && document.body.setAttribute('data-theme','dark');
       document.documentElement.classList.add('dark-mode','theme-dark','dark','razafi-force-dark');
@@ -602,7 +611,7 @@ html.razafi-force-dark.html.dark-mode, html.razafi-force-dark.dark, html.razafi-
   })();
 
   switchEl.addEventListener('click', () => {
-    const current = effective(readPref());
+    const current = readPref(); // 'light' or 'dark'
     knobEl.classList.add('knob-pressed');
     setTimeout(()=>knobEl.classList.remove('knob-pressed'),140);
     apply(current === 'dark' ? 'light' : 'dark', true);
@@ -614,10 +623,9 @@ html.razafi-force-dark.html.dark-mode, html.razafi-force-dark.dark, html.razafi-
   window.addEventListener('resize', positionUnderHeader);
   window.addEventListener('scroll', () => { window.requestAnimationFrame(positionUnderHeader); });
 
-  if (mq && mq.addEventListener) mq.addEventListener('change', () => { if (readPref() === 'auto') apply('auto', true); });
-
+  // Expose limited API (no 'auto' anymore)
   window.iosProSwitch = {
-    set: (t) => { if (['light','dark','auto'].includes(t)) apply(t, true); },
+    set: (t) => { if (t === 'light' || t === 'dark') apply(t, true); },
     get: () => readPref()
   };
 })();
