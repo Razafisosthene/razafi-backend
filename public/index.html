@@ -271,8 +271,8 @@ html, body, header, .plan-card { transition: background 240ms ease, color 240ms 
   }
 </style>
 
-
 <!-- START: razafi manual dark overrides (scoped to .razafi-force-dark) -->
+
 <style id="razafi-force-dark-injected">
 /* Global surfaces */
 .razafi-force-dark body { background: #0b1220 !important; color: #e6eef8 !important; }
@@ -339,6 +339,27 @@ html, body, header, .plan-card { transition: background 240ms ease, color 240ms 
 
 /* modal/backdrop tweaks to ensure visibility */
 .razafi-force-dark .modal-backdrop { background: rgba(0,0,0,0.6) !important; }
+
+/* Modal background + text fix in dark mode */
+.razafi-force-dark .modal-content {
+  background: #0f1724 !important;
+  color: #e6eef8 !important;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.45) !important;
+}
+
+.razafi-force-dark .modal-content * {
+  color: #e6eef8 !important;
+}
+
+.razafi-force-dark .modal-header,
+.razafi-force-dark .modal-body {
+  background: transparent !important;
+}
+
+.razafi-force-dark .modal-backdrop {
+  background: rgba(0,0,0,0.7) !important;
+}
+
 </style>
 <!-- END: razafi manual dark overrides -->
 </head>
