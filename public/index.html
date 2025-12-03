@@ -71,6 +71,88 @@
 }
 </style>
 
+<style id="razafi-modal-fix">
+/* === Transactions modal: force dark overrides (final) === */
+.razafi-force-dark #transactionsModalFinal {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  background: rgba(0,0,0,0.82) !important;
+  backdrop-filter: blur(6px) !important;
+  -webkit-backdrop-filter: blur(6px) !important;
+  z-index: 9998 !important;
+}
+
+.razafi-force-dark #transactionsModalFinal .transactions-dialog,
+.razafi-force-dark #transactionsModalFinal > div {
+  background: #0f1724 !important;
+  color: #e6eef8 !important;
+  border: 1px solid rgba(255,255,255,0.04) !important;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.6) !important;
+  z-index: 9999 !important;
+}
+
+/* Ensure all text inside dialog is light */
+.razafi-force-dark #transactionsModalFinal .transactions-dialog * {
+  color: #e6eef8 !important;
+}
+
+/* Card rows inside modal */
+.razafi-force-dark #transactionsModalFinal .p-3.bg-gray-50 {
+  background: rgba(255,255,255,0.02) !important;
+  color: #dbeafe !important;
+  border: 1px solid rgba(255,255,255,0.03) !important;
+  box-shadow: 0 6px 22px rgba(0,0,0,0.45) !important;
+}
+
+/* Copy button: visible and high contrast (strong selector) */
+html.razafi-force-dark #transactionsModalFinal button.copyCodeBtn,
+html.razafi-force-dark #transactionsModalFinal .copyCodeBtn,
+html.razafi-force-dark #transactionsModalFinal button.copy-btn,
+html.razafi-force-dark #transactionsModalFinal .copy-btn,
+html.razafi-force-dark #transactionsModalFinal button.btn-copy,
+html.razafi-force-dark #transactionsModalFinal .btn-copy,
+html.razafi-force-dark #transactionsModalFinal button.copy,
+html.razafi-force-dark #transactionsModalFinal .copy,
+html.razafi-force-dark #transactionsModalFinal .code-card button,
+html.razafi-force-dark #transactionsModalFinal .code-card .copy-btn {
+  background: rgba(255,255,255,0.18) !important;
+  color: #0b1220 !important;
+  border: 1px solid rgba(255,255,255,0.35) !important;
+  box-shadow: 0 6px 14px rgba(2,6,23,0.6) inset !important;
+  opacity: 1 !important;
+  filter: none !important;
+  mix-blend-mode: normal !important;
+  pointer-events: auto !important;
+  padding: 0.55rem 0.9rem !important;
+  border-radius: 0.6rem !important;
+  font-weight: 700 !important;
+  text-shadow: none !important;
+}
+
+/* Disabled variant: keep it readable */
+html.razafi-force-dark #transactionsModalFinal button.copyCodeBtn[disabled],
+html.razafi-force-dark #transactionsModalFinal .copyCodeBtn[disabled],
+html.razafi-force-dark #transactionsModalFinal button.copyCodeBtn[aria-disabled="true"] {
+  opacity: 0.98 !important;
+  cursor: pointer !important;
+}
+
+/* Hover states */
+html.razafi-force-dark #transactionsModalFinal button.copyCodeBtn:hover,
+html.razafi-force-dark #transactionsModalFinal .copyCodeBtn:hover,
+html.razafi-force-dark #transactionsModalFinal button.copyCodeBtn:active {
+  background: rgba(255,255,255,0.28) !important;
+  transform: translateY(0) !important;
+}
+
+/* scrollbar thumb inside modal list */
+.razafi-force-dark #transactionsModalFinal .transactions-dialog ::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.06) !important;
+}
+</style>
+
 <style id="razafi-cleaned-styles">
 
 
