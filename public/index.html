@@ -15,36 +15,31 @@
 
 
 <!-- START: razafi manual dark overrides (scoped to .razafi-force-dark) -->
-
-
-<!-- END: razafi manual dark overrides -->
-
-/* === Modal dark-mode overrides (transactions modal) - INSERT INSIDE razafi-force-dark style block === */
-/* FORCE DARK — specific fixes for transactions modal used in index.html */
+/* === Transactions modal: force dark overrides === */
 .razafi-force-dark #transactionsModalFinal {
-  background: rgba(0,0,0,0.7) !important;         /* darker overlay */
+  background: rgba(0,0,0,0.72) !important;        /* overlay darker */
   backdrop-filter: blur(6px) !important;
   -webkit-backdrop-filter: blur(6px) !important;
 }
 
-.razafi-force-dark #transactionsModalFinal > div,
-.razafi-force-dark #transactionsModalFinal .transactions-dialog {
-  background: #0f1724 !important;                  /* dark surface */
-  color: #e6eef8 !important;                       /* readable text */
+.razafi-force-dark #transactionsModalFinal .transactions-dialog,
+.razafi-force-dark #transactionsModalFinal > div {
+  background: #0f1724 !important;                  /* dialog surface */
+  color: #e6eef8 !important;                       /* text */
   border: 1px solid rgba(255,255,255,0.04) !important;
-  box-shadow: 0 10px 40px rgba(0,0,0,0.55) !important;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.6) !important;
 }
 
 .razafi-force-dark #transactionsModalFinal .transactions-dialog * {
   color: #e6eef8 !important;
 }
 
-/* items inside the modal (history rows) */
+/* override each injected history row (tailwind classes applied dynamically) */
 .razafi-force-dark #transactionsModalFinal .p-3.bg-gray-50 {
   background: rgba(255,255,255,0.02) !important;
-  color: #e6eef8 !important;
+  color: #dbeafe !important;
   border: 1px solid rgba(255,255,255,0.03) !important;
-  box-shadow: 0 4px 18px rgba(0,0,0,0.45) !important;
+  box-shadow: 0 6px 22px rgba(0,0,0,0.45) !important;
 }
 
 /* 'Aucune transaction' placeholder */
@@ -53,17 +48,21 @@
 }
 
 /* Footer button (Fermer) */
+.razafi-force-dark #transactionsModalFinal #transactionsClose,
 .razafi-force-dark #transactionsModalFinal .mt-4 .py-2 {
   background: #0b1220 !important;
   color: #f8fafc !important;
-  border: 1px solid rgba(245,158,11,0.9) !important; /* gold rim */
+  border: 1px solid rgba(245,158,11,0.9) !important;
   box-shadow: 0 6px 18px rgba(0,0,0,0.45) !important;
 }
 
-/* Ensure scrollbar/thumb contrast inside modal list */
+/* scrollbar thumb inside modal list */
 .razafi-force-dark #transactionsModalFinal .transactions-dialog ::-webkit-scrollbar-thumb {
   background: rgba(255,255,255,0.06) !important;
 }
+
+
+<!-- END: razafi manual dark overrides -->
 
 
 <style id="razafi-cleaned-styles">
@@ -412,53 +411,6 @@ html, body, header, .plan-card { transition: background 240ms ease, color 240ms 
 .razafi-force-dark .modal-backdrop {
   background: rgba(0,0,0,0.7) !important;
 }
-
-/* === Transactions modal: force dark overrides === */
-.razafi-force-dark #transactionsModalFinal {
-  background: rgba(0,0,0,0.72) !important;        /* overlay darker */
-  backdrop-filter: blur(6px) !important;
-  -webkit-backdrop-filter: blur(6px) !important;
-}
-
-.razafi-force-dark #transactionsModalFinal .transactions-dialog,
-.razafi-force-dark #transactionsModalFinal > div {
-  background: #0f1724 !important;                  /* dialog surface */
-  color: #e6eef8 !important;                       /* text */
-  border: 1px solid rgba(255,255,255,0.04) !important;
-  box-shadow: 0 12px 48px rgba(0,0,0,0.6) !important;
-}
-
-.razafi-force-dark #transactionsModalFinal .transactions-dialog * {
-  color: #e6eef8 !important;
-}
-
-/* override each injected history row (tailwind classes applied dynamically) */
-.razafi-force-dark #transactionsModalFinal .p-3.bg-gray-50 {
-  background: rgba(255,255,255,0.02) !important;
-  color: #dbeafe !important;
-  border: 1px solid rgba(255,255,255,0.03) !important;
-  box-shadow: 0 6px 22px rgba(0,0,0,0.45) !important;
-}
-
-/* 'Aucune transaction' placeholder */
-.razafi-force-dark #transactionsModalFinal #transactionsEmpty {
-  color: #9fb6d9 !important;
-}
-
-/* Footer button (Fermer) */
-.razafi-force-dark #transactionsModalFinal #transactionsClose,
-.razafi-force-dark #transactionsModalFinal .mt-4 .py-2 {
-  background: #0b1220 !important;
-  color: #f8fafc !important;
-  border: 1px solid rgba(245,158,11,0.9) !important;
-  box-shadow: 0 6px 18px rgba(0,0,0,0.45) !important;
-}
-
-/* scrollbar thumb inside modal list */
-.razafi-force-dark #transactionsModalFinal .transactions-dialog ::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.06) !important;
-}
-
 
 /* === End consolidated styles === */
 
