@@ -19,6 +19,52 @@
 
 <!-- END: razafi manual dark overrides -->
 
+/* === Modal dark-mode overrides (transactions modal) - INSERT INSIDE razafi-force-dark style block === */
+/* FORCE DARK — specific fixes for transactions modal used in index.html */
+.razafi-force-dark #transactionsModalFinal {
+  background: rgba(0,0,0,0.7) !important;         /* darker overlay */
+  backdrop-filter: blur(6px) !important;
+  -webkit-backdrop-filter: blur(6px) !important;
+}
+
+.razafi-force-dark #transactionsModalFinal > div,
+.razafi-force-dark #transactionsModalFinal .transactions-dialog {
+  background: #0f1724 !important;                  /* dark surface */
+  color: #e6eef8 !important;                       /* readable text */
+  border: 1px solid rgba(255,255,255,0.04) !important;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.55) !important;
+}
+
+.razafi-force-dark #transactionsModalFinal .transactions-dialog * {
+  color: #e6eef8 !important;
+}
+
+/* items inside the modal (history rows) */
+.razafi-force-dark #transactionsModalFinal .p-3.bg-gray-50 {
+  background: rgba(255,255,255,0.02) !important;
+  color: #e6eef8 !important;
+  border: 1px solid rgba(255,255,255,0.03) !important;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.45) !important;
+}
+
+/* 'Aucune transaction' placeholder */
+.razafi-force-dark #transactionsModalFinal #transactionsEmpty {
+  color: #9fb6d9 !important;
+}
+
+/* Footer button (Fermer) */
+.razafi-force-dark #transactionsModalFinal .mt-4 .py-2 {
+  background: #0b1220 !important;
+  color: #f8fafc !important;
+  border: 1px solid rgba(245,158,11,0.9) !important; /* gold rim */
+  box-shadow: 0 6px 18px rgba(0,0,0,0.45) !important;
+}
+
+/* Ensure scrollbar/thumb contrast inside modal list */
+.razafi-force-dark #transactionsModalFinal .transactions-dialog ::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.06) !important;
+}
+
 
 <style id="razafi-cleaned-styles">
 
