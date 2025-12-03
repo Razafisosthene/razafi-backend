@@ -6,8 +6,26 @@
   <title>Achat code WiFi RAZAFI</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-  <style>
-    body { font-family: 'Inter', sans-serif; }
+  
+<!-- Paste this CSS right after the toggle block (or in <head>) -->
+
+
+
+<!-- Center modal dialog: responsive sizing -->
+
+
+<!-- START: razafi manual dark overrides (scoped to .razafi-force-dark) -->
+
+
+<!-- END: razafi manual dark overrides -->
+
+
+<style id="razafi-cleaned-styles">
+
+
+/* === Consolidated styles === */
+
+body { font-family: 'Inter', sans-serif; }
     .toast.show {
       visibility: visible;
       animation: slidein 0.5s ease-out, fadeout 0.5s ease-in 4s;
@@ -165,10 +183,7 @@ html.dark-mode .floating-toggle .toggle-knob { transform: translateY(-50%) trans
 /* keep small smooth transitions for theme change */
 html, body, header, .plan-card { transition: background 240ms ease, color 240ms ease; }
 
-</style>
-<!-- Paste this CSS right after the toggle block (or in <head>) -->
-<style id="razafi-contrast-fixes">
-  /* Improve readability for the plans intro line */
+/* Improve readability for the plans intro line */
   #plans p.text-center.text-sm {
     color: #374151 !important;                /* darker on light bg */
     background: rgba(255,255,255,0.0);        /* keep transparent by default */
@@ -244,12 +259,8 @@ html, body, header, .plan-card { transition: background 240ms ease, color 240ms 
       background: rgba(255,255,255,0.04) !important;
     }
   }
-</style>
 
-
-<!-- Center modal dialog: responsive sizing -->
-<style>
-  /* Target the dialog inside transactionsModalFinal */
+/* Target the dialog inside transactionsModalFinal */
   #transactionsModalFinal > div > .transactions-dialog,
   #transactionsModalFinal .transactions-dialog {
     position: absolute;
@@ -269,11 +280,7 @@ html, body, header, .plan-card { transition: background 240ms ease, color 240ms 
       transform: translate(-50%, -45%);
     }
   }
-</style>
 
-<!-- START: razafi manual dark overrides (scoped to .razafi-force-dark) -->
-
-<style id="razafi-force-dark-injected">
 /* Global surfaces */
 .razafi-force-dark body { background: #0b1220 !important; color: #e6eef8 !important; }
 .razafi-force-dark header { background: #071022 !important; color: #e6eef8 !important; box-shadow: none; }
@@ -360,8 +367,9 @@ html, body, header, .plan-card { transition: background 240ms ease, color 240ms 
   background: rgba(0,0,0,0.7) !important;
 }
 
+/* === End consolidated styles === */
+
 </style>
-<!-- END: razafi manual dark overrides -->
 </head>
 <body class="bg-gray-100 text-gray-800">
 
