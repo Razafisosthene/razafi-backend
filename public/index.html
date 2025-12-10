@@ -503,6 +503,30 @@ html, body, header, .plan-card { transition: background 240ms ease, color 240ms 
 /* === End consolidated styles === */
 
 </style>
+
+<!-- BEGIN RAZAFI_TOUCH_FIX: ensure 'Choisir' button works on touch devices -->
+<style>
+/* Ensure choose button is topmost and can receive touch */
+.choose-btn {
+  position: relative !important;
+  z-index: 99999 !important;
+  pointer-events: auto !important;
+  -webkit-tap-highlight-color: rgba(0,0,0,0.12);
+  touch-action: manipulation;
+  min-width: 84px;
+  padding: 10px 14px;
+}
+
+/* Safety: when device is touch-only, always show choose button */
+@media (hover: none), (pointer: coarse), (max-width: 680px) {
+  .choose-btn { display: inline-block !important; }
+}
+
+/* Helpful debug helper (comment out after testing)
+* { outline: 1px dashed rgba(255,0,0,0.08) !important; }
+*/
+</style>
+<!-- END RAZAFI_TOUCH_FIX -->
 </head>
 <body class="bg-gray-100 text-gray-800">
 
@@ -2228,6 +2252,121 @@ document.addEventListener('DOMContentLoaded', function(){
 </script>
 <!-- END GROUPED TRANSACTIONS -->
 
+
+<!-- BEGIN RAZAFI_TOUCH_FIX_JS: robust touch/click handling and theme toggle sync -->
+<script>
+/* Robust binding for 'Choisir' buttons: handle both touchend and click, but only fire once */
+(function(){
+  function handleChooseClick(e){
+    if (e.__handled) return;
+    e.__handled = true;
+    try { e.preventDefault && e.preventDefault(); } catch(_){}
+    try { e.stopPropagation && e.stopPropagation(); } catch(_){}
+
+    var btn = e.currentTarget || e.target;
+    // If there's an inline onclick, call it
+    try {
+      if (btn && btn.hasAttribute && btn.hasAttribute('onclick')) {
+        // create a safe function invocation of the inline handler
+        var fn = btn.getAttribute('onclick');
+        // try to call it as a function with the event
+        try { 
+          // eslint-disable-next-line no-eval
+          (new Function('event', fn))(e);
+          return;
+        } catch(err) {
+          // fallback: try direct onclick property if available
+          if (typeof btn.onclick === 'function') {
+            btn.onclick.call(btn, e);
+            return;
+          }
+        }
+      }
+      // If button has onclick property assigned
+      if (typeof btn.onclick === 'function') {
+        btn.onclick.call(btn, e);
+        return;
+      }
+      // Otherwise dispatch a simple click event as fallback
+      var ev = document.createEvent('MouseEvents');
+      ev.initMouseEvent('click', true, true, window);
+      btn.dispatchEvent(ev);
+    } catch(err){
+      console.error('handleChooseClick error', err);
+    }
+  }
+
+  function bindAll() {
+    var buttons = document.querySelectorAll('.choose-btn');
+    buttons.forEach(function(b){
+      b.removeEventListener('touchend', handleChooseClick);
+      b.removeEventListener('click', handleChooseClick);
+      try {
+        b.addEventListener('touchend', handleChooseClick, {passive:false});
+      } catch(e){
+        // older browsers may not accept options object
+        b.addEventListener('touchend', handleChooseClick, false);
+      }
+      b.addEventListener('click', handleChooseClick, false);
+      b.style.pointerEvents = 'auto';
+      b.style.zIndex = '99999';
+      if (!b.style.position) b.style.position = 'relative';
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bindAll);
+  } else {
+    bindAll();
+  }
+
+  // Re-bind if new plan-cards are inserted dynamically:
+  try {
+    var obs = new MutationObserver(bindAll);
+    obs.observe(document.body, { childList: true, subtree: true });
+  } catch(e){}
+
+  /* Theme toggle sync - replace '#razafi-theme-toggle' with your toggle ID if different */
+  var toggle = document.getElementById('razafi-theme-toggle') || document.querySelector('.razafi-theme-toggle');
+  function updateToggleVisual(isDark) {
+    if (!toggle) return;
+    toggle.setAttribute('aria-pressed', isDark ? 'true' : 'false');
+    toggle.classList.toggle('on', !!isDark);
+  }
+  function applyTheme(theme) {
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+    updateToggleVisual(theme === 'dark');
+    try { localStorage.setItem('razafi_theme', theme); } catch(e){}
+  }
+  try {
+    var saved = null;
+    try { saved = localStorage.getItem('razafi_theme'); } catch(e){}
+    if (!saved) {
+      saved = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    applyTheme(saved);
+    if (toggle) {
+      toggle.addEventListener('click', function(e){
+        var isDark = document.documentElement.classList.toggle('dark');
+        applyTheme(isDark ? 'dark' : 'light');
+      }, false);
+    }
+    // Watch for class changes to keep toggle visual in sync
+    try {
+      var mo = new MutationObserver(function(){
+        var isDark = document.documentElement.classList.contains('dark');
+        updateToggleVisual(isDark);
+      });
+      mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    } catch(e){}
+  } catch(e){ console.warn('theme sync init failed', e); }
+})();
+</script>
+<!-- END RAZAFI_TOUCH_FIX_JS -->
 </body>
 
 </html>
