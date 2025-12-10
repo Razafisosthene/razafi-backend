@@ -504,29 +504,23 @@ html, body, header, .plan-card { transition: background 240ms ease, color 240ms 
 
 </style>
 
-<!-- BEGIN RAZAFI_TOUCH_FIX: ensure 'Choisir' button works on touch devices -->
-<style>
-/* Ensure choose button is topmost and can receive touch */
-.choose-btn {
-  position: relative !important;
-  z-index: 99999 !important;
-  pointer-events: auto !important;
-  -webkit-tap-highlight-color: rgba(0,0,0,0.12);
-  touch-action: manipulation;
-  min-width: 84px;
-  padding: 10px 14px;
-}
+<!-- RAZAFI: touch-friendly choose button styles (safe, minimal) -->
 
-/* Safety: when device is touch-only, always show choose button */
-@media (hover: none), (pointer: coarse), (max-width: 680px) {
+<!-- RAZAFI: touch-friendly choose button (hidden by default, visible on hover or touch devices) -->
+<style id="razafi-touch-style">
+/* Hidden by default so desktop hover reveal still works */
+.choose-btn { display: none !important; }
+
+/* Reveal on hover or focus-within for pointer devices */
+.plan-card:hover .choose-btn,
+.plan-card:focus-within .choose-btn { display: inline-block !important; }
+
+/* For touch devices (no hover) always show choose button for direct tap */
+@media (hover: none), (pointer: coarse) {
   .choose-btn { display: inline-block !important; }
 }
-
-/* Helpful debug helper (comment out after testing)
-* { outline: 1px dashed rgba(255,0,0,0.08) !important; }
-*/
 </style>
-<!-- END RAZAFI_TOUCH_FIX -->
+
 </head>
 <body class="bg-gray-100 text-gray-800">
 
@@ -2253,120 +2247,162 @@ document.addEventListener('DOMContentLoaded', function(){
 <!-- END GROUPED TRANSACTIONS -->
 
 
-<!-- BEGIN RAZAFI_TOUCH_FIX_JS: robust touch/click handling and theme toggle sync -->
+<!-- RAZAFI: safe touch + theme fix -->
 <script>
-/* Robust binding for 'Choisir' buttons: handle both touchend and click, but only fire once */
 (function(){
-  function handleChooseClick(e){
-    if (e.__handled) return;
-    e.__handled = true;
-    try { e.preventDefault && e.preventDefault(); } catch(_){}
-    try { e.stopPropagation && e.stopPropagation(); } catch(_){}
+  'use strict';
 
-    var btn = e.currentTarget || e.target;
-    // If there's an inline onclick, call it
-    try {
-      if (btn && btn.hasAttribute && btn.hasAttribute('onclick')) {
-        // create a safe function invocation of the inline handler
-        var fn = btn.getAttribute('onclick');
-        // try to call it as a function with the event
-        try { 
-          // eslint-disable-next-line no-eval
-          (new Function('event', fn))(e);
-          return;
-        } catch(err) {
-          // fallback: try direct onclick property if available
-          if (typeof btn.onclick === 'function') {
-            btn.onclick.call(btn, e);
-            return;
+  function parseArgs(argsText){
+    if (!argsText || !argsText.trim()) return [];
+    var args = [];
+    var i = 0, len = argsText.length;
+    function skipSpaces(){
+      while(i<len && /\s/.test(argsText[i])) i++;
+    }
+    function parseValue(){
+      skipSpaces();
+      if (i>=len) return null;
+      var ch = argsText[i];
+      if (ch === '\'' || ch === '"'){
+        var quote = ch; i++;
+        var out = '';
+        while(i<len){
+          var c = argsText[i++];
+          if (c === '\\\\') {
+            if (i<len) {
+              var esc = argsText[i++];
+              if (esc === 'n') out += '\n';
+              else if (esc === 't') out += '\t';
+              else if (esc === 'r') out += '\r';
+              else out += esc;
+            }
+            continue;
           }
+          if (c === quote) break;
+          out += c;
+        }
+        return out;
+      }
+      var m = argsText.slice(i).match(/^(true|false|null|[-+]?\d+(\.\d+)?([eE][-+]?\d+)?)/);
+      if (m){
+        var token = m[1];
+        i += token.length;
+        if (token === 'true') return true;
+        if (token === 'false') return false;
+        if (token === 'null') return null;
+        var num = Number(token);
+        if (!isNaN(num)) return num;
+      }
+      var start = i;
+      while(i<len && argsText[i] !== ',') i++;
+      var raw = argsText.slice(start, i).trim();
+      if ((raw[0] === '"' && raw[raw.length-1] === '"') || (raw[0] === "'" && raw[raw.length-1] === "'")){
+        return raw.slice(1,-1);
+      }
+      return raw;
+    }
+
+    while(i < len){
+      skipSpaces();
+      if (i>=len) break;
+      var val = parseValue();
+      args.push(val);
+      skipSpaces();
+      if (argsText[i] === ',') { i++; continue; }
+      else break;
+    }
+    return args;
+  }
+
+  function handleChooseEvent(e){
+    try {
+      var target = e.target;
+      if (!target) return;
+      var btn = target.closest && target.closest('button, .choose-btn, .choisir');
+      if (!btn) return;
+      e.preventDefault && e.preventDefault();
+      e.stopPropagation && e.stopPropagation();
+
+      var onclickAttr = (btn.getAttribute && btn.getAttribute('onclick')) || '';
+      if (onclickAttr){
+        var m = onclickAttr.trim().match(/^([A-Za-z_$][\w$]*)\s*\(([\s\S]*)\)\s*;?$/);
+        if (m){
+          var fnName = m[1];
+          var argsText = m[2];
+          var fn = window[fnName];
+          if (typeof fn === 'function'){
+            var args = [];
+            try { args = parseArgs(argsText); } catch(parseErr){ console.warn('RAZAFI: arg parse failed, passing raw text as single arg', parseErr); args = [argsText]; }
+            try { fn.apply(null, args); return; } catch(callErr){ console.error('RAZAFI: error calling function', fnName, callErr); }
+          } else {
+            console.warn('RAZAFI: function \"'+fnName+'\" not found on window. onclick attr:', onclickAttr);
+          }
+        } else {
+          console.warn('RAZAFI: onclick attribute not in simple functionCall form, value=', onclickAttr);
         }
       }
-      // If button has onclick property assigned
-      if (typeof btn.onclick === 'function') {
-        btn.onclick.call(btn, e);
-        return;
+
+      if (typeof btn.onclick === 'function'){
+        try { btn.onclick.call(btn, e); return; } catch(err){ console.error('RAZAFI: btn.onclick error', err); }
       }
-      // Otherwise dispatch a simple click event as fallback
-      var ev = document.createEvent('MouseEvents');
-      ev.initMouseEvent('click', true, true, window);
-      btn.dispatchEvent(ev);
+
+      var ev = document.createEvent && document.createEvent('MouseEvents');
+      if (ev){
+        ev.initMouseEvent && ev.initMouseEvent('click', true, true, window);
+        try { btn.dispatchEvent(ev); } catch(err){ /* ignore */ }
+      }
     } catch(err){
-      console.error('handleChooseClick error', err);
+      console.error('RAZAFI: handleChooseEvent error', err);
     }
   }
 
-  function bindAll() {
-    var buttons = document.querySelectorAll('.choose-btn');
-    buttons.forEach(function(b){
-      b.removeEventListener('touchend', handleChooseClick);
-      b.removeEventListener('click', handleChooseClick);
-      try {
-        b.addEventListener('touchend', handleChooseClick, {passive:false});
-      } catch(e){
-        // older browsers may not accept options object
-        b.addEventListener('touchend', handleChooseClick, false);
+  try { document.addEventListener('click', handleChooseEvent, false); } catch(e){}
+  try { document.addEventListener('touchend', handleChooseEvent, {passive:false}); } catch(e){ document.addEventListener('touchend', handleChooseEvent, false); }
+
+  function wireThemeToggle(){
+    var selectors = ['#razafi-theme-toggle', '.razafi-theme-toggle', '#razafiIosToggleFloat', '#razafiIosToggleContainer', '[data-theme-toggle]', '.theme-toggle', '.toggle-theme', '#theme-toggle', '#razafilosToggleFloat'];
+    var toggle = null;
+    for (var i=0;i<selectors.length;i++){
+      var el = document.querySelector(selectors[i]);
+      if (el){ toggle = el; break; }
+    }
+    if (!toggle){
+      toggle = document.querySelector('[role=\"switch\"], [aria-pressed], [data-toggle]') || null;
+    }
+    if (!toggle) return null;
+
+    function applyTheme(theme){
+      if (theme === 'dark') document.documentElement.classList.add('dark');
+      else document.documentElement.classList.remove('dark');
+      try { localStorage.setItem('razafi_theme', theme); } catch(e){}
+      try { toggle.setAttribute('aria-pressed', theme === 'dark' ? 'true' : 'false'); toggle.classList.toggle('on', theme === 'dark'); } catch(e){}
+    }
+
+    try {
+      var saved = localStorage.getItem('razafi_theme');
+      if (saved) applyTheme(saved);
+      else {
+        var preferDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        applyTheme(preferDark ? 'dark' : 'light');
       }
-      b.addEventListener('click', handleChooseClick, false);
-      b.style.pointerEvents = 'auto';
-      b.style.zIndex = '99999';
-      if (!b.style.position) b.style.position = 'relative';
-    });
-  }
+    } catch(e){}
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bindAll);
-  } else {
-    bindAll();
-  }
-
-  // Re-bind if new plan-cards are inserted dynamically:
-  try {
-    var obs = new MutationObserver(bindAll);
-    obs.observe(document.body, { childList: true, subtree: true });
-  } catch(e){}
-
-  /* Theme toggle sync - replace '#razafi-theme-toggle' with your toggle ID if different */
-  var toggle = document.getElementById('razafi-theme-toggle') || document.querySelector('.razafi-theme-toggle');
-  function updateToggleVisual(isDark) {
-    if (!toggle) return;
-    toggle.setAttribute('aria-pressed', isDark ? 'true' : 'false');
-    toggle.classList.toggle('on', !!isDark);
-  }
-  function applyTheme(theme) {
-    if (theme === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-    updateToggleVisual(theme === 'dark');
-    try { localStorage.setItem('razafi_theme', theme); } catch(e){}
-  }
-  try {
-    var saved = null;
-    try { saved = localStorage.getItem('razafi_theme'); } catch(e){}
-    if (!saved) {
-      saved = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-    }
-    applyTheme(saved);
-    if (toggle) {
-      toggle.addEventListener('click', function(e){
+    try {
+      toggle.addEventListener('click', function(ev){
+        ev && ev.preventDefault && ev.preventDefault();
+        ev && ev.stopPropagation && ev.stopPropagation();
         var isDark = document.documentElement.classList.toggle('dark');
         applyTheme(isDark ? 'dark' : 'light');
       }, false);
-    }
-    // Watch for class changes to keep toggle visual in sync
-    try {
-      var mo = new MutationObserver(function(){
-        var isDark = document.documentElement.classList.contains('dark');
-        updateToggleVisual(isDark);
-      });
-      mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
     } catch(e){}
-  } catch(e){ console.warn('theme sync init failed', e); }
-})();
+
+    return toggle;
+  }
+
+  wireThemeToggle();
+
+})(); 
 </script>
-<!-- END RAZAFI_TOUCH_FIX_JS -->
 </body>
 
 </html>
