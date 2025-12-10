@@ -920,7 +920,7 @@ html.razafi-force-dark .toast { background: rgba(10,10,10,0.88) !important; colo
 
 <section id="plans" class="py-6" style="padding-top: 4.5rem;">
   <h2 class="text-xl font-semibold text-center mb-2">📦 Plans WiFi disponibles</h2>
-  <p class="text-center text-sm text-gray-600 mb-4">Paiement sécurisé via <strong>MVola</strong> • Cliquez sur un plan pour acheter un code.</p>
+  <p class="text-center text-sm text-gray-600 mb-4">Paiement sécurisé via <strong>MVola</strong> • Cliquez sur “Choisir” pour acheter un code.</p>
 <div class="flex justify-center mt-2 mb-4">
   <img src="mvola.png" alt="Logo MVola" style="height: 54px; display: block;" />
 </div>
@@ -931,42 +931,42 @@ html.razafi-force-dark .toast { background: rgba(10,10,10,0.88) !important; colo
     <div class="plan-card plan-limited p-6 rounded-xl w-full max-w-sm">
       <h3 class="font-semibold text-lg">📆 1 Jour – 1 Go</h3>
       <p class="text-sm text-blue-700">1000 Ar – Pour une utilisation rapide.</p>
-      
+      <button class="choose-btn mt-4 px-4 py-2 bg-blue-600 text-white rounded" onclick="handlePayment('1 Jour - 1 Go - 1000 Ar')">Choisir</button>
     </div>
 
     <!-- LIMITED: 7 Jours – 5 Go -->
     <div class="plan-card plan-limited-warm p-6 rounded-xl w-full max-w-sm">
       <h3 class="font-semibold text-lg">📆 7 Jours – 5 Go</h3>
       <p class="text-sm text-orange-700">5000 Ar – Pour une semaine complète.</p>
-      
+      <button class="choose-btn mt-4 px-4 py-2 bg-orange-600 text-white rounded" onclick="handlePayment('7 Jours - 5 Go - 5000 Ar')">Choisir</button>
     </div>
 
     <!-- LIMITED: 30 Jours – 20 Go -->
     <div class="plan-card plan-limited-purple p-6 rounded-xl w-full max-w-sm">
       <h3 class="font-semibold text-lg">📆 30 Jours – 20 Go</h3>
       <p class="text-sm text-purple-700">15000 Ar – Pour le mois entier.</p>
-      
+      <button class="choose-btn mt-4 px-4 py-2 bg-purple-600 text-white rounded" onclick="handlePayment('30 Jours - 20 Go - 15000 Ar')">Choisir</button>
     </div>
 
     <!-- UNLIMITED: 2 Heures – Illimité (Mint Soft Green) -->
     <div class="plan-card plan-unlimited-2h p-6 rounded-xl w-full max-w-sm">
       <h3 class="font-semibold text-lg">⏱️ 2 Heures – Illimité</h3>
       <p class="text-sm">2000 Ar – Accès illimité pendant 2 heures.</p>
-      
+      <button class="choose-btn mt-4 px-4 py-2 bg-green-600 text-white rounded" onclick="handlePayment('2 Heures - ILLIMITE - 2000 Ar')">Choisir</button>
     </div>
 
     <!-- UNLIMITED: 4 Heures – Illimité (Aqua Pastel) -->
     <div class="plan-card plan-unlimited-4h p-6 rounded-xl w-full max-w-sm">
       <h3 class="font-semibold text-lg">⏱️ 4 Heures – Illimité</h3>
       <p class="text-sm">3500 Ar – Accès illimité pendant 4 heures.</p>
-      
+      <button class="choose-btn mt-4 px-4 py-2 bg-teal-600 text-white rounded" onclick="handlePayment('4 Heures - ILLIMITE - 3500 Ar')">Choisir</button>
     </div>
 
     <!-- UNLIMITED: 6 Heures – Illimité (Sage Green) -->
     <div class="plan-card plan-unlimited-6h p-6 rounded-xl w-full max-w-sm">
       <h3 class="font-semibold text-lg">⏱️ 6 Heures – Illimité</h3>
       <p class="text-sm">7000 Ar – Accès illimité pendant 6 heures.</p>
-      
+      <button class="choose-btn mt-4 px-4 py-2 bg-emerald-600 text-white rounded" onclick="handlePayment('6 Heures - ILLIMITE - 7000 Ar')">Choisir</button>
     </div>
 
   </div>
@@ -2227,36 +2227,6 @@ document.addEventListener('DOMContentLoaded', function(){
 })();
 </script>
 <!-- END GROUPED TRANSACTIONS -->
-
-
-<!-- Minimal: make plan cards clickable and call existing handlePayment(plan) -->
-<script>
-(function(){
-  function attachCard(el, plan) {
-    if(!el) return;
-    // keep visual and markup unchanged, only add interaction
-    el.setAttribute('role','button');
-    el.setAttribute('tabindex','0');
-    el.style.cursor = 'pointer';
-    el.addEventListener('click', function(e){
-      if(e && e.target && (e.target.tagName === 'A' || e.target.tagName === 'BUTTON' || e.target.closest('a'))) return;
-      try { handlePayment(plan); } catch(err) { console.error('handlePayment not available', err); }
-    });
-    el.addEventListener('keydown', function(e){
-      if(e.key === 'Enter' || e.key === ' ') { e.preventDefault(); try { handlePayment(plan); } catch(err){ console.error(err); } }
-    });
-  }
-  function init(){
-    attachCard(document.querySelector('.plan-limited'), '1 Jour - 1 Go - 1000 Ar');
-    attachCard(document.querySelector('.plan-limited-warm'), '7 Jours - 5 Go - 5000 Ar');
-    attachCard(document.querySelector('.plan-limited-purple'), '30 Jours - 20 Go - 15000 Ar');
-    attachCard(document.querySelector('.plan-unlimited-2h'), '2 Heures - ILLIMITE - 2000 Ar');
-    attachCard(document.querySelector('.plan-unlimited-4h'), '4 Heures - ILLIMITE - 3500 Ar');
-    attachCard(document.querySelector('.plan-unlimited-6h'), '6 Heures - ILLIMITE - 7000 Ar');
-  }
-  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
-})();
-</script>
 
 </body>
 
