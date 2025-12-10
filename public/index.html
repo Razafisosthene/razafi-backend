@@ -504,23 +504,18 @@ html, body, header, .plan-card { transition: background 240ms ease, color 240ms 
 
 </style>
 
-<!-- RAZAFI: touch-friendly choose button styles (safe, minimal) -->
 
-<!-- RAZAFI: touch-friendly choose button (hidden by default, visible on hover or touch devices) -->
 <style id="razafi-touch-style">
-/* Hidden by default so desktop hover reveal still works */
+/* Hidden by default so desktop hover reveal works exactly as before */
 .choose-btn { display: none !important; }
 
-/* Reveal on hover or focus-within for pointer devices */
+/* Original desktop behavior — reveal on hover or keyboard focus */
 .plan-card:hover .choose-btn,
 .plan-card:focus-within .choose-btn { display: inline-block !important; }
 
-/* For touch devices (no hover) always show choose button for direct tap */
-@media (hover: none), (pointer: coarse) {
-  .choose-btn { display: inline-block !important; }
-}
+/* When JS marks a card as active for touch, reveal its button */
+.plan-card.razafi-touch-active .choose-btn { display: inline-block !important; }
 </style>
-
 </head>
 <body class="bg-gray-100 text-gray-800">
 
@@ -2247,160 +2242,111 @@ document.addEventListener('DOMContentLoaded', function(){
 <!-- END GROUPED TRANSACTIONS -->
 
 
-<!-- RAZAFI: safe touch + theme fix -->
+<!-- RAZAFI: touch-friendly two-tap behavior (restore original visual UX) -->
 <script>
 (function(){
   'use strict';
 
-  function parseArgs(argsText){
-    if (!argsText || !argsText.trim()) return [];
-    var args = [];
-    var i = 0, len = argsText.length;
-    function skipSpaces(){
-      while(i<len && /\s/.test(argsText[i])) i++;
-    }
-    function parseValue(){
-      skipSpaces();
-      if (i>=len) return null;
-      var ch = argsText[i];
-      if (ch === '\'' || ch === '"'){
-        var quote = ch; i++;
-        var out = '';
-        while(i<len){
-          var c = argsText[i++];
-          if (c === '\\\\') {
-            if (i<len) {
-              var esc = argsText[i++];
-              if (esc === 'n') out += '\n';
-              else if (esc === 't') out += '\t';
-              else if (esc === 'r') out += '\r';
-              else out += esc;
+  function callInlineOnclick(btn){
+    try {
+      var onclickAttr = (btn.getAttribute && btn.getAttribute('onclick')) || '';
+      if (!onclickAttr) return false;
+      var m = onclickAttr.trim().match(/^([A-Za-z_$][\w$]*)\s*\(([^\)]*)\)\s*;?$/);
+      if (!m) return false;
+      var fnName = m[1], argsText = m[2];
+      var fn = window[fnName];
+      if (typeof fn !== 'function') {
+        console.warn('RAZAFI: function not found:', fnName);
+        return false;
+      }
+      function parseArgs(txt){
+        if (!txt || !txt.trim()) return [];
+        var i=0, len=txt.length, out=[];
+        function skip(){ while(i<len && /\s/.test(txt[i])) i++; }
+        function parseVal(){
+          skip(); if (i>=len) return null;
+          var ch = txt[i];
+          if (ch === "'" || ch === '"'){
+            var q = ch; i++; var s='';
+            while(i<len){
+              var c = txt[i++]; if (c === '\\' && i<len){ s+=txt[i++]; continue; }
+              if (c === q) break; s+=c;
             }
-            continue;
+            return s;
           }
-          if (c === quote) break;
-          out += c;
+          var rem = txt.slice(i).match(/^(true|false|null|[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)/);
+          if (rem){ i += rem[0].length; var t = rem[0]; if (t==='true') return true; if (t==='false') return false; if (t==='null') return null; var n = Number(t); if (!isNaN(n)) return n; }
+          var start=i; while(i<len && txt[i] !== ',') i++; return txt.slice(start,i).trim();
         }
+        while(i < len){ skip(); if (i>=len) break; out.push(parseVal()); skip(); if (txt[i]===','){ i++; continue; } else break; }
         return out;
       }
-      var m = argsText.slice(i).match(/^(true|false|null|[-+]?\d+(\.\d+)?([eE][-+]?\d+)?)/);
-      if (m){
-        var token = m[1];
-        i += token.length;
-        if (token === 'true') return true;
-        if (token === 'false') return false;
-        if (token === 'null') return null;
-        var num = Number(token);
-        if (!isNaN(num)) return num;
-      }
-      var start = i;
-      while(i<len && argsText[i] !== ',') i++;
-      var raw = argsText.slice(start, i).trim();
-      if ((raw[0] === '"' && raw[raw.length-1] === '"') || (raw[0] === "'" && raw[raw.length-1] === "'")){
-        return raw.slice(1,-1);
-      }
-      return raw;
+      var args = parseArgs(argsText);
+      fn.apply(null, args);
+      return true;
+    } catch(err){
+      console.error('RAZAFI callInlineOnclick error', err);
+      return false;
     }
-
-    while(i < len){
-      skipSpaces();
-      if (i>=len) break;
-      var val = parseValue();
-      args.push(val);
-      skipSpaces();
-      if (argsText[i] === ',') { i++; continue; }
-      else break;
-    }
-    return args;
   }
 
-  function handleChooseEvent(e){
+  function delegatedChooseHandler(e){
     try {
-      var target = e.target;
-      if (!target) return;
-      var btn = target.closest && target.closest('button, .choose-btn, .choisir');
+      var btn = e.target && e.target.closest && e.target.closest('button.choose-btn, button.choisir, .choose-btn');
       if (!btn) return;
       e.preventDefault && e.preventDefault();
       e.stopPropagation && e.stopPropagation();
 
-      var onclickAttr = (btn.getAttribute && btn.getAttribute('onclick')) || '';
-      if (onclickAttr){
-        var m = onclickAttr.trim().match(/^([A-Za-z_$][\w$]*)\s*\(([\s\S]*)\)\s*;?$/);
-        if (m){
-          var fnName = m[1];
-          var argsText = m[2];
-          var fn = window[fnName];
-          if (typeof fn === 'function'){
-            var args = [];
-            try { args = parseArgs(argsText); } catch(parseErr){ console.warn('RAZAFI: arg parse failed, passing raw text as single arg', parseErr); args = [argsText]; }
-            try { fn.apply(null, args); return; } catch(callErr){ console.error('RAZAFI: error calling function', fnName, callErr); }
-          } else {
-            console.warn('RAZAFI: function \"'+fnName+'\" not found on window. onclick attr:', onclickAttr);
-          }
-        } else {
-          console.warn('RAZAFI: onclick attribute not in simple functionCall form, value=', onclickAttr);
-        }
-      }
-
-      if (typeof btn.onclick === 'function'){
-        try { btn.onclick.call(btn, e); return; } catch(err){ console.error('RAZAFI: btn.onclick error', err); }
-      }
-
-      var ev = document.createEvent && document.createEvent('MouseEvents');
-      if (ev){
-        ev.initMouseEvent && ev.initMouseEvent('click', true, true, window);
-        try { btn.dispatchEvent(ev); } catch(err){ /* ignore */ }
-      }
+      if (callInlineOnclick(btn)) return;
+      if (typeof btn.onclick === 'function'){ try { btn.onclick.call(btn, e); return; } catch(err){ console.error(err); } }
+      try {
+        var ev = document.createEvent && document.createEvent('MouseEvents');
+        if (ev && ev.initMouseEvent){ ev.initMouseEvent('click', true, true, window); btn.dispatchEvent(ev); }
+      } catch(err){}
     } catch(err){
-      console.error('RAZAFI: handleChooseEvent error', err);
+      console.error('RAZAFI delegatedChooseHandler', err);
     }
   }
 
-  try { document.addEventListener('click', handleChooseEvent, false); } catch(e){}
-  try { document.addEventListener('touchend', handleChooseEvent, {passive:false}); } catch(e){ document.addEventListener('touchend', handleChooseEvent, false); }
+  function setupTouchReveal(){
+    var isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0 || navigator.msMaxTouchPoints > 0;
+    if (!isTouch) return;
 
-  function wireThemeToggle(){
-    var selectors = ['#razafi-theme-toggle', '.razafi-theme-toggle', '#razafiIosToggleFloat', '#razafiIosToggleContainer', '[data-theme-toggle]', '.theme-toggle', '.toggle-theme', '#theme-toggle', '#razafilosToggleFloat'];
-    var toggle = null;
-    for (var i=0;i<selectors.length;i++){
-      var el = document.querySelector(selectors[i]);
-      if (el){ toggle = el; break; }
-    }
-    if (!toggle){
-      toggle = document.querySelector('[role=\"switch\"], [aria-pressed], [data-toggle]') || null;
-    }
-    if (!toggle) return null;
-
-    function applyTheme(theme){
-      if (theme === 'dark') document.documentElement.classList.add('dark');
-      else document.documentElement.classList.remove('dark');
-      try { localStorage.setItem('razafi_theme', theme); } catch(e){}
-      try { toggle.setAttribute('aria-pressed', theme === 'dark' ? 'true' : 'false'); toggle.classList.toggle('on', theme === 'dark'); } catch(e){}
-    }
-
-    try {
-      var saved = localStorage.getItem('razafi_theme');
-      if (saved) applyTheme(saved);
-      else {
-        var preferDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-        applyTheme(preferDark ? 'dark' : 'light');
+    document.addEventListener('touchend', function(e){
+      var target = e.target;
+      if (target.closest && target.closest('button.choose-btn, button.choisir, .choose-btn')) {
+        return;
       }
-    } catch(e){}
+      var card = target.closest && target.closest('.plan-card');
+      if (!card) {
+        var active = document.querySelector('.plan-card.razafi-touch-active');
+        if (active) active.classList.remove('razafi-touch-active');
+        return;
+      }
+      if (card.classList.contains('razafi-touch-active')){
+        return;
+      }
+      card.classList.add('razafi-touch-active');
+      var others = document.querySelectorAll('.plan-card.razafi-touch-active');
+      others.forEach(function(o){ if (o !== card) o.classList.remove('razafi-touch-active'); });
+      e.preventDefault && e.preventDefault();
+      e.stopPropagation && e.stopPropagation();
+      setTimeout(function(){ try{ card.classList.remove('razafi-touch-active'); }catch(_){} }, 6000);
+    }, {passive:false});
 
-    try {
-      toggle.addEventListener('click', function(ev){
-        ev && ev.preventDefault && ev.preventDefault();
-        ev && ev.stopPropagation && ev.stopPropagation();
-        var isDark = document.documentElement.classList.toggle('dark');
-        applyTheme(isDark ? 'dark' : 'light');
-      }, false);
-    } catch(e){}
+    try { document.addEventListener('touchend', delegatedChooseHandler, {passive:false}); } catch(e){ document.addEventListener('touchend', delegatedChooseHandler, false); }
+    document.addEventListener('click', delegatedChooseHandler, false);
 
-    return toggle;
+    document.addEventListener('click', function(e){
+      var card = e.target && e.target.closest && e.target.closest('.plan-card');
+      if (!card) {
+        var active = document.querySelector('.plan-card.razafi-touch-active');
+        if (active) active.classList.remove('razafi-touch-active');
+      }
+    }, false);
   }
 
-  wireThemeToggle();
-
+  setupTouchReveal();
 })(); 
 </script>
 </body>
