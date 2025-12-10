@@ -503,6 +503,23 @@ html, body, header, .plan-card { transition: background 240ms ease, color 240ms 
 /* === End consolidated styles === */
 
 </style>
+
+<!-- Fix: ensure "Choisir" buttons visible on touch devices -->
+<style>
+/* Show choose buttons on touch devices where :hover is unreliable */
+@media (hover: none), (pointer: coarse) {
+  .choose-btn, .chooseBtn, button.choose, .plan-card .choose-btn {
+    display: inline-block !important;
+    pointer-events: auto !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+  }
+  .plan-card:hover .choose-btn,
+  .plan-card:focus-within .choose-btn { display: inline-block !important; }
+}
+/* Ensure plan containers allow pointer events */
+.plans-container, .plans-container * { pointer-events: auto !important; }
+</style>
 </head>
 <body class="bg-gray-100 text-gray-800">
 
@@ -647,72 +664,8 @@ html, body, header, .plan-card { transition: background 240ms ease, color 240ms 
    - conservation des animations et classes existantes
 */
 (function(){
-// --- COMPATIBILITY HELPERS (injected) ---
-/* RAF polyfill for very old webviews */
-window.requestAnimationFrame = window.requestAnimationFrame
-  || window.webkitRequestAnimationFrame
-  || function(cb){ return setTimeout(cb, 16); };
-window.cancelAnimationFrame = window.cancelAnimationFrame
-  || window.webkitCancelAnimationFrame
-  || function(id){ clearTimeout(id); };
-
-/* Safe SVG setter to avoid innerHTML SVG quirks */
-function setKnobSVG(knobEl, svgString){
-  if (!knobEl) return;
-  try {
-    knobEl.innerHTML = svgString;
-    // ensure an SVG node exists after assignment
-    if (!knobEl.querySelector || !knobEl.querySelector('svg')) throw new Error('SVG not found');
-  } catch (e) {
-    knobEl.innerHTML = '';
-    var div = document.createElement('div');
-    div.innerHTML = svgString;
-    var svg = div.querySelector && div.querySelector('svg');
-    if (svg) knobEl.appendChild(svg);
-  }
-}
-
-/* Touchstart fallback for old devices so taps reliably trigger the switch.
-   Uses a small timeout to avoid double-firing alongside click events. */
-function attachTouchFallback(switchEl){
-  if (!switchEl) return;
-  try {
-    switchEl.addEventListener('touchstart', function(e){
-      // prevent default so some webviews don't synthesize an extra click immediately
-      e.preventDefault && e.preventDefault();
-      setTimeout(function(){ try{ switchEl.click(); }catch(_){} }, 10);
-    }, { passive: false });
-  } catch(_) {}
-}
-
-/* Keyboard fallback that supports older browsers reporting 'Spacebar' or keyCode */
-function attachKeyboardFallback(switchEl){
-  if (!switchEl) return;
-  try {
-    switchEl.addEventListener('keydown', function(e){
-      var key = e.key || e.keyIdentifier || e.keyCode;
-      if (key === 'Enter' || key === ' ' || key === 'Spacebar' || key === 13 || key === 32) {
-        e.preventDefault && e.preventDefault();
-        try{ switchEl.click(); }catch(_){} 
-      }
-    });
-  } catch(_) {}
-}
-// --- end compatibility helpers ---
-
-/* Safe fetch-get helper: only uses fetch when available, otherwise falls back */
-function safeFetchGet(src){
-  if (!window.fetch) {
-    return Promise.reject(new Error('fetch-not-supported'));
-  }
-  return fetch(src, { method: 'GET', cache: 'no-store' });
-}
-
-
   const wrapper = document.getElementById('razafiIosToggleFloat');
   const switchEl = document.getElementById('iosProSwitchFloat');
-try{ attachTouchFallback(switchEl); attachKeyboardFallback(switchEl); }catch(_){ }
-
   const knobEl = document.getElementById('iosProKnobFloat');
 
   if (!wrapper || !switchEl || !knobEl) return;
@@ -797,7 +750,7 @@ html.razafi-force-dark .toast { background: rgba(10,10,10,0.88) !important; colo
       ensureDarkOverrides();
       switchEl.setAttribute('aria-checked','true');
       if (animate) animateTo(KNOB_TRAVEL); else { pos = KNOB_TRAVEL; knobEl.style.transform = `translateX(${pos}px)`; }
-      setKnobSVG(knobEl, SVG_MOON);
+      knobEl.innerHTML = SVG_MOON;
     } else {
       document.documentElement.removeAttribute('data-theme');
       document.body && document.body.removeAttribute('data-theme');
@@ -806,7 +759,7 @@ html.razafi-force-dark .toast { background: rgba(10,10,10,0.88) !important; colo
       removeDarkOverrides();
       switchEl.setAttribute('aria-checked','false');
       if (animate) animateTo(0); else { pos = 0; knobEl.style.transform = `translateX(0px)`; }
-      setKnobSVG(knobEl, SVG_SUN);
+      knobEl.innerHTML = SVG_SUN;
     }
     savePref(eff);
     try { window.dispatchEvent(new CustomEvent('themechange',{detail:{theme:eff}})); } catch(e){}
@@ -2292,6 +2245,77 @@ document.addEventListener('DOMContentLoaded', function(){
 </script>
 <!-- END GROUPED TRANSACTIONS -->
 
+
+<!-- Robust Choose-button handlers for old phones -->
+<script>
+(function(){
+  function isChooseButton(el){
+    if(!el) return false;
+    try {
+      if (el.matches && (el.matches('.choose-btn') || el.matches('.chooseBtn') || el.matches('button.choose') )) return true;
+      if (el.getAttribute && el.getAttribute('data-action') === 'choose') return true;
+      var txt = (el.innerText || el.textContent || '').trim().toLowerCase();
+      if (txt === 'choisir' || txt.startsWith('choisir')) return true;
+    } catch(e){}
+    return false;
+  }
+
+  function handleChooseInteraction(ev){
+    try {
+      var target = ev.target && ev.target.closest ? ev.target.closest('button, a, [role="button"]') : ev.target;
+      if (!target) return;
+      if (!isChooseButton(target)) return;
+
+      if (target.__choosetap_inflight) return;
+      target.__choosetap_inflight = true;
+      setTimeout(function(){ target.__choosetap_inflight = false; }, 500);
+
+      if (target.disabled || target.getAttribute && target.getAttribute('aria-disabled') === 'true') {
+        return;
+      }
+
+      try {
+        var rect = target.getBoundingClientRect();
+        var cx = rect.left + rect.width/2;
+        var cy = rect.top + rect.height/2;
+        var topEl = document.elementFromPoint(cx, cy);
+        if (topEl && topEl !== target && !target.contains(topEl)) {
+          ev.preventDefault && ev.preventDefault();
+          ev.stopPropagation && ev.stopPropagation();
+          target.focus && target.focus();
+          setTimeout(function(){ try { target.click(); } catch(e){} }, 10);
+          return;
+        }
+      } catch(e){}
+
+      ev.preventDefault && ev.preventDefault();
+      ev.stopPropagation && ev.stopPropagation();
+      try { target.click(); } catch(e){
+        try {
+          var evt = document.createEvent('MouseEvents');
+          evt.initMouseEvent('click', true, true, window, 1, 0,0,0,0, false,false,false,false,0,null);
+          target.dispatchEvent(evt);
+        } catch(ex){}
+      }
+    } catch(e){}
+  }
+
+  document.addEventListener('click', function(e){ try { handleChooseInteraction(e); } catch(err){} }, true);
+  try { document.addEventListener('pointerdown', function(e){ try { handleChooseInteraction(e); } catch(err){} }, true); } catch(e){}
+  try { document.addEventListener('touchstart', function(e){ try { handleChooseInteraction(e); } catch(err){} }, { passive: false, capture: true }); } catch(e){}
+
+  // minimal CSS fallback to ensure visibility if classes differ
+  (function ensurePointerEvents(){
+    var styleId = 'ensure-choose-pointer-style';
+    if (document.getElementById(styleId)) return;
+    var css = '.choose-btn, .chooseBtn, button.choose { pointer-events: auto !important; z-index: 9999 !important; } .plans-container * { pointer-events: auto !important; }';
+    var s = document.createElement('style'); s.id = styleId; s.textContent = css;
+    (document.head || document.documentElement).appendChild(s);
+  })();
+
+})();
+</script>
+<!-- End choose handler -->
 </body>
 
 </html>
