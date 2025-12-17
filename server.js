@@ -13,17 +13,89 @@ import path from "path";
 import { fileURLToPath } from "url";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import cookieParser from "cookie-parser";
+import bcrypt from "bcryptjs";
 
+// helper: hash session token
+function hashToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+// helper: generate random session token
+function generateSessionToken() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+// ===============================
+// REQUIRE ADMIN MIDDLEWARE
+// ===============================
+async function requireAdmin(req, res, next) {
+  try {
+    const token = req.cookies?.admin_session;
+    if (!token) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+
+    const tokenHash = hashToken(token);
+
+    const { data: session, error } = await supabase
+      .from("admin_sessions")
+      .select(`
+        id,
+        expires_at,
+        revoked_at,
+        admin_user_id,
+        admin_users ( id, email, is_active )
+      `)
+      .eq("session_token_hash", tokenHash)
+      .single();
+
+    if (error || !session) {
+      return res.status(401).json({ error: "Invalid session" });
+    }
+
+    if (session.revoked_at) {
+      return res.status(401).json({ error: "Session revoked" });
+    }
+
+    if (new Date(session.expires_at) < new Date()) {
+      return res.status(401).json({ error: "Session expired" });
+    }
+
+    if (!session.admin_users?.is_active) {
+      return res.status(403).json({ error: "Admin disabled" });
+    }
+
+    // attach admin to request
+    req.admin = {
+      id: session.admin_users.id,
+      email: session.admin_users.email,
+      session_id: session.id
+    };
+
+    next();
+  } catch (err) {
+    console.error("[ADMIN AUTH ERROR]", err);
+    return res.status(500).json({ error: "Auth error" });
+  }
+}
 
 dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
+
+
+
 // allow Express to trust X-Forwarded-For (Render / Cloudflare / proxies)
 app.set("trust proxy", 1);
 app.use(express.json());
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: true }));
+// ===== Context detector: OLD vs NEW system =====
+app.use((req, res, next) => {
+  req.isNewSystem = req.path.startsWith("/api/new/");
+  next();
+});
 app.use(cors());
 const PORT = process.env.PORT || 10000;
 
@@ -102,53 +174,128 @@ const isBlockedPageRequest = (req) => {
 };
 
 // --- BLOCKING MIDDLEWARE (AP-MAC only - Option A) ---
-// IMPORTANT: this middleware should be placed BEFORE express.static(...) so blocked clients are redirected first.
+// IMPORTANT: this middleware must be placed BEFORE express.static(...)
+
 app.use((req, res, next) => {
   try {
-    // --- EARLY ALLOW LIST ---
-    // 1) Allow all API calls (so payment endpoints, AJAX, webhooks, etc. are reachable)
-    if (req.path && req.path.startsWith("/api/")) return next();
+    // ==================================================
+    // EARLY ALLOW LIST (DO NOT BLOCK THESE)
+    // ==================================================
 
-    // 2) Allow requests for the block page assets or static files used by bloque page
-    if (isBlockedPageRequest(req)) return next();
+    /**
+     * 1) Allow ALL API calls
+     *    - user API
+     *    - admin auth
+     *    - AJAX / polling
+     *    - webhooks
+     */
+    if (req.path && req.path.startsWith("/api/")) {
+      return next();
+    }
 
-    // 3) Allow specific IPs (healthchecks, admin IPs) defined in EXTRA_ALLOWED
-    const remote = (req.headers['x-forwarded-for'] || req.ip || req.socket?.remoteAddress || '').toString();
-    const remoteFirst = remote.split(',')[0].trim();
-    if (extraAllowed.includes(remoteFirst) || extraAllowed.includes(req.ip)) return next();
+    /**
+     * 2) Allow ADMIN panel
+     *    Admin must be reachable OUTSIDE WiFi RAZAFI
+     */
+    if (req.path && req.path.startsWith("/admin")) {
+      return next();
+    }
 
-    // 4) Allow if ap_allowed cookie previously set
+    /**
+     * 3) Allow block page and its assets
+     */
+    if (isBlockedPageRequest(req)) {
+      return next();
+    }
+
+    /**
+     * 4) Allow specific IPs (healthchecks, admin IPs)
+     */
+    const remote =
+      (req.headers["x-forwarded-for"] ||
+        req.ip ||
+        req.socket?.remoteAddress ||
+        "").toString();
+
+    const remoteFirst = remote.split(",")[0].trim();
+
+    if (extraAllowed.includes(remoteFirst) || extraAllowed.includes(req.ip)) {
+      return next();
+    }
+
+    /**
+     * 5) Allow if short-lived AP cookie already set
+     */
     try {
       if (req.cookies && req.cookies.ap_allowed === "1") {
         return next();
       }
-    } catch (e) { /* ignore cookie parse errors */ }
+    } catch (_) {}
 
-    // 5) Normalize query value and allow if ap_mac present
+    /**
+     * 6) Check ap_mac presence (WiFi RAZAFI)
+     */
     normalizeApMac(req, res, () => {
       if (req.ap_mac) {
         try {
-          // set short-lived cookie so subsequent client requests show allowed state
-          res.cookie('ap_allowed', '1', { maxAge: 5 * 60 * 1000, httpOnly: true, secure: true, sameSite: 'lax' });
-        } catch (e) {}
+          res.cookie("ap_allowed", "1", {
+            maxAge: 5 * 60 * 1000,
+            httpOnly: true,
+            secure: true,
+            sameSite: "lax",
+          });
+        } catch (_) {}
         return next();
       }
 
-      // No AP MAC and not permitted -> redirect or 403
-      if (req.accepts && req.accepts('html')) {
-        return res.redirect('/bloque.html');
+      // ❌ Not on WiFi → block
+      if (req.accepts && req.accepts("html")) {
+        return res.redirect("/bloque.html");
       } else {
-        return res.status(403).send('Access blocked: connect to WiFi RAZAFI to continue.');
+        return res
+          .status(403)
+          .send("Access blocked: connect to WiFi RAZAFI to continue.");
       }
     });
-
   } catch (err) {
-    console.error('AP-MAC blocking middleware error', err);
-    // fail open to avoid taking the app down
+    console.error("AP-MAC blocking middleware error", err);
+    // Fail-open safety
     return next();
   }
 });
+
 // --- END BLOCKING MIDDLEWARE ---
+
+// ==================================================
+// HOSTNAME ROUTING (portal vs wifi)
+// MUST be BEFORE express.static()
+// ==================================================
+app.use((req, res, next) => {
+  const host = (req.hostname || "").toLowerCase();
+
+  // --- ADMIN (always accessible) ---
+  if (req.path.startsWith("/admin")) {
+    return next();
+  }
+
+  // --- NEW SYSTEM: portal.razafistore.com ---
+  if (host === "portal.razafistore.com") {
+    if (req.path === "/" || req.path === "/index.html") {
+      return res.sendFile(
+        path.join(__dirname, "public", "portal", "index.html")
+      );
+    }
+    return next();
+  }
+
+  // --- OLD SYSTEM: wifi.razafistore.com ---
+  if (host === "wifi.razafistore.com") {
+    return next();
+  }
+
+  // --- fallback ---
+  return next();
+});
 
 
 // serve static frontend from /public
@@ -261,6 +408,93 @@ if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
     auth: { persistSession: false },
   });
 }
+
+// ===============================
+// ADMIN AUTH — LOGIN
+// ===============================
+app.post("/api/admin/login", async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email et mot de passe requis" });
+    }
+
+    const { data: admin, error } = await supabase
+      .from("admin_users")
+      .select("*")
+      .eq("email", email.toLowerCase())
+      .single();
+
+    if (error || !admin) {
+      return res.status(401).json({ error: "Identifiants invalides" });
+    }
+
+    if (!admin.is_active) {
+      return res.status(403).json({ error: "Compte désactivé" });
+    }
+
+    const ok = await bcrypt.compare(password, admin.password_hash);
+    if (!ok) {
+      return res.status(401).json({ error: "Identifiants invalides" });
+    }
+
+    const token = generateSessionToken();
+    const tokenHash = hashToken(token);
+
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await supabase.from("admin_sessions").insert({
+      admin_user_id: admin.id,
+      session_token_hash: tokenHash,
+      expires_at: expiresAt.toISOString(),
+    });
+
+    await supabase
+      .from("admin_users")
+      .update({ last_login_at: new Date().toISOString() })
+      .eq("id", admin.id);
+
+    res.cookie("admin_session", token, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      expires: expiresAt,
+    });
+
+    return res.json({ ok: true, email: admin.email });
+  } catch (err) {
+    console.error("ADMIN LOGIN ERROR", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+// ===============================
+// ADMIN AUTH — LOGOUT
+// ===============================
+app.post("/api/admin/logout", requireAdmin, async (req, res) => {
+  try {
+    await supabase
+      .from("admin_sessions")
+      .update({ revoked_at: new Date().toISOString() })
+      .eq("id", req.admin.session_id);
+
+    res.clearCookie("admin_session");
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("ADMIN LOGOUT ERROR", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+// ===============================
+// ADMIN AUTH — ME
+// ===============================
+app.get("/api/admin/me", requireAdmin, async (req, res) => {
+  return res.json({
+    id: req.admin.id,
+    email: req.admin.email,
+  });
+});
+
 
 // ---------------------------------------------------------------------------
 // MAILER
@@ -723,6 +957,271 @@ function toISOStringMG(d) {
   return md.toISOString().replace("Z", "+03:00");
 }
 
+// ===== NEW SYSTEM: Purchase by plan =====
+app.post("/api/new/purchase", async (req, res) => {
+  try {
+    if (!req.isNewSystem) {
+      return res.status(404).json({ error: "Not found" });
+    }
+
+    const { plan_id } = req.body;
+    if (!plan_id) {
+      return res.status(400).json({ error: "Missing plan_id" });
+    }
+
+    // 1) Read plan from DB (source of truth)
+    const { data: plan, error: planErr } = await supabase
+      .from("plans")
+      .select("*")
+      .eq("id", plan_id)
+      .eq("is_active", true)
+      .single();
+
+    if (planErr || !plan) {
+      return res.status(400).json({ error: "Invalid or inactive plan" });
+    }
+
+    // 2) Determine pool from AP (to check saturation)
+    const apMac = req.query.ap_mac || req.body.ap_mac;
+    if (!apMac) {
+      return res.status(400).json({ error: "Missing ap_mac" });
+    }
+
+    const { data: apRow } = await supabase
+      .from("ap_registry")
+      .select("pool_id")
+      .eq("ap_mac", apMac)
+      .eq("is_active", true)
+      .single();
+
+    if (!apRow?.pool_id) {
+      return res.status(400).json({ error: "Unknown or inactive AP" });
+    }
+
+    // 3) Check saturation (BLOCK PURCHASE ONLY)
+    const { data: poolStats } = await supabase
+      .from("pool_live_stats")
+      .select("is_saturated")
+      .eq("pool_id", apRow.pool_id)
+      .single();
+
+    if (poolStats?.is_saturated) {
+      return res.status(423).json({
+        error: "SERVICE_SATURATED",
+        message: "Service momentanément saturé. Veuillez réessayer plus tard."
+      });
+    }
+
+    // 4) Initiate payment (MVola)
+    // IMPORTANT: amount is read from plan.price_ar (integer)
+    // Replace this with your existing MVola initiation function
+    const paymentResult = await initiateMvolaPayment({
+      amount: plan.price_ar,
+      description: plan.name
+    });
+
+    if (!paymentResult?.success) {
+      return res.status(402).json({ error: "Payment failed" });
+    }
+
+    // 5) Generate voucher code (backend only)
+    const voucherCode = "RAZAFI-" + crypto.randomBytes(4).toString("hex").toUpperCase();
+
+    // 6) Create voucher session (PENDING)
+    const { data: session, error: vsErr } = await supabase
+      .from("voucher_sessions")
+      .insert({
+        voucher_code: voucherCode,
+        plan_id: plan.id,
+        status: "pending"
+      })
+      .select()
+      .single();
+
+    if (vsErr) {
+      return res.status(500).json({ error: "Failed to create voucher session" });
+    }
+
+    // 7) Link voucher to plan (snapshot)
+    await supabase
+      .from("voucher_plan_links")
+      .insert({
+        voucher_code: voucherCode,
+        plan_id: plan.id,
+        plan_name_snapshot: plan.name
+      });
+
+    // 8) Return voucher (duration NOT started)
+    return res.json({
+      success: true,
+      voucher_code: voucherCode,
+      plan: {
+        name: plan.name,
+        duration_hours: plan.duration_hours,
+        data_mb: plan.data_mb,
+        max_devices: plan.max_devices
+      }
+    });
+
+  } catch (err) {
+    console.error("NEW purchase error:", err);
+    return res.status(500).json({ error: "Internal error" });
+  }
+});
+
+// ===== NEW SYSTEM: Authorize device & start voucher =====
+app.post("/api/new/authorize", async (req, res) => {
+  try {
+    if (!req.isNewSystem) {
+      return res.status(404).json({ error: "Not found" });
+    }
+
+    const { voucher_code, device_mac, ap_mac } = req.body;
+    if (!voucher_code || !device_mac || !ap_mac) {
+      return res.status(400).json({ error: "Missing parameters" });
+    }
+
+    // 1) Load voucher session + plan
+    const { data: session, error: sErr } = await supabase
+      .from("voucher_sessions")
+      .select("*, plans(*)")
+      .eq("voucher_code", voucher_code)
+      .single();
+
+    if (sErr || !session) {
+      return res.status(404).json({ error: "Invalid voucher" });
+    }
+
+    if (session.status === "blocked") {
+      return res.status(403).json({ error: "Voucher blocked" });
+    }
+
+    if (session.status === "expired") {
+      return res.status(403).json({ error: "Voucher expired" });
+    }
+
+    // 2) Resolve pool from AP
+    const { data: apRow } = await supabase
+      .from("ap_registry")
+      .select("pool_id")
+      .eq("ap_mac", ap_mac)
+      .eq("is_active", true)
+      .single();
+
+    if (!apRow?.pool_id) {
+      return res.status(400).json({ error: "Unknown AP" });
+    }
+
+    const now = new Date();
+
+    // 3) FIRST CONNECTION → start voucher
+    if (session.status === "pending") {
+      const startedAt = now;
+      const expiresAt = new Date(
+        startedAt.getTime() + session.plans.duration_hours * 3600 * 1000
+      );
+
+      // Atomic update
+      const { error: upErr } = await supabase
+        .from("voucher_sessions")
+        .update({
+          status: "active",
+          started_at: startedAt.toISOString(),
+          expires_at: expiresAt.toISOString(),
+          pool_id: apRow.pool_id
+        })
+        .eq("id", session.id)
+        .eq("status", "pending");
+
+      if (upErr) {
+        return res.status(409).json({ error: "Voucher already activated" });
+      }
+
+      // Create owner device
+      await supabase.from("voucher_devices").insert({
+        voucher_session_id: session.id,
+        device_mac,
+        is_owner: true,
+        is_allowed: true
+      });
+
+      // Create active session
+      await supabase.from("active_device_sessions").insert({
+        voucher_session_id: session.id,
+        device_mac,
+        ap_mac,
+        pool_id: apRow.pool_id
+      });
+
+      return res.json({
+        authorized: true,
+        owner: true,
+        started_at: startedAt,
+        expires_at: expiresAt
+      });
+    }
+
+    // 4) ALREADY ACTIVE → multi-device / roaming
+    const { data: deviceRow } = await supabase
+      .from("voucher_devices")
+      .select("*")
+      .eq("voucher_session_id", session.id)
+      .eq("device_mac", device_mac)
+      .single();
+
+    if (deviceRow) {
+      // Known device → roaming allowed
+      await supabase
+        .from("active_device_sessions")
+        .upsert({
+          voucher_session_id: session.id,
+          device_mac,
+          ap_mac,
+          pool_id: apRow.pool_id,
+          is_active: true,
+          last_seen_at: now.toISOString()
+        }, { onConflict: "voucher_session_id,device_mac" });
+
+      return res.json({ authorized: true });
+    }
+
+    // New device → check limit
+    const { count } = await supabase
+      .from("voucher_devices")
+      .select("*", { count: "exact", head: true })
+      .eq("voucher_session_id", session.id)
+      .eq("is_allowed", true);
+
+    if (count >= session.plans.max_devices) {
+      return res.status(403).json({
+        authorized: false,
+        error: "MAX_DEVICES_REACHED"
+      });
+    }
+
+    // Allow new device
+    await supabase.from("voucher_devices").insert({
+      voucher_session_id: session.id,
+      device_mac,
+      is_owner: false,
+      is_allowed: true
+    });
+
+    await supabase.from("active_device_sessions").insert({
+      voucher_session_id: session.id,
+      device_mac,
+      ap_mac,
+      pool_id: apRow.pool_id
+    });
+
+    return res.json({ authorized: true });
+
+  } catch (err) {
+    console.error("NEW authorize error:", err);
+    return res.status(500).json({ error: "Internal error" });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // ENDPOINT: /api/dernier-code
 // ---------------------------------------------------------------------------
@@ -1048,9 +1547,148 @@ app.get("/api/history", async (req, res) => {
   }
 });
 
+const MONITOR_INTERVAL_MS = 30_000;   // 30 secondes
+const DEVICE_TIMEOUT_MS  = 2 * 60_000; // 2 minutes
+setInterval(async () => {
+  try {
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - DEVICE_TIMEOUT_MS).toISOString();
+
+    /* --------------------------------------------------
+       1) Mark inactive device sessions
+    -------------------------------------------------- */
+    await supabase
+      .from("active_device_sessions")
+      .update({ is_active: false })
+      .lt("last_seen_at", cutoff)
+      .eq("is_active", true);
+
+/* --------------------------------------------------
+   2) AP live stats (FIXED – no group())
+-------------------------------------------------- */
+const { data: activeSessions, error: apErr } = await supabase
+  .from("active_device_sessions")
+  .select("ap_mac")
+  .eq("is_active", true);
+
+if (apErr) {
+  console.error("AP live stats error:", apErr.message);
+} else if (activeSessions) {
+  const apCounts = {};
+
+  // Count active clients per AP
+  for (const row of activeSessions) {
+    if (!row.ap_mac) continue;
+    apCounts[row.ap_mac] = (apCounts[row.ap_mac] || 0) + 1;
+  }
+
+  // Upsert results
+  for (const [ap_mac, count] of Object.entries(apCounts)) {
+    await supabase
+      .from("ap_live_stats")
+      .upsert(
+        {
+          ap_mac,
+          active_clients: count,
+          last_computed_at: now.toISOString(),
+          is_stale: false
+        },
+        { onConflict: "ap_mac" }
+      );
+  }
+}
+
+
+    /* --------------------------------------------------
+       3) Pool live stats
+    -------------------------------------------------- */
+    const { data: pools } = await supabase
+      .from("internet_pools")
+      .select("id, capacity_max");
+
+    for (const pool of pools || []) {
+      const { data: poolCount } = await supabase
+        .from("active_device_sessions")
+        .select("id", { count: "exact", head: true })
+        .eq("pool_id", pool.id)
+        .eq("is_active", true);
+
+      const activeClients = poolCount || 0;
+      const saturated = activeClients >= pool.capacity_max;
+
+      await supabase.from("pool_live_stats").upsert({
+        pool_id: pool.id,
+        active_clients: activeClients,
+        is_saturated: saturated,
+        last_computed_at: now.toISOString()
+      }, { onConflict: "pool_id" });
+    }
+
+  } catch (err) {
+    console.error("B4 monitoring error:", err);
+  }
+}, MONITOR_INTERVAL_MS);
+
+// ---------------------------------------------------------------------------
+// POOL STATUS (capacity check)
+// ---------------------------------------------------------------------------
+app.get("/api/new/pool-status", async (req, res) => {
+  try {
+    const { ap_mac } = req.query;
+
+    if (!ap_mac) {
+      return res.status(400).json({ error: "ap_mac required" });
+    }
+
+    // 1. Find AP → pool
+    const { data: ap, error: apErr } = await supabase
+      .from("ap_registry")
+      .select("pool_id")
+      .eq("ap_mac", ap_mac)
+      .single();
+
+    if (apErr || !ap?.pool_id) {
+      return res.status(404).json({ error: "AP not found" });
+    }
+
+    // 2. Pool capacity
+    const { data: pool, error: poolErr } = await supabase
+      .from("internet_pools")
+      .select("capacity_max")
+      .eq("id", ap.pool_id)
+      .single();
+
+    if (poolErr) {
+      return res.status(500).json({ error: "Pool not found" });
+    }
+
+    // 3. Active sessions
+    const { count } = await supabase
+      .from("active_device_sessions")
+      .select("*", { count: "exact", head: true })
+      .eq("pool_id", ap.pool_id)
+      .eq("is_active", true);
+
+    const is_saturated = count >= pool.capacity_max;
+
+    return res.json({
+      ap_mac,
+      pool_id: ap.pool_id,
+      active_clients: count,
+      capacity_max: pool.capacity_max,
+      is_saturated
+    });
+
+  } catch (e) {
+    console.error("pool-status error", e);
+    return res.status(500).json({ error: "internal" });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // START SERVER
 // ---------------------------------------------------------------------------
+
 app.listen(PORT, () => {
   const now = new Date().toISOString();
   console.log(`🚀 Server started at ${now} on port ${PORT}`);

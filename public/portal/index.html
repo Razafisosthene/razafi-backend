@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WiFi RAZAFI</title>
+
+  <link rel="stylesheet" href="/portal/assets/css/style.css">
+  <meta name="theme-color" content="#ffffff">
+</head>
+
+<body class="theme-light">
+
+  <!-- ================= HEADER ================= -->
+  <header class="portal-header">
+    <div class="brand">
+      <img src="/portal/assets/img/RAZAFI.png" alt="RAZAFI" style="height:40px;">
+    </div>
+
+    <button id="themeToggle" class="theme-toggle" aria-label="Changer de thème">
+      🌙
+    </button>
+  </header>
+
+  <!-- ================= MAIN ================= -->
+  <main class="portal-container">
+
+    <!-- ========= STATUS BLOCK ========= -->
+    <section id="status-block" class="card status-card">
+
+      <h2>Bienvenue sur WiFi RAZAFI</h2>
+      <p class="muted">Vérification de votre accès en cours…</p>
+
+      <div class="voucher-active">
+        <p class="success">✅ Vous avez un code actif</p>
+
+        <ul class="voucher-info">
+          <li>⏳ Temps restant : <strong id="time-left">—</strong></li>
+          <li>📊 Données restantes : <strong id="data-left">—</strong></li>
+          <li>🔌 Appareils utilisés : <strong id="devices-used">—</strong></li>
+        </ul>
+
+        <button class="primary-btn" id="useVoucherBtn">
+          Utiliser ce code
+        </button>
+
+        <button class="secondary-btn" id="copyVoucherBtn">
+          Copier le code
+        </button>
+      </div>
+
+    </section>
+
+    <!-- ========= RULE ========= -->
+    <section class="info-box">
+      ℹ️ <strong>Le nombre d’appareils autorisés dépend du plan choisi.</strong>
+    </section>
+
+    <!-- ========= PLANS ========= -->
+    <section id="plans-section">
+
+      <h3>Choisissez un plan</h3>
+
+      <div class="plans-grid">
+
+        <!-- ===== PLAN 1 ===== -->
+        <div class="card plan-card" data-plan-id="plan_1">
+
+          <h4>1 Go – 24h</h4>
+          <p class="price">1 000 Ar</p>
+          <p class="muted small">⏳ La durée commence à la première connexion.</p>
+
+          <button class="choose-plan-btn">Choisir</button>
+
+          <!-- Paiement intégré (caché par défaut) -->
+          <div class="plan-payment hidden">
+
+            <h5>Paiement</h5>
+
+            <label>Numéro MVola</label>
+            <input
+              type="tel"
+              placeholder="034 XX XXX XX"
+              inputmode="numeric"
+              autocomplete="tel"
+            />
+
+            <button class="primary-btn pay-btn">
+              Payer avec MVola
+            </button>
+
+            <button class="secondary-btn cancel-btn">
+              Annuler
+            </button>
+
+            <div class="mvola-badge">
+              <span class="secure-text">🔒 Paiement sécurisé via</span>
+              <img src="/portal/assets/img/mvola.png" alt="MVola">
+            </div>
+
+            <p class="muted small">
+              💼 Paiement en espèces possible avec assistance du staff.
+            </p>
+
+          </div>
+        </div>
+
+        <!-- ===== PLAN 2 ===== -->
+        <div class="card plan-card highlight" data-plan-id="plan_2">
+
+          <h4>Illimité – 1 jour</h4>
+          <p class="price">3 000 Ar</p>
+          <p class="muted small">⏳ La durée commence à la première connexion.</p>
+
+          <button class="choose-plan-btn">Choisir</button>
+
+          <!-- Paiement intégré (caché par défaut) -->
+          <div class="plan-payment hidden">
+
+            <h5>Paiement</h5>
+
+            <label>Numéro MVola</label>
+            <input
+              type="tel"
+              placeholder="034 XX XXX XX"
+              inputmode="numeric"
+              autocomplete="tel"
+            />
+
+            <button class="primary-btn pay-btn">
+              Payer avec MVola
+            </button>
+
+            <button class="secondary-btn cancel-btn">
+              Annuler
+            </button>
+
+            <div class="mvola-badge">
+              <span class="secure-text">🔒 Paiement sécurisé via</span>
+              <img src="/portal/assets/img/mvola.png" alt="MVola">
+            </div>
+
+            <p class="muted small">
+              💼 Paiement en espèces possible avec assistance du staff.
+            </p>
+
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ========= FAQ ========= -->
+    <section class="card faq">
+
+      <h3>❓ FAQ</h3>
+
+      <p><strong>🛒 Comment acheter un code ?</strong><br>
+        Choisissez un plan et payez par MVola.</p>
+
+      <p><strong>📱 Appareils autorisés ?</strong><br>
+        Cela dépend du plan choisi.</p>
+
+      <p><strong>📞 Contact</strong><br>
+        Téléphone : <strong>038 75 00 592</strong></p>
+
+    </section>
+
+  </main>
+
+  <!-- ================= FOOTER ================= -->
+  <footer class="portal-footer">
+    <p class="muted small">
+      📺 Pour Smart TV, utilisez un téléphone si la page ne s’affiche pas.
+    </p>
+  </footer>
+
+  <!-- ================= JS ================= -->
+  <script src="/portal/assets/js/portal.js" defer></script>
+
+</body>
+</html>
