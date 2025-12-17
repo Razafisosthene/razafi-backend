@@ -173,44 +173,32 @@ const isBlockedPageRequest = (req) => {
   return false;
 };
 
-// --- BLOCKING MIDDLEWARE (AP-MAC only - Option A) ---
-// IMPORTANT: this middleware must be placed BEFORE express.static(...)
-
+// ==================================================
+// BLOCKING MIDDLEWARE (AP-MAC only - Option A)
+// IMPORTANT: MUST be BEFORE express.static(...)
+// ==================================================
 app.use((req, res, next) => {
   try {
-    // ==================================================
-    // EARLY ALLOW LIST (DO NOT BLOCK THESE)
-    // ==================================================
+    // --------------------------------------------------
+    // EARLY ALLOW LIST (NEVER BLOCK)
+    // --------------------------------------------------
 
-    /**
-     * 1) Allow ALL API calls
-     *    - user API
-     *    - admin auth
-     *    - AJAX / polling
-     *    - webhooks
-     */
+    // 1) Allow ALL API calls (user, admin, webhooks, ajax)
     if (req.path && req.path.startsWith("/api/")) {
       return next();
     }
 
-    /**
-     * 2) Allow ADMIN panel
-     *    Admin must be reachable OUTSIDE WiFi RAZAFI
-     */
+    // 2) Allow ADMIN panel (always accessible outside WiFi)
     if (req.path && req.path.startsWith("/admin")) {
       return next();
     }
 
-    /**
-     * 3) Allow block page and its assets
-     */
+    // 3) Allow block page & its assets
     if (isBlockedPageRequest(req)) {
       return next();
     }
 
-    /**
-     * 4) Allow specific IPs (healthchecks, admin IPs)
-     */
+    // 4) Allow specific IPs (healthchecks, whitelisted IPs)
     const remote =
       (req.headers["x-forwarded-for"] ||
         req.ip ||
@@ -223,18 +211,16 @@ app.use((req, res, next) => {
       return next();
     }
 
-    /**
-     * 5) Allow if short-lived AP cookie already set
-     */
+    // 5) Allow if short-lived cookie already set
     try {
-      if (req.cookies && req.cookies.ap_allowed === "1") {
+      if (req.cookies?.ap_allowed === "1") {
         return next();
       }
     } catch (_) {}
 
-    /**
-     * 6) Check ap_mac presence (WiFi RAZAFI)
-     */
+    // --------------------------------------------------
+    // WiFi RAZAFI CHECK (ap_mac REQUIRED)
+    // --------------------------------------------------
     normalizeApMac(req, res, () => {
       if (req.ap_mac) {
         try {
@@ -248,23 +234,22 @@ app.use((req, res, next) => {
         return next();
       }
 
-      // ❌ Not on WiFi → block
+      // ❌ NOT on WiFi → BLOCK
       if (req.accepts && req.accepts("html")) {
         return res.redirect("/bloque.html");
-      } else {
-        return res
-          .status(403)
-          .send("Access blocked: connect to WiFi RAZAFI to continue.");
       }
+
+      return res
+        .status(403)
+        .send("Access blocked: connect to WiFi RAZAFI to continue.");
     });
+
   } catch (err) {
     console.error("AP-MAC blocking middleware error", err);
-    // Fail-open safety
+    // Fail-open (never break prod)
     return next();
   }
 });
-
-// --- END BLOCKING MIDDLEWARE ---
 
 // ==================================================
 // HOSTNAME ROUTING (portal vs wifi)
@@ -273,12 +258,12 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
   const host = (req.hostname || "").toLowerCase();
 
-  // --- ADMIN (always accessible) ---
+  // ADMIN (already allowed, just pass)
   if (req.path.startsWith("/admin")) {
     return next();
   }
 
-  // --- NEW SYSTEM: portal.razafistore.com ---
+  // NEW SYSTEM — portal
   if (host === "portal.razafistore.com") {
     if (req.path === "/" || req.path === "/index.html") {
       return res.sendFile(
@@ -288,19 +273,16 @@ app.use((req, res, next) => {
     return next();
   }
 
-  // --- OLD SYSTEM: wifi.razafistore.com ---
+  // OLD SYSTEM — wifi
   if (host === "wifi.razafistore.com") {
     return next();
   }
 
-  // --- fallback ---
+  // Fallback
   return next();
 });
-
-
-// serve static frontend from /public
+// Serve static frontend
 app.use(express.static(path.join(__dirname, "public")));
-
 
 // ---------------------------------------------------------------------------
 // ENVIRONMENT VARIABLES
