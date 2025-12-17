@@ -394,7 +394,8 @@ app.use("/admin", requireAdminPage);
 app.use("/admin", express.static(path.join(__dirname, "public", "admin")));
 
 // 3) SPA fallback: protect deep routes (e.g. /admin/users)
-app.get("/admin/*", requireAdminPage, (req, res) => {
+
+app.get(/^\/admin\/.*/, requireAdminPage, (req, res) => {
   return res.sendFile(path.join(__dirname, "public", "admin", "index.html"));
 });
 
@@ -1704,6 +1705,7 @@ const MONITOR_INTERVAL_MS = 30_000;   // 30 secondes
 const DEVICE_TIMEOUT_MS  = 2 * 60_000; // 2 minutes
 setInterval(async () => {
   try {
+    if (!supabase) return;
     const now = new Date();
     const cutoff = new Date(now.getTime() - DEVICE_TIMEOUT_MS).toISOString();
 
