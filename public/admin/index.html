@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>RAZAFI Admin</title>
+  <link rel="stylesheet" href="/admin/admin.css" />
+</head>
+<body>
+
+  <h1>Admin Dashboard</h1>
+  <p id="status">Checking session...</p>
+
+  <button id="logout">Logout</button>
+
+  <script>
+    async function checkSession() {
+      try {
+        const res = await fetch("/api/admin/me", {
+          credentials: "include"
+        });
+
+        if (!res.ok) {
+          window.location.href = "/admin/login.html";
+          return;
+        }
+
+        const admin = await res.json();
+        document.getElementById("status").textContent =
+          "Connected as " + admin.email;
+      } catch {
+        window.location.href = "/admin/login.html";
+      }
+    }
+
+    document.getElementById("logout").onclick = async () => {
+      await fetch("/api/admin/logout", {
+        method: "POST",
+        credentials: "include"
+      });
+      window.location.href = "/admin/login.html";
+    };
+
+    checkSession();
+  </script>
+
+</body>
+</html>
