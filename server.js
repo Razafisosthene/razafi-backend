@@ -172,6 +172,85 @@ const isBlockedPageRequest = (req) => {
 
   return false;
 };
+// ==================================================
+// A1 — ADMIN AUTH API
+// ==================================================
+
+import bcrypt from "bcryptjs";
+
+// ---- ADMIN LOGIN ----
+app.post("/api/admin/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email et mot de passe requis" });
+    }
+
+    const { data: admin, error } = await supabase
+      .from("admin_users")
+      .select("*")
+      .eq("email", email.toLowerCase())
+      .eq("is_active", true)
+      .single();
+
+    if (error || !admin) {
+      return res.status(401).json({ error: "Accès refusé" });
+    }
+
+    const ok = await bcrypt.compare(password, admin.password_hash);
+    if (!ok) {
+      return res.status(401).json({ error: "Accès refusé" });
+    }
+
+    // session cookie
+    res.cookie("admin_session", admin.id, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      maxAge: 12 * 60 * 60 * 1000, // 12h
+    });
+
+    return res.json({
+      success: true,
+      admin: {
+        email: admin.email,
+      },
+    });
+  } catch (err) {
+    console.error("ADMIN LOGIN ERROR", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ---- ADMIN ME ----
+app.get("/api/admin/me", async (req, res) => {
+  try {
+    const adminId = req.cookies?.admin_session;
+    if (!adminId) return res.status(401).json({ logged: false });
+
+    const { data: admin } = await supabase
+      .from("admin_users")
+      .select("email")
+      .eq("id", adminId)
+      .single();
+
+    if (!admin) return res.status(401).json({ logged: false });
+
+    return res.json({
+      logged: true,
+      admin,
+    });
+  } catch {
+    return res.status(401).json({ logged: false });
+  }
+});
+
+// ---- ADMIN LOGOUT ----
+app.post("/api/admin/logout", (req, res) => {
+  res.clearCookie("admin_session");
+  return res.json({ success: true });
+});
 
 // ==================================================
 // BLOCKING MIDDLEWARE (AP-MAC only - Option A)
