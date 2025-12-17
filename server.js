@@ -26,11 +26,33 @@ function generateSessionToken() {
 }
 
 // ===============================
+// ADMIN AUTH — SETTINGS (A1 hardening)
+// ===============================
+const IS_PROD = process.env.NODE_ENV === "production";
+const ADMIN_COOKIE_NAME = "admin_session";
+const adminCookieOptions = () => ({
+  httpOnly: true,
+  secure: IS_PROD, // ✅ works in prod HTTPS + local dev HTTP
+  sameSite: "lax",
+  path: "/",
+});
+
+function ensureSupabase(res) {
+  if (!supabase) {
+    res.status(500).json({ error: "Supabase not configured on server" });
+    return false;
+  }
+  return true;
+}
+
+// ===============================
 // REQUIRE ADMIN MIDDLEWARE
 // ===============================
 async function requireAdmin(req, res, next) {
   try {
-    const token = req.cookies?.admin_session;
+    if (!ensureSupabase(res)) return;
+
+    const token = req.cookies?.[ADMIN_COOKIE_NAME];
     if (!token) {
       return res.status(401).json({ error: "Not authenticated" });
     }
@@ -57,7 +79,14 @@ async function requireAdmin(req, res, next) {
       return res.status(401).json({ error: "Session revoked" });
     }
 
+    // Expired: best-effort revoke to keep DB clean
     if (new Date(session.expires_at) < new Date()) {
+      try {
+        await supabase
+          .from("admin_sessions")
+          .update({ revoked_at: new Date().toISOString() })
+          .eq("id", session.id);
+      } catch (_) {}
       return res.status(401).json({ error: "Session expired" });
     }
 
@@ -359,6 +388,23 @@ const lightLimiter = rateLimit({
   message: { error: "Trop de requêtes. Patientez un instant." },
 });
 
+// 4) Strict limiter for ADMIN login (anti-bruteforce)
+const adminLoginSpeedLimiter = slowDown({
+  windowMs: 15 * 60 * 1000,
+  delayAfter: 3,
+  delayMs: () => 750,
+  maxDelayMs: 3000,
+});
+
+const adminLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: "Trop de tentatives. Réessayez plus tard." },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req), // IPv6-safe
+});
+
 // Apply to routes
 app.use("/api/send-payment", speedLimiter, paymentLimiter);
 app.use("/api/dernier-code", lightLimiter);
@@ -394,73 +440,93 @@ if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
 // ===============================
 // ADMIN AUTH — LOGIN
 // ===============================
-app.post("/api/admin/login", async (req, res) => {
-  try {
-    const { email, password } = req.body || {};
+app.post(
+  "/api/admin/login",
+  adminLoginSpeedLimiter,
+  adminLoginLimiter,
+  async (req, res) => {
+    try {
+      if (!ensureSupabase(res)) return;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: "Email et mot de passe requis" });
+      const { email, password } = req.body || {};
+
+      if (!email || !password) {
+        return res.status(400).json({ error: "Email et mot de passe requis" });
+      }
+
+      // Housekeeping: delete expired sessions (safe + keeps table small)
+      try {
+        await supabase
+          .from("admin_sessions")
+          .delete()
+          .lt("expires_at", new Date().toISOString());
+      } catch (_) {}
+
+      const { data: admin, error } = await supabase
+        .from("admin_users")
+        .select("*")
+        .eq("email", email.toLowerCase())
+        .single();
+
+      if (error || !admin) {
+        return res.status(401).json({ error: "Identifiants invalides" });
+      }
+
+      if (!admin.is_active) {
+        return res.status(403).json({ error: "Compte désactivé" });
+      }
+
+      const ok = await bcrypt.compare(password, admin.password_hash);
+      if (!ok) {
+        return res.status(401).json({ error: "Identifiants invalides" });
+      }
+
+      const token = generateSessionToken();
+      const tokenHash = hashToken(token);
+
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+      const { error: insErr } = await supabase.from("admin_sessions").insert({
+        admin_user_id: admin.id,
+        session_token_hash: tokenHash,
+        expires_at: expiresAt.toISOString(),
+      });
+
+      if (insErr) {
+        console.error("ADMIN SESSION INSERT ERROR", insErr);
+        return res.status(500).json({ error: "Erreur serveur" });
+      }
+
+      await supabase
+        .from("admin_users")
+        .update({ last_login_at: new Date().toISOString() })
+        .eq("id", admin.id);
+
+      res.cookie(ADMIN_COOKIE_NAME, token, {
+        ...adminCookieOptions(),
+        expires: expiresAt,
+      });
+
+      return res.json({ ok: true, email: admin.email });
+    } catch (err) {
+      console.error("ADMIN LOGIN ERROR", err);
+      return res.status(500).json({ error: "Erreur serveur" });
     }
-
-    const { data: admin, error } = await supabase
-      .from("admin_users")
-      .select("*")
-      .eq("email", email.toLowerCase())
-      .single();
-
-    if (error || !admin) {
-      return res.status(401).json({ error: "Identifiants invalides" });
-    }
-
-    if (!admin.is_active) {
-      return res.status(403).json({ error: "Compte désactivé" });
-    }
-
-    const ok = await bcrypt.compare(password, admin.password_hash);
-    if (!ok) {
-      return res.status(401).json({ error: "Identifiants invalides" });
-    }
-
-    const token = generateSessionToken();
-    const tokenHash = hashToken(token);
-
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-
-    await supabase.from("admin_sessions").insert({
-      admin_user_id: admin.id,
-      session_token_hash: tokenHash,
-      expires_at: expiresAt.toISOString(),
-    });
-
-    await supabase
-      .from("admin_users")
-      .update({ last_login_at: new Date().toISOString() })
-      .eq("id", admin.id);
-
-    res.cookie("admin_session", token, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "lax",
-      expires: expiresAt,
-    });
-
-    return res.json({ ok: true, email: admin.email });
-  } catch (err) {
-    console.error("ADMIN LOGIN ERROR", err);
-    return res.status(500).json({ error: "Erreur serveur" });
   }
-});
+);
 // ===============================
 // ADMIN AUTH — LOGOUT
 // ===============================
 app.post("/api/admin/logout", requireAdmin, async (req, res) => {
   try {
+    if (!ensureSupabase(res)) return;
+
     await supabase
       .from("admin_sessions")
       .update({ revoked_at: new Date().toISOString() })
       .eq("id", req.admin.session_id);
 
-    res.clearCookie("admin_session");
+    res.clearCookie(ADMIN_COOKIE_NAME, adminCookieOptions());
     return res.json({ ok: true });
   } catch (err) {
     console.error("ADMIN LOGOUT ERROR", err);
