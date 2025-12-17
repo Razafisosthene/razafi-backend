@@ -178,10 +178,10 @@ const isBlockedPageRequest = (req) => {
 
 import bcrypt from "bcryptjs";
 
-// ---- ADMIN LOGIN ----
+// ---- Admin login ----
 app.post("/api/admin/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body || {};
 
     if (!email || !password) {
       return res.status(400).json({ error: "Email et mot de passe requis" });
@@ -189,12 +189,11 @@ app.post("/api/admin/login", async (req, res) => {
 
     const { data: admin, error } = await supabase
       .from("admin_users")
-      .select("*")
-      .eq("email", email.toLowerCase())
-      .eq("is_active", true)
+      .select("id, email, password_hash, is_active")
+      .eq("email", email)
       .single();
 
-    if (error || !admin) {
+    if (error || !admin || !admin.is_active) {
       return res.status(401).json({ error: "Accès refusé" });
     }
 
@@ -203,7 +202,7 @@ app.post("/api/admin/login", async (req, res) => {
       return res.status(401).json({ error: "Accès refusé" });
     }
 
-    // session cookie
+    // Cookie admin sécurisé
     res.cookie("admin_session", admin.id, {
       httpOnly: true,
       secure: true,
@@ -213,9 +212,7 @@ app.post("/api/admin/login", async (req, res) => {
 
     return res.json({
       success: true,
-      admin: {
-        email: admin.email,
-      },
+      admin: { id: admin.id, email: admin.email },
     });
   } catch (err) {
     console.error("ADMIN LOGIN ERROR", err);
@@ -223,33 +220,38 @@ app.post("/api/admin/login", async (req, res) => {
   }
 });
 
-// ---- ADMIN ME ----
+// ---- Admin logout ----
+app.post("/api/admin/logout", (req, res) => {
+  res.clearCookie("admin_session");
+  res.json({ success: true });
+});
+
+// ---- Admin session check ----
 app.get("/api/admin/me", async (req, res) => {
   try {
     const adminId = req.cookies?.admin_session;
-    if (!adminId) return res.status(401).json({ logged: false });
+    if (!adminId) {
+      return res.status(401).json({ error: "Non authentifié" });
+    }
 
     const { data: admin } = await supabase
       .from("admin_users")
-      .select("email")
+      .select("id, email, is_active")
       .eq("id", adminId)
       .single();
 
-    if (!admin) return res.status(401).json({ logged: false });
+    if (!admin || !admin.is_active) {
+      return res.status(401).json({ error: "Session invalide" });
+    }
 
     return res.json({
-      logged: true,
-      admin,
+      id: admin.id,
+      email: admin.email,
     });
-  } catch {
-    return res.status(401).json({ logged: false });
+  } catch (err) {
+    console.error("ADMIN ME ERROR", err);
+    return res.status(500).json({ error: "Erreur serveur" });
   }
-});
-
-// ---- ADMIN LOGOUT ----
-app.post("/api/admin/logout", (req, res) => {
-  res.clearCookie("admin_session");
-  return res.json({ success: true });
 });
 
 // ==================================================
