@@ -51,7 +51,6 @@ function ensureSupabase(res) {
 async function requireAdmin(req, res, next) {
   try {
     if (!ensureSupabase(res)) return;
-
     const token = req.cookies?.[ADMIN_COOKIE_NAME];
     if (!token) {
       return res.status(401).json({ error: "Not authenticated" });
@@ -125,7 +124,7 @@ app.use((req, res, next) => {
   req.isNewSystem = req.path.startsWith("/api/new/");
   next();
 });
-app.use(cors());
+
 const PORT = process.env.PORT || 10000;
 
 const extraAllowed = (process.env.EXTRA_ALLOWED || "127.0.0.1,::1").split(",").map(s => s.trim()).filter(Boolean);
@@ -310,6 +309,95 @@ app.use((req, res, next) => {
   // Fallback
   return next();
 });
+
+// ===============================
+// ADMIN PAGES — PROTECT /admin/* SERVER-SIDE
+// (redirect to login BEFORE serving HTML)
+// ===============================
+async function requireAdminPage(req, res, next) {
+  // allow the login page + its assets without auth
+  const p = req.path || "";
+  if (
+    p === "/login" ||
+    p === "/login.html" ||
+    p.startsWith("/assets/") ||
+    p.match(/\.(css|js|png|jpg|jpeg|svg|ico|map)$/i)
+  ) {
+    return next();
+  }
+
+  try {
+    if (!ensureSupabase(res)) return;
+    // reuse the same session check logic as requireAdmin
+    const token = req.cookies?.[ADMIN_COOKIE_NAME];
+    if (!token) {
+      const nextUrl = encodeURIComponent(req.originalUrl || "/admin");
+      return res.redirect(`/admin/login.html?next=${nextUrl}`);
+    }
+
+    const tokenHash = hashToken(token);
+
+    const { data: session, error } = await supabase
+      .from("admin_sessions")
+      .select(
+        `
+        id,
+        expires_at,
+        revoked_at,
+        admin_user_id,
+        admin_users ( id, email, is_active )
+      `
+      )
+      .eq("session_token_hash", tokenHash)
+      .single();
+
+    if (error || !session || session.revoked_at) {
+      res.clearCookie(ADMIN_COOKIE_NAME, adminCookieOptions());
+      const nextUrl = encodeURIComponent(req.originalUrl || "/admin");
+      return res.redirect(`/admin/login.html?next=${nextUrl}`);
+    }
+
+    if (new Date(session.expires_at) < new Date()) {
+      try {
+        await supabase
+          .from("admin_sessions")
+          .update({ revoked_at: new Date().toISOString() })
+          .eq("id", session.id);
+      } catch (_) {}
+      res.clearCookie(ADMIN_COOKIE_NAME, adminCookieOptions());
+      const nextUrl = encodeURIComponent(req.originalUrl || "/admin");
+      return res.redirect(`/admin/login.html?next=${nextUrl}`);
+    }
+
+    if (!session.admin_users?.is_active) {
+      res.clearCookie(ADMIN_COOKIE_NAME, adminCookieOptions());
+      return res.redirect(`/admin/login.html?reason=disabled`);
+    }
+
+    req.admin = {
+      id: session.admin_users.id,
+      email: session.admin_users.email,
+      session_id: session.id,
+    };
+
+    return next();
+  } catch (e) {
+    console.error("[ADMIN PAGE AUTH ERROR]", e);
+    return res.status(500).send("Admin auth error");
+  }
+}
+
+// 1) Gate ALL /admin requests first
+app.use("/admin", requireAdminPage);
+
+// 2) Then serve admin static files (only reachable if authed, except login/assets)
+app.use("/admin", express.static(path.join(__dirname, "public", "admin")));
+
+// 3) SPA fallback: protect deep routes (e.g. /admin/users)
+app.get("/admin/*", requireAdminPage, (req, res) => {
+  return res.sendFile(path.join(__dirname, "public", "admin", "index.html"));
+});
+
 // Serve static frontend
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -343,18 +431,28 @@ const allowedOrigins =
     .filter(Boolean)
     .length
     ? (process.env.CORS_ORIGINS || "").split(",").map(s => s.trim())
-    : ["https://wifi.razafistore.com", "http://localhost:3000"];
+    : [
+      "https://wifi.razafistore.com",
+      "https://portal.razafistore.com",
+      "http://localhost:3000",
+      "http://localhost:10000",
+    ];
 
 app.use(
   cors({
-    origin: function (origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        console.error("❌ CORS non autorisé pour:", origin);
-        callback(new Error("Origin non autorisée"));
-      }
-    },
+   origin: function (origin, callback) {
+  if (!origin) return callback(null, true);
+
+  const clean = String(origin).trim().replace(/\/$/, "");
+
+  if (allowedOrigins.includes(clean)) {
+    return callback(null, true);
+  }
+
+  console.error("❌ CORS non autorisé pour:", clean);
+  return callback(null, false);
+},
+    
     methods: ["GET", "POST"],
     credentials: true,
   })
@@ -446,6 +544,13 @@ app.post(
   adminLoginLimiter,
   async (req, res) => {
     try {
+
+console.log(
+        "HIT /api/admin/login",
+        new Date().toISOString(),
+        req.headers["content-type"]
+      );
+
       if (!ensureSupabase(res)) return;
 
       const { email, password } = req.body || {};
