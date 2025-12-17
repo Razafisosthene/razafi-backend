@@ -649,6 +649,223 @@ app.get("/api/admin/me", requireAdmin, async (req, res) => {
   });
 });
 
+// ===============================
+// ADMIN — PLANS CRUD (A2.3)
+// ===============================
+
+function toInt(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return Math.trunc(n);
+}
+function toBool(v) {
+  if (v === true || v === "true" || v === 1 || v === "1") return true;
+  if (v === false || v === "false" || v === 0 || v === "0") return false;
+  return null;
+}
+function isNonEmptyString(s) {
+  return typeof s === "string" && s.trim().length > 0;
+}
+
+app.get("/api/admin/plans", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const q = String(req.query.q || "").trim();
+    const active = String(req.query.active || "all"); // 1|0|all
+    const visible = String(req.query.visible || "all"); // 1|0|all
+    const limit = Math.min(Math.max(toInt(req.query.limit) ?? 50, 1), 200);
+    const offset = Math.max(toInt(req.query.offset) ?? 0, 0);
+
+    let query = supabase
+      .from("plans")
+      .select("*", { count: "exact" });
+
+    if (q) query = query.ilike("name", `%${q}%`);
+    if (active === "1") query = query.eq("is_active", true);
+    if (active === "0") query = query.eq("is_active", false);
+    if (visible === "1") query = query.eq("is_visible", true);
+    if (visible === "0") query = query.eq("is_visible", false);
+
+    query = query
+      .order("sort_order", { ascending: true })
+      .order("updated_at", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    const { data, error, count } = await query;
+    if (error) {
+      console.error("ADMIN PLANS LIST ERROR", error);
+      return res.status(500).json({ error: "db_error" });
+    }
+
+    return res.json({ ok: true, plans: data || [], total: count || 0 });
+  } catch (e) {
+    console.error("ADMIN PLANS LIST EX", e);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+app.post("/api/admin/plans", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const b = req.body || {};
+    const name = typeof b.name === "string" ? b.name.trim() : "";
+    const price_ar = toInt(b.price_ar);
+    const duration_hours = toInt(b.duration_hours);
+    const data_mb = toInt(b.data_mb);
+    const max_devices = toInt(b.max_devices);
+    const is_active = toBool(b.is_active);
+    const is_visible = toBool(b.is_visible);
+    const sort_order = toInt(b.sort_order);
+
+    // validations (simple, strict)
+    if (!isNonEmptyString(name)) return res.status(400).json({ error: "name required" });
+    if (price_ar === null || price_ar < 0) return res.status(400).json({ error: "price_ar invalid" });
+    if (duration_hours === null || duration_hours <= 0) return res.status(400).json({ error: "duration_hours invalid" });
+    if (data_mb === null || data_mb < 0) return res.status(400).json({ error: "data_mb invalid" });
+    if (max_devices === null || max_devices <= 0) return res.status(400).json({ error: "max_devices invalid" });
+
+    const payload = {
+      name,
+      price_ar,
+      duration_hours,
+      data_mb,
+      max_devices,
+      is_active: is_active ?? true,
+      is_visible: is_visible ?? true,
+      sort_order: sort_order ?? 0,
+    };
+
+    const { data, error } = await supabase
+      .from("plans")
+      .insert(payload)
+      .select("*")
+      .single();
+
+    if (error) {
+      console.error("ADMIN PLANS CREATE ERROR", error);
+      return res.status(500).json({ error: "db_error" });
+    }
+
+    return res.json({ ok: true, plan: data });
+  } catch (e) {
+    console.error("ADMIN PLANS CREATE EX", e);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+app.patch("/api/admin/plans/:id", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const id = req.params.id;
+    const b = req.body || {};
+
+    const patch = {};
+
+    if (b.name !== undefined) {
+      const name = typeof b.name === "string" ? b.name.trim() : "";
+      if (!isNonEmptyString(name)) return res.status(400).json({ error: "name invalid" });
+      patch.name = name;
+    }
+    if (b.price_ar !== undefined) {
+      const v = toInt(b.price_ar);
+      if (v === null || v < 0) return res.status(400).json({ error: "price_ar invalid" });
+      patch.price_ar = v;
+    }
+    if (b.duration_hours !== undefined) {
+      const v = toInt(b.duration_hours);
+      if (v === null || v <= 0) return res.status(400).json({ error: "duration_hours invalid" });
+      patch.duration_hours = v;
+    }
+    if (b.data_mb !== undefined) {
+      const v = toInt(b.data_mb);
+      if (v === null || v < 0) return res.status(400).json({ error: "data_mb invalid" });
+      patch.data_mb = v;
+    }
+    if (b.max_devices !== undefined) {
+      const v = toInt(b.max_devices);
+      if (v === null || v <= 0) return res.status(400).json({ error: "max_devices invalid" });
+      patch.max_devices = v;
+    }
+    if (b.is_active !== undefined) {
+      const v = toBool(b.is_active);
+      if (v === null) return res.status(400).json({ error: "is_active invalid" });
+      patch.is_active = v;
+    }
+    if (b.is_visible !== undefined) {
+      const v = toBool(b.is_visible);
+      if (v === null) return res.status(400).json({ error: "is_visible invalid" });
+      patch.is_visible = v;
+    }
+    if (b.sort_order !== undefined) {
+      const v = toInt(b.sort_order);
+      if (v === null) return res.status(400).json({ error: "sort_order invalid" });
+      patch.sort_order = v;
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).json({ error: "no fields to update" });
+    }
+
+    const { data, error } = await supabase
+      .from("plans")
+      .update(patch)
+      .eq("id", id)
+      .select("*")
+      .single();
+
+    if (error) {
+      console.error("ADMIN PLANS PATCH ERROR", error);
+      return res.status(500).json({ error: "db_error" });
+    }
+
+    return res.json({ ok: true, plan: data });
+  } catch (e) {
+    console.error("ADMIN PLANS PATCH EX", e);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+app.post("/api/admin/plans/:id/toggle", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const id = req.params.id;
+    const desired = (req.body && req.body.is_active !== undefined) ? toBool(req.body.is_active) : null;
+
+    // fetch current
+    const { data: cur, error: curErr } = await supabase
+      .from("plans")
+      .select("id,is_active")
+      .eq("id", id)
+      .single();
+
+    if (curErr || !cur) return res.status(404).json({ error: "plan not found" });
+
+    const next = desired ?? !cur.is_active;
+
+    const { data, error } = await supabase
+      .from("plans")
+      .update({ is_active: next })
+      .eq("id", id)
+      .select("*")
+      .single();
+
+    if (error) {
+      console.error("ADMIN PLANS TOGGLE ERROR", error);
+      return res.status(500).json({ error: "db_error" });
+    }
+
+    return res.json({ ok: true, plan: data });
+  } catch (e) {
+    console.error("ADMIN PLANS TOGGLE EX", e);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
 
 // ---------------------------------------------------------------------------
 // MAILER
