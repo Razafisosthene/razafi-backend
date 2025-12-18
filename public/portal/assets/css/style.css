@@ -263,3 +263,104 @@ input[type="tel"] {
 .plan-card.selected .plan-payment {
   display: block;
 }
+
+
+/* ===============================
+   A + D POLISH (Plan cards + Mobile)
+   - Price unchanged
+   - Plan infos bigger + 2-line layout
+   - Buttons full width on mobile
+   =============================== */
+
+.plan-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Typography tweaks (without changing price size) */
+.plan-card h4 {
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+/* Plan info lines */
+.plan-meta,
+.plan-devices {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 1.02rem; /* slightly bigger */
+  line-height: 1.25rem;
+}
+
+.plan-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.plan-devices {
+  color: var(--text);
+  opacity: 0.9;
+}
+
+/* Improve button look + spacing */
+.plan-card button,
+.plan-payment button {
+  border-radius: 14px;
+}
+
+/* Selected plan emphasis */
+.plan-card.selected {
+  border: 2px solid rgba(255,255,255,0.20);
+}
+
+/* Payment area spacing */
+.plan-payment {
+  padding-top: 8px;
+  border-top: 1px solid rgba(255,255,255,0.12);
+}
+
+/* Responsive layout: wider cards, less scroll */
+@media (min-width: 720px) {
+  .plans-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+  }
+}
+
+@media (min-width: 1040px) {
+  .plans-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Mobile: near full width + full-width buttons */
+@media (max-width: 520px) {
+  .plans-grid {
+    gap: 14px;
+  }
+
+  .card {
+    padding: 16px;
+  }
+
+  .plan-card button,
+  .plan-payment .primary-btn,
+  .plan-payment .secondary-btn,
+  .plan-payment .pay-btn,
+  .plan-payment .cancel-btn {
+    width: 100%;
+  }
+
+  .plan-meta,
+  .plan-devices {
+    font-size: 1.05rem; /* a touch bigger on mobile */
+  }
+
+  .price {
+    margin-bottom: 8px; /* reduce scroll */
+  }
+}

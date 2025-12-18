@@ -125,15 +125,15 @@
     const durationHours = Number(plan.duration_hours) || 0;
     const dataMb = Number(plan.data_mb) || 0;
     const maxDevices = Number(plan.max_devices) || 1;
-
-    // Approved C:
-    const subtitle = `⏳ Durée: ${formatDuration(durationHours)} • 📊 Data: ${formatData(dataMb)} • 🔌 ${formatDevices(maxDevices)}`;
-
+    // Approved A+D: 2-line plan info (bigger)
+    const line1 = `⏳ Durée: ${formatDuration(durationHours)} • 📊 Data: ${formatData(dataMb)}`;
+    const line2 = `🔌 ${formatDevices(maxDevices)}`;
     return `
       <div class="card plan-card" data-plan-id="${plan.id}">
         <h4>${name}</h4>
         <p class="price">${price}</p>
-        <p class="muted small">${subtitle}</p>
+        <p class="plan-meta">${line1}</p>
+        <p class="plan-devices">${line2}</p>
 
         <button class="choose-plan-btn">Choisir</button>
 
