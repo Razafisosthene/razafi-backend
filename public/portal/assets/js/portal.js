@@ -35,8 +35,6 @@
       const go = mb / 1024;
       const rounded = Math.round(go * 10) / 10; // 1 decimal
       return (rounded % 1 === 0 ? rounded.toFixed(0) : rounded.toFixed(1)) + " Go";
-    }
-    return mb + " MB";
   }
     return mb + " MB";
   }
