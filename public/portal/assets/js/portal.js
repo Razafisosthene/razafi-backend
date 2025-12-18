@@ -1,6 +1,6 @@
 /* ===============================
    RAZAFI PORTAL – JS v2 (DB Plans)
-   Plans fetched from backend
+   Plans fetched from backend (Supabase via server.js)
    Payment integrated per plan
    =============================== */
 
@@ -21,6 +21,37 @@
   function formatAr(n) {
     const num = Number(n) || 0;
     return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " Ar";
+  }
+
+  // C) Plan info formatters (Approved C, Option 2)
+  function formatData(dataMb) {
+    const mb = Number(dataMb) || 0;
+    if (mb >= 1024) {
+      const go = mb / 1024;
+      const rounded = Math.round(go * 10) / 10; // 1 decimal
+      return (rounded % 1 === 0 ? rounded.toFixed(0) : rounded.toFixed(1)) + " Go";
+    }
+    return mb + " MB";
+  }
+
+  function formatDuration(hoursVal) {
+    const h = Math.max(0, Math.trunc(Number(hoursVal) || 0));
+    if (h < 24) return h + "h";
+    const days = Math.trunc(h / 24);
+    const rem = h % 24;
+
+    if (days === 1 && rem === 0) return "1 jour";
+
+    const dayLabel = days === 1 ? "jour" : "jours";
+    if (rem === 0) return days + " " + dayLabel;
+
+    // Option 2: mixed format, e.g. "1 jour 6h"
+    return days + " " + dayLabel + " " + rem + "h";
+  }
+
+  function formatDevices(maxDevicesVal) {
+    const d = Math.max(1, Math.trunc(Number(maxDevicesVal) || 1));
+    return d === 1 ? "1 appareil" : d + " appareils";
   }
 
   // -------- Read Tanaza params (or DEV) --------
@@ -51,8 +82,7 @@
     if (timeLeftEl) timeLeftEl.textContent = status.timeLeft;
     if (dataLeftEl) dataLeftEl.textContent = status.dataLeft;
     if (devicesEl) {
-      devicesEl.textContent =
-        status.devicesUsed + " / " + status.devicesAllowed;
+      devicesEl.textContent = status.devicesUsed + " / " + status.devicesAllowed;
     }
   }
 
@@ -91,11 +121,13 @@
   function planCardHTML(plan) {
     const name = plan.name || "Plan";
     const price = formatAr(plan.price_ar);
-    const duration = Number(plan.duration_hours) || 0;
-    const dataMb = Number(plan.data_mb) || 0;
-    const devices = Number(plan.max_devices) || 1;
 
-    const subtitle = `⏳ Durée: ${duration}h • 📊 Data: ${dataMb} MB • 🔌 Appareils: ${devices}`;
+    const durationHours = Number(plan.duration_hours) || 0;
+    const dataMb = Number(plan.data_mb) || 0;
+    const maxDevices = Number(plan.max_devices) || 1;
+
+    // Approved C:
+    const subtitle = `⏳ Durée: ${formatDuration(durationHours)} • 📊 Data: ${formatData(dataMb)} • 🔌 ${formatDevices(maxDevices)}`;
 
     return `
       <div class="card plan-card" data-plan-id="${plan.id}">
@@ -143,11 +175,18 @@
     if (plansLoading) plansLoading.textContent = "Chargement des plans…";
 
     try {
-      // backend filters is_active=true and is_visible=true
-      const res = await fetch(`/api/new/plans?ap_mac=${encodeURIComponent(apMac)}&client_mac=${encodeURIComponent(clientMac)}`);
+      const res = await fetch(
+        `/api/new/plans?ap_mac=${encodeURIComponent(apMac)}&client_mac=${encodeURIComponent(clientMac)}`
+      );
+
       const text = await res.text();
       let data;
-      try { data = JSON.parse(text); } catch { throw new Error("Réponse serveur invalide"); }
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error("Réponse serveur invalide");
+      }
+
       if (!res.ok) throw new Error(data?.error || "Erreur chargement plans");
 
       const plans = data.plans || [];
