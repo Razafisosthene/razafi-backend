@@ -1,458 +1,14 @@
 /* ===============================
-   RAZAFI PORTAL – BASE STYLE
-   =============================== */
-/* DEBUG — À SUPPRIMER EN PROD
-body {
-  outline: 10px solid red !important;
-}
-*/
-
-:root {
-  --color-primary: #0d6efd; /* RAZAFI primary – SAME AS OLD */
-  --color-primary-soft: rgba(13,110,253,0.08);
-
-  --bg-main: #f6f8fb;
-  --bg-card: #ffffff;
-  --text-main: #1f2937;
-  --text-muted: #6b7280;
-
-  --border-radius: 16px;
-  --shadow-soft: 0 10px 25px rgba(0,0,0,0.06);
-
-  --success: #16a34a;
-}
-
-/* Dark theme (premium anthracite) */
-body.theme-dark {
-  --bg-main: #121418;
-  --bg-card: #1a1d23;
-  --text-main: #e5e7eb;
-  --text-muted: #9ca3af;
-  --shadow-soft: 0 10px 30px rgba(0,0,0,0.5);
-}
-
-/* ===============================
-   GLOBAL
+   RAZAFI PORTAL – CSS (NEW system)
+   - Premium cards (limited/unlimited families)
+   - Payment UX (toast + confirm + processing overlay)
    =============================== */
 
-* {
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
-               Roboto, Helvetica, Arial, sans-serif;
-  background: var(--bg-main);
-  color: var(--text-main);
-}
-
-img {
-  max-width: 100%;
-}
-
-/* ===============================
-   HEADER
-   =============================== */
-
-.portal-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  background: var(--bg-card);
-  padding: 14px 18px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  box-shadow: var(--shadow-soft);
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-weight: 600;
-}
-
-.brand img {
-  height: 32px;
-}
-
-.theme-toggle {
-  background: transparent;
-  border: none;
-  font-size: 20px;
-  cursor: pointer;
-}
-
-/* ===============================
-   MAIN CONTAINER
-   =============================== */
-
-.portal-container {
-  max-width: 420px;
-  margin: 24px auto;
-  padding: 0 16px 40px;
-}
-
-/* ===============================
-   CARDS
-   =============================== */
-
-.card {
-  background: var(--bg-card);
-  border-radius: var(--border-radius);
-  padding: 18px;
-  margin-bottom: 18px;
-  box-shadow: var(--shadow-soft);
-}
-
-/* ===============================
-   PREMIUM PLAN CARDS (P2)
-   Limited = blue/purple/warm family
-   Unlimited = green/teal family
-   Variants are deterministic via JS (v0..v3)
-   =============================== */
-
-.plan-card {
-  position: relative;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
-}
-
-.theme-light .plan-card {
-  border-color: rgba(0, 0, 0, 0.08);
-}
-
-.plan-card::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 3px;
-  opacity: 0.8;
-  background: rgba(255, 255, 255, 0.35);
-}
-
-.theme-light .plan-card::before {
-  background: rgba(0, 0, 0, 0.08);
-}
-
-.plan-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
-  border-color: rgba(255, 255, 255, 0.18);
-}
-
-.theme-light .plan-card:hover {
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.12);
-  border-color: rgba(0, 0, 0, 0.12);
-}
-
-/* Limited palette */
-.plan-card.plan-limited.v0 { background: linear-gradient(135deg, rgba(59,130,246,0.22), rgba(99,102,241,0.10)), var(--bg-card); }
-.plan-card.plan-limited.v1 { background: linear-gradient(135deg, rgba(168,85,247,0.20), rgba(59,130,246,0.10)), var(--bg-card); }
-.plan-card.plan-limited.v2 { background: linear-gradient(135deg, rgba(245,158,11,0.18), rgba(239,68,68,0.08)), var(--bg-card); }
-.plan-card.plan-limited.v3 { background: linear-gradient(135deg, rgba(14,165,233,0.20), rgba(168,85,247,0.08)), var(--bg-card); }
-
-/* Unlimited palette */
-.plan-card.plan-unlimited.v0 { background: linear-gradient(135deg, rgba(16,185,129,0.22), rgba(20,184,166,0.10)), var(--bg-card); }
-.plan-card.plan-unlimited.v1 { background: linear-gradient(135deg, rgba(34,197,94,0.20), rgba(16,185,129,0.10)), var(--bg-card); }
-.plan-card.plan-unlimited.v2 { background: linear-gradient(135deg, rgba(20,184,166,0.22), rgba(59,130,246,0.08)), var(--bg-card); }
-.plan-card.plan-unlimited.v3 { background: linear-gradient(135deg, rgba(74,222,128,0.18), rgba(20,184,166,0.10)), var(--bg-card); }
-
-/* Unlimited badge */
-.plan-badge {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  padding: 6px 10px;
-  font-size: 0.72rem;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  border-radius: 999px;
-  text-transform: uppercase;
-  background: rgba(16, 185, 129, 0.22);
-  border: 1px solid rgba(16, 185, 129, 0.35);
-  color: var(--text);
-  backdrop-filter: blur(6px);
-}
-
-.theme-light .plan-badge {
-  background: rgba(16, 185, 129, 0.14);
-  border-color: rgba(16, 185, 129, 0.25);
-}
-
-
-.status-card h2 {
-  margin-top: 0;
-}
-
-.muted {
-  color: var(--text-muted);
-}
-
-.small {
-  font-size: 0.85rem;
-}
-
-.success {
-  color: var(--success);
-  font-weight: 600;
-}
-
-/* ===============================
-   BUTTONS
-   =============================== */
-
-.primary-btn {
-  width: 100%;
-  padding: 14px;
-  border-radius: 12px;
-  border: none;
-  background: var(--color-primary);
-  color: white;
-  font-size: 1rem;
-  font-weight: 600;
-  cursor: pointer;
-  margin-top: 10px;
-}
-
-.secondary-btn {
-  width: 100%;
-  padding: 12px;
-  border-radius: 12px;
-  border: 2px solid var(--color-primary);
-  background: transparent;
-  color: var(--color-primary);
-  font-weight: 600;
-  cursor: pointer;
-  margin-top: 10px;
-}
-
-/* ===============================
-   INFO BOX
-   =============================== */
-
-.info-box {
-  background: var(--color-primary-soft);
-  border-radius: var(--border-radius);
-  padding: 14px;
-  font-size: 0.9rem;
-  margin-bottom: 18px;
-}
-
-/* ===============================
-   PLANS
-   =============================== */
-
-.plans-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 16px;
-}
-
-.plan-card h4 {
-  margin: 0 0 6px;
-}
-
-.price {
-  font-size: 1.4rem;
-  font-weight: 700;
-  margin-bottom: 12px;
-}
-
-.plan-card.highlight {
-  border: 2px solid var(--color-primary);
-}
-
-/* ===============================
-   PAYMENT
-   =============================== */
-
-label {
-  display: block;
-  margin-bottom: 6px;
-  font-weight: 500;
-}
-
-input[type="tel"] {
-  width: 100%;
-  padding: 14px;
-  border-radius: 12px;
-  border: 1px solid #d1d5db;
-  font-size: 1rem;
-  margin-bottom: 10px;
-}
-
-/* ===============================
-   FOOTER
-   =============================== */
-
-.portal-footer {
-  text-align: center;
-  font-size: 0.85rem;
-  color: var(--text-muted);
-  padding: 20px;
-}
-/* ===== MVola Official Badge ===== */
-.mvola-badge {
-  margin-top: 12px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-}
-
-.mvola-badge .secure-text {
-  font-size: 0.85rem;
-  color: #6b7280; /* gris élégant */
-}
-
-.mvola-badge img {
-  height: 44px;
-  max-width: 160px;
-  object-fit: contain;
-}
-/* =========================
-   Payment visibility logic
-   ========================= */
-
-
-/* ÉTAT CACHÉ PAR DÉFAUT */
-.hidden {
-  display: none !important;
-}
-
-/* ÉTAT ACTIF */
-.plan-card.selected {
-  border: 2px solid #2563eb;
-}
-/* ===============================
-   Payment visibility – HARD RULE
-   =============================== */
-
-/* Payment is hidden by default */
-.plan-payment {
-  display: none;
-  margin-top: 16px;
-}
-
-/* Payment visible ONLY when plan is selected */
-.plan-card.selected .plan-payment {
-  display: block;
-}
-
-
-/* ===============================
-   A + D POLISH (Plan cards + Mobile)
-   - Price unchanged
-   - Plan infos bigger + 2-line layout
-   - Buttons full width on mobile
-   =============================== */
-
-.plan-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-/* Typography tweaks (without changing price size) */
-.plan-card h4 {
-  font-size: 1.05rem;
-  font-weight: 700;
-  letter-spacing: 0.2px;
-}
-
-/* Plan info lines */
-.plan-meta,
-.plan-devices {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: 1.02rem; /* slightly bigger */
-  line-height: 1.25rem;
-}
-
-.plan-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-}
-
-.plan-devices {
-  color: var(--text);
-  opacity: 0.9;
-}
-
-/* Improve button look + spacing */
-.plan-card button,
-.plan-payment button {
-  border-radius: 14px;
-}
-
-/* Selected plan emphasis */
-.plan-card.selected {
-  border: 2px solid rgba(255,255,255,0.20);
-}
-
-/* Payment area spacing */
-.plan-payment {
-  padding-top: 8px;
-  border-top: 1px solid rgba(255,255,255,0.12);
-}
-
-/* Responsive layout: wider cards, less scroll */
-@media (min-width: 720px) {
-  .plans-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 18px;
-  }
-}
-
-@media (min-width: 1040px) {
-  .plans-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-/* Mobile: near full width + full-width buttons */
-@media (max-width: 520px) {
-  .plans-grid {
-    gap: 14px;
-  }
-
-  .card {
-    padding: 16px;
-  }
-
-  .plan-card button,
-  .plan-payment .primary-btn,
-  .plan-payment .secondary-btn,
-  .plan-payment .pay-btn,
-  .plan-payment .cancel-btn {
-    width: 100%;
-  }
-
-  .plan-meta,
-  .plan-devices {
-    font-size: 1.05rem; /* a touch bigger on mobile */
-  }
-
-  .price {
-    margin-bottom: 8px; /* reduce scroll */
-  }
-}
-
-
-
-/* ===============================
-   Payment UX (B) — Toast, Confirmation, Processing
-   =============================== */
-
-#toastHost{
+/* IMPORTANT: remove any debug outline in production */
+body { outline: none !important; }
+
+/* ---- Toast (top-center, safe area) ---- */
+#toastContainer{
   position: fixed;
   top: calc(env(safe-area-inset-top, 0px) + 14px);
   left: 50%;
@@ -469,124 +25,144 @@ input[type="tel"] {
   pointer-events: none;
   opacity: 0;
   transform: translateY(-6px);
-  transition: opacity .18s ease, transform .18s ease;
-  padding: 12px 14px;
+  transition: opacity .2s ease, transform .2s ease;
   border-radius: 14px;
+  padding: 12px 14px;
   font-weight: 600;
+  box-shadow: 0 12px 30px rgba(0,0,0,.18);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(255,255,255,.12);
-  background: rgba(20,20,24,.72);
+}
+
+.toast.show{
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast-info{
+  background: rgba(20, 28, 36, .88);
   color: #fff;
-  box-shadow: 0 10px 30px rgba(0,0,0,.25);
+  border: 1px solid rgba(255,255,255,.10);
+}
+.toast-success{
+  background: rgba(18, 120, 70, .90);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,.14);
+}
+.toast-error{
+  background: rgba(160, 40, 40, .92);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,.14);
 }
 
-.toast.show{ opacity: 1; transform: translateY(0); }
-
-.toast-info{ background: rgba(20,20,24,.72); }
-.toast-error{ background: rgba(160, 35, 35, .78); }
-
-body.theme-light .toast{
-  background: rgba(255,255,255,.86);
-  color: #111;
-  border: 1px solid rgba(0,0,0,.08);
-}
-body.theme-light .toast-error{
-  background: rgba(255, 220, 220, .92);
-  color: #7a1111;
-}
-
+/* ---- Payment UX helpers ---- */
 .phone-hint{
-  margin: 8px 0 2px;
-  font-size: 0.95rem;
-  font-weight: 600;
-  min-height: 1.2em;
+  margin-top: 6px;
+  min-height: 18px;
 }
-.phone-hint.ok{ color: #22c55e; }
-.phone-hint.bad{ color: #ef4444; }
+.phone-hint.hint-ok{ color: rgba(30, 140, 80, 1); }
+.phone-hint.hint-error{ color: rgba(185, 55, 55, 1); }
 
-.plan-payment .pay-btn[disabled]{
+.pay-btn[disabled]{
   opacity: .55;
   cursor: not-allowed;
+  transform: none !important;
 }
 
+/* Inline confirmation */
 .pay-confirm{
   margin-top: 12px;
-  padding: 12px;
   border-radius: 16px;
-  border: 1px solid rgba(255,255,255,.14);
-  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(20, 28, 36, .06);
+  padding: 12px;
 }
-body.theme-light .pay-confirm{
-  border: 1px solid rgba(0,0,0,.08);
-  background: rgba(0,0,0,.03);
-}
-.pay-confirm h6{
-  margin: 0 0 10px;
-  font-size: 1rem;
+.pay-confirm.hidden{ display:none; }
+
+.pay-confirm-inner h6{
+  margin: 0 0 10px 0;
+  font-size: 14px;
+  font-weight: 800;
 }
 .pay-summary{
   display: grid;
-  gap: 6px;
-  font-size: 0.98rem;
+  gap: 8px;
+  margin-bottom: 12px;
 }
+.summary-row{
+  display:flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+.summary-row span{ opacity: .75; }
+.summary-row strong{ font-weight: 800; }
+
 .pay-confirm-actions{
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display:flex;
   gap: 10px;
-  margin-top: 12px;
+}
+.pay-confirm-actions .primary-btn,
+.pay-confirm-actions .secondary-btn{
+  flex: 1;
 }
 
-.pay-processing{
+/* iPhone-style processing overlay (local card) */
+.processing-overlay{
   position: absolute;
   inset: 0;
-  border-radius: 20px;
-  background: rgba(0,0,0,.30);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  border-radius: 18px;
+  background: rgba(0,0,0,.22);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 18px;
+  padding: 16px;
 }
-body.theme-light .pay-processing{
-  background: rgba(255,255,255,.42);
-}
-.plan-card{ position: relative; }
-.pay-processing-inner{
+.processing-overlay.hidden{ display:none; }
+
+.processing-card{
   width: min(92%, 420px);
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 14px 16px;
-  border-radius: 18px;
-  border: 1px solid rgba(255,255,255,.18);
-  background: rgba(20,20,24,.78);
+  background: rgba(20, 28, 36, .90);
   color: #fff;
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,.14);
+  padding: 14px 14px;
+  display:flex;
+  align-items:center;
+  gap: 12px;
+  box-shadow: 0 18px 50px rgba(0,0,0,.35);
 }
-body.theme-light .pay-processing-inner{
-  background: rgba(255,255,255,.92);
-  color: #111;
-  border: 1px solid rgba(0,0,0,.10);
-}
+
 .spinner{
-  width: 20px;
-  height: 20px;
-  border-radius: 999px;
-  border: 3px solid rgba(255,255,255,.35);
-  border-top-color: rgba(255,255,255,1);
-  animation: spin .8s linear infinite;
-}
-body.theme-light .spinner{
-  border: 3px solid rgba(0,0,0,.18);
-  border-top-color: rgba(0,0,0,.65);
-}
-@keyframes spin{ to{ transform: rotate(360deg);} }
-
-.pay-status{
-  margin-top: 10px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 3px solid rgba(255,255,255,.28);
+  border-top-color: rgba(255,255,255,.95);
+  animation: spin .9s linear infinite;
+  flex: 0 0 auto;
 }
 
-@media (max-width: 520px){
-  .pay-confirm-actions{ grid-template-columns: 1fr; }
+@keyframes spin{
+  to{ transform: rotate(360deg); }
 }
+
+.processing-title{
+  font-weight: 900;
+  margin-bottom: 4px;
+}
+.processing-sub{
+  opacity: .88;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+/* Ensure plan payment is positioning context for overlay */
+.plan-payment{ position: relative; }
+
+/* ===== The rest of your portal styling should remain from your existing premium CSS =====
+   We keep this file focused on Payment UX additions to avoid breaking your current design.
+   If you already have premium palettes/buttons/cards, keep them; these selectors only add on top.
+*/
