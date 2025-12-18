@@ -1,9 +1,11 @@
 /* ===============================
    RAZAFI PORTAL – BASE STYLE
    =============================== */
+/* DEBUG — À SUPPRIMER EN PROD
 body {
   outline: 10px solid red !important;
 }
+*/
 
 :root {
   --color-primary: #0d6efd; /* RAZAFI primary – SAME AS OLD */
