@@ -443,3 +443,148 @@ input[type="tel"] {
     margin-bottom: 8px; /* reduce scroll */
   }
 }
+
+
+
+/* ===============================
+   Payment UX (B) — Toast, Confirmation, Processing
+   =============================== */
+
+#toastHost{
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 14px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+  width: min(92vw, 520px);
+}
+
+.toast{
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity .18s ease, transform .18s ease;
+  padding: 12px 14px;
+  border-radius: 14px;
+  font-weight: 600;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(20,20,24,.72);
+  color: #fff;
+  box-shadow: 0 10px 30px rgba(0,0,0,.25);
+}
+
+.toast.show{ opacity: 1; transform: translateY(0); }
+
+.toast-info{ background: rgba(20,20,24,.72); }
+.toast-error{ background: rgba(160, 35, 35, .78); }
+
+body.theme-light .toast{
+  background: rgba(255,255,255,.86);
+  color: #111;
+  border: 1px solid rgba(0,0,0,.08);
+}
+body.theme-light .toast-error{
+  background: rgba(255, 220, 220, .92);
+  color: #7a1111;
+}
+
+.phone-hint{
+  margin: 8px 0 2px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  min-height: 1.2em;
+}
+.phone-hint.ok{ color: #22c55e; }
+.phone-hint.bad{ color: #ef4444; }
+
+.plan-payment .pay-btn[disabled]{
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+.pay-confirm{
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,.14);
+  background: rgba(255,255,255,.06);
+}
+body.theme-light .pay-confirm{
+  border: 1px solid rgba(0,0,0,.08);
+  background: rgba(0,0,0,.03);
+}
+.pay-confirm h6{
+  margin: 0 0 10px;
+  font-size: 1rem;
+}
+.pay-summary{
+  display: grid;
+  gap: 6px;
+  font-size: 0.98rem;
+}
+.pay-confirm-actions{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.pay-processing{
+  position: absolute;
+  inset: 0;
+  border-radius: 20px;
+  background: rgba(0,0,0,.30);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+body.theme-light .pay-processing{
+  background: rgba(255,255,255,.42);
+}
+.plan-card{ position: relative; }
+.pay-processing-inner{
+  width: min(92%, 420px);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,.18);
+  background: rgba(20,20,24,.78);
+  color: #fff;
+}
+body.theme-light .pay-processing-inner{
+  background: rgba(255,255,255,.92);
+  color: #111;
+  border: 1px solid rgba(0,0,0,.10);
+}
+.spinner{
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  border: 3px solid rgba(255,255,255,.35);
+  border-top-color: rgba(255,255,255,1);
+  animation: spin .8s linear infinite;
+}
+body.theme-light .spinner{
+  border: 3px solid rgba(0,0,0,.18);
+  border-top-color: rgba(0,0,0,.65);
+}
+@keyframes spin{ to{ transform: rotate(360deg);} }
+
+.pay-status{
+  margin-top: 10px;
+}
+
+@media (max-width: 520px){
+  .pay-confirm-actions{ grid-template-columns: 1fr; }
+}

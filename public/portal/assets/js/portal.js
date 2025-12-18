@@ -150,7 +150,7 @@
     const line1 = `⏳ Durée: ${formatDuration(durationHours)} • 📊 Data: ${formatData(dataMb)}`;
     const line2 = `🔌 ${formatDevices(maxDevices)}`;
     return `
-      <div class="card plan-card ${familyClass} ${variantClass}" data-plan-id="${plan.id}">${badgeHtml}
+      <div class="card plan-card ${familyClass} ${variantClass}" data-plan-id="${plan.id}" data-plan-name="${escapeHtml(name)}" data-plan-price-ar="${Number(plan.price_ar)||0}" data-plan-duration-hours="${durationHours}" data-plan-data-mb="${isUnlimited ? "" : (Number(plan.data_mb)||0)}" data-plan-unlimited="${isUnlimited ? "1" : "0"}" data-plan-max-devices="${maxDevices}">${badgeHtml}
         <h4>${name}</h4>
         <p class="price">${price}</p>
         <p class="plan-meta">${line1}</p>
@@ -267,24 +267,131 @@
       }
 
       if (payBtn) {
-        payBtn.addEventListener("click", function () {
-          const input = card.querySelector("input[type='tel']");
-          const phone = input ? input.value.trim() : "";
-          const planId = card.getAttribute("data-plan-id");
+        const hintEl = card.querySelector(".phone-hint");
+        const confirmBox = card.querySelector(".pay-confirm");
+        const summaryBox = card.querySelector(".pay-summary");
+        const confirmBtn = card.querySelector(".pay-confirm-btn");
+        const confirmCancelBtn = card.querySelector(".pay-confirm-cancel-btn");
+        const processing = card.querySelector(".pay-processing");
+        const statusEl = card.querySelector(".pay-status");
 
-          if (!phone) {
-            alert("Veuillez entrer un numéro MVola");
+        function setPayEnabled(enabled) {
+          payBtn.disabled = !enabled;
+          payBtn.setAttribute("aria-disabled", (!enabled).toString());
+        }
+
+        function setHint(text, ok) {
+          if (!hintEl) return;
+          hintEl.textContent = text || "";
+          hintEl.classList.toggle("ok", !!ok);
+          hintEl.classList.toggle("bad", ok === false);
+        }
+
+        function hideConfirm() {
+          if (confirmBox) confirmBox.classList.add("hidden");
+        }
+
+        function showConfirm() {
+          if (confirmBox) confirmBox.classList.remove("hidden");
+        }
+
+        function setProcessing(on) {
+          card.classList.toggle("is-processing", !!on);
+          if (processing) processing.classList.toggle("hidden", !on);
+          // lock inputs/buttons during processing
+          const input = card.querySelector("input[type='tel']");
+          if (input) input.disabled = !!on;
+          if (cancelBtn) cancelBtn.disabled = !!on;
+          if (confirmBtn) confirmBtn.disabled = !!on;
+          if (confirmCancelBtn) confirmCancelBtn.disabled = !!on;
+          // Pay button stays disabled if invalid; otherwise disabled during processing
+          if (payBtn) payBtn.disabled = !!on || payBtn.disabled;
+        }
+
+        function setStatus(text) {
+          if (!statusEl) return;
+          statusEl.textContent = text || "";
+          statusEl.classList.toggle("hidden", !text);
+        }
+
+        // Live validation on input
+        const input = card.querySelector("input[type='tel']");
+        if (input) {
+          input.addEventListener("input", function () {
+            hideConfirm();
+            setStatus("");
+
+            const { isMvola } = normalizeMvolaNumber(input.value);
+            if (!input.value.trim()) {
+              setHint("", null);
+              setPayEnabled(false);
+              return;
+            }
+
+            if (isMvola) {
+              setHint("✅ Numéro MVola valide", true);
+              setPayEnabled(true);
+            } else {
+              setHint("❌ Numéro MVola invalide (ex : 0341234567 ou +26134xxxxxxx)", false);
+              setPayEnabled(false);
+            }
+          });
+        }
+
+        // On Pay click -> open confirmation
+        payBtn.addEventListener("click", function () {
+          if (payBtn.disabled) return;
+
+          const rawPhone = input ? input.value : "";
+          const { cleaned, isMvola } = normalizeMvolaNumber(rawPhone);
+
+          if (!isMvola) {
+            showToast("❌ Numéro MVola invalide. Entrez 034xxxxxxx ou +26134xxxxxxx (ex : 0341234567).", "error");
+            setPayEnabled(false);
             return;
           }
 
-          // Simulated payment action (future: backend)
-          alert(
-            "Paiement en cours pour ce plan.\nPlan ID : " + planId + "\nNuméro MVola : " + phone
-          );
+          // Build plan summary from dataset (no hardcoding)
+          const planName = card.getAttribute("data-plan-name") || "Plan";
+          const priceAr = Number(card.getAttribute("data-plan-price-ar") || 0);
+          const durationHours = Number(card.getAttribute("data-plan-duration-hours") || 0);
+          const isUnlimited = card.getAttribute("data-plan-unlimited") === "1";
+          const dataMb = isUnlimited ? null : Number(card.getAttribute("data-plan-data-mb") || 0);
+          const maxDevices = Number(card.getAttribute("data-plan-max-devices") || 1);
 
-          // future:
-          // - send plan_id + phone + apMac + clientMac to backend
-          // - handle MVola flow
+          const lines = [
+            `<div><strong>${escapeHtml(planName)}</strong></div>`,
+            `<div>💰 Prix : <strong>${escapeHtml(formatAr(priceAr))}</strong></div>`,
+            `<div>⏳ Durée : <strong>${escapeHtml(formatDuration(durationHours))}</strong></div>`,
+            `<div>📊 Data : <strong>${escapeHtml(formatData(dataMb))}</strong></div>`,
+            `<div>🔌 Appareils : <strong>${escapeHtml(formatDevices(maxDevices))}</strong></div>`,
+            `<div class="muted small">MVola : <strong>${escapeHtml(cleaned)}</strong></div>`
+          ];
+
+          if (summaryBox) summaryBox.innerHTML = lines.join("");
+          showConfirm();
+
+          // Confirm -> processing
+          if (confirmBtn) {
+            confirmBtn.onclick = function () {
+              hideConfirm();
+              setProcessing(true);
+              setStatus("⏳ Paiement lancé. Merci de valider la transaction sur votre mobile MVola.");
+              showToast("⏳ Paiement lancé. Merci de valider la transaction sur votre mobile MVola.", "info");
+
+              // TODO: integrate backend purchase endpoint here
+              window.setTimeout(() => {
+                setProcessing(false);
+                // keep status visible while waiting for backend in future
+              }, 2500);
+            };
+          }
+
+          if (confirmCancelBtn) {
+            confirmCancelBtn.onclick = function () {
+              hideConfirm();
+            };
+          }
         });
       }
     });
