@@ -650,6 +650,34 @@ app.get("/api/admin/me", requireAdmin, async (req, res) => {
 });
 
 // ===============================
+// NEW PORTAL — PLANS (DB ONLY)
+// ===============================
+app.get("/api/new/plans", async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const { data, error } = await supabase
+      .from("plans")
+      .select("id,name,price_ar,duration_hours,data_mb,max_devices,is_active,is_visible,sort_order,updated_at")
+      .eq("is_active", true)
+      .eq("is_visible", true)
+      .order("sort_order", { ascending: true })
+      .order("updated_at", { ascending: false });
+
+    if (error) {
+      console.error("NEW PLANS ERROR", error);
+      return res.status(500).json({ error: "db_error" });
+    }
+
+    return res.json({ ok: true, plans: data || [] });
+  } catch (e) {
+    console.error("NEW PLANS EX", e);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+
+// ===============================
 // ADMIN — PLANS CRUD (A2.3)
 // ===============================
 

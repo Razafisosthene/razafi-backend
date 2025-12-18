@@ -1,7 +1,7 @@
 /* ===============================
-   RAZAFI PORTAL – JS v2
+   RAZAFI PORTAL – JS v2 (DB Plans)
+   Plans fetched from backend
    Payment integrated per plan
-   Safe, minimal, captive-friendly
    =============================== */
 
 (function () {
@@ -16,6 +16,11 @@
 
   function $all(selector) {
     return document.querySelectorAll(selector);
+  }
+
+  function formatAr(n) {
+    const num = Number(n) || 0;
+    return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " Ar";
   }
 
   // -------- Read Tanaza params (or DEV) --------
@@ -79,10 +84,96 @@
     });
   }
 
+  // -------- Plans: fetch + render (DB only) --------
+  const plansGrid = $("plansGrid");
+  const plansLoading = $("plansLoading");
+
+  function planCardHTML(plan) {
+    const name = plan.name || "Plan";
+    const price = formatAr(plan.price_ar);
+    const duration = Number(plan.duration_hours) || 0;
+    const dataMb = Number(plan.data_mb) || 0;
+    const devices = Number(plan.max_devices) || 1;
+
+    const subtitle = `⏳ Durée: ${duration}h • 📊 Data: ${dataMb} MB • 🔌 Appareils: ${devices}`;
+
+    return `
+      <div class="card plan-card" data-plan-id="${plan.id}">
+        <h4>${name}</h4>
+        <p class="price">${price}</p>
+        <p class="muted small">${subtitle}</p>
+
+        <button class="choose-plan-btn">Choisir</button>
+
+        <div class="plan-payment hidden">
+          <h5>Paiement</h5>
+
+          <label>Numéro MVola</label>
+          <input
+            type="tel"
+            placeholder="034 XX XXX XX"
+            inputmode="numeric"
+            autocomplete="tel"
+          />
+
+          <button class="primary-btn pay-btn">
+            Payer avec MVola
+          </button>
+
+          <button class="secondary-btn cancel-btn">
+            Annuler
+          </button>
+
+          <div class="mvola-badge">
+            <span class="secure-text">🔒 Paiement sécurisé via</span>
+            <img src="/portal/assets/img/mvola.png" alt="MVola">
+          </div>
+
+          <p class="muted small">
+            💼 Paiement en espèces possible avec assistance du staff.
+          </p>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadPlans() {
+    if (!plansGrid) return;
+
+    if (plansLoading) plansLoading.textContent = "Chargement des plans…";
+
+    try {
+      // backend filters is_active=true and is_visible=true
+      const res = await fetch(`/api/new/plans?ap_mac=${encodeURIComponent(apMac)}&client_mac=${encodeURIComponent(clientMac)}`);
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch { throw new Error("Réponse serveur invalide"); }
+      if (!res.ok) throw new Error(data?.error || "Erreur chargement plans");
+
+      const plans = data.plans || [];
+      if (!plans.length) {
+        plansGrid.innerHTML = `<p class="muted small">Aucun plan disponible pour le moment.</p>`;
+        return;
+      }
+
+      plansGrid.innerHTML = plans.map(planCardHTML).join("");
+
+      // bind behaviors after rendering
+      bindPlanHandlers();
+      closeAllPayments(); // ensure closed on load
+    } catch (e) {
+      console.error("[RAZAFI] loadPlans error", e);
+      plansGrid.innerHTML = `<p class="muted small">Impossible de charger les plans.</p>`;
+    }
+  }
+
   // -------- Plan selection & payment integration --------
-  const planCards = $all(".plan-card");
+  function getPlanCards() {
+    return $all(".plan-card");
+  }
 
   function closeAllPayments() {
+    const planCards = getPlanCards();
     planCards.forEach((card) => {
       card.classList.remove("selected");
       const payment = card.querySelector(".plan-payment");
@@ -90,49 +181,54 @@
     });
   }
 
-  planCards.forEach((card) => {
-    const chooseBtn = card.querySelector(".choose-plan-btn");
-    const cancelBtn = card.querySelector(".cancel-btn");
-    const payBtn = card.querySelector(".pay-btn");
+  function bindPlanHandlers() {
+    const planCards = getPlanCards();
 
-    if (chooseBtn) {
-      chooseBtn.addEventListener("click", function () {
-        closeAllPayments();
-        card.classList.add("selected");
-        const payment = card.querySelector(".plan-payment");
-        if (payment) payment.classList.remove("hidden");
-      });
-    }
+    planCards.forEach((card) => {
+      const chooseBtn = card.querySelector(".choose-plan-btn");
+      const cancelBtn = card.querySelector(".cancel-btn");
+      const payBtn = card.querySelector(".pay-btn");
 
-    if (cancelBtn) {
-      cancelBtn.addEventListener("click", function () {
-        card.classList.remove("selected");
-        const payment = card.querySelector(".plan-payment");
-        if (payment) payment.classList.add("hidden");
-      });
-    }
+      if (chooseBtn) {
+        chooseBtn.addEventListener("click", function () {
+          closeAllPayments();
+          card.classList.add("selected");
+          const payment = card.querySelector(".plan-payment");
+          if (payment) payment.classList.remove("hidden");
+        });
+      }
 
-    if (payBtn) {
-      payBtn.addEventListener("click", function () {
-        const input = card.querySelector("input[type='tel']");
-        const phone = input ? input.value.trim() : "";
+      if (cancelBtn) {
+        cancelBtn.addEventListener("click", function () {
+          card.classList.remove("selected");
+          const payment = card.querySelector(".plan-payment");
+          if (payment) payment.classList.add("hidden");
+        });
+      }
 
-        if (!phone) {
-          alert("Veuillez entrer un numéro MVola");
-          return;
-        }
+      if (payBtn) {
+        payBtn.addEventListener("click", function () {
+          const input = card.querySelector("input[type='tel']");
+          const phone = input ? input.value.trim() : "";
+          const planId = card.getAttribute("data-plan-id");
 
-        // Simulated payment action
-        alert(
-          "Paiement en cours pour ce plan.\nNuméro MVola : " + phone
-        );
+          if (!phone) {
+            alert("Veuillez entrer un numéro MVola");
+            return;
+          }
 
-        // future:
-        // - send plan_id + phone + apMac + clientMac to backend
-        // - handle MVola flow
-      });
-    }
-  });
+          // Simulated payment action (future: backend)
+          alert(
+            "Paiement en cours pour ce plan.\nPlan ID : " + planId + "\nNuméro MVola : " + phone
+          );
+
+          // future:
+          // - send plan_id + phone + apMac + clientMac to backend
+          // - handle MVola flow
+        });
+      }
+    });
+  }
 
   // -------- Theme toggle --------
   if (themeToggle) {
@@ -152,8 +248,8 @@
   }
 
   // -------- Init --------
-  closeAllPayments();
   renderStatus(simulatedStatus);
+  loadPlans();
 
   console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac });
 })();

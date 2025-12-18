@@ -18,7 +18,14 @@ form.addEventListener("submit", async (e) => {
       body: JSON.stringify({ email, password })
     });
 
-    const data = await res.json();
+   const raw = await res.text();
+let data = {};
+try { data = JSON.parse(raw); } catch {}
+
+if (!res.ok) {
+  throw new Error(data.error || data.message || raw || "Erreur de connexion");
+}
+
 
     if (!res.ok) {
       throw new Error(data.error || "Erreur de connexion");

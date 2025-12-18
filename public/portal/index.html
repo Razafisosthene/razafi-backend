@@ -61,91 +61,9 @@
 
       <h3>Choisissez un plan</h3>
 
-      <div class="plans-grid">
+      <div class="plans-grid" id="plansGrid">
 
-        <!-- ===== PLAN 1 ===== -->
-        <div class="card plan-card" data-plan-id="plan_1">
-
-          <h4>1 Go – 24h</h4>
-          <p class="price">1 000 Ar</p>
-          <p class="muted small">⏳ La durée commence à la première connexion.</p>
-
-          <button class="choose-plan-btn">Choisir</button>
-
-          <!-- Paiement intégré (caché par défaut) -->
-          <div class="plan-payment hidden">
-
-            <h5>Paiement</h5>
-
-            <label>Numéro MVola</label>
-            <input
-              type="tel"
-              placeholder="034 XX XXX XX"
-              inputmode="numeric"
-              autocomplete="tel"
-            />
-
-            <button class="primary-btn pay-btn">
-              Payer avec MVola
-            </button>
-
-            <button class="secondary-btn cancel-btn">
-              Annuler
-            </button>
-
-            <div class="mvola-badge">
-              <span class="secure-text">🔒 Paiement sécurisé via</span>
-              <img src="/portal/assets/img/mvola.png" alt="MVola">
-            </div>
-
-            <p class="muted small">
-              💼 Paiement en espèces possible avec assistance du staff.
-            </p>
-
-          </div>
-        </div>
-
-        <!-- ===== PLAN 2 ===== -->
-        <div class="card plan-card highlight" data-plan-id="plan_2">
-
-          <h4>Illimité – 1 jour</h4>
-          <p class="price">3 000 Ar</p>
-          <p class="muted small">⏳ La durée commence à la première connexion.</p>
-
-          <button class="choose-plan-btn">Choisir</button>
-
-          <!-- Paiement intégré (caché par défaut) -->
-          <div class="plan-payment hidden">
-
-            <h5>Paiement</h5>
-
-            <label>Numéro MVola</label>
-            <input
-              type="tel"
-              placeholder="034 XX XXX XX"
-              inputmode="numeric"
-              autocomplete="tel"
-            />
-
-            <button class="primary-btn pay-btn">
-              Payer avec MVola
-            </button>
-
-            <button class="secondary-btn cancel-btn">
-              Annuler
-            </button>
-
-            <div class="mvola-badge">
-              <span class="secure-text">🔒 Paiement sécurisé via</span>
-              <img src="/portal/assets/img/mvola.png" alt="MVola">
-            </div>
-
-            <p class="muted small">
-              💼 Paiement en espèces possible avec assistance du staff.
-            </p>
-
-          </div>
-        </div>
+        <p class="muted small" id="plansLoading">Chargement des plans…</p>
 
       </div>
     </section>
