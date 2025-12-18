@@ -25,12 +25,19 @@
 
   // C) Plan info formatters (Approved C, Option 2)
   function formatData(dataMb) {
-    const mb = Number(dataMb) || 0;
+    // Unlimited plan: data_mb is NULL
+    if (dataMb === null || dataMb === undefined) return "Illimité";
+
+    const mb = Number(dataMb);
+    if (!Number.isFinite(mb) || mb < 0) return "—";
+
     if (mb >= 1024) {
       const go = mb / 1024;
       const rounded = Math.round(go * 10) / 10; // 1 decimal
       return (rounded % 1 === 0 ? rounded.toFixed(0) : rounded.toFixed(1)) + " Go";
     }
+    return mb + " MB";
+  }
     return mb + " MB";
   }
 
@@ -123,7 +130,7 @@
     const price = formatAr(plan.price_ar);
 
     const durationHours = Number(plan.duration_hours) || 0;
-    const dataMb = Number(plan.data_mb) || 0;
+    const dataMb = plan.data_mb; // may be null for unlimited
     const maxDevices = Number(plan.max_devices) || 1;
     // Approved A+D: 2-line plan info (bigger)
     const line1 = `⏳ Durée: ${formatDuration(durationHours)} • 📊 Data: ${formatData(dataMb)}`;
