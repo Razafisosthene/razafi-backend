@@ -31,6 +31,73 @@
       h = (h * 31 + s.charCodeAt(i)) >>> 0;
     }
     return h;
+
+  function escapeHtml(input) {
+    return String(input ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  // Toast (top-center). Safe for mobile captive portal (no browser popups).
+  function showToast(message, type = "info", ms = 3500) {
+    let root = document.getElementById("toastRoot");
+    if (!root) {
+      root = document.createElement("div");
+      root.id = "toastRoot";
+      root.style.position = "fixed";
+      root.style.left = "50%";
+      root.style.top = "calc(env(safe-area-inset-top, 0px) + 16px)";
+      root.style.transform = "translateX(-50%)";
+      root.style.zIndex = "9999";
+      root.style.display = "flex";
+      root.style.flexDirection = "column";
+      root.style.gap = "10px";
+      root.style.pointerEvents = "none";
+      document.body.appendChild(root);
+    }
+
+    const t = document.createElement("div");
+    t.className = "toast toast-" + type;
+    t.textContent = String(message);
+    t.style.pointerEvents = "auto";
+    root.appendChild(t);
+
+    requestAnimationFrame(() => t.classList.add("show"));
+
+    const timer = setTimeout(() => {
+      t.classList.remove("show");
+      setTimeout(() => t.remove(), 250);
+    }, ms);
+
+    t.addEventListener("click", () => {
+      clearTimeout(timer);
+      t.classList.remove("show");
+      setTimeout(() => t.remove(), 250);
+    });
+  }
+
+  // MVola validation (copied from OLD behavior):
+  // - remove spaces
+  // - accept +26134xxxxxxx / 26134xxxxxxx (also 37/38) and convert to 034xxxxxxx
+  // - validate local format: 0(34|37|38) + 7 digits
+  function normalizeMvolaNumber(entered) {
+    let cleaned = String(entered || "").trim().replace(/\s+/g, "");
+    const intRegex = /^(?:\+?261)(34|37|38)(\d{7})$/;
+    if (intRegex.test(cleaned)) {
+      cleaned = cleaned.replace(intRegex, "0$1$2");
+    }
+    return cleaned;
+  }
+
+  function isValidMvolaNumber(entered) {
+    const cleaned = normalizeMvolaNumber(entered);
+    return /^0(34|37|38)\d{7}$/.test(cleaned);
+  }
+
+
   }
 
 
@@ -71,8 +138,9 @@
   }
 
   // -------- Read Tanaza params (or DEV) --------
-  const apMac = qs("ap_mac") || "DEV_AP";
-  const clientMac = qs("client_mac") || "DEV_CLIENT";
+  const isLocalhost = (location.hostname === "localhost" || location.hostname === "127.0.0.1");
+const apMac = qs("ap_mac") || (isLocalhost ? "DEV_AP" : "");
+const clientMac = qs("client_mac") || (isLocalhost ? "DEV_CLIENT" : "");
 
   // -------- Status elements --------
   const timeLeftEl = $("time-left");
@@ -196,9 +264,7 @@
     if (plansLoading) plansLoading.textContent = "Chargement des plans…";
 
     try {
-      const res = await fetch(
-        `/api/new/plans?ap_mac=${encodeURIComponent(apMac)}&client_mac=${encodeURIComponent(clientMac)}`
-      );
+      const res = await fetch((apMac && clientMac) ? `/api/new/plans?ap_mac=${encodeURIComponent(apMac)}&client_mac=${encodeURIComponent(clientMac)}` : `/api/new/plans`);
 
       const text = await res.text();
       let data;
