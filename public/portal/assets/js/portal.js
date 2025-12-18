@@ -23,6 +23,17 @@
     return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " Ar";
   }
 
+  function hashToInt(str) {
+    // Deterministic small hash for stable color variants (no hardcoded mapping)
+    const s = String(str || "");
+    let h = 0;
+    for (let i = 0; i < s.length; i++) {
+      h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    }
+    return h;
+  }
+
+
   // C) Plan info formatters (Approved C, Option 2)
   function formatData(dataMb) {
     // Unlimited plan: data_mb is NULL
@@ -35,7 +46,7 @@
       const go = mb / 1024;
       const rounded = Math.round(go * 10) / 10; // 1 decimal
       return (rounded % 1 === 0 ? rounded.toFixed(0) : rounded.toFixed(1)) + " Go";
-  }
+    }
     return mb + " MB";
   }
 
@@ -130,11 +141,16 @@
     const durationHours = Number(plan.duration_hours) || 0;
     const dataMb = plan.data_mb; // may be null for unlimited
     const maxDevices = Number(plan.max_devices) || 1;
+
+    const isUnlimited = (plan.data_mb === null || plan.data_mb === undefined);
+    const familyClass = isUnlimited ? "plan-unlimited" : "plan-limited";
+    const variantClass = "v" + (hashToInt(plan.id) % 4);
+    const badgeHtml = isUnlimited ? `<span class="plan-badge">ILLIMITÉ</span>` : "";
     // Approved A+D: 2-line plan info (bigger)
     const line1 = `⏳ Durée: ${formatDuration(durationHours)} • 📊 Data: ${formatData(dataMb)}`;
     const line2 = `🔌 ${formatDevices(maxDevices)}`;
     return `
-      <div class="card plan-card" data-plan-id="${plan.id}">
+      <div class="card plan-card ${familyClass} ${variantClass}" data-plan-id="${plan.id}">${badgeHtml}
         <h4>${name}</h4>
         <p class="price">${price}</p>
         <p class="plan-meta">${line1}</p>
@@ -275,21 +291,33 @@
   }
 
   // -------- Theme toggle --------
+  function updateThemeIcon() {
+    if (!themeToggle) return;
+    const isDark = document.body.classList.contains("theme-dark");
+    // Light mode shows moon, dark mode shows sun
+    themeToggle.textContent = isDark ? "☀️" : "🌙";
+  }
+
+  function applyTheme(mode, persist = true) {
+    const body = document.body;
+    const isDark = mode === "dark";
+    body.classList.toggle("theme-dark", isDark);
+    body.classList.toggle("theme-light", !isDark);
+    if (persist) localStorage.setItem("razafi-theme", isDark ? "dark" : "light");
+    updateThemeIcon();
+  }
+
   if (themeToggle) {
     themeToggle.addEventListener("click", function () {
-      const body = document.body;
-      const isDark = body.classList.contains("theme-dark");
-      body.classList.toggle("theme-dark", !isDark);
-      body.classList.toggle("theme-light", isDark);
-      localStorage.setItem("razafi-theme", isDark ? "light" : "dark");
+      const isDark = document.body.classList.contains("theme-dark");
+      applyTheme(isDark ? "light" : "dark");
     });
 
     const savedTheme = localStorage.getItem("razafi-theme");
-    if (savedTheme === "dark") {
-      document.body.classList.remove("theme-light");
-      document.body.classList.add("theme-dark");
-    }
+    if (savedTheme === "dark") applyTheme("dark", false);
+    else applyTheme("light", false);
   }
+
 
   // -------- Init --------
   renderStatus(simulatedStatus);
