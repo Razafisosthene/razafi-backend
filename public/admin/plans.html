@@ -68,10 +68,22 @@
           <form id="form">
             <input id="f_name" placeholder="Name" required />
             <input id="f_price_ar" placeholder="Price (Ar)" required />
-            <input id="f_duration_hours" placeholder="Duration hours" required />
-            <input id="f_data_mb" placeholder="Data MB" required />
+
+            <div style="display:flex; gap:10px;">
+              <input id="f_duration_days" placeholder="Duration (days)" required style="flex:1;" />
+              <input id="f_duration_extra_hours" placeholder="Extra hours (0-23)" required style="flex:1;" />
+            </div>
+
+            <label style="display:flex; gap:10px; align-items:center; margin:10px 0;">
+              <input id="f_unlimited_data" type="checkbox" />
+              <span>Unlimited data</span>
+            </label>
+
+            <input id="f_data_gb" placeholder="Data (GB)" required />
+
             <input id="f_max_devices" placeholder="Max devices" required />
             <input id="f_sort_order" placeholder="Sort order" />
+
             <label style="display:flex; gap:10px; align-items:center; margin:10px 0;">
               <input id="f_is_visible" type="checkbox" checked />
               <span>Visible</span>
@@ -90,6 +102,7 @@
           </form>
         </div>
       </div>
+
 
     </div>
   </div>

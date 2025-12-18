@@ -37,8 +37,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const f_name = document.getElementById("f_name");
   const f_price_ar = document.getElementById("f_price_ar");
-  const f_duration_hours = document.getElementById("f_duration_hours");
-  const f_data_mb = document.getElementById("f_data_mb");
+  const f_duration_days = document.getElementById("f_duration_days");
+  const f_duration_extra_hours = document.getElementById("f_duration_extra_hours");
+  const f_unlimited_data = document.getElementById("f_unlimited_data");
+  const f_data_gb = document.getElementById("f_data_gb");
   const f_max_devices = document.getElementById("f_max_devices");
   const f_sort_order = document.getElementById("f_sort_order");
   const f_is_visible = document.getElementById("f_is_visible");
@@ -52,8 +54,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       modalTitle.textContent = "New plan";
       f_name.value = "";
       f_price_ar.value = "";
-      f_duration_hours.value = "";
-      f_data_mb.value = "";
+      f_duration_days.value = "1";
+      f_duration_extra_hours.value = "0";
+      f_unlimited_data.checked = false;
+      f_data_gb.disabled = false;
+      f_data_gb.value = "";
       f_max_devices.value = "";
       f_sort_order.value = "0";
       f_is_visible.checked = true;
@@ -63,8 +68,23 @@ document.addEventListener("DOMContentLoaded", async () => {
       modalTitle.textContent = "Edit plan";
       f_name.value = plan.name ?? "";
       f_price_ar.value = plan.price_ar ?? 0;
-      f_duration_hours.value = plan.duration_hours ?? 1;
-      f_data_mb.value = plan.data_mb ?? 0;
+      const totalHours = Number(plan.duration_hours ?? 1);
+      const days = Math.floor(totalHours / 24);
+      const extra = totalHours % 24;
+      f_duration_days.value = String(days);
+      f_duration_extra_hours.value = String(extra);
+
+      if (plan.data_mb === null || plan.data_mb === undefined) {
+        f_unlimited_data.checked = true;
+        f_data_gb.value = "";
+        f_data_gb.disabled = true;
+      } else {
+        f_unlimited_data.checked = false;
+        const gb = Number(plan.data_mb) / 1024;
+        const rounded = Math.round(gb * 10) / 10; // 1 decimal
+        f_data_gb.value = String(rounded % 1 === 0 ? rounded.toFixed(0) : rounded.toFixed(1));
+        f_data_gb.disabled = false;
+      }
       f_max_devices.value = plan.max_devices ?? 1;
       f_sort_order.value = plan.sort_order ?? 0;
       f_is_visible.checked = !!plan.is_visible;
@@ -138,6 +158,18 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   refreshBtn.addEventListener("click", () => loadPlans().catch(e => errEl.textContent = e.message));
   newBtn.addEventListener("click", () => openModal("new"));
+
+  // Unlimited data toggle
+  f_unlimited_data.addEventListener("change", () => {
+    if (f_unlimited_data.checked) {
+      f_data_gb.value = "";
+      f_data_gb.disabled = true;
+      f_data_gb.removeAttribute("required");
+    } else {
+      f_data_gb.disabled = false;
+      f_data_gb.setAttribute("required", "required");
+    }
+  });
   cancelBtn.addEventListener("click", closeModal);
   modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
 
@@ -178,18 +210,57 @@ document.addEventListener("DOMContentLoaded", async () => {
     e.preventDefault();
     formError.textContent = "";
 
+    const days = Number(f_duration_days.value);
+    const extraHours = Number(f_duration_extra_hours.value);
+    const duration_hours = Math.round(days * 24 + extraHours);
+
+    let data_mb = null;
+    if (!f_unlimited_data.checked) {
+      const gb = Number(f_data_gb.value);
+      data_mb = Math.round(gb * 1024);
+    }
+
     const payload = {
       name: f_name.value.trim(),
       price_ar: Number(f_price_ar.value),
-      duration_hours: Number(f_duration_hours.value),
-      data_mb: Number(f_data_mb.value),
+      duration_hours,
+      data_mb,
       max_devices: Number(f_max_devices.value),
       sort_order: Number(f_sort_order.value || 0),
       is_visible: f_is_visible.checked,
       is_active: f_is_active.checked,
     };
 
-    try {
+    
+    // Basic validation
+    if (!payload.name) {
+      formError.textContent = "Name required";
+      return;
+    }
+    if (!Number.isFinite(payload.price_ar) || payload.price_ar < 0) {
+      formError.textContent = "Price invalid";
+      return;
+    }
+    if (!Number.isFinite(days) || days < 0 || !Number.isFinite(extraHours) || extraHours < 0 || extraHours > 23) {
+      formError.textContent = "Duration invalid (days >= 0, extra hours 0-23)";
+      return;
+    }
+    if (!Number.isFinite(payload.duration_hours) || payload.duration_hours <= 0) {
+      formError.textContent = "Total duration must be > 0";
+      return;
+    }
+    if (!f_unlimited_data.checked) {
+      const gbVal = Number(f_data_gb.value);
+      if (!Number.isFinite(gbVal) || gbVal <= 0) {
+        formError.textContent = "Data (GB) must be > 0 or choose Unlimited";
+        return;
+      }
+    }
+    if (!Number.isFinite(payload.max_devices) || payload.max_devices <= 0) {
+      formError.textContent = "Max devices invalid";
+      return;
+    }
+try {
       if (!editingId) {
         await fetchJSON("/api/admin/plans", {
           method: "POST",

@@ -742,7 +742,12 @@ app.post("/api/admin/plans", requireAdmin, async (req, res) => {
     const name = typeof b.name === "string" ? b.name.trim() : "";
     const price_ar = toInt(b.price_ar);
     const duration_hours = toInt(b.duration_hours);
-    const data_mb = toInt(b.data_mb);
+    let data_mb = null;
+    if (b.data_mb === null) {
+      data_mb = null;
+    } else {
+      data_mb = toInt(b.data_mb);
+    }
     const max_devices = toInt(b.max_devices);
     const is_active = toBool(b.is_active);
     const is_visible = toBool(b.is_visible);
@@ -752,7 +757,7 @@ app.post("/api/admin/plans", requireAdmin, async (req, res) => {
     if (!isNonEmptyString(name)) return res.status(400).json({ error: "name required" });
     if (price_ar === null || price_ar < 0) return res.status(400).json({ error: "price_ar invalid" });
     if (duration_hours === null || duration_hours <= 0) return res.status(400).json({ error: "duration_hours invalid" });
-    if (data_mb === null || data_mb < 0) return res.status(400).json({ error: "data_mb invalid" });
+    if (data_mb !== null && data_mb < 0) return res.status(400).json({ error: "data_mb invalid" });
     if (max_devices === null || max_devices <= 0) return res.status(400).json({ error: "max_devices invalid" });
 
     const payload = {
@@ -809,9 +814,13 @@ app.patch("/api/admin/plans/:id", requireAdmin, async (req, res) => {
       patch.duration_hours = v;
     }
     if (b.data_mb !== undefined) {
-      const v = toInt(b.data_mb);
-      if (v === null || v < 0) return res.status(400).json({ error: "data_mb invalid" });
-      patch.data_mb = v;
+      if (b.data_mb === null) {
+        patch.data_mb = null; // unlimited
+      } else {
+        const v = toInt(b.data_mb);
+        if (v === null || v < 0) return res.status(400).json({ error: "data_mb invalid" });
+        patch.data_mb = v;
+      }
     }
     if (b.max_devices !== undefined) {
       const v = toInt(b.max_devices);
