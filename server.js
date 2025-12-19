@@ -454,7 +454,7 @@ app.use(
   return callback(null, false);
 },
     
-    methods: ["GET", "POST"],
+    methods: ["GET", "POST", "PATCH", "OPTIONS"],
     credentials: true,
   })
 );
@@ -732,6 +732,7 @@ app.get("/api/admin/plans", requireAdmin, async (req, res) => {
     console.error("ADMIN PLANS LIST EX", e);
     return res.status(500).json({ error: "internal error" });
   }
+});
 
 // ---------------------------------------------------------------------------
 // ADMIN — APs (list)
