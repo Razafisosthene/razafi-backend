@@ -837,6 +837,80 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// ADMIN — APs (assign pool)
+// ---------------------------------------------------------------------------
+app.patch("/api/admin/aps/:ap_mac", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const ap_mac = String(req.params.ap_mac || "").trim();
+    if (!ap_mac) return res.status(400).json({ error: "missing_ap_mac" });
+
+    const b = req.body || {};
+    let pool_id = b.pool_id;
+    if (pool_id === undefined) {
+      return res.status(400).json({ error: "missing_pool_id" });
+    }
+    if (pool_id === null) {
+      pool_id = null; // unassign
+    } else {
+      pool_id = String(pool_id).trim();
+      if (!pool_id) pool_id = null;
+    }
+
+    // ensure AP exists
+    const { data: existing, error: exErr } = await supabase
+      .from("ap_registry")
+      .select("ap_mac,pool_id,is_active")
+      .eq("ap_mac", ap_mac)
+      .maybeSingle();
+
+    if (exErr) {
+      console.error("ADMIN APS PATCH LOOKUP ERROR", exErr);
+      return res.status(500).json({ error: "db_error" });
+    }
+    if (!existing) {
+      return res.status(404).json({ error: "ap_not_found" });
+    }
+
+    // if assigning to a pool, ensure pool exists
+    if (pool_id) {
+      const { data: pool, error: poolErr } = await supabase
+        .from("internet_pools")
+        .select("id")
+        .eq("id", pool_id)
+        .maybeSingle();
+
+      if (poolErr) {
+        console.error("ADMIN APS PATCH POOL LOOKUP ERROR", poolErr);
+        return res.status(500).json({ error: "db_error" });
+      }
+      if (!pool) {
+        return res.status(400).json({ error: "invalid_pool_id" });
+      }
+    }
+
+    const { data, error } = await supabase
+      .from("ap_registry")
+      .update({ pool_id })
+      .eq("ap_mac", ap_mac)
+      .select("ap_mac,pool_id,is_active")
+      .single();
+
+    if (error) {
+      console.error("ADMIN APS PATCH ERROR", error);
+      return res.status(500).json({ error: "db_error" });
+    }
+
+    return res.json({ ok: true, ap: data });
+  } catch (e) {
+    console.error("ADMIN APS PATCH EX", e);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+
 });
 
 app.post("/api/admin/plans", requireAdmin, async (req, res) => {
