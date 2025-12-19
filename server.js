@@ -732,6 +732,111 @@ app.get("/api/admin/plans", requireAdmin, async (req, res) => {
     console.error("ADMIN PLANS LIST EX", e);
     return res.status(500).json({ error: "internal error" });
   }
+
+// ---------------------------------------------------------------------------
+// ADMIN — APs (list)
+// ---------------------------------------------------------------------------
+app.get("/api/admin/aps", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const q = String(req.query.q || "").trim(); // search ap_mac
+    const pool_id = String(req.query.pool_id || "").trim(); // exact pool id
+    const active = String(req.query.active || "all"); // 1|0|all
+    const stale = String(req.query.stale || "all"); // 1|0|all (based on ap_live_stats.is_stale or missing stats)
+    const limit = Math.min(Math.max(toInt(req.query.limit) ?? 50, 1), 200);
+    const offset = Math.max(toInt(req.query.offset) ?? 0, 0);
+
+    // 1) AP registry list
+    let query = supabase
+      .from("ap_registry")
+      .select("ap_mac,pool_id,is_active", { count: "exact" });
+
+    if (q) query = query.ilike("ap_mac", `%${q}%`);
+    if (pool_id) query = query.eq("pool_id", pool_id);
+    if (active === "1") query = query.eq("is_active", true);
+    if (active === "0") query = query.eq("is_active", false);
+
+    query = query
+      .order("ap_mac", { ascending: true })
+      .range(offset, offset + limit - 1);
+
+    const { data: aps, error: apErr, count } = await query;
+    if (apErr) {
+      console.error("ADMIN APS LIST ERROR", apErr);
+      return res.status(500).json({ error: "db_error" });
+    }
+
+    const apList = aps || [];
+    if (!apList.length) {
+      return res.json({ ok: true, aps: [], total: count || 0 });
+    }
+
+    const apMacs = apList.map((a) => a.ap_mac).filter(Boolean);
+
+    // 2) Live stats for these APs
+    const { data: statsRows, error: statsErr } = await supabase
+      .from("ap_live_stats")
+      .select("ap_mac,active_clients,last_computed_at,is_stale")
+      .in("ap_mac", apMacs);
+
+    if (statsErr) {
+      console.error("ADMIN APS STATS ERROR", statsErr);
+      return res.status(500).json({ error: "db_error" });
+    }
+
+    const statsByMac = {};
+    for (const s of statsRows || []) {
+      statsByMac[s.ap_mac] = s;
+    }
+
+    // 3) Pool info (capacity) for pool_ids present
+    const poolIds = Array.from(new Set(apList.map((a) => a.pool_id).filter(Boolean)));
+    let poolById = {};
+    if (poolIds.length) {
+      const { data: poolRows, error: poolErr } = await supabase
+        .from("internet_pools")
+        .select("id,capacity_max")
+        .in("id", poolIds);
+
+      if (poolErr) {
+        console.error("ADMIN APS POOLS ERROR", poolErr);
+        return res.status(500).json({ error: "db_error" });
+      }
+
+      for (const p of poolRows || []) {
+        poolById[p.id] = p;
+      }
+    }
+
+    // 4) Merge
+    let merged = apList.map((a) => {
+      const s = statsByMac[a.ap_mac] || null;
+      const pool = a.pool_id ? (poolById[a.pool_id] || null) : null;
+
+      const is_stale = s ? !!s.is_stale : true; // missing stats => stale
+      return {
+        ap_mac: a.ap_mac,
+        pool_id: a.pool_id || null,
+        is_active: a.is_active !== false,
+        active_clients: s ? (s.active_clients ?? 0) : 0,
+        last_computed_at: s ? (s.last_computed_at || null) : null,
+        is_stale,
+        capacity_max: pool ? (pool.capacity_max ?? null) : null,
+      };
+    });
+
+    // Optional stale filter after merge
+    if (stale === "1") merged = merged.filter((x) => x.is_stale === true);
+    if (stale === "0") merged = merged.filter((x) => x.is_stale === false);
+
+    return res.json({ ok: true, aps: merged, total: count || 0 });
+  } catch (e) {
+    console.error("ADMIN APS LIST EX", e);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
 });
 
 app.post("/api/admin/plans", requireAdmin, async (req, res) => {
