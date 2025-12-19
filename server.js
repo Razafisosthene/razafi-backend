@@ -911,6 +911,45 @@ app.patch("/api/admin/aps/:ap_mac", requireAdmin, async (req, res) => {
 });
 
 
+// ---------------------------------------------------------------------------
+// ADMIN — Pools (list)
+// ---------------------------------------------------------------------------
+app.get("/api/admin/pools", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const q = String(req.query.q || "").trim();
+    const limitRaw = Number(req.query.limit ?? 200);
+    const offsetRaw = Number(req.query.offset ?? 0);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 200;
+    const offset = Number.isFinite(offsetRaw) ? Math.max(offsetRaw, 0) : 0;
+
+    let query = supabase
+      .from("internet_pools")
+      .select("id,capacity_max", { count: "exact" });
+
+    // safest filter: by id only (schema-stable)
+    if (q) {
+      query = query.ilike("id", `%${q}%`);
+    }
+
+    query = query.order("id", { ascending: true }).range(offset, offset + limit - 1);
+
+    const { data, error, count } = await query;
+
+    if (error) {
+      console.error("ADMIN POOLS LIST ERROR", error);
+      return res.status(500).json({ error: "db_error" });
+    }
+
+    return res.json({ ok: true, pools: data || [], total: count ?? (data ? data.length : 0) });
+  } catch (e) {
+    console.error("ADMIN POOLS LIST EX", e);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+
 });
 
 app.post("/api/admin/plans", requireAdmin, async (req, res) => {
