@@ -75,8 +75,6 @@ function showToast(message, kind = "info", ms = 3200) {
     setTimeout(() => t.remove(), 250);
   }, ms);
 }
-    return h;
-  }
 
 
   // C) Plan info formatters (Approved C, Option 2)
