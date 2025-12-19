@@ -21,17 +21,30 @@ function fmtDate(v) {
   return d.toLocaleString();
 }
 
+let poolsCache = [];
+let editingApMac = null;
+let editingCurrentPool = null;
+
 document.addEventListener("DOMContentLoaded", async () => {
   const meEl = document.getElementById("me");
   const errEl = document.getElementById("error");
   const rowsEl = document.getElementById("rows");
 
   const qEl = document.getElementById("q");
-  const poolEl = document.getElementById("poolId");
+  const poolFilterEl = document.getElementById("poolId");
   const activeEl = document.getElementById("activeFilter");
   const staleEl = document.getElementById("staleFilter");
   const refreshBtn = document.getElementById("refreshBtn");
   const logoutBtn = document.getElementById("logoutBtn");
+
+  // modal refs
+  const modal = document.getElementById("modal");
+  const mApEl = document.getElementById("m_ap");
+  const form = document.getElementById("form");
+  const poolSelect = document.getElementById("poolSelect");
+  const unassign = document.getElementById("unassign");
+  const formError = document.getElementById("formError");
+  const cancelBtn = document.getElementById("cancelBtn");
 
   async function guardSession() {
     try {
@@ -44,13 +57,52 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
+  async function loadPools() {
+    const data = await fetchJSON("/api/admin/pools?limit=200&offset=0");
+    poolsCache = data.pools || [];
+    // Build dropdown
+    poolSelect.innerHTML = poolsCache.map(p => {
+      const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "—" : p.capacity_max;
+      return `<option value="${esc(p.id)}">${esc(p.id)} (cap: ${esc(cap)})</option>`;
+    }).join("");
+    if (!poolsCache.length) {
+      poolSelect.innerHTML = `<option value="">(No pools)</option>`;
+    }
+  }
+
+  function openModal(ap_mac, currentPoolId) {
+    editingApMac = ap_mac;
+    editingCurrentPool = currentPoolId || null;
+    formError.textContent = "";
+    mApEl.textContent = ap_mac;
+
+    // default selection
+    unassign.checked = !currentPoolId;
+    poolSelect.disabled = unassign.checked;
+
+    if (currentPoolId) {
+      const opt = [...poolSelect.options].find(o => o.value === currentPoolId);
+      if (opt) poolSelect.value = currentPoolId;
+    } else {
+      poolSelect.selectedIndex = 0;
+    }
+
+    modal.style.display = "block";
+  }
+
+  function closeModal() {
+    modal.style.display = "none";
+    editingApMac = null;
+    editingCurrentPool = null;
+  }
+
   async function loadAPs() {
     errEl.textContent = "";
-    rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="7">Loading...</td></tr>`;
+    rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="8">Loading...</td></tr>`;
 
     const params = new URLSearchParams();
     const q = qEl.value.trim();
-    const pool_id = poolEl.value.trim();
+    const pool_id = poolFilterEl.value.trim();
 
     if (q) params.set("q", q);
     if (pool_id) params.set("pool_id", pool_id);
@@ -65,7 +117,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const aps = data.aps || [];
 
     if (!aps.length) {
-      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="7">No APs</td></tr>`;
+      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="8">No APs</td></tr>`;
       return;
     }
 
@@ -85,6 +137,10 @@ document.addEventListener("DOMContentLoaded", async () => {
           <td style="padding:10px;">${stale}</td>
           <td style="padding:10px;">${active}</td>
           <td style="padding:10px;">${cap}</td>
+          <td style="padding:10px;">
+            <button type="button" data-edit="${esc(a.ap_mac)}" data-pool="${esc(a.pool_id || "")}"
+              style="width:auto; padding:8px 12px;">Edit</button>
+          </td>
         </tr>
       `;
     }).join("");
@@ -92,6 +148,15 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // init
   if (!(await guardSession())) return;
+
+  try {
+    await loadPools();
+  } catch (e) {
+    // pools list failure shouldn't block AP list, but modal won't work
+    console.error(e);
+    errEl.textContent = `Pools load failed: ${e.message}`;
+  }
+
   await loadAPs();
 
   refreshBtn.addEventListener("click", () => loadAPs().catch(e => errEl.textContent = e.message));
@@ -99,12 +164,56 @@ document.addEventListener("DOMContentLoaded", async () => {
   qEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter") loadAPs().catch(err => errEl.textContent = err.message);
   });
-  poolEl.addEventListener("keydown", (e) => {
+  poolFilterEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter") loadAPs().catch(err => errEl.textContent = err.message);
   });
 
   activeEl.addEventListener("change", () => loadAPs().catch(err => errEl.textContent = err.message));
   staleEl.addEventListener("change", () => loadAPs().catch(err => errEl.textContent = err.message));
+
+  // modal behavior
+  unassign.addEventListener("change", () => {
+    poolSelect.disabled = unassign.checked;
+  });
+  cancelBtn.addEventListener("click", closeModal);
+  modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
+
+  rowsEl.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    const ap = btn.getAttribute("data-edit");
+    if (!ap) return;
+    const pool = btn.getAttribute("data-pool") || "";
+    openModal(ap, pool || null);
+  });
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    formError.textContent = "";
+    if (!editingApMac) return;
+
+    let pool_id = null;
+    if (!unassign.checked) {
+      const val = poolSelect.value;
+      if (!val) {
+        formError.textContent = "Select a pool or choose Unassign";
+        return;
+      }
+      pool_id = val;
+    }
+
+    try {
+      await fetchJSON(`/api/admin/aps/${encodeURIComponent(editingApMac)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pool_id }),
+      });
+      closeModal();
+      await loadAPs();
+    } catch (err) {
+      formError.textContent = err.message;
+    }
+  });
 
   logoutBtn.addEventListener("click", async () => {
     try {
