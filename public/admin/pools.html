@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>RAZAFI Admin — Pools</title>
+  <link rel="stylesheet" href="./admin.css" />
+</head>
+<body>
+  <div class="login-container">
+    <div class="card" style="max-width: 1100px; width: 96%;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+        <div>
+          <h1 style="margin:0;">Pools</h1>
+          <div id="me" class="subtitle" style="margin-top:6px;">Loading...</div>
+        </div>
+        <div style="display:flex; gap:10px;">
+          <a href="/admin/" style="text-decoration:none;">
+            <button type="button" style="width:auto; padding:10px 16px;">Dashboard</button>
+          </a>
+          <button id="logoutBtn" type="button" style="width:auto; padding:10px 16px;">Logout</button>
+        </div>
+      </div>
+
+      <hr style="opacity:.2; margin:18px 0;" />
+
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+        <input id="q" placeholder="Search by id/name…" style="flex:1; min-width:240px;" />
+        <button id="refreshBtn" type="button" style="width:auto;">Refresh</button>
+      </div>
+
+      <div id="error" class="error" style="margin-top:12px;"></div>
+
+      <div style="overflow:auto; margin-top:14px;">
+        <table style="width:100%; border-collapse:collapse;">
+          <thead>
+            <tr style="text-align:left; opacity:.9;">
+              <th style="padding:10px;">Name</th>
+              <th style="padding:10px;">Pool ID</th>
+              <th style="padding:10px;">Capacity</th>
+              <th style="padding:10px;">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+
+      <!-- Modal -->
+      <div id="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.5);">
+        <div class="card" style="max-width:520px; margin:10vh auto; width:92%;">
+          <h2 style="margin-top:0;">Edit pool capacity</h2>
+
+          <div style="opacity:.9; margin-bottom:10px;">
+            <div><b id="m_name">—</b></div>
+            <div style="opacity:.7; font-size:13px;">ID: <span id="m_id">—</span></div>
+          </div>
+
+          <form id="form">
+            <input id="f_capacity" placeholder="Capacity max" required />
+            <div id="formError" class="error" style="margin:8px 0;"></div>
+
+            <div style="display:flex; gap:10px; justify-content:flex-end;">
+              <button id="cancelBtn" type="button" style="width:auto;">Cancel</button>
+              <button id="saveBtn" type="submit" style="width:auto;">Save</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="./pools.js"></script>
+</body>
+</html>

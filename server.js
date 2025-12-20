@@ -821,7 +821,7 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
     if (poolIds.length) {
       const { data: poolRows, error: poolErr } = await supabase
         .from("internet_pools")
-        .select("id,name,capacity_max")
+        .select("id,capacity_max")
         .in("id", poolIds);
 
       if (poolErr) {
@@ -847,7 +847,6 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
         active_clients: s ? (s.active_clients ?? 0) : 0,
         last_computed_at: s ? (s.last_computed_at || null) : null,
         is_stale,
-        pool_name: pool ? (pool.name ?? null) : null,
         capacity_max: pool ? (pool.capacity_max ?? null) : null,
       };
     });
@@ -974,6 +973,62 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
     return res.status(500).json({ error: "internal error" });
   }
 });
+
+// ---------------------------------------------------------------------------
+// ADMIN — Pools (edit capacity)
+// ---------------------------------------------------------------------------
+app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "missing_pool_id" });
+
+    const b = req.body || {};
+    if (b.capacity_max === undefined) return res.status(400).json({ error: "missing_capacity_max" });
+
+    const capRaw = Number(b.capacity_max);
+    if (!Number.isFinite(capRaw) || capRaw < 0) {
+      return res.status(400).json({ error: "invalid_capacity_max" });
+    }
+
+    // keep integer (capacity is a count)
+    const capacity_max = Math.round(capRaw);
+
+    // ensure pool exists
+    const { data: existing, error: exErr } = await supabase
+      .from("internet_pools")
+      .select("id,name,capacity_max")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (exErr) {
+      console.error("ADMIN POOLS PATCH LOOKUP ERROR", exErr);
+      return res.status(500).json({ error: "db_error" });
+    }
+    if (!existing) {
+      return res.status(404).json({ error: "pool_not_found" });
+    }
+
+    const { data, error } = await supabase
+      .from("internet_pools")
+      .update({ capacity_max })
+      .eq("id", id)
+      .select("id,name,capacity_max")
+      .single();
+
+    if (error) {
+      console.error("ADMIN POOLS PATCH ERROR", error);
+      return res.status(500).json({ error: "db_error" });
+    }
+
+    return res.json({ ok: true, pool: data });
+  } catch (e) {
+    console.error("ADMIN POOLS PATCH EX", e);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
 
 app.post("/api/admin/plans", requireAdmin, async (req, res) => {
   try {
