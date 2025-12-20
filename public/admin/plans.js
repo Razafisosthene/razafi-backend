@@ -265,7 +265,10 @@ if (!Number.isFinite(durationValue) || durationValue <= 0) {
 if (unit === "minutes") duration_minutes = Math.round(durationValue);
 else if (unit === "hours") duration_minutes = Math.round(durationValue * 60);
 else if (unit === "days") duration_minutes = Math.round(durationValue * 24 * 60);
-else duration_minutes = Math.round(durationValue);
+else duration_minutes = Math\.round\(durationValue\);
+
+    // Legacy compatibility: many backends still expect duration_hours
+    const duration_hours = Math.max(1, Math.ceil(duration_minutes / 60));
 
     let data_mb = null;
     if (!f_unlimited_data.checked) {
@@ -277,6 +280,7 @@ else duration_minutes = Math.round(durationValue);
       name: f_name.value.trim(),
       price_ar: Number(f_price_ar.value),
       duration_minutes,
+      duration_hours,
       data_mb,
       max_devices: Number(f_max_devices.value),
       sort_order: Number(f_sort_order.value || 0),
