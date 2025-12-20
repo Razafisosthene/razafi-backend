@@ -112,28 +112,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
 
-// ---------------------------------------------------------------------------
-// DIAGNOSTICS (safe, no OLD system impact)
-// ---------------------------------------------------------------------------
-// This helps verify which server.js is actually running in production.
-const BUILD_INFO = {
-  git_commit: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null,
-  service: process.env.RENDER_SERVICE_NAME || null,
-  node_env: process.env.NODE_ENV || null,
-  started_at: new Date().toISOString(),
-};
-
-console.log("SERVER BOOT", BUILD_INFO);
-
-app.get("/api/_build", (req, res) => {
-  res.json({ ok: true, ...BUILD_INFO });
-});
-
-// Admin ping (requires login cookie) — lets us confirm admin router is loaded.
-app.get("/api/admin/_ping", requireAdmin, (req, res) => {
-  res.json({ ok: true, admin: true, ...BUILD_INFO });
-});
-
 
 
 // allow Express to trust X-Forwarded-For (Render / Cloudflare / proxies)
@@ -420,9 +398,6 @@ app.use("/admin", express.static(path.join(__dirname, "public", "admin")));
 app.get(/^\/admin\/.*/, requireAdminPage, (req, res) => {
   return res.sendFile(path.join(__dirname, "public", "admin", "index.html"));
 });
-
-// Serve static frontend
-app.use(express.static(path.join(__dirname, "public")));
 
 // ---------------------------------------------------------------------------
 // ENVIRONMENT VARIABLES
@@ -769,43 +744,21 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
     const limit = Math.min(Math.max(toInt(req.query.limit) ?? 50, 1), 200);
     const offset = Math.max(toInt(req.query.offset) ?? 0, 0);
 
-    // Some deployments may not have ap_registry.is_active yet.
-    // We try with is_active first, and transparently fall back if the column doesn't exist.
-    async function runApRegistryQuery({ withIsActive }) {
-      let query = supabase
-        .from("ap_registry")
-        .select(withIsActive ? "ap_mac,pool_id,is_active" : "ap_mac,pool_id", { count: "exact" });
+    // 1) AP registry list
+    let query = supabase
+      .from("ap_registry")
+      .select("ap_mac,pool_id,is_active", { count: "exact" });
 
-      if (q) query = query.ilike("ap_mac", `%${q}%`);
-      if (pool_id) query = query.eq("pool_id", pool_id);
+    if (q) query = query.ilike("ap_mac", `%${q}%`);
+    if (pool_id) query = query.eq("pool_id", pool_id);
+    if (active === "1") query = query.eq("is_active", true);
+    if (active === "0") query = query.eq("is_active", false);
 
-      if (withIsActive) {
-        if (active === "1") query = query.eq("is_active", true);
-        if (active === "0") query = query.eq("is_active", false);
-      }
+    query = query
+      .order("ap_mac", { ascending: true })
+      .range(offset, offset + limit - 1);
 
-      query = query
-        .order("ap_mac", { ascending: true })
-        .range(offset, offset + limit - 1);
-
-      return await query;
-    }
-
-    let supportsIsActive = true;
-    let { data: aps, error: apErr, count } = await runApRegistryQuery({ withIsActive: true });
-
-    if (apErr) {
-      const msg = String(apErr.message || "");
-      const details = String(apErr.details || "");
-      const hint = String(apErr.hint || "");
-      const combined = `${msg} ${details} ${hint}`.toLowerCase();
-
-      if (combined.includes("is_active") && combined.includes("column")) {
-        supportsIsActive = false;
-        ({ data: aps, error: apErr, count } = await runApRegistryQuery({ withIsActive: false }));
-      }
-    }
-
+    const { data: aps, error: apErr, count } = await query;
     if (apErr) {
       console.error("ADMIN APS LIST ERROR", apErr);
       return res.status(500).json({ error: "db_error" });
@@ -862,7 +815,7 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
       return {
         ap_mac: a.ap_mac,
         pool_id: a.pool_id || null,
-        is_active: supportsIsActive ? (a.is_active !== false) : true,
+        is_active: a.is_active !== false,
         active_clients: s ? (s.active_clients ?? 0) : 0,
         last_computed_at: s ? (s.last_computed_at || null) : null,
         is_stale,
@@ -874,12 +827,6 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
     if (stale === "1") merged = merged.filter((x) => x.is_stale === true);
     if (stale === "0") merged = merged.filter((x) => x.is_stale === false);
 
-    // If DB doesn't have is_active, ignore active filter to avoid false negatives.
-    if (supportsIsActive) {
-      if (active === "1") merged = merged.filter((x) => x.is_active === true);
-      if (active === "0") merged = merged.filter((x) => x.is_active === false);
-    }
-
     return res.json({ ok: true, aps: merged, total: count || 0 });
   } catch (e) {
     console.error("ADMIN APS LIST EX", e);
@@ -887,6 +834,9 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// ADMIN — APs (assign pool)
+// ---------------------------------------------------------------------------
 app.patch("/api/admin/aps/:ap_mac", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
@@ -906,35 +856,12 @@ app.patch("/api/admin/aps/:ap_mac", requireAdmin, async (req, res) => {
       if (!pool_id) pool_id = null;
     }
 
-    // Some deployments may not have ap_registry.is_active yet.
-    async function getApRow() {
-      const { data, error } = await supabase
-        .from("ap_registry")
-        .select("ap_mac,pool_id,is_active")
-        .eq("ap_mac", ap_mac)
-        .maybeSingle();
-
-      if (!error) return { data, error, supportsIsActive: true };
-
-      const msg = String(error.message || "");
-      const details = String(error.details || "");
-      const hint = String(error.hint || "");
-      const combined = `${msg} ${details} ${hint}`.toLowerCase();
-
-      if (combined.includes("is_active") && combined.includes("column")) {
-        const retry = await supabase
-          .from("ap_registry")
-          .select("ap_mac,pool_id")
-          .eq("ap_mac", ap_mac)
-          .maybeSingle();
-        return { ...retry, supportsIsActive: false };
-      }
-
-      return { data: null, error, supportsIsActive: true };
-    }
-
     // ensure AP exists
-    const { data: existing, error: exErr, supportsIsActive } = await getApRow();
+    const { data: existing, error: exErr } = await supabase
+      .from("ap_registry")
+      .select("ap_mac,pool_id,is_active")
+      .eq("ap_mac", ap_mac)
+      .maybeSingle();
 
     if (exErr) {
       console.error("ADMIN APS PATCH LOOKUP ERROR", exErr);
@@ -961,67 +888,25 @@ app.patch("/api/admin/aps/:ap_mac", requireAdmin, async (req, res) => {
       }
     }
 
-    // update
-    let updated = null;
+    const { data, error } = await supabase
+      .from("ap_registry")
+      .update({ pool_id })
+      .eq("ap_mac", ap_mac)
+      .select("ap_mac,pool_id,is_active")
+      .single();
 
-    // Try returning is_active if supported, otherwise return minimal fields
-    if (supportsIsActive) {
-      const { data, error } = await supabase
-        .from("ap_registry")
-        .update({ pool_id })
-        .eq("ap_mac", ap_mac)
-        .select("ap_mac,pool_id,is_active")
-        .single();
-
-      if (error) {
-        const msg = String(error.message || "");
-        const details = String(error.details || "");
-        const hint = String(error.hint || "");
-        const combined = `${msg} ${details} ${hint}`.toLowerCase();
-
-        if (combined.includes("is_active") && combined.includes("column")) {
-          const retry = await supabase
-            .from("ap_registry")
-            .update({ pool_id })
-            .eq("ap_mac", ap_mac)
-            .select("ap_mac,pool_id")
-            .single();
-
-          if (retry.error) {
-            console.error("ADMIN APS PATCH UPDATE ERROR", retry.error);
-            return res.status(500).json({ error: "db_error" });
-          }
-
-          updated = { ...retry.data, is_active: true };
-        } else {
-          console.error("ADMIN APS PATCH UPDATE ERROR", error);
-          return res.status(500).json({ error: "db_error" });
-        }
-      } else {
-        updated = data;
-      }
-    } else {
-      const { data, error } = await supabase
-        .from("ap_registry")
-        .update({ pool_id })
-        .eq("ap_mac", ap_mac)
-        .select("ap_mac,pool_id")
-        .single();
-
-      if (error) {
-        console.error("ADMIN APS PATCH UPDATE ERROR", error);
-        return res.status(500).json({ error: "db_error" });
-      }
-
-      updated = { ...data, is_active: true };
+    if (error) {
+      console.error("ADMIN APS PATCH ERROR", error);
+      return res.status(500).json({ error: "db_error" });
     }
 
-    return res.json({ ok: true, ap: updated });
+    return res.json({ ok: true, ap: data });
   } catch (e) {
     console.error("ADMIN APS PATCH EX", e);
     return res.status(500).json({ error: "internal error" });
   }
 });
+
 
 // ---------------------------------------------------------------------------
 // ADMIN — Pools (list)
@@ -2427,6 +2312,10 @@ app.get("/api/new/pool-status", async (req, res) => {
 // ---------------------------------------------------------------------------
 // START SERVER
 // ---------------------------------------------------------------------------
+
+// Serve static frontend (MUST be after API routes to avoid shadowing /api/*)
+app.use(express.static(path.join(__dirname, "public")));
+
 
 app.listen(PORT, () => {
   const now = new Date().toISOString();
