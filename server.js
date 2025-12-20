@@ -951,8 +951,6 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
 });
 
 
-});
-
 app.post("/api/admin/plans", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
