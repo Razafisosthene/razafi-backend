@@ -454,7 +454,7 @@ app.use(
   return callback(null, false);
 },
     
-    methods: ["GET", "POST", "PATCH", "OPTIONS"],
+    methods: ["GET", "POST"],
     credentials: true,
   })
 );
@@ -732,7 +732,6 @@ app.get("/api/admin/plans", requireAdmin, async (req, res) => {
     console.error("ADMIN PLANS LIST EX", e);
     return res.status(500).json({ error: "internal error" });
   }
-});
 
 // ---------------------------------------------------------------------------
 // ADMIN — APs (list)
@@ -748,21 +747,43 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
     const limit = Math.min(Math.max(toInt(req.query.limit) ?? 50, 1), 200);
     const offset = Math.max(toInt(req.query.offset) ?? 0, 0);
 
-    // 1) AP registry list
-    let query = supabase
-      .from("ap_registry")
-      .select("ap_mac,pool_id,is_active", { count: "exact" });
+    // Some deployments may not have ap_registry.is_active yet.
+    // We try with is_active first, and transparently fall back if the column doesn't exist.
+    async function runApRegistryQuery({ withIsActive }) {
+      let query = supabase
+        .from("ap_registry")
+        .select(withIsActive ? "ap_mac,pool_id,is_active" : "ap_mac,pool_id", { count: "exact" });
 
-    if (q) query = query.ilike("ap_mac", `%${q}%`);
-    if (pool_id) query = query.eq("pool_id", pool_id);
-    if (active === "1") query = query.eq("is_active", true);
-    if (active === "0") query = query.eq("is_active", false);
+      if (q) query = query.ilike("ap_mac", `%${q}%`);
+      if (pool_id) query = query.eq("pool_id", pool_id);
 
-    query = query
-      .order("ap_mac", { ascending: true })
-      .range(offset, offset + limit - 1);
+      if (withIsActive) {
+        if (active === "1") query = query.eq("is_active", true);
+        if (active === "0") query = query.eq("is_active", false);
+      }
 
-    const { data: aps, error: apErr, count } = await query;
+      query = query
+        .order("ap_mac", { ascending: true })
+        .range(offset, offset + limit - 1);
+
+      return await query;
+    }
+
+    let supportsIsActive = true;
+    let { data: aps, error: apErr, count } = await runApRegistryQuery({ withIsActive: true });
+
+    if (apErr) {
+      const msg = String(apErr.message || "");
+      const details = String(apErr.details || "");
+      const hint = String(apErr.hint || "");
+      const combined = `${msg} ${details} ${hint}`.toLowerCase();
+
+      if (combined.includes("is_active") && combined.includes("column")) {
+        supportsIsActive = false;
+        ({ data: aps, error: apErr, count } = await runApRegistryQuery({ withIsActive: false }));
+      }
+    }
+
     if (apErr) {
       console.error("ADMIN APS LIST ERROR", apErr);
       return res.status(500).json({ error: "db_error" });
@@ -819,7 +840,7 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
       return {
         ap_mac: a.ap_mac,
         pool_id: a.pool_id || null,
-        is_active: a.is_active !== false,
+        is_active: supportsIsActive ? (a.is_active !== false) : true,
         active_clients: s ? (s.active_clients ?? 0) : 0,
         last_computed_at: s ? (s.last_computed_at || null) : null,
         is_stale,
@@ -831,6 +852,12 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
     if (stale === "1") merged = merged.filter((x) => x.is_stale === true);
     if (stale === "0") merged = merged.filter((x) => x.is_stale === false);
 
+    // If DB doesn't have is_active, ignore active filter to avoid false negatives.
+    if (supportsIsActive) {
+      if (active === "1") merged = merged.filter((x) => x.is_active === true);
+      if (active === "0") merged = merged.filter((x) => x.is_active === false);
+    }
+
     return res.json({ ok: true, aps: merged, total: count || 0 });
   } catch (e) {
     console.error("ADMIN APS LIST EX", e);
@@ -838,9 +865,6 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// ADMIN — APs (assign pool)
-// ---------------------------------------------------------------------------
 app.patch("/api/admin/aps/:ap_mac", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
@@ -860,12 +884,35 @@ app.patch("/api/admin/aps/:ap_mac", requireAdmin, async (req, res) => {
       if (!pool_id) pool_id = null;
     }
 
+    // Some deployments may not have ap_registry.is_active yet.
+    async function getApRow() {
+      const { data, error } = await supabase
+        .from("ap_registry")
+        .select("ap_mac,pool_id,is_active")
+        .eq("ap_mac", ap_mac)
+        .maybeSingle();
+
+      if (!error) return { data, error, supportsIsActive: true };
+
+      const msg = String(error.message || "");
+      const details = String(error.details || "");
+      const hint = String(error.hint || "");
+      const combined = `${msg} ${details} ${hint}`.toLowerCase();
+
+      if (combined.includes("is_active") && combined.includes("column")) {
+        const retry = await supabase
+          .from("ap_registry")
+          .select("ap_mac,pool_id")
+          .eq("ap_mac", ap_mac)
+          .maybeSingle();
+        return { ...retry, supportsIsActive: false };
+      }
+
+      return { data: null, error, supportsIsActive: true };
+    }
+
     // ensure AP exists
-    const { data: existing, error: exErr } = await supabase
-      .from("ap_registry")
-      .select("ap_mac,pool_id,is_active")
-      .eq("ap_mac", ap_mac)
-      .maybeSingle();
+    const { data: existing, error: exErr, supportsIsActive } = await getApRow();
 
     if (exErr) {
       console.error("ADMIN APS PATCH LOOKUP ERROR", exErr);
@@ -892,25 +939,67 @@ app.patch("/api/admin/aps/:ap_mac", requireAdmin, async (req, res) => {
       }
     }
 
-    const { data, error } = await supabase
-      .from("ap_registry")
-      .update({ pool_id })
-      .eq("ap_mac", ap_mac)
-      .select("ap_mac,pool_id,is_active")
-      .single();
+    // update
+    let updated = null;
 
-    if (error) {
-      console.error("ADMIN APS PATCH ERROR", error);
-      return res.status(500).json({ error: "db_error" });
+    // Try returning is_active if supported, otherwise return minimal fields
+    if (supportsIsActive) {
+      const { data, error } = await supabase
+        .from("ap_registry")
+        .update({ pool_id })
+        .eq("ap_mac", ap_mac)
+        .select("ap_mac,pool_id,is_active")
+        .single();
+
+      if (error) {
+        const msg = String(error.message || "");
+        const details = String(error.details || "");
+        const hint = String(error.hint || "");
+        const combined = `${msg} ${details} ${hint}`.toLowerCase();
+
+        if (combined.includes("is_active") && combined.includes("column")) {
+          const retry = await supabase
+            .from("ap_registry")
+            .update({ pool_id })
+            .eq("ap_mac", ap_mac)
+            .select("ap_mac,pool_id")
+            .single();
+
+          if (retry.error) {
+            console.error("ADMIN APS PATCH UPDATE ERROR", retry.error);
+            return res.status(500).json({ error: "db_error" });
+          }
+
+          updated = { ...retry.data, is_active: true };
+        } else {
+          console.error("ADMIN APS PATCH UPDATE ERROR", error);
+          return res.status(500).json({ error: "db_error" });
+        }
+      } else {
+        updated = data;
+      }
+    } else {
+      const { data, error } = await supabase
+        .from("ap_registry")
+        .update({ pool_id })
+        .eq("ap_mac", ap_mac)
+        .select("ap_mac,pool_id")
+        .single();
+
+      if (error) {
+        console.error("ADMIN APS PATCH UPDATE ERROR", error);
+        return res.status(500).json({ error: "db_error" });
+      }
+
+      updated = { ...data, is_active: true };
     }
 
-    return res.json({ ok: true, ap: data });
+    return res.json({ ok: true, ap: updated });
   } catch (e) {
     console.error("ADMIN APS PATCH EX", e);
     return res.status(500).json({ error: "internal error" });
   }
 });
-
 
 // ---------------------------------------------------------------------------
 // ADMIN — Pools (list)
@@ -950,6 +1039,8 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
   }
 });
 
+
+});
 
 app.post("/api/admin/plans", requireAdmin, async (req, res) => {
   try {
