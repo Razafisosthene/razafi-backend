@@ -482,8 +482,7 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 // ✅ Explicit preflight handler (fixes PATCH/OPTIONS issues behind proxies)
-app.options("*", cors(corsOptions));
-
+app.options(/.*/, cors(corsOptions));
 // ---------------------------------------------------------------------------
 // SECURITY MIDDLEWARE
 // ---------------------------------------------------------------------------
