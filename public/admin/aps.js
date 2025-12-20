@@ -63,7 +63,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Build dropdown
     poolSelect.innerHTML = poolsCache.map(p => {
       const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "—" : p.capacity_max;
-      return `<option value="${esc(p.id)}">${esc(p.id)} (cap: ${esc(cap)})</option>`;
+      const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : p.id;
+      return `<option value="${esc(p.id)}">${esc(label)} (cap: ${esc(cap)})</option>`;
     }).join("");
     if (!poolsCache.length) {
       poolSelect.innerHTML = `<option value="">(No pools)</option>`;
@@ -125,7 +126,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const stale = a.is_stale ? "⚠️" : "✅";
       const active = a.is_active ? "✅" : "—";
       const clients = Number.isFinite(Number(a.active_clients)) ? Number(a.active_clients) : 0;
-      const pool = a.pool_id ? esc(a.pool_id) : "—";
+      const pool = (a.pool_name ? esc(a.pool_name) : (a.pool_id ? esc(a.pool_id) : "—"));
       const cap = (a.capacity_max === null || a.capacity_max === undefined) ? "—" : esc(a.capacity_max);
 
       return `
