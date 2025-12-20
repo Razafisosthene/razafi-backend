@@ -463,25 +463,26 @@ const allowedOrigins =
       "http://localhost:10000",
     ];
 
-app.use(
-  cors({
-   origin: function (origin, callback) {
-  if (!origin) return callback(null, true);
+const corsOptions = {
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
 
-  const clean = String(origin).trim().replace(/\/$/, "");
+    const clean = String(origin).trim().replace(/\/$/, "");
 
-  if (allowedOrigins.includes(clean)) {
-    return callback(null, true);
-  }
+    if (allowedOrigins.includes(clean)) {
+      return callback(null, true);
+    }
 
-  console.error("❌ CORS non autorisé pour:", clean);
-  return callback(null, false);
-},
-    
-    methods: ["GET", "POST" ,"PATCH","OPTIONS"],
-    credentials: true,
-  })
-);
+    console.error("❌ CORS non autorisé pour:", clean);
+    return callback(null, false);
+  },
+  methods: ["GET", "POST", "PATCH", "OPTIONS"],
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
+// ✅ Explicit preflight handler (fixes PATCH/OPTIONS issues behind proxies)
+app.options("*", cors(corsOptions));
 
 // ---------------------------------------------------------------------------
 // SECURITY MIDDLEWARE
