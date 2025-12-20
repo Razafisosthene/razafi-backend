@@ -31,7 +31,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const rowsEl = document.getElementById("rows");
 
   const qEl = document.getElementById("q");
-  const poolFilterEl = document.getElementById("poolId");
+  const poolFilterEl = document.getElementById("poolFilter");
   const activeEl = document.getElementById("activeFilter");
   const staleEl = document.getElementById("staleFilter");
   const refreshBtn = document.getElementById("refreshBtn");
@@ -63,10 +63,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Build dropdown
     poolSelect.innerHTML = poolsCache.map(p => {
       const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "—" : p.capacity_max;
-      const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : p.id;
+      const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : "(Unnamed pool)";
       return `<option value="${esc(p.id)}">${esc(label)} (cap: ${esc(cap)})</option>`;
     }).join("");
-    if (!poolsCache.length) {
+      // Also populate the filter dropdown with pool NAMES (not IDs)
+    poolFilterEl.innerHTML = `<option value="">Pool: all</option>` + poolsCache.map(p => {
+      const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : "(Unnamed pool)";
+      return `<option value="${esc(p.id)}">${esc(label)}</option>`;
+    }).join("");
+if (!poolsCache.length) {
       poolSelect.innerHTML = `<option value="">(No pools)</option>`;
     }
   }
@@ -103,7 +108,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const params = new URLSearchParams();
     const q = qEl.value.trim();
-    const pool_id = poolFilterEl.value.trim();
+    const pool_id = String(poolFilterEl.value || "");
 
     if (q) params.set("q", q);
     if (pool_id) params.set("pool_id", pool_id);
@@ -126,7 +131,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const stale = a.is_stale ? "⚠️" : "✅";
       const active = a.is_active ? "✅" : "—";
       const clients = Number.isFinite(Number(a.active_clients)) ? Number(a.active_clients) : 0;
-      const pool = (a.pool_name ? esc(a.pool_name) : (a.pool_id ? esc(a.pool_id) : "—"));
+      const pool = (a.pool_name ? esc(a.pool_name) : "—");
       const cap = (a.capacity_max === null || a.capacity_max === undefined) ? "—" : esc(a.capacity_max);
 
       return `
@@ -162,7 +167,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   refreshBtn.addEventListener("click", () => loadAPs().catch(e => errEl.textContent = e.message));
 
-  qEl.addEventListener("keydown", (e) => {
+    poolFilterEl.addEventListener("change", () => loadAPs().catch(e => errEl.textContent = e.message));
+  activeEl.addEventListener("change", () => loadAPs().catch(e => errEl.textContent = e.message));
+  staleEl.addEventListener("change", () => loadAPs().catch(e => errEl.textContent = e.message));
+
+qEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter") loadAPs().catch(err => errEl.textContent = err.message);
   });
   poolFilterEl.addEventListener("keydown", (e) => {
