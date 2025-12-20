@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -9,101 +10,20 @@
 <body>
   <div class="login-container">
     <div class="card" style="max-width: 1100px; width: 96%;">
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
-        <div>
-          <h1 style="margin:0;">Plans</h1>
-          <div id="me" class="subtitle" style="margin-top:6px;">Loading...</div>
-        </div>
-        <div style="display:flex; gap:10px;">
-          <a href="/admin/" style="text-decoration:none;">
-            <button type="button" style="width:auto; padding:10px 16px;">Dashboard</button>
-          </a>
-          <button id="logoutBtn" type="button" style="width:auto; padding:10px 16px;">Logout</button>
-        </div>
-      </div>
+      <h1>Plans</h1>
 
-      <hr style="opacity:.2; margin:18px 0;" />
-
-      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-        <input id="q" placeholder="Search by name…" style="flex:1; min-width:240px;" />
-        <select id="activeFilter" style="width:auto;">
-          <option value="all">Active: all</option>
-          <option value="1">Active only</option>
-          <option value="0">Inactive only</option>
-        </select>
-        <select id="visibleFilter" style="width:auto;">
-          <option value="all">Visible: all</option>
-          <option value="1">Visible only</option>
-          <option value="0">Hidden only</option>
-        </select>
-        <button id="refreshBtn" type="button" style="width:auto;">Refresh</button>
-        <button id="newBtn" type="button" style="width:auto;">+ New plan</button>
-      </div>
-
-      <div id="error" class="error" style="margin-top:12px;"></div>
-
-      <div style="overflow:auto; margin-top:14px;">
-        <table style="width:100%; border-collapse:collapse;">
-          <thead>
-            <tr style="text-align:left; opacity:.9;">
-              <th style="padding:10px;">Name</th>
-              <th style="padding:10px;">Price</th>
-              <th style="padding:10px;">Duration (h)</th>
-              <th style="padding:10px;">Data (MB)</th>
-              <th style="padding:10px;">Devices</th>
-              <th style="padding:10px;">Visible</th>
-              <th style="padding:10px;">Active</th>
-              <th style="padding:10px;">Sort</th>
-              <th style="padding:10px;">Actions</th>
-            </tr>
-          </thead>
-          <tbody id="rows"></tbody>
-        </table>
-      </div>
-
-      <!-- Simple modal -->
-      <div id="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.5);">
-        <div class="card" style="max-width:520px; margin:8vh auto; width:92%;">
-          <h2 id="modalTitle" style="margin-top:0;">New plan</h2>
-          <form id="form">
-            <input id="f_name" placeholder="Name" required />
-            <input id="f_price_ar" placeholder="Price (Ar)" required />
-
-            <div style="display:flex; gap:10px;">
-              <input id="f_duration_days" placeholder="Duration (days)" required style="flex:1;" />
-              <input id="f_duration_extra_hours" placeholder="Extra hours (0-23)" required style="flex:1;" />
-            </div>
-
-            <label style="display:flex; gap:10px; align-items:center; margin:10px 0;">
-              <input id="f_unlimited_data" type="checkbox" />
-              <span>Unlimited data</span>
-            </label>
-
-            <input id="f_data_gb" placeholder="Data (GB)" required />
-
-            <input id="f_max_devices" placeholder="Max devices" required />
-            <input id="f_sort_order" placeholder="Sort order" />
-
-            <label style="display:flex; gap:10px; align-items:center; margin:10px 0;">
-              <input id="f_is_visible" type="checkbox" checked />
-              <span>Visible</span>
-            </label>
-            <label style="display:flex; gap:10px; align-items:center; margin:10px 0;">
-              <input id="f_is_active" type="checkbox" checked />
-              <span>Active</span>
-            </label>
-
-            <div id="formError" class="error" style="margin:8px 0;"></div>
-
-            <div style="display:flex; gap:10px; justify-content:flex-end;">
-              <button id="cancelBtn" type="button" style="width:auto;">Cancel</button>
-              <button id="saveBtn" type="submit" style="width:auto;">Save</button>
-            </div>
-          </form>
-        </div>
-      </div>
-
-
+      <table style="width:100%; border-collapse:collapse;">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Price</th>
+            <th>Duration</th>
+            <th>Data</th>
+            <th>Devices</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
     </div>
   </div>
 
