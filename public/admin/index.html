@@ -2,51 +2,69 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>RAZAFI Admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>RAZAFI Admin — Dashboard</title>
   <link rel="stylesheet" href="/admin/admin.css" />
 </head>
 <body>
+  <div class="login-container">
+    <div class="card" style="max-width: 1100px; width: 96%;">
+      <div class="topbar">
+        <div class="title">
+          <h1 style="margin:0;">Admin Dashboard</h1>
+          <div id="me" class="subtitle">Checking session...</div>
+        </div>
+        <div class="nav">
+          <a href="/admin/aps.html"><button type="button">APs</button></a>
+          <a href="/admin/plans.html"><button type="button">Plans</button></a>
+          <a href="/admin/pools.html"><button type="button">Pools</button></a>
+          <button id="logoutBtn" type="button">Logout</button>
+        </div>
+      </div>
 
-  \1
-  <div style="margin:12px 0; display:flex; gap:10px; flex-wrap:wrap;">
-    <a href="/admin/aps.html"><button type="button">APs</button></a>
-    <a href="/admin/plans.html"><button type="button">Plans</button></a>
-    <a href="/admin/pools.html"><button type="button">Pools</button></a>
+      <hr style="opacity:.2; margin:18px 0;" />
+
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <a href="/admin/aps.html" style="text-decoration:none;"><button type="button">Manage Access Points</button></a>
+        <a href="/admin/plans.html" style="text-decoration:none;"><button type="button">Manage Plans</button></a>
+        <a href="/admin/pools.html" style="text-decoration:none;"><button type="button">Manage Pools</button></a>
+      </div>
+
+      <div id="status" style="margin-top:14px; opacity:.85;"></div>
+    </div>
   </div>
-<p id="status">Checking session...</p>
-
-  <button id="logout">Logout</button>
 
   <script>
+    async function fetchJSON(url, opts = {}) {
+      const res = await fetch(url, { credentials: "include", ...opts });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch { throw new Error("Server returned non-JSON"); }
+      if (!res.ok) throw new Error(data?.error || data?.message || "Request failed");
+      return data;
+    }
+
     async function checkSession() {
+      const meEl = document.getElementById("me");
+      const statusEl = document.getElementById("status");
       try {
-        const res = await fetch("/api/admin/me", {
-          credentials: "include"
-        });
-
-        if (!res.ok) {
-          window.location.href = "/admin/login.html";
-          return;
-        }
-
-        const admin = await res.json();
-        document.getElementById("status").textContent =
-          "Connected as " + admin.email;
+        const admin = await fetchJSON("/api/admin/me");
+        meEl.textContent = "Connected as " + admin.email;
+        statusEl.textContent = "Session OK.";
       } catch {
         window.location.href = "/admin/login.html";
       }
     }
 
-    document.getElementById("logout").onclick = async () => {
-      await fetch("/api/admin/logout", {
-        method: "POST",
-        credentials: "include"
-      });
-      window.location.href = "/admin/login.html";
+    document.getElementById("logoutBtn").onclick = async () => {
+      try {
+        await fetch("/api/admin/logout", { method: "POST", credentials: "include" });
+      } finally {
+        window.location.href = "/admin/login.html";
+      }
     };
 
     checkSession();
   </script>
-
 </body>
 </html>

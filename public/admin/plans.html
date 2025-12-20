@@ -9,19 +9,19 @@
 <body>
   <div class="login-container">
     <div class="card" style="max-width: 1100px; width: 96%;">
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
-        <div>
-          <h1 style="margin:0;">Plans</h1>
-          <div id="me" class="subtitle" style="margin-top:6px;">Loading...</div>
-        </div>
-        <div style="display:flex; gap:10px;">
-          <a href="/admin/" style="text-decoration:none;">
-            <button type="button" style="width:auto; padding:10px 16px;">Dashboard</button>
-          </a>
-          <button id="logoutBtn" type="button" style="width:auto; padding:10px 16px;">Logout</button>
-        </div>
-      </div>
-
+      <div class="topbar">
+  <div class="title">
+    <h1 style="margin:0;">Plans</h1>
+    <div id="me" class="subtitle">Loading...</div>
+  </div>
+  <div class="nav">
+    <a href="/admin/"><button type="button">Dashboard</button></a>
+    <a href="/admin/aps.html"><button type="button">APs</button></a>
+    <a href="/admin/plans.html"><button type="button">Plans</button></a>
+    <a href="/admin/pools.html"><button type="button">Pools</button></a>
+    <button id="logoutBtn" type="button">Logout</button>
+  </div>
+</div>
       <hr style="opacity:.2; margin:18px 0;" />
 
       <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
@@ -42,13 +42,13 @@
 
       <div id="error" class="error" style="margin-top:12px;"></div>
 
-      <div style="overflow:auto; margin-top:14px;">
+      <div class="table-wrap">
         <table style="width:100%; border-collapse:collapse;">
           <thead>
             <tr style="text-align:left; opacity:.9;">
               <th style="padding:10px;">Name</th>
               <th style="padding:10px;">Price</th>
-              <th style="padding:10px;">Duration</th>
+              <th style="padding:10px;">Duration (h)</th>
               <th style="padding:10px;">Data (MB)</th>
               <th style="padding:10px;">Devices</th>
               <th style="padding:10px;">Visible</th>
@@ -69,14 +69,10 @@
             <input id="f_name" placeholder="Name" required />
             <input id="f_price_ar" placeholder="Price (Ar)" required />
 
-            <div style="display:flex; gap:10px; align-items:center;">
-  <input id="f_duration_value" placeholder="Duration" required style="flex:1;" />
-  <select id="f_duration_unit" style="width:auto;">
-    <option value="minutes">minutes</option>
-    <option value="hours">hours</option>
-    <option value="days">days</option>
-  </select>
-</div>
+            <div style="display:flex; gap:10px;">
+              <input id="f_duration_days" placeholder="Duration (days)" required style="flex:1;" />
+              <input id="f_duration_extra_hours" placeholder="Extra hours (0-23)" required style="flex:1;" />
+            </div>
 
             <label style="display:flex; gap:10px; align-items:center; margin:10px 0;">
               <input id="f_unlimited_data" type="checkbox" />
