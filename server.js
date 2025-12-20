@@ -821,7 +821,7 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
     if (poolIds.length) {
       const { data: poolRows, error: poolErr } = await supabase
         .from("internet_pools")
-        .select("id,capacity_max")
+        .select("id,name,capacity_max")
         .in("id", poolIds);
 
       if (poolErr) {
@@ -847,6 +847,7 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
         active_clients: s ? (s.active_clients ?? 0) : 0,
         last_computed_at: s ? (s.last_computed_at || null) : null,
         is_stale,
+        pool_name: pool ? (pool.name ?? null) : null,
         capacity_max: pool ? (pool.capacity_max ?? null) : null,
       };
     });
@@ -951,7 +952,7 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
 
     let query = supabase
       .from("internet_pools")
-      .select("id,capacity_max", { count: "exact" });
+      .select("id,name,capacity_max", { count: "exact" });
 
     // safest filter: by id only (schema-stable)
     if (q) {
