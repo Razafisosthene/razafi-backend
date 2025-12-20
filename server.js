@@ -15,6 +15,9 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import cookieParser from "cookie-parser";
 import bcrypt from "bcryptjs";
 
+dotenv.config();
+
+
 // helper: hash session token
 function hashToken(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
@@ -107,7 +110,10 @@ async function requireAdmin(req, res, next) {
   }
 }
 
-dotenv.config();
+
+
+
+global.__RAZAFI_STARTED_AT__ = new Date().toISOString();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
@@ -115,6 +121,24 @@ const app = express();
 
 
 // allow Express to trust X-Forwarded-For (Render / Cloudflare / proxies)
+// ---------------------------------------------------------------------------
+// BUILD / DIAGNOSTIC
+// ---------------------------------------------------------------------------
+app.get("/api/_build", (req, res) => {
+  res.json({
+    ok: true,
+    git_commit: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null,
+    service: process.env.RENDER_SERVICE_NAME || "unknown",
+    node_env: process.env.NODE_ENV || null,
+    started_at: global.__RAZAFI_STARTED_AT__ || null,
+  });
+});
+
+// Simple admin router check
+app.get("/api/admin/_ping", requireAdmin, (req, res) => {
+  res.json({ ok: true, admin: true, email: req.admin?.email || null });
+});
+
 app.set("trust proxy", 1);
 app.use(express.json());
 app.use(cookieParser());
@@ -399,6 +423,9 @@ app.get(/^\/admin\/.*/, requireAdminPage, (req, res) => {
   return res.sendFile(path.join(__dirname, "public", "admin", "index.html"));
 });
 
+// Serve static frontend
+app.use(express.static(path.join(__dirname, "public")));
+
 // ---------------------------------------------------------------------------
 // ENVIRONMENT VARIABLES
 // ---------------------------------------------------------------------------
@@ -451,7 +478,7 @@ app.use(
   return callback(null, false);
 },
     
-    methods: ["GET", "POST"],
+    methods: ["GET", "POST" ,"PATCH","OPTIONS"],
     credentials: true,
   })
 );
@@ -729,6 +756,7 @@ app.get("/api/admin/plans", requireAdmin, async (req, res) => {
     console.error("ADMIN PLANS LIST EX", e);
     return res.status(500).json({ error: "internal error" });
   }
+});
 
 // ---------------------------------------------------------------------------
 // ADMIN — APs (list)
@@ -944,9 +972,6 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
     console.error("ADMIN POOLS LIST EX", e);
     return res.status(500).json({ error: "internal error" });
   }
-});
-
-
 });
 
 app.post("/api/admin/plans", requireAdmin, async (req, res) => {
@@ -2312,10 +2337,6 @@ app.get("/api/new/pool-status", async (req, res) => {
 // ---------------------------------------------------------------------------
 // START SERVER
 // ---------------------------------------------------------------------------
-
-// Serve static frontend (MUST be after API routes to avoid shadowing /api/*)
-app.use(express.static(path.join(__dirname, "public")));
-
 
 app.listen(PORT, () => {
   const now = new Date().toISOString();
