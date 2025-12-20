@@ -93,19 +93,29 @@ function showToast(message, kind = "info", ms = 3200) {
     return mb + " MB";
   }
 
-  function formatDuration(hoursVal) {
-    const h = Math.max(0, Math.trunc(Number(hoursVal) || 0));
-    if (h < 24) return h + "h";
-    const days = Math.trunc(h / 24);
-    const rem = h % 24;
+  function formatDuration(minutesVal) {
+    // minutes-aware, friendly: "1h 30min", "1 jour 2h 15min"
+    const m0 = Math.max(0, Math.trunc(Number(minutesVal) || 0));
+    if (m0 < 60) return m0 + " min";
 
-    if (days === 1 && rem === 0) return "1 jour";
+    const dayMin = 24 * 60;
+    const days = Math.trunc(m0 / dayMin);
+    const remDay = m0 % dayMin;
+    const hours = Math.trunc(remDay / 60);
+    const mins = remDay % 60;
+
+    if (days === 0) {
+      if (mins === 0) return hours + "h";
+      return hours + "h " + mins + "min";
+    }
+
+    if (days === 1 && hours === 0 && mins === 0) return "1 jour";
 
     const dayLabel = days === 1 ? "jour" : "jours";
-    if (rem === 0) return days + " " + dayLabel;
-
-    // Option 2: mixed format, e.g. "1 jour 6h"
-    return days + " " + dayLabel + " " + rem + "h";
+    let s = days + " " + dayLabel;
+    if (hours > 0) s += " " + hours + "h";
+    if (mins > 0) s += " " + mins + "min";
+    return s;
   }
 
   function formatDevices(maxDevicesVal) {
@@ -182,7 +192,9 @@ function showToast(message, kind = "info", ms = 3200) {
     const name = plan.name || "Plan";
     const price = formatAr(plan.price_ar);
 
-    const durationHours = Number(plan.duration_hours) || 0;
+    const durationMinutes = (plan.duration_minutes !== null && plan.duration_minutes !== undefined)
+      ? Number(plan.duration_minutes)
+      : (Number(plan.duration_hours) || 0) * 60;
     const dataMb = plan.data_mb; // may be null for unlimited
     const maxDevices = Number(plan.max_devices) || 1;
 
@@ -191,7 +203,7 @@ function showToast(message, kind = "info", ms = 3200) {
     const variantClass = "v" + (hashToInt(plan.id) % 4);
     const badgeHtml = isUnlimited ? `<span class="plan-badge">ILLIMITÉ</span>` : "";
     // Approved A+D: 2-line plan info (bigger)
-    const line1 = `⏳ Durée: ${formatDuration(durationHours)} • 📊 Data: ${formatData(dataMb)}`;
+    const line1 = `⏳ Durée: ${formatDuration(durationMinutes)} • 📊 Data: ${formatData(dataMb)}`;
     const line2 = `🔌 ${formatDevices(maxDevices)}`;
 
 return `
@@ -199,7 +211,7 @@ return `
        data-plan-id="${escapeHtml(plan.id)}"
        data-plan-name="${escapeHtml(name)}"
        data-plan-price="${escapeHtml(String(plan.price_ar ?? ""))}"
-       data-plan-duration="${escapeHtml(String(durationHours))}"
+       data-plan-duration="${escapeHtml(String(durationMinutes))}"
        data-plan-data="${(dataMb === null || dataMb === undefined) ? "" : escapeHtml(String(dataMb))}"
        data-plan-unlimited="${isUnlimited ? "1" : "0"}"
        data-plan-devices="${escapeHtml(String(maxDevices))}">
@@ -337,13 +349,13 @@ function setProcessing(card, isProcessing) {
 function buildPlanSummary(card) {
   const name = card.getAttribute("data-plan-name") || "Plan";
   const priceAr = card.getAttribute("data-plan-price") || "";
-  const durationH = card.getAttribute("data-plan-duration") || "0";
+  const durationM = card.getAttribute("data-plan-duration") || "0";
   const dataMb = card.getAttribute("data-plan-data"); // empty if unlimited
   const isUnlimited = card.getAttribute("data-plan-unlimited") === "1";
   const devices = card.getAttribute("data-plan-devices") || "1";
 
   const price = formatAr(priceAr);
-  const duration = formatDuration(Number(durationH));
+  const duration = formatDuration(Number(durationM));
   const data = isUnlimited ? "Illimité" : formatData(Number(dataMb));
   const dev = formatDevices(Number(devices));
 
