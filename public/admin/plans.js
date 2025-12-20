@@ -15,9 +15,8 @@ function esc(s) {
 }
 
 
-
-
 function formatDurationFromPlan(p) {
+  // Prefer duration_minutes if backend returns it; fallback to duration_hours.
   let minutes = null;
   if (p && p.duration_minutes !== null && p.duration_minutes !== undefined) minutes = Number(p.duration_minutes);
   else if (p && p.duration_hours !== null && p.duration_hours !== undefined) minutes = Number(p.duration_hours) * 60;
@@ -29,23 +28,23 @@ function formatDurationFromPlan(p) {
 
   const day = 24 * 60;
   const days = Math.floor(minutes / day);
-  const remAfterDays = minutes % day;
-
-  const hours = Math.floor(remAfterDays / 60);
-  const mins = remAfterDays % 60;
+  const rem = minutes % day;
+  const hours = Math.floor(rem / 60);
+  const mins = rem % 60;
 
   if (days === 0) {
     if (hours > 0 && mins > 0) return `${hours}h${String(mins).padStart(2, "0")}`;
     if (hours > 0) return `${hours}h`;
-    return `${mins}min`;
+    return `${mins} min`;
   }
-
-  if (hours === 0 && mins === 0) return `${days}d`;
 
   const parts = [`${days}d`];
   if (hours > 0) parts.push(`${hours}h`);
+  if (days === 0 && mins > 0) parts.push(`${mins}min`);
   return parts.join(" ");
 }
+
+
 let editingId = null;
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -69,9 +68,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const f_name = document.getElementById("f_name");
   const f_price_ar = document.getElementById("f_price_ar");
-  const f_duration_value = document.getElementById("f_duration_value");
+    const f_duration_value = document.getElementById("f_duration_value");
   const f_duration_unit = document.getElementById("f_duration_unit");
-  const f_unlimited_data = document.getElementById("f_unlimited_data");
+const f_unlimited_data = document.getElementById("f_unlimited_data");
   const f_data_gb = document.getElementById("f_data_gb");
   const f_max_devices = document.getElementById("f_max_devices");
   const f_sort_order = document.getElementById("f_sort_order");
@@ -101,23 +100,23 @@ document.addEventListener("DOMContentLoaded", async () => {
       f_name.value = plan.name ?? "";
       f_price_ar.value = plan.price_ar ?? 0;
       const totalMinutes = (plan.duration_minutes !== null && plan.duration_minutes !== undefined)
-  ? Number(plan.duration_minutes)
-  : (Number(plan.duration_hours ?? 1) * 60);
+        ? Number(plan.duration_minutes)
+        : (Number(plan.duration_hours ?? 1) * 60);
 
-if (Number.isFinite(totalMinutes) && totalMinutes < 60) {
-  f_duration_value.value = String(Math.max(1, Math.round(totalMinutes)));
-  f_duration_unit.value = "minutes";
-} else if (Number.isFinite(totalMinutes) && totalMinutes < 24 * 60 && (totalMinutes % 60 === 0)) {
-  f_duration_value.value = String(Math.round(totalMinutes / 60));
-  f_duration_unit.value = "hours";
-} else {
-  const days = totalMinutes / (24 * 60);
-  const rounded = Math.round(days * 100) / 100;
-  f_duration_value.value = String(rounded % 1 === 0 ? rounded.toFixed(0) : rounded.toFixed(2));
-  f_duration_unit.value = "days";
-}
+      if (Number.isFinite(totalMinutes) && totalMinutes < 60) {
+        f_duration_value.value = String(Math.max(1, Math.round(totalMinutes)));
+        f_duration_unit.value = "minutes";
+      } else if (Number.isFinite(totalMinutes) && totalMinutes < 24 * 60 && (totalMinutes % 60 === 0)) {
+        f_duration_value.value = String(Math.round(totalMinutes / 60));
+        f_duration_unit.value = "hours";
+      } else {
+        const days = totalMinutes / (24 * 60);
+        const rounded = Math.round(days * 100) / 100;
+        f_duration_value.value = String(rounded % 1 === 0 ? rounded.toFixed(0) : rounded.toFixed(2));
+        f_duration_unit.value = "days";
+      }
 
-      if (plan.data_mb === null || plan.data_mb === undefined) {
+if (plan.data_mb === null || plan.data_mb === undefined) {
         f_unlimited_data.checked = true;
         f_data_gb.value = "";
         f_data_gb.disabled = true;
@@ -254,23 +253,22 @@ if (Number.isFinite(totalMinutes) && totalMinutes < 60) {
     formError.textContent = "";
 
     const durationValue = Number(f_duration_value.value);
-const unit = String(f_duration_unit.value || "minutes");
-let duration_minutes = null;
+    const unit = String(f_duration_unit.value || "minutes");
 
-if (!Number.isFinite(durationValue) || durationValue <= 0) {
-  formError.textContent = "Duration invalid";
-  return;
-}
+    if (!Number.isFinite(durationValue) || durationValue <= 0) {
+      formError.textContent = "Duration invalid";
+      return;
+    }
 
-if (unit === "minutes") duration_minutes = Math.round(durationValue);
-else if (unit === "hours") duration_minutes = Math.round(durationValue * 60);
-else if (unit === "days") duration_minutes = Math.round(durationValue * 24 * 60);
-else duration_minutes = Math\.round\(durationValue\);
+    let duration_minutes = null;
+    if (unit === "minutes") duration_minutes = Math.round(durationValue);
+    else if (unit === "hours") duration_minutes = Math.round(durationValue * 60);
+    else if (unit === "days") duration_minutes = Math.round(durationValue * 24 * 60);
+    else duration_minutes = Math.round(durationValue);
 
-    // Legacy compatibility: many backends still expect duration_hours
+    // Legacy compatibility for existing server (old version expects duration_hours)
     const duration_hours = Math.max(1, Math.ceil(duration_minutes / 60));
-
-    let data_mb = null;
+let data_mb = null;
     if (!f_unlimited_data.checked) {
       const gb = Number(f_data_gb.value);
       data_mb = Math.round(gb * 1024);
@@ -279,8 +277,8 @@ else duration_minutes = Math\.round\(durationValue\);
     const payload = {
       name: f_name.value.trim(),
       price_ar: Number(f_price_ar.value),
-      duration_minutes,
       duration_hours,
+      duration_minutes,
       data_mb,
       max_devices: Number(f_max_devices.value),
       sort_order: Number(f_sort_order.value || 0),
@@ -299,10 +297,10 @@ else duration_minutes = Math\.round\(durationValue\);
       return;
     }
     if (!Number.isFinite(payload.duration_minutes) || payload.duration_minutes <= 0) {
-  formError.textContent = "Total duration must be > 0";
-  return;
-}
-if (!f_unlimited_data.checked) {
+      formError.textContent = "Total duration must be > 0";
+      return;
+    }
+    if (!f_unlimited_data.checked) {
       const gbVal = Number(f_data_gb.value);
       if (!Number.isFinite(gbVal) || gbVal <= 0) {
         formError.textContent = "Data (GB) must be > 0 or choose Unlimited";
