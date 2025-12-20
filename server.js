@@ -112,6 +112,28 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
 
+// ---------------------------------------------------------------------------
+// DIAGNOSTICS (safe, no OLD system impact)
+// ---------------------------------------------------------------------------
+// This helps verify which server.js is actually running in production.
+const BUILD_INFO = {
+  git_commit: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null,
+  service: process.env.RENDER_SERVICE_NAME || null,
+  node_env: process.env.NODE_ENV || null,
+  started_at: new Date().toISOString(),
+};
+
+console.log("SERVER BOOT", BUILD_INFO);
+
+app.get("/api/_build", (req, res) => {
+  res.json({ ok: true, ...BUILD_INFO });
+});
+
+// Admin ping (requires login cookie) — lets us confirm admin router is loaded.
+app.get("/api/admin/_ping", requireAdmin, (req, res) => {
+  res.json({ ok: true, admin: true, ...BUILD_INFO });
+});
+
 
 
 // allow Express to trust X-Forwarded-For (Render / Cloudflare / proxies)
