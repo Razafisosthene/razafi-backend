@@ -147,3 +147,9 @@ button:hover {
     font-size: 16px; /* avoid iOS zoom */
   }
 }
+
+/* Plans: deleted badge + danger button */
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;line-height:18px;vertical-align:middle;}
+.badge-deleted{background:rgba(220,53,69,.18);border:1px solid rgba(220,53,69,.35);color:#ffd1d6;}
+button.danger{background:#dc3545;border-color:#dc3545;}
+button.danger:hover{filter:brightness(0.95);}

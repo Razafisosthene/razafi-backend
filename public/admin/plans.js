@@ -46,6 +46,7 @@ function formatDurationFromPlan(p) {
 
 
 let editingId = null;
+let lastPlansById = {};
 
 document.addEventListener("DOMContentLoaded", async () => {
   const meEl = document.getElementById("me");
@@ -55,6 +56,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const qEl = document.getElementById("q");
   const activeEl = document.getElementById("activeFilter");
   const visibleEl = document.getElementById("visibleFilter");
+  const deletedEl = document.getElementById("deletedFilter");
   const refreshBtn = document.getElementById("refreshBtn");
   const newBtn = document.getElementById("newBtn");
   const logoutBtn = document.getElementById("logoutBtn");
@@ -157,25 +159,32 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
     const params = new URLSearchParams();
     const q = qEl.value.trim();
     if (q) params.set("q", q);
-    params.set("active", activeEl.value);
-    params.set("visible", visibleEl.value);
+    // If admin wants to include deleted plans, we must fetch without server-side active/visible filtering
+    const deletedMode = (deletedEl && deletedEl.value) ? deletedEl.value : "hide";
+    if (deletedMode !== "hide") {
+      params.set("active", "all");
+      params.set("visible", "all");
+    } else {
+      params.set("active", activeEl.value);
+      params.set("visible", visibleEl.value);
+    }
     params.set("limit", "200");
     params.set("offset", "0");
 
     const data = await fetchJSON(`/api/admin/plans?${params.toString()}`);
     const plans = data.plans || [];
 
-    if (!plans.length) {
+    if (!filtered.length) {
       rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="9">No plans</td></tr>`;
       return;
     }
 
-    rowsEl.innerHTML = plans.map(p => {
+    rowsEl.innerHTML = filtered.map(p => {
       const active = p.is_active ? "✅" : "—";
       const visible = p.is_visible ? "👁️" : "—";
       return `
         <tr style="border-top:1px solid rgba(255,255,255,.12);">
-          <td style="padding:10px; font-weight:600;">${esc(p.name)}</td>
+          <td style="padding:10px; font-weight:600;">${esc(p.name)} ${(!p.is_active && !p.is_visible) ? `<span class="badge badge-deleted">Deleted</span>` : ""}</td>
           <td style="padding:10px;">${esc(p.price_ar)}</td>
           <td style="padding:10px;">${esc(formatDurationFromPlan(p))}</td>
           <td style="padding:10px;">${esc(p.data_mb)}</td>
@@ -185,9 +194,13 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
           <td style="padding:10px;">${esc(p.sort_order)}</td>
           <td style="padding:10px; display:flex; gap:8px; flex-wrap:wrap;">
             <button type="button" data-edit="${esc(p.id)}" style="width:auto; padding:8px 12px;">Edit</button>
-            <button type="button" data-toggle="${esc(p.id)}" style="width:auto; padding:8px 12px;">
-              ${p.is_active ? "Disable" : "Enable"}
-            </button>
+            ${(!p.is_active && !p.is_visible)
+              ? `<button type="button" data-restore="${esc(p.id)}" style="width:auto; padding:8px 12px;">Restore</button>`
+              : `<button type="button" class="danger" data-delete="${esc(p.id)}" style="width:auto; padding:8px 12px;">Delete</button>
+                 <button type="button" data-toggle="${esc(p.id)}" style="width:auto; padding:8px 12px;">
+                   ${p.is_active ? "Disable" : "Enable"}
+                 </button>`
+            }
           </td>
         </tr>
       `;
@@ -225,6 +238,8 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
 
     const editId = btn.getAttribute("data-edit");
     const toggleId = btn.getAttribute("data-toggle");
+    const deleteId = btn.getAttribute("data-delete");
+    const restoreId = btn.getAttribute("data-restore");
 
     try {
       if (editId) {
@@ -233,6 +248,58 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
         const plan = (data.plans || []).find(x => x.id === editId);
         if (!plan) throw new Error("Plan not found");
         openModal("edit", plan);
+      }
+
+      if (deleteId) {
+        const plan = lastPlansById[deleteId];
+        const planName = plan ? plan.name : deleteId;
+        const ok = window.confirm(`Delete plan "${planName}"?\n\nIt will be hidden from admin & portal, but kept in DB (reversible).`);
+        if (!ok) return;
+
+        if (!plan) throw new Error("Plan not found");
+        const payload = {
+          name: plan.name,
+          price_ar: plan.price_ar,
+          duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
+          data_mb: plan.data_mb ?? null,
+          max_devices: plan.max_devices ?? 1,
+          sort_order: plan.sort_order ?? 0,
+          is_visible: false,
+          is_active: false,
+        };
+
+        await fetchJSON(`/api/admin/plans/${deleteId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        await loadPlans();
+      }
+
+      if (restoreId) {
+        const plan = lastPlansById[restoreId];
+        const planName = plan ? plan.name : restoreId;
+        const ok = window.confirm(`Restore plan "${planName}"?\n\nIt will appear again in admin (and can be enabled).`);
+        if (!ok) return;
+
+        if (!plan) throw new Error("Plan not found");
+        const payload = {
+          name: plan.name,
+          price_ar: plan.price_ar,
+          duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
+          data_mb: plan.data_mb ?? null,
+          max_devices: plan.max_devices ?? 1,
+          sort_order: plan.sort_order ?? 0,
+          is_visible: true,
+          is_active: false, // safer: restore as visible but inactive
+        };
+
+        await fetchJSON(`/api/admin/plans/${restoreId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        await loadPlans();
       }
 
       if (toggleId) {
