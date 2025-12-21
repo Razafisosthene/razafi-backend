@@ -44,6 +44,21 @@ function formatDurationFromPlan(p) {
   return parts.join(" ");
 }
 
+function formatDataDisplay(plan) {
+  // In DB, data_mb is either a number (MB) or null for unlimited.
+  const mb = plan?.data_mb;
+  if (mb === null || mb === undefined) return "Illimité";
+  const n = Number(mb);
+  if (!Number.isFinite(n) || n < 0) return String(mb);
+
+  // Display as Go for consistency
+  const gb = n / 1024;
+  const rounded = gb >= 1 ? Math.round(gb * 10) / 10 : Math.round(gb * 100) / 100;
+  const s = (rounded % 1 === 0) ? rounded.toFixed(0) : String(rounded);
+  return `${s} Go`;
+}
+
+
 
 let editingId = null;
 let lastPlansById = {};
@@ -225,7 +240,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
           <td style="padding:10px; font-weight:600;">${esc(p.name)}${badgeHtml}</td>
           <td style="padding:10px;">${esc(p.price_ar)}</td>
           <td style="padding:10px;">${esc(formatDurationFromPlan(p))}</td>
-          <td style="padding:10px;">${esc(p.data_mb)}</td>
+          <td style="padding:10px;">${esc(formatDataDisplay(p))}</td>
           <td style="padding:10px;">${esc(p.max_devices)}</td>
           <td style="padding:10px;">${visible}</td>
           <td style="padding:10px;">${active}</td>
