@@ -207,14 +207,18 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
 
       const badgeHtml = deleted ? ' <span class="badge badge-deleted">Deleted</span>' : "";
 
-      const actionsHtml = deleted
-        ? ('<button type="button" data-restore="' + esc(p.id) + '" style="width:auto; padding:8px 12px;">Restore</button>')
-        : (
-            '<button type="button" class="danger" data-delete="' + esc(p.id) + '" style="width:auto; padding:8px 12px;">Delete</button>' +
-            '<button type="button" data-toggle="' + esc(p.id) + '" style="width:auto; padding:8px 12px;">' +
-              (p.is_active ? "Disable" : "Enable") +
-            '</button>'
-          );
+      const actionsHtml = (
+        '<button type="button" data-edit="' + esc(p.id) + '" style="width:auto; padding:8px 12px;">Edit</button>' +
+        (deleted
+          ? ('<button type="button" data-restore="' + esc(p.id) + '" style="width:auto; padding:8px 12px;">Restore</button>')
+          : (
+              '<button type="button" class="danger" data-delete="' + esc(p.id) + '" style="width:auto; padding:8px 12px;">Delete</button>' +
+              '<button type="button" data-toggle="' + esc(p.id) + '" style="width:auto; padding:8px 12px;">' +
+                (p.is_active ? "Disable" : "Enable") +
+              '</button>'
+            )
+        )
+      );
 
       return `
         <tr style="border-top:1px solid rgba(255,255,255,.12);">
