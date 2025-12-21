@@ -182,9 +182,22 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
     rowsEl.innerHTML = filtered.map(p => {
       const active = p.is_active ? "✅" : "—";
       const visible = p.is_visible ? "👁️" : "—";
+      const deleted = (!p.is_active && !p.is_visible);
+
+      const badgeHtml = deleted ? ' <span class="badge badge-deleted">Deleted</span>' : "";
+
+      const actionsHtml = deleted
+        ? ('<button type="button" data-restore="' + esc(p.id) + '" style="width:auto; padding:8px 12px;">Restore</button>')
+        : (
+            '<button type="button" class="danger" data-delete="' + esc(p.id) + '" style="width:auto; padding:8px 12px;">Delete</button>' +
+            '<button type="button" data-toggle="' + esc(p.id) + '" style="width:auto; padding:8px 12px;">' +
+              (p.is_active ? "Disable" : "Enable") +
+            '</button>'
+          );
+
       return `
         <tr style="border-top:1px solid rgba(255,255,255,.12);">
-          <td style="padding:10px; font-weight:600;">${esc(p.name)} ${(!p.is_active && !p.is_visible) ? `<span class="badge badge-deleted">Deleted</span>` : ""}</td>
+          <td style="padding:10px; font-weight:600;">${esc(p.name)}${badgeHtml}</td>
           <td style="padding:10px;">${esc(p.price_ar)}</td>
           <td style="padding:10px;">${esc(formatDurationFromPlan(p))}</td>
           <td style="padding:10px;">${esc(p.data_mb)}</td>
@@ -193,14 +206,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
           <td style="padding:10px;">${active}</td>
           <td style="padding:10px;">${esc(p.sort_order)}</td>
           <td style="padding:10px; display:flex; gap:8px; flex-wrap:wrap;">
-            <button type="button" data-edit="${esc(p.id)}" style="width:auto; padding:8px 12px;">Edit</button>
-            ${(!p.is_active && !p.is_visible)
-              ? `<button type="button" data-restore="${esc(p.id)}" style="width:auto; padding:8px 12px;">Restore</button>`
-              : `<button type="button" class="danger" data-delete="${esc(p.id)}" style="width:auto; padding:8px 12px;">Delete</button>
-                 <button type="button" data-toggle="${esc(p.id)}" style="width:auto; padding:8px 12px;">
-                   ${p.is_active ? "Disable" : "Enable"}
-                 </button>`
-            }
+            ${actionsHtml}
           </td>
         </tr>
       `;
