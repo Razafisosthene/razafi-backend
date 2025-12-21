@@ -317,8 +317,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
     if (e.key === "Enter") loadPlans().catch(e => errEl.textContent = e.message);
   });
 
-  
-  async function handleActionClick(e) {
+  rowsEl.addEventListener("click", async (e) => {
     const btn = e.target.closest("button");
     if (!btn) return;
 
@@ -329,7 +328,9 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
 
     try {
       if (editId) {
-        const plan = lastPlansById[editId];
+        // quick fetch list and find the plan locally by reloading (simple and safe)
+        const data = await fetchJSON("/api/admin/plans?limit=200&offset=0");
+        const plan = (data.plans || []).find(x => x.id === editId);
         if (!plan) throw new Error("Plan not found");
         openModal("edit", plan);
       }
@@ -337,9 +338,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
       if (deleteId) {
         const plan = lastPlansById[deleteId];
         const planName = plan ? plan.name : deleteId;
-        const ok = window.confirm(`Delete plan "${planName}"?
-
-It will be hidden from admin & portal, but kept in DB (reversible).`);
+        const ok = window.confirm(`Delete plan "${planName}"?\n\nIt will be hidden from admin & portal, but kept in DB (reversible).`);
         if (!ok) return;
 
         if (!plan) throw new Error("Plan not found");
@@ -347,7 +346,7 @@ It will be hidden from admin & portal, but kept in DB (reversible).`);
           name: plan.name,
           price_ar: plan.price_ar,
           duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
-          data_mb: (plan.data_mb === undefined ? null : plan.data_mb),
+          data_mb: plan.data_mb ?? null,
           max_devices: plan.max_devices ?? 1,
           sort_order: plan.sort_order ?? 0,
           is_visible: false,
@@ -359,52 +358,90 @@ It will be hidden from admin & portal, but kept in DB (reversible).`);
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        await loadPlans();
+
+  if (cardsEl) {
+    cardsEl.addEventListener("click", async (e) => {
+      const btn = e.target.closest("button");
+      if (!btn) return;
+
+      const editId = btn.getAttribute("data-edit");
+      const toggleId = btn.getAttribute("data-toggle");
+      const deleteId = btn.getAttribute("data-delete");
+      const restoreId = btn.getAttribute("data-restore");
+
+      try {
+        if (editId) {
+          // reuse existing edit logic by calling openModal directly with cached plan
+          const plan = lastPlansById[editId];
+          if (!plan) throw new Error("Plan not found");
+          openModal("edit", plan);
+        }
+
+        if (deleteId) {
+          const plan = lastPlansById[deleteId];
+          const planName = plan ? plan.name : deleteId;
+          const ok = window.confirm(`Delete plan "${planName}"?\n\nIt will be hidden from admin & portal, but kept in DB (reversible).`);
+          if (!ok) return;
+
+          if (!plan) throw new Error("Plan not found");
+          const payload = {
+            name: plan.name,
+            price_ar: plan.price_ar,
+            duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
+            data_mb: (plan.data_mb === undefined ? null : plan.data_mb),
+            max_devices: plan.max_devices ?? 1,
+            sort_order: plan.sort_order ?? 0,
+            is_visible: false,
+            is_active: false,
+          };
+
+          await fetchJSON(`/api/admin/plans/${deleteId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          await loadPlans();
+        }
+
+        if (restoreId) {
+          const plan = lastPlansById[restoreId];
+          const planName = plan ? plan.name : restoreId;
+          const ok = window.confirm(`Restore plan "${planName}"?\n\nIt will appear again in admin (and can be enabled).`);
+          if (!ok) return;
+
+          if (!plan) throw new Error("Plan not found");
+          const payload = {
+            name: plan.name,
+            price_ar: plan.price_ar,
+            duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
+            data_mb: (plan.data_mb === undefined ? null : plan.data_mb),
+            max_devices: plan.max_devices ?? 1,
+            sort_order: plan.sort_order ?? 0,
+            is_visible: true,
+            is_active: false,
+          };
+
+          await fetchJSON(`/api/admin/plans/${restoreId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          await loadPlans();
+        }
+
+        if (toggleId) {
+          await fetchJSON(`/api/admin/plans/${toggleId}/toggle`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          await loadPlans();
+        }
+      } catch (err) {
+        errEl.textContent = err.message;
       }
-
-      if (restoreId) {
-        const plan = lastPlansById[restoreId];
-        const planName = plan ? plan.name : restoreId;
-        const ok = window.confirm(`Restore plan "${planName}"?
-
-It will appear again in admin (and can be enabled).`);
-        if (!ok) return;
-
-        if (!plan) throw new Error("Plan not found");
-        const payload = {
-          name: plan.name,
-          price_ar: plan.price_ar,
-          duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
-          data_mb: (plan.data_mb === undefined ? null : plan.data_mb),
-          max_devices: plan.max_devices ?? 1,
-          sort_order: plan.sort_order ?? 0,
-          is_visible: true,
-          is_active: false, // restore as visible but inactive
-        };
-
-        await fetchJSON(`/api/admin/plans/${restoreId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        await loadPlans();
-      }
-
-      if (toggleId) {
-        await fetchJSON(`/api/admin/plans/${toggleId}/toggle`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        });
-        await loadPlans();
-      }
-    } catch (err) {
-      errEl.textContent = err.message;
-    }
+    });
   }
-
-  rowsEl.addEventListener("click", handleActionClick);
-  if (cardsEl) cardsEl.addEventListener("click", handleActionClick);
         await loadPlans();
       }
 
