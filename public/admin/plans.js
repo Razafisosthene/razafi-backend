@@ -174,6 +174,27 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
     const data = await fetchJSON(`/api/admin/plans?${params.toString()}`);
     const plans = data.plans || [];
 
+    // Keep a lookup for actions (edit/delete/restore)
+    lastPlansById = Object.fromEntries((plans || []).map(p => [p.id, p]));
+
+    // Client-side deleted filter (deleted = inactive + hidden)
+    const deletedMode2 = (deletedEl && deletedEl.value) ? deletedEl.value : "hide";
+    let filtered = (plans || []).slice();
+
+    const isDeleted = (p) => !p.is_active && !p.is_visible;
+
+    if (deletedMode2 === "hide") filtered = filtered.filter(p => !isDeleted(p));
+    else if (deletedMode2 === "only") filtered = filtered.filter(p => isDeleted(p));
+
+    // If we fetched without server-side filters (deletedMode != hide), re-apply active/visible filters client-side
+    if (deletedMode2 !== "hide") {
+      const aVal = activeEl.value;
+      const vVal = visibleEl.value;
+      if (aVal !== "all") filtered = filtered.filter(p => (p.is_active ? "1" : "0") === aVal);
+      if (vVal !== "all") filtered = filtered.filter(p => (p.is_visible ? "1" : "0") === vVal);
+    }
+
+
     if (!filtered.length) {
       rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="9">No plans</td></tr>`;
       return;
