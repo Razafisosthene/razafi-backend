@@ -67,6 +67,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const meEl = document.getElementById("me");
   const errEl = document.getElementById("error");
   const rowsEl = document.getElementById("rows");
+  const cardsEl = document.getElementById("cards");
 
   const qEl = document.getElementById("q");
   const activeEl = document.getElementById("activeFilter");
@@ -251,6 +252,44 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
         </tr>
       `;
     }).join("");
+
+    // Mobile cards view (shown on small screens via CSS)
+    if (cardsEl) {
+      cardsEl.innerHTML = filtered.map(p => {
+        const deleted = (!p.is_active && !p.is_visible);
+        const badge = deleted ? '<span class="badge badge-deleted">Deleted</span>' : '';
+        const visibleTxt = p.is_visible ? "Visible" : "Hidden";
+        const activeTxt = p.is_active ? "Active" : "Inactive";
+
+        const actions = deleted
+          ? (
+              '<button type="button" data-edit="' + esc(p.id) + '">Edit</button>' +
+              '<button type="button" data-restore="' + esc(p.id) + '">Restore</button>'
+            )
+          : (
+              '<button type="button" data-edit="' + esc(p.id) + '">Edit</button>' +
+              '<button type="button" class="danger" data-delete="' + esc(p.id) + '">Delete</button>' +
+              '<button type="button" data-toggle="' + esc(p.id) + '">' + (p.is_active ? "Disable" : "Enable") + '</button>'
+            );
+
+        return (
+          '<div class="plan-card" data-row="' + esc(p.id) + '">' +
+            '<div class="card-head">' +
+              '<div class="plan-name">' + esc(p.name) + ' ' + badge + '</div>' +
+              '<div class="plan-price">' + esc(p.price_ar) + ' Ar</div>' +
+            '</div>' +
+            '<div class="meta">' +
+              '<div><span class="label">Duration</span><span class="value">' + esc(formatDurationFromPlan(p)) + '</span></div>' +
+              '<div><span class="label">Data</span><span class="value">' + esc(formatDataDisplay(p)) + '</span></div>' +
+              '<div><span class="label">Devices</span><span class="value">' + esc(p.max_devices) + '</span></div>' +
+              '<div><span class="label">Status</span><span class="value">' + esc(visibleTxt) + ' • ' + esc(activeTxt) + '</span></div>' +
+              '<div><span class="label">Sort</span><span class="value">' + esc(p.sort_order) + '</span></div>' +
+            '</div>' +
+            '<div class="actions">' + actions + '</div>' +
+          '</div>'
+        );
+      }).join("");
+    }
   }
 
   // init
@@ -278,7 +317,8 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
     if (e.key === "Enter") loadPlans().catch(e => errEl.textContent = e.message);
   });
 
-  rowsEl.addEventListener("click", async (e) => {
+  
+  async function handleActionClick(e) {
     const btn = e.target.closest("button");
     if (!btn) return;
 
@@ -289,9 +329,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
 
     try {
       if (editId) {
-        // quick fetch list and find the plan locally by reloading (simple and safe)
-        const data = await fetchJSON("/api/admin/plans?limit=200&offset=0");
-        const plan = (data.plans || []).find(x => x.id === editId);
+        const plan = lastPlansById[editId];
         if (!plan) throw new Error("Plan not found");
         openModal("edit", plan);
       }
@@ -299,7 +337,9 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
       if (deleteId) {
         const plan = lastPlansById[deleteId];
         const planName = plan ? plan.name : deleteId;
-        const ok = window.confirm(`Delete plan "${planName}"?\n\nIt will be hidden from admin & portal, but kept in DB (reversible).`);
+        const ok = window.confirm(`Delete plan "${planName}"?
+
+It will be hidden from admin & portal, but kept in DB (reversible).`);
         if (!ok) return;
 
         if (!plan) throw new Error("Plan not found");
@@ -307,7 +347,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
           name: plan.name,
           price_ar: plan.price_ar,
           duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
-          data_mb: plan.data_mb ?? null,
+          data_mb: (plan.data_mb === undefined ? null : plan.data_mb),
           max_devices: plan.max_devices ?? 1,
           sort_order: plan.sort_order ?? 0,
           is_visible: false,
@@ -319,6 +359,52 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
+        await loadPlans();
+      }
+
+      if (restoreId) {
+        const plan = lastPlansById[restoreId];
+        const planName = plan ? plan.name : restoreId;
+        const ok = window.confirm(`Restore plan "${planName}"?
+
+It will appear again in admin (and can be enabled).`);
+        if (!ok) return;
+
+        if (!plan) throw new Error("Plan not found");
+        const payload = {
+          name: plan.name,
+          price_ar: plan.price_ar,
+          duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
+          data_mb: (plan.data_mb === undefined ? null : plan.data_mb),
+          max_devices: plan.max_devices ?? 1,
+          sort_order: plan.sort_order ?? 0,
+          is_visible: true,
+          is_active: false, // restore as visible but inactive
+        };
+
+        await fetchJSON(`/api/admin/plans/${restoreId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        await loadPlans();
+      }
+
+      if (toggleId) {
+        await fetchJSON(`/api/admin/plans/${toggleId}/toggle`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        await loadPlans();
+      }
+    } catch (err) {
+      errEl.textContent = err.message;
+    }
+  }
+
+  rowsEl.addEventListener("click", handleActionClick);
+  if (cardsEl) cardsEl.addEventListener("click", handleActionClick);
         await loadPlans();
       }
 
