@@ -213,6 +213,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
 
     if (!filtered.length) {
       rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="9">No plans</td></tr>`;
+      if (cardsEl) cardsEl.innerHTML = `<div class="plan-card"><div class="plan-name">No plans</div></div>`;
       return;
     }
 
@@ -253,7 +254,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
       `;
     }).join("");
 
-    // Mobile cards view (shown on small screens via CSS)
+    // Mobile cards (shown via CSS on small screens)
     if (cardsEl) {
       cardsEl.innerHTML = filtered.map(p => {
         const deleted = (!p.is_active && !p.is_visible);
@@ -371,7 +372,6 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
 
       try {
         if (editId) {
-          // reuse existing edit logic by calling openModal directly with cached plan
           const plan = lastPlansById[editId];
           if (!plan) throw new Error("Plan not found");
           openModal("edit", plan);
@@ -388,7 +388,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
             name: plan.name,
             price_ar: plan.price_ar,
             duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
-            data_mb: (plan.data_mb === undefined ? null : plan.data_mb),
+            data_mb: plan.data_mb ?? null,
             max_devices: plan.max_devices ?? 1,
             sort_order: plan.sort_order ?? 0,
             is_visible: false,
@@ -414,7 +414,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
             name: plan.name,
             price_ar: plan.price_ar,
             duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
-            data_mb: (plan.data_mb === undefined ? null : plan.data_mb),
+            data_mb: plan.data_mb ?? null,
             max_devices: plan.max_devices ?? 1,
             sort_order: plan.sort_order ?? 0,
             is_visible: true,
