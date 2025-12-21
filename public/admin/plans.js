@@ -237,7 +237,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
 
       return `
         <tr style="border-top:1px solid rgba(255,255,255,.12);">
-          <td class="sticky-col sticky-left" style="padding:10px; font-weight:600;">${esc(p.name)}${badgeHtml}</td>
+          <td style="padding:10px; font-weight:600;">${esc(p.name)}${badgeHtml}</td>
           <td style="padding:10px;">${esc(p.price_ar)}</td>
           <td style="padding:10px;">${esc(formatDurationFromPlan(p))}</td>
           <td style="padding:10px;">${esc(formatDataDisplay(p))}</td>
@@ -245,7 +245,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
           <td style="padding:10px;">${visible}</td>
           <td style="padding:10px;">${active}</td>
           <td style="padding:10px;">${esc(p.sort_order)}</td>
-          <td class="sticky-col sticky-right" style="padding:10px; display:flex; gap:8px; flex-wrap:wrap;">
+          <td style="padding:10px; display:flex; gap:8px; flex-wrap:wrap;">
             ${actionsHtml}
           </td>
         </tr>

@@ -271,39 +271,3 @@ button.danger:hover{filter:brightness(0.95);}
     font-size: 16px;
   }
 }
-
-/* Plans table: better horizontal scrolling + sticky Name/Actions */
-.table-wrap{
-  overflow: auto;
-  -webkit-overflow-scrolling: touch;
-}
-
-.table-wrap table{
-  border-collapse: separate;
-  border-spacing: 0;
-}
-
-/* Sticky columns */
-.sticky-col{
-  position: sticky;
-  background: rgba(255,255,255,0.96);
-  backdrop-filter: blur(6px);
-}
-
-.sticky-left{
-  left: 0;
-  z-index: 3;
-  box-shadow: 1px 0 0 rgba(0,0,0,0.06);
-}
-
-.sticky-right{
-  right: 0;
-  z-index: 3;
-  box-shadow: -1px 0 0 rgba(0,0,0,0.06);
-  white-space: nowrap;
-}
-
-/* Ensure header stays above cells */
-thead .sticky-col{
-  z-index: 5;
-}
