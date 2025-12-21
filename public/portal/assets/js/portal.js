@@ -411,6 +411,20 @@ function bindPlanHandlers() {
     const confirmBtn = card.querySelector(".confirm-btn");
     const summaryEl = card.querySelector(".pay-summary");
 
+    // Make the whole card clickable (same as "Choisir"), except for interactive elements
+    card.addEventListener("click", function (e) {
+      // If already selected, don't re-trigger (avoids resetting payment state)
+      if (card.classList.contains("selected")) return;
+
+      // Ignore clicks on interactive controls or inside the payment area
+      const t = e.target;
+      if (!t || typeof t.closest !== "function") return;
+      if (t.closest(".plan-payment")) return;
+      if (t.closest("button, a, input, textarea, select, label")) return;
+
+      if (chooseBtn) chooseBtn.click();
+    });
+
     if (chooseBtn) {
       chooseBtn.addEventListener("click", function () {
         closeAllPayments();
@@ -455,7 +469,24 @@ function bindPlanHandlers() {
         }
 
         if (summaryEl) summaryEl.innerHTML = buildPlanSummary(card);
-        if (confirmWrap) confirmWrap.classList.remove("hidden");
+        if (confirmWrap) {
+          confirmWrap.classList.remove("hidden");
+
+          // Auto-scroll to confirmation on desktop (and focus the confirm button)
+          try {
+            requestAnimationFrame(function () {
+              if (typeof confirmWrap.scrollIntoView === "function") {
+                confirmWrap.scrollIntoView({ behavior: "smooth", block: "center" });
+              }
+              if (confirmBtn && typeof confirmBtn.focus === "function") {
+                // Small delay so the element is visible before focusing
+                setTimeout(function () { confirmBtn.focus({ preventScroll: true }); }, 200);
+              }
+            });
+          } catch (_) {
+            // no-op: keep UX functional on very old browsers
+          }
+        }
       });
     }
 

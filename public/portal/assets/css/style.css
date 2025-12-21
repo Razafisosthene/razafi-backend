@@ -114,7 +114,15 @@ img {
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.10);
   transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+  cursor: pointer; /* whole card is clickable */
 }
+
+/* Keep correct cursors on interactive elements inside cards */
+.plan-card button { cursor: pointer; }
+.plan-card a { cursor: pointer; }
+.plan-card input,
+.plan-card textarea { cursor: text; }
+.plan-card select { cursor: pointer; }
 
 .theme-light .plan-card {
   border-color: rgba(0, 0, 0, 0.08);
