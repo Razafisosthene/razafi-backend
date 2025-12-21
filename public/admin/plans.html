@@ -67,14 +67,14 @@
       </div>
 
       <!-- Simple modal -->
-      <div id="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.5);">
-        <div class="card" style="max-width:520px; margin:8vh auto; width:92%;">
+      <div id="modal" class="modal" style="display:none;">
+        <div class="card modal-card">
           <h2 id="modalTitle" style="margin-top:0;">New plan</h2>
           <form id="form">
             <input id="f_name" placeholder="Name" required />
             <input id="f_price_ar" placeholder="Price (Ar)" required />
 
-            <div style="display:flex; gap:10px; align-items:center;">
+            <div class="form-row">
               <input id="f_duration_value" placeholder="Duration" required style="flex:1;" />
               <select id="f_duration_unit" style="width:auto;">
                 <option value="minutes">minutes</option>
@@ -83,7 +83,7 @@
               </select>
             </div>
 
-            <label style="display:flex; gap:10px; align-items:center; margin:10px 0;">
+            <label class="check-row">
               <input id="f_unlimited_data" type="checkbox" />
               <span>Unlimited data</span>
             </label>
@@ -93,11 +93,11 @@
             <input id="f_max_devices" placeholder="Max devices" required />
             <input id="f_sort_order" placeholder="Sort order" />
 
-            <label style="display:flex; gap:10px; align-items:center; margin:10px 0;">
+            <label class="check-row">
               <input id="f_is_visible" type="checkbox" checked />
               <span>Visible</span>
             </label>
-            <label style="display:flex; gap:10px; align-items:center; margin:10px 0;">
+            <label class="check-row">
               <input id="f_is_active" type="checkbox" checked />
               <span>Active</span>
             </label>

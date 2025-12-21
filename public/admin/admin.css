@@ -199,3 +199,75 @@ button.danger:hover{filter:brightness(0.95);}
     width: 100%;
   }
 }
+
+/* Modal improvements (mobile-friendly) */
+.modal{
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.5);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 14px;
+  overflow: auto;
+  z-index: 1000;
+}
+
+/* Default modal card */
+.modal-card{
+  width: 100%;
+  max-width: 520px;
+  margin: 6vh auto;
+  max-height: 88vh;
+  overflow: auto;
+  padding: 16px;
+}
+
+/* Form layout helpers */
+.form-row{
+  display:flex;
+  gap:10px;
+  align-items:center;
+}
+.check-row{
+  display:flex;
+  gap:10px;
+  align-items:center;
+  margin: 10px 0;
+}
+
+/* Sticky action bar inside modal */
+.modal-actions{
+  position: sticky;
+  bottom: 0;
+  display:flex;
+  gap:10px;
+  justify-content:flex-end;
+  padding-top: 12px;
+  background: rgba(255,255,255,0.96);
+  border-top: 1px solid rgba(0,0,0,0.06);
+  margin-top: 12px;
+}
+
+/* On small screens, modal becomes near full-screen */
+@media (max-width: 520px){
+  .modal{
+    padding: 10px;
+    align-items: stretch;
+  }
+  .modal-card{
+    margin: 0;
+    max-height: 94vh;
+    border-radius: 18px;
+  }
+  .modal-actions{
+    justify-content: space-between;
+  }
+  .modal-actions button{
+    width: 48%;
+  }
+  /* Ensure form inputs are readable (avoid iOS zoom) */
+  .modal-card input, .modal-card select, .modal-card button{
+    font-size: 16px;
+  }
+}
