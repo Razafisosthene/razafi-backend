@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
@@ -8,7 +8,8 @@
 </head>
 <body>
   <div class="login-container">
-    <div class="card" style="max-width: 1200px; width: 96%;">
+    <div class="card" style="max-width:1200px; width:96%;">
+
       <div class="topbar">
         <div class="title">
           <h1 style="margin:0;">Access Points</h1>
@@ -25,98 +26,53 @@
 
       <hr style="opacity:.2; margin:18px 0;" />
 
-      <!-- Tanaza Import -->
-      <div class="card" style="padding:14px; margin-bottom:14px;">
-        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-          <div style="font-weight:700;">Import AP from Tanaza</div>
-          <button id="tanazaLoadBtn" type="button" style="width:auto;">Load Tanaza devices</button>
-          <select id="tanazaSelect" style="min-width:320px; flex:1;">
-            <option value="">(Load devices first)</option>
-          </select>
-          <select id="tanazaPoolSelect" style="min-width:260px;">
-            <option value="">Pool (optional)</option>
-          </select>
-          <input id="tanazaCap" type="number" min="0" placeholder="AP max clients (optional)" style="width:220px;" />
-          <button id="tanazaImportBtn" type="button" style="width:auto;">Import</button>
-        </div>
-        <div id="tanazaMsg" class="subtitle" style="margin-top:10px; opacity:.85;"></div>
-      </div>
-
-      <!-- Filters -->
       <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-        <input id="q" placeholder="Search AP MAC…" style="flex:1; min-width:240px;" />
-        <select id="poolFilter" style="width:auto; min-width:260px;"><option value="">Pool: all</option></select>
-
-        <select id="activeFilter" style="width:auto;">
+        <input id="q" placeholder="Search AP name / MAC…" style="flex:1; min-width:240px;" />
+        <select id="poolFilter" style="min-width:220px;">
+          <option value="">Pool: all</option>
+        </select>
+        <select id="activeFilter" style="min-width:140px;">
           <option value="all">Active: all</option>
           <option value="1">Active only</option>
           <option value="0">Inactive only</option>
         </select>
-
-        <select id="staleFilter" style="width:auto;">
+        <select id="staleFilter" style="min-width:140px;">
           <option value="all">Stale: all</option>
           <option value="0">Fresh only</option>
           <option value="1">Stale only</option>
         </select>
-
         <button id="refreshBtn" type="button" style="width:auto;">Refresh</button>
       </div>
 
       <div id="error" class="error" style="margin-top:12px;"></div>
 
+      <div class="subtitle" style="margin-top:10px; opacity:.85;">
+        Tanaza fields (Name / Online / Connected) come from Tanaza Cloud API and may update every ~15s (cached).
+      </div>
+
       <div class="table-wrap">
-        <table style="width:100%; border-collapse:collapse;">
+        <table style="width:100%; border-collapse:collapse; margin-top:14px;">
           <thead>
-            <tr style="text-align:left; opacity:.9;">
-              <th style="padding:10px;">AP MAC</th>
-              <th style="padding:10px;">Pool</th>
-              <th style="padding:10px;">Active clients</th>
-              <th style="padding:10px;">Last computed</th>
-              <th style="padding:10px;">Stale</th>
-              <th style="padding:10px;">Active</th>
-              <th style="padding:10px;">Pool cap</th>
-              <th style="padding:10px;">AP cap</th>
-              <th style="padding:10px;">Actions</th>
+            <tr>
+              <th style="padding:10px; text-align:left;">AP</th>
+              <th style="padding:10px; text-align:left;">Pool</th>
+              <th style="padding:10px; text-align:left;">Tanaza Online</th>
+              <th style="padding:10px; text-align:left;">Tanaza Connected</th>
+              <th style="padding:10px; text-align:left;">Server Active</th>
+              <th style="padding:10px; text-align:left;">Last computed</th>
+              <th style="padding:10px; text-align:left;">Stale</th>
+              <th style="padding:10px; text-align:left;">Active</th>
+              <th style="padding:10px; text-align:left;">Pool cap</th>
+              <th style="padding:10px; text-align:left;">AP cap</th>
             </tr>
           </thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
 
-      <!-- Edit AP modal (pool + AP capacity) -->
-      <div id="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.5);">
-        <div class="card" style="max-width:560px; margin:10vh auto; width:92%;">
-          <h2 style="margin-top:0;">Edit AP</h2>
-
-          <div class="subtitle" style="margin-top:6px;">
-            AP: <span id="m_ap" style="font-weight:700;"></span>
-          </div>
-
-          <form id="form" style="margin-top:14px;">
-            <label style="display:block; margin:10px 0 6px; opacity:.85;">Pool</label>
-            <select id="poolSelect"></select>
-
-            <label style="display:flex; gap:10px; align-items:center; margin:12px 0;">
-              <input id="unassign" type="checkbox" />
-              <span>Unassign (no pool)</span>
-            </label>
-
-            <label style="display:block; margin:14px 0 6px; opacity:.85;">AP max clients (Tanaza connectedClients)</label>
-            <input id="apCapInput" type="number" min="0" placeholder="e.g. 50 (leave empty for default)" />
-
-            <div id="formError" class="error" style="margin:8px 0;"></div>
-
-            <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:14px;">
-              <button id="cancelBtn" type="button" style="width:auto;">Cancel</button>
-              <button id="saveBtn" type="submit" style="width:auto;">Save</button>
-            </div>
-          </form>
-        </div>
-      </div>
-
     </div>
   </div>
 
-  <script src="./aps.js"></script>
+  <script src="/admin/aps.js"></script>
 </body>
 </html>
