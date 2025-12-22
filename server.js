@@ -1050,6 +1050,54 @@ try {
 // ---------------------------------------------------------------------------
 // ADMIN — APs (assign pool)
 // ---------------------------------------------------------------------------
+app.post("/api/admin/aps/import-tanaza", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const macAddress = String(req.body?.macAddress || req.body?.mac || "").trim();
+    const label = String(req.body?.label || req.body?.name || "").trim();
+    const pool_id = String(req.body?.pool_id || "").trim();
+
+    // capacity_max is optional
+    const capRaw = req.body?.capacity_max;
+    const capacity_max =
+      capRaw === null || capRaw === undefined || capRaw === "" ? null : Number(capRaw);
+
+    if (!macAddress) return res.status(400).json({ error: "macAddress_required" });
+    if (!pool_id) return res.status(400).json({ error: "pool_id_required" });
+    if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
+      return res.status(400).json({ error: "capacity_max_invalid" });
+    }
+
+    const ap_mac = macAddress.toUpperCase();
+
+    const payload = {
+      ap_mac,
+      ap_name: label || ap_mac,  // store friendly Tanaza label in existing column
+      pool_id,
+      is_active: true,
+      updated_at: new Date().toISOString(),
+    };
+
+    // Only set capacity_max if provided (column exists after your DB update)
+    if (capacity_max !== null) payload.capacity_max = Math.round(capacity_max);
+
+    const { data, error } = await supabase
+      .from("ap_registry")
+      .upsert(payload, { onConflict: "ap_mac" })
+      .select("id, ap_mac, ap_name, pool_id, is_active, capacity_max")
+      .single();
+
+    if (error) return res.status(400).json({ error: error.message, details: error });
+
+    return res.json({ ok: true, ap: data });
+  } catch (e) {
+    console.error("ADMIN APS IMPORT TANAZA ERROR", e);
+    return res.status(500).json({ error: "import_failed" });
+  }
+});
+
+
 app.patch("/api/admin/aps/:ap_mac", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });

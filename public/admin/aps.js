@@ -24,6 +24,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   const meEl = document.getElementById("me");
   const rowsEl = document.getElementById("rows");
   const errEl = document.getElementById("error");
+  const tanazaLoadBtn = document.getElementById("tanazaLoadBtn");
+  const tanazaDeviceSel = document.getElementById("tanazaDeviceSel");
+  const tanazaPoolSel = document.getElementById("tanazaPoolSel");
+  const tanazaApCap = document.getElementById("tanazaApCap");
+  const tanazaImportBtn = document.getElementById("tanazaImportBtn");
+  const tanazaMsg = document.getElementById("tanazaMsg");
+
+  let tanazaDevices = []; // cached list for dropdown
+
   const qEl = document.getElementById("q");
   const poolFilter = document.getElementById("poolFilter");
   const activeFilter = document.getElementById("activeFilter");
@@ -46,6 +55,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     try {
       const data = await fetchJSON("/api/admin/pools?limit=200&offset=0");
       const pools = data.pools || [];
+    // Populate Tanaza import pool selector (required)
+    if (tanazaPoolSel) {
+      tanazaPoolSel.innerHTML = `<option value="">Select pool (required)</option>` +
+        pools.map(p => `<option value="${esc(p.id)}">${esc(p.name || p.id)}</option>`).join("");
+    }
+
       poolFilter.innerHTML = `<option value="">Pool: all</option>` + pools.map(p => {
         const name = p.name ? `${p.name}` : `${p.id}`;
         return `<option value="${esc(p.id)}">${esc(name)}</option>`;
@@ -119,6 +134,87 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadAPs();
 
   refreshBtn.addEventListener("click", () => loadAPs().catch(e => errEl.textContent = e.message));
+
+
+  // Tanaza import: load devices for dropdown
+  if (tanazaLoadBtn) {
+    tanazaLoadBtn.addEventListener("click", async () => {
+      try {
+        if (tanazaMsg) tanazaMsg.textContent = "Loading Tanaza devices...";
+        tanazaLoadBtn.disabled = true;
+        const data = await fetchJSON("/api/admin/tanaza/devices");
+        tanazaDevices = data.devices || data.results || [];
+        if (!Array.isArray(tanazaDevices)) tanazaDevices = [];
+        if (!tanazaDevices.length) {
+          if (tanazaDeviceSel) tanazaDeviceSel.innerHTML = `<option value="">(No devices returned)</option>`;
+          if (tanazaMsg) tanazaMsg.textContent = "No Tanaza devices returned.";
+          return;
+        }
+        if (tanazaDeviceSel) {
+          tanazaDeviceSel.innerHTML =
+            `<option value="">Select a Tanaza device…</option>` +
+            tanazaDevices.map(d => {
+              const mac = d.macAddress || (Array.isArray(d.macAddressList) ? d.macAddressList[0] : "");
+              const label = d.label || d.name || d.id || mac || "Device";
+              const text = mac ? `${label} — ${mac}` : `${label}`;
+              return `<option value="${esc(d.id || mac || label)}" data-mac="${esc(mac)}" data-label="${esc(label)}">${esc(text)}</option>`;
+            }).join("");
+        }
+        if (tanazaMsg) tanazaMsg.textContent = `Loaded ${tanazaDevices.length} devices from Tanaza.`;
+      } catch (e) {
+        if (tanazaMsg) tanazaMsg.textContent = `Tanaza load failed: ${e.message}`;
+      } finally {
+        tanazaLoadBtn.disabled = false;
+      }
+    });
+  }
+
+  // Tanaza import: upsert into ap_registry
+  if (tanazaImportBtn) {
+    tanazaImportBtn.addEventListener("click", async () => {
+      const opt = tanazaDeviceSel?.selectedOptions?.[0];
+      const mac = opt?.getAttribute("data-mac") || "";
+      const label = opt?.getAttribute("data-label") || "";
+      const pool_id = tanazaPoolSel?.value || "";
+      const capStr = String(tanazaApCap?.value || "").trim();
+
+      if (!mac) {
+        if (tanazaMsg) tanazaMsg.textContent = "Please select a Tanaza device first.";
+        return;
+      }
+      if (!pool_id) {
+        if (tanazaMsg) tanazaMsg.textContent = "Please select a pool (required).";
+        return;
+      }
+
+      let capacity_max = null;
+      if (capStr !== "") {
+        const n = Number(capStr);
+        if (!Number.isFinite(n) || n < 0) {
+          if (tanazaMsg) tanazaMsg.textContent = "AP max clients must be a number ≥ 0";
+          return;
+        }
+        capacity_max = Math.round(n);
+      }
+
+      try {
+        tanazaImportBtn.disabled = true;
+        if (tanazaMsg) tanazaMsg.textContent = "Importing...";
+        await fetchJSON("/api/admin/aps/import-tanaza", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ macAddress: mac, label, pool_id, capacity_max }),
+        });
+        if (tanazaMsg) tanazaMsg.textContent = `Imported ${label || mac}. Refreshing list...`;
+        await loadAPs();
+      } catch (e) {
+        if (tanazaMsg) tanazaMsg.textContent = `Import failed: ${e.message}`;
+      } finally {
+        tanazaImportBtn.disabled = false;
+      }
+    });
+  }
+
   qEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter") loadAPs().catch(err => errEl.textContent = err.message);
   });
