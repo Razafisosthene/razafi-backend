@@ -29,16 +29,14 @@
       
       <div class="card" style="margin-top:14px;">
         <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-          <div style="font-weight:700;">Import AP from Tanaza</div>
-          <div class="subtitle" style="opacity:.8;">Load devices from Tanaza, choose one, assign a pool, then import.</div>
+          <div style="font-weight:700;">Import AP from Tanaza (by MAC)</div>
+          <div class="subtitle" style="opacity:.8;">Paste AP MAC, fetch details from Tanaza, assign a pool, then import.</div>
         </div>
 
         <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px;">
-          <button id="tanazaLoadBtn" type="button" style="width:auto;">Load Tanaza devices</button>
+          <input id="tanazaMacInput" placeholder="AP MAC (e.g. E0:E1:A9:B0:5B:51)" style="min-width:260px; flex:1;" />
 
-          <select id="tanazaDeviceSel" style="min-width:260px; flex:1;">
-            <option value="">(Load devices first)</option>
-          </select>
+          <button id="tanazaFetchBtn" type="button" style="width:auto;">Fetch from Tanaza</button>
 
           <select id="tanazaPoolSel" style="min-width:220px;">
             <option value="">Select pool (required)</option>
@@ -49,54 +47,9 @@
           <button id="tanazaImportBtn" type="button" style="width:auto;">Import</button>
         </div>
 
-        <div id="tanazaMsg" class="subtitle" style="margin-top:8px;"></div>
+        <div id="tanazaPreview" class="subtitle" style="margin-top:8px;"></div>
+        <div id="tanazaMsg" class="subtitle" style="margin-top:6px;"></div>
       </div>
-<div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-        <input id="q" placeholder="Search AP name / MAC…" style="flex:1; min-width:240px;" />
-        <select id="poolFilter" style="min-width:220px;">
-          <option value="">Pool: all</option>
-        </select>
-        <select id="activeFilter" style="min-width:140px;">
-          <option value="all">Active: all</option>
-          <option value="1">Active only</option>
-          <option value="0">Inactive only</option>
-        </select>
-        <select id="staleFilter" style="min-width:140px;">
-          <option value="all">Stale: all</option>
-          <option value="0">Fresh only</option>
-          <option value="1">Stale only</option>
-        </select>
-        <button id="refreshBtn" type="button" style="width:auto;">Refresh</button>
-      </div>
-
-      <div id="error" class="error" style="margin-top:12px;"></div>
-
-      <div class="subtitle" style="margin-top:10px; opacity:.85;">
-        Tanaza fields (Name / Online / Connected) come from Tanaza Cloud API and may update every ~15s (cached).
-      </div>
-
-      <div class="table-wrap">
-        <table style="width:100%; border-collapse:collapse; margin-top:14px;">
-          <thead>
-            <tr>
-              <th style="padding:10px; text-align:left;">AP</th>
-              <th style="padding:10px; text-align:left;">Pool</th>
-              <th style="padding:10px; text-align:left;">Tanaza Online</th>
-              <th style="padding:10px; text-align:left;">Tanaza Connected</th>
-              <th style="padding:10px; text-align:left;">Server Active</th>
-              <th style="padding:10px; text-align:left;">Last computed</th>
-              <th style="padding:10px; text-align:left;">Stale</th>
-              <th style="padding:10px; text-align:left;">Active</th>
-              <th style="padding:10px; text-align:left;">Pool cap</th>
-              <th style="padding:10px; text-align:left;">AP cap</th>
-            </tr>
-          </thead>
-          <tbody id="rows"></tbody>
-        </table>
-      </div>
-
-    </div>
-  </div>
 
   <script src="/admin/aps.js"></script>
 </body>
