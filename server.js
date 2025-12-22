@@ -1453,11 +1453,96 @@ async function tanazaListDevicesFresh() {
     throw err;
   }
 
-  const url = `${TANAZA_BASE_URL}${TANAZA_DEVICES_PATH}`;
-  const resp = await axios.get(url, {
-    headers: { Authorization: `Bearer ${TANAZA_API_TOKEN}` },
-    timeout: Number.isFinite(TANAZA_TIMEOUT_MS) ? TANAZA_TIMEOUT_MS : 4000,
-  });
+  const candidatePaths = [
+    // 1) configured path (default /network-devices)
+    TANAZA_DEVICES_PATH,
+    // 2) common alternatives (some accounts/APIs use different naming)
+    "/networkDevices",
+    "/devices",
+    "/network_devices",
+  ];
+
+  let resp = null;
+  let lastErr = null;
+
+  for (const p of candidatePaths) {
+    try {
+      const url = `${TANAZA_BASE_URL}${p}`;
+      resp = await axios.get(url, {
+        headers: { Authorization: `Bearer ${TANAZA_API_TOKEN}` },
+        timeout: Number.isFinite(TANAZA_TIMEOUT_MS) ? TANAZA_TIMEOUT_MS : 4000,
+      });
+      lastErr = null;
+      break;
+    } catch (e) {
+      lastErr = e;
+      const status = e?.response?.status;
+      // If it's 404, try next candidate. If it's auth/other, stop early.
+      if (status === 404) continue;
+      throw e;
+    }
+  }
+
+  // Fallback: some Tanaza setups require listing networks first, then devices per network.
+  // We only try this fallback when we got 404s from all direct device endpoints.
+  if (!resp && lastErr && lastErr?.response?.status === 404) {
+    try {
+      const networksResp = await axios.get(`${TANAZA_BASE_URL}/networks`, {
+        headers: { Authorization: `Bearer ${TANAZA_API_TOKEN}` },
+        timeout: Number.isFinite(TANAZA_TIMEOUT_MS) ? TANAZA_TIMEOUT_MS : 4000,
+      });
+
+      const networksData = networksResp?.data;
+      const networks =
+        (Array.isArray(networksData) ? networksData :
+          (Array.isArray(networksData?.items) ? networksData.items :
+            (Array.isArray(networksData?.data) ? networksData.data : []))) || [];
+
+      const allDevices = [];
+      for (const n of networks) {
+        const nid = n?.id || n?.uuid || n?.networkId;
+        if (!nid) continue;
+
+        const perNetPaths = [
+          `/networks/${nid}${TANAZA_DEVICES_PATH}`,
+          `/networks/${nid}/network-devices`,
+          `/networks/${nid}/networkDevices`,
+          `/networks/${nid}/devices`,
+        ];
+
+        for (const p of perNetPaths) {
+          try {
+            const r = await axios.get(`${TANAZA_BASE_URL}${p}`, {
+              headers: { Authorization: `Bearer ${TANAZA_API_TOKEN}` },
+              timeout: Number.isFinite(TANAZA_TIMEOUT_MS) ? TANAZA_TIMEOUT_MS : 4000,
+            });
+            const d = r?.data;
+            const devices =
+              (Array.isArray(d) ? d :
+                (Array.isArray(d?.items) ? d.items :
+                  (Array.isArray(d?.data) ? d.data :
+                    (Array.isArray(d?.devices) ? d.devices : [])))) || [];
+            allDevices.push(...devices);
+            break; // stop trying perNetPaths for this network
+          } catch (e) {
+            const status = e?.response?.status;
+            if (status === 404) continue;
+            throw e;
+          }
+        }
+      }
+
+      // If we found any devices, synthesize a response-like object.
+      if (allDevices.length) {
+        resp = { data: allDevices };
+        lastErr = null;
+      }
+    } catch (e) {
+      // ignore and fall through to original error
+    }
+  }
+
+  if (!resp && lastErr) throw lastErr;
 
   const data = resp?.data;
   // Tanaza APIs sometimes return {items:[...]} or {data:[...]} or array. Support common shapes.
