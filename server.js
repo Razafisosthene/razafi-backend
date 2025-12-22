@@ -1,7 +1,6 @@
 // RAZAFI MVola Backend (User-side only) — Hardened Security Edition
 // ---------------------------------------------------------------------------
 
-import fetch from "node-fetch";
 import express from "express";
 import axios from "axios";
 import cors from "cors";
@@ -762,38 +761,29 @@ async function _tanazaFetch(path) {
     err.code = "tanaza_token_missing";
     throw err;
   }
+
   const url = `${TANAZA_BASE_URL}${path}`;
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), TANAZA_TIMEOUT_MS);
-  try {
-    const resp = await fetch(url, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${TANAZA_API_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      signal: ctrl.signal,
-    });
-    const txt = await resp.text();
-    let json;
-    try {
-      json = txt ? JSON.parse(txt) : null;
-    } catch {
-      const err = new Error(`tanaza_non_json_${resp.status}`);
-      err.status = resp.status;
-      err.body = txt?.slice(0, 300);
-      throw err;
-    }
-    if (!resp.ok) {
-      const err = new Error(`tanaza_http_${resp.status}`);
-      err.status = resp.status;
-      err.payload = json;
-      throw err;
-    }
-    return json;
-  } finally {
-    clearTimeout(t);
+
+  // Use axios (no global fetch / node-fetch dependency issues on Render)
+  const resp = await axios.get(url, {
+    headers: {
+      Authorization: `Bearer ${TANAZA_API_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    timeout: TANAZA_TIMEOUT_MS,
+    // Don't throw on non-2xx; we handle below
+    validateStatus: () => true,
+  });
+
+  if (resp.status < 200 || resp.status >= 300) {
+    const err = new Error(`tanaza_http_${resp.status}`);
+    err.code = "tanaza_http_error";
+    err.status = resp.status;
+    err.payload = resp.data;
+    throw err;
   }
+
+  return resp.data;
 }
 
 async function tanazaGetDeviceByMac(mac) {
