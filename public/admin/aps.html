@@ -8,22 +8,41 @@
 </head>
 <body>
   <div class="login-container">
-    <div class="card" style="max-width: 1100px; width: 96%;">
+    <div class="card" style="max-width: 1200px; width: 96%;">
       <div class="topbar">
-  <div class="title">
-    <h1 style="margin:0;">Access Points</h1>
-    <div id="me" class="subtitle">Loading...</div>
-  </div>
-  <div class="nav">
-    <a href="/admin/"><button type="button">Dashboard</button></a>
-    <a href="/admin/aps.html"><button type="button">APs</button></a>
-    <a href="/admin/plans.html"><button type="button">Plans</button></a>
-    <a href="/admin/pools.html"><button type="button">Pools</button></a>
-    <button id="logoutBtn" type="button">Logout</button>
-  </div>
-</div>
+        <div class="title">
+          <h1 style="margin:0;">Access Points</h1>
+          <div id="me" class="subtitle">Loading...</div>
+        </div>
+        <div class="nav">
+          <a href="/admin/"><button type="button">Dashboard</button></a>
+          <a href="/admin/aps.html"><button type="button">APs</button></a>
+          <a href="/admin/plans.html"><button type="button">Plans</button></a>
+          <a href="/admin/pools.html"><button type="button">Pools</button></a>
+          <button id="logoutBtn" type="button">Logout</button>
+        </div>
+      </div>
+
       <hr style="opacity:.2; margin:18px 0;" />
 
+      <!-- Tanaza Import -->
+      <div class="card" style="padding:14px; margin-bottom:14px;">
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <div style="font-weight:700;">Import AP from Tanaza</div>
+          <button id="tanazaLoadBtn" type="button" style="width:auto;">Load Tanaza devices</button>
+          <select id="tanazaSelect" style="min-width:320px; flex:1;">
+            <option value="">(Load devices first)</option>
+          </select>
+          <select id="tanazaPoolSelect" style="min-width:260px;">
+            <option value="">Pool (optional)</option>
+          </select>
+          <input id="tanazaCap" type="number" min="0" placeholder="AP max clients (optional)" style="width:220px;" />
+          <button id="tanazaImportBtn" type="button" style="width:auto;">Import</button>
+        </div>
+        <div id="tanazaMsg" class="subtitle" style="margin-top:10px; opacity:.85;"></div>
+      </div>
+
+      <!-- Filters -->
       <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
         <input id="q" placeholder="Search AP MAC…" style="flex:1; min-width:240px;" />
         <select id="poolFilter" style="width:auto; min-width:260px;"><option value="">Pool: all</option></select>
@@ -55,7 +74,8 @@
               <th style="padding:10px;">Last computed</th>
               <th style="padding:10px;">Stale</th>
               <th style="padding:10px;">Active</th>
-              <th style="padding:10px;">Capacity</th>
+              <th style="padding:10px;">Pool cap</th>
+              <th style="padding:10px;">AP cap</th>
               <th style="padding:10px;">Actions</th>
             </tr>
           </thead>
@@ -63,10 +83,10 @@
         </table>
       </div>
 
-      <!-- Assign pool modal -->
+      <!-- Edit AP modal (pool + AP capacity) -->
       <div id="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.5);">
-        <div class="card" style="max-width:520px; margin:10vh auto; width:92%;">
-          <h2 style="margin-top:0;">Assign Pool</h2>
+        <div class="card" style="max-width:560px; margin:10vh auto; width:92%;">
+          <h2 style="margin-top:0;">Edit AP</h2>
 
           <div class="subtitle" style="margin-top:6px;">
             AP: <span id="m_ap" style="font-weight:700;"></span>
@@ -80,6 +100,9 @@
               <input id="unassign" type="checkbox" />
               <span>Unassign (no pool)</span>
             </label>
+
+            <label style="display:block; margin:14px 0 6px; opacity:.85;">AP max clients (Tanaza connectedClients)</label>
+            <input id="apCapInput" type="number" min="0" placeholder="e.g. 50 (leave empty for default)" />
 
             <div id="formError" class="error" style="margin:8px 0;"></div>
 

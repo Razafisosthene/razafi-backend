@@ -446,6 +446,28 @@ const SMTP_PASS = process.env.SMTP_PASS;
 const MAIL_FROM = process.env.MAIL_FROM || SMTP_USER;
 const OPS_EMAIL = process.env.OPS_EMAIL;
 
+
+// ---------------------------------------------------------------------------
+// TANAZA (AP realtime load) + AP LIMITS (per-AP capacity gating)
+// ---------------------------------------------------------------------------
+const TANAZA_BASE_URL = process.env.TANAZA_BASE_URL || "https://app-graph.tanaza.com/api/v1";
+const TANAZA_API_TOKEN = process.env.TANAZA_API_TOKEN || null;
+// Fail mode when Tanaza is unreachable: "closed" (block) or "open" (allow)
+const TANAZA_FAIL_MODE = String(process.env.TANAZA_FAIL_MODE || "closed").toLowerCase();
+const TANAZA_TIMEOUT_MS = Number.parseInt(process.env.TANAZA_TIMEOUT_MS || "4000", 10);
+const TANAZA_CACHE_TTL_MS = Number.parseInt(process.env.TANAZA_CACHE_TTL_MS || "15000", 10);
+const TANAZA_STALE_TTL_MS = Number.parseInt(process.env.TANAZA_STALE_TTL_MS || "30000", 10);
+// Tanaza endpoint path for listing network devices (override if your Tanaza account uses a different path)
+const TANAZA_DEVICES_PATH = process.env.TANAZA_DEVICES_PATH || "/network-devices";
+
+// Per-AP capacity limits: JSON mapping by MAC. Example:
+// AP_LIMITS_JSON={"AA:BB:CC:DD:EE:FF":50,"11:22:33:44:55:66":30}
+const AP_LIMITS_JSON = process.env.AP_LIMITS_JSON || "{}";
+// Default AP limit when a MAC is not present in mapping. 0 => no AP limit for unknown APs.
+const AP_LIMIT_DEFAULT = Number.parseInt(process.env.AP_LIMIT_DEFAULT || "0", 10);
+// Optional: also enforce AP limit at /api/new/authorize (extra safety). Default OFF to avoid behavior changes.
+const ENFORCE_AP_LIMIT_ON_AUTHORIZE = String(process.env.ENFORCE_AP_LIMIT_ON_AUTHORIZE || "false").toLowerCase() === "true";
+
 // ---------------------------------------------------------------------------
 // CORS
 // ---------------------------------------------------------------------------
@@ -673,6 +695,149 @@ app.get("/api/admin/me", requireAdmin, async (req, res) => {
   });
 });
 
+
+// ===============================
+// ADMIN — TANAZA (list devices for dropdown)
+// ===============================
+app.get("/api/admin/tanaza/devices", requireAdmin, async (req, res) => {
+  try {
+    // cache-friendly list for dropdown (server-side, token stays secret)
+    const { devices, stale } = await getTanazaDevicesCached({ allowStale: true });
+
+    const sanitized = (devices || []).map((d) => ({
+      id: d?.id ?? null,
+      label: d?.label ?? d?.name ?? null,
+      macAddress: d?.macAddress ?? null,
+      macAddressList: Array.isArray(d?.macAddressList) ? d.macAddressList : null,
+      connectedClients: d?.connectedClients ?? null,
+    }));
+
+    return res.json({ ok: true, stale: !!stale, devices: sanitized });
+  } catch (e) {
+    const code = e?.code || "tanaza_error";
+    console.error("ADMIN TANAZA DEVICES ERROR", code, e?.response?.data || e?.message || e);
+    return res.status(502).json({
+      ok: false,
+      error: "TANAZA_ERROR",
+      code,
+      message: "Impossible de récupérer la liste des APs depuis Tanaza.",
+    });
+  }
+});
+
+// ===============================
+// ADMIN — TANAZA (import AP into ap_registry)
+// Upsert by macAddress -> ap_mac. Keeps existing pool_id unless provided.
+// ===============================
+app.post("/api/admin/tanaza/import-ap", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const body = req.body || {};
+    const macRaw = body.macAddress || body.ap_mac || body.apMac || null;
+    const ap_mac = normalizeMacString(macRaw);
+
+    if (!ap_mac) {
+      return res.status(400).json({ ok: false, error: "invalid_macAddress" });
+    }
+
+    // optional pool assignment during import
+    let pool_id = body.pool_id;
+    if (pool_id !== undefined && pool_id !== null) {
+      pool_id = String(pool_id).trim();
+      if (!pool_id) pool_id = null;
+    }
+
+    // optional capacity_max during import (per-AP limit managed in admin)
+let capacity_max = body.capacity_max;
+if (capacity_max !== undefined) {
+  if (capacity_max === null || capacity_max === "") {
+    capacity_max = null;
+  } else {
+    const v = toInt(capacity_max);
+    if (v === null || v < 0) {
+      return res.status(400).json({ ok: false, error: "capacity_max_invalid" });
+    }
+    capacity_max = v;
+  }
+}
+
+// check existing
+    const { data: existing, error: exErr } = await supabase
+      .from("ap_registry")
+      .select("ap_mac,pool_id,is_active,capacity_max")
+      .eq("ap_mac", ap_mac)
+      .maybeSingle();
+
+    if (exErr) {
+      console.error("IMPORT AP lookup error", exErr);
+      return res.status(500).json({ ok: false, error: "db_error" });
+    }
+
+    // If assigning to a pool, ensure pool exists
+    if (pool_id) {
+      const { data: pool, error: poolErr } = await supabase
+        .from("internet_pools")
+        .select("id")
+        .eq("id", pool_id)
+        .maybeSingle();
+
+      if (poolErr) {
+        console.error("IMPORT AP pool lookup error", poolErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+      if (!pool) {
+        return res.status(400).json({ ok: false, error: "invalid_pool_id" });
+      }
+    }
+
+    if (existing) {
+      // Update: keep pool_id unless provided; always keep AP active unless explicitly passed
+      const patch = {};
+      if (pool_id !== undefined) patch.pool_id = pool_id;
+      if (capacity_max !== undefined) patch.capacity_max = capacity_max;
+      if (body.is_active !== undefined) patch.is_active = !!body.is_active;
+      else patch.is_active = true;
+
+      const { data: updated, error: upErr } = await supabase
+        .from("ap_registry")
+        .update(patch)
+        .eq("ap_mac", ap_mac)
+        .select("ap_mac,pool_id,is_active,capacity_max")
+        .single();
+
+      if (upErr) {
+        console.error("IMPORT AP update error", upErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+
+      return res.json({ ok: true, action: "updated", ap: updated });
+    }
+
+    // Insert new
+    const { data: inserted, error: insErr } = await supabase
+      .from("ap_registry")
+      .insert({
+        ap_mac,
+        pool_id: pool_id ?? null,
+        is_active: true,
+        capacity_max: (capacity_max !== undefined ? capacity_max : null),
+      })
+      .select("ap_mac,pool_id,is_active,capacity_max")
+      .single();
+
+    if (insErr) {
+      console.error("IMPORT AP insert error", insErr);
+      return res.status(500).json({ ok: false, error: "db_error" });
+    }
+
+    return res.json({ ok: true, action: "inserted", ap: inserted });
+  } catch (e) {
+    console.error("IMPORT AP EX", e?.message || e);
+    return res.status(500).json({ ok: false, error: "internal error" });
+  }
+});
+
 // ===============================
 // NEW PORTAL — PLANS (DB ONLY)
 // ===============================
@@ -775,7 +940,7 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
     // 1) AP registry list
     let query = supabase
       .from("ap_registry")
-      .select("ap_mac,pool_id,is_active", { count: "exact" });
+      .select("ap_mac,pool_id,is_active,capacity_max", { count: "exact" });
 
     if (q) query = query.ilike("ap_mac", `%${q}%`);
     if (pool_id) query = query.eq("pool_id", pool_id);
@@ -844,6 +1009,7 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
         ap_mac: a.ap_mac,
         pool_id: a.pool_id || null,
         is_active: a.is_active !== false,
+        ap_capacity_max: (a.capacity_max ?? null),
         active_clients: s ? (s.active_clients ?? 0) : 0,
         last_computed_at: s ? (s.last_computed_at || null) : null,
         is_stale,
@@ -873,16 +1039,36 @@ app.patch("/api/admin/aps/:ap_mac", requireAdmin, async (req, res) => {
     if (!ap_mac) return res.status(400).json({ error: "missing_ap_mac" });
 
     const b = req.body || {};
-    let pool_id = b.pool_id;
-    if (pool_id === undefined) {
-      return res.status(400).json({ error: "missing_pool_id" });
+let pool_id = b.pool_id;
+let capacity_max = b.capacity_max;
+
+const hasPoolPatch = pool_id !== undefined;
+const hasCapPatch = capacity_max !== undefined;
+
+if (!hasPoolPatch && !hasCapPatch) {
+  return res.status(400).json({ error: "missing_fields" });
+}
+
+if (hasPoolPatch) {
+  if (pool_id === null) {
+    pool_id = null; // unassign
+  } else {
+    pool_id = String(pool_id).trim();
+    if (!pool_id) pool_id = null;
+  }
+}
+
+if (hasCapPatch) {
+  if (capacity_max === null || capacity_max === "") {
+    capacity_max = null; // clear -> use default
+  } else {
+    const v = toInt(capacity_max);
+    if (v === null || v < 0) {
+      return res.status(400).json({ error: "capacity_max_invalid" });
     }
-    if (pool_id === null) {
-      pool_id = null; // unassign
-    } else {
-      pool_id = String(pool_id).trim();
-      if (!pool_id) pool_id = null;
-    }
+    capacity_max = v;
+  }
+}
 
     // ensure AP exists
     const { data: existing, error: exErr } = await supabase
@@ -916,11 +1102,15 @@ app.patch("/api/admin/aps/:ap_mac", requireAdmin, async (req, res) => {
       }
     }
 
+    const patch = {};
+    if (hasPoolPatch) patch.pool_id = pool_id;
+    if (hasCapPatch) patch.capacity_max = capacity_max;
+
     const { data, error } = await supabase
       .from("ap_registry")
-      .update({ pool_id })
+      .update(patch)
       .eq("ap_mac", ap_mac)
-      .select("ap_mac,pool_id,is_active")
+      .select("ap_mac,pool_id,is_active,capacity_max")
       .single();
 
     if (error) {
@@ -1193,6 +1383,163 @@ async function sendEmailNotification(subject, message) {
 // ---------------------------------------------------------------------------
 // HELPERS
 // ---------------------------------------------------------------------------
+
+
+// --- START: MAC normalizer (shared) ---
+function normalizeMacString(raw) {
+  try {
+    if (!raw) return null;
+    let s = String(raw).trim();
+    if (!s) return null;
+    // if something like "ap_mac=AA-BB..." or multiple CSV values, keep last
+    if (s.includes(",")) s = s.split(",").pop().trim();
+    s = s.replace(/^ap_mac=/i, "").trim();
+    s = s.replace(/-/g, ":");
+    const groups = s.match(/[0-9A-Fa-f]{2}/g);
+    if (!groups || groups.length < 6) return null;
+    return groups.slice(0, 6).map(g => g.toUpperCase()).join(":");
+  } catch (_) {
+    return null;
+  }
+}
+// --- END: MAC normalizer (shared) ---
+
+// --- START: AP limits (env JSON mapping) ---
+let __apLimitsCache = null;
+function loadApLimitsMap() {
+  if (__apLimitsCache) return __apLimitsCache;
+  try {
+    const obj = JSON.parse(AP_LIMITS_JSON || "{}");
+    const map = {};
+    for (const [k, v] of Object.entries(obj || {})) {
+      const mac = normalizeMacString(k);
+      const n = Number.parseInt(String(v), 10);
+      if (mac && Number.isFinite(n) && n > 0) map[mac] = n;
+    }
+    __apLimitsCache = map;
+    return map;
+  } catch (e) {
+    console.warn("⚠️ Invalid AP_LIMITS_JSON, treating as empty. Error:", e?.message || e);
+    __apLimitsCache = {};
+    return __apLimitsCache;
+  }
+}
+
+function getApLimitForMac(apMac) {
+  const mac = normalizeMacString(apMac);
+  if (!mac) return 0;
+  const map = loadApLimitsMap();
+  if (map && map[mac]) return map[mac];
+  const def = Number.isFinite(AP_LIMIT_DEFAULT) ? AP_LIMIT_DEFAULT : 0;
+  return def > 0 ? def : 0;
+}
+// --- END: AP limits ---
+
+// --- START: Tanaza API helpers + caching ---
+const __tanazaCache = {
+  devices: null,
+  fetched_at: 0,
+  by_mac: new Map(),
+};
+
+function tanazaConfigured() {
+  return !!(TANAZA_API_TOKEN && TANAZA_API_TOKEN.length > 10);
+}
+
+async function tanazaListDevicesFresh() {
+  if (!tanazaConfigured()) {
+    const err = new Error("Tanaza not configured (missing TANAZA_API_TOKEN)");
+    err.code = "TANAZA_NOT_CONFIGURED";
+    throw err;
+  }
+
+  const url = `${TANAZA_BASE_URL}${TANAZA_DEVICES_PATH}`;
+  const resp = await axios.get(url, {
+    headers: { Authorization: `Bearer ${TANAZA_API_TOKEN}` },
+    timeout: Number.isFinite(TANAZA_TIMEOUT_MS) ? TANAZA_TIMEOUT_MS : 4000,
+  });
+
+  const data = resp?.data;
+  // Tanaza APIs sometimes return {items:[...]} or {data:[...]} or array. Support common shapes.
+  const devices =
+    (Array.isArray(data) ? data :
+      (Array.isArray(data?.items) ? data.items :
+        (Array.isArray(data?.data) ? data.data :
+          (Array.isArray(data?.devices) ? data.devices : [])))) || [];
+
+  return devices;
+}
+
+function buildTanazaMacIndex(devices) {
+  const byMac = new Map();
+  for (const d of devices || []) {
+    const primary = normalizeMacString(d?.macAddress);
+    if (primary) byMac.set(primary, d);
+
+    const list = Array.isArray(d?.macAddressList) ? d.macAddressList : [];
+    for (const m of list) {
+      const nm = normalizeMacString(m);
+      if (nm && !byMac.has(nm)) byMac.set(nm, d);
+    }
+  }
+  return byMac;
+}
+
+async function getTanazaDevicesCached({ allowStale = true } = {}) {
+  const now = Date.now();
+  const age = now - (__tanazaCache.fetched_at || 0);
+
+  // fresh cache
+  if (__tanazaCache.devices && age >= 0 && age <= TANAZA_CACHE_TTL_MS) {
+    return { devices: __tanazaCache.devices, stale: false };
+  }
+
+  try {
+    const devices = await tanazaListDevicesFresh();
+    __tanazaCache.devices = devices;
+    __tanazaCache.fetched_at = now;
+    __tanazaCache.by_mac = buildTanazaMacIndex(devices);
+    return { devices, stale: false };
+  } catch (e) {
+    // if allowed, serve stale cache up to TANAZA_STALE_TTL_MS
+    if (allowStale && __tanazaCache.devices && age <= TANAZA_STALE_TTL_MS) {
+      return { devices: __tanazaCache.devices, stale: true, error: e };
+    }
+    throw e;
+  }
+}
+
+async function getTanazaConnectedClientsByMac(apMac) {
+  const mac = normalizeMacString(apMac);
+  if (!mac) {
+    const err = new Error("Invalid ap_mac");
+    err.code = "INVALID_AP_MAC";
+    throw err;
+  }
+
+  const { stale } = await getTanazaDevicesCached({ allowStale: true });
+  const d = __tanazaCache.by_mac.get(mac) || null;
+
+  if (!d) {
+    const err = new Error("AP not found in Tanaza devices list");
+    err.code = "TANAZA_DEVICE_NOT_FOUND";
+    throw err;
+  }
+
+  const ccRaw = d?.connectedClients;
+  const connectedClients = Number.isFinite(Number(ccRaw)) ? Number(ccRaw) : 0;
+
+  return {
+    connectedClients,
+    device: d,
+    stale,
+  };
+}
+
+function shouldFailOpenOnTanazaError() {
+  return String(TANAZA_FAIL_MODE || "closed").toLowerCase() === "open";
+}
+// --- END: Tanaza helpers ---
 function maskPhone(phone) {
   if (!phone) return null;
   const s = String(phone);
@@ -1648,14 +1995,15 @@ app.post("/api/new/purchase", async (req, res) => {
     }
 
     // 2) Determine pool from AP (to check saturation)
-    const apMac = req.query.ap_mac || req.body.ap_mac;
+    const apMacRaw = req.query.ap_mac || req.body.ap_mac;
+    const apMac = normalizeMacString(apMacRaw);
     if (!apMac) {
-      return res.status(400).json({ error: "Missing ap_mac" });
+      return res.status(400).json({ error: "Missing or invalid ap_mac" });
     }
 
     const { data: apRow } = await supabase
       .from("ap_registry")
-      .select("pool_id")
+      .select("pool_id,capacity_max")
       .eq("ap_mac", apMac)
       .eq("is_active", true)
       .single();
@@ -1663,6 +2011,46 @@ app.post("/api/new/purchase", async (req, res) => {
     if (!apRow?.pool_id) {
       return res.status(400).json({ error: "Unknown or inactive AP" });
     }
+
+
+// 2b) NEW: AP capacity check (Tanaza realtime connectedClients)
+// This protects Wi‑Fi airtime. Pool saturation check remains below (protects backhaul).
+const apLimit = (() => {
+  const dbVal = apRow?.capacity_max;
+  if (dbVal === null || dbVal === undefined) return getApLimitForMac(apMac);
+  const n = Number(dbVal);
+  if (!Number.isFinite(n) || n < 0) return getApLimitForMac(apMac);
+  // 0 means "no limit"
+  return n;
+})();
+if (apLimit > 0) {
+  try {
+    const { connectedClients, stale } = await getTanazaConnectedClientsByMac(apMac);
+
+    if (connectedClients >= apLimit) {
+      return res.status(423).json({
+        error: "AP_SATURATED",
+        message: `Ce point d'accès Wi‑Fi est actuellement saturé (${connectedClients}/${apLimit}). Veuillez vous rapprocher d'un autre AP ou réessayer dans un instant.`,
+        ap_mac: apMac,
+        connectedClients,
+        ap_limit: apLimit,
+        stale: !!stale,
+      });
+    }
+  } catch (e) {
+    const code = e?.code || "TANAZA_UNREACHABLE";
+    console.error("AP capacity check (Tanaza) failed:", code, e?.response?.data || e?.message || e);
+
+    if (!shouldFailOpenOnTanazaError()) {
+      return res.status(503).json({
+        error: "TANAZA_UNREACHABLE",
+        message: "Service temporairement indisponible. Veuillez réessayer dans quelques instants.",
+        code,
+      });
+    }
+    // fail-open: continue purchase flow
+  }
+}
 
     // 3) Check saturation (BLOCK PURCHASE ONLY)
     const { data: poolStats } = await supabase
@@ -1742,7 +2130,8 @@ app.post("/api/new/authorize", async (req, res) => {
       return res.status(404).json({ error: "Not found" });
     }
 
-    const { voucher_code, device_mac, ap_mac } = req.body;
+    const { voucher_code, device_mac, ap_mac: apMacRaw } = req.body;
+    const ap_mac = normalizeMacString(apMacRaw);
     if (!voucher_code || !device_mac || !ap_mac) {
       return res.status(400).json({ error: "Missing parameters" });
     }
@@ -1769,7 +2158,7 @@ app.post("/api/new/authorize", async (req, res) => {
     // 2) Resolve pool from AP
     const { data: apRow } = await supabase
       .from("ap_registry")
-      .select("pool_id")
+      .select("pool_id,capacity_max")
       .eq("ap_mac", ap_mac)
       .eq("is_active", true)
       .single();
@@ -1777,6 +2166,47 @@ app.post("/api/new/authorize", async (req, res) => {
     if (!apRow?.pool_id) {
       return res.status(400).json({ error: "Unknown AP" });
     }
+
+
+// OPTIONAL: also enforce AP capacity at authorize time (reduces race conditions).
+// Default OFF (ENFORCE_AP_LIMIT_ON_AUTHORIZE=false) to preserve existing behavior.
+if (ENFORCE_AP_LIMIT_ON_AUTHORIZE) {
+  const apLimit = (() => {
+    const dbVal = apRow?.capacity_max;
+    if (dbVal === null || dbVal === undefined) return getApLimitForMac(ap_mac);
+    const n = Number(dbVal);
+    if (!Number.isFinite(n) || n < 0) return getApLimitForMac(ap_mac);
+    return n;
+  })();
+  if (apLimit > 0) {
+    try {
+      const { connectedClients, stale } = await getTanazaConnectedClientsByMac(ap_mac);
+      if (connectedClients >= apLimit) {
+        return res.status(423).json({
+          authorized: false,
+          error: "AP_SATURATED",
+          message: `Ce point d'accès Wi‑Fi est actuellement saturé (${connectedClients}/${apLimit}). Veuillez changer d'AP ou réessayer.`,
+          ap_mac,
+          connectedClients,
+          ap_limit: apLimit,
+          stale: !!stale,
+        });
+      }
+    } catch (e) {
+      const code = e?.code || "TANAZA_UNREACHABLE";
+      console.error("Authorize AP capacity check failed:", code, e?.response?.data || e?.message || e);
+      if (!shouldFailOpenOnTanazaError()) {
+        return res.status(503).json({
+          authorized: false,
+          error: "TANAZA_UNREACHABLE",
+          message: "Service temporairement indisponible. Veuillez réessayer dans quelques instants.",
+          code,
+        });
+      }
+      // fail-open: continue authorize flow
+    }
+  }
+}
 
     const now = new Date();
 
