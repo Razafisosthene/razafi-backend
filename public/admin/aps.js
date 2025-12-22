@@ -3,7 +3,7 @@ async function fetchJSON(url, opts = {}) {
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); }
-  catch { throw new Error(text || "Server returned non-JSON"); }
+  catch { throw new Error("Server returned non-JSON"); }
   if (!res.ok) throw new Error(data?.error || data?.message || "Request failed");
   return data;
 }
@@ -14,36 +14,58 @@ function esc(s) {
   }[c]));
 }
 
-function badge(text, ok) {
-  const bg = ok ? "rgba(16,185,129,.25)" : "rgba(239,68,68,.25)";
-  const bd = ok ? "rgba(16,185,129,.55)" : "rgba(239,68,68,.55)";
-  return `<span style="display:inline-block; padding:3px 8px; border-radius:999px; border:1px solid ${bd}; background:${bg}; font-size:.85em;">${esc(text)}</span>`;
+function fmtDate(v) {
+  if (!v) return "—";
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v);
+  return d.toLocaleString();
 }
 
+let poolsCache = [];
+let editingApMac = null;
+let editingCurrentPool = null;
+
 document.addEventListener("DOMContentLoaded", async () => {
+
+// Tanaza import (by MAC)
+const tanazaMacInput = document.getElementById("tanazaMacInput");
+const tanazaFetchBtn = document.getElementById("tanazaFetchBtn");
+const tanazaPoolSel = document.getElementById("tanazaPoolSel");
+const tanazaApCap = document.getElementById("tanazaApCap");
+const tanazaImportBtn = document.getElementById("tanazaImportBtn");
+const tanazaPreview = document.getElementById("tanazaPreview");
+const tanazaMsg = document.getElementById("tanazaMsg");
+
+function normalizeMac(input) {
+  return String(input || "").trim().toUpperCase().replace(/-/g, ":");
+}
+
+async function tanazaFetchByMac(mac) {
+  return await fetchJSON(`/api/admin/tanaza/device/${encodeURIComponent(mac)}`);
+}
+
+
   const meEl = document.getElementById("me");
-  const rowsEl = document.getElementById("rows");
   const errEl = document.getElementById("error");
-
-  const tanazaMacInput = document.getElementById("tanazaMacInput");
-  const tanazaFetchBtn = document.getElementById("tanazaFetchBtn");
-  const tanazaPoolSel = document.getElementById("tanazaPoolSel");
-  const tanazaApCap = document.getElementById("tanazaApCap");
-  const tanazaImportBtn = document.getElementById("tanazaImportBtn");
-  const tanazaPreview = document.getElementById("tanazaPreview");
-  const tanazaMsg = document.getElementById("tanazaMsg");
-
-  let tanazaFetched = null; // last fetched device object
-
+  const rowsEl = document.getElementById("rows");
 
   const qEl = document.getElementById("q");
-  const poolFilter = document.getElementById("poolFilter");
-  const activeFilter = document.getElementById("activeFilter");
-  const staleFilter = document.getElementById("staleFilter");
+  const poolFilterEl = document.getElementById("poolFilter");
+  const activeEl = document.getElementById("activeFilter");
+  const staleEl = document.getElementById("staleFilter");
   const refreshBtn = document.getElementById("refreshBtn");
   const logoutBtn = document.getElementById("logoutBtn");
 
-  async function guard() {
+  // modal refs
+  const modal = document.getElementById("modal");
+  const mApEl = document.getElementById("m_ap");
+  const form = document.getElementById("form");
+  const poolSelect = document.getElementById("poolSelect");
+  const unassign = document.getElementById("unassign");
+  const formError = document.getElementById("formError");
+  const cancelBtn = document.getElementById("cancelBtn");
+
+  async function guardSession() {
     try {
       const me = await fetchJSON("/api/admin/me");
       meEl.textContent = `Connected as ${me.email}`;
@@ -55,38 +77,64 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   async function loadPools() {
-    try {
-      const data = await fetchJSON("/api/admin/pools?limit=200&offset=0");
-      const pools = data.pools || [];
-    // Populate Tanaza import pool selector (required)
-    if (tanazaPoolSel) {
-      tanazaPoolSel.innerHTML = `<option value="">Select pool (required)</option>` +
-        pools.map(p => `<option value="${esc(p.id)}">${esc(p.name || p.id)}</option>`).join("");
+    const data = await fetchJSON("/api/admin/pools?limit=200&offset=0");
+    poolsCache = data.pools || [];
+    // Build dropdown
+    poolSelect.innerHTML = poolsCache.map(p => {
+      const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "—" : p.capacity_max;
+      const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : "(Unnamed pool)";
+      return `<option value="${esc(p.id)}">${esc(label)} (cap: ${esc(cap)})</option>`;
+    }).join("");
+      // Also populate the filter dropdown with pool NAMES (not IDs)
+    poolFilterEl.innerHTML = `<option value="">Pool: all</option>` + poolsCache.map(p => {
+      const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : "(Unnamed pool)";
+      return `<option value="${esc(p.id)}">${esc(label)}</option>`;
+    }).join("");
+if (!poolsCache.length) {
+      poolSelect.innerHTML = `<option value="">(No pools)</option>`;
+    }
+  }
+
+  function openModal(ap_mac, currentPoolId) {
+    editingApMac = ap_mac;
+    editingCurrentPool = currentPoolId || null;
+    formError.textContent = "";
+    mApEl.textContent = ap_mac;
+
+    // default selection
+    unassign.checked = !currentPoolId;
+    poolSelect.disabled = unassign.checked;
+
+    if (currentPoolId) {
+      const opt = [...poolSelect.options].find(o => o.value === currentPoolId);
+      if (opt) poolSelect.value = currentPoolId;
+    } else {
+      poolSelect.selectedIndex = 0;
     }
 
-      poolFilter.innerHTML = `<option value="">Pool: all</option>` + pools.map(p => {
-        const name = p.name ? `${p.name}` : `${p.id}`;
-        return `<option value="${esc(p.id)}">${esc(name)}</option>`;
-      }).join("");
-    } catch (e) {
-      // If pools endpoint fails, keep filter usable
-      console.warn("Pools load failed", e);
-    }
+    modal.style.display = "block";
+  }
+
+  function closeModal() {
+    modal.style.display = "none";
+    editingApMac = null;
+    editingCurrentPool = null;
   }
 
   async function loadAPs() {
     errEl.textContent = "";
-    rowsEl.innerHTML = `<tr><td colspan="10" style="padding:10px;">Loading...</td></tr>`;
+    rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="8">Loading...</td></tr>`;
 
     const params = new URLSearchParams();
-    const q = String(qEl.value || "").trim();
+    const q = qEl.value.trim();
+    const pool_id = String(poolFilterEl.value || "");
+
     if (q) params.set("q", q);
-    const poolId = String(poolFilter.value || "").trim();
-    if (poolId) params.set("pool_id", poolId);
-    const active = String(activeFilter.value || "all");
-    const stale = String(staleFilter.value || "all");
-    if (active) params.set("active", active);
-    if (stale) params.set("stale", stale);
+    if (pool_id) params.set("pool_id", pool_id);
+
+    params.set("active", activeEl.value);
+    params.set("stale", staleEl.value);
+
     params.set("limit", "200");
     params.set("offset", "0");
 
@@ -94,84 +142,132 @@ document.addEventListener("DOMContentLoaded", async () => {
     const aps = data.aps || [];
 
     if (!aps.length) {
-      rowsEl.innerHTML = `<tr><td colspan="10" style="padding:10px;">No APs</td></tr>`;
+      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="8">No APs</td></tr>`;
       return;
     }
 
     rowsEl.innerHTML = aps.map(a => {
-      const apName = a.tanaza_label ? `${a.tanaza_label}` : a.ap_mac;
-      const apLine = a.tanaza_label ? `${esc(a.tanaza_label)}<div style="opacity:.8; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:.85em;">${esc(a.ap_mac)}</div>` : `<span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">${esc(a.ap_mac)}</span>`;
-      const poolLine = a.pool_name ? esc(a.pool_name) : (a.pool_id ? `<span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:.85em;">${esc(a.pool_id)}</span>` : "—");
-
-      let onlineHtml = "—";
-      if (a.tanaza_online === true) onlineHtml = badge("Online", true);
-      else if (a.tanaza_online === false) onlineHtml = badge("Offline", false);
-
-      const tanazaConn = (a.tanaza_connected_clients === null || a.tanaza_connected_clients === undefined) ? "—" : esc(a.tanaza_connected_clients);
-      const serverConn = esc(a.active_clients ?? 0);
-      const last = a.last_computed_at ? esc(new Date(a.last_computed_at).toLocaleString()) : "—";
-      const staleHtml = a.is_stale ? badge("Stale", false) : badge("Fresh", true);
-      const activeHtml = (a.is_active === false) ? badge("No", false) : badge("Yes", true);
-      const poolCap = (a.pool_capacity_max === null || a.pool_capacity_max === undefined) ? "—" : esc(a.pool_capacity_max);
-      const apCap = (a.ap_capacity_max === null || a.ap_capacity_max === undefined) ? "—" : esc(a.ap_capacity_max);
+      const stale = a.is_stale ? "⚠️" : "✅";
+      const active = a.is_active ? "✅" : "—";
+      const clients = Number.isFinite(Number(a.active_clients)) ? Number(a.active_clients) : 0;
+      const pool = (a.pool_name ? esc(a.pool_name) : "—");
+      const cap = (a.capacity_max === null || a.capacity_max === undefined) ? "—" : esc(a.capacity_max);
 
       return `
         <tr style="border-top:1px solid rgba(255,255,255,.12);">
-          <td style="padding:10px;">${apLine}</td>
-          <td style="padding:10px;">${poolLine}</td>
-          <td style="padding:10px;">${onlineHtml}</td>
-          <td style="padding:10px;">${tanazaConn}</td>
-          <td style="padding:10px;">${serverConn}</td>
-          <td style="padding:10px;">${last}</td>
-          <td style="padding:10px;">${staleHtml}</td>
-          <td style="padding:10px;">${activeHtml}</td>
-          <td style="padding:10px;">${poolCap}</td>
-          <td style="padding:10px;">${apCap}</td>
+          <td style="padding:10px; font-weight:600;">${esc(a.ap_mac)}</td>
+          <td style="padding:10px;">${pool}</td>
+          <td style="padding:10px;">${esc(clients)}</td>
+          <td style="padding:10px;">${esc(fmtDate(a.last_computed_at))}</td>
+          <td style="padding:10px;">${stale}</td>
+          <td style="padding:10px;">${active}</td>
+          <td style="padding:10px;">${cap}</td>
+          <td style="padding:10px;">
+            <button type="button" data-edit="${esc(a.ap_mac)}" data-pool="${esc(a.pool_id || "")}"
+              style="width:auto; padding:8px 12px;">Edit</button>
+          </td>
         </tr>
       `;
     }).join("");
   }
 
-  if (!(await guard())) return;
-  await loadPools();
+  // init
+  if (!(await guardSession())) return;
+
+  try {
+    await loadPools();
+  } catch (e) {
+    // pools list failure shouldn't block AP list, but modal won't work
+    console.error(e);
+    errEl.textContent = `Pools load failed: ${e.message}`;
+  }
+
   await loadAPs();
 
   refreshBtn.addEventListener("click", () => loadAPs().catch(e => errEl.textContent = e.message));
 
-function normalizeMac(input) {
-  return String(input || "")
-    .trim()
-    .toUpperCase()
-    .replace(/-/g, ":");
-}
+    poolFilterEl.addEventListener("change", () => loadAPs().catch(e => errEl.textContent = e.message));
+  activeEl.addEventListener("change", () => loadAPs().catch(e => errEl.textContent = e.message));
+  staleEl.addEventListener("change", () => loadAPs().catch(e => errEl.textContent = e.message));
 
-async function fetchTanazaByMac(mac) {
-  return await fetchJSON(`/api/admin/tanaza/device/${encodeURIComponent(mac)}`);
-}
+qEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") loadAPs().catch(err => errEl.textContent = err.message);
+  });
+  poolFilterEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") loadAPs().catch(err => errEl.textContent = err.message);
+  });
+
+  activeEl.addEventListener("change", () => loadAPs().catch(err => errEl.textContent = err.message));
+  staleEl.addEventListener("change", () => loadAPs().catch(err => errEl.textContent = err.message));
+
+  // modal behavior
+  unassign.addEventListener("change", () => {
+    poolSelect.disabled = unassign.checked;
+  });
+  cancelBtn.addEventListener("click", closeModal);
+  modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
+
+  rowsEl.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    const ap = btn.getAttribute("data-edit");
+    if (!ap) return;
+    const pool = btn.getAttribute("data-pool") || "";
+    openModal(ap, pool || null);
+  });
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    formError.textContent = "";
+    if (!editingApMac) return;
+
+    let pool_id = null;
+    if (!unassign.checked) {
+      const val = poolSelect.value;
+      if (!val) {
+        formError.textContent = "Select a pool or choose Unassign";
+        return;
+      }
+      pool_id = val;
+    }
+
+    try {
+      await fetchJSON(`/api/admin/aps/${encodeURIComponent(editingApMac)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pool_id }),
+      });
+      closeModal();
+      await loadAPs();
+    } catch (err) {
+      formError.textContent = err.message;
+    }
+  });
+
+  logoutBtn.addEventListener("click", async () => {
+    try {
+      await fetchJSON("/api/admin/logout", { method: "POST" });
+      window.location.href = "/admin/login.html";
+    } catch (e) {
+      errEl.textContent = e.message;
+    }
+  });
 
 if (tanazaFetchBtn) {
   tanazaFetchBtn.addEventListener("click", async () => {
     const mac = normalizeMac(tanazaMacInput?.value);
-    if (!mac) {
-      if (tanazaMsg) tanazaMsg.textContent = "Please enter an AP MAC address.";
-      return;
-    }
+    if (!mac) { if (tanazaMsg) tanazaMsg.textContent = "Please enter an AP MAC address."; return; }
     try {
-      tanazaFetched = null;
       if (tanazaMsg) tanazaMsg.textContent = "";
       if (tanazaPreview) tanazaPreview.textContent = "Fetching from Tanaza...";
       tanazaFetchBtn.disabled = true;
-
-      const data = await fetchTanazaByMac(mac);
-      tanazaFetched = data.device || data;
-
-      const label = tanazaFetched?.label || "(no label)";
-      const online = tanazaFetched?.online;
-      const clients = tanazaFetched?.connectedClients;
-
-      if (tanazaPreview) {
-        tanazaPreview.textContent = `Found: ${label} — ${mac} | Online: ${online === true ? "Yes" : online === false ? "No" : "?"} | Connected: ${clients ?? "?"}`;
-      }
+      const data = await tanazaFetchByMac(mac);
+      const device = data.device || data;
+      const label = device?.label || "(no label)";
+      const online = device?.online;
+      const clients = device?.connectedClients;
+      if (tanazaPreview) tanazaPreview.textContent =
+        `Found: ${label} — ${mac} | Online: ${online === true ? "Yes" : online === false ? "No" : "?"} | Connected: ${clients ?? "?"}`;
     } catch (e) {
       if (tanazaPreview) tanazaPreview.textContent = "";
       if (tanazaMsg) tanazaMsg.textContent = `Tanaza fetch failed: ${e.message}`;
@@ -187,22 +283,13 @@ if (tanazaImportBtn) {
     const pool_id = tanazaPoolSel?.value || "";
     const capStr = String(tanazaApCap?.value || "").trim();
 
-    if (!mac) {
-      if (tanazaMsg) tanazaMsg.textContent = "Please enter an AP MAC address.";
-      return;
-    }
-    if (!pool_id) {
-      if (tanazaMsg) tanazaMsg.textContent = "Please select a pool (required).";
-      return;
-    }
+    if (!mac) { if (tanazaMsg) tanazaMsg.textContent = "Please enter an AP MAC address."; return; }
+    if (!pool_id) { if (tanazaMsg) tanazaMsg.textContent = "Please select a pool (required)."; return; }
 
     let capacity_max = null;
     if (capStr !== "") {
       const n = Number(capStr);
-      if (!Number.isFinite(n) || n < 0) {
-        if (tanazaMsg) tanazaMsg.textContent = "AP max clients must be a number ≥ 0";
-        return;
-      }
+      if (!Number.isFinite(n) || n < 0) { if (tanazaMsg) tanazaMsg.textContent = "AP max clients must be a number ≥ 0"; return; }
       capacity_max = Math.round(n);
     }
 
@@ -216,8 +303,8 @@ if (tanazaImportBtn) {
       });
       if (tanazaMsg) tanazaMsg.textContent = `Imported ${mac}. Refreshing list...`;
       if (tanazaPreview) tanazaPreview.textContent = "";
-      tanazaFetched = null;
-      await loadAPs();
+      // Refresh AP list if loadAPs exists
+      if (typeof loadAPs === "function") await loadAPs();
     } catch (e) {
       if (tanazaMsg) tanazaMsg.textContent = `Import failed: ${e.message}`;
     } finally {
@@ -225,13 +312,4 @@ if (tanazaImportBtn) {
     }
   });
 }
-
-  logoutBtn.addEventListener("click", async () => {
-    try {
-      await fetchJSON("/api/admin/logout", { method: "POST" });
-      window.location.href = "/admin/login.html";
-    } catch (e) {
-      errEl.textContent = e.message;
-    }
-  });
 });
