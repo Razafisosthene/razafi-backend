@@ -907,9 +907,13 @@ app.get("/api/admin/tanaza/devices", requireAdmin, async (req, res) => {
 
 app.get("/api/admin/tanaza/device/:mac", requireAdmin, async (req, res) => {
   try {
-    const mac = String(req.params.mac || "").trim().toUpperCase();
+    let rawMac = req.params.mac || "";
+    // Browser encodes ":" as "%3A" in path params. Decode safely.
+    try { rawMac = decodeURIComponent(String(rawMac)); } catch (e) { rawMac = String(rawMac); }
+    const mac = rawMac.trim().toUpperCase().replace(/-/g, ":");
     if (!mac) return res.status(400).json({ error: "mac_required" });
-    const device = await tanazaGetDeviceByMac(mac);
+    if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)) return res.status(400).json({ error: "mac_invalid" });
+const device = await tanazaGetDeviceByMac(mac);
     return res.json({ ok: true, device });
   } catch (e) {
     console.error("ADMIN TANAZA DEVICE BY MAC ERROR", e?.message || e);
@@ -1259,156 +1263,6 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
     return res.status(500).json({ error: "internal error" });
   }
 });
-
-
-app.post("/api/admin/pools", requireAdmin, async (req, res) => {
-  try {
-    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
-    const name = String(req.body?.name || "").trim();
-    const capRaw = req.body?.capacity_max;
-    const capacity_max = capRaw === undefined || capRaw === null || capRaw === "" ? null : Number(capRaw);
-
-    if (!name) return res.status(400).json({ error: "name_required" });
-    if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
-      return res.status(400).json({ error: "capacity_max_invalid" });
-    }
-
-    const payload = { name };
-    if (capacity_max !== null) payload.capacity_max = Math.round(capacity_max);
-
-    const { data, error } = await supabase
-      .from("internet_pools")
-      .insert(payload)
-      .select("id,name,capacity_max")
-      .single();
-
-    if (error) return res.status(400).json({ error: error.message, details: error });
-    return res.json({ ok: true, pool: data });
-  } catch (e) {
-    console.error("ADMIN POOLS CREATE EX", e);
-    return res.status(500).json({ error: "internal error" });
-  }
-});
-
-app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
-  try {
-    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
-    const id = String(req.params.id || "").trim();
-    if (!id) return res.status(400).json({ error: "id_required" });
-
-    const updates = {};
-    if (req.body?.name !== undefined) {
-      const name = String(req.body.name || "").trim();
-      if (!name) return res.status(400).json({ error: "name_required" });
-      updates.name = name;
-    }
-    if (req.body?.capacity_max !== undefined) {
-      const capRaw = req.body.capacity_max;
-      const capacity_max = capRaw === null || capRaw === "" ? null : Number(capRaw);
-      if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
-        return res.status(400).json({ error: "capacity_max_invalid" });
-      }
-      updates.capacity_max = capacity_max === null ? null : Math.round(capacity_max);
-    }
-
-    if (!Object.keys(updates).length) return res.status(400).json({ error: "no_updates" });
-
-    const { data, error } = await supabase
-      .from("internet_pools")
-      .update(updates)
-      .eq("id", id)
-      .select("id,name,capacity_max")
-      .single();
-
-    if (error) return res.status(400).json({ error: error.message, details: error });
-    return res.json({ ok: true, pool: data });
-  } catch (e) {
-    console.error("ADMIN POOLS PATCH EX", e);
-    return res.status(500).json({ error: "internal error" });
-  }
-});
-
-app.get("/api/admin/pools/:id/aps", requireAdmin, async (req, res) => {
-  try {
-    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
-    const id = String(req.params.id || "").trim();
-    if (!id) return res.status(400).json({ error: "id_required" });
-
-    // Pool row
-    const { data: pool, error: poolErr } = await supabase
-      .from("internet_pools")
-      .select("id,name,capacity_max")
-      .eq("id", id)
-      .single();
-
-    if (poolErr) return res.status(400).json({ error: poolErr.message, details: poolErr });
-
-    // APs in this pool
-    const { data: aps, error: apErr } = await supabase
-      .from("ap_registry")
-      .select("ap_mac,pool_id,is_active,capacity_max")
-      .eq("pool_id", id)
-      .order("ap_mac", { ascending: true });
-
-    if (apErr) return res.status(400).json({ error: apErr.message, details: apErr });
-
-    const apMacs = (aps || []).map((a) => a.ap_mac).filter(Boolean);
-
-    // AP live stats (server computed)
-    let statsByMac = {};
-    let pool_active_clients = 0;
-    if (apMacs.length) {
-      const { data: statsRows, error: statsErr } = await supabase
-        .from("ap_live_stats")
-        .select("ap_mac,active_clients,last_computed_at,is_stale")
-        .in("ap_mac", apMacs);
-
-      if (statsErr) return res.status(400).json({ error: statsErr.message, details: statsErr });
-
-      for (const s of statsRows || []) {
-        statsByMac[s.ap_mac] = s;
-        pool_active_clients += Number(s.active_clients || 0);
-      }
-    }
-
-    // Tanaza live info (fail-open for admin)
-    let tanazaMap = {};
-    try {
-      if (TANAZA_API_TOKEN && apMacs.length) {
-        tanazaMap = await tanazaBatchDevicesByMac(apMacs);
-      }
-    } catch (e) {
-      console.error("ADMIN POOL APS TANAZA ERROR", e?.message || e);
-    }
-
-    const rows = (aps || []).map((a) => {
-      const s = statsByMac[a.ap_mac] || null;
-      const dev = tanazaMap[_tanazaNormalizeMac(a.ap_mac)] || null;
-      return {
-        ap_mac: a.ap_mac,
-        is_active: a.is_active,
-        ap_capacity_max: a.capacity_max ?? null,
-        ap_active_clients: s ? (s.active_clients ?? 0) : 0,
-        ap_last_computed_at: s ? (s.last_computed_at ?? null) : null,
-        is_stale: s ? !!s.is_stale : true,
-        tanaza_label: dev?.label ?? null,
-        tanaza_online: dev?.online ?? null,
-        tanaza_connected: dev?.connectedClients ?? null,
-      };
-    });
-
-    return res.json({
-      ok: true,
-      pool: { id: pool.id, name: pool.name, capacity_max: pool.capacity_max ?? null },
-      pool_active_clients,
-      aps: rows,
-    });
-  } catch (e) {
-    console.error("ADMIN POOL APS EX", e);
-    return res.status(500).json({ error: "internal error" });
-  }
-});
-
 
 app.post("/api/admin/plans", requireAdmin, async (req, res) => {
   try {
