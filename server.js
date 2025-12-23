@@ -806,11 +806,40 @@ async function tanazaGetDeviceByMac(mac) {
   const cached = _tanazaCacheGet(macNorm);
   if (cached) return cached.data;
 
+  // 1) Try Tanaza "device by MAC" endpoint first (official docs)
   try {
     const dev = await _tanazaFetch(`/devices/${encodeURIComponent(macNorm)}`);
     _tanazaCacheSet(macNorm, dev, null);
     return dev;
   } catch (e) {
+    // 2) If Tanaza returns 404, fallback to "list devices of a network" then match MAC.
+    const status = e?.status;
+    const msg = String(e?.message || "");
+    const is404 = status === 404 || msg.includes("tanaza_http_404");
+
+    if (is404 && TANAZA_NETWORK_ID) {
+      try {
+        const list = await tanazaListDevicesForImport();
+        const match = (Array.isArray(list) ? list : []).find((d) => {
+          const candidates = []
+            .concat(d?.macAddress ? [d.macAddress] : [])
+            .concat(d?.userMacAddress ? [d.userMacAddress] : [])
+            .concat(Array.isArray(d?.macAddressList) ? d.macAddressList : []);
+          return candidates.some((c) => _tanazaNormalizeMac(c) === macNorm);
+        });
+
+        if (match) {
+          // If we have a Tanaza device id, fetch full details by ID for adopted devices.
+          const id = match?.id;
+          const dev = id ? await _tanazaFetch(`/devices/${encodeURIComponent(String(id))}`) : match;
+          _tanazaCacheSet(macNorm, dev, null);
+          return dev;
+        }
+      } catch (e2) {
+        // keep original error below if fallback fails
+      }
+    }
+
     _tanazaCacheSet(macNorm, null, e?.message || "tanaza_error");
     throw e;
   }
@@ -903,26 +932,18 @@ app.get("/api/admin/plans", requireAdmin, async (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.get("/api/admin/tanaza/devices", requireAdmin, async (req, res) => {
-  return res.status(403).json({ error: "tanaza_list_not_allowed", message: "This Tanaza token cannot list network devices. Use Import by MAC." });
+  // Some Tanaza tokens cannot list network devices. We keep this endpoint disabled on purpose.
+  return res.status(403).json({
+    error: "tanaza_list_not_allowed",
+    message: "This Tanaza token cannot list network devices. Use Import by MAC.",
+  });
+});
 
 app.get("/api/admin/tanaza/device/:mac", requireAdmin, async (req, res) => {
   try {
     const mac = String(req.params.mac || "").trim().toUpperCase();
     if (!mac) return res.status(400).json({ error: "mac_required" });
-    const device = await tanazaGetDeviceByMac(mac);
-    return res.json({ ok: true, device });
-  } catch (e) {
-    console.error("ADMIN TANAZA DEVICE BY MAC ERROR", e?.message || e);
-    return res.status(502).json({ error: "tanaza_fetch_failed", message: String(e?.message || e) });
-  }
-});
 
-
-// Same as /api/admin/tanaza/device/:mac but accepts ?mac=... (helps when proxies dislike ':' in path)
-app.get("/api/admin/tanaza/device", requireAdmin, async (req, res) => {
-  try {
-    const mac = String(req.query.mac || "").trim().toUpperCase();
-    if (!mac) return res.status(400).json({ error: "mac_required" });
     const device = await tanazaGetDeviceByMac(mac);
     return res.json({ ok: true, device });
   } catch (e) {
@@ -933,11 +954,7 @@ app.get("/api/admin/tanaza/device", requireAdmin, async (req, res) => {
   }
 });
 
-
-
-});
-
-app.get("/api/admin/aps", requireAdmin, async (req, res) => {
+app.get("/api/admin/aps", requireAdminapp.get("/api/admin/aps", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
@@ -1043,7 +1060,7 @@ try {
         ...row,
         tanaza_label: dev.label ?? null,
         tanaza_online: dev.online ?? null,
-        tanaza_connected_clients: dev.connectedClients ?? null,
+        tanaza_connected: dev.connectedClients ?? null,
       };
     });
   }
@@ -1067,46 +1084,77 @@ try {
 // ADMIN — APs (assign pool)
 // ---------------------------------------------------------------------------
 app.post("/api/admin/aps/import-tanaza", requireAdmin, async (req, res) => {
+  // Backward-compatible alias (older admin JS used this route)
+  // Now behaves the same as /api/admin/aps/import-by-mac.
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
-    const macAddress = String(req.body?.macAddress || req.body?.mac || "").trim();
-    const label = String(req.body?.label || req.body?.name || "").trim();
-    const pool_id = String(req.body?.pool_id || "").trim();
+    const macAddress = String(req.body?.macAddress || req.body?.ap_mac || req.body?.mac || "").trim();
+    let pool_id = req.body?.pool_id;
+    pool_id = pool_id === null || pool_id === undefined ? null : String(pool_id).trim();
+    if (!pool_id) pool_id = null;
 
-    // capacity_max is optional
     const capRaw = req.body?.capacity_max;
     const capacity_max =
       capRaw === null || capRaw === undefined || capRaw === "" ? null : Number(capRaw);
 
     if (!macAddress) return res.status(400).json({ error: "macAddress_required" });
-    if (!pool_id) return res.status(400).json({ error: "pool_id_required" });
     if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
       return res.status(400).json({ error: "capacity_max_invalid" });
     }
 
     const ap_mac = macAddress.toUpperCase();
 
+    if (pool_id) {
+      const { data: pool, error: poolErr } = await supabase
+        .from("internet_pools")
+        .select("id")
+        .eq("id", pool_id)
+        .maybeSingle();
+      if (poolErr) return res.status(500).json({ error: "db_error", details: poolErr });
+      if (!pool) return res.status(400).json({ error: "pool_not_found" });
+    }
+
+    let device = null;
+    try {
+      device = await tanazaGetDeviceByMac(ap_mac);
+      if (!device) return res.status(404).json({ error: "tanaza_device_not_found" });
+    } catch (e) {
+      return res.status(502).json({
+        error: "tanaza_unreachable",
+        message: "Cannot reach Tanaza to validate MAC. Try again.",
+      });
+    }
+
+    const label = String(device?.label || "").trim();
+
     const payload = {
       ap_mac,
-      ap_name: label || ap_mac,  // store friendly Tanaza label in existing column
+      ap_name: label || ap_mac,
+      site_name: label || ap_mac,
       pool_id,
       is_active: true,
       updated_at: new Date().toISOString(),
     };
-
-    // Only set capacity_max if provided (column exists after your DB update)
-    if (capacity_max !== null) payload.capacity_max = Math.round(capacity_max);
+    if (capacity_max !== null) payload.capacity_max = capacity_max;
 
     const { data, error } = await supabase
       .from("ap_registry")
       .upsert(payload, { onConflict: "ap_mac" })
-      .select("id, ap_mac, ap_name, pool_id, is_active, capacity_max")
+      .select("id, ap_mac, ap_name, site_name, pool_id, is_active, capacity_max")
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
 
-    return res.json({ ok: true, ap: data });
+    return res.json({
+      ok: true,
+      ap: data,
+      tanaza: {
+        label: device?.label ?? null,
+        online: device?.online ?? null,
+        connectedClients: device?.connectedClients ?? null,
+      },
+    });
   } catch (e) {
     console.error("ADMIN APS IMPORT TANAZA ERROR", e);
     return res.status(500).json({ error: "import_failed" });
@@ -1116,57 +1164,87 @@ app.post("/api/admin/aps/import-tanaza", requireAdmin, async (req, res) => {
 
 
 
+
 app.post("/api/admin/aps/import-by-mac", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
     const macAddress = String(req.body?.macAddress || req.body?.mac || "").trim();
-    const pool_id = String(req.body?.pool_id || "").trim();
+    let pool_id = req.body?.pool_id;
+    pool_id = pool_id === null || pool_id === undefined ? null : String(pool_id).trim();
+    if (!pool_id) pool_id = null;
 
     const capRaw = req.body?.capacity_max;
     const capacity_max =
       capRaw === null || capRaw === undefined || capRaw === "" ? null : Number(capRaw);
 
     if (!macAddress) return res.status(400).json({ error: "macAddress_required" });
-    if (!pool_id) return res.status(400).json({ error: "pool_id_required" });
     if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
       return res.status(400).json({ error: "capacity_max_invalid" });
     }
 
     const ap_mac = macAddress.toUpperCase();
 
-    // Fetch from Tanaza to get label (human-friendly AP name) and validate MAC exists in Tanaza
-    let label = "";
-    try {
-      const device = await tanazaGetDeviceByMac(ap_mac);
-      label = String(device?.label || "").trim();
-    } catch (e) {
-      return res.status(502).json({ error: "tanaza_unreachable", message: "Cannot reach Tanaza to validate MAC. Try again." });
+    // If a pool_id is provided, make sure it exists (pool assignment is managed in Pools page).
+    if (pool_id) {
+      const { data: pool, error: poolErr } = await supabase
+        .from("internet_pools")
+        .select("id")
+        .eq("id", pool_id)
+        .maybeSingle();
+
+      if (poolErr) return res.status(500).json({ error: "db_error", details: poolErr });
+      if (!pool) return res.status(400).json({ error: "pool_not_found" });
     }
 
+    // Fetch from Tanaza to validate MAC + get label/status/clients
+    let device = null;
+    try {
+      device = await tanazaGetDeviceByMac(ap_mac);
+      if (!device) return res.status(404).json({ error: "tanaza_device_not_found" });
+    } catch (e) {
+      return res.status(502).json({
+        error: "tanaza_unreachable",
+        message: "Cannot reach Tanaza to validate MAC. Try again.",
+      });
+    }
+
+    const label = String(device?.label || "").trim();
+
+    // NOTE: ap_registry.site_name is NOT NULL in your DB. Use Tanaza label, fallback to MAC.
     const payload = {
       ap_mac,
       ap_name: label || ap_mac,
-      pool_id,
+      site_name: label || ap_mac,
+      pool_id, // can be null
       is_active: true,
       updated_at: new Date().toISOString(),
     };
-    if (capacity_max !== null) payload.capacity_max = Math.round(capacity_max);
+    if (capacity_max !== null) payload.capacity_max = capacity_max;
 
     const { data, error } = await supabase
       .from("ap_registry")
       .upsert(payload, { onConflict: "ap_mac" })
-      .select("id, ap_mac, ap_name, pool_id, is_active, capacity_max")
+      .select("id, ap_mac, ap_name, site_name, pool_id, is_active, capacity_max")
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
 
-    return res.json({ ok: true, ap: data });
+    return res.json({
+      ok: true,
+      ap: data,
+      tanaza: {
+        label: device?.label ?? null,
+        online: device?.online ?? null,
+        connectedClients: device?.connectedClients ?? null,
+      },
+    });
   } catch (e) {
     console.error("ADMIN APS IMPORT BY MAC ERROR", e);
     return res.status(500).json({ error: "import_failed" });
   }
 });
+
 
 app.patch("/api/admin/aps/:ap_mac", requireAdmin, async (req, res) => {
   try {
