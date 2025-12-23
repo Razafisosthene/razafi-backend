@@ -123,7 +123,7 @@ if (!poolsCache.length) {
 
   async function loadAPs() {
     errEl.textContent = "";
-    rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="8">Loading...</td></tr>`;
+    rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="10">Loading...</td></tr>`;
 
     const params = new URLSearchParams();
     const q = qEl.value.trim();
@@ -142,33 +142,59 @@ if (!poolsCache.length) {
     const aps = data.aps || [];
 
     if (!aps.length) {
-      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="8">No APs</td></tr>`;
+      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="10">No APs</td></tr>`;
       return;
     }
 
-    rowsEl.innerHTML = aps.map(a => {
-      const stale = a.is_stale ? "⚠️" : "✅";
-      const active = a.is_active ? "✅" : "—";
-      const clients = Number.isFinite(Number(a.active_clients)) ? Number(a.active_clients) : 0;
-      const pool = (a.pool_name ? esc(a.pool_name) : "—");
-      const cap = (a.capacity_max === null || a.capacity_max === undefined) ? "—" : esc(a.capacity_max);
+    // Aggregate pool active clients (server computed) for pool % display
+const poolActive = {};
+for (const a of aps) {
+  const pid = a.pool_id || "";
+  const n = Number.isFinite(Number(a.active_clients)) ? Number(a.active_clients) : 0;
+  if (!pid) continue;
+  poolActive[pid] = (poolActive[pid] || 0) + n;
+}
 
-      return `
-        <tr style="border-top:1px solid rgba(255,255,255,.12);">
-          <td style="padding:10px; font-weight:600;">${esc(a.ap_mac)}</td>
-          <td style="padding:10px;">${pool}</td>
-          <td style="padding:10px;">${esc(clients)}</td>
-          <td style="padding:10px;">${esc(fmtDate(a.last_computed_at))}</td>
-          <td style="padding:10px;">${stale}</td>
-          <td style="padding:10px;">${active}</td>
-          <td style="padding:10px;">${cap}</td>
-          <td style="padding:10px;">
-            <button type="button" data-edit="${esc(a.ap_mac)}" data-pool="${esc(a.pool_id || "")}"
-              style="width:auto; padding:8px 12px;">Edit</button>
-          </td>
-        </tr>
-      `;
-    }).join("");
+rowsEl.innerHTML = aps.map(a => {
+  const mac = String(a.ap_mac || "");
+  const label = a.tanaza_label || a.ap_name || mac;
+  const online = (a.tanaza_online === true) ? "🟢 Online" : (a.tanaza_online === false ? "🔴 Offline" : "⚪ Unknown");
+  const tanClients = (a.tanaza_connected === null || a.tanaza_connected === undefined) ? "—" : esc(a.tanaza_connected);
+  const poolName = (a.pool_name ? esc(a.pool_name) : "—");
+  const serverClients = Number.isFinite(Number(a.active_clients)) ? Number(a.active_clients) : 0;
+
+  const apCap = (a.ap_capacity_max === null || a.ap_capacity_max === undefined) ? null : Number(a.ap_capacity_max);
+  const apPct = (apCap && apCap > 0 && a.tanaza_connected !== null && a.tanaza_connected !== undefined)
+    ? Math.min(999, Math.round((Number(a.tanaza_connected) / apCap) * 100))
+    : null;
+
+  const poolCap = (a.pool_capacity_max === null || a.pool_capacity_max === undefined) ? null : Number(a.pool_capacity_max);
+  const pActive = (a.pool_id ? (poolActive[a.pool_id] || 0) : 0);
+  const poolPct = (poolCap && poolCap > 0) ? Math.min(999, Math.round((pActive / poolCap) * 100)) : null;
+
+  const activeBadge = a.is_active ? "✅" : "—";
+
+  return `
+    <tr style="border-top:1px solid rgba(255,255,255,.12);">
+      <td style="padding:10px;">
+        <div style="font-weight:700;">${esc(label)}</div>
+        <div class="subtitle" style="opacity:.8;">${esc(mac)}</div>
+      </td>
+      <td style="padding:10px;">${online}</td>
+      <td style="padding:10px;">${tanClients}</td>
+      <td style="padding:10px;">${poolName}</td>
+      <td style="padding:10px;">${esc(serverClients)}</td>
+      <td style="padding:10px;">${apCap === null || Number.isNaN(apCap) ? "—" : esc(apCap)}</td>
+      <td style="padding:10px;">${apPct === null ? "—" : esc(apPct + "%")}</td>
+      <td style="padding:10px;">${poolPct === null ? "—" : esc(poolPct + "%")}</td>
+      <td style="padding:10px;">${activeBadge}</td>
+      <td style="padding:10px;">
+        <button type="button" data-edit="${esc(mac)}"
+          style="width:auto; padding:8px 12px;">Edit</button>
+      </td>
+    </tr>
+  `;
+}).join("");
   }
 
   // init
