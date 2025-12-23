@@ -925,7 +925,7 @@ app.get("/api/admin/tanaza/device/:mac", requireAdmin, async (req, res) => {
   }
 });
 
-app.get("/api/admin/aps", requireAdminapp.get("/api/admin/aps", requireAdmin, async (req, res) => {
+app.get("/api/admin/aps", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
