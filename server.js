@@ -917,8 +917,22 @@ app.get("/api/admin/tanaza/device/:mac", requireAdmin, async (req, res) => {
     const device = await tanazaGetDeviceByMac(mac);
     return res.json({ ok: true, device });
   } catch (e) {
+    const status = Number(e?.status || 0);
+
+    if (status === 404) {
+      return res.status(404).json({
+        ok: false,
+        error: "tanaza_not_found",
+        message: "No device found in Tanaza for this MAC address.",
+      });
+    }
+
     console.error("ADMIN TANAZA DEVICE BY MAC ERROR", e?.message || e);
-    return res.status(502).json({ error: "tanaza_fetch_failed", message: String(e?.message || e) });
+    return res.status(502).json({
+      ok: false,
+      error: "tanaza_fetch_failed",
+      message: String(e?.message || e),
+    });
   }
 
 });
@@ -1065,8 +1079,7 @@ app.post("/api/admin/aps/import-tanaza", requireAdmin, async (req, res) => {
       capRaw === null || capRaw === undefined || capRaw === "" ? null : Number(capRaw);
 
     if (!macAddress) return res.status(400).json({ error: "macAddress_required" });
-    if (!pool_id) return res.status(400).json({ error: "pool_id_required" });
-    if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
+if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
       return res.status(400).json({ error: "capacity_max_invalid" });
     }
 
@@ -1075,7 +1088,7 @@ app.post("/api/admin/aps/import-tanaza", requireAdmin, async (req, res) => {
     const payload = {
       ap_mac,
       ap_name: label || ap_mac,  // store friendly Tanaza label in existing column
-      pool_id,
+      pool_id: (pool_id ?? null),
       is_active: true,
       updated_at: new Date().toISOString(),
     };
@@ -1113,21 +1126,22 @@ app.post("/api/admin/aps/import-by-mac", requireAdmin, async (req, res) => {
       capRaw === null || capRaw === undefined || capRaw === "" ? null : Number(capRaw);
 
     if (!macAddress) return res.status(400).json({ error: "macAddress_required" });
-    if (!pool_id) return res.status(400).json({ error: "pool_id_required" });
-    if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
+if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
       return res.status(400).json({ error: "capacity_max_invalid" });
     }
 
     const ap_mac = macAddress.toUpperCase();
 
-    // Fetch from Tanaza to get label (human-friendly AP name) and validate MAC exists in Tanaza
-    let label = "";
-    try {
-      const device = await tanazaGetDeviceByMac(ap_mac);
-      label = String(device?.label || "").trim();
-    } catch (e) {
-      return res.status(502).json({ error: "tanaza_unreachable", message: "Cannot reach Tanaza to validate MAC. Try again." });
-    }
+    // Fetch from Tanaza (optional): if it fails, we still allow import.
+let label = "";
+if (TANAZA_API_TOKEN) {
+  try {
+    const device = await tanazaGetDeviceByMac(ap_mac);
+    label = String(device?.label || "").trim();
+  } catch (e) {
+    console.warn("TANAZA getDeviceByMac failed (non-blocking)", e?.message || e);
+  }
+}
 
     const payload = {
       ap_mac,
@@ -2281,7 +2295,7 @@ app.post("/api/new/authorize", async (req, res) => {
           voucher_session_id: session.id,
           device_mac,
           ap_mac,
-          pool_id: apRow.pool_id,
+          pool_id: (apRow.pool_id ?? null),
           is_active: true,
           last_seen_at: now.toISOString()
         }, { onConflict: "voucher_session_id,device_mac" });
