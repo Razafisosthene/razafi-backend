@@ -903,12 +903,7 @@ app.get("/api/admin/plans", requireAdmin, async (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.get("/api/admin/tanaza/devices", requireAdmin, async (req, res) => {
-  // Tanaza tokens may not allow listing all devices; this endpoint is intentionally disabled.
-  return res.status(403).json({
-    error: "tanaza_list_not_allowed",
-    message: "This Tanaza token cannot list network devices. Use Import by MAC.",
-  });
-});
+  return res.status(403).json({ error: "tanaza_list_not_allowed", message: "This Tanaza token cannot list network devices. Use Import by MAC." });
 
 app.get("/api/admin/tanaza/device/:mac", requireAdmin, async (req, res) => {
   try {
@@ -917,25 +912,14 @@ app.get("/api/admin/tanaza/device/:mac", requireAdmin, async (req, res) => {
     const device = await tanazaGetDeviceByMac(mac);
     return res.json({ ok: true, device });
   } catch (e) {
-    const status = Number(e?.status || 0);
-
-    if (status === 404) {
-      return res.status(404).json({
-        ok: false,
-        error: "tanaza_not_found",
-        message: "No device found in Tanaza for this MAC address.",
-      });
-    }
-
     console.error("ADMIN TANAZA DEVICE BY MAC ERROR", e?.message || e);
-    return res.status(502).json({
-      ok: false,
-      error: "tanaza_fetch_failed",
-      message: String(e?.message || e),
-    });
+    return res.status(502).json({ error: "tanaza_fetch_failed", message: String(e?.message || e) });
   }
+});
+
 
 });
+
 app.get("/api/admin/aps", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
@@ -1079,7 +1063,7 @@ app.post("/api/admin/aps/import-tanaza", requireAdmin, async (req, res) => {
       capRaw === null || capRaw === undefined || capRaw === "" ? null : Number(capRaw);
 
     if (!macAddress) return res.status(400).json({ error: "macAddress_required" });
-if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
+    if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
       return res.status(400).json({ error: "capacity_max_invalid" });
     }
 
@@ -1088,7 +1072,7 @@ if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0
     const payload = {
       ap_mac,
       ap_name: label || ap_mac,  // store friendly Tanaza label in existing column
-      pool_id: (pool_id ?? null),
+            pool_id: pool_id_norm,
       is_active: true,
       updated_at: new Date().toISOString(),
     };
@@ -1126,27 +1110,25 @@ app.post("/api/admin/aps/import-by-mac", requireAdmin, async (req, res) => {
       capRaw === null || capRaw === undefined || capRaw === "" ? null : Number(capRaw);
 
     if (!macAddress) return res.status(400).json({ error: "macAddress_required" });
-if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
+    if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
       return res.status(400).json({ error: "capacity_max_invalid" });
     }
 
     const ap_mac = macAddress.toUpperCase();
 
-    // Fetch from Tanaza (optional): if it fails, we still allow import.
-let label = "";
-if (TANAZA_API_TOKEN) {
-  try {
-    const device = await tanazaGetDeviceByMac(ap_mac);
-    label = String(device?.label || "").trim();
-  } catch (e) {
-    console.warn("TANAZA getDeviceByMac failed (non-blocking)", e?.message || e);
-  }
-}
+    // Fetch from Tanaza to get label (human-friendly AP name) and validate MAC exists in Tanaza
+    let label = "";
+    try {
+      const device = await tanazaGetDeviceByMac(ap_mac);
+      label = String(device?.label || "").trim();
+    } catch (e) {
+      console.warn("Tanaza validate failed (non-blocking):", e?.message || e);
+    }
 
     const payload = {
       ap_mac,
       ap_name: label || ap_mac,
-      pool_id,
+      pool_id: pool_id_norm,
       is_active: true,
       updated_at: new Date().toISOString(),
     };
@@ -2295,7 +2277,7 @@ app.post("/api/new/authorize", async (req, res) => {
           voucher_session_id: session.id,
           device_mac,
           ap_mac,
-          pool_id: (apRow.pool_id ?? null),
+          pool_id: apRow.pool_id,
           is_active: true,
           last_seen_at: now.toISOString()
         }, { onConflict: "voucher_session_id,device_mac" });
