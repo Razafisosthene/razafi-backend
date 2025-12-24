@@ -1,88 +1,120 @@
-<!DOCTYPE html>
-<html lang="fr">
+<!doctype html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>RAZAFI Admin — APs</title>
   <link rel="stylesheet" href="/admin/admin.css" />
 </head>
 <body>
-  <div class="login-container">
-    <div class="card" style="max-width: 1100px; width: 96%;">
-      <div class="topbar">
-  <div class="title">
-    <h1 style="margin:0;">Access Points</h1>
-    <div id="me" class="subtitle">Loading...</div>
-  </div>
-  <div class="nav">
-    <a href="/admin/"><button type="button">Dashboard</button></a>
-    <a href="/admin/aps.html"><button type="button">APs</button></a>
-    <a href="/admin/plans.html"><button type="button">Plans</button></a>
-    <a href="/admin/pools.html"><button type="button">Pools</button></a>
-    <button id="logoutBtn" type="button">Logout</button>
-  </div>
-</div>
-      <hr style="opacity:.2; margin:18px 0;" />
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h1>Access Points</h1>
+        <div class="muted">Connected as <span id="me"></span></div>
+      </div>
+      <div class="nav">
+        <a class="btn" href="/admin/index.html">Dashboard</a>
+        <a class="btn primary" href="/admin/aps.html">APs</a>
+        <a class="btn" href="/admin/plans.html">Plans</a>
+        <a class="btn" href="/admin/pools.html">Pools</a>
+        <button class="btn" id="logout">Logout</button>
+      </div>
+    </div>
 
-      <!-- Tanaza import (by MAC) -->
-      <div class="card" style="margin-top:14px;">
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-          <div style="font-weight:700;">Import AP from Tanaza (by MAC)</div>
-          <div class="subtitle" style="opacity:.8;">Paste AP MAC, fetch details from Tanaza, then import. (Pool assignment is done in Pools page.)</div>
-        </div>
+    <div id="msg" class="msg"></div>
 
-        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px;">
-          <input id="tanazaMacInput" placeholder="AP MAC (e.g. E0:E1:A9:B0:5B:51)" style="min-width:260px; flex:1;" />
-          <button id="tanazaFetchBtn" type="button" style="width:auto;">Fetch from Tanaza</button>
-
-          <input id="tanazaApCap" type="number" min="0" placeholder="AP max clients (optional)" style="width:220px;" />
-          <button id="tanazaImportBtn" type="button" style="width:auto;">Import</button>
-        </div>
-
-        <div id="tanazaPreview" class="subtitle" style="margin-top:8px;"></div>
-        <div id="tanazaMsg" class="subtitle" style="margin-top:6px;"></div>
+    <div class="card">
+      <div class="card-h">
+        <h3>Import AP from Tanaza (by MAC)</h3>
+        <div class="muted">Paste AP MAC, fetch details from Tanaza, then import. (Pool assignment is done in Pools page.)</div>
       </div>
 
-      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-        <input id="q" placeholder="Search AP MAC…" style="flex:1; min-width:240px;" />
-        <select id="poolFilter" style="width:auto; min-width:260px;"><option value="">Pool: all</option></select>
+      <div class="card-b">
+        <div class="row" style="gap:10px; align-items:center;">
+          <div class="col grow">
+            <input id="tanazaMac" placeholder="AA:BB:CC:DD:EE:FF" />
+          </div>
+          <div class="col">
+            <button class="btn primary" id="tanazaFetch">Fetch from Tanaza</button>
+          </div>
+          <div class="col">
+            <button class="btn primary" id="tanazaImport">Import</button>
+          </div>
+        </div>
 
-        <select id="activeFilter" style="width:auto;">
-          <option value="all">Active: all</option>
-          <option value="1">Active only</option>
-          <option value="0">Inactive only</option>
-        </select>
+        <div id="tanazaPreview" class="muted" style="margin-top:10px;"></div>
+        <div id="tanazaMsg" class="msg" style="margin-top:10px;"></div>
+      </div>
+    </div>
 
-        <select id="staleFilter" style="width:auto;">
-          <option value="all">Stale: all</option>
-          <option value="0">Fresh only</option>
-          <option value="1">Stale only</option>
-        </select>
+    <div class="card">
+      <div class="card-h">
+        <h3>APs</h3>
+        <div class="row" style="gap:10px; align-items:center; margin-top:10px;">
+          <input id="q" class="grow" placeholder="Search AP MAC..." />
 
-        <button id="refreshBtn" type="button" style="width:auto;">Refresh</button>
+          <select id="poolFilter" title="Pool filter">
+            <option value="">Pool: all</option>
+          </select>
+
+          <select id="activeFilter" title="Active filter">
+            <option value="">Active: all</option>
+            <option value="yes">Active: yes</option>
+            <option value="no">Active: no</option>
+          </select>
+
+          <select id="staleFilter" title="Stale filter">
+            <option value="">Stale: all</option>
+            <option value="yes">Stale: yes</option>
+            <option value="no">Stale: no</option>
+          </select>
+
+          <button class="btn primary" id="refresh">Refresh</button>
+        </div>
       </div>
 
-      <div id="error" class="error" style="margin-top:12px;"></div>
-
-      <div class="table-wrap">
-        <table style="width:100%; border-collapse:collapse;">
+      <div class="card-b">
+        <table class="table">
           <thead>
-            <tr style="text-align:left; opacity:.9;">
-              <th style="padding:10px;">AP</th>
-              <th style="padding:10px;">Status</th>
-              <th style="padding:10px;">Connected (Tanaza)</th>
-              <th style="padding:10px;">Pool</th>
-              <th style="padding:10px;">Clients (Server)</th>
-              <th style="padding:10px;">AP Cap</th>
-              <th style="padding:10px;">AP %</th>
-              <th style="padding:10px;">Pool %</th>
-              <th style="padding:10px;">Active</th>
-                          </tr>
+            <tr>
+              <th>AP</th>
+              <th>Status</th>
+              <th>Connected (Tanaza)</th>
+              <th>Pool</th>
+              <th>Clients (Server)</th>
+              <th>AP Cap</th>
+              <th>AP %</th>
+              <th>Pool %</th>
+              <th>Active</th>
+            </tr>
           </thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
+    </div>
+  </div>
 
-  <script src="./aps.js"></script>
+  <!-- Pool assignment modal -->
+  <div class="modal" id="modal" style="display:none;">
+    <div class="modal-box">
+      <div class="modal-h">
+        <div><strong>Assign Pool</strong></div>
+        <div class="muted">AP: <span id="modalMac"></span></div>
+      </div>
+
+      <div class="modal-b">
+        <select id="poolSelect" style="width:100%;"></select>
+        <div id="modalMsg" class="msg" style="margin-top:10px;"></div>
+      </div>
+
+      <div class="modal-f">
+        <button class="btn" id="modalCancel">Cancel</button>
+        <button class="btn primary" id="modalSave">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/admin/aps.js"></script>
 </body>
 </html>
