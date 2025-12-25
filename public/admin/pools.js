@@ -107,7 +107,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!rowsEl) return;
 
     if (!pools.length) {
-      rowsEl.innerHTML = `<tr><td colspan="4">No pools</td></tr>`;
+      rowsEl.innerHTML = `<tr><td colspan="5">No pools</td></tr>`;
       return;
     }
 
@@ -140,8 +140,16 @@ document.addEventListener("DOMContentLoaded", async () => {
           <td>
             <input data-cap="${esc(pid)}" type="number" min="0" value="${esc(cap)}" placeholder="—" style="width:160px;" />
           </td>
+          <td>${esc(usage.used)}</td>
           <td>
-            ${esc(usage.used)}
+            ${usage.pct === null ? "—" : `
+              <div style="min-width:160px;">
+                <div class="muted" style="margin-bottom:6px;">${esc(usage.pct)}%</div>
+                <div style="height:10px; border-radius:999px; background:rgba(255,255,255,.12); overflow:hidden;">
+                  <div style="height:10px; width:${esc(Math.min(100, Math.max(0, usage.pct)))}%; background:rgba(255,255,255,.55);"></div>
+                </div>
+              </div>
+            `}
           </td>
           <td style="display:flex; gap:8px; flex-wrap:wrap;">
             <button class="btn" type="button" data-save="${esc(pid)}">Save</button>
@@ -150,7 +158,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           </td>
         </tr>
         <tr data-details="${esc(pid)}" style="${detailsOpen ? "" : "display:none;"}">
-          <td colspan="4">
+          <td colspan="5">
             <div class="muted" style="margin-bottom:8px;">Loading APs...</div>
           </td>
         </tr>
@@ -390,7 +398,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   async function refresh() {
     setMsg("");
-    rowsEl.innerHTML = `<tr><td colspan="4">Loading...</td></tr>`;
+    rowsEl.innerHTML = `<tr><td colspan="5">Loading...</td></tr>`;
     const q = (qEl?.value || "").trim();
     const live = await getPoolsLive();
 
