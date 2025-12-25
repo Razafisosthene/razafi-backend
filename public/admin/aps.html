@@ -28,12 +28,16 @@
       <div class="card" style="margin-top:14px;">
         <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
           <div style="font-weight:700;">Import AP from Tanaza (by MAC)</div>
-          <div class="subtitle" style="opacity:.8;">Paste AP MAC, fetch details from Tanaza, assign a pool, then import.</div>
+          <div class="subtitle" style="opacity:.8;">Paste AP MAC, fetch details from Tanaza, choose a pool, then import.</div>
         </div>
 
         <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px;">
           <input id="tanazaMacInput" placeholder="AP MAC (e.g. E0:E1:A9:B0:5B:51)" style="min-width:260px; flex:1;" />
-          <button id="tanazaFetchBtn" type="button" style="width:auto;">Fetch from Tanaza</button>
+          
+          <select id="tanazaPoolSel" style="min-width:220px; width:auto;">
+            <option value="">Select pool...</option>
+          </select>
+<button id="tanazaFetchBtn" type="button" style="width:auto;">Fetch from Tanaza</button>
 <button id="tanazaImportBtn" type="button" style="width:auto;">Import</button>
         </div>
 

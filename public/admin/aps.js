@@ -27,6 +27,7 @@ function esc(s) {
 }
 
 let poolsCache = [];
+let tanazaLastDevice = null; // last fetched device (by MAC)
 let editingApMac = null;
 let editingCurrentPool = null;
 
@@ -95,6 +96,17 @@ document.addEventListener("DOMContentLoaded", async () => {
       const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : "(Unnamed pool)";
       return `<option value="${esc(p.id)}">${esc(label)} (cap: ${esc(cap)})</option>`;
     }).join("");
+
+    // Import dropdown (Tanaza import)
+    if (tanazaPoolSel) {
+      tanazaPoolSel.innerHTML =
+        `<option value="">Select pool...</option>` +
+        poolsCache.map((p) => {
+          const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "—" : p.capacity_max;
+          const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : "(Unnamed pool)";
+          return `<option value="${esc(p.id)}">${esc(label)} (cap: ${esc(cap)})</option>`;
+        }).join("");
+    }
 
     // Filter dropdown
     poolFilterEl.innerHTML =
@@ -303,6 +315,11 @@ rowsEl.innerHTML = aps.map((a) => {
         if (tanazaMsg) tanazaMsg.textContent = "Please enter an AP MAC address.";
         return;
       }
+      const selectedPool = String(tanazaPoolSel?.value || "").trim();
+      if (!selectedPool) {
+        if (tanazaMsg) tanazaMsg.textContent = "Please select a pool before importing.";
+        return;
+      }
 
       try {
         if (tanazaMsg) tanazaMsg.textContent = "";
@@ -311,6 +328,7 @@ rowsEl.innerHTML = aps.map((a) => {
 
         const data = await tanazaFetchByMac(mac);
         const device = data.device || data;
+        tanazaLastDevice = device;
 
         const label = device?.label || "(no label)";
         const online = device?.online;
@@ -343,6 +361,11 @@ rowsEl.innerHTML = aps.map((a) => {
         if (tanazaMsg) tanazaMsg.textContent = "Please enter an AP MAC address.";
         return;
       }
+      const selectedPool = String(tanazaPoolSel?.value || "").trim();
+      if (!selectedPool) {
+        if (tanazaMsg) tanazaMsg.textContent = "Please select a pool before importing.";
+        return;
+      }
 
       try {
         tanazaImportBtn.disabled = true;
@@ -351,7 +374,7 @@ rowsEl.innerHTML = aps.map((a) => {
         await fetchJSON("/api/admin/aps/import-by-mac", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ macAddress: mac, pool_id: null, capacity_max: null }),
+          body: JSON.stringify({ macAddress: mac, label: (tanazaLastDevice?.label || ""), pool_id: String(tanazaPoolSel?.value || "").trim() }),
         });
 
         if (tanazaMsg) tanazaMsg.textContent = `Imported ${mac}. Refreshing list...`;
