@@ -87,37 +87,45 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   async function loadPools() {
-    const data = await fetchJSON("/api/admin/pools?limit=200&offset=0");
-    poolsCache = data.pools || [];
+    // Pools are stored in our DB. Response shape may vary depending on server version.
+    // We try /api/admin/pools first (config endpoint), and gracefully fall back.
+    let data = null;
+    try {
+      data = await fetchJSON("/api/admin/pools?limit=200&offset=0");
+    } catch (e) {
+      // Fallback: some versions may not support paging params
+      try { data = await fetchJSON("/api/admin/pools"); } catch (e2) { data = null; }
+    }
+
+    let pools = [];
+    if (Array.isArray(data)) pools = data;
+    else if (data && Array.isArray(data.pools)) pools = data.pools;
+    else if (data && Array.isArray(data.items)) pools = data.items;
+    else if (data && Array.isArray(data.rows)) pools = data.rows;
+    else if (data && Array.isArray(data.data)) pools = data.data;
+    poolsCache = pools;
+
+    // Build dropdowns (import + modal). If no pools exist, keep placeholder and show a hint.
+    const hint = poolsCache.length === 0
+      ? `<option value="">(No pools yet — create one in Pools page)</option>`
+      : `<option value="">Select pool...</option>`;
 
     // Build modal dropdown
-    poolSelect.innerHTML = poolsCache.map((p) => {
-      const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "—" : p.capacity_max;
-      const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : "(Unnamed pool)";
-      return `<option value="${esc(p.id)}">${esc(label)} (cap: ${esc(cap)})</option>`;
-    }).join("");
+    if (poolSelect) {
+      poolSelect.innerHTML = poolsCache.length === 0 ? hint : poolsCache.map((p) => {
+        const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "—" : p.capacity_max;
+        const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : "(Unnamed pool)";
+        return `<option value="${esc(p.id)}">${esc(label)} (cap: ${esc(cap)})</option>`;
+      }).join("");
+    }
 
     // Import dropdown (Tanaza import)
     if (tanazaPoolSel) {
-      tanazaPoolSel.innerHTML =
-        `<option value="">Select pool...</option>` +
-        poolsCache.map((p) => {
-          const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "—" : p.capacity_max;
-          const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : "(Unnamed pool)";
-          return `<option value="${esc(p.id)}">${esc(label)} (cap: ${esc(cap)})</option>`;
-        }).join("");
-    }
-
-    // Filter dropdown
-    poolFilterEl.innerHTML =
-      `<option value="">Pool: all</option>` +
-      poolsCache.map((p) => {
+      tanazaPoolSel.innerHTML = hint + (poolsCache.length === 0 ? "" : poolsCache.map((p) => {
+        const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "—" : p.capacity_max;
         const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : "(Unnamed pool)";
-        return `<option value="${esc(p.id)}">${esc(label)}</option>`;
-      }).join("");
-
-    if (!poolsCache.length) {
-      poolSelect.innerHTML = `<option value="">(No pools)</option>`;
+        return `<option value="${esc(p.id)}">${esc(label)} (cap: ${esc(cap)})</option>`;
+      }).join(""));
     }
   }
 
