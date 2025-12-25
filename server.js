@@ -1124,6 +1124,7 @@ app.post("/api/admin/aps/import-tanaza", requireAdmin, async (req, res) => {
     const payload = {
       ap_mac,
       ap_name: label || ap_mac,  // store friendly Tanaza label in existing column
+      site_name: label || ap_mac,  // required by DB (NOT NULL)
       pool_id,
       is_active: true,
       updated_at: new Date().toISOString(),
@@ -1181,6 +1182,7 @@ if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0
     const payload = {
       ap_mac,
       ap_name: label || ap_mac,
+      site_name: label || ap_mac,
       pool_id,
       is_active: true,
       updated_at: new Date().toISOString(),
