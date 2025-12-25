@@ -27,7 +27,7 @@
     <div class="card">
       <div class="card-h">
         <h3>Create pool</h3>
-        <div class="muted">Capacity is max concurrent active sessions</div>
+        <div class="muted">Capacity is max connected devices (Starlink)</div>
       </div>
       <div class="card-b">
         <div class="row" style="gap:10px; align-items:center;">
@@ -42,8 +42,8 @@
       <div class="card-h">
         <h3>All pools</h3>
         <div class="row" style="gap:10px; align-items:center; margin-top:10px;">
-          <input id="q" class="grow" placeholder="Search AP MAC..." />
-          <button class="btn primary" id="refresh">Refresh</button>
+          <input id="q" class="grow" placeholder="Search pool name or ID..." />
+          <button class="btn primary" id="refresh">Refresh</button> <span class="muted" style="margin-left:10px;">Last updated: <span id="lastUpdated">—</span></span>
         </div>
       </div>
 

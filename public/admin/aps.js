@@ -154,79 +154,68 @@ document.addEventListener("DOMContentLoaded", async () => {
     const aps = data.aps || [];
 
     if (!aps.length) {
-      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="10">No APs</td></tr>`;
+      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="8">No APs</td></tr>`;
       return;
     }
 
-    // Aggregate pool active clients (server computed) for pool % display
-    const poolActive = {};
-    for (const a of aps) {
-      const pid = a.pool_id || "";
-      const n = Number.isFinite(Number(a.active_clients)) ? Number(a.active_clients) : 0;
-      if (!pid) continue;
-      poolActive[pid] = (poolActive[pid] || 0) + n;
-    }
+    // Aggregate pool live clients (Tanaza connected) for pool usage display
+const poolLive = {};
+for (const a of aps) {
+  const pid = a.pool_id || "";
+  const n = Number.isFinite(Number(a.tanaza_connected)) ? Number(a.tanaza_connected) : 0;
+  if (!pid) continue;
+  // Count only online APs to avoid stale values
+  if (a.tanaza_online === false) continue;
+  poolLive[pid] = (poolLive[pid] || 0) + n;
+}
 
-    rowsEl.innerHTML = aps.map((a) => {
-      const mac = String(a.ap_mac || "");
-      const label = a.tanaza_label || a.ap_name || mac;
+rowsEl.innerHTML = aps.map((a) => {
+  const mac = String(a.ap_mac || "");
+  const label = a.tanaza_label || a.ap_name || mac;
 
-      const online =
-        (a.tanaza_online === true) ? "🟢 Online"
-          : (a.tanaza_online === false) ? "🔴 Offline"
-            : "⚪ Unknown";
+  const online =
+    (a.tanaza_online === true) ? "🟢 Online"
+      : (a.tanaza_online === false) ? "🔴 Offline"
+        : "⚪ Unknown";
 
-      const tanClients =
-        (a.tanaza_connected === null || a.tanaza_connected === undefined)
-          ? "—"
-          : esc(a.tanaza_connected);
+  const tanClients =
+    (a.tanaza_connected === null || a.tanaza_connected === undefined)
+      ? "—"
+      : esc(a.tanaza_connected);
 
-      const poolName = a.pool_name ? esc(a.pool_name) : "—";
-      const serverClients = Number.isFinite(Number(a.active_clients)) ? Number(a.active_clients) : 0;
+  const poolName = a.pool_name ? esc(a.pool_name) : "—";
+  const poolCap =
+    (a.pool_capacity_max === null || a.pool_capacity_max === undefined)
+      ? null
+      : Number(a.pool_capacity_max);
 
-      const apCap =
-        (a.ap_capacity_max === null || a.ap_capacity_max === undefined)
-          ? null
-          : Number(a.ap_capacity_max);
+  const pLive = a.pool_id ? (poolLive[a.pool_id] || 0) : 0;
+  const poolPct = (poolCap && poolCap > 0) ? Math.min(999, Math.round((pLive / poolCap) * 100)) : null;
 
-      const apPct =
-        (apCap && apCap > 0 && a.tanaza_connected !== null && a.tanaza_connected !== undefined)
-          ? Math.min(999, Math.round((Number(a.tanaza_connected) / apCap) * 100))
-          : null;
+  const activeBadge = a.is_active ? "✅" : "—";
 
-      const poolCap =
-        (a.pool_capacity_max === null || a.pool_capacity_max === undefined)
-          ? null
-          : Number(a.pool_capacity_max);
+  return `
+    <tr style="border-top:1px solid rgba(255,255,255,.12);">
+      <td style="padding:10px;">
+        <div style="font-weight:700;">${esc(label)}</div>
+        <div class="subtitle" style="opacity:.8;">${esc(mac)}</div>
+      </td>
+      <td style="padding:10px;">${online}</td>
+      <td style="padding:10px;">${tanClients}</td>
+      <td style="padding:10px;">${poolName}</td>
+      <td style="padding:10px;">${poolCap === null || Number.isNaN(poolCap) ? "—" : esc(poolCap)}</td>
+      <td style="padding:10px;">${poolPct === null ? "—" : esc(poolPct + "%")}</td>
+      <td style="padding:10px;">${activeBadge}</td>
+      <td style="padding:10px;">
+        <button type="button"
+          data-edit="${esc(mac)}"
+          data-pool="${esc(a.pool_id || "")}"
+          style="width:auto; padding:8px 12px;">Edit</button>
+      </td>
+    </tr>
+  `;
+}).join("");
 
-      const pActive = a.pool_id ? (poolActive[a.pool_id] || 0) : 0;
-      const poolPct = (poolCap && poolCap > 0) ? Math.min(999, Math.round((pActive / poolCap) * 100)) : null;
-
-      const activeBadge = a.is_active ? "✅" : "—";
-
-      return `
-        <tr style="border-top:1px solid rgba(255,255,255,.12);">
-          <td style="padding:10px;">
-            <div style="font-weight:700;">${esc(label)}</div>
-            <div class="subtitle" style="opacity:.8;">${esc(mac)}</div>
-          </td>
-          <td style="padding:10px;">${online}</td>
-          <td style="padding:10px;">${tanClients}</td>
-          <td style="padding:10px;">${poolName}</td>
-          <td style="padding:10px;">${esc(serverClients)}</td>
-          <td style="padding:10px;">${apCap === null || Number.isNaN(apCap) ? "—" : esc(apCap)}</td>
-          <td style="padding:10px;">${apPct === null ? "—" : esc(apPct + "%")}</td>
-          <td style="padding:10px;">${poolPct === null ? "—" : esc(poolPct + "%")}</td>
-          <td style="padding:10px;">${activeBadge}</td>
-          <td style="padding:10px;">
-            <button type="button"
-              data-edit="${esc(mac)}"
-              data-pool="${esc(a.pool_id || "")}"
-              style="width:auto; padding:8px 12px;">Edit</button>
-          </td>
-        </tr>
-      `;
-    }).join("");
   }
 
   // init
