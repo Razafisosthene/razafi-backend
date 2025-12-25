@@ -27,7 +27,6 @@ function esc(s) {
 }
 
 let poolsCache = [];
-let tanazaLastDevice = null; // last fetched device (by MAC)
 let editingApMac = null;
 let editingCurrentPool = null;
 
@@ -87,45 +86,40 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   async function loadPools() {
-    // Pools are stored in our DB. Response shape may vary depending on server version.
-    // We try /api/admin/pools first (config endpoint), and gracefully fall back.
-    let data = null;
-    try {
-      data = await fetchJSON("/api/admin/pools?limit=200&offset=0");
-    } catch (e) {
-      // Fallback: some versions may not support paging params
-      try { data = await fetchJSON("/api/admin/pools"); } catch (e2) { data = null; }
+    const data = await fetchJSON("/api/admin/pools?limit=200&offset=0");
+    poolsCache = data.pools || [];
+
+    // Tanaza import dropdown (choose pool before import)
+    if (tanazaPoolSel) {
+      tanazaPoolSel.innerHTML =
+        `<option value="">Select pool...</option>` +
+        poolsCache.map((p) => {
+          const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "—" : p.capacity_max;
+          const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : "(Unnamed pool)";
+          return `<option value="${esc(p.id)}">${esc(label)} (cap: ${esc(cap)})</option>`;
+        }).join("");
+      if (!poolsCache.length) {
+        tanazaPoolSel.innerHTML = `<option value="">(No pools)</option>`;
+      }
     }
-
-    let pools = [];
-    if (Array.isArray(data)) pools = data;
-    else if (data && Array.isArray(data.pools)) pools = data.pools;
-    else if (data && Array.isArray(data.items)) pools = data.items;
-    else if (data && Array.isArray(data.rows)) pools = data.rows;
-    else if (data && Array.isArray(data.data)) pools = data.data;
-    poolsCache = pools;
-
-    // Build dropdowns (import + modal). If no pools exist, keep placeholder and show a hint.
-    const hint = poolsCache.length === 0
-      ? `<option value="">(No pools yet — create one in Pools page)</option>`
-      : `<option value="">Select pool...</option>`;
 
     // Build modal dropdown
-    if (poolSelect) {
-      poolSelect.innerHTML = poolsCache.length === 0 ? hint : poolsCache.map((p) => {
-        const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "—" : p.capacity_max;
-        const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : "(Unnamed pool)";
-        return `<option value="${esc(p.id)}">${esc(label)} (cap: ${esc(cap)})</option>`;
-      }).join("");
-    }
+    poolSelect.innerHTML = poolsCache.map((p) => {
+      const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "—" : p.capacity_max;
+      const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : "(Unnamed pool)";
+      return `<option value="${esc(p.id)}">${esc(label)} (cap: ${esc(cap)})</option>`;
+    }).join("");
 
-    // Import dropdown (Tanaza import)
-    if (tanazaPoolSel) {
-      tanazaPoolSel.innerHTML = hint + (poolsCache.length === 0 ? "" : poolsCache.map((p) => {
-        const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "—" : p.capacity_max;
+    // Filter dropdown
+    poolFilterEl.innerHTML =
+      `<option value="">Pool: all</option>` +
+      poolsCache.map((p) => {
         const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : "(Unnamed pool)";
-        return `<option value="${esc(p.id)}">${esc(label)} (cap: ${esc(cap)})</option>`;
-      }).join(""));
+        return `<option value="${esc(p.id)}">${esc(label)}</option>`;
+      }).join("");
+
+    if (!poolsCache.length) {
+      poolSelect.innerHTML = `<option value="">(No pools)</option>`;
     }
   }
 
@@ -174,68 +168,79 @@ document.addEventListener("DOMContentLoaded", async () => {
     const aps = data.aps || [];
 
     if (!aps.length) {
-      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="8">No APs</td></tr>`;
+      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="10">No APs</td></tr>`;
       return;
     }
 
-    // Aggregate pool live clients (Tanaza connected) for pool usage display
-const poolLive = {};
-for (const a of aps) {
-  const pid = a.pool_id || "";
-  const n = Number.isFinite(Number(a.tanaza_connected)) ? Number(a.tanaza_connected) : 0;
-  if (!pid) continue;
-  // Count only online APs to avoid stale values
-  if (a.tanaza_online === false) continue;
-  poolLive[pid] = (poolLive[pid] || 0) + n;
-}
+    // Aggregate pool active clients (server computed) for pool % display
+    const poolActive = {};
+    for (const a of aps) {
+      const pid = a.pool_id || "";
+      const n = Number.isFinite(Number(a.active_clients)) ? Number(a.active_clients) : 0;
+      if (!pid) continue;
+      poolActive[pid] = (poolActive[pid] || 0) + n;
+    }
 
-rowsEl.innerHTML = aps.map((a) => {
-  const mac = String(a.ap_mac || "");
-  const label = a.tanaza_label || a.ap_name || mac;
+    rowsEl.innerHTML = aps.map((a) => {
+      const mac = String(a.ap_mac || "");
+      const label = a.tanaza_label || a.ap_name || mac;
 
-  const online =
-    (a.tanaza_online === true) ? "🟢 Online"
-      : (a.tanaza_online === false) ? "🔴 Offline"
-        : "⚪ Unknown";
+      const online =
+        (a.tanaza_online === true) ? "🟢 Online"
+          : (a.tanaza_online === false) ? "🔴 Offline"
+            : "⚪ Unknown";
 
-  const tanClients =
-    (a.tanaza_connected === null || a.tanaza_connected === undefined)
-      ? "—"
-      : esc(a.tanaza_connected);
+      const tanClients =
+        (a.tanaza_connected === null || a.tanaza_connected === undefined)
+          ? "—"
+          : esc(a.tanaza_connected);
 
-  const poolName = a.pool_name ? esc(a.pool_name) : "—";
-  const poolCap =
-    (a.pool_capacity_max === null || a.pool_capacity_max === undefined)
-      ? null
-      : Number(a.pool_capacity_max);
+      const poolName = a.pool_name ? esc(a.pool_name) : "—";
+      const serverClients = Number.isFinite(Number(a.active_clients)) ? Number(a.active_clients) : 0;
 
-  const pLive = a.pool_id ? (poolLive[a.pool_id] || 0) : 0;
-  const poolPct = (poolCap && poolCap > 0) ? Math.min(999, Math.round((pLive / poolCap) * 100)) : null;
+      const apCap =
+        (a.ap_capacity_max === null || a.ap_capacity_max === undefined)
+          ? null
+          : Number(a.ap_capacity_max);
 
-  const activeBadge = a.is_active ? "✅" : "—";
+      const apPct =
+        (apCap && apCap > 0 && a.tanaza_connected !== null && a.tanaza_connected !== undefined)
+          ? Math.min(999, Math.round((Number(a.tanaza_connected) / apCap) * 100))
+          : null;
 
-  return `
-    <tr style="border-top:1px solid rgba(255,255,255,.12);">
-      <td style="padding:10px;">
-        <div style="font-weight:700;">${esc(label)}</div>
-        <div class="subtitle" style="opacity:.8;">${esc(mac)}</div>
-      </td>
-      <td style="padding:10px;">${online}</td>
-      <td style="padding:10px;">${tanClients}</td>
-      <td style="padding:10px;">${poolName}</td>
-      <td style="padding:10px;">${poolCap === null || Number.isNaN(poolCap) ? "—" : esc(poolCap)}</td>
-      <td style="padding:10px;">${poolPct === null ? "—" : esc(poolPct + "%")}</td>
-      <td style="padding:10px;">${activeBadge}</td>
-      <td style="padding:10px;">
-        <button type="button"
-          data-edit="${esc(mac)}"
-          data-pool="${esc(a.pool_id || "")}"
-          style="width:auto; padding:8px 12px;">Edit</button>
-      </td>
-    </tr>
-  `;
-}).join("");
+      const poolCap =
+        (a.pool_capacity_max === null || a.pool_capacity_max === undefined)
+          ? null
+          : Number(a.pool_capacity_max);
 
+      const pActive = a.pool_id ? (poolActive[a.pool_id] || 0) : 0;
+      const poolPct = (poolCap && poolCap > 0) ? Math.min(999, Math.round((pActive / poolCap) * 100)) : null;
+
+      const activeBadge = a.is_active ? "✅" : "—";
+
+      return `
+        <tr style="border-top:1px solid rgba(255,255,255,.12);">
+          <td style="padding:10px;">
+            <div style="font-weight:700;">${esc(label)}</div>
+            <div class="subtitle" style="opacity:.8;">${esc(mac)}</div>
+          </td>
+          <td style="padding:10px;">${online}</td>
+          <td style="padding:10px;">${tanClients}</td>
+          <td style="padding:10px;">${poolName}</td>
+          <td style="padding:10px;">${esc(serverClients)}</td>
+          <td style="padding:10px;">${apCap === null || Number.isNaN(apCap) ? "—" : esc(apCap)}</td>
+          <td style="padding:10px;">${apPct === null ? "—" : esc(apPct + "%")}</td>
+          <td style="padding:10px;">${poolPct === null ? "—" : esc(poolPct + "%")}</td>
+          <td style="padding:10px;">${activeBadge}</td>
+          <td style="padding:10px;">
+            <button type="button"
+              data-edit="${esc(mac)}"
+              data-pool="${esc(a.pool_id || "")}"
+              style="width:auto; padding:8px 12px;">Edit</button>
+          </td>
+        </tr>
+      `;
+    }).join("");
   }
 
   // init
@@ -323,11 +328,6 @@ rowsEl.innerHTML = aps.map((a) => {
         if (tanazaMsg) tanazaMsg.textContent = "Please enter an AP MAC address.";
         return;
       }
-      const selectedPool = String(tanazaPoolSel?.value || "").trim();
-      if (!selectedPool) {
-        if (tanazaMsg) tanazaMsg.textContent = "Please select a pool before importing.";
-        return;
-      }
 
       try {
         if (tanazaMsg) tanazaMsg.textContent = "";
@@ -336,7 +336,6 @@ rowsEl.innerHTML = aps.map((a) => {
 
         const data = await tanazaFetchByMac(mac);
         const device = data.device || data;
-        tanazaLastDevice = device;
 
         const label = device?.label || "(no label)";
         const online = device?.online;
@@ -356,21 +355,18 @@ rowsEl.innerHTML = aps.map((a) => {
   }
 
   // --- Tanaza import (by MAC) ---
-  // Pool + capacity are handled in pools.html now => import with nulls.
+  // Pool is selected here; capacity is edited in Pools page.
   if (tanazaImportBtn) {
     tanazaImportBtn.addEventListener("click", async () => {
       const mac = normalizeMac(tanazaMacInput?.value);
-
-      // Keep these for backwards compatibility if you re-add UI later
-      void tanazaPoolSel;
-      void tanazaApCap;
 
       if (!mac) {
         if (tanazaMsg) tanazaMsg.textContent = "Please enter an AP MAC address.";
         return;
       }
-      const selectedPool = String(tanazaPoolSel?.value || "").trim();
-      if (!selectedPool) {
+
+      const pool_id = String(tanazaPoolSel?.value || "").trim();
+      if (!pool_id) {
         if (tanazaMsg) tanazaMsg.textContent = "Please select a pool before importing.";
         return;
       }
@@ -382,11 +378,13 @@ rowsEl.innerHTML = aps.map((a) => {
         await fetchJSON("/api/admin/aps/import-by-mac", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ macAddress: mac, label: (tanazaLastDevice?.label || ""), pool_id: String(tanazaPoolSel?.value || "").trim() }),
+          body: JSON.stringify({ macAddress: mac, pool_id, capacity_max: null }),
         });
 
         if (tanazaMsg) tanazaMsg.textContent = `Imported ${mac}. Refreshing list...`;
         if (tanazaPreview) tanazaPreview.textContent = "";
+        tanazaMacInput.value = "";
+        if (tanazaPoolSel) tanazaPoolSel.value = "";
         if (typeof loadAPs === "function") await loadAPs();
       } catch (e) {
         if (tanazaMsg) tanazaMsg.textContent = `Import failed: ${e.message}`;
