@@ -442,10 +442,12 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const TANAZA_BASE_URL = process.env.TANAZA_BASE_URL || "https://app-graph.tanaza.com/api/v1";
 const TANAZA_API_TOKEN = process.env.TANAZA_API_TOKEN;
-const TANAZA_NETWORK_ID = process.env.TANAZA_NETWORK_ID; // required for listing devices for import dropdown
-const TANAZA_ORG_ID = process.env.TANAZA_ORG_ID;
+const TANAZA_ORG_ID = process.env.TANAZA_ORG_ID; // REQUIRED for Tanaza Graph API
+const TANAZA_NETWORK_ID = process.env.TANAZA_NETWORK_ID; // Tanaza network id (e.g. 8468)
 const TANAZA_TIMEOUT_MS = parseInt(process.env.TANAZA_TIMEOUT_MS || "5000", 10);
 const TANAZA_CACHE_TTL_MS = parseInt(process.env.TANAZA_CACHE_TTL_MS || "15000", 10);
+const TANAZA_NETWORK_CACHE_TTL_MS = parseInt(process.env.TANAZA_NETWORK_CACHE_TTL_MS || String(TANAZA_CACHE_TTL_MS), 10);
+
 
 const SMTP_HOST = process.env.SMTP_HOST || "smtp.gmail.com";
 const SMTP_PORT = parseInt(process.env.SMTP_PORT || "587", 10);
@@ -800,98 +802,74 @@ async function _tanazaFetch(path) {
   return resp.data;
 }
 
-async function _tanazaNormalizeMacCompact(mac) {
-  // Return uppercase hex without separators, 12 chars when valid
-  const groups = String(mac || "").match(/[0-9A-Fa-f]{2}/g);
-  if (!groups || groups.length < 6) return "";
-  return groups.slice(0, 6).join("").toUpperCase();
-}
-
-function _tanazaNetworkDevicesPath() {
-  if (!TANAZA_NETWORK_ID) {
-    const err = new Error("tanaza_network_id_missing");
-    err.code = "tanaza_network_id_missing";
-    throw err;
-  }
+async function _tanazaNetworkDevicesPath() {
   if (!TANAZA_ORG_ID) {
     const err = new Error("tanaza_org_id_missing");
     err.code = "tanaza_org_id_missing";
     throw err;
   }
+  if (!TANAZA_NETWORK_ID) {
+    const err = new Error("tanaza_network_id_missing");
+    err.code = "tanaza_network_id_missing";
+    throw err;
+  }
   return `/organizations/${encodeURIComponent(String(TANAZA_ORG_ID))}/networks/${encodeURIComponent(String(TANAZA_NETWORK_ID))}/devices`;
 }
 
-async function tanazaListNetworkDevices() {
-  const path = _tanazaNetworkDevicesPath();
-  const list = await _tanazaFetch(path);
-  const arr = Array.isArray(list) ? list : (list?.devices || list?.data || list?.items || []);
-  return Array.isArray(arr) ? arr : [];
-}
+let _tanazaNetworkCache = { ts: 0, data: null };
 
-function _tanazaExtractMacsFromDevice(dev) {
-  const macs = [];
-  if (!dev || typeof dev !== "object") return macs;
-
-  if (dev.macAddress) macs.push(dev.macAddress);
-  if (dev.userMacAddress) macs.push(dev.userMacAddress);
-
-  if (Array.isArray(dev.macAddressList)) {
-    for (const m of dev.macAddressList) macs.push(m);
+async function tanazaListNetworkDevicesCached() {
+  const now = Date.now();
+  if (_tanazaNetworkCache.data && (now - _tanazaNetworkCache.ts) < TANAZA_NETWORK_CACHE_TTL_MS) {
+    return _tanazaNetworkCache.data;
   }
-  return Array.from(new Set(macs.map(_tanazaNormalizeMacCompact).filter(Boolean)));
+  const path = await _tanazaNetworkDevicesPath();
+  const list = await _tanazaFetch(path);
+  const arr = Array.isArray(list) ? list : (list?.devices || list?.data || list?.items || list?.rows || []);
+  const out = Array.isArray(arr) ? arr : [];
+  _tanazaNetworkCache = { ts: now, data: out };
+  return out;
 }
 
 async function tanazaGetDeviceByMac(mac) {
+  // IMPORTANT: Do NOT call any Tanaza "device by MAC" endpoint.
+  // We only use the official, reliable network devices endpoint and filter locally.
   const macNorm = _tanazaNormalizeMac(mac);
   if (!macNorm) return null;
 
   const cached = _tanazaCacheGet(macNorm);
-  if (cached) return cached.data;
+  if (cached && ("data" in cached)) return cached.data;
 
-  const macCompact = _tanazaNormalizeMacCompact(macNorm);
+  const devices = await tanazaListNetworkDevicesCached();
 
-  // 1) Try direct endpoint if supported by this Tanaza tenant/token
-  try {
-    const dev = await _tanazaFetch(`/devices/${encodeURIComponent(macNorm)}`);
-    _tanazaCacheSet(macNorm, dev, null);
-    return dev;
-  } catch (e) {
-    // if 404 / not supported, fall back to network listing
-    const msg = String(e?.message || "");
-    const status = e?.status || null;
-    const is404 = msg.includes("tanaza_http_404") || status === 404;
-    const isOrgMissing = msg.includes("tanaza_org_id_missing");
+  const dev = devices.find((d) => {
+    const m1 = _tanazaNormalizeMac(d?.macAddress);
+    const m2 = _tanazaNormalizeMac(d?.userMacAddress);
+    const list = Array.isArray(d?.macAddressList) ? d.macAddressList.map(_tanazaNormalizeMac).filter(Boolean) : [];
+    return (m1 === macNorm) || (m2 === macNorm) || list.includes(macNorm);
+  }) || null;
 
-    if (!is404 && !isOrgMissing) {
-      _tanazaCacheSet(macNorm, null, e?.message || "tanaza_error");
-      throw e;
-    }
-    // fall through to list search
-  }
-
-  // 2) Fallback: list devices in the configured network and match by any MAC field
-  try {
-    const devices = await tanazaListNetworkDevices();
-
-    for (const d of devices) {
-      const dMacs = _tanazaExtractMacsFromDevice(d);
-      if (dMacs.includes(macCompact)) {
-        _tanazaCacheSet(macNorm, d, null);
-        return d;
-      }
-    }
-
-    _tanazaCacheSet(macNorm, null, "tanaza_device_not_found");
-    return null;
-  } catch (e) {
-    _tanazaCacheSet(macNorm, null, e?.message || "tanaza_error");
-    throw e;
-  }
+  _tanazaCacheSet(macNorm, dev, dev ? null : "not_found");
+  return dev;
 }
 
 async function tanazaListDevicesForImport() {
-  // Deprecated alias kept for compatibility with older admin code
-  return tanazaListNetworkDevices();
+  // Keep name for backward compatibility (admin pages).
+  return tanazaListNetworkDevicesCached();
+}
+
+async function _asyncPool(limit, items, fn) {
+  const ret = [];
+  const executing = new Set();
+  for (const item of items) {
+    const p = Promise.resolve().then(() => fn(item));
+    ret.push(p);
+    executing.add(p);
+    const clean = () => executing.delete(p);
+    p.then(clean).catch(clean);
+    if (executing.size >= limit) await Promise.race(executing);
+  }
+  return Promise.allSettled(ret);
 }
 
 async function tanazaBatchDevicesByMac(macs) {
@@ -899,42 +877,25 @@ async function tanazaBatchDevicesByMac(macs) {
   const out = {};
   if (!TANAZA_API_TOKEN || !uniq.length) return out;
 
-  // Efficient path: list network devices once, then map locally
-  if (TANAZA_ORG_ID && TANAZA_NETWORK_ID) {
-    const devices = await tanazaListNetworkDevices();
-    const map = new Map(); // compactMac -> device
-    for (const d of devices) {
-      for (const cm of _tanazaExtractMacsFromDevice(d)) {
-        if (!map.has(cm)) map.set(cm, d);
+  // One Tanaza call per batch (cached), then map locally.
+  const devices = await tanazaListNetworkDevicesCached();
+  for (const mac of uniq) out[mac] = null;
+
+  for (const d of devices) {
+    const m1 = _tanazaNormalizeMac(d?.macAddress);
+    const m2 = _tanazaNormalizeMac(d?.userMacAddress);
+    const list = Array.isArray(d?.macAddressList) ? d.macAddressList.map(_tanazaNormalizeMac).filter(Boolean) : [];
+    for (const mac of uniq) {
+      if (out[mac]) continue;
+      if ((m1 && m1 === mac) || (m2 && m2 === mac) || list.includes(mac)) {
+        out[mac] = d;
+        _tanazaCacheSet(mac, d, null);
       }
-    }
-
-    for (const m of uniq) {
-      const cm = _tanazaNormalizeMacCompact(m);
-      const d = cm ? (map.get(cm) || null) : null;
-      if (d) {
-        out[m] = d;
-        _tanazaCacheSet(m, d, null);
-      } else {
-        out[m] = null;
-        _tanazaCacheSet(m, null, "tanaza_device_not_found");
-      }
-    }
-
-    return out;
-  }
-
-  // Fallback: old per-mac fetch
-  for (const m of uniq) {
-    try {
-      const dev = await tanazaGetDeviceByMac(m);
-      out[m] = dev || null;
-    } catch (_) {
-      out[m] = null;
     }
   }
   return out;
 }
+
 
 app.get("/api/admin/plans", requireAdmin, async (req, res) => {
   try {
@@ -988,18 +949,28 @@ app.get("/api/admin/tanaza/devices", requireAdmin, async (req, res) => {
 
 app.get("/api/admin/tanaza/device/:mac", requireAdmin, async (req, res) => {
   try {
-    const mac = String(req.params.mac || "").trim().toUpperCase();
-    if (!mac) return res.status(400).json({ error: "mac_required" });
-    const device = await tanazaGetDeviceByMac(mac);
-    if (!device) {
-      return res.status(404).json({ ok: false, error: "not_found", message: "Device not found in Tanaza for this network" });
-    }
-    return res.json({ ok: true, device });} catch (e) {
-    console.error("ADMIN TANAZA DEVICE BY MAC ERROR", e?.message || e);
-    return res.status(502).json({ error: "tanaza_fetch_failed", message: String(e?.message || e) });
-  }
+    const macRaw = String(req.params.mac || "").trim();
+    if (!macRaw) return res.status(400).json({ ok: false, error: "mac_required" });
 
+    const mac = _tanazaNormalizeMac(macRaw);
+    if (!mac) return res.status(400).json({ ok: false, error: "mac_invalid" });
+
+    const device = await tanazaGetDeviceByMac(mac);
+    if (!device) return res.status(404).json({ ok: false, error: "not_found", message: "Device not found in Tanaza for this network" });
+
+    return res.json({ ok: true, device });
+  } catch (e) {
+    console.error("ADMIN TANAZA DEVICE LOOKUP ERROR", e?.message || e);
+
+    const code = String(e?.code || "");
+    if (code === "tanaza_org_id_missing" || code === "tanaza_network_id_missing" || code === "tanaza_token_missing") {
+      return res.status(500).json({ ok: false, error: code });
+    }
+
+    return res.status(502).json({ ok: false, error: "tanaza_fetch_failed", message: String(e?.message || e) });
+  }
 });
+
 app.get("/api/admin/aps", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
