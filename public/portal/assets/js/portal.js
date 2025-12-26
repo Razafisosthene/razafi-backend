@@ -167,7 +167,13 @@ function showToast(message, kind = "info", ms = 3200) {
 
 
   // -------- Status elements --------
-    const voucherCodeEl = $("voucher-code");
+  const accessMsgEl = $("accessMsg");
+  const voucherHasEl = $("voucherHas");
+  const voucherNoneEl = $("voucherNone");
+  const hasVoucherMsgEl = $("hasVoucherMsg");
+  const noVoucherMsgEl = $("noVoucherMsg");
+
+  const voucherCodeEl = $("voucher-code");
   const timeLeftEl = $("time-left");
   const dataLeftEl = $("data-left");
   const devicesEl = $("devices-used");
@@ -176,11 +182,9 @@ function showToast(message, kind = "info", ms = 3200) {
 
   const themeToggle = $("themeToggle");
 
-  // -------- Simulated voucher status (V2) --------
-  // Will be replaced later by backend fetch
-    const simulatedStatus = {
-    hasActiveVoucher: false,
-    voucherCode: "",
+  // We don't have a "real" session status endpoint yet.
+  // So time/data/devices remain "—" for now; only the voucher code is real.
+  const simulatedStatus = {
     timeLeft: "—",
     dataLeft: "—",
     devicesUsed: 0,
@@ -204,11 +208,30 @@ function showToast(message, kind = "info", ms = 3200) {
   let currentPhone = "";
   let currentVoucherCode = "";
 
-  function setVoucherUI({ phone = "", code = "" } = {}) {
+  function setVoucherUI({ phone = "", code = "", statusText = "" } = {}) {
     currentPhone = phone || currentPhone || "";
     currentVoucherCode = code || currentVoucherCode || "";
 
     const has = !!currentVoucherCode;
+
+    // Toggle blocks
+    if (voucherHasEl) voucherHasEl.classList.toggle("hidden", !has);
+    if (voucherNoneEl) voucherNoneEl.classList.toggle("hidden", has);
+
+    // Messages
+    if (hasVoucherMsgEl) {
+      hasVoucherMsgEl.textContent = "✅ Code actif détecté";
+    }
+    if (noVoucherMsgEl) {
+      noVoucherMsgEl.textContent = "Vous n’avez pas de code actif.";
+    }
+    if (accessMsgEl) {
+      if (statusText) accessMsgEl.textContent = statusText;
+      else accessMsgEl.textContent = has
+        ? "Code prêt. Cliquez sur « Utiliser ce code » pour vous connecter."
+        : "Aucun code actif pour le moment.";
+    }
+
     renderStatus({
       hasActiveVoucher: has,
       voucherCode: currentVoucherCode || "—",
