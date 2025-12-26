@@ -362,7 +362,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             await fetchJSON(`/api/admin/aps/${encodeURIComponent(mac)}`, {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ capacity_max: cap }),
+              body: JSON.stringify({ pool_id: poolId, capacity_max: cap }),
             });
             // refresh the AP list to update % bars
             await loadPoolAps(poolId);
