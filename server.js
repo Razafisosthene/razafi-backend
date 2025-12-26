@@ -1299,8 +1299,6 @@ app.patch("/api/admin/aps/:ap_mac", requireAdmin, async (req, res) => {
     return res.status(500).json({ error: "internal error" });
   }
 });
-});
-
 
 // ---------------------------------------------------------------------------
 // ADMIN — Pools (list)
