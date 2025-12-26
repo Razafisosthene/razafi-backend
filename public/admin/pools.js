@@ -31,7 +31,8 @@ function pct(n, d) {
 async function guardSession() {
   try {
     const me = await fetchJSON("/api/admin/me");
-    document.getElementById("me").textContent = `${me.username || "admin"}`;
+    const meEl = document.getElementById("me");
+    if (meEl) meEl.textContent = `${me.username || "admin"}`;
     return true;
   } catch (e) {
     window.location.href = "/admin/login.html";
@@ -40,18 +41,26 @@ async function guardSession() {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-  const rowsEl = document.getElementById("rows");
-  const errEl = document.getElementById("error");
-  const qEl = document.getElementById("q");
-  const refreshBtn = document.getElementById("refreshBtn");
+  const $id = (...ids) => {
+    for (const id of ids) {
+      const el = document.getElementById(id);
+      if (el) return el;
+    }
+    return null;
+  };
+
+  const rowsEl = $id("rows");
+  const errEl = $id("error","msg");
+  const qEl = $id("q");
+  const refreshBtn = $id("refreshBtn","refresh");
 
   const newPoolName = document.getElementById("newPoolName");
   const newPoolCap = document.getElementById("newPoolCap");
-  const createPoolBtn = document.getElementById("createPoolBtn");
-  const createMsg = document.getElementById("createMsg");
+  const createPoolBtn = $id("createPoolBtn");
+  const createMsg = $id("createMsg","msg");
 
   // nav logout
-  const logoutBtn = document.getElementById("logoutBtn");
+  const logoutBtn = $id("logoutBtn","logout");
 
   let pools = [];
   let allAps = [];
@@ -78,7 +87,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   async function loadPools() {
-    errEl.textContent = "";
+    if (errEl) errEl.textContent = "";
     rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="5">Loading...</td></tr>`;
 
     await loadAllAps();
