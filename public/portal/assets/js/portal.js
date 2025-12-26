@@ -6,11 +6,42 @@
 
 (function () {
   // -------- Utils --------
-  function qs(name) {
-    return new URLSearchParams(window.location.search).get(name);
+  function qsAll(name) {
+    try { return new URLSearchParams(window.location.search).getAll(name); } catch { return []; }
   }
 
-  function $(id) {
+  function isPlaceholder(v) {
+    const s = String(v || "").trim();
+    if (!s) return true;
+    // Tanaza often sends placeholders like "<ap_mac>"
+    if (s.includes("<") && s.includes(">")) return true;
+    return false;
+  }
+
+  function pickLastValidParam(names, validator) {
+    for (const n of names) {
+      const all = qsAll(n);
+      for (let i = all.length - 1; i >= 0; i--) {
+        const v = all[i];
+        if (isPlaceholder(v)) continue;
+        if (!validator || validator(v)) return String(v).trim();
+      }
+    }
+    return null;
+  }
+
+  function isProbablyMac(v) {
+    const s = String(v || "").trim().replace(/-/g, ":");
+    const groups = s.match(/[0-9A-Fa-f]{2}/g);
+    return !!(groups && groups.length >= 6);
+  }
+
+  function qs(name) {
+    // Backward-compatible: return the last non-placeholder value (handles duplicate params)
+    const v = pickLastValidParam([name], (x) => !isPlaceholder(x));
+    return v;
+  }
+function $(id) {
     return document.getElementById(id);
   }
 
@@ -125,66 +156,180 @@ function showToast(message, kind = "info", ms = 3200) {
 
   // -------- Read Tanaza params (robust) --------
   const isLocalhost = (location.hostname === "localhost" || location.hostname === "127.0.0.1");
-  const apMac = qs("ap_mac") || (isLocalhost ? "DEV_AP" : "");
-  const clientMac = qs("client_mac") || (isLocalhost ? "DEV_CLIENT" : "");
+    const apMac = (pickLastValidParam(["ap_mac","apMac"], isProbablyMac) || (isLocalhost ? "DEV_AP" : ""));
+  const clientMac = (pickLastValidParam(["client_mac","clientMac"], isProbablyMac) || (isLocalhost ? "DEV_CLIENT" : ""));
+  const loginUrl = pickLastValidParam(["login_url","loginUrl"], (v) => {
+    if (isPlaceholder(v)) return false;
+    const s = String(v || "").trim();
+    return /^https?:\/\//i.test(s) || s.startsWith("/");
+  }) || "";
+  const continueUrl = pickLastValidParam(["continue_url","continueUrl","dst","url"], (v) => !isPlaceholder(v)) || "";
+
 
   // -------- Status elements --------
+    const voucherCodeEl = $("voucher-code");
   const timeLeftEl = $("time-left");
   const dataLeftEl = $("data-left");
   const devicesEl = $("devices-used");
   const useBtn = $("useVoucherBtn");
   const copyBtn = $("copyVoucherBtn");
+
   const themeToggle = $("themeToggle");
 
   // -------- Simulated voucher status (V2) --------
   // Will be replaced later by backend fetch
-  const simulatedStatus = {
-    hasActiveVoucher: true,
-    timeLeft: "5h 20min",
-    dataLeft: "1.2 Go",
-    devicesUsed: 2,
-    devicesAllowed: 3,
-    voucherCode: "RAZAFI-ABCD-1234"
+    const simulatedStatus = {
+    hasActiveVoucher: false,
+    voucherCode: "",
+    timeLeft: "—",
+    dataLeft: "—",
+    devicesUsed: 0,
+    devicesAllowed: 0,
   };
 
+
   function renderStatus(status) {
-    if (!status.hasActiveVoucher) return;
-    if (timeLeftEl) timeLeftEl.textContent = status.timeLeft;
-    if (dataLeftEl) dataLeftEl.textContent = status.dataLeft;
+    const has = !!status?.hasActiveVoucher;
+    if (voucherCodeEl) voucherCodeEl.textContent = (status?.voucherCode || "—");
+    if (timeLeftEl) timeLeftEl.textContent = has ? (status.timeLeft || "—") : "—";
+    if (dataLeftEl) dataLeftEl.textContent = has ? (status.dataLeft || "—") : "—";
     if (devicesEl) {
-      devicesEl.textContent = status.devicesUsed + " / " + status.devicesAllowed;
+      if (has) devicesEl.textContent = (status.devicesUsed || 0) + " / " + (status.devicesAllowed || 0);
+      else devicesEl.textContent = "—";
     }
   }
 
-  // -------- Voucher buttons --------
+
+  // -------- Voucher buttons + state --------
+  let currentPhone = "";
+  let currentVoucherCode = "";
+
+  function setVoucherUI({ phone = "", code = "" } = {}) {
+    currentPhone = phone || currentPhone || "";
+    currentVoucherCode = code || currentVoucherCode || "";
+
+    const has = !!currentVoucherCode;
+    renderStatus({
+      hasActiveVoucher: has,
+      voucherCode: currentVoucherCode || "—",
+      timeLeft: has ? (simulatedStatus.timeLeft || "—") : "—",
+      dataLeft: has ? (simulatedStatus.dataLeft || "—") : "—",
+      devicesUsed: has ? (simulatedStatus.devicesUsed || 0) : 0,
+      devicesAllowed: has ? (simulatedStatus.devicesAllowed || 0) : 0,
+    });
+
+    if (useBtn) useBtn.disabled = !has;
+    if (copyBtn) copyBtn.disabled = !has;
+  }
+
+  async function pollDernierCode(phone, { timeoutMs = 180000, intervalMs = 3000 } = {}) {
+    const started = Date.now();
+
+    while (Date.now() - started < timeoutMs) {
+      try {
+        const url = `/api/dernier-code?phone=${encodeURIComponent(phone)}`;
+        const r = await fetch(url, { method: "GET" });
+        if (r.status === 204) {
+          // no code yet
+        } else if (r.ok) {
+          const j = await r.json();
+          if (j && j.code) return String(j.code);
+        } else {
+          // if server returns error, stop early
+          let msg = "Erreur serveur";
+          try { const t = await r.text(); msg = t || msg; } catch(_) {}
+          throw new Error(msg);
+        }
+      } catch (e) {
+        console.warn("[RAZAFI] pollDernierCode error", e?.message || e);
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+
+    return null;
+  }
+
+  function submitToLoginUrl(code) {
+    if (!loginUrl) {
+      showToast("❌ login_url manquant (Tanaza). Impossible d'activer la connexion.", "error", 5200);
+      return;
+    }
+    const action = loginUrl;
+
+    // Build a POST form (most captive portals expect POST)
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = action;
+    form.style.display = "none";
+
+    const add = (name, value) => {
+      if (value === null || value === undefined) return;
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = name;
+      input.value = String(value);
+      form.appendChild(input);
+    };
+
+    // Common field names across captive portals
+    add("voucher", code);
+    add("username", code);
+    add("password", code);
+
+    // Some portals accept a destination/continue url
+    if (continueUrl) {
+      add("continue_url", continueUrl);
+      add("dst", continueUrl);
+      add("url", continueUrl);
+    }
+
+    document.body.appendChild(form);
+    form.submit();
+  }
+
   if (useBtn) {
     useBtn.addEventListener("click", function () {
+      if (!currentVoucherCode) {
+        showToast("❌ Aucun code disponible pour le moment.", "error");
+        return;
+      }
       showToast("Connexion en cours…", "info");
-      // future: backend call to activate session
+      submitToLoginUrl(currentVoucherCode);
     });
   }
 
   if (copyBtn) {
-    copyBtn.addEventListener("click", function () {
-      const code = simulatedStatus.voucherCode;
-      if (navigator.clipboard?.writeText) {
-        navigator.clipboard.writeText(code).then(
-          () => showToast("📋 Code copié !", "success"),
-          () => showToast("Erreur copier le code.", "error")
-        );
-      } else {
-        const ta = document.createElement("textarea");
-        ta.value = code;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
-        showToast("📋 Code copié !", "success");
+    copyBtn.addEventListener("click", async function () {
+      if (!currentVoucherCode) {
+        showToast("❌ Aucun code à copier.", "error");
+        return;
+      }
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(currentVoucherCode);
+        } else {
+          // fallback
+          const ta = document.createElement("textarea");
+          ta.value = currentVoucherCode;
+          ta.style.position = "fixed";
+          ta.style.left = "-9999px";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          ta.remove();
+        }
+        showToast("✅ Code copié.", "success");
+      } catch (e) {
+        showToast("❌ Impossible de copier le code.", "error");
       }
     });
   }
 
-  // -------- Plans: fetch + render (DB only) --------
+  // init voucher UI
+  setVoucherUI({ phone: "", code: "" });
+
+// -------- Plans: fetch + render (DB only) --------
   const plansGrid = $("plansGrid");
   const plansLoading = $("plansLoading");
 
@@ -514,19 +659,51 @@ function bindPlanHandlers() {
         showToast("⏳ Paiement lancé. Merci de valider la transaction sur votre mobile MVola.", "info");
         setProcessing(card, true);
 
-        // TODO: Integrate NEW payment endpoint here (plan_id + cleaned + apMac/clientMac)
-        // For now we keep a short processing simulation.
-        setTimeout(() => {
-          setProcessing(card, false);
-          // Keep payment open for now
-          const payment = card.querySelector(".plan-payment");
-          if (payment) payment.classList.remove("hidden");
-          // Note: remove this toast once backend is wired
-          showToast("Paiement en cours d’intégration côté portail NEW.", "info", 4200);
-          // Restore pay button state based on current input
-          updatePayButtonState(card);
-        }, 2500);
-      });
+        // NEW: Real MVola payment + real “utiliser ce code”
+        (async () => {
+          try {
+            const planId = card.getAttribute("data-plan-id") || "";
+            const planName = card.getAttribute("data-plan-name") || "Plan";
+            const planPrice = card.getAttribute("data-plan-price") || "";
+            const planStr = `${planName} ${planPrice}`.trim();
+
+            const resp = await fetch("/api/send-payment", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                phone: cleaned,
+                plan: planStr || planId || planPrice || "plan",
+              }),
+            });
+
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || !data.ok) {
+              const msg = data?.error || data?.message || "Erreur lors du paiement";
+              throw new Error(msg);
+            }
+
+            showToast("✅ Paiement initié. Validez la transaction sur votre mobile MVola…", "success", 5200);
+            showToast("⏳ En attente du code…", "info", 5200);
+
+            const code = await pollDernierCode(cleaned, { timeoutMs: 180000, intervalMs: 3000 });
+            if (!code) {
+              showToast("⏰ Pas de code reçu pour le moment. Si vous avez validé MVola, réessayez dans 1-2 minutes.", "info", 6500);
+              setProcessing(card, false);
+              updatePayButtonState(card);
+              return;
+            }
+
+            setVoucherUI({ phone: cleaned, code });
+            showToast("🎉 Code reçu ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
+          } catch (e) {
+            console.error("[RAZAFI] payment error", e);
+            showToast("❌ " + (e?.message || "Erreur paiement"), "error", 6500);
+          } finally {
+            setProcessing(card, false);
+            updatePayButtonState(card);
+          }
+        })();
+});
     }
 
     // initial state
