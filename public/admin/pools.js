@@ -22,20 +22,6 @@ function esc(s) {
   }[c]));
 }
 
-  function pctBar(pct) {
-    if (pct === null || pct === undefined || Number.isNaN(Number(pct))) return "—";
-    const p = Math.max(0, Math.min(100, Number(pct)));
-    const color = (p >= 90) ? "rgba(255, 80, 80, .90)" : (p >= 70) ? "rgba(255, 196, 0, .90)" : "rgba(80, 200, 120, .90)";
-    return `
-      <div style="min-width:170px;">
-        <div class="subtitle" style="margin-bottom:6px; opacity:.8;">${esc(Math.round(p))}%</div>
-        <div style="height:10px; border-radius:999px; background:rgba(255,255,255,.12); overflow:hidden;">
-          <div style="height:10px; width:${esc(p)}%; background:${color};"></div>
-        </div>
-      </div>
-    `;
-  }
-
 function pct(n, d) {
   const num = Number(n), den = Number(d);
   if (!Number.isFinite(num) || !Number.isFinite(den) || den <= 0) return null;
@@ -45,37 +31,27 @@ function pct(n, d) {
 async function guardSession() {
   try {
     const me = await fetchJSON("/api/admin/me");
-    const meEl = document.getElementById("me");
-    if (meEl) meEl.textContent = `${me.username || "admin"}`;
+    document.getElementById("me").textContent = `${me.username || "admin"}`;
     return true;
   } catch (e) {
-    // Only redirect if the API call failed (unauthorized). DOM issues should not log you out.
     window.location.href = "/admin/login.html";
     return false;
   }
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-  const $id = (...ids) => {
-    for (const id of ids) {
-      const el = document.getElementById(id);
-      if (el) return el;
-    }
-    return null;
-  };
-
   const rowsEl = document.getElementById("rows");
-  const errEl = $id("error","msg");
+  const errEl = document.getElementById("error");
   const qEl = document.getElementById("q");
-  const refreshBtn = $id("refreshBtn","refresh");
+  const refreshBtn = document.getElementById("refreshBtn");
 
-  const newPoolName = document.getElementById("newPoolName");
-  const newPoolCap = document.getElementById("newPoolCap");
-  const createPoolBtn = document.getElementById("createPoolBtn");
-  const createMsg = document.getElementById("createMsg");
+  const newPoolName = $id("newPoolName","newName");
+  const newPoolCap = $id("newPoolCap","newCap");
+  const createPoolBtn = $id("createPoolBtn");
+  const createMsg = $id("createMsg","msg");
 
   // nav logout
-  const logoutBtn = $id("logoutBtn","logout");
+  const logoutBtn = document.getElementById("logoutBtn");
 
   let pools = [];
   let allAps = [];
@@ -94,21 +70,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     const map = {};
     for (const a of allAps || []) {
       const pid = a.pool_id || "";
+      const n = Number.isFinite(Number(a.active_clients)) ? Number(a.active_clients) : 0;
       if (!pid) continue;
-
-      const online = (a.tanaza_online === true) || (String(a.tanaza_online).toLowerCase() === "true");
-      if (!online) continue;
-
-      const raw = (a.tanaza_connected ?? a.tanaza_connected_clients ?? a.tanaza_connectedClients ?? a.connectedClients ?? 0);
-      const n = Number.isFinite(Number(raw)) ? Number(raw) : 0;
-
       map[pid] = (map[pid] || 0) + n;
     }
     return map;
   }
 
   async function loadPools() {
-    if (errEl) errEl.textContent = "";
+    errEl.textContent = "";
     rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="5">Loading...</td></tr>`;
 
     await loadAllAps();
@@ -147,7 +117,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             <input data-cap="${esc(pid)}" type="number" min="0" value="${esc(cap)}" placeholder="—" style="width:160px;" />
           </td>
           <td style="padding:10px;">${esc(activeClients)}</td>
-          <td style="padding:10px;">${pp === null ? "—" : pctBar(pp)}</td>
+          <td style="padding:10px;">${pp === null ? "—" : esc(pp + "%")}</td>
           <td style="padding:10px; display:flex; gap:8px; flex-wrap:wrap;">
             <button type="button" data-save="${esc(pid)}" style="width:auto; padding:8px 12px;">Save</button>
             <button type="button" data-toggle="${esc(pid)}" style="width:auto; padding:8px 12px;">APs</button>
@@ -282,11 +252,8 @@ document.addEventListener("DOMContentLoaded", async () => {
                     <td style="padding:10px;">${online}</td>
                     <td style="padding:10px;">${tanC}</td>
                     <td style="padding:10px;">${esc(srvC)}</td>
-                    <td style="padding:10px;">
-                      <input data-apcap="${esc(mac)}" type="number" min="0" value="${apCap === null || Number.isNaN(apCap) ? "" : esc(apCap)}" placeholder="—" style="width:110px;" />
-                      <button type="button" data-saveapcap="${esc(mac)}" style="width:auto; padding:6px 10px; margin-left:8px;">Save</button>
-                    </td>
-                    <td style="padding:10px;">${apPct === null ? "—" : pctBar(apPct)}</td>
+                    <td style="padding:10px;">${apCap === null || Number.isNaN(apCap) ? "—" : esc(apCap)}</td>
+                    <td style="padding:10px;">${apPct === null ? "—" : esc(apPct + "%")}</td>
                     <td style="padding:10px;">
                       <select data-move="${esc(mac)}" style="min-width:220px;">
                         ${poolOptions}
