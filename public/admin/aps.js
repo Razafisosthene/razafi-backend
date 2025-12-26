@@ -150,7 +150,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   async function loadAPs() {
     errEl.textContent = "";
-    rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="10">Loading...</td></tr>`;
+    rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="5">Loading...</td></tr>`;
 
     const params = new URLSearchParams();
     const q = qEl.value.trim();
@@ -168,17 +168,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     const aps = data.aps || [];
 
     if (!aps.length) {
-      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="10">No APs</td></tr>`;
+      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="5">No APs</td></tr>`;
       return;
-    }
-
-    // Aggregate pool active clients (server computed) for pool % display
-    const poolActive = {};
-    for (const a of aps) {
-      const pid = a.pool_id || "";
-      const n = Number.isFinite(Number(a.active_clients)) ? Number(a.active_clients) : 0;
-      if (!pid) continue;
-      poolActive[pid] = (poolActive[pid] || 0) + n;
     }
 
     rowsEl.innerHTML = aps.map((a) => {
@@ -191,32 +182,12 @@ document.addEventListener("DOMContentLoaded", async () => {
             : "⚪ Unknown";
 
       const tanClients =
-        (a.tanaza_connected === null || a.tanaza_connected === undefined)
+        (a.tanaza_connected_clients === null || a.tanaza_connected_clients === undefined)
           ? "—"
-          : esc(a.tanaza_connected);
+          : esc(a.tanaza_connected_clients);
+
 
       const poolName = a.pool_name ? esc(a.pool_name) : "—";
-      const serverClients = Number.isFinite(Number(a.active_clients)) ? Number(a.active_clients) : 0;
-
-      const apCap =
-        (a.ap_capacity_max === null || a.ap_capacity_max === undefined)
-          ? null
-          : Number(a.ap_capacity_max);
-
-      const apPct =
-        (apCap && apCap > 0 && a.tanaza_connected !== null && a.tanaza_connected !== undefined)
-          ? Math.min(999, Math.round((Number(a.tanaza_connected) / apCap) * 100))
-          : null;
-
-      const poolCap =
-        (a.pool_capacity_max === null || a.pool_capacity_max === undefined)
-          ? null
-          : Number(a.pool_capacity_max);
-
-      const pActive = a.pool_id ? (poolActive[a.pool_id] || 0) : 0;
-      const poolPct = (poolCap && poolCap > 0) ? Math.min(999, Math.round((pActive / poolCap) * 100)) : null;
-
-      const activeBadge = a.is_active ? "✅" : "—";
 
       return `
         <tr style="border-top:1px solid rgba(255,255,255,.12);">
@@ -227,11 +198,6 @@ document.addEventListener("DOMContentLoaded", async () => {
           <td style="padding:10px;">${online}</td>
           <td style="padding:10px;">${tanClients}</td>
           <td style="padding:10px;">${poolName}</td>
-          <td style="padding:10px;">${esc(serverClients)}</td>
-          <td style="padding:10px;">${apCap === null || Number.isNaN(apCap) ? "—" : esc(apCap)}</td>
-          <td style="padding:10px;">${apPct === null ? "—" : esc(apPct + "%")}</td>
-          <td style="padding:10px;">${poolPct === null ? "—" : esc(poolPct + "%")}</td>
-          <td style="padding:10px;">${activeBadge}</td>
           <td style="padding:10px;">
             <button type="button"
               data-edit="${esc(mac)}"
