@@ -22,6 +22,20 @@ function esc(s) {
   }[c]));
 }
 
+  function pctBar(pct) {
+    if (pct === null || pct === undefined || Number.isNaN(Number(pct))) return "—";
+    const p = Math.max(0, Math.min(100, Number(pct)));
+    const color = (p >= 90) ? "rgba(255, 80, 80, .90)" : (p >= 70) ? "rgba(255, 196, 0, .90)" : "rgba(80, 200, 120, .90)";
+    return `
+      <div style="min-width:170px;">
+        <div class="subtitle" style="margin-bottom:6px; opacity:.8;">${esc(Math.round(p))}%</div>
+        <div style="height:10px; border-radius:999px; background:rgba(255,255,255,.12); overflow:hidden;">
+          <div style="height:10px; width:${esc(p)}%; background:${color};"></div>
+        </div>
+      </div>
+    `;
+  }
+
 function pct(n, d) {
   const num = Number(n), den = Number(d);
   if (!Number.isFinite(num) || !Number.isFinite(den) || den <= 0) return null;
@@ -80,8 +94,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     const map = {};
     for (const a of allAps || []) {
       const pid = a.pool_id || "";
-      const n = Number.isFinite(Number(a.active_clients)) ? Number(a.active_clients) : 0;
       if (!pid) continue;
+
+      const online = (a.tanaza_online === true) || (String(a.tanaza_online).toLowerCase() === "true");
+      if (!online) continue;
+
+      const raw = (a.tanaza_connected ?? a.tanaza_connected_clients ?? a.tanaza_connectedClients ?? a.connectedClients ?? 0);
+      const n = Number.isFinite(Number(raw)) ? Number(raw) : 0;
+
       map[pid] = (map[pid] || 0) + n;
     }
     return map;
@@ -127,7 +147,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             <input data-cap="${esc(pid)}" type="number" min="0" value="${esc(cap)}" placeholder="—" style="width:160px;" />
           </td>
           <td style="padding:10px;">${esc(activeClients)}</td>
-          <td style="padding:10px;">${pp === null ? "—" : esc(pp + "%")}</td>
+          <td style="padding:10px;">${pp === null ? "—" : pctBar(pp)}</td>
           <td style="padding:10px; display:flex; gap:8px; flex-wrap:wrap;">
             <button type="button" data-save="${esc(pid)}" style="width:auto; padding:8px 12px;">Save</button>
             <button type="button" data-toggle="${esc(pid)}" style="width:auto; padding:8px 12px;">APs</button>
@@ -262,8 +282,11 @@ document.addEventListener("DOMContentLoaded", async () => {
                     <td style="padding:10px;">${online}</td>
                     <td style="padding:10px;">${tanC}</td>
                     <td style="padding:10px;">${esc(srvC)}</td>
-                    <td style="padding:10px;">${apCap === null || Number.isNaN(apCap) ? "—" : esc(apCap)}</td>
-                    <td style="padding:10px;">${apPct === null ? "—" : esc(apPct + "%")}</td>
+                    <td style="padding:10px;">
+                      <input data-apcap="${esc(mac)}" type="number" min="0" value="${apCap === null || Number.isNaN(apCap) ? "" : esc(apCap)}" placeholder="—" style="width:110px;" />
+                      <button type="button" data-saveapcap="${esc(mac)}" style="width:auto; padding:6px 10px; margin-left:8px;">Save</button>
+                    </td>
+                    <td style="padding:10px;">${apPct === null ? "—" : pctBar(apPct)}</td>
                     <td style="padding:10px;">
                       <select data-move="${esc(mac)}" style="min-width:220px;">
                         ${poolOptions}
