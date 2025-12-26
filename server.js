@@ -442,12 +442,9 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const TANAZA_BASE_URL = process.env.TANAZA_BASE_URL || "https://app-graph.tanaza.com/api/v1";
 const TANAZA_API_TOKEN = process.env.TANAZA_API_TOKEN;
-const TANAZA_ORG_ID = process.env.TANAZA_ORG_ID; // REQUIRED for Tanaza Graph API
-const TANAZA_NETWORK_ID = process.env.TANAZA_NETWORK_ID; // Tanaza network id (e.g. 8468)
+const TANAZA_NETWORK_ID = process.env.TANAZA_NETWORK_ID; // required for listing devices for import dropdown
 const TANAZA_TIMEOUT_MS = parseInt(process.env.TANAZA_TIMEOUT_MS || "5000", 10);
 const TANAZA_CACHE_TTL_MS = parseInt(process.env.TANAZA_CACHE_TTL_MS || "15000", 10);
-const TANAZA_NETWORK_CACHE_TTL_MS = parseInt(process.env.TANAZA_NETWORK_CACHE_TTL_MS || String(TANAZA_CACHE_TTL_MS), 10);
-
 
 const SMTP_HOST = process.env.SMTP_HOST || "smtp.gmail.com";
 const SMTP_PORT = parseInt(process.env.SMTP_PORT || "587", 10);
@@ -802,60 +799,32 @@ async function _tanazaFetch(path) {
   return resp.data;
 }
 
-async function _tanazaNetworkDevicesPath() {
-  if (!TANAZA_ORG_ID) {
-    const err = new Error("tanaza_org_id_missing");
-    err.code = "tanaza_org_id_missing";
-    throw err;
+async function tanazaGetDeviceByMac(mac) {
+  const macNorm = _tanazaNormalizeMac(mac);
+  if (!macNorm) return null;
+
+  const cached = _tanazaCacheGet(macNorm);
+  if (cached) return cached.data;
+
+  try {
+    const dev = await _tanazaFetch(`/devices/${encodeURIComponent(macNorm)}`);
+    _tanazaCacheSet(macNorm, dev, null);
+    return dev;
+  } catch (e) {
+    _tanazaCacheSet(macNorm, null, e?.message || "tanaza_error");
+    throw e;
   }
+}
+
+async function tanazaListDevicesForImport() {
   if (!TANAZA_NETWORK_ID) {
     const err = new Error("tanaza_network_id_missing");
     err.code = "tanaza_network_id_missing";
     throw err;
   }
-  return `/organizations/${encodeURIComponent(String(TANAZA_ORG_ID))}/networks/${encodeURIComponent(String(TANAZA_NETWORK_ID))}/devices`;
-}
-
-let _tanazaNetworkCache = { ts: 0, data: null };
-
-async function tanazaListNetworkDevicesCached() {
-  const now = Date.now();
-  if (_tanazaNetworkCache.data && (now - _tanazaNetworkCache.ts) < TANAZA_NETWORK_CACHE_TTL_MS) {
-    return _tanazaNetworkCache.data;
-  }
-  const path = await _tanazaNetworkDevicesPath();
-  const list = await _tanazaFetch(path);
-  const arr = Array.isArray(list) ? list : (list?.devices || list?.data || list?.items || list?.rows || []);
-  const out = Array.isArray(arr) ? arr : [];
-  _tanazaNetworkCache = { ts: now, data: out };
-  return out;
-}
-
-async function tanazaGetDeviceByMac(mac) {
-  // IMPORTANT: Do NOT call any Tanaza "device by MAC" endpoint.
-  // We only use the official, reliable network devices endpoint and filter locally.
-  const macNorm = _tanazaNormalizeMac(mac);
-  if (!macNorm) return null;
-
-  const cached = _tanazaCacheGet(macNorm);
-  if (cached && ("data" in cached)) return cached.data;
-
-  const devices = await tanazaListNetworkDevicesCached();
-
-  const dev = devices.find((d) => {
-    const m1 = _tanazaNormalizeMac(d?.macAddress);
-    const m2 = _tanazaNormalizeMac(d?.userMacAddress);
-    const list = Array.isArray(d?.macAddressList) ? d.macAddressList.map(_tanazaNormalizeMac).filter(Boolean) : [];
-    return (m1 === macNorm) || (m2 === macNorm) || list.includes(macNorm);
-  }) || null;
-
-  _tanazaCacheSet(macNorm, dev, dev ? null : "not_found");
-  return dev;
-}
-
-async function tanazaListDevicesForImport() {
-  // Keep name for backward compatibility (admin pages).
-  return tanazaListNetworkDevicesCached();
+  const list = await _tanazaFetch(`/networks/${encodeURIComponent(String(TANAZA_NETWORK_ID))}/devices`);
+  const arr = Array.isArray(list) ? list : (list?.devices || list?.data || []);
+  return Array.isArray(arr) ? arr : [];
 }
 
 async function _asyncPool(limit, items, fn) {
@@ -877,21 +846,15 @@ async function tanazaBatchDevicesByMac(macs) {
   const out = {};
   if (!TANAZA_API_TOKEN || !uniq.length) return out;
 
-  // One Tanaza call per batch (cached), then map locally.
-  const devices = await tanazaListNetworkDevicesCached();
-  for (const mac of uniq) out[mac] = null;
+  const results = await _asyncPool(6, uniq, async (m) => {
+    const cached = _tanazaCacheGet(m);
+    if (cached && cached.data) return { mac: m, dev: cached.data };
+    const dev = await tanazaGetDeviceByMac(m);
+    return { mac: m, dev };
+  });
 
-  for (const d of devices) {
-    const m1 = _tanazaNormalizeMac(d?.macAddress);
-    const m2 = _tanazaNormalizeMac(d?.userMacAddress);
-    const list = Array.isArray(d?.macAddressList) ? d.macAddressList.map(_tanazaNormalizeMac).filter(Boolean) : [];
-    for (const mac of uniq) {
-      if (out[mac]) continue;
-      if ((m1 && m1 === mac) || (m2 && m2 === mac) || list.includes(mac)) {
-        out[mac] = d;
-        _tanazaCacheSet(mac, d, null);
-      }
-    }
+  for (const r of results) {
+    if (r.status === "fulfilled" && r.value?.mac) out[r.value.mac] = r.value.dev || null;
   }
   return out;
 }
@@ -949,28 +912,16 @@ app.get("/api/admin/tanaza/devices", requireAdmin, async (req, res) => {
 
 app.get("/api/admin/tanaza/device/:mac", requireAdmin, async (req, res) => {
   try {
-    const macRaw = String(req.params.mac || "").trim();
-    if (!macRaw) return res.status(400).json({ ok: false, error: "mac_required" });
-
-    const mac = _tanazaNormalizeMac(macRaw);
-    if (!mac) return res.status(400).json({ ok: false, error: "mac_invalid" });
-
+    const mac = String(req.params.mac || "").trim().toUpperCase();
+    if (!mac) return res.status(400).json({ error: "mac_required" });
     const device = await tanazaGetDeviceByMac(mac);
-    if (!device) return res.status(404).json({ ok: false, error: "not_found", message: "Device not found in Tanaza for this network" });
-
     return res.json({ ok: true, device });
   } catch (e) {
-    console.error("ADMIN TANAZA DEVICE LOOKUP ERROR", e?.message || e);
-
-    const code = String(e?.code || "");
-    if (code === "tanaza_org_id_missing" || code === "tanaza_network_id_missing" || code === "tanaza_token_missing") {
-      return res.status(500).json({ ok: false, error: code });
-    }
-
-    return res.status(502).json({ ok: false, error: "tanaza_fetch_failed", message: String(e?.message || e) });
+    console.error("ADMIN TANAZA DEVICE BY MAC ERROR", e?.message || e);
+    return res.status(502).json({ error: "tanaza_fetch_failed", message: String(e?.message || e) });
   }
-});
 
+});
 app.get("/api/admin/aps", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
@@ -1124,7 +1075,6 @@ app.post("/api/admin/aps/import-tanaza", requireAdmin, async (req, res) => {
     const payload = {
       ap_mac,
       ap_name: label || ap_mac,  // store friendly Tanaza label in existing column
-      site_name: label || ap_mac,  // required by DB (NOT NULL)
       pool_id,
       is_active: true,
       updated_at: new Date().toISOString(),
@@ -1182,7 +1132,6 @@ if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0
     const payload = {
       ap_mac,
       ap_name: label || ap_mac,
-      site_name: label || ap_mac,
       pool_id,
       is_active: true,
       updated_at: new Date().toISOString(),
@@ -1212,21 +1161,35 @@ app.patch("/api/admin/aps/:ap_mac", requireAdmin, async (req, res) => {
     if (!ap_mac) return res.status(400).json({ error: "missing_ap_mac" });
 
     const b = req.body || {};
+
+    // pool_id is optional IF only updating capacity_max.
+    // If pool_id is provided, we validate it (or allow null to unassign).
     let pool_id = b.pool_id;
-    if (pool_id === undefined) {
-      return res.status(400).json({ error: "missing_pool_id" });
-    }
-    if (pool_id === null) {
-      pool_id = null; // unassign
-    } else {
-      pool_id = String(pool_id).trim();
-      if (!pool_id) pool_id = null;
+    const hasPoolId = (pool_id !== undefined);
+    let capacity_max = b.capacity_max;
+
+    const hasCap = (capacity_max !== undefined);
+
+    if (!hasPoolId && !hasCap) {
+      return res.status(400).json({ error: "missing_update_fields" });
     }
 
-    // ensure AP exists
+    // Validate capacity_max if present
+    if (hasCap) {
+      if (capacity_max === null || capacity_max === "") {
+        capacity_max = null;
+      } else {
+        capacity_max = Number(capacity_max);
+        if (!Number.isFinite(capacity_max) || capacity_max < 0) {
+          return res.status(400).json({ error: "invalid_capacity_max" });
+        }
+      }
+    }
+
+    // Load existing so we can keep pool_id if not provided
     const { data: existing, error: exErr } = await supabase
       .from("ap_registry")
-      .select("ap_mac,pool_id,is_active")
+      .select("ap_mac,pool_id,capacity_max,is_active")
       .eq("ap_mac", ap_mac)
       .maybeSingle();
 
@@ -1238,28 +1201,41 @@ app.patch("/api/admin/aps/:ap_mac", requireAdmin, async (req, res) => {
       return res.status(404).json({ error: "ap_not_found" });
     }
 
-    // if assigning to a pool, ensure pool exists
-    if (pool_id) {
-      const { data: pool, error: poolErr } = await supabase
-        .from("internet_pools")
-        .select("id")
-        .eq("id", pool_id)
-        .maybeSingle();
+    if (!hasPoolId) {
+      pool_id = existing.pool_id ?? null;
+    } else {
+      if (pool_id === null) {
+        pool_id = null; // unassign
+      } else {
+        pool_id = String(pool_id).trim();
+        if (!pool_id) return res.status(400).json({ error: "invalid_pool_id" });
 
-      if (poolErr) {
-        console.error("ADMIN APS PATCH POOL LOOKUP ERROR", poolErr);
-        return res.status(500).json({ error: "db_error" });
-      }
-      if (!pool) {
-        return res.status(400).json({ error: "invalid_pool_id" });
+        // if assigning to a pool, ensure pool exists
+        const { data: pool, error: poolErr } = await supabase
+          .from("internet_pools")
+          .select("id")
+          .eq("id", pool_id)
+          .maybeSingle();
+
+        if (poolErr) {
+          console.error("ADMIN APS PATCH POOL LOOKUP ERROR", poolErr);
+          return res.status(500).json({ error: "db_error" });
+        }
+        if (!pool) {
+          return res.status(400).json({ error: "invalid_pool_id" });
+        }
       }
     }
 
+    const update = {};
+    if (hasPoolId) update.pool_id = pool_id;
+    if (hasCap) update.capacity_max = capacity_max;
+
     const { data, error } = await supabase
       .from("ap_registry")
-      .update({ pool_id })
+      .update(update)
       .eq("ap_mac", ap_mac)
-      .select("ap_mac,pool_id,is_active")
+      .select("ap_mac,pool_id,capacity_max,is_active")
       .single();
 
     if (error) {
