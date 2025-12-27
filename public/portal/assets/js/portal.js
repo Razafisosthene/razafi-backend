@@ -165,13 +165,6 @@ function showToast(message, kind = "info", ms = 3200) {
   }) || "";
   const continueUrl = pickLastValidParam(["continue_url","continueUrl","dst","url"], (v) => !isPlaceholder(v)) || "";
 
-  // Expose Tanaza parameters for field-debug (safe)
-  window.apMac = apMac;
-  window.clientMac = clientMac;
-  window.loginUrl = loginUrl;
-  window.continueUrl = continueUrl;
-
-
 
   // -------- Status elements --------
     const voucherCodeEl = $("voucher-code");
@@ -182,29 +175,28 @@ function showToast(message, kind = "info", ms = 3200) {
   const copyBtn = $("copyVoucherBtn");
 
   const themeToggle = $("themeToggle");
-  // -------- Voucher status (PROD) --------
-  // No simulated values in production. We only display a code if we actually have one.
-  function renderStatus({ hasActiveVoucher = false, voucherCode = "" } = {}) {
-    const has = !!hasActiveVoucher;
 
-    // Toggle blocks if they exist in HTML
-    const noneEl = document.getElementById("voucherNone");
-    const hasEl = document.getElementById("voucherHas");
-    if (noneEl) noneEl.style.display = has ? "none" : "";
-    if (hasEl) hasEl.style.display = has ? "" : "none";
+  // -------- Simulated voucher status (V2) --------
+  // Will be replaced later by backend fetch
+    const simulatedStatus = {
+    hasActiveVoucher: false,
+    voucherCode: "",
+    timeLeft: "—",
+    dataLeft: "—",
+    devicesUsed: 0,
+    devicesAllowed: 0,
+  };
 
-    const codeEl = $("voucher-code");
-    if (codeEl) codeEl.textContent = has ? (voucherCode || "—") : "—";
 
-    // These fields are intentionally unknown in PROD (no fake values)
-    const timeLeftEl = $("time-left");
-    const dataLeftEl = $("data-left");
-    const devicesEl = $("devices-used");
-    if (timeLeftEl) timeLeftEl.textContent = "—";
-    if (dataLeftEl) dataLeftEl.textContent = "—";
-    if (devicesEl) devicesEl.textContent = "—";
-  }
-
+  function renderStatus(status) {
+    const has = !!status?.hasActiveVoucher;
+    if (voucherCodeEl) voucherCodeEl.textContent = (status?.voucherCode || "—");
+    if (timeLeftEl) timeLeftEl.textContent = has ? (status.timeLeft || "—") : "—";
+    if (dataLeftEl) dataLeftEl.textContent = has ? (status.dataLeft || "—") : "—";
+    if (devicesEl) {
+      if (has) devicesEl.textContent = (status.devicesUsed || 0) + " / " + (status.devicesAllowed || 0);
+      else devicesEl.textContent = "—";
+    }
   }
 
 
@@ -212,24 +204,23 @@ function showToast(message, kind = "info", ms = 3200) {
   let currentPhone = "";
   let currentVoucherCode = "";
 
-  
   function setVoucherUI({ phone = "", code = "" } = {}) {
     currentPhone = phone || currentPhone || "";
     currentVoucherCode = code || currentVoucherCode || "";
 
     const has = !!currentVoucherCode;
-
-    // Update UI blocks + code
     renderStatus({
       hasActiveVoucher: has,
       voucherCode: currentVoucherCode || "—",
+      timeLeft: has ? (simulatedStatus.timeLeft || "—") : "—",
+      dataLeft: has ? (simulatedStatus.dataLeft || "—") : "—",
+      devicesUsed: has ? (simulatedStatus.devicesUsed || 0) : 0,
+      devicesAllowed: has ? (simulatedStatus.devicesAllowed || 0) : 0,
     });
 
-    // Enable/disable actions
     if (useBtn) useBtn.disabled = !has;
     if (copyBtn) copyBtn.disabled = !has;
   }
-
 
   async function pollDernierCode(phone, { timeoutMs = 180000, intervalMs = 3000, baselineCode = null } = {}) {
     const started = Date.now();
@@ -284,18 +275,12 @@ function showToast(message, kind = "info", ms = 3200) {
       form.appendChild(input);
     };
 
-    // Captive portals vary: some expect success_url, some expect dst. Send both.
-    const redirect = continueUrl || location.href;
-    add("success_url", redirect);
-    add("dst", redirect);
-
-    // Helpful extras (ignored if not needed)
-    if (clientMac) add("client_mac", clientMac);
-    if (apMac) add("ap_mac", apMac);
-
-    // Credentials expected by Tanaza external splash login form
-    // username: client MAC (stable) ; password: voucher code
+    // Fields expected by Tanaza external splash login form
+    // It typically posts: success_url, username, password
+    if (continueUrl) add("success_url", continueUrl);
+    // Use client MAC as username when available (stable & unique)
     add("username", clientMac || "username");
+    // Backend-generated code goes in password
     add("password", code);
 
     document.body.appendChild(form);
@@ -765,7 +750,7 @@ function bindPlanHandlers() {
 
 
   // -------- Init --------
-  renderStatus({ hasActiveVoucher: false, voucherCode: "" });
+  renderStatus(simulatedStatus);
   loadPlans();
 
   console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac });
