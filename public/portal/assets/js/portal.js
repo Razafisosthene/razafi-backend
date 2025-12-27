@@ -165,6 +165,13 @@ function showToast(message, kind = "info", ms = 3200) {
   }) || "";
   const continueUrl = pickLastValidParam(["continue_url","continueUrl","dst","url"], (v) => !isPlaceholder(v)) || "";
 
+// Expose Tanaza parameters for debugging / interoperability (useful in production support)
+window.apMac = apMac;
+window.clientMac = clientMac;
+window.loginUrl = loginUrl || "";
+window.continueUrl = continueUrl || "";
+
+
 
   // -------- Status elements --------
     const voucherCodeEl = $("voucher-code");
@@ -176,29 +183,6 @@ function showToast(message, kind = "info", ms = 3200) {
 
   const themeToggle = $("themeToggle");
 
-  // -------- Simulated voucher status (V2) --------
-  // Will be replaced later by backend fetch
-    const simulatedStatus = {
-    hasActiveVoucher: false,
-    voucherCode: "",
-    timeLeft: "—",
-    dataLeft: "—",
-    devicesUsed: 0,
-    devicesAllowed: 0,
-  };
-
-
-  function renderStatus(status) {
-    const has = !!status?.hasActiveVoucher;
-    if (voucherCodeEl) voucherCodeEl.textContent = (status?.voucherCode || "—");
-    if (timeLeftEl) timeLeftEl.textContent = has ? (status.timeLeft || "—") : "—";
-    if (dataLeftEl) dataLeftEl.textContent = has ? (status.dataLeft || "—") : "—";
-    if (devicesEl) {
-      if (has) devicesEl.textContent = (status.devicesUsed || 0) + " / " + (status.devicesAllowed || 0);
-      else devicesEl.textContent = "—";
-    }
-  }
-
 
   // -------- Voucher buttons + state --------
   let currentPhone = "";
@@ -209,18 +193,32 @@ function showToast(message, kind = "info", ms = 3200) {
     currentVoucherCode = code || currentVoucherCode || "";
 
     const has = !!currentVoucherCode;
-    renderStatus({
-      hasActiveVoucher: has,
-      voucherCode: currentVoucherCode || "—",
-      timeLeft: has ? (simulatedStatus.timeLeft || "—") : "—",
-      dataLeft: has ? (simulatedStatus.dataLeft || "—") : "—",
-      devicesUsed: has ? (simulatedStatus.devicesUsed || 0) : 0,
-      devicesAllowed: has ? (simulatedStatus.devicesAllowed || 0) : 0,
-    });
+
+    // Toggle states
+    const noneEl = $("voucherNone");
+    const hasEl = $("voucherHas");
+    if (noneEl && hasEl) {
+      if (has) {
+        noneEl.classList.add("hidden");
+        hasEl.classList.remove("hidden");
+      } else {
+        hasEl.classList.add("hidden");
+        noneEl.classList.remove("hidden");
+      }
+    }
+
+    // Update visible code
+    if (voucherCodeEl) voucherCodeEl.textContent = has ? currentVoucherCode : "—";
+
+    // Statuts (temps / data / appareils) non disponibles ici tant qu'ils ne viennent pas d'une source backend fiable.
+    if (timeLeftEl) timeLeftEl.textContent = "—";
+    if (dataLeftEl) dataLeftEl.textContent = "—";
+    if (devicesEl) devicesEl.textContent = "—";
 
     if (useBtn) useBtn.disabled = !has;
     if (copyBtn) copyBtn.disabled = !has;
   }
+
 
   async function pollDernierCode(phone, { timeoutMs = 180000, intervalMs = 3000, baselineCode = null } = {}) {
     const started = Date.now();
@@ -275,11 +273,20 @@ function showToast(message, kind = "info", ms = 3200) {
       form.appendChild(input);
     };
 
-    // Fields expected by Tanaza external splash login form
-    // It typically posts: success_url, username, password
-    if (continueUrl) add("success_url", continueUrl);
+    // Fields expected by Tanaza external splash login form.
+    // Depending on captive portal templates, the redirect field can be "success_url" and/or "dst".
+    const redirectUrl = continueUrl || window.location.href;
+
+    add("success_url", redirectUrl);
+    add("dst", redirectUrl);
+
+    // Some templates also accept these (harmless if ignored)
+    if (clientMac) add("client_mac", clientMac);
+    if (apMac) add("ap_mac", apMac);
+
     // Use client MAC as username when available (stable & unique)
     add("username", clientMac || "username");
+
     // Backend-generated code goes in password
     add("password", code);
 
@@ -750,7 +757,6 @@ function bindPlanHandlers() {
 
 
   // -------- Init --------
-  renderStatus(simulatedStatus);
   loadPlans();
 
   console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac });
