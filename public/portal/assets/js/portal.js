@@ -165,11 +165,11 @@ function showToast(message, kind = "info", ms = 3200) {
   }) || "";
   const continueUrl = pickLastValidParam(["continue_url","continueUrl","dst","url"], (v) => !isPlaceholder(v)) || "";
 
-// Expose Tanaza parameters for debugging / interoperability (useful in production support)
-window.apMac = apMac;
-window.clientMac = clientMac;
-window.loginUrl = loginUrl || "";
-window.continueUrl = continueUrl || "";
+  // Expose Tanaza parameters for field-debug (safe)
+  window.apMac = apMac;
+  window.clientMac = clientMac;
+  window.loginUrl = loginUrl;
+  window.continueUrl = continueUrl;
 
 
 
@@ -182,39 +182,50 @@ window.continueUrl = continueUrl || "";
   const copyBtn = $("copyVoucherBtn");
 
   const themeToggle = $("themeToggle");
+  // -------- Voucher status (PROD) --------
+  // No simulated values in production. We only display a code if we actually have one.
+  function renderStatus({ hasActiveVoucher = false, voucherCode = "" } = {}) {
+    const has = !!hasActiveVoucher;
+
+    // Toggle blocks if they exist in HTML
+    const noneEl = document.getElementById("voucherNone");
+    const hasEl = document.getElementById("voucherHas");
+    if (noneEl) noneEl.style.display = has ? "none" : "";
+    if (hasEl) hasEl.style.display = has ? "" : "none";
+
+    const codeEl = $("voucher-code");
+    if (codeEl) codeEl.textContent = has ? (voucherCode || "—") : "—";
+
+    // These fields are intentionally unknown in PROD (no fake values)
+    const timeLeftEl = $("time-left");
+    const dataLeftEl = $("data-left");
+    const devicesEl = $("devices-used");
+    if (timeLeftEl) timeLeftEl.textContent = "—";
+    if (dataLeftEl) dataLeftEl.textContent = "—";
+    if (devicesEl) devicesEl.textContent = "—";
+  }
+
+  }
 
 
   // -------- Voucher buttons + state --------
   let currentPhone = "";
   let currentVoucherCode = "";
 
+  
   function setVoucherUI({ phone = "", code = "" } = {}) {
     currentPhone = phone || currentPhone || "";
     currentVoucherCode = code || currentVoucherCode || "";
 
     const has = !!currentVoucherCode;
 
-    // Toggle states
-    const noneEl = $("voucherNone");
-    const hasEl = $("voucherHas");
-    if (noneEl && hasEl) {
-      if (has) {
-        noneEl.classList.add("hidden");
-        hasEl.classList.remove("hidden");
-      } else {
-        hasEl.classList.add("hidden");
-        noneEl.classList.remove("hidden");
-      }
-    }
+    // Update UI blocks + code
+    renderStatus({
+      hasActiveVoucher: has,
+      voucherCode: currentVoucherCode || "—",
+    });
 
-    // Update visible code
-    if (voucherCodeEl) voucherCodeEl.textContent = has ? currentVoucherCode : "—";
-
-    // Statuts (temps / data / appareils) non disponibles ici tant qu'ils ne viennent pas d'une source backend fiable.
-    if (timeLeftEl) timeLeftEl.textContent = "—";
-    if (dataLeftEl) dataLeftEl.textContent = "—";
-    if (devicesEl) devicesEl.textContent = "—";
-
+    // Enable/disable actions
     if (useBtn) useBtn.disabled = !has;
     if (copyBtn) copyBtn.disabled = !has;
   }
@@ -273,21 +284,18 @@ window.continueUrl = continueUrl || "";
       form.appendChild(input);
     };
 
-    // Fields expected by Tanaza external splash login form.
-    // Depending on captive portal templates, the redirect field can be "success_url" and/or "dst".
-    const redirectUrl = continueUrl || window.location.href;
+    // Captive portals vary: some expect success_url, some expect dst. Send both.
+    const redirect = continueUrl || location.href;
+    add("success_url", redirect);
+    add("dst", redirect);
 
-    add("success_url", redirectUrl);
-    add("dst", redirectUrl);
-
-    // Some templates also accept these (harmless if ignored)
+    // Helpful extras (ignored if not needed)
     if (clientMac) add("client_mac", clientMac);
     if (apMac) add("ap_mac", apMac);
 
-    // Use client MAC as username when available (stable & unique)
+    // Credentials expected by Tanaza external splash login form
+    // username: client MAC (stable) ; password: voucher code
     add("username", clientMac || "username");
-
-    // Backend-generated code goes in password
     add("password", code);
 
     document.body.appendChild(form);
@@ -757,6 +765,7 @@ function bindPlanHandlers() {
 
 
   // -------- Init --------
+  renderStatus({ hasActiveVoucher: false, voucherCode: "" });
   loadPlans();
 
   console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac });
