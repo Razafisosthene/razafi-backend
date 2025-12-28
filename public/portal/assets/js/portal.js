@@ -230,6 +230,65 @@ function showToast(message, kind = "info", ms = 3200) {
     });
   }
 
+  function pickContinueTarget() {
+    // Option A: use Tanaza continue_url if it is a safe absolute http(s) URL; otherwise default to Google.
+    const fallback = "https://www.google.com/";
+    const raw = (continueUrl || "").trim();
+    if (!raw) return fallback;
+    try {
+      // Reject javascript:, data:, etc.
+      const u = new URL(raw, window.location.href);
+      if (u.protocol === "http:" || u.protocol === "https:") return u.toString();
+      return fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function setConnectedUI() {
+    // When internet is confirmed active: show only "connected" state (no purchase prompts).
+    const accessMsg = document.getElementById("accessMsg");
+    if (accessMsg) accessMsg.textContent = "✅ Accès Internet activé. Vous pouvez naviguer.";
+
+    // Hide "no active code" + purchase hint
+    const voucherNone = document.getElementById("voucherNone");
+    if (voucherNone) {
+      voucherNone.classList.add("hidden");
+      voucherNone.style.display = "none";
+    }
+    const noVoucherMsg = document.getElementById("noVoucherMsg");
+    if (noVoucherMsg) noVoucherMsg.style.display = "none";
+
+    // Update "has voucher" heading if present (avoid confusion)
+    const hasMsg = document.getElementById("hasVoucherMsg");
+    if (hasMsg) hasMsg.textContent = "✅ Accès Internet activé";
+
+    // Hide purchase UI: plans + info banner + headings
+    const plansSection = document.getElementById("plans-section") || document.getElementById("plansSection");
+    if (plansSection) plansSection.style.display = "none";
+
+    const plansGrid = document.getElementById("plansGrid");
+    if (plansGrid) {
+      const plansContainer =
+        plansGrid.closest("section") ||
+        plansGrid.closest(".plans-section") ||
+        plansGrid.closest(".plans") ||
+        plansGrid.parentElement;
+      if (plansContainer) plansContainer.style.display = "none";
+      else plansGrid.style.display = "none";
+    }
+
+    const infoBox = document.querySelector(".info-box");
+    if (infoBox) infoBox.style.display = "none";
+
+    const plansHeading = Array.from(document.querySelectorAll("h1,h2,h3"))
+      .find((el) => (el.textContent || "").trim().toLowerCase().includes("choisissez un plan"));
+    if (plansHeading) plansHeading.style.display = "none";
+
+    ensureContinueButton();
+  }
+
+
   function ensureContinueButton() {
     // Place a "Continuer" button inside the status card when internet is OK
     const card = document.querySelector(".status-card");
@@ -249,7 +308,7 @@ function showToast(message, kind = "info", ms = 3200) {
     btn.textContent = "Continuer vers Internet";
 
     // Prefer Tanaza continue_url when provided; otherwise go to a safe default
-    btn.href = continueUrl || "https://www.google.com/";
+    btn.href = pickContinueTarget();
     btn.target = "_self";
 
     card.appendChild(btn);
@@ -267,28 +326,7 @@ function showToast(message, kind = "info", ms = 3200) {
     const ok = await checkInternet({ timeoutMs: 4500 });
 
     if (ok) {
-      if (accessMsg) accessMsg.textContent = "✅ Accès Internet activé. Vous pouvez naviguer.";
-      const hasMsg = document.getElementById("hasVoucherMsg");
-      if (hasMsg) hasMsg.textContent = "✅ Accès Internet activé";
-
-      // Hide purchase plans once internet is confirmed active (PROD UX)
-      const plansGrid = document.getElementById("plansGrid");
-      if (plansGrid) {
-        const plansContainer =
-          plansGrid.closest("section") ||
-          plansGrid.closest(".plans-section") ||
-          plansGrid.closest(".plans") ||
-          plansGrid.parentElement;
-        if (plansContainer) plansContainer.style.display = "none";
-        else plansGrid.style.display = "none";
-      }
-
-      // Also hide any "Choisissez un plan" heading if it is separate
-      const plansHeading = Array.from(document.querySelectorAll("h1,h2,h3"))
-        .find((el) => (el.textContent || "").trim().toLowerCase().includes("choisissez un plan"));
-      if (plansHeading) plansHeading.style.display = "none";
-
-      ensureContinueButton();
+      setConnectedUI();
     } else {
       // Do not show scary errors; user may simply not be connected yet.
       // Keep default texts.
