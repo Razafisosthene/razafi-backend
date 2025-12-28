@@ -207,6 +207,98 @@ function showToast(message, kind = "info", ms = 3200) {
 
 
 
+  // -------- Internet connectivity check (PROD) --------
+  // We can't reliably ask Tanaza for session status from the browser.
+  // Best-effort: try loading an HTTPS asset (not interceptable by captive portals without cert errors).
+  function checkInternet({ timeoutMs = 5000 } = {}) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (ok) => {
+        if (done) return;
+        done = true;
+        resolve(!!ok);
+      };
+
+      const img = new Image();
+      const t = setTimeout(() => finish(false), timeoutMs);
+
+      img.onload = () => { clearTimeout(t); finish(true); };
+      img.onerror = () => { clearTimeout(t); finish(false); };
+
+      // Cache-buster to avoid false positives from cache
+      img.src = "https://www.google.com/favicon.ico?_=" + Date.now();
+    });
+  }
+
+  function ensureContinueButton() {
+    // Place a "Continuer" button inside the status card when internet is OK
+    const card = document.querySelector(".status-card");
+    if (!card) return null;
+
+    let btn = document.getElementById("continueInternetBtn");
+    if (btn) return btn;
+
+    btn = document.createElement("a");
+    btn.id = "continueInternetBtn";
+    btn.className = "primary-btn";
+    btn.style.textDecoration = "none";
+    btn.style.display = "inline-flex";
+    btn.style.alignItems = "center";
+    btn.style.justifyContent = "center";
+    btn.style.marginTop = "10px";
+    btn.textContent = "Continuer vers Internet";
+
+    // Prefer Tanaza continue_url when provided; otherwise go to a safe default
+    btn.href = continueUrl || "https://www.google.com/";
+    btn.target = "_self";
+
+    card.appendChild(btn);
+    return btn;
+  }
+
+  async function updateConnectedUI({ force = false } = {}) {
+    // If we just attempted a login, we should check quickly.
+    // Otherwise, keep it lightweight (still useful if user already has an active session).
+    const accessMsg = document.getElementById("accessMsg");
+    if (accessMsg && (force || accessMsg.textContent.includes("Vérification"))) {
+      accessMsg.textContent = "Vérification de votre accès en cours…";
+    }
+
+    const ok = await checkInternet({ timeoutMs: 4500 });
+
+    if (ok) {
+      if (accessMsg) accessMsg.textContent = "✅ Accès Internet activé. Vous pouvez naviguer.";
+      const hasMsg = document.getElementById("hasVoucherMsg");
+      if (hasMsg) hasMsg.textContent = "✅ Accès Internet activé";
+
+      // Hide purchase plans once internet is confirmed active (PROD UX)
+      const plansGrid = document.getElementById("plansGrid");
+      if (plansGrid) {
+        const plansContainer =
+          plansGrid.closest("section") ||
+          plansGrid.closest(".plans-section") ||
+          plansGrid.closest(".plans") ||
+          plansGrid.parentElement;
+        if (plansContainer) plansContainer.style.display = "none";
+        else plansGrid.style.display = "none";
+      }
+
+      // Also hide any "Choisissez un plan" heading if it is separate
+      const plansHeading = Array.from(document.querySelectorAll("h1,h2,h3"))
+        .find((el) => (el.textContent || "").trim().toLowerCase().includes("choisissez un plan"));
+      if (plansHeading) plansHeading.style.display = "none";
+
+      ensureContinueButton();
+    } else {
+      // Do not show scary errors; user may simply not be connected yet.
+      // Keep default texts.
+      const btn = document.getElementById("continueInternetBtn");
+      if (btn) btn.remove();
+    }
+  }
+
+
+
   // -------- Voucher buttons + state --------
   let currentPhone = "";
   let currentVoucherCode = "";
@@ -267,6 +359,13 @@ function showToast(message, kind = "info", ms = 3200) {
       return;
     }
     const action = loginUrl;
+
+    // Mark that we are attempting to login (helps show the right UI after redirect)
+    try {
+      sessionStorage.setItem("razafi_login_attempt", JSON.stringify({ ts: Date.now(), continueUrl: continueUrl || "" }));
+    } catch (_) {}
+    const accessMsg = document.getElementById("accessMsg");
+    if (accessMsg) accessMsg.textContent = "Connexion en cours…";
 
     // Build a POST form (most captive portals expect POST)
     const form = document.createElement("form");
@@ -766,6 +865,21 @@ function bindPlanHandlers() {
   // -------- Init --------
   renderStatus({ hasActiveVoucher: false, voucherCode: "" });
   loadPlans();
+
+  // Best-effort: if user already has an active Tanaza session, show "Internet activé"
+  // If we just attempted login, force the check once after load.
+  try {
+    const raw = sessionStorage.getItem("razafi_login_attempt");
+    if (raw) {
+      sessionStorage.removeItem("razafi_login_attempt");
+      updateConnectedUI({ force: true });
+    } else {
+      updateConnectedUI({ force: false });
+    }
+  } catch (_) {
+    // If sessionStorage is blocked, still do a lightweight check.
+    updateConnectedUI({ force: false });
+  }
 
   console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac });
 })();
