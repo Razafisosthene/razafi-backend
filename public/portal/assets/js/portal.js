@@ -232,24 +232,62 @@ function showToast(message, kind = "info", ms = 3200) {
   // We can't reliably ask Tanaza for session status from the browser.
   // Best-effort: try loading an HTTPS asset (not interceptable by captive portals without cert errors).
   function checkInternet({ timeoutMs = 5000 } = {}) {
-    return new Promise((resolve) => {
-      let done = false;
-      const finish = (ok) => {
-        if (done) return;
-        done = true;
-        resolve(!!ok);
-      };
+  // Captive portals can block some domains; try multiple HTTPS endpoints.
+  // Succeed if ANY endpoint loads successfully within timeout.
+  const urls = [
+    "https://www.gstatic.com/generate_204",
+    "https://www.google.com/favicon.ico",
+    "https://www.cloudflare.com/favicon.ico",
+  ];
 
-      const img = new Image();
-      const t = setTimeout(() => finish(false), timeoutMs);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      resolve(!!ok);
+    };
 
-      img.onload = () => { clearTimeout(t); finish(true); };
-      img.onerror = () => { clearTimeout(t); finish(false); };
+    const t = setTimeout(() => finish(false), timeoutMs);
 
-      // Cache-buster to avoid false positives from cache
-      img.src = "https://www.google.com/favicon.ico?_=" + Date.now();
-    });
+    let pending = urls.length;
+    const onResult = (ok) => {
+      if (done) return;
+      if (ok) {
+        clearTimeout(t);
+        return finish(true);
+      }
+      pending -= 1;
+      if (pending <= 0) {
+        clearTimeout(t);
+        finish(false);
+      }
+    };
+
+    for (const base of urls) {
+      try {
+        const img = new Image();
+        img.onload = () => onResult(true);
+        img.onerror = () => onResult(false);
+        const sep = base.includes("?") ? "&" : "?";
+        img.src = base + sep + "_=" + Date.now();
+      } catch (_) {
+        onResult(false);
+      }
+    }
+  });
+}
+
+async function waitForInternet({ totalMs = 25000, intervalMs = 2000 } = {}) {
+  const start = Date.now();
+  while ((Date.now() - start) < totalMs) {
+    const ok = await checkInternet({ timeoutMs: 4500 });
+    if (ok) return true;
+    await new Promise((r) => setTimeout(r, intervalMs));
   }
+  return false;
+}
+
 
   function pickContinueTarget() {
     // Option A: use Tanaza continue_url if it is a safe absolute http(s) URL; otherwise default to Google.
@@ -265,8 +303,13 @@ function showToast(message, kind = "info", ms = 3200) {
       return fallback;
     }
   }
+  // Track when we are in connected UI state (prevents pool context from overwriting messages)
+  let _portalIsConnected = false;
+
 
   function setConnectedUI() {
+    _portalIsConnected = true;
+
     // When internet is confirmed active: show only "connected" state (no purchase prompts).
     const accessMsg = document.getElementById("accessMsg");
     if (accessMsg) accessMsg.textContent = "✅ Accès Internet activé. Vous pouvez naviguer.";
@@ -393,24 +436,47 @@ function showToast(message, kind = "info", ms = 3200) {
 
 
   async function updateConnectedUI({ force = false } = {}) {
-    // If we just attempted a login, we should check quickly.
-    // Otherwise, keep it lightweight (still useful if user already has an active session).
-    const accessMsg = document.getElementById("accessMsg");
-    if (accessMsg && (force || accessMsg.textContent.includes("Vérification"))) {
-      accessMsg.textContent = "Vérification de votre accès en cours…";
-    }
+  // When force=true (after clicking "Utiliser ce code"), Tanaza may take a few seconds
+  // to open internet access. We poll for a short time to avoid being stuck on "Vérification…".
+  const accessMsg = _uiEls.accessMsg;
 
-    const ok = await checkInternet({ timeoutMs: 4500 });
-
-    if (ok) {
-      setConnectedUI();
+  if (accessMsg) {
+    if (force) {
+      accessMsg.textContent = "Connexion en cours… Merci de patienter quelques secondes.";
     } else {
-      // Do not show scary errors; user may simply not be connected yet.
-      // Keep default texts.
-      const btn = document.getElementById("continueInternetBtn");
-      if (btn) btn.remove();
+      // keep default text until we know more
+      if (!_portalIsConnected) accessMsg.textContent = _uiDefaults.accessMsg || "Vérification de votre accès en cours…";
     }
   }
+
+  // Always show recap if we already have it (even before internet is confirmed)
+  try { ensurePurchaseSummary(); } catch (_) {}
+
+  let ok = await checkInternet({ timeoutMs: 4500 });
+
+  if (!ok && force) {
+    ok = await waitForInternet({ totalMs: 25000, intervalMs: 2000 });
+  }
+
+  if (ok) {
+    setConnectedUI();
+    return;
+  }
+
+  // Not connected (yet)
+  if (accessMsg && !_portalIsConnected) {
+    if (force) {
+      accessMsg.textContent = "✅ Code envoyé. Activation en cours… Si cela prend plus de 30 secondes, appuyez à nouveau sur « Utiliser ce code ».";
+    } else {
+      accessMsg.textContent = "🔒 Vous n’êtes pas encore connecté. Utilisez votre code ou choisissez un plan.";
+    }
+  }
+
+  // Remove continue button if present
+  const cont = document.getElementById("continueInternetBtn");
+  if (cont) cont.remove();
+}
+
 
 
 
@@ -654,9 +720,12 @@ function showToast(message, kind = "info", ms = 3200) {
           "Les achats sont temporairement indisponibles. Veuillez patienter ou contacter l’assistance sur place.";
       } else if (!poolIsFull) {
         // Restore defaults (only if we had them)
-        if (_uiEls.accessMsg && _uiDefaults.accessMsg) _uiEls.accessMsg.textContent = _uiDefaults.accessMsg;
-        if (_uiEls.noVoucherMsg && _uiDefaults.noVoucherMsg) _uiEls.noVoucherMsg.textContent = _uiDefaults.noVoucherMsg;
-        if (_uiEls.choosePlanHint && _uiDefaults.choosePlanHint) _uiEls.choosePlanHint.textContent = _uiDefaults.choosePlanHint;
+        // Do not overwrite the "connected" message/state.
+        if (!_portalIsConnected) {
+          if (_uiEls.accessMsg && _uiDefaults.accessMsg) _uiEls.accessMsg.textContent = _uiDefaults.accessMsg;
+          if (_uiEls.noVoucherMsg && _uiDefaults.noVoucherMsg) _uiEls.noVoucherMsg.textContent = _uiDefaults.noVoucherMsg;
+          if (_uiEls.choosePlanHint && _uiDefaults.choosePlanHint) _uiEls.choosePlanHint.textContent = _uiDefaults.choosePlanHint;
+        }
       }
     } catch (_) {}
 
