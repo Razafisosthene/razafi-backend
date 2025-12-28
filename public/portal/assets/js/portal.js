@@ -165,6 +165,13 @@ function showToast(message, kind = "info", ms = 3200) {
   }) || "";
   const continueUrl = pickLastValidParam(["continue_url","continueUrl","dst","url"], (v) => !isPlaceholder(v)) || "";
 
+
+  // Expose Tanaza params for support/debug (not shown to end-users)
+  window.apMac = apMac || "";
+  window.clientMac = clientMac || "";
+  window.loginUrl = loginUrl || "";
+  window.continueUrl = continueUrl || "";
+
   // Expose Tanaza parameters for field-debug (safe)
   window.apMac = apMac;
   window.clientMac = clientMac;
@@ -538,6 +545,128 @@ function showToast(message, kind = "info", ms = 3200) {
 // -------- Plans: fetch + render (DB only) --------
   const plansGrid = $("plansGrid");
   const plansLoading = $("plansLoading");
+  // -------- Pool context (AP -> Pool) --------
+  let poolContext = { pool_name: null, pool_percent: null, is_full: false };
+  let poolIsFull = false;
+
+  function ensurePoolNameLine() {
+    // Insert under the main title ("Bienvenue sur WiFi RAZAFI") without changing HTML
+    const existing = document.getElementById("poolNameLine");
+    if (existing) return existing;
+
+    const h1 = document.querySelector("h1");
+    if (!h1 || !h1.parentNode) return null;
+
+    const div = document.createElement("div");
+    div.id = "poolNameLine";
+    div.className = "muted small";
+    div.style.marginTop = "6px";
+    div.style.textAlign = "center";
+    h1.parentNode.insertBefore(div, h1.nextSibling);
+    return div;
+  }
+
+  function ensurePoolBanner() {
+    const existing = document.getElementById("poolStatusBanner");
+    if (existing) return existing;
+
+    const anchor = plansLoading || plansGrid;
+    if (!anchor || !anchor.parentNode) return null;
+
+    const div = document.createElement("div");
+    div.id = "poolStatusBanner";
+    div.className = "banner hidden";
+    // minimal inline styling to avoid CSS dependency changes
+    div.style.margin = "12px auto";
+    div.style.maxWidth = "680px";
+    div.style.padding = "10px 12px";
+    div.style.borderRadius = "10px";
+    div.style.border = "1px solid rgba(200, 120, 0, 0.35)";
+    div.style.background = "rgba(255, 200, 0, 0.10)";
+    div.style.color = "inherit";
+    anchor.parentNode.insertBefore(div, anchor);
+    return div;
+  }
+
+  function applyPoolContextUI() {
+    const nameLine = ensurePoolNameLine();
+    if (nameLine) {
+      nameLine.textContent = poolContext.pool_name ? String(poolContext.pool_name) : "";
+      nameLine.style.display = poolContext.pool_name ? "" : "none";
+    }
+
+    const banner = ensurePoolBanner();
+    if (banner) {
+      if (poolIsFull) {
+        const pct = (poolContext.pool_percent !== null && poolContext.pool_percent !== undefined)
+          ? ` (${poolContext.pool_percent}%)`
+          : "";
+        const poolName = poolContext.pool_name ? String(poolContext.pool_name) : "Ce point WiFi";
+        banner.innerHTML = `
+          <strong>⚠️ ${escapeHtml(poolName)} est saturé${escapeHtml(pct)}.</strong><br>
+          Les achats sont temporairement indisponibles. Merci de réessayer plus tard.
+        `;
+        banner.classList.remove("hidden");
+      } else {
+        banner.classList.add("hidden");
+        banner.innerHTML = "";
+      }
+    }
+  }
+
+  function applyPoolFullLockToPlans() {
+    if (!poolIsFull) return;
+
+    // Disable purchase-related controls, but keep plans visible
+    const planCards = getPlanCards();
+    planCards.forEach((card) => {
+      card.classList.remove("selected");
+      const payment = card.querySelector(".plan-payment");
+      if (payment) payment.classList.add("hidden");
+
+      const inputs = card.querySelectorAll("input, button");
+      inputs.forEach((el) => {
+        // keep cancel buttons disabled too, to avoid confusion
+        el.setAttribute("disabled", "disabled");
+      });
+
+      const chooseBtn = card.querySelector(".choose-plan-btn");
+      if (chooseBtn) {
+        chooseBtn.textContent = "Indisponible";
+        chooseBtn.setAttribute("disabled", "disabled");
+        chooseBtn.title = "Pool plein (100%). Achat temporairement indisponible.";
+      }
+    });
+  }
+
+  async function fetchPortalContext() {
+    if (!apMac) {
+      poolContext = { pool_name: null, pool_percent: null, is_full: false };
+      poolIsFull = false;
+      applyPoolContextUI();
+      return;
+    }
+
+    try {
+      const r = await fetch(`/api/portal/context?ap_mac=${encodeURIComponent(apMac)}`, { method: "GET" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.ok) throw new Error(j?.error || "context_failed");
+
+      poolContext = {
+        pool_name: j.pool_name ?? null,
+        pool_percent: (j.pool_percent === null || j.pool_percent === undefined) ? null : Number(j.pool_percent),
+        is_full: !!j.is_full,
+      };
+      poolIsFull = !!j.is_full;
+    } catch (e) {
+      console.warn("[RAZAFI] portal context fetch failed", e?.message || e);
+      poolContext = { pool_name: null, pool_percent: null, is_full: false };
+      poolIsFull = false;
+    } finally {
+      applyPoolContextUI();
+    }
+  }
+
 
   function planCardHTML(plan) {
     const name = plan.name || "Plan";
@@ -664,6 +793,7 @@ return `
       // bind behaviors after rendering
       bindPlanHandlers();
       closeAllPayments(); // ensure closed on load
+      applyPoolFullLockToPlans();
     } catch (e) {
       console.error("[RAZAFI] loadPlans error", e);
       plansGrid.innerHTML = `<p class="muted small">Impossible de charger les plans.</p>`;
@@ -778,6 +908,10 @@ function bindPlanHandlers() {
 
     if (chooseBtn) {
       chooseBtn.addEventListener("click", function () {
+        if (poolIsFull) {
+          showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
+          return;
+        }
         closeAllPayments();
         card.classList.add("selected");
         const payment = card.querySelector(".plan-payment");
@@ -809,6 +943,10 @@ function bindPlanHandlers() {
 
     if (payBtn) {
       payBtn.addEventListener("click", function () {
+        if (poolIsFull) {
+          showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
+          return;
+        }
         if (card.classList.contains("processing")) return;
 
         const raw = input ? input.value.trim() : "";
@@ -850,6 +988,10 @@ function bindPlanHandlers() {
 
     if (confirmBtn) {
       confirmBtn.addEventListener("click", function () {
+        if (poolIsFull) {
+          showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
+          return;
+        }
         if (card.classList.contains("processing")) return;
 
         const raw = input ? input.value.trim() : "";

@@ -686,6 +686,115 @@ app.get("/api/admin/me", requireAdmin, async (req, res) => {
 // ===============================
 // NEW PORTAL — PLANS (DB ONLY)
 // ===============================
+
+// ---------------------------------------------------------------------------
+// PORTAL (User) — Context for AP/Pool (pool name + usage)
+// ---------------------------------------------------------------------------
+app.get("/api/portal/context", normalizeApMac, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+
+    const ap_mac = req.ap_mac || null;
+    if (!ap_mac) return res.status(400).json({ ok: false, error: "ap_mac_required" });
+
+    // 1) Find pool for this AP
+    const { data: apRow, error: apErr } = await supabase
+      .from("ap_registry")
+      .select("ap_mac,pool_id,is_active")
+      .eq("ap_mac", ap_mac)
+      .maybeSingle();
+
+    if (apErr) {
+      console.error("PORTAL CONTEXT AP ERROR", apErr);
+      return res.status(500).json({ ok: false, error: "db_error" });
+    }
+
+    const pool_id = apRow?.pool_id || null;
+    if (!pool_id) {
+      // AP not registered or not assigned: fail-open (allow purchase)
+      return res.json({
+        ok: true,
+        ap_mac,
+        pool_id: null,
+        pool_name: null,
+        pool_capacity_max: null,
+        pool_active_clients: 0,
+        pool_percent: null,
+        is_full: false,
+      });
+    }
+
+    // 2) Pool info
+    const { data: pool, error: poolErr } = await supabase
+      .from("internet_pools")
+      .select("id,name,capacity_max")
+      .eq("id", pool_id)
+      .maybeSingle();
+
+    if (poolErr) {
+      console.error("PORTAL CONTEXT POOL ERROR", poolErr);
+      return res.status(500).json({ ok: false, error: "db_error" });
+    }
+
+    const capacity_max = (pool?.capacity_max === null || pool?.capacity_max === undefined) ? null : Number(pool.capacity_max);
+
+    // 3) Active clients in pool = sum of ap_live_stats.active_clients across active APs in that pool
+    const { data: aps, error: apsErr } = await supabase
+      .from("ap_registry")
+      .select("ap_mac,is_active")
+      .eq("pool_id", pool_id);
+
+    if (apsErr) {
+      console.error("PORTAL CONTEXT POOL APS ERROR", apsErr);
+      return res.status(500).json({ ok: false, error: "db_error" });
+    }
+
+    const apMacs = (aps || [])
+      .filter((a) => a && a.ap_mac && a.is_active !== false)
+      .map((a) => a.ap_mac);
+
+    let pool_active_clients = 0;
+    if (apMacs.length) {
+      const { data: statsRows, error: statsErr } = await supabase
+        .from("ap_live_stats")
+        .select("ap_mac,active_clients")
+        .in("ap_mac", apMacs);
+
+      if (statsErr) {
+        console.error("PORTAL CONTEXT STATS ERROR", statsErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+
+      for (const s of statsRows || []) {
+        pool_active_clients += Number(s?.active_clients || 0);
+      }
+    }
+
+    // STRICT: full at 100% (>= capacity_max)
+    let pool_percent = null;
+    let is_full = false;
+
+    if (Number.isFinite(capacity_max) && capacity_max > 0) {
+      pool_percent = Math.round((pool_active_clients / capacity_max) * 100);
+      is_full = pool_active_clients >= capacity_max;
+    }
+
+    return res.json({
+      ok: true,
+      ap_mac,
+      pool_id,
+      pool_name: pool?.name ?? null,
+      pool_capacity_max: Number.isFinite(capacity_max) ? capacity_max : null,
+      pool_active_clients,
+      pool_percent,
+      is_full,
+    });
+  } catch (e) {
+    console.error("PORTAL CONTEXT EX", e);
+    return res.status(500).json({ ok: false, error: "internal_error" });
+  }
+});
+
 app.get("/api/new/plans", async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
