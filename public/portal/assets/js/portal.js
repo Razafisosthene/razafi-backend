@@ -232,62 +232,24 @@ function showToast(message, kind = "info", ms = 3200) {
   // We can't reliably ask Tanaza for session status from the browser.
   // Best-effort: try loading an HTTPS asset (not interceptable by captive portals without cert errors).
   function checkInternet({ timeoutMs = 5000 } = {}) {
-  // Captive portals can block some domains; try multiple HTTPS endpoints.
-  // Succeed if ANY endpoint loads successfully within timeout.
-  const urls = [
-    "https://www.gstatic.com/generate_204",
-    "https://www.google.com/favicon.ico",
-    "https://www.cloudflare.com/favicon.ico",
-  ];
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (ok) => {
+        if (done) return;
+        done = true;
+        resolve(!!ok);
+      };
 
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = (ok) => {
-      if (done) return;
-      done = true;
-      resolve(!!ok);
-    };
+      const img = new Image();
+      const t = setTimeout(() => finish(false), timeoutMs);
 
-    const t = setTimeout(() => finish(false), timeoutMs);
+      img.onload = () => { clearTimeout(t); finish(true); };
+      img.onerror = () => { clearTimeout(t); finish(false); };
 
-    let pending = urls.length;
-    const onResult = (ok) => {
-      if (done) return;
-      if (ok) {
-        clearTimeout(t);
-        return finish(true);
-      }
-      pending -= 1;
-      if (pending <= 0) {
-        clearTimeout(t);
-        finish(false);
-      }
-    };
-
-    for (const base of urls) {
-      try {
-        const img = new Image();
-        img.onload = () => onResult(true);
-        img.onerror = () => onResult(false);
-        const sep = base.includes("?") ? "&" : "?";
-        img.src = base + sep + "_=" + Date.now();
-      } catch (_) {
-        onResult(false);
-      }
-    }
-  });
-}
-
-async function waitForInternet({ totalMs = 25000, intervalMs = 2000 } = {}) {
-  const start = Date.now();
-  while ((Date.now() - start) < totalMs) {
-    const ok = await checkInternet({ timeoutMs: 4500 });
-    if (ok) return true;
-    await new Promise((r) => setTimeout(r, intervalMs));
+      // Cache-buster to avoid false positives from cache
+      img.src = "https://www.google.com/favicon.ico?_=" + Date.now();
+    });
   }
-  return false;
-}
-
 
   function pickContinueTarget() {
     // Option A: use Tanaza continue_url if it is a safe absolute http(s) URL; otherwise default to Google.
@@ -303,13 +265,8 @@ async function waitForInternet({ totalMs = 25000, intervalMs = 2000 } = {}) {
       return fallback;
     }
   }
-  // Track when we are in connected UI state (prevents pool context from overwriting messages)
-  let _portalIsConnected = false;
-
 
   function setConnectedUI() {
-    _portalIsConnected = true;
-
     // When internet is confirmed active: show only "connected" state (no purchase prompts).
     const accessMsg = document.getElementById("accessMsg");
     if (accessMsg) accessMsg.textContent = "✅ Accès Internet activé. Vous pouvez naviguer.";
@@ -436,47 +393,24 @@ async function waitForInternet({ totalMs = 25000, intervalMs = 2000 } = {}) {
 
 
   async function updateConnectedUI({ force = false } = {}) {
-  // When force=true (after clicking "Utiliser ce code"), Tanaza may take a few seconds
-  // to open internet access. We poll for a short time to avoid being stuck on "Vérification…".
-  const accessMsg = _uiEls.accessMsg;
+    // If we just attempted a login, we should check quickly.
+    // Otherwise, keep it lightweight (still useful if user already has an active session).
+    const accessMsg = document.getElementById("accessMsg");
+    if (accessMsg && (force || accessMsg.textContent.includes("Vérification"))) {
+      accessMsg.textContent = "Vérification de votre accès en cours…";
+    }
 
-  if (accessMsg) {
-    if (force) {
-      accessMsg.textContent = "Connexion en cours… Merci de patienter quelques secondes.";
+    const ok = await checkInternet({ timeoutMs: 4500 });
+
+    if (ok) {
+      setConnectedUI();
     } else {
-      // keep default text until we know more
-      if (!_portalIsConnected) accessMsg.textContent = _uiDefaults.accessMsg || "Vérification de votre accès en cours…";
+      // Do not show scary errors; user may simply not be connected yet.
+      // Keep default texts.
+      const btn = document.getElementById("continueInternetBtn");
+      if (btn) btn.remove();
     }
   }
-
-  // Always show recap if we already have it (even before internet is confirmed)
-  try { ensurePurchaseSummary(); } catch (_) {}
-
-  let ok = await checkInternet({ timeoutMs: 4500 });
-
-  if (!ok && force) {
-    ok = await waitForInternet({ totalMs: 25000, intervalMs: 2000 });
-  }
-
-  if (ok) {
-    setConnectedUI();
-    return;
-  }
-
-  // Not connected (yet)
-  if (accessMsg && !_portalIsConnected) {
-    if (force) {
-      accessMsg.textContent = "✅ Code envoyé. Activation en cours… Si cela prend plus de 30 secondes, appuyez à nouveau sur « Utiliser ce code ».";
-    } else {
-      accessMsg.textContent = "🔒 Vous n’êtes pas encore connecté.";
-    }
-  }
-
-  // Remove continue button if present
-  const cont = document.getElementById("continueInternetBtn");
-  if (cont) cont.remove();
-}
-
 
 
 
@@ -720,12 +654,9 @@ async function waitForInternet({ totalMs = 25000, intervalMs = 2000 } = {}) {
           "Les achats sont temporairement indisponibles. Veuillez patienter ou contacter l’assistance sur place.";
       } else if (!poolIsFull) {
         // Restore defaults (only if we had them)
-        // Do not overwrite the "connected" message/state.
-        if (!_portalIsConnected) {
-          if (_uiEls.accessMsg && _uiDefaults.accessMsg) _uiEls.accessMsg.textContent = _uiDefaults.accessMsg;
-          if (_uiEls.noVoucherMsg && _uiDefaults.noVoucherMsg) _uiEls.noVoucherMsg.textContent = _uiDefaults.noVoucherMsg;
-          if (_uiEls.choosePlanHint && _uiDefaults.choosePlanHint) _uiEls.choosePlanHint.textContent = _uiDefaults.choosePlanHint;
-        }
+        if (_uiEls.accessMsg && _uiDefaults.accessMsg) _uiEls.accessMsg.textContent = _uiDefaults.accessMsg;
+        if (_uiEls.noVoucherMsg && _uiDefaults.noVoucherMsg) _uiEls.noVoucherMsg.textContent = _uiDefaults.noVoucherMsg;
+        if (_uiEls.choosePlanHint && _uiDefaults.choosePlanHint) _uiEls.choosePlanHint.textContent = _uiDefaults.choosePlanHint;
       }
     } catch (_) {}
 
@@ -1132,14 +1063,15 @@ function bindPlanHandlers() {
             const planPrice = card.getAttribute("data-plan-price") || "";
             const planStr = `${planName} ${planPrice}`.trim();
 
-            // Store last selected plan (PROD receipt) for post-login "Connecté" screen
+            // Build receipt draft (store ONLY after code is actually received)
+            let receiptDraft = null;
             try {
               const durationMinutes = Number(card.getAttribute("data-plan-duration") || "") || 0;
               const dataStr = card.getAttribute("data-plan-data") || "";
               const dataMb = (dataStr === "" ? null : Number(dataStr));
               const isUnlimited = (card.getAttribute("data-plan-unlimited") || "0") === "1";
               const maxDevices = Number(card.getAttribute("data-plan-devices") || "1") || 1;
-              const receipt = {
+              receiptDraft = {
                 id: planId || null,
                 name: planName,
                 price_ar: planPrice ? Number(planPrice) : null,
@@ -1149,9 +1081,7 @@ function bindPlanHandlers() {
                 devices: maxDevices,
                 at: Date.now(),
               };
-              sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receipt));
             } catch (_) {}
-
 
             // Capture last known code before starting payment, to avoid showing an old code if payment fails
             let baselineCode = null;
@@ -1188,6 +1118,12 @@ function bindPlanHandlers() {
               updatePayButtonState(card);
               return;
             }
+
+            
+            // Store receipt ONLY now (payment succeeded + code received)
+            try {
+              if (receiptDraft) sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
+            } catch (_) {}
 
             setVoucherUI({ phone: cleaned, code });
             showToast("🎉 Code reçu ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
