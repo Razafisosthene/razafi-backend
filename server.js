@@ -754,23 +754,46 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
       .map((a) => a.ap_mac);
 
     let pool_active_clients = 0;
-    if (apMacs.length) {
-      const { data: statsRows, error: statsErr } = await supabase
-        .from("ap_live_stats")
-        .select("ap_mac,active_clients")
-        .in("ap_mac", apMacs);
 
-      if (statsErr) {
-        console.error("PORTAL CONTEXT STATS ERROR", statsErr);
-        return res.status(500).json({ ok: false, error: "db_error" });
+    // Prefer real-time Tanaza connected clients (same as Admin), fail-open to cached DB stats.
+    if (apMacs.length) {
+      let usedTanaza = false;
+
+      try {
+        if (TANAZA_API_TOKEN) {
+          const tanazaMap = await tanazaBatchDevicesByMac(apMacs);
+          for (const mac of apMacs) {
+            const dev = tanazaMap[_tanazaNormalizeMac(mac)] || null;
+            const n = Number(dev?.connectedClients);
+            if (Number.isFinite(n)) {
+              pool_active_clients += n;
+              usedTanaza = true;
+            }
+          }
+        }
+      } catch (e) {
+        console.error("PORTAL CONTEXT TANAZA ERROR", e?.message || e);
       }
 
-      for (const s of statsRows || []) {
-        pool_active_clients += Number(s?.active_clients || 0);
+      // Fallback: DB cached stats (ap_live_stats.active_clients)
+      if (!usedTanaza) {
+        const { data: statsRows, error: statsErr } = await supabase
+          .from("ap_live_stats")
+          .select("ap_mac,active_clients")
+          .in("ap_mac", apMacs);
+
+        if (statsErr) {
+          console.error("PORTAL CONTEXT STATS ERROR", statsErr);
+          return res.status(500).json({ ok: false, error: "db_error" });
+        }
+
+        for (const s of statsRows || []) {
+          pool_active_clients += Number(s?.active_clients || 0);
+        }
       }
     }
 
-    // STRICT: full at 100% (>= capacity_max)
+// STRICT: full at 100% (>= capacity_max)
     let pool_percent = null;
     let is_full = false;
 
