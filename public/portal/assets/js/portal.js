@@ -285,7 +285,12 @@ function showToast(message, kind = "info", ms = 3200) {
       .find((el) => (el.textContent || "").trim().toLowerCase().includes("choisissez un plan"));
     if (plansHeading) plansHeading.style.display = "none";
 
+    // Hide FAQ in connected mode
+    const faq = document.querySelector("section.card.faq, section.faq, .card.faq, .faq");
+    if (faq) faq.style.display = "none";
+
     ensureContinueButton();
+    ensurePurchaseSummary();
   }
 
 
@@ -314,6 +319,57 @@ function showToast(message, kind = "info", ms = 3200) {
     card.appendChild(btn);
     return btn;
   }
+
+  function ensurePurchaseSummary() {
+    const card = document.querySelector(".status-card");
+    if (!card) return null;
+
+    let box = document.getElementById("purchaseSummary");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "purchaseSummary";
+      box.className = "purchase-summary";
+      box.style.marginTop = "12px";
+      box.style.paddingTop = "10px";
+      box.style.borderTop = "1px solid rgba(255,255,255,0.12)";
+      card.appendChild(box);
+    }
+
+    let receipt = null;
+    try {
+      const raw = sessionStorage.getItem("razafi_last_purchase");
+      if (raw) receipt = JSON.parse(raw);
+    } catch (_) {}
+
+    if (!receipt) {
+      box.style.display = "none";
+      return box;
+    }
+
+    const name = receipt.name || "Plan";
+    const duration = receipt.duration_minutes ? formatDuration(Number(receipt.duration_minutes)) : "—";
+    const data = receipt.unlimited
+      ? "Illimité"
+      : (receipt.data_mb !== null && receipt.data_mb !== undefined ? formatData(Number(receipt.data_mb)) : "—");
+    const devices = receipt.devices ? formatDevices(Number(receipt.devices)) : "—";
+    const price = (receipt.price_ar !== null && receipt.price_ar !== undefined && receipt.price_ar !== "")
+      ? `${receipt.price_ar} Ar`
+      : "";
+    const code = currentVoucherCode ? String(currentVoucherCode) : "";
+
+    box.style.display = "";
+    box.innerHTML = `
+      <div class="muted small" style="margin-bottom:6px;">🧾 Récapitulatif de votre achat</div>
+      <div><strong>Plan :</strong> ${escapeHtml(name)} ${price ? `(${escapeHtml(price)})` : ""}</div>
+      <div><strong>Durée :</strong> ${escapeHtml(duration)}</div>
+      <div><strong>Données :</strong> ${escapeHtml(data)}</div>
+      <div><strong>Appareils :</strong> ${escapeHtml(devices)}</div>
+      ${code ? `<div style="margin-top:6px;"><strong>Code :</strong> <span style="letter-spacing:1px;">${escapeHtml(code)}</span></div>` : ""}
+    `;
+    return box;
+  }
+
+
 
   async function updateConnectedUI({ force = false } = {}) {
     // If we just attempted a login, we should check quickly.
@@ -816,6 +872,27 @@ function bindPlanHandlers() {
             const planName = card.getAttribute("data-plan-name") || "Plan";
             const planPrice = card.getAttribute("data-plan-price") || "";
             const planStr = `${planName} ${planPrice}`.trim();
+
+            // Store last selected plan (PROD receipt) for post-login "Connecté" screen
+            try {
+              const durationMinutes = Number(card.getAttribute("data-plan-duration") || "") || 0;
+              const dataStr = card.getAttribute("data-plan-data") || "";
+              const dataMb = (dataStr === "" ? null : Number(dataStr));
+              const isUnlimited = (card.getAttribute("data-plan-unlimited") || "0") === "1";
+              const maxDevices = Number(card.getAttribute("data-plan-devices") || "1") || 1;
+              const receipt = {
+                id: planId || null,
+                name: planName,
+                price_ar: planPrice ? Number(planPrice) : null,
+                duration_minutes: durationMinutes || null,
+                data_mb: isUnlimited ? null : (Number.isFinite(dataMb) ? dataMb : null),
+                unlimited: isUnlimited,
+                devices: maxDevices,
+                at: Date.now(),
+              };
+              sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receipt));
+            } catch (_) {}
+
 
             // Capture last known code before starting payment, to avoid showing an old code if payment fails
             let baselineCode = null;
