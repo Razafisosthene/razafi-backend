@@ -165,6 +165,20 @@ function showToast(message, kind = "info", ms = 3200) {
   }) || "";
   const continueUrl = pickLastValidParam(["continue_url","continueUrl","dst","url"], (v) => !isPlaceholder(v)) || "";
 
+  // Debug: show duplicated Tanaza params (placeholders + real values)
+  const __apMacAll = qsAll("ap_mac");
+  const __clientMacAll = qsAll("client_mac");
+  const __loginUrlAll = qsAll("login_url");
+  const __continueUrlAll = qsAll("continue_url");
+  console.log("[RAZAFI] Tanaza params raw", {
+    ap_mac_all: __apMacAll,
+    client_mac_all: __clientMacAll,
+    login_url_all: __loginUrlAll,
+    continue_url_all: __continueUrlAll
+  });
+  console.log("[RAZAFI] Tanaza params chosen", { apMac, clientMac, loginUrl, continueUrl });
+
+
 
   // Expose Tanaza params for support/debug (not shown to end-users)
   window.apMac = apMac || "";
