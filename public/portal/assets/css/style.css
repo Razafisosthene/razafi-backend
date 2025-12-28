@@ -204,15 +204,14 @@ img {
   text-align: center;
 }
 
-.portal-subtitle{
-  font-size: 1.15rem;
+.portal-subtitle {
+  font-size: 1.3rem;          /* plus grand que le texte normal */
   font-weight: 600;
-  line-height: 1.2;
-  color: var(--text-muted);
-  margin: 0.15rem 0 0;
+  line-height: 1.25;
+  color: var(--text-color);   /* plus fort que --text-muted */
+  margin: 0.2rem 0 0.6rem;    /* espace avant le texte d’état */
   text-align: center;
 }
-
 
 
 .muted {
