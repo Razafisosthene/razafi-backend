@@ -568,7 +568,7 @@ function showToast(message, kind = "info", ms = 3200) {
     const existing = document.getElementById("poolNameLine");
     if (existing) return existing;
 
-    const h1 = document.querySelector("h1");
+    const h1 = document.querySelector(".text-center h1, .text-center h2, h1, h2");
     if (!h1 || !h1.parentNode) return null;
 
     const div = document.createElement("div");
@@ -1152,5 +1152,8 @@ function bindPlanHandlers() {
     updateConnectedUI({ force: false });
   }
 
-  console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac });
+  // Load pool context (pool name + saturation) for this AP
+  fetchPortalContext();
+
+console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac });
 })();
