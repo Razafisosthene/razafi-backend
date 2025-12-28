@@ -468,7 +468,7 @@ async function waitForInternet({ totalMs = 25000, intervalMs = 2000 } = {}) {
     if (force) {
       accessMsg.textContent = "✅ Code envoyé. Activation en cours… Si cela prend plus de 30 secondes, appuyez à nouveau sur « Utiliser ce code ».";
     } else {
-      accessMsg.textContent = "🔒 Vous n’êtes pas encore connecté. Utilisez votre code ou choisissez un plan.";
+      accessMsg.textContent = "🔒 Vous n’êtes pas encore connecté.";
     }
   }
 
