@@ -573,11 +573,17 @@ function showToast(message, kind = "info", ms = 3200) {
 
     const div = document.createElement("div");
     div.id = "poolNameLine";
-    div.className = "muted small";
-    div.style.marginTop = "6px";
+    div.className = "muted small portal-subtitle";
+    div.style.marginTop = "4px";
     div.style.textAlign = "center";
     h1.parentNode.insertBefore(div, h1.nextSibling);
     return div;
+  }
+
+  function ensurePortalTitle() {
+    const title = document.querySelector(".status-card h1, .status-card h2, .text-center h1, .text-center h2, h1, h2");
+    if (title) title.classList.add("portal-title");
+    return title;
   }
 
   function ensurePoolBanner() {
@@ -603,8 +609,10 @@ function showToast(message, kind = "info", ms = 3200) {
   }
 
   function applyPoolContextUI() {
+    ensurePortalTitle();
     const nameLine = ensurePoolNameLine();
     if (nameLine) {
+      nameLine.classList.add("portal-subtitle");
       nameLine.textContent = poolContext.pool_name ? String(poolContext.pool_name) : "";
       nameLine.style.display = poolContext.pool_name ? "" : "none";
     }
@@ -1134,6 +1142,7 @@ function bindPlanHandlers() {
 
 
   // -------- Init --------
+  ensurePortalTitle();
   renderStatus({ hasActiveVoucher: false, voucherCode: "" });
   loadPlans();
 
