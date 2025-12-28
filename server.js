@@ -2650,6 +2650,112 @@ app.post("/api/send-payment", async (req, res) => {
   // normalize to local 0XXXXXXXXX
   phone = normalizePhone(phone);
 
+  // Optional: block purchase when the WiFi (pool) is full (source of truth: Tanaza connected clients by AP)
+  // Fail-open if ap_mac is missing or if any error happens (never break production).
+  let ap_mac = null;
+  try {
+    let raw = (body.ap_mac || body.apMac || "").toString().trim();
+    if (raw) {
+      if (raw.indexOf(",") !== -1) {
+        const parts = raw.split(",");
+        raw = parts[parts.length - 1];
+      }
+      raw = raw.replace(/^ap_mac=/i, "").replace(/^,+|,+$/g, "");
+      raw = raw.replace(/-/g, ":");
+      const groups = raw.match(/[0-9A-Fa-f]{2}/g);
+      if (groups && groups.length >= 6) {
+        ap_mac = groups.slice(0, 6).map(g => g.toUpperCase()).join(":");
+      }
+    }
+  } catch (_) {
+    ap_mac = null;
+  }
+
+  if (ap_mac && supabase) {
+    try {
+      // 1) Find pool for this AP
+      const { data: apRow, error: apErr } = await supabase
+        .from("ap_registry")
+        .select("ap_mac,pool_id,is_active")
+        .eq("ap_mac", ap_mac)
+        .maybeSingle();
+
+      if (!apErr && apRow?.pool_id) {
+        const pool_id = apRow.pool_id;
+
+        // 2) Pool info (capacity)
+        const { data: pool, error: poolErr } = await supabase
+          .from("internet_pools")
+          .select("id,name,capacity_max")
+          .eq("id", pool_id)
+          .maybeSingle();
+
+        const capacity_max = (pool?.capacity_max === null || pool?.capacity_max === undefined) ? null : Number(pool.capacity_max);
+
+        // 3) APs in this pool (active only)
+        const { data: aps, error: apsErr } = await supabase
+          .from("ap_registry")
+          .select("ap_mac,is_active")
+          .eq("pool_id", pool_id);
+
+        let apMacs = [];
+        if (!apsErr && Array.isArray(aps)) {
+          apMacs = aps.filter(a => a && a.ap_mac && a.is_active !== false).map(a => a.ap_mac);
+        }
+
+        let pool_active_clients = 0;
+        let usedTanaza = false;
+
+        // Prefer Tanaza realtime counts
+        try {
+          if (TANAZA_API_TOKEN && apMacs.length) {
+            const tanazaMap = await tanazaBatchDevicesByMac(apMacs);
+            for (const mac of apMacs) {
+              const dev = tanazaMap[_tanazaNormalizeMac(mac)] || null;
+              const n = Number(dev?.connectedClients);
+              if (Number.isFinite(n)) {
+                pool_active_clients += n;
+                usedTanaza = true;
+              }
+            }
+          }
+        } catch (e) {
+          console.error("SEND-PAYMENT TANAZA CHECK ERROR", e?.message || e);
+        }
+
+        // Fallback to cached stats
+        if (!usedTanaza && apMacs.length) {
+          const { data: statsRows, error: statsErr } = await supabase
+            .from("ap_live_stats")
+            .select("ap_mac,active_clients")
+            .in("ap_mac", apMacs);
+
+          if (!statsErr && Array.isArray(statsRows)) {
+            for (const s of statsRows) pool_active_clients += Number(s?.active_clients || 0);
+          }
+        }
+
+        const is_full = (Number.isFinite(capacity_max) && capacity_max > 0) ? (pool_active_clients >= capacity_max) : false;
+
+        if (is_full) {
+          const placeName = pool?.name ? String(pool.name) : "ce point WiFi";
+          return res.status(409).json({
+            ok: false,
+            error: "wifi_sature",
+            message: `Le WiFi ${placeName} est momentanément saturé. Les achats sont temporairement indisponibles. Veuillez patienter ou contacter l’assistance sur place.`,
+            pool_name: pool?.name ?? null,
+            pool_active_clients,
+            pool_capacity_max: Number.isFinite(capacity_max) ? capacity_max : null,
+          });
+        }
+      }
+    } catch (e) {
+      // Fail-open
+      console.error("SEND-PAYMENT POOL CHECK EX", e?.message || e);
+    }
+  }
+
+
   const requestRef = `RAZAFI_${Date.now()}`;
 
   // derive amount from plan string when possible

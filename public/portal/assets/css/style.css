@@ -191,26 +191,19 @@ img {
 
 .status-card h2 {
   margin-top: 0;
-}
-
-/* ===============================
-   PORTAL TITLE + POOL SUBTITLE
-   =============================== */
-.portal-title{
-  font-size: 1.8rem;
-  font-weight: 700;
-  line-height: 1.25;
-  margin: 0;
   text-align: center;
+  font-size: 1.6rem;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
 .portal-subtitle {
-  font-size: 1.3rem;          /* plus grand que le texte normal */
-  font-weight: 600;
-  line-height: 1.25;
-  color: var(--text-color);   /* plus fort que --text-muted */
-  margin: 0.2rem 0 0.6rem;    /* espace avant le texte d’état */
   text-align: center;
+  font-size: 1.3rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text);
+  margin: 0.25rem 0 0;
 }
 
 
@@ -443,6 +436,7 @@ input[type="tel"] {
   }
 }
 
+}
 
 @media (min-width: 1040px) {
   /* Keep plans stacked even on large screens */
@@ -451,6 +445,7 @@ input[type="tel"] {
   }
 }
 
+}
 
 /* Mobile: near full width + full-width buttons */
 @media (max-width: 520px) {

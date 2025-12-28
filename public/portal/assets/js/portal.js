@@ -563,27 +563,35 @@ function showToast(message, kind = "info", ms = 3200) {
   let poolContext = { pool_name: null, pool_percent: null, is_full: false };
   let poolIsFull = false;
 
+  // Keep original texts so we can restore them when the WiFi is no longer saturated
+  const _uiEls = {
+    accessMsg: document.getElementById("accessMsg"),
+    noVoucherMsg: document.getElementById("noVoucherMsg"),
+    voucherNone: document.getElementById("voucherNone"),
+    voucherHas: document.getElementById("voucherHas"),
+  };
+  _uiEls.choosePlanHint = _uiEls.voucherNone ? _uiEls.voucherNone.querySelector("p.muted.small") : null;
+
+  const _uiDefaults = {
+    accessMsg: _uiEls.accessMsg ? _uiEls.accessMsg.textContent : null,
+    noVoucherMsg: _uiEls.noVoucherMsg ? _uiEls.noVoucherMsg.textContent : null,
+    choosePlanHint: _uiEls.choosePlanHint ? _uiEls.choosePlanHint.textContent : null,
+  };
+
+
   function ensurePoolNameLine() {
     // Insert under the main title ("Bienvenue sur WiFi RAZAFI") without changing HTML
     const existing = document.getElementById("poolNameLine");
     if (existing) return existing;
 
-    const h1 = document.querySelector(".text-center h1, .text-center h2, h1, h2");
-    if (!h1 || !h1.parentNode) return null;
+    const titleEl = document.querySelector("#status-block h2, .status-card h2, .text-center h2, h2, h1");
+    if (!titleEl || !titleEl.parentNode) return null;
 
     const div = document.createElement("div");
     div.id = "poolNameLine";
-    div.className = "muted small portal-subtitle";
-    div.style.marginTop = "4px";
-    div.style.textAlign = "center";
-    h1.parentNode.insertBefore(div, h1.nextSibling);
+    div.className = "portal-subtitle";
+    titleEl.parentNode.insertBefore(div, titleEl.nextSibling);
     return div;
-  }
-
-  function ensurePortalTitle() {
-    const title = document.querySelector(".status-card h1, .status-card h2, .text-center h1, .text-center h2, h1, h2");
-    if (title) title.classList.add("portal-title");
-    return title;
   }
 
   function ensurePoolBanner() {
@@ -609,10 +617,8 @@ function showToast(message, kind = "info", ms = 3200) {
   }
 
   function applyPoolContextUI() {
-    ensurePortalTitle();
     const nameLine = ensurePoolNameLine();
     if (nameLine) {
-      nameLine.classList.add("portal-subtitle");
       nameLine.textContent = poolContext.pool_name ? String(poolContext.pool_name) : "";
       nameLine.style.display = poolContext.pool_name ? "" : "none";
     }
@@ -625,8 +631,8 @@ function showToast(message, kind = "info", ms = 3200) {
           : "";
         const poolName = poolContext.pool_name ? String(poolContext.pool_name) : "Ce point WiFi";
         banner.innerHTML = `
-          <strong>⚠️ ${escapeHtml(poolName)} est saturé${escapeHtml(pct)}.</strong><br>
-          Les achats sont temporairement indisponibles. Merci de réessayer plus tard.
+          <strong>⚠️ Le WiFi ${escapeHtml(poolName)} est momentanément saturé${escapeHtml(pct)}.</strong><br>
+          Les achats sont temporairement indisponibles. Veuillez patienter ou contacter l’assistance sur place.
         `;
         banner.classList.remove("hidden");
       } else {
@@ -634,6 +640,26 @@ function showToast(message, kind = "info", ms = 3200) {
         banner.innerHTML = "";
       }
     }
+
+    // Update the “no voucher” texts when the WiFi is saturated (pool full)
+    try {
+      const showingNoVoucher = _uiEls.voucherNone && !_uiEls.voucherNone.classList.contains("hidden");
+      const showingHasVoucher = _uiEls.voucherHas && !_uiEls.voucherHas.classList.contains("hidden");
+
+      if (poolIsFull && showingNoVoucher && !showingHasVoucher) {
+        const placeName = (poolContext.pool_name ? String(poolContext.pool_name) : "ce point WiFi");
+        if (_uiEls.accessMsg) _uiEls.accessMsg.textContent = `⚠️ WiFi ${placeName} est momentanément saturé.`;
+        if (_uiEls.noVoucherMsg) _uiEls.noVoucherMsg.textContent = "Vous n’avez pas de code actif.";
+        if (_uiEls.choosePlanHint) _uiEls.choosePlanHint.textContent =
+          "Les achats sont temporairement indisponibles. Veuillez patienter ou contacter l’assistance sur place.";
+      } else if (!poolIsFull) {
+        // Restore defaults (only if we had them)
+        if (_uiEls.accessMsg && _uiDefaults.accessMsg) _uiEls.accessMsg.textContent = _uiDefaults.accessMsg;
+        if (_uiEls.noVoucherMsg && _uiDefaults.noVoucherMsg) _uiEls.noVoucherMsg.textContent = _uiDefaults.noVoucherMsg;
+        if (_uiEls.choosePlanHint && _uiDefaults.choosePlanHint) _uiEls.choosePlanHint.textContent = _uiDefaults.choosePlanHint;
+      }
+    } catch (_) {}
+
   }
 
   function applyPoolFullLockToPlans() {
@@ -1073,6 +1099,7 @@ function bindPlanHandlers() {
               body: JSON.stringify({
                 phone: cleaned,
                 plan: planStr || planId || planPrice || "plan",
+                ap_mac: apMac || null,
               }),
             });
 
@@ -1142,7 +1169,6 @@ function bindPlanHandlers() {
 
 
   // -------- Init --------
-  ensurePortalTitle();
   renderStatus({ hasActiveVoucher: false, voucherCode: "" });
   loadPlans();
 
