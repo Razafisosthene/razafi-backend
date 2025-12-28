@@ -205,7 +205,6 @@ function showToast(message, kind = "info", ms = 3200) {
     if (devicesEl) devicesEl.textContent = "—";
   }
 
-  }
 
 
   // -------- Voucher buttons + state --------
