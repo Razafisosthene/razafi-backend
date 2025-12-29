@@ -2756,6 +2756,29 @@ app.post("/api/send-payment", async (req, res) => {
   }
 
 
+  
+
+  // derive amount from plan string when possible
+  let amount = null;
+  if (plan && typeof plan === "string") {
+    try {
+      const matches = Array.from(plan.matchAll(/(\d+)/g)).map(m => m[1]);
+      if (matches.length > 0) {
+        const candidates = matches.filter(x => parseInt(x, 10) >= 1000);
+        const choice = (candidates.length ? candidates[candidates.length - 1] : matches[matches.length - 1]);
+        amount = parseInt(choice, 10);
+      }
+    } catch (e) {
+      amount = null;
+    }
+  }
+  if (amount === null || Number.isNaN(amount)) {
+    amount = String(plan).includes("5000") ? 5000 : 1000;
+  }
+
+  
+
+
   const requestRef = `RAZAFI_${Date.now()}`;
 
   // FREE PLAN FLOW: amount === 0 => generate voucher immediately (no MVola)
@@ -2788,24 +2811,6 @@ app.post("/api/send-payment", async (req, res) => {
     }
 
     return res.json({ ok: true, free: true, requestRef, code: voucherCode });
-  }
-
-  // derive amount from plan string when possible
-  let amount = null;
-  if (plan && typeof plan === "string") {
-    try {
-      const matches = Array.from(plan.matchAll(/(\d+)/g)).map(m => m[1]);
-      if (matches.length > 0) {
-        const candidates = matches.filter(x => parseInt(x, 10) >= 1000);
-        const choice = (candidates.length ? candidates[candidates.length - 1] : matches[matches.length - 1]);
-        amount = parseInt(choice, 10);
-      }
-    } catch (e) {
-      amount = null;
-    }
-  }
-  if (amount === null || Number.isNaN(amount)) {
-    amount = String(plan).includes("5000") ? 5000 : 1000;
   }
 
   try {
