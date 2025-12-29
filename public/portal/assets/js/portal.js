@@ -1098,8 +1098,6 @@ function bindPlanHandlers() {
               body: JSON.stringify({
                 phone: cleaned,
                 plan: planStr || planId || planPrice || "plan",
-                plan_id: planId || null,
-                price_ar: (planPrice !== "" && planPrice !== null && planPrice !== undefined) ? Number(planPrice) : null,
                 ap_mac: apMac || null,
               }),
             });
@@ -1110,22 +1108,25 @@ function bindPlanHandlers() {
               throw new Error(msg);
             }
 
-            // FREE (0 Ar) flow: server can return the voucher directly
+            
+            // FREE FLOW: if server generated a voucher immediately (0 Ar plan), show it now and skip MVola polling
             if (data && data.free && data.code) {
-              const code = String(data.code);
-
-              // Store receipt draft now (code already generated)
-              try {
-                if (receiptDraft) sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
-              } catch (_) {}
-
-              setVoucherUI({ phone: cleaned, code });
-              showToast("✅ Code gratuit généré.", "success", 5200);
-              showToast("🎉 Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
-              return;
+              const freeCode = String(data.code || "").trim();
+              if (freeCode) {
+                try {
+                  if (receiptDraft) {
+                    receiptDraft.code = freeCode;
+                    receiptDraft.ts = Date.now();
+                    sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
+                  }
+                } catch (_) {}
+                setVoucherUI({ phone: cleaned, code: freeCode });
+                showToast("🎉 Code gratuit généré ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
+                return;
+              }
             }
 
-            showToast("✅ Paiement initié. Validez la transaction sur votre mobile MVola…", "success", 5200);
+showToast("✅ Paiement initié. Validez la transaction sur votre mobile MVola…", "success", 5200);
             showToast("⏳ En attente du code…", "info", 5200);
 
             const code = await pollDernierCode(cleaned, { timeoutMs: 180000, intervalMs: 3000, baselineCode });
