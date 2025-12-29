@@ -211,8 +211,17 @@ function showToast(message, kind = "info", ms = 3200) {
     // Toggle blocks if they exist in HTML
     const noneEl = document.getElementById("voucherNone");
     const hasEl = document.getElementById("voucherHas");
-    if (noneEl) noneEl.style.display = has ? "none" : "";
-    if (hasEl) hasEl.style.display = has ? "" : "none";
+
+    // Some pages ship with a `.hidden { display:none !important; }` class.
+    // Use class toggling (not only inline styles) so the voucher panel can actually appear.
+    if (noneEl) {
+      noneEl.classList.toggle("hidden", has);
+      noneEl.style.display = has ? "none" : "";
+    }
+    if (hasEl) {
+      hasEl.classList.toggle("hidden", !has);
+      hasEl.style.display = has ? "" : "none";
+    }
 
     const codeEl = $("voucher-code");
     if (codeEl) codeEl.textContent = has ? (voucherCode || "—") : "—";
