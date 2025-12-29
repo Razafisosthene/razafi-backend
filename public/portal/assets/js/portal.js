@@ -84,6 +84,121 @@ function normalizeMvolaNumber(entered) {
   return { cleaned, isMvola };
 }
 
+
+// -------- UX helpers (auto-scroll, highlight, resume banner, friendly errors) --------
+function ensureFlashStyle() {
+  if (document.getElementById("razafi-flash-style")) return;
+  const st = document.createElement("style");
+  st.id = "razafi-flash-style";
+  st.textContent = `
+    .razafi-flash { outline: 3px solid rgba(255,255,255,0.65); outline-offset: 4px; transition: outline-color 0.2s ease; }
+    .razafi-banner { margin: 10px 0 10px; padding: 10px 12px; border-radius: 12px; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.10); }
+    .razafi-banner .small { font-size: 12px; opacity: 0.85; }
+  `;
+  document.head.appendChild(st);
+}
+
+function focusVoucherBlock({ highlightMs = 1100 } = {}) {
+  const el = document.getElementById("voucherHas");
+  if (!el) return;
+  // Make sure it's visible even if HTML shipped with class="hidden"
+  el.classList.remove("hidden");
+  el.style.display = "";
+  try {
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (_) {
+    // no-op
+  }
+  ensureFlashStyle();
+  el.classList.add("razafi-flash");
+  window.setTimeout(() => el.classList.remove("razafi-flash"), highlightMs);
+}
+
+function formatLocalTime(ts) {
+  try {
+    const d = new Date(Number(ts) || Date.now());
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch (_) {
+    return "";
+  }
+}
+
+function writeLastCode({ code, planName, durationMinutes, maxDevices } = {}) {
+  const safeCode = String(code || "").trim();
+  if (!safeCode) return;
+  const payload = {
+    code: safeCode,
+    ts: Date.now(),
+    planName: planName || null,
+    durationMinutes: (durationMinutes ?? null),
+    maxDevices: (maxDevices ?? null),
+  };
+  try { sessionStorage.setItem("razafi_last_code", JSON.stringify(payload)); } catch (_) {}
+}
+
+function readLastCode() {
+  try {
+    const raw = sessionStorage.getItem("razafi_last_code");
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (_) {
+    return null;
+  }
+}
+
+function ensureLastCodeBanner() {
+  const wrap = document.getElementById("voucherHas");
+  if (!wrap) return null;
+
+  let banner = wrap.querySelector("#razafiLastCodeBanner");
+  if (!banner) {
+    banner = document.createElement("div");
+    banner.id = "razafiLastCodeBanner";
+    banner.className = "razafi-banner";
+    // insert after the success message if possible
+    const msg = document.getElementById("hasVoucherMsg");
+    if (msg && msg.parentElement === wrap) msg.insertAdjacentElement("afterend", banner);
+    else wrap.insertAdjacentElement("afterbegin", banner);
+  }
+  return banner;
+}
+
+function renderLastCodeBanner() {
+  const last = readLastCode();
+  const banner = ensureLastCodeBanner();
+  if (!banner) return;
+
+  if (!last?.code) {
+    banner.style.display = "none";
+    return;
+  }
+  banner.style.display = "";
+  const when = last.ts ? formatLocalTime(last.ts) : "";
+  const plan = last.planName ? escapeHtml(last.planName) : "Plan";
+  const dur = (last.durationMinutes != null) ? escapeHtml(formatDuration(Number(last.durationMinutes))) : "—";
+  const dev = (last.maxDevices != null) ? escapeHtml(String(last.maxDevices)) : "—";
+
+  banner.innerHTML = `
+    <div><strong>Dernier code généré :</strong> <span style="letter-spacing:1px;">${escapeHtml(last.code)}</span> ${when ? `<span class="small">(${escapeHtml(when)})</span>` : ""}</div>
+    <div class="small" style="margin-top:4px;">Plan: ${plan} · Durée: ${dur} · Appareils: ${dev}</div>
+    <div class="small" style="margin-top:6px;">👉 Cliquez <strong>« Utiliser ce code »</strong> pour activer Internet.</div>
+  `;
+}
+
+function friendlyErrorMessage(err) {
+  // Network errors from fetch are often TypeError
+  const name = String(err?.name || "");
+  const msg = String(err?.message || err || "").toLowerCase();
+
+  if (name === "TypeError" || msg.includes("failed to fetch") || msg.includes("network")) {
+    return "Connexion instable. Réessayez.";
+  }
+  if (msg.includes("no_voucher") || msg.includes("no voucher") || msg.includes("409")) {
+    return "Codes tempor. indisponibles. Réessayez plus tard.";
+  }
+  // Default: keep original message but avoid technical noise
+  return String(err?.message || "Erreur serveur");
+}
 // Toast (top-center, safe-area)
 function ensureToastContainer() {
   let c = document.getElementById("toastContainer");
@@ -428,7 +543,7 @@ function showToast(message, kind = "info", ms = 3200) {
   let currentVoucherCode = "";
 
   
-  function setVoucherUI({ phone = "", code = "" } = {}) {
+  function setVoucherUI({ phone = "", code = "", meta = null, focus = false } = {}) {
     currentPhone = phone || currentPhone || "";
     currentVoucherCode = code || currentVoucherCode || "";
 
@@ -443,6 +558,29 @@ function showToast(message, kind = "info", ms = 3200) {
     // Enable/disable actions
     if (useBtn) useBtn.disabled = !has;
     if (copyBtn) copyBtn.disabled = !has;
+
+    // Persist “last code” meta for better resume-after-refresh
+    if (has) {
+      let m = meta && typeof meta === "object" ? { ...meta } : {};
+      try {
+        if (!m.planName || m.durationMinutes == null || m.maxDevices == null) {
+          const raw = sessionStorage.getItem("razafi_last_purchase");
+          if (raw) {
+            const r = JSON.parse(raw);
+            if (!m.planName && r?.name) m.planName = r.name;
+            if (m.durationMinutes == null && (r?.duration_minutes != null)) m.durationMinutes = r.duration_minutes;
+            if (m.maxDevices == null && (r?.max_devices != null)) m.maxDevices = r.max_devices;
+          }
+        }
+      } catch (_) {}
+      writeLastCode({ code: currentVoucherCode, planName: m.planName, durationMinutes: m.durationMinutes, maxDevices: m.maxDevices });
+    }
+
+    // Update banner (if any)
+    renderLastCodeBanner();
+
+    // Auto-focus the voucher area when a new code is produced
+    if (focus && has) focusVoucherBlock();
   }
 
 
@@ -530,8 +668,16 @@ function showToast(message, kind = "info", ms = 3200) {
         showToast("❌ Aucun code disponible pour le moment.", "error");
         return;
       }
+      // Prevent double-click spam
+      try { useBtn.setAttribute("disabled", "disabled"); } catch (_) {}
       showToast("Connexion en cours…", "info");
       submitToLoginUrl(currentVoucherCode);
+
+      // If Tanaza takes time / redirect is blocked, guide the user
+      window.setTimeout(() => {
+        showToast("Activation en cours… si Internet ne s’ouvre pas, reconnectez-vous au Wi-Fi.", "info", 6500);
+        try { useBtn.removeAttribute("disabled"); } catch (_) {}
+      }, 2200);
     });
   }
 
@@ -563,7 +709,14 @@ function showToast(message, kind = "info", ms = 3200) {
   }
 
   // init voucher UI
-  setVoucherUI({ phone: "", code: "" });
+  // Try to resume from previous session (after refresh)
+  const last = readLastCode();
+  if (last && last.code) {
+    setVoucherUI({ phone: "", code: String(last.code), meta: { planName: last.planName, durationMinutes: last.durationMinutes, maxDevices: last.maxDevices }, focus: false });
+  } else {
+    setVoucherUI({ phone: "", code: "" });
+    renderLastCodeBanner();
+  }
 
 // -------- Plans: fetch + render (DB only) --------
   const plansGrid = $("plansGrid");
@@ -1129,7 +1282,7 @@ function bindPlanHandlers() {
                     sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
                   }
                 } catch (_) {}
-                setVoucherUI({ phone: cleaned, code: freeCode });
+                setVoucherUI({ phone: cleaned, code: freeCode, meta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.max_devices } : null, focus: true });
                 showToast("🎉 Code gratuit généré ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
                 return;
               }
@@ -1152,11 +1305,11 @@ showToast("✅ Paiement initié. Validez la transaction sur votre mobile MVola�
               if (receiptDraft) sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
             } catch (_) {}
 
-            setVoucherUI({ phone: cleaned, code });
+            setVoucherUI({ phone: cleaned, code, meta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.max_devices } : null, focus: true });
             showToast("🎉 Code reçu ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
           } catch (e) {
             console.error("[RAZAFI] payment error", e);
-            showToast("❌ " + (e?.message || "Erreur paiement"), "error", 6500);
+            showToast("❌ " + friendlyErrorMessage(e), "error", 6500);
           } finally {
             setProcessing(card, false);
             updatePayButtonState(card);
