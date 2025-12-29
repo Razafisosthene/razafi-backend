@@ -2631,6 +2631,8 @@ app.post("/api/send-payment", async (req, res) => {
   const body = req.body || {};
   let phone = (body.phone || "").trim();
   const plan = body.plan;
+  const plan_id = body.plan_id || body.planId || null;
+  const price_ar = (body.price_ar === 0 || body.price_ar) ? Number(body.price_ar) : null;
 
   if (!phone || !plan) {
     console.warn("⚠️ Mauvais appel /api/send-payment — phone ou plan manquant. body:", body);
@@ -2756,64 +2758,84 @@ app.post("/api/send-payment", async (req, res) => {
   }
 
 
-  
-
-  // derive amount from plan string when possible
-  let amount = null;
-  if (plan && typeof plan === "string") {
-    try {
-      const matches = Array.from(plan.matchAll(/(\d+)/g)).map(m => m[1]);
-      if (matches.length > 0) {
-        const candidates = matches.filter(x => parseInt(x, 10) >= 1000);
-        const choice = (candidates.length ? candidates[candidates.length - 1] : matches[matches.length - 1]);
-        amount = parseInt(choice, 10);
-      }
-    } catch (e) {
-      amount = null;
-    }
-  }
-  if (amount === null || Number.isNaN(amount)) {
-    amount = String(plan).includes("5000") ? 5000 : 1000;
-  }
-
-  
-
-
   const requestRef = `RAZAFI_${Date.now()}`;
 
-  // FREE PLAN FLOW: amount === 0 => generate voucher immediately (no MVola)
-  if (amount === 0) {
-    const voucherCode = "RAZAFI-" + crypto.randomBytes(4).toString("hex").toUpperCase();
+  // Determine amount (Ar)
+// Priority:
+//  1) Explicit price_ar from client (portal sends plan price)
+//  2) DB lookup by plan_id (server-side source of truth)
+//  3) Parse digits from plan string (last number)
+//  4) Fallback to 1000 (legacy default)
+let amount = null;
 
-    try {
-      const metadataForInsert = {
-        source: "portal",
-        free: true,
-        created_at_local: toISOStringMG(new Date()),
-      };
+if (Number.isFinite(price_ar)) {
+  amount = Math.trunc(price_ar);
+}
 
-      if (supabase) {
-        await supabase.from("transactions").insert([{
-          phone,
-          plan,
-          amount,
-          currency: "Ar",
-          description: `Achat WiFi ${plan}`,
-          request_ref: requestRef,
-          status: "completed",
-          voucher: voucherCode,
-          metadata: metadataForInsert,
-        }]);
-      }
-    } catch (dbErr) {
-      console.error("⚠️ Warning: unable to insert FREE transaction row:", dbErr?.message || dbErr);
-      // Fail-open: even if DB insert fails, still return the code to the portal.
+// DB lookup by plan_id (safer than parsing strings)
+if ((amount === null || amount === undefined) && plan_id && supabase) {
+  try {
+    const { data: pRow, error: pErr } = await supabase
+      .from("plans")
+      .select("id,price_ar")
+      .eq("id", plan_id)
+      .maybeSingle();
+    if (!pErr && pRow && Number.isFinite(Number(pRow.price_ar))) {
+      amount = Math.trunc(Number(pRow.price_ar));
     }
+  } catch (e) {
+    // ignore and continue
+  }
+}
 
-    return res.json({ ok: true, free: true, requestRef, code: voucherCode });
+// Parse plan string (e.g. "test 0", "12 heures 2000")
+if ((amount === null || amount === undefined) && plan && typeof plan === "string") {
+  try {
+    const matches = Array.from(plan.matchAll(/(\d+)/g)).map(m => m[1]);
+    if (matches.length > 0) {
+      amount = parseInt(matches[matches.length - 1], 10);
+    }
+  } catch (e) {
+    amount = null;
+  }
+}
+
+if (!Number.isFinite(amount)) amount = 1000;
+if (amount < 0) amount = 0;
+
+  
+// FREE (0 Ar) — generate voucher directly (no MVola)
+if (Number(amount) === 0) {
+  const code = `RZ-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+
+  // Optional: store as a delivered transaction (keeps history if Supabase is configured)
+  try {
+    const metadataForInsert = {
+      source: "portal",
+      created_at_local: toISOStringMG(new Date()),
+      free: true,
+    };
+    if (supabase) {
+      await supabase.from("transactions").insert([{
+        phone,
+        plan,
+        amount: 0,
+        currency: "Ar",
+        description: `Code gratuit ${plan || ""}`.trim(),
+        request_ref: requestRef,
+        status: "delivered",
+        voucher: code,
+        metadata: metadataForInsert,
+      }]);
+    }
+  } catch (e) {
+    console.error("⚠️ Warning: unable to insert FREE transaction row:", e?.message || e);
   }
 
-  try {
+  return res.json({ ok: true, free: true, code, requestRef });
+}
+
+try {
     // insert initial transaction row with Madagascar local created timestamp in metadata
     const metadataForInsert = {
       source: "portal",

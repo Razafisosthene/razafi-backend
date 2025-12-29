@@ -1098,6 +1098,8 @@ function bindPlanHandlers() {
               body: JSON.stringify({
                 phone: cleaned,
                 plan: planStr || planId || planPrice || "plan",
+                plan_id: planId || null,
+                price_ar: (planPrice !== "" && planPrice !== null && planPrice !== undefined) ? Number(planPrice) : null,
                 ap_mac: apMac || null,
               }),
             });
@@ -1108,18 +1110,18 @@ function bindPlanHandlers() {
               throw new Error(msg);
             }
 
-            // FREE PLAN FLOW: server returns the voucher immediately (no MVola)
-            if (data?.free && (data?.code || data?.voucher)) {
-              const codeNow = data.code || data.voucher;
+            // FREE (0 Ar) flow: server can return the voucher directly
+            if (data && data.free && data.code) {
+              const code = String(data.code);
 
-              // Store receipt + last code immediately
+              // Store receipt draft now (code already generated)
               try {
                 if (receiptDraft) sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
-                sessionStorage.setItem("razafi_last_code", JSON.stringify({ code: codeNow, ts: Date.now() }));
               } catch (_) {}
 
-              setVoucherUI({ phone: cleaned, code: codeNow });
-              showToast("🎉 Code gratuit généré ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
+              setVoucherUI({ phone: cleaned, code });
+              showToast("✅ Code gratuit généré.", "success", 5200);
+              showToast("🎉 Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
               return;
             }
 
