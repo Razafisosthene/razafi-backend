@@ -1108,6 +1108,21 @@ function bindPlanHandlers() {
               throw new Error(msg);
             }
 
+            // FREE PLAN FLOW: server returns the voucher immediately (no MVola)
+            if (data?.free && (data?.code || data?.voucher)) {
+              const codeNow = data.code || data.voucher;
+
+              // Store receipt + last code immediately
+              try {
+                if (receiptDraft) sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
+                sessionStorage.setItem("razafi_last_code", JSON.stringify({ code: codeNow, ts: Date.now() }));
+              } catch (_) {}
+
+              setVoucherUI({ phone: cleaned, code: codeNow });
+              showToast("🎉 Code gratuit généré ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
+              return;
+            }
+
             showToast("✅ Paiement initié. Validez la transaction sur votre mobile MVola…", "success", 5200);
             showToast("⏳ En attente du code…", "info", 5200);
 

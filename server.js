@@ -2758,6 +2758,38 @@ app.post("/api/send-payment", async (req, res) => {
 
   const requestRef = `RAZAFI_${Date.now()}`;
 
+  // FREE PLAN FLOW: amount === 0 => generate voucher immediately (no MVola)
+  if (amount === 0) {
+    const voucherCode = "RAZAFI-" + crypto.randomBytes(4).toString("hex").toUpperCase();
+
+    try {
+      const metadataForInsert = {
+        source: "portal",
+        free: true,
+        created_at_local: toISOStringMG(new Date()),
+      };
+
+      if (supabase) {
+        await supabase.from("transactions").insert([{
+          phone,
+          plan,
+          amount,
+          currency: "Ar",
+          description: `Achat WiFi ${plan}`,
+          request_ref: requestRef,
+          status: "completed",
+          voucher: voucherCode,
+          metadata: metadataForInsert,
+        }]);
+      }
+    } catch (dbErr) {
+      console.error("⚠️ Warning: unable to insert FREE transaction row:", dbErr?.message || dbErr);
+      // Fail-open: even if DB insert fails, still return the code to the portal.
+    }
+
+    return res.json({ ok: true, free: true, requestRef, code: voucherCode });
+  }
+
   // derive amount from plan string when possible
   let amount = null;
   if (plan && typeof plan === "string") {
@@ -2772,7 +2804,7 @@ app.post("/api/send-payment", async (req, res) => {
       amount = null;
     }
   }
-  if (!amount) {
+  if (amount === null || Number.isNaN(amount)) {
     amount = String(plan).includes("5000") ? 5000 : 1000;
   }
 
