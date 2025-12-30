@@ -4,12 +4,7 @@
    Payment integrated per plan
    =============================== */
 
-(function () {
-
-  // --- RAZAFI: lock purchases when a delivered code exists (resume from server) ---
-  let __razafiVoucherLock = false;
-  function setVoucherLock(on) { __razafiVoucherLock = !!on; }
-  function isVoucherLocked() { return !!__razafiVoucherLock; }
+(async function () {
   // -------- Utils --------
   function qsAll(name) {
     try { return new URLSearchParams(window.location.search).getAll(name); } catch { return []; }
@@ -546,6 +541,8 @@ function showToast(message, kind = "info", ms = 3200) {
   // -------- Voucher buttons + state --------
   let currentPhone = "";
   let currentVoucherCode = "";
+  let purchaseLockedByVoucher = false;
+  let blockingVoucherMeta = null;
 
   
   function setVoucherUI({ phone = "", code = "", meta = null, focus = false } = {}) {
@@ -553,9 +550,6 @@ function showToast(message, kind = "info", ms = 3200) {
     currentVoucherCode = code || currentVoucherCode || "";
 
     const has = !!currentVoucherCode;
-    // Lock purchases as soon as a code exists (until it is used / cleared)
-    setVoucherLock(has);
-
 
     // Update UI blocks + code
     renderStatus({
@@ -671,7 +665,7 @@ function showToast(message, kind = "info", ms = 3200) {
   }
 
   if (useBtn) {
-    useBtn.addEventListener("click", function () {
+    useBtn.addEventListener("click", async function () {
       if (!currentVoucherCode) {
         showToast("❌ Aucun code disponible pour le moment.", "error");
         return;
@@ -679,6 +673,24 @@ function showToast(message, kind = "info", ms = 3200) {
       // Prevent double-click spam
       try { useBtn.setAttribute("disabled", "disabled"); } catch (_) {}
       showToast("Connexion en cours…", "info");
+
+      // Mark as activated server-side (for admin monitoring + reliable state)
+      try {
+        if (clientMac && currentVoucherCode) {
+          await fetch("/api/voucher/activate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              client_mac: clientMac,
+              ap_mac: apMac || null,
+              voucher_code: currentVoucherCode,
+            }),
+          });
+        }
+      } catch (_) {
+        // Fail-open: do not block Tanaza login
+      }
+
       submitToLoginUrl(currentVoucherCode);
 
       // If Tanaza takes time / redirect is blocked, guide the user
@@ -717,63 +729,45 @@ function showToast(message, kind = "info", ms = 3200) {
   }
 
   
-// Resume last delivered-but-not-activated voucher from the server (reliable even after closing the phone)
-async function resumeVoucherFromServer() {
-  try {
-    if (!clientMac) return false;
-    const qs = new URLSearchParams();
-    qs.set("client_mac", clientMac);
-    if (apMac) qs.set("ap_mac", apMac);
-
-    const r = await fetch("/api/voucher/last?" + qs.toString(), {
-      method: "GET",
-      headers: { "Accept": "application/json" },
-      cache: "no-store",
-    });
-
-    if (r.status === 204 || r.status === 404) return false;
-    if (!r.ok) return false;
-
-    const j = await r.json();
-    const code = (j && (j.code || j.voucher_code)) ? String(j.code || j.voucher_code).trim() : "";
-    if (!code) return false;
-
-    const p = j.plan || {};
-    const meta = {
-      planName: p.name || p.planName || null,
-      durationMinutes: (p.duration_minutes != null ? Number(p.duration_minutes) : (p.durationMinutes != null ? Number(p.durationMinutes) : null)),
-      maxDevices: (p.max_devices != null ? Number(p.max_devices) : (p.maxDevices != null ? Number(p.maxDevices) : null)),
-    };
-
-    setVoucherUI({ phone: "", code, meta, focus: false });
-    setVoucherLock(true);
-
-    // Clear, consistent message for the user
-    try {
-      const accessMsg = document.getElementById("accessMsg");
-      if (accessMsg) accessMsg.textContent = "✅ Code déjà généré. Cliquez « Utiliser ce code » pour activer Internet.";
-    } catch (_) {}
-
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-
 // init voucher UI
-  // 1) Best-effort resume from browser storage (refresh within same session)
+// 1) Try resume from server (reliable after closing the browser/phone)
+(async () => {
+  try {
+    if (clientMac) {
+      const qs = new URLSearchParams();
+      qs.set("client_mac", clientMac);
+      if (apMac) qs.set("ap_mac", apMac);
+      const r = await fetch("/api/voucher/last?" + qs.toString(), { method: "GET" });
+      if (r.ok) {
+        const j = await r.json().catch(() => ({}));
+        if (j && (j.code || j.voucher_code)) {
+          const code = String(j.code || j.voucher_code || "").trim();
+          if (code) {
+            currentVoucherCode = code;
+            purchaseLockedByVoucher = true;
+            blockingVoucherMeta = j.plan || null;
+            setVoucherUI({ phone: "", code, meta: null, focus: false });
+            try { writeLastCode({ code }); } catch (_) {}
+            showToast("ℹ️ Code déjà disponible. Cliquez « Utiliser ce code » pour activer Internet.", "info", 6500);
+            // Do not show purchase banners; user must use existing code
+            return;
+          }
+        }
+      }
+    }
+  } catch (_) {}
+
+  // 2) Fallback: sessionStorage (works for simple refresh only)
   const last = readLastCode();
   if (last && last.code) {
+    purchaseLockedByVoucher = true;
+    currentVoucherCode = String(last.code);
     setVoucherUI({ phone: "", code: String(last.code), meta: { planName: last.planName, durationMinutes: last.durationMinutes, maxDevices: last.maxDevices }, focus: false });
-    setVoucherLock(true);
   } else {
     setVoucherUI({ phone: "", code: "" });
     renderLastCodeBanner();
   }
-
-  // 2) Reliable resume from server (works even after closing the phone / browser)
-  // If found, it overrides the local state.
-  resumeVoucherFromServer().catch(() => {});
+})();
 
 // -------- Plans: fetch + render (DB only) --------
   const plansGrid = $("plansGrid");
@@ -1179,6 +1173,13 @@ function bindPlanHandlers() {
           showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
           return;
         }
+
+
+if (purchaseLockedByVoucher && currentVoucherCode) {
+  showToast("⚠️ Achat désactivé : vous avez déjà un code en attente/actif. Utilisez d’abord le code ci-dessous.", "info", 7500);
+  try { focusVoucherBlock(); } catch (_) {}
+  return;
+}
         closeAllPayments();
         card.classList.add("selected");
         const payment = card.querySelector(".plan-payment");
@@ -1210,12 +1211,6 @@ function bindPlanHandlers() {
 
     if (payBtn) {
       payBtn.addEventListener("click", function () {
-// Block purchases if a voucher already exists for this device
-if (isVoucherLocked() && currentVoucherCode) {
-  showToast("⚠️ Achat désactivé : vous avez déjà un code actif/en attente. Cliquez « Utiliser ce code ».", "info", 6500);
-  focusVoucherBlock();
-  return;
-}
         if (poolIsFull) {
           showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
           return;
@@ -1261,12 +1256,6 @@ if (isVoucherLocked() && currentVoucherCode) {
 
     if (confirmBtn) {
       confirmBtn.addEventListener("click", function () {
-// Block purchases if a voucher already exists for this device
-if (isVoucherLocked() && currentVoucherCode) {
-  showToast("⚠️ Achat désactivé : vous avez déjà un code actif/en attente. Cliquez « Utiliser ce code ».", "info", 6500);
-  focusVoucherBlock();
-  return;
-}
         if (poolIsFull) {
           showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
           return;
@@ -1330,14 +1319,32 @@ if (isVoucherLocked() && currentVoucherCode) {
                 phone: cleaned,
                 plan: planStr || planId || planPrice || "plan",
                 ap_mac: apMac || null,
+                client_mac: clientMac || null,
+                plan_id: planId || null,
               }),
             });
 
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || !data.ok) {
-              const msg = data?.error || data?.message || "Erreur lors du paiement";
-              throw new Error(msg);
-            }
+
+// If server says a code is already pending/active for this device, show it and block purchases.
+if (resp.status === 409 && data && data.code) {
+  const existingCode = String(data.code || "").trim();
+  if (existingCode) {
+    currentVoucherCode = existingCode;
+    purchaseLockedByVoucher = true;
+    blockingVoucherMeta = data.plan || null;
+    setVoucherUI({ phone: cleaned, code: existingCode, meta: null, focus: true });
+    try { writeLastCode({ code: existingCode }); } catch (_) {}
+    showToast(data.message || "Vous avez déjà un code. Utilisez-le avant d’acheter un autre plan.", "info", 8500);
+    try { focusVoucherBlock(); } catch (_) {}
+    return;
+  }
+}
+
+if (!resp.ok || !data.ok) {
+  const msg = data?.error || data?.message || "Erreur lors du paiement";
+  throw new Error(msg);
+}
 
             
             // FREE FLOW: if server generated a voucher immediately (0 Ar plan), show it now and skip MVola polling
@@ -1440,6 +1447,29 @@ showToast("✅ Paiement initié. Validez la transaction sur votre mobile MVola�
     // If sessionStorage is blocked, still do a lightweight check.
     updateConnectedUI({ force: false });
   }
+
+
+  // Resume last delivered-but-not-activated code from server (reliable after browser close)
+  async function resumeLastVoucherFromServer() {
+    try {
+      if (!clientMac) return;
+      const url = `/api/voucher/last?client_mac=${encodeURIComponent(clientMac)}${apMac ? `&ap_mac=${encodeURIComponent(apMac)}` : ""}`;
+      const r = await fetch(url, { method: "GET" });
+      if (r.status === 204) return;
+      if (!r.ok) return;
+      const j = await r.json().catch(() => ({}));
+      if (j && j.code) {
+        const c = String(j.code);
+        if (!currentVoucherCode || c !== String(currentVoucherCode)) {
+          setVoucherUI({ code: c, meta: { fromServer: true } });
+        }
+      }
+    } catch (_) {
+      // ignore (fail-open)
+    }
+  }
+
+  await resumeLastVoucherFromServer();
 
   // Load pool context (pool name + saturation) for this AP
   fetchPortalContext();
