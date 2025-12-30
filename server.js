@@ -580,85 +580,6 @@ if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
   });
 }
 
-
-
-// ---------------------------------------------------------------------------
-// VOUCHER SESSIONS HELPERS (activation-based expiry - Model B)
-// ---------------------------------------------------------------------------
-function computeDurationMinutesFromPlan(planRow) {
-  const dm = planRow?.duration_minutes;
-  const dh = planRow?.duration_hours;
-  if (Number.isFinite(Number(dm)) && Number(dm) > 0) return Number(dm);
-  if (Number.isFinite(Number(dh)) && Number(dh) > 0) return Number(dh) * 60;
-  return null;
-}
-
-async function findBlockingVoucherSessionByClientMac(client_mac) {
-  if (!supabase || !client_mac) return null;
-  const nowIso = new Date().toISOString();
-  // Block if:
-  // - pending (delivered but not activated)
-  // - active and not expired
-  const { data, error } = await supabase
-    .from("voucher_sessions")
-    .select("id,voucher_code,status,expires_at,activated_at,plan_id,created_at,delivered_at")
-    .eq("client_mac", client_mac)
-    .in("status", ["pending", "active"])
-    .order("created_at", { ascending: false })
-    .limit(10);
-
-  if (error || !Array.isArray(data) || !data.length) return null;
-
-  for (const s of data) {
-    if (s.status === "pending" && !s.activated_at) return s;
-    if (s.status === "active") {
-      // If no expires_at for active (should not happen), treat as blocking (fail-safe)
-      if (!s.expires_at) return s;
-      if (new Date(s.expires_at).toISOString() > nowIso) return s;
-    }
-  }
-  return null;
-}
-
-async function insertVoucherSessionOnDelivery({
-  voucher_code,
-  plan_id,
-  pool_id = null,
-  client_mac = null,
-  ap_mac = null,
-  mvola_phone = null,
-  transaction_id = null,
-}) {
-  if (!supabase) return null;
-  const nowIso = new Date().toISOString();
-  const row = {
-    voucher_code,
-    plan_id,
-    pool_id,
-    status: "pending",
-    started_at: null,
-    expires_at: null, // ✅ Model B: expiry computed on activation
-    delivered_at: nowIso,
-    activated_at: null,
-    client_mac,
-    ap_mac,
-    mvola_phone,
-    transaction_id,
-    updated_at: nowIso,
-  };
-  const { data, error } = await supabase
-    .from("voucher_sessions")
-    .insert(row)
-    .select("id,voucher_code,plan_id,status,delivered_at,client_mac,ap_mac,mvola_phone")
-    .single();
-
-  if (error) {
-    console.warn("voucher_sessions insert failed:", error?.message || error);
-    return null;
-  }
-  return data;
-}
-
 // ===============================
 // ADMIN AUTH — LOGIN
 // ===============================
@@ -2153,68 +2074,6 @@ async function pollTransactionStatus({
           const voucherCode = assigned?.voucher_code || assigned?.code || assigned?.voucher || assigned?.voucherCode || null;
           const voucherId = assigned?.voucher_id || assigned?.id || null;
 
-          // Store voucher delivery in voucher_sessions (reliable resume + admin monitoring)
-          try {
-            if (supabase && voucherCode) {
-              let txMeta = null;
-              try {
-                const { data: txRow } = await supabase
-                  .from("transactions")
-                  .select("metadata,plan,amount,phone")
-                  .eq("request_ref", requestRef)
-                  .maybeSingle();
-                txMeta = txRow?.metadata || null;
-              } catch (_) {}
-
-              const client_mac = (txMeta?.client_mac || null);
-              const ap_mac_raw = (txMeta?.ap_mac || null);
-              const plan_id_hint = (txMeta?.plan_id || null);
-
-              const resolvedPlanId = await resolvePlanIdOrFallback({
-                plan_id: plan_id_hint,
-                amount,
-                planLabel: String(plan || "")
-              });
-
-              if (resolvedPlanId) {
-                let normAp = null;
-                try {
-                  let raw = (ap_mac_raw || "").toString().trim();
-                  if (raw.indexOf(",") !== -1) raw = raw.split(",").pop();
-                  raw = raw.replace(/^ap_mac=/i, "").replace(/^,+|,+$/g, "");
-                  raw = raw.replace(/-/g, ":");
-                  const groups = raw.match(/[0-9A-Fa-f]{2}/g);
-                  if (groups && groups.length >= 6) normAp = groups.slice(0, 6).map(g => g.toUpperCase()).join(":");
-                } catch (_) {}
-
-                let pool_id = null;
-                if (normAp) {
-                  try {
-                    const { data: apRow } = await supabase
-                      .from("ap_registry")
-                      .select("pool_id")
-                      .eq("ap_mac", normAp)
-                      .maybeSingle();
-                    pool_id = apRow?.pool_id || null;
-                  } catch (_) {}
-                }
-
-                await insertVoucherSessionOnDelivery({
-                  voucher_code: voucherCode,
-                  plan_id: resolvedPlanId,
-                  pool_id,
-                  client_mac,
-                  ap_mac: normAp || ap_mac_raw || null,
-                  mvola_phone: phone,
-                  transaction_id: serverCorrelationId || requestRef,
-                });
-              }
-            }
-          } catch (e) {
-            console.warn("voucher_sessions insert (paid) failed:", e?.message || e);
-          }
-
-
           if (!assigned || !voucherCode) {
             console.warn("⚠️ No voucher available for", requestRef);
             try {
@@ -2775,118 +2634,6 @@ app.get("/api/dernier-code", async (req, res) => {
   }
 });
 
-
-// ---------------------------------------------------------------------------
-// ENDPOINT: /api/voucher/last  (resume last delivered-but-not-activated code)
-// ---------------------------------------------------------------------------
-app.get("/api/voucher/last", async (req, res) => {
-  try {
-    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
-
-    const client_mac = (req.query.client_mac || req.query.clientMac || "").toString().trim();
-    const ap_mac = (req.query.ap_mac || req.query.apMac || "").toString().trim() || null;
-
-    if (!client_mac) return res.status(400).json({ error: "client_mac query param required" });
-
-    // Most recent delivered code not yet activated
-    const { data: row, error } = await supabase
-      .from("voucher_sessions")
-      .select("voucher_code,plan_id,created_at,delivered_at,client_mac,ap_mac,mvola_phone,status,plans ( name, price_ar, duration_minutes, duration_hours, data_mb, max_devices )")
-      .eq("client_mac", client_mac)
-      .eq("status", "pending")
-      .is("activated_at", null)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (error) {
-      console.warn("/api/voucher/last error:", error?.message || error);
-      return res.status(200).json({ code: null });
-    }
-    if (!row?.voucher_code) return res.status(200).json({ code: null });
-
-    return res.json({
-      code: row.voucher_code,
-      status: row.status,
-      plan: row.plans ? {
-        name: row.plans.name,
-        price_ar: row.plans.price_ar,
-        duration_minutes: row.plans.duration_minutes ?? null,
-        duration_hours: row.plans.duration_hours ?? null,
-        data_mb: row.plans.data_mb ?? null,
-        max_devices: row.plans.max_devices ?? null,
-      } : null,
-      delivered_at: row.delivered_at || row.created_at || null,
-    });
-  } catch (e) {
-    console.error("/api/voucher/last exception:", e?.message || e);
-    return res.status(200).json({ code: null });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// ENDPOINT: /api/voucher/activate  (mark a code as used when user clicks "Utiliser")
-// Model B: compute expires_at ONLY on activation
-// ---------------------------------------------------------------------------
-app.post("/api/voucher/activate", async (req, res) => {
-  try {
-    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
-
-    const body = req.body || {};
-    const client_mac = (body.client_mac || body.clientMac || "").toString().trim();
-    const ap_mac = (body.ap_mac || body.apMac || "").toString().trim() || null;
-    const voucher_code = (body.voucher_code || body.voucherCode || "").toString().trim();
-
-    if (!client_mac || !voucher_code) {
-      return res.status(400).json({ error: "client_mac and voucher_code are required" });
-    }
-
-    // Read the session + plan
-    const { data: session, error: sessErr } = await supabase
-      .from("voucher_sessions")
-      .select("id,voucher_code,status,activated_at,plan_id,plans ( duration_minutes, duration_hours )")
-      .eq("client_mac", client_mac)
-      .eq("voucher_code", voucher_code)
-      .maybeSingle();
-
-    if (sessErr || !session) {
-      return res.status(404).json({ error: "voucher_not_found" });
-    }
-
-    if (session.activated_at) {
-      return res.status(200).json({ ok: true, already: true });
-    }
-
-    const now = new Date();
-    const nowIso = now.toISOString();
-
-    const durMin = computeDurationMinutesFromPlan(session.plans);
-    let expires_at = null;
-    if (durMin) {
-      expires_at = new Date(now.getTime() + durMin * 60 * 1000).toISOString();
-    }
-
-    await supabase
-      .from("voucher_sessions")
-      .update({
-        status: "active",
-        activated_at: nowIso,
-        started_at: nowIso,
-        expires_at, // computed here
-        ap_mac: ap_mac || session.ap_mac || null,
-        updated_at: nowIso,
-      })
-      .eq("id", session.id);
-
-    return res.json({ ok: true, expires_at });
-  } catch (e) {
-    console.error("/api/voucher/activate error:", e?.message || e);
-    return res.status(500).json({ error: "internal_error" });
-  }
-});
-
-
-
 // ---------------------------------------------------------------------------
 // ENDPOINT: /api/send-payment
 // ---------------------------------------------------------------------------
@@ -2912,29 +2659,6 @@ app.post("/api/send-payment", async (req, res) => {
 
   // normalize to local 0XXXXXXXXX
   phone = normalizePhone(phone);
-
-  // Optional identifiers (for reliable resume + admin monitoring)
-  const client_mac = (body.client_mac || body.clientMac || "").toString().trim() || null;
-  const ap_mac_from_client = (body.ap_mac || body.apMac || "").toString().trim() || null;
-  const plan_id_from_client = (body.plan_id || body.planId || "").toString().trim() || null;
-
-  // BLOCK purchase if user already has a pending or active code (Model B)
-  try {
-    if (client_mac) {
-      const blocking = await findBlockingVoucherSessionByClientMac(client_mac);
-      if (blocking) {
-        return res.status(409).json({
-          error: blocking.status === "pending" ? "HAS_PENDING_CODE" : "HAS_ACTIVE_CODE",
-          code: blocking.voucher_code,
-          status: blocking.status,
-        });
-      }
-    }
-  } catch (e) {
-    // Fail-open (never block purchase if DB query fails)
-    console.warn("blocking voucher check failed:", e?.message || e);
-  }
-
 
   // Optional: block purchase when the WiFi (pool) is full (source of truth: Tanaza connected clients by AP)
   // Fail-open if ap_mac is missing or if any error happens (never break production).
@@ -3096,56 +2820,6 @@ app.post("/api/send-payment", async (req, res) => {
       // Fail-open: even if DB insert fails, still return the code to the portal.
     }
 
-
-    // Also store in voucher_sessions (reliable resume + admin monitoring)
-    try {
-      if (supabase) {
-        const resolvedPlanId = await resolvePlanIdOrFallback({
-          plan_id: plan_id_from_client,
-          amount,
-          planLabel: String(plan || "")
-        });
-
-        if (resolvedPlanId) {
-          // best-effort normalize ap_mac
-          let normAp = null;
-          try {
-            let raw = (ap_mac_from_client || "").toString().trim();
-            if (raw.indexOf(",") !== -1) raw = raw.split(",").pop();
-            raw = raw.replace(/^ap_mac=/i, "").replace(/^,+|,+$/g, "");
-            raw = raw.replace(/-/g, ":");
-            const groups = raw.match(/[0-9A-Fa-f]{2}/g);
-            if (groups && groups.length >= 6) normAp = groups.slice(0, 6).map(g => g.toUpperCase()).join(":");
-          } catch (_) {}
-
-          let pool_id = null;
-          if (normAp) {
-            try {
-              const { data: apRow } = await supabase
-                .from("ap_registry")
-                .select("pool_id")
-                .eq("ap_mac", normAp)
-                .maybeSingle();
-              pool_id = apRow?.pool_id || null;
-            } catch (_) {}
-          }
-
-          await insertVoucherSessionOnDelivery({
-            voucher_code: voucherCode,
-            plan_id: resolvedPlanId,
-            pool_id,
-            client_mac,
-            ap_mac: normAp || ap_mac_from_client || null,
-            mvola_phone: phone,
-            transaction_id: requestRef,
-          });
-        }
-      }
-    } catch (e) {
-      // Fail-open
-      console.warn("voucher_sessions FREE insert failed:", e?.message || e);
-    }
-
     return res.json({ ok: true, free: true, requestRef, code: voucherCode });
   }
 
@@ -3154,9 +2828,6 @@ app.post("/api/send-payment", async (req, res) => {
     const metadataForInsert = {
       source: "portal",
       created_at_local: toISOStringMG(new Date()),
-      client_mac: client_mac || null,
-      ap_mac: ap_mac_from_client || null,
-      plan_id: plan_id_from_client || null,
     };
 
     if (supabase) {
