@@ -133,12 +133,12 @@ function writeLastCode({ code, planName, durationMinutes, maxDevices } = {}) {
     durationMinutes: (durationMinutes ?? null),
     maxDevices: (maxDevices ?? null),
   };
-  try { sessionStorage.setItem("razafi_last_code", JSON.stringify(payload)); } catch (_) {}
+  try { localStorage.setItem("razafi_last_code", JSON.stringify(payload)); } catch (_) {}
 }
 
 function readLastCode() {
   try {
-    const raw = sessionStorage.getItem("razafi_last_code");
+    const raw = localStorage.getItem("razafi_last_code");
     if (!raw) return null;
     return JSON.parse(raw);
   } catch (_) {
@@ -482,7 +482,7 @@ function showToast(message, kind = "info", ms = 3200) {
 
     let receipt = null;
     try {
-      const raw = sessionStorage.getItem("razafi_last_purchase");
+      const raw = localStorage.getItem("razafi_last_purchase");
       if (raw) receipt = JSON.parse(raw);
     } catch (_) {}
 
@@ -564,7 +564,7 @@ function showToast(message, kind = "info", ms = 3200) {
       let m = meta && typeof meta === "object" ? { ...meta } : {};
       try {
         if (!m.planName || m.durationMinutes == null || m.maxDevices == null) {
-          const raw = sessionStorage.getItem("razafi_last_purchase");
+          const raw = localStorage.getItem("razafi_last_purchase");
           if (raw) {
             const r = JSON.parse(raw);
             if (!m.planName && r?.name) m.planName = r.name;
@@ -1286,11 +1286,26 @@ function bindPlanHandlers() {
 
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || !data.ok) {
+              // If user already has a pending/active code, show it instead of failing
+              if (resp.status === 409 && (data?.error === "HAS_PENDING_CODE" || data?.error === "HAS_ACTIVE_CODE") && data?.code) {
+                const existingCode = String(data.code);
+                try { writeLastCode({ code: existingCode, planName, durationMinutes, maxDevices }); } catch (_) {}
+                setVoucherUI({
+                  phone: cleaned,
+                  code: existingCode,
+                  mvola: null,
+                  receipt: receiptDraft || null,
+                  focus: true,
+                });
+                showToast("ℹ️ Vous avez déjà un code en cours. Cliquez « Utiliser ce code » pour vous connecter.", "info", 6500);
+                setProcessing(card, false);
+                return;
+              }
+
               const msg = data?.error || data?.message || "Erreur lors du paiement";
               throw new Error(msg);
             }
 
-            
             // FREE FLOW: if server generated a voucher immediately (0 Ar plan), show it now and skip MVola polling
             if (data && data.free && data.code) {
               const freeCode = String(data.code || "").trim();
@@ -1299,7 +1314,7 @@ function bindPlanHandlers() {
                   if (receiptDraft) {
                     receiptDraft.code = freeCode;
                     receiptDraft.ts = Date.now();
-                    sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
+                    localStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
                   }
                 } catch (_) {}
                 setVoucherUI({ phone: cleaned, code: freeCode, meta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.max_devices } : null, focus: true });
@@ -1322,7 +1337,7 @@ showToast("✅ Paiement initié. Validez la transaction sur votre mobile MVola�
             
             // Store receipt ONLY now (payment succeeded + code received)
             try {
-              if (receiptDraft) sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
+              if (receiptDraft) localStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
             } catch (_) {}
 
             setVoucherUI({ phone: cleaned, code, meta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.max_devices } : null, focus: true });
