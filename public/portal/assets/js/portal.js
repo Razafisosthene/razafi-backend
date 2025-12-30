@@ -4,7 +4,7 @@
    Payment integrated per plan
    =============================== */
 
-(function () {
+(async function () {
   // -------- Utils --------
   function qsAll(name) {
     try { return new URLSearchParams(window.location.search).getAll(name); } catch { return []; }
@@ -663,7 +663,7 @@ function showToast(message, kind = "info", ms = 3200) {
   }
 
   if (useBtn) {
-    useBtn.addEventListener("click", function () {
+    useBtn.addEventListener("click", async function () {
       if (!currentVoucherCode) {
         showToast("❌ Aucun code disponible pour le moment.", "error");
         return;
@@ -671,6 +671,24 @@ function showToast(message, kind = "info", ms = 3200) {
       // Prevent double-click spam
       try { useBtn.setAttribute("disabled", "disabled"); } catch (_) {}
       showToast("Connexion en cours…", "info");
+
+      // Mark as activated server-side (for admin monitoring + reliable state)
+      try {
+        if (clientMac && currentVoucherCode) {
+          await fetch("/api/voucher/activate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              client_mac: clientMac,
+              ap_mac: apMac || null,
+              voucher_code: currentVoucherCode,
+            }),
+          });
+        }
+      } catch (_) {
+        // Fail-open: do not block Tanaza login
+      }
+
       submitToLoginUrl(currentVoucherCode);
 
       // If Tanaza takes time / redirect is blocked, guide the user
@@ -1261,6 +1279,8 @@ function bindPlanHandlers() {
                 phone: cleaned,
                 plan: planStr || planId || planPrice || "plan",
                 ap_mac: apMac || null,
+                client_mac: clientMac || null,
+                plan_id: planId || null,
               }),
             });
 
@@ -1371,6 +1391,29 @@ showToast("✅ Paiement initié. Validez la transaction sur votre mobile MVola�
     // If sessionStorage is blocked, still do a lightweight check.
     updateConnectedUI({ force: false });
   }
+
+
+  // Resume last delivered-but-not-activated code from server (reliable after browser close)
+  async function resumeLastVoucherFromServer() {
+    try {
+      if (!clientMac) return;
+      const url = `/api/voucher/last?client_mac=${encodeURIComponent(clientMac)}${apMac ? `&ap_mac=${encodeURIComponent(apMac)}` : ""}`;
+      const r = await fetch(url, { method: "GET" });
+      if (r.status === 204) return;
+      if (!r.ok) return;
+      const j = await r.json().catch(() => ({}));
+      if (j && j.code) {
+        const c = String(j.code);
+        if (!currentVoucherCode || c !== String(currentVoucherCode)) {
+          setVoucherUI({ code: c, meta: { fromServer: true } });
+        }
+      }
+    } catch (_) {
+      // ignore (fail-open)
+    }
+  }
+
+  await resumeLastVoucherFromServer();
 
   // Load pool context (pool name + saturation) for this AP
   fetchPortalContext();
