@@ -745,9 +745,29 @@ function showToast(message, kind = "info", ms = 3200) {
           if (code) {
             currentVoucherCode = code;
             purchaseLockedByVoucher = true;
-            blockingVoucherMeta = j.plan || null;
-            setVoucherUI({ phone: "", code, meta: null, focus: false });
-            try { writeLastCode({ code }); } catch (_) {}
+            const plan = j.plan || null;
+            blockingVoucherMeta = plan;
+            const meta = plan ? {
+              planName: plan.name || plan.plan_name || plan.label || plan.title || null,
+              durationMinutes: (plan.duration_minutes != null ? Number(plan.duration_minutes)
+                : (plan.duration_hours != null ? Number(plan.duration_hours) * 60 : null)),
+              dataMb: (plan.data_mb !== undefined ? plan.data_mb : null),
+              maxDevices: (plan.max_devices != null ? Number(plan.max_devices) : null),
+              priceAr: (plan.price_ar != null ? Number(plan.price_ar) : null),
+              planId: plan.id || null,
+            } : null;
+
+            setVoucherUI({ phone: "", code, meta, focus: false });
+
+            try {
+              writeLastCode({
+                code,
+                planName: meta?.planName || null,
+                durationMinutes: meta?.durationMinutes ?? null,
+                dataMb: meta?.dataMb ?? null,
+                maxDevices: meta?.maxDevices ?? null,
+              });
+            } catch (_) {}
             showToast("ℹ️ Code déjà disponible. Cliquez « Utiliser ce code » pour activer Internet.", "info", 6500);
             // Do not show purchase banners; user must use existing code
             return;

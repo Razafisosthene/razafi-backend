@@ -2955,7 +2955,7 @@ app.get("/api/voucher/last", async (req, res) => {
       const { data: strictRows, error: strictErr } = await q.eq("ap_mac", ap_mac);
       if (!strictErr && strictRows && strictRows.length) {
         const r = strictRows[0];
-        return res.json({ ok: true, code: r.voucher_code, plan: r.plans || { id: r.plan_id } });
+        return res.json({ ok: true, code: r.voucher_code, status: r.status, session: { created_at: r.created_at, delivered_at: r.delivered_at, activated_at: r.activated_at, started_at: r.started_at, expires_at: r.expires_at }, plan: r.plans || { id: r.plan_id } });
       }
       // fallback without AP filter
       q = supabase
@@ -2975,7 +2975,7 @@ app.get("/api/voucher/last", async (req, res) => {
     if (!rows || !rows.length) return res.status(204).send();
 
     const r = rows[0];
-    return res.json({ ok: true, code: r.voucher_code, plan: r.plans || { id: r.plan_id } });
+    return res.json({ ok: true, code: r.voucher_code, status: r.status, session: { created_at: r.created_at, delivered_at: r.delivered_at, activated_at: r.activated_at, started_at: r.started_at, expires_at: r.expires_at }, plan: r.plans || { id: r.plan_id } });
   } catch (e) {
     console.error("/api/voucher/last error:", e?.message || e);
     return res.status(500).json({ error: "internal_error" });
