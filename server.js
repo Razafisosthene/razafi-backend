@@ -3068,9 +3068,31 @@ app.post("/api/send-payment", async (req, res) => {
   // normalize to local 0XXXXXXXXX
   phone = normalizePhone(phone);
 
+  // Extras from portal (used for voucher_sessions + free-plan once-per-MAC)
+  const plan_id_from_client = String(body.plan_id || body.planId || "").trim() || null;
+
+  // Parse client_mac safely (Tanaza may pass various formats)
+  let client_mac = null;
+  try {
+    let raw = (body.client_mac || body.clientMac || "").toString().trim();
+    if (raw) {
+      if (raw.indexOf(",") !== -1) {
+        const parts = raw.split(",");
+        raw = parts[parts.length - 1];
+      }
+      raw = raw.replace(/^client_mac=/i, "").replace(/^,+|,+$/g, "");
+      raw = raw.replace(/-/g, ":");
+      const groups = raw.match(/[0-9A-Fa-f]{2}/g);
+      if (groups && groups.length >= 6) {
+        client_mac = groups.slice(0, 6).map(g => g.toUpperCase()).join(":");
+      }
+    }
+  } catch (_) {
+    client_mac = null;
+  }
+
+
   // Optional identifiers for reliable resume + admin monitoring
-  const client_mac = (body.client_mac || body.clientMac || "").toString().trim() || null;
-  const plan_id_from_client = (body.plan_id || body.planId || "").toString().trim() || null;
 
 
   // Optional: block purchase when the WiFi (pool) is full (source of truth: Tanaza connected clients by AP)
@@ -3122,6 +3144,8 @@ try {
   } catch (_) {
     ap_mac = null;
   }
+
+  let resolved_pool_id = null;
 
   if (ap_mac && supabase) {
     try {
@@ -3210,9 +3234,27 @@ try {
 
   
 
+  // Prefer plan.price_ar from DB when plan_id is provided (source of truth)
+  let planRow = null;
+  if (supabase && plan_id_from_client) {
+    try {
+      const { data: pr, error: prErr } = await supabase
+        .from("plans")
+        .select("id,name,price_ar")
+        .eq("id", plan_id_from_client)
+        .maybeSingle();
+      if (!prErr && pr) planRow = pr;
+    } catch (_) {
+      planRow = null;
+    }
+  }
+
   // derive amount from plan string when possible
   let amount = null;
-  if (plan && typeof plan === "string") {
+  if (planRow && planRow.price_ar !== null && planRow.price_ar !== undefined && Number.isFinite(Number(planRow.price_ar))) {
+    amount = Number(planRow.price_ar);
+  }
+  if (amount === null && plan && typeof plan === "string") {
     try {
       const matches = Array.from(plan.matchAll(/(\d+)/g)).map(m => m[1]);
       if (matches.length > 0) {
@@ -3236,6 +3278,37 @@ try {
   // FREE PLAN FLOW: amount === 0 => generate voucher immediately (no MVola)
   if (amount === 0) {
     const voucherCode = "RAZAFI-" + crypto.randomBytes(4).toString("hex").toUpperCase();
+
+    // Enforce: each FREE plan (price=0 Ar) can be used only once per client MAC
+    // We consider the free plan "used" only when it has been ACTIVATED (Model B)
+    if (supabase && plan_id_from_client && client_mac) {
+      try {
+        const { data: usedRows, error: usedErr } = await supabase
+          .from("voucher_sessions")
+          .select("voucher_code, activated_at")
+          .eq("client_mac", client_mac)
+          .eq("plan_id", plan_id_from_client)
+          .not("activated_at", "is", null)
+          .order("activated_at", { ascending: false })
+          .limit(1);
+
+        if (!usedErr && Array.isArray(usedRows) && usedRows.length) {
+          const last = usedRows[0];
+          const when = last.activated_at ? new Date(last.activated_at).toLocaleString("fr-FR", { timeZone: "Indian/Antananarivo" }) : null;
+          return res.status(409).json({
+            ok: false,
+            error: "free_plan_used",
+            message: `Ce plan gratuit a déjà été utilisé sur cet appareil${when ? " le " + when : ""}.`,
+            last_used_at: last.activated_at || null,
+            last_code: last.voucher_code || null,
+          });
+        }
+      } catch (e) {
+        // Fail-open (never break production)
+        console.error("FREE PLAN USED CHECK EX", e?.message || e);
+      }
+    }
+
 
     try {
       const metadataForInsert = {
@@ -3295,6 +3368,28 @@ try {
     } catch (dbErr) {
       console.error("⚠️ Warning: unable to insert FREE transaction row:", dbErr?.message || dbErr);
       // Fail-open: even if DB insert fails, still return the code to the portal.
+    }
+
+    // Create voucher session (PENDING, Model B: expiry starts at activation)
+    try {
+      if (supabase && plan_id_from_client) {
+        const nowIso = new Date().toISOString();
+        const payload = {
+          voucher_code: voucherCode,
+          plan_id: plan_id_from_client,
+          pool_id: resolved_pool_id || null,
+          status: "pending",
+          client_mac: client_mac || null,
+          ap_mac: ap_mac || null,
+          mvola_phone: phone || null,
+          transaction_id: requestRef,
+          delivered_at: nowIso,
+        };
+        const { error: vsErr } = await supabase.from("voucher_sessions").insert(payload);
+        if (vsErr) console.warn("⚠️ FREE voucher_session insert error:", vsErr?.message || vsErr);
+      }
+    } catch (e) {
+      console.warn("⚠️ FREE voucher_session insert exception:", e?.message || e);
     }
 
     return res.json({ ok: true, free: true, requestRef, code: voucherCode });
