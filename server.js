@@ -2377,7 +2377,7 @@ app.post("/api/new/purchase", async (req, res) => {
         client_mac: (body.client_mac || body.clientMac || null),
         ap_mac: (body.ap_mac || body.apMac || null),
         mvola_phone: phone || null,
-        transaction_id: paymentResult?.transactionId || null,
+        transaction_id: null,
         delivered_at: new Date().toISOString(),
       })
       .select()
@@ -2462,22 +2462,15 @@ app.post("/api/new/authorize", async (req, res) => {
     // 3) FIRST CONNECTION → start voucher
     if (session.status === "pending") {
       const startedAt = now;
-      const durationMinutes = Number(session?.plans?.duration_minutes);
-      const durationHours = Number(session?.plans?.duration_hours);
-      const durationMs = (Number.isFinite(durationMinutes) && durationMinutes > 0)
-        ? (durationMinutes * 60 * 1000)
-        : ((Number.isFinite(durationHours) && durationHours > 0) ? (durationHours * 3600 * 1000) : 0);
-      const expiresAt = new Date(startedAt.getTime() + durationMs);
+      const expiresAt = new Date(
+        startedAt.getTime() + session.plans.duration_hours * 3600 * 1000
+      );
 
-      if (!durationMs) {
-        return res.status(500).json({ error: "Invalid plan duration" });
-      }
-// Atomic update
+      // Atomic update
       const { error: upErr } = await supabase
         .from("voucher_sessions")
         .update({
           status: "active",
-          activated_at: startedAt.toISOString(),
           started_at: startedAt.toISOString(),
           expires_at: expiresAt.toISOString(),
           pool_id: apRow.pool_id
@@ -2832,12 +2825,6 @@ app.post("/api/send-payment", async (req, res) => {
   // normalize to local 0XXXXXXXXX
   phone = normalizePhone(phone);
 
-  // Identifiers (required for resume, blocking, and free-plan rules)
-  const client_mac = String(body.client_mac || body.clientMac || "").trim() || null;
-  const plan_id = String(body.plan_id || body.planId || "").trim() || null;
-  // Keep pool_id across the whole handler (avoid block-scope bugs)
-  let pool_id = null;
-
   // Optional: block purchase when the WiFi (pool) is full (source of truth: Tanaza connected clients by AP)
   // Fail-open if ap_mac is missing or if any error happens (never break production).
   let ap_mac = null;
@@ -2891,7 +2878,7 @@ try {
         .maybeSingle();
 
       if (!apErr && apRow?.pool_id) {
-        pool_id = apRow.pool_id;
+        const pool_id = apRow.pool_id;
 
         // 2) Pool info (capacity)
         const { data: pool, error: poolErr } = await supabase
@@ -2968,27 +2955,6 @@ try {
 
   
 
-  // Resolve price from DB when possible (source of truth for free/paid)
-  let plan_price_ar = null;
-  try {
-    if (supabase && plan_id) {
-      const { data: planRow, error: planErr } = await supabase
-        .from("plans")
-        .select("id,price_ar")
-        .eq("id", plan_id)
-        .maybeSingle();
-      if (!planErr && planRow) {
-        const p = Number(planRow.price_ar);
-        if (Number.isFinite(p)) plan_price_ar = p;
-      }
-    }
-  } catch (_) {
-    // Fail-open: fall back to parsing amount from plan label
-    plan_price_ar = null;
-  }
-  const isFreePlan = (plan_price_ar === 0);
-
-
   // derive amount from plan string when possible
   let amount = null;
   if (plan && typeof plan === "string") {
@@ -3007,24 +2973,17 @@ try {
     amount = String(plan).includes("5000") ? 5000 : 1000;
   }
 
-  // Prefer DB price when available (avoid mis-detecting free plans)
-  if (plan_price_ar !== null && Number.isFinite(plan_price_ar) && plan_price_ar >= 0) {
-    amount = plan_price_ar;
-  }
-
   
 
 
   const requestRef = `RAZAFI_${Date.now()}`;
 
-  // FREE PLAN FLOW: DB price_ar === 0 (or parsed amount === 0) => generate voucher immediately (no MVola)
-  if (isFreePlan || amount === 0) {
-    // Ensure amount is 0 for consistency
-    amount = 0;
+  // FREE PLAN FLOW: amount === 0 => generate voucher immediately (no MVola)
+  if (amount === 0) {
 // Free plan can be used only once per device (Rule B: used only when activated).
 try {
-  if (supabase && client_mac && plan_id) {
-    const lastUsedAt = await getFreePlanLastUse({ client_mac, plan_id });
+  if (supabase && client_mac && plan_id_from_client) {
+    const lastUsedAt = await getFreePlanLastUse({ client_mac, plan_id: (body.plan_id || body.planId || "").toString().trim() || null });
     if (lastUsedAt) {
       return res.status(409).json({ error: "free_plan_used", last_used_at: lastUsedAt });
     }
@@ -3059,7 +3018,7 @@ if (supabase) {
       client_mac: clientMacForSession,
       ap_mac: apMacForSession,
       mvola_phone: phone || null,
-      transaction_id: requestRef || null,
+      transaction_id: null,
       delivered_at: nowIso,
       updated_at: nowIso,
     });
@@ -3444,10 +3403,6 @@ app.get("/api/new/pool-status", async (req, res) => {
     return res.status(500).json({ error: "internal" });
   }
 });
-
-
-
-
 
 // ---------------------------------------------------------------------------
 // START SERVER
