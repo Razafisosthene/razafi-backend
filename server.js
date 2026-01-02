@@ -2804,6 +2804,12 @@ app.get("/api/free-plan/check", async (req, res) => {
 // ---------------------------------------------------------------------------
 app.post("/api/send-payment", async (req, res) => {
   const body = req.body || {};
+  const client_mac = (
+  body.client_mac ||
+  body.clientMac ||
+  body.clientMAC ||
+  null
+)?.toString().trim() || null;
   let phone = (body.phone || "").trim();
   const plan = body.plan;
 
