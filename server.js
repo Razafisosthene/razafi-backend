@@ -2983,7 +2983,7 @@ try {
 // Free plan can be used only once per device (Rule B: used only when activated).
 try {
   if (supabase && client_mac && plan_id_from_client) {
-    const lastUsedAt = await getFreePlanLastUse({ client_mac, plan_id: plan_id_from_client });
+    const lastUsedAt = await getFreePlanLastUse({ client_mac, plan_id: (body.plan_id || body.planId || "").toString().trim() || null });
     if (lastUsedAt) {
       return res.status(409).json({ error: "free_plan_used", last_used_at: lastUsedAt });
     }
@@ -2997,7 +2997,7 @@ try {
 // IMPORTANT: we require plan_id + client_mac for reliable resume & admin monitoring.
 if (supabase) {
   const nowIso = new Date().toISOString();
-  const planIdForSession = (plan_id_from_client || body.plan_id || body.planId || "").toString().trim() || null;
+  const planIdForSession = (body.plan_id || body.planId || "").toString().trim() || null;
   const clientMacForSession = (client_mac || body.client_mac || body.clientMac || "").toString().trim() || null;
   const apMacForSession = (ap_mac || body.ap_mac || body.apMac || "").toString().trim() || null;
 
