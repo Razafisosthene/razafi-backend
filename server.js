@@ -2372,7 +2372,13 @@ app.post("/api/new/purchase", async (req, res) => {
       .insert({
         voucher_code: voucherCode,
         plan_id: plan.id,
-        status: "pending"
+        pool_id: pool_id || null,
+        status: "pending",
+        client_mac: (body.client_mac || body.clientMac || null),
+        ap_mac: (body.ap_mac || body.apMac || null),
+        mvola_phone: phone || null,
+        transaction_id: paymentResult?.transactionId || null,
+        delivered_at: new Date().toISOString(),
       })
       .select()
       .single();
@@ -2986,6 +2992,44 @@ try {
 
 
     const voucherCode = "RAZAFI-" + crypto.randomBytes(4).toString("hex").toUpperCase();
+
+// Persist delivery in Supabase so the user can resume after closing the portal (Model B).
+// IMPORTANT: we require plan_id + client_mac for reliable resume & admin monitoring.
+if (supabase) {
+  const nowIso = new Date().toISOString();
+  const planIdForSession = (plan_id_from_client || body.plan_id || body.planId || "").toString().trim() || null;
+  const clientMacForSession = (client_mac || body.client_mac || body.clientMac || "").toString().trim() || null;
+  const apMacForSession = (ap_mac || body.ap_mac || body.apMac || "").toString().trim() || null;
+
+  if (!planIdForSession || !clientMacForSession) {
+    return res.status(400).json({
+      error: "missing_identifiers",
+      message: "Impossible d'enregistrer le code: plan_id et client_mac sont requis."
+    });
+  }
+
+  const { error: vsErr } = await supabase
+    .from("voucher_sessions")
+    .insert({
+      voucher_code: voucherCode,
+      plan_id: planIdForSession,
+      pool_id: pool_id || null,
+      status: "pending",
+      client_mac: clientMacForSession,
+      ap_mac: apMacForSession,
+      mvola_phone: phone || null,
+      transaction_id: requestRef || null,
+      delivered_at: nowIso,
+      updated_at: nowIso,
+    });
+
+  if (vsErr) {
+    console.error("voucher_sessions insert failed (free plan):", vsErr);
+    return res.status(500).json({ error: "db_insert_failed", message: "Erreur serveur. Veuillez réessayer." });
+  }
+}
+
+
 
     try {
       const metadataForInsert = {

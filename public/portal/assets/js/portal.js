@@ -1324,6 +1324,8 @@ try {
               body: JSON.stringify({
                 phone: cleaned,
                 plan: planStr || planId || planPrice || "plan",
+                plan_id: planId || null,
+                client_mac: clientMac || null,
                 ap_mac: apMac || null,
               }),
             });
