@@ -541,6 +541,8 @@ function showToast(message, kind = "info", ms = 3200) {
   // -------- Voucher buttons + state --------
   let currentPhone = "";
   let currentVoucherCode = "";
+  let purchaseLockedByVoucher = false;
+  let blockingVoucherMeta = null;
 
   
   function setVoucherUI({ phone = "", code = "", meta = null, focus = false } = {}) {
@@ -582,6 +584,37 @@ function showToast(message, kind = "info", ms = 3200) {
     // Auto-focus the voucher area when a new code is produced
     if (focus && has) focusVoucherBlock();
   }
+
+// 1) Try resume from server (reliable after closing the browser/phone) when Tanaza params are present
+(async () => {
+  try {
+    if (!clientMac) return;
+    const qs = new URLSearchParams({ client_mac: clientMac });
+    if (apMac) qs.set("ap_mac", apMac);
+    const r = await fetch("/api/voucher/last?" + qs.toString(), { method: "GET" });
+    if (!r.ok) return;
+    const j = await r.json().catch(() => ({}));
+    if (j && j.found && (j.code || j.voucher_code)) {
+      const code = String(j.code || j.voucher_code || "").trim();
+      if (!code) return;
+      purchaseLockedByVoucher = true;
+      blockingVoucherMeta = j.plan || null;
+      setVoucherUI({ code, meta: j.plan || null, focus: false });
+      // Also persist locally for quick refresh
+      try {
+        sessionStorage.setItem("razafi_last_code", JSON.stringify({
+          code,
+          ts: Date.now(),
+          planName: (j.plan && (j.plan.name || j.plan.plan_name)) || null,
+          durationMinutes: (j.plan && (j.plan.duration_minutes ?? j.plan.durationMinutes)) ?? null,
+          maxDevices: (j.plan && (j.plan.max_devices ?? j.plan.maxDevices)) ?? null
+        }));
+      } catch (_) {}
+      try { renderLastCodeBanner(); } catch (_) {}
+    }
+  } catch (_) {}
+})();
+
 
 
   async function pollDernierCode(phone, { timeoutMs = 180000, intervalMs = 3000, baselineCode = null } = {}) {
@@ -628,18 +661,6 @@ function showToast(message, kind = "info", ms = 3200) {
     } catch (_) {}
     const accessMsg = document.getElementById("accessMsg");
     if (accessMsg) accessMsg.textContent = "Connexion en cours…";
-
-// Best-effort activation tracking (Model B): mark voucher as activated in DB
-try {
-  fetch("/api/voucher/activate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    keepalive: true,
-    body: JSON.stringify({ voucher_code: code, client_mac: clientMac || null, ap_mac: apMac || null })
-  }).catch(() => {});
-} catch (_) {}
-
-
 
     // Build a POST form (most captive portals expect POST)
     const form = document.createElement("form");
@@ -1134,33 +1155,38 @@ function bindPlanHandlers() {
           showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
           return;
         }
-        
-
-// Free plan pre-check: show message immediately after choosing the plan (before MVola input)
+if (purchaseLockedByVoucher && currentVoucherCode) {
+  showToast("⚠️ Achat désactivé : vous avez déjà un code en attente/actif. Utilisez d’abord le code ci-dessous.", "info", 7500);
+  try { focusVoucherBlock(); } catch (_) {}
+  return;
+}
+// Free plan pre-check (price=0): show "already used" message immediately after selecting the plan,
+// BEFORE asking for MVola number. Fail-open on errors.
 try {
   const planPrice = Number(card.getAttribute("data-plan-price") || card.dataset.planPrice || 0);
   const planId = (card.getAttribute("data-plan-id") || card.dataset.planId || "").toString().trim() || null;
   if (planPrice === 0 && planId && clientMac) {
     const qs = new URLSearchParams({ client_mac: clientMac, plan_id: planId });
-    const r = await fetch(`/api/free-plan/check?${qs.toString()}`);
+    if (apMac) qs.set("ap_mac", apMac);
+    const r = await fetch("/api/free-plan/check?" + qs.toString(), { method: "GET" });
     if (r.status === 409) {
       const j = await r.json().catch(() => ({}));
       const whenIso = j.last_used_at || null;
       let whenTxt = "";
       if (whenIso) {
         const d = new Date(whenIso);
-        if (!Number.isNaN(d.getTime())) whenTxt = d.toLocaleString("fr-FR");
+        if (!Number.isNaN(d.getTime())) whenTxt = " (" + d.toLocaleString("fr-FR") + ")";
       }
-      showToast(
-        `Ce plan gratuit a déjà été utilisé sur cet appareil${whenTxt ? " (Dernière utilisation : " + whenTxt + ")" : ""}. Merci de choisir un autre plan.`,
-        "warning"
-      );
+      showToast("Ce plan gratuit a déjà été utilisé sur cet appareil" + whenTxt + ". Merci de choisir un autre plan.", "warning", 7500);
       return;
     }
   }
 } catch (_) {}
 
-closeAllPayments();
+
+
+
+        closeAllPayments();
         card.classList.add("selected");
         const payment = card.querySelector(".plan-payment");
         if (payment) payment.classList.remove("hidden");
@@ -1298,8 +1324,6 @@ closeAllPayments();
               body: JSON.stringify({
                 phone: cleaned,
                 plan: planStr || planId || planPrice || "plan",
-                plan_id: planId || null,
-                client_mac: clientMac || null,
                 ap_mac: apMac || null,
               }),
             });
