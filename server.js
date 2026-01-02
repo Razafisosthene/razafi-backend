@@ -2810,6 +2810,7 @@ app.post("/api/send-payment", async (req, res) => {
   body.clientMAC ||
   null
 )?.toString().trim() || null;
+let pool_id = null;
   let phone = (body.phone || "").trim();
   const plan = body.plan;
 
@@ -2884,9 +2885,10 @@ try {
         .maybeSingle();
 
       if (!apErr && apRow?.pool_id) {
-        const pool_id = apRow.pool_id;
 
-        // 2) Pool info (capacity)
+ pool_id = apRow.pool_id; // ✅ garde la variable globale
+  const poolId = pool_id;  // ✅ variable locale pour les queries
+         // 2) Pool info (capacity)
         const { data: pool, error: poolErr } = await supabase
           .from("internet_pools")
           .select("id,name,capacity_max")
