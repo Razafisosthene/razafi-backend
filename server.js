@@ -880,6 +880,19 @@ function _tanazaNormalizeMac(mac) {
   return String(mac || "").trim().toUpperCase();
 }
 
+
+function normalizeMacColon(raw) {
+  try {
+    const s = String(raw || "").trim();
+    if (!s) return null;
+    const groups = s.replace(/-/g, ":").match(/[0-9A-Fa-f]{2}/g);
+    if (!groups || groups.length < 6) return null;
+    return groups.slice(0, 6).map(g => g.toUpperCase()).join(":");
+  } catch (_) {
+    return null;
+  }
+}
+
 function _tanazaCacheGet(mac) {
   const key = _tanazaNormalizeMac(mac);
   const ent = _tanazaDeviceCache.get(key);
@@ -2374,11 +2387,12 @@ app.post("/api/new/purchase", async (req, res) => {
         plan_id: plan.id,
         pool_id: pool_id || null,
         status: "pending",
-        client_mac: (body.client_mac || body.clientMac || null),
-        ap_mac: (body.ap_mac || body.apMac || null),
+        client_mac: (normalizeMacColon(body.client_mac || body.clientMac || body.clientMAC || null) || (body.client_mac || body.clientMac || body.clientMAC || null)),
+        ap_mac: (normalizeMacColon(body.ap_mac || body.apMac || null) || (body.ap_mac || body.apMac || null)),
         mvola_phone: phone || null,
         transaction_id: null,
         delivered_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       })
       .select()
       .single();
@@ -2462,15 +2476,19 @@ app.post("/api/new/authorize", async (req, res) => {
     // 3) FIRST CONNECTION → start voucher
     if (session.status === "pending") {
       const startedAt = now;
-      const expiresAt = new Date(
-        startedAt.getTime() + session.plans.duration_hours * 3600 * 1000
-      );
+      const durationMinutes = Number(session?.plans?.duration_minutes ?? NaN);
+const minutes = Number.isFinite(durationMinutes) && durationMinutes > 0
+  ? durationMinutes
+  : (Number(session?.plans?.duration_hours ?? 0) > 0 ? Number(session.plans.duration_hours) * 60 : 0);
+const expiresAt = new Date(startedAt.getTime() + minutes * 60 * 1000);
+
 
       // Atomic update
       const { error: upErr } = await supabase
         .from("voucher_sessions")
         .update({
           status: "active",
+          activated_at: startedAt.toISOString(),
           started_at: startedAt.toISOString(),
           expires_at: expiresAt.toISOString(),
           pool_id: apRow.pool_id
@@ -2641,6 +2659,131 @@ app.get("/api/dernier-code", async (req, res) => {
 });
 
 
+
+// ---------------------------------------------------------------------------
+// ENDPOINT: /api/voucher/activate
+// Model B: Start expiry ONLY when user clicks "Utiliser ce code" on the portal.
+// - If session is pending -> atomically activates it (activated_at/started_at/expires_at)
+// - If already active and not expired -> returns ok
+// - If expired -> returns 403
+// Fail-open philosophy is handled client-side (portal will still submit login_url if this fails).
+// ---------------------------------------------------------------------------
+app.post("/api/voucher/activate", async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const body = req.body || {};
+    const voucher_code = String(body.voucher_code || body.voucherCode || "").trim();
+    const client_mac_raw = body.client_mac || body.clientMac || body.clientMAC || "";
+    const ap_mac_raw = body.ap_mac || body.apMac || "";
+    const client_mac = normalizeMacColon(client_mac_raw) || String(client_mac_raw || "").trim() || null;
+    const ap_mac = normalizeMacColon(ap_mac_raw) || String(ap_mac_raw || "").trim() || null;
+
+    if (!voucher_code || !client_mac) {
+      return res.status(400).json({ error: "voucher_code and client_mac are required" });
+    }
+
+    // Load session + plan
+    const { data: session, error: sErr } = await supabase
+      .from("voucher_sessions")
+      .select("id,voucher_code,plan_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)")
+      .eq("voucher_code", voucher_code)
+      .eq("client_mac", client_mac)
+      .maybeSingle();
+
+    if (sErr || !session) {
+      return res.status(404).json({ error: "invalid_voucher", message: "Code invalide ou introuvable." });
+    }
+
+    if (session.status === "blocked") {
+      return res.status(403).json({ error: "voucher_blocked", message: "Ce code a été bloqué." });
+    }
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    // If already active: check expiry
+    if (session.status === "active") {
+      if (session.expires_at && String(session.expires_at) <= nowIso) {
+        // Best-effort mark as expired (fail-open)
+        try {
+          await supabase.from("voucher_sessions")
+            .update({ status: "expired", updated_at: nowIso })
+            .eq("id", session.id);
+        } catch (_) {}
+        return res.status(403).json({ error: "voucher_expired", message: "Ce code a expiré." });
+      }
+      return res.json({
+        ok: true,
+        already_active: true,
+        activated_at: session.activated_at || session.started_at || null,
+        expires_at: session.expires_at || null,
+      });
+    }
+
+    // Pending -> activate now
+    const durationMinutes = Number(session?.plans?.duration_minutes ?? NaN);
+    const minutes = Number.isFinite(durationMinutes) && durationMinutes > 0
+      ? durationMinutes
+      : (Number(session?.plans?.duration_hours ?? 0) > 0 ? Number(session.plans.duration_hours) * 60 : 0);
+
+    if (!minutes || minutes <= 0) {
+      return res.status(500).json({ error: "invalid_plan_duration", message: "Durée du plan invalide." });
+    }
+
+    const startedAt = now;
+    const expiresAt = new Date(startedAt.getTime() + minutes * 60 * 1000);
+
+    const updatePayload = {
+      status: "active",
+      activated_at: startedAt.toISOString(),
+      started_at: startedAt.toISOString(),
+      expires_at: expiresAt.toISOString(),
+      updated_at: startedAt.toISOString(),
+    };
+
+    // Keep the first AP that activated it (optional)
+    if (ap_mac && !session.ap_mac) updatePayload.ap_mac = ap_mac;
+
+    const { data: updated, error: upErr } = await supabase
+      .from("voucher_sessions")
+      .update(updatePayload)
+      .eq("id", session.id)
+      .eq("status", "pending")
+      .select("activated_at,expires_at,status,ap_mac")
+      .maybeSingle();
+
+    if (upErr) {
+      // race: someone activated in parallel -> re-read and return ok if active
+      const { data: reread } = await supabase
+        .from("voucher_sessions")
+        .select("status,activated_at,expires_at")
+        .eq("id", session.id)
+        .maybeSingle();
+      if (reread?.status === "active") {
+        return res.json({
+          ok: true,
+          already_active: true,
+          activated_at: reread.activated_at || null,
+          expires_at: reread.expires_at || null,
+        });
+      }
+      return res.status(409).json({ error: "voucher_already_activated" });
+    }
+
+    return res.json({
+      ok: true,
+      activated: true,
+      activated_at: updated?.activated_at || updatePayload.activated_at,
+      expires_at: updated?.expires_at || updatePayload.expires_at,
+    });
+
+  } catch (e) {
+    console.error("/api/voucher/activate error:", e?.message || e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // ENDPOINT: /api/voucher/last
 // Resume the latest voucher for a device (client_mac), preferring:
@@ -2652,8 +2795,10 @@ app.get("/api/voucher/last", async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-    const client_mac = String(req.query.client_mac || req.query.clientMac || "").trim();
-    const ap_mac = String(req.query.ap_mac || req.query.apMac || "").trim() || null;
+    const client_mac_raw = (req.query.client_mac || req.query.clientMac || "");
+    const client_mac = normalizeMacColon(client_mac_raw) || String(client_mac_raw).trim();
+    const ap_mac_raw = (req.query.ap_mac || req.query.apMac || "");
+    const ap_mac = normalizeMacColon(ap_mac_raw) || (String(ap_mac_raw).trim() || null);
     if (!client_mac) return res.status(400).json({ error: "client_mac query param required" });
 
     const nowIso = new Date().toISOString();
@@ -2783,7 +2928,8 @@ async function getFreePlanLastUse({ client_mac, plan_id }) {
 // Fail-open on errors (never break production).
 app.get("/api/free-plan/check", async (req, res) => {
   try {
-    const client_mac = String(req.query.client_mac || "").trim();
+    const client_mac_raw = (req.query.client_mac || "");
+    const client_mac = normalizeMacColon(client_mac_raw) || String(client_mac_raw).trim();
     const plan_id = String(req.query.plan_id || "").trim();
     if (!client_mac || !plan_id) {
       return res.status(400).json({ error: "client_mac and plan_id are required" });
@@ -2804,13 +2950,24 @@ app.get("/api/free-plan/check", async (req, res) => {
 // ---------------------------------------------------------------------------
 app.post("/api/send-payment", async (req, res) => {
   const body = req.body || {};
-  const client_mac = (
-  body.client_mac ||
-  body.clientMac ||
-  body.clientMAC ||
-  null
-)?.toString().trim() || null;
-let pool_id = null;
+
+  const client_mac_raw = (
+    body.client_mac ||
+    body.clientMac ||
+    body.clientMAC ||
+    null
+  );
+
+  const client_mac = normalizeMacColon(client_mac_raw) || (client_mac_raw ? String(client_mac_raw).trim() : null);
+
+  const plan_id_from_client = (
+    body.plan_id ||
+    body.planId ||
+    null
+  )?.toString().trim() || null;
+
+  let pool_id = null;
+
   let phone = (body.phone || "").trim();
   const plan = body.plan;
 
@@ -2862,7 +3019,8 @@ try {
     if (blocking && blocking.voucher_code) {
       const plan = blocking.plans || { id: blocking.plan_id };
       return res.status(409).json({
-        error: "existing_voucher",
+        ok: false,
+        error_code: "existing_voucher",
         code: blocking.voucher_code,
         status: blocking.status,
         delivered_at: blocking.delivered_at,
@@ -2960,11 +3118,26 @@ try {
     }
   }
 
+// Prefer authoritative plan price from DB (fixes free plan parsing issues).
+// Fail-open: if any error occurs, fallback to the string parsing below.
+let planRowFromDb = null;
+try {
+  if (supabase && plan_id_from_client) {
+    const { data: pRow, error: pErr } = await supabase
+      .from("plans")
+      .select("id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices")
+      .eq("id", plan_id_from_client)
+      .maybeSingle();
+    if (!pErr && pRow) planRowFromDb = pRow;
+  }
+} catch (_) {
+  planRowFromDb = null;
+}
 
-  
 
-  // derive amount from plan string when possible
-  let amount = null;
+
+// derive amount from plan string when possible
+  let amount = (planRowFromDb && planRowFromDb.price_ar !== undefined && planRowFromDb.price_ar !== null) ? Number(planRowFromDb.price_ar) : null;
   if (plan && typeof plan === "string") {
     try {
       const matches = Array.from(plan.matchAll(/(\d+)/g)).map(m => m[1]);
