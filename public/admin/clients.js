@@ -2,7 +2,8 @@
 // Helpers
 // -------------------------
 async function fetchJSON(url, opts = {}) {
-  const res = await fetch(url, { credentials: "include", ...opts });
+  // keep structure intact; ensure credentials cannot be overridden
+  const res = await fetch(url, { ...opts, credentials: "include" });
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { throw new Error("Server returned non-JSON"); }
@@ -92,15 +93,22 @@ function renderTable(items) {
     tr.style.cursor = "pointer";
     tr.dataset.id = it.id;
 
+    // ✅ AP: human name if available, else MAC, else —
+    const apDisplay = it.ap_name || it.ap_mac || "—";
+
     tr.innerHTML = `
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.client_mac || "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_price ?? "—")}</td>
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.ap_name || "—")}</td>
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(apDisplay)}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
+
+      <!-- ✅ status now is DB truth (view); just display it -->
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}</td>
+
+      <!-- ✅ remaining_seconds now is DB truth (view); just display it -->
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
     `;
@@ -153,9 +161,16 @@ async function openDetail(id) {
 
     const rows = [
       ["Client MAC", it.client_mac],
+
+      // ✅ Human AP + MAC visible as requested
       ["AP", it.ap_name || it.ap_mac || "—"],
+      ["AP MAC", it.ap_mac || "—"],
+
       ["Pool", it.pool?.name || it.pool_name || it.pool_id],
-      ["Status", it.status],
+
+      // ✅ status is DB truth (view); display as-is with fallback
+      ["Status", it.status || "—"],
+
       ["Voucher", it.voucher_code],
       ["MVola", it.mvola_phone],
       ["Created", fmtDate(it.created_at)],
@@ -163,7 +178,10 @@ async function openDetail(id) {
       ["Activated", fmtDate(it.activated_at)],
       ["Started", fmtDate(it.started_at)],
       ["Expires", fmtDate(it.expires_at)],
+
+      // ✅ remaining_seconds is DB truth (view); display as-is
       ["Remaining", fmtRemaining(it.remaining_seconds)],
+
       ["Plan", it.plans?.name || it.plan_name],
       ["Price", it.plans?.price ?? it.plan_price],
       ["Duration (min)", it.plans?.duration_minutes],

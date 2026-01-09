@@ -695,19 +695,12 @@ app.get("/api/admin/me", requireAdmin, async (req, res) => {
 // ------------------------------------------------------------
 // ADMIN: Clients (NEW system only)
 // Uses cookie session auth (credentials: include)
+// Option A: DB Truth View (vw_voucher_sessions_truth)
 // ------------------------------------------------------------
 
 function safeNumber(v, def = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : def;
-}
-
-function computeRemainingSeconds(expires_at) {
-  if (!expires_at) return null;
-  const t = new Date(expires_at).getTime();
-  if (!Number.isFinite(t)) return null;
-  const now = Date.now();
-  return Math.max(0, Math.floor((t - now) / 1000));
 }
 
 // GET /api/admin/clients?status=all|active|pending|expired&search=&limit=200&offset=0
@@ -720,17 +713,17 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     const limit = Math.min(500, Math.max(1, safeNumber(req.query.limit, 200)));
     const offset = Math.max(0, safeNumber(req.query.offset, 0));
 
-    const nowIso = new Date().toISOString();
-
-    // Build query
+    // ✅ Read from TRUTH VIEW (DB computed truth_status + remaining_seconds)
     let q = supabase
-      .from("voucher_sessions")
+      .from("vw_voucher_sessions_truth")
       .select(`
         id,
         voucher_code,
         plan_id,
         pool_id,
         status,
+        truth_status,
+        remaining_seconds,
         client_mac,
         ap_mac,
         delivered_at,
@@ -752,13 +745,10 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       );
     }
 
-    // Status filter:
-    // - "active/expired" based on expires_at
-    // - "pending" = started_at is null (you can tighten later)
-    if (status === "active") q = q.gt("expires_at", nowIso);
-    else if (status === "expired") q = q.lte("expires_at", nowIso);
-    else if (status === "pending") q = q.is("started_at", null);
-    else if (status !== "all") q = q.eq("status", status); // fallback if you store explicit statuses
+    // ✅ Filter by DB truth
+    if (status !== "all") {
+      q = q.eq("truth_status", status);
+    }
 
     const { data, error, count } = await q;
     if (error) return res.status(500).json({ error: error.message });
@@ -766,19 +756,32 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     const items = (data || []).map(r => ({
       id: r.id,
       voucher_code: r.voucher_code,
+
       client_mac: r.client_mac,
       ap_mac: r.ap_mac,
       ap_name: null, // will be filled from Tanaza (best-effort)
+
       pool_id: r.pool_id,
       pool_name: r.pool?.name || null,
+
       plan_id: r.plan_id,
       plan_name: r.plans?.name || null,
-      plan_price: r.plans?.price_ar ?? null, // ✅ FIX
-      status: r.status || null,
+      plan_price: r.plans?.price_ar ?? null,
+
+      // ✅ truth status for UI
+      stored_status: r.status || null,
+      truth_status: r.truth_status || null,
+      status: r.truth_status || r.status || null, // keep clients.js compatible
+
       mvola_phone: r.mvola_phone || null,
       started_at: r.started_at || null,
       expires_at: r.expires_at || null,
-      remaining_seconds: computeRemainingSeconds(r.expires_at),
+
+      // ✅ from DB view
+      remaining_seconds:
+        (r.remaining_seconds === 0 || r.remaining_seconds)
+          ? Number(r.remaining_seconds)
+          : null,
     }));
 
     // ✅ Add AP Name from Tanaza (best-effort, does not block response if Tanaza fails)
@@ -789,9 +792,9 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         for (const it of items) {
           const d = map?.[it.ap_mac];
           it.ap_name =
+            d?.label ||
             d?.name ||
             d?.deviceName ||
-            d?.label ||
             d?.hostname ||
             null;
         }
@@ -800,11 +803,11 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       console.error("ADMIN CLIENTS: Tanaza name lookup failed:", e?.message || e);
     }
 
-    // Summary (fast + simple)
+    // ✅ Summary based on DB truth_status
     const total = count || 0;
-    const active = items.filter(i => i.remaining_seconds != null && i.remaining_seconds > 0).length;
-    const expired = items.filter(i => i.remaining_seconds === 0).length;
-    const pending = items.filter(i => !i.started_at).length;
+    const active = items.filter(i => i.truth_status === "active").length;
+    const expired = items.filter(i => i.truth_status === "expired").length;
+    const pending = items.filter(i => i.truth_status === "pending").length;
 
     res.json({
       items,
@@ -816,7 +819,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
   }
 });
 
-// GET one voucher_session for detail view
+// GET one voucher_session for detail view (Truth View)
 app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
@@ -824,13 +827,15 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
     if (!id) return res.status(400).json({ error: "id required" });
 
     const { data, error } = await supabase
-      .from("voucher_sessions")
+      .from("vw_voucher_sessions_truth")
       .select(`
         id,
         voucher_code,
         plan_id,
         pool_id,
         status,
+        truth_status,
+        remaining_seconds,
         client_mac,
         ap_mac,
         delivered_at,
@@ -848,7 +853,9 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
     if (error) return res.status(500).json({ error: error.message });
     if (!data) return res.status(404).json({ error: "not_found" });
 
-    data.remaining_seconds = computeRemainingSeconds(data.expires_at);
+    // ✅ Make UI use DB truth
+    data.stored_status = data.status || null;
+    data.status = data.truth_status || data.status || null;
 
     // Best-effort Tanaza name for detail view too
     try {
@@ -856,9 +863,9 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
         const map = await tanazaBatchDevicesByMac([data.ap_mac]);
         const d = map?.[data.ap_mac];
         data.ap_name =
+          d?.label ||
           d?.name ||
           d?.deviceName ||
-          d?.label ||
           d?.hostname ||
           null;
       } else {
@@ -867,6 +874,12 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
     } catch (e) {
       data.ap_name = null;
     }
+
+    // normalize remaining_seconds to number/null
+    data.remaining_seconds =
+      (data.remaining_seconds === 0 || data.remaining_seconds)
+        ? Number(data.remaining_seconds)
+        : null;
 
     res.json({ item: data });
   } catch (e) {
@@ -920,6 +933,7 @@ app.delete("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => 
 // ===============================
 // NEW PORTAL — PLANS (DB ONLY)
 // ===============================
+
 
 // ---------------------------------------------------------------------------
 // PORTAL (User) — Context for AP/Pool (pool name + usage)
