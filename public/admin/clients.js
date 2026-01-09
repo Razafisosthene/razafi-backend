@@ -153,7 +153,7 @@ async function openDetail(id) {
 
     const rows = [
       ["Client MAC", it.client_mac],
-      ["AP MAC", it.ap_mac],
+      ["AP", it.ap_name || it.ap_mac || "—"],
       ["Pool", it.pool?.name || it.pool_name || it.pool_id],
       ["Status", it.status],
       ["Voucher", it.voucher_code],
