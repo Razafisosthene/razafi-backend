@@ -692,6 +692,193 @@ app.get("/api/admin/me", requireAdmin, async (req, res) => {
     email: req.admin.email,
   });
 });
+// ------------------------------------------------------------
+// ADMIN: Clients (NEW system only)
+// Uses cookie session auth (credentials: include)
+// ------------------------------------------------------------
+
+function safeNumber(v, def = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
+}
+
+function computeRemainingSeconds(expires_at) {
+  if (!expires_at) return null;
+  const t = new Date(expires_at).getTime();
+  if (!Number.isFinite(t)) return null;
+  const now = Date.now();
+  return Math.max(0, Math.floor((t - now) / 1000));
+}
+
+// GET /api/admin/clients?status=all|active|pending|expired&search=&limit=200&offset=0
+app.get("/api/admin/clients", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const status = String(req.query.status || "all").toLowerCase();
+    const search = String(req.query.search || "").trim();
+    const limit = Math.min(500, Math.max(1, safeNumber(req.query.limit, 200)));
+    const offset = Math.max(0, safeNumber(req.query.offset, 0));
+
+    const nowIso = new Date().toISOString();
+
+    // Build query
+    let q = supabase
+      .from("voucher_sessions")
+      .select(`
+        id,
+        voucher_code,
+        plan_id,
+        pool_id,
+        status,
+        client_mac,
+        ap_mac,
+        delivered_at,
+        activated_at,
+        started_at,
+        expires_at,
+        mvola_phone,
+        created_at,
+        plans:plans ( id, name, price, duration_minutes, data_mb, max_devices ),
+        pool:internet_pools ( id, name )
+      `, { count: "exact" })
+      .order("created_at", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (search) {
+      const s = search.replace(/%/g, "\\%"); // avoid wildcard injection
+      q = q.or(
+        `client_mac.ilike.%${s}%,voucher_code.ilike.%${s}%,mvola_phone.ilike.%${s}%`
+      );
+    }
+
+    // Status filter:
+    // - "active/expired" based on expires_at
+    // - "pending" = started_at is null (you can tighten later)
+    if (status === "active") q = q.gt("expires_at", nowIso);
+    else if (status === "expired") q = q.lte("expires_at", nowIso);
+    else if (status === "pending") q = q.is("started_at", null);
+    else if (status !== "all") q = q.eq("status", status); // fallback if you store explicit statuses
+
+    const { data, error, count } = await q;
+    if (error) return res.status(500).json({ error: error.message });
+
+    const items = (data || []).map(r => ({
+      id: r.id,
+      voucher_code: r.voucher_code,
+      client_mac: r.client_mac,
+      ap_mac: r.ap_mac,
+      pool_id: r.pool_id,
+      pool_name: r.pool?.name || null,
+      plan_id: r.plan_id,
+      plan_name: r.plans?.name || null,
+      plan_price: r.plans?.price ?? null,
+      status: r.status || null,
+      mvola_phone: r.mvola_phone || null,
+      started_at: r.started_at || null,
+      expires_at: r.expires_at || null,
+      remaining_seconds: computeRemainingSeconds(r.expires_at),
+    }));
+
+    // Summary (fast + simple)
+    const total = count || 0;
+    const active = items.filter(i => i.remaining_seconds != null && i.remaining_seconds > 0).length;
+    const expired = items.filter(i => i.remaining_seconds === 0).length;
+    const pending = items.filter(i => !i.started_at).length;
+
+    res.json({
+      items,
+      total,
+      summary: { total, active, pending, expired }
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// GET one voucher_session for detail view
+app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id required" });
+
+    const { data, error } = await supabase
+      .from("voucher_sessions")
+      .select(`
+        id,
+        voucher_code,
+        plan_id,
+        pool_id,
+        status,
+        client_mac,
+        ap_mac,
+        delivered_at,
+        activated_at,
+        started_at,
+        expires_at,
+        mvola_phone,
+        created_at,
+        plans:plans ( id, name, price, duration_minutes, data_mb, max_devices ),
+        pool:internet_pools ( id, name )
+      `)
+      .eq("id", id)
+      .maybeSingle();
+
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data) return res.status(404).json({ error: "not_found" });
+
+    data.remaining_seconds = computeRemainingSeconds(data.expires_at);
+
+    res.json({ item: data });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// DELETE voucher_session by id (hard delete in public.voucher_sessions)
+app.delete("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id required" });
+
+    // Fetch voucher_code (optional: for cleanup)
+    const { data: vs, error: e1 } = await supabase
+      .from("voucher_sessions")
+      .select("id, voucher_code")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (e1) return res.status(500).json({ error: e1.message });
+    if (!vs) return res.status(404).json({ error: "not_found" });
+
+    const voucher_code = vs.voucher_code;
+
+    // Optional cleanup (safe to remove if you want ONLY voucher_sessions delete)
+    const safeDelete = async (table, col, val) => {
+      const r = await supabase.from(table).delete().eq(col, val);
+      // If table doesn't exist, you may get an error; you can ignore it by commenting cleanup lines.
+      return r;
+    };
+
+    // Comment these two lines if you don't want cleanup:
+    await safeDelete("active_device_sessions", "voucher_code", voucher_code);
+    await safeDelete("voucher_devices", "voucher_code", voucher_code);
+
+    // Actual required delete:
+    const { error: e2 } = await supabase
+      .from("voucher_sessions")
+      .delete()
+      .eq("id", id);
+
+    if (e2) return res.status(500).json({ error: e2.message });
+
+    res.json({ ok: true, deleted_id: id, deleted_voucher_code: voucher_code });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
 
 // ===============================
 // NEW PORTAL — PLANS (DB ONLY)

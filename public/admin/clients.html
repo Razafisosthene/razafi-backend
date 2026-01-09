@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>RAZAFI Admin — Clients</title>
+  <link rel="stylesheet" href="/admin/admin.css" />
+</head>
+<body>
+  <div class="login-container">
+    <div class="card" style="max-width: 1200px; width: 96%;">
+      <div class="topbar">
+        <div class="title">
+          <h1 style="margin:0;">Clients</h1>
+          <div id="me" class="subtitle">Checking session...</div>
+        </div>
+        <div class="nav">
+          <a href="/admin/"><button type="button">Dashboard</button></a>
+          <a href="/admin/aps.html"><button type="button">APs</button></a>
+          <a href="/admin/plans.html"><button type="button">Plans</button></a>
+          <a href="/admin/pools.html"><button type="button">Pools</button></a>
+          <button id="logoutBtn" type="button">Logout</button>
+        </div>
+      </div>
+
+      <div class="sticky-bar">
+        <div class="filters">
+          <input id="search" class="filter-search" placeholder="Search: MAC / voucher code / MVola..." />
+          <select id="status" class="filter-select">
+            <option value="all">All</option>
+            <option value="active">Active</option>
+            <option value="pending">Pending</option>
+            <option value="expired">Expired</option>
+          </select>
+          <button id="refreshBtn" class="filter-btn" type="button">Refresh</button>
+          <button id="clearBtn" class="filter-btn" type="button">Clear</button>
+        </div>
+        <div id="hint" class="subtitle" style="margin:10px 0 0; opacity:.9;">
+          Click a row to see details. Delete is inside the detail view.
+        </div>
+      </div>
+
+      <div id="summary" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;"></div>
+
+      <div class="table-wrap">
+        <table id="table" style="width:100%; border-collapse: collapse; min-width: 980px;">
+          <thead>
+            <tr style="text-align:left;">
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Client MAC</th>
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Voucher</th>
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">MVola</th>
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Plan</th>
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Price</th>
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">AP MAC</th>
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Pool</th>
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Status</th>
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Remaining</th>
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Expires</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+
+      <div id="empty" class="subtitle" style="margin-top:14px; display:none;">
+        No records found.
+      </div>
+
+      <div id="error" class="error" style="display:none;"></div>
+    </div>
+  </div>
+
+  <!-- Detail Modal -->
+  <div id="modal" class="modal" style="display:none;">
+    <div class="card modal-card">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
+        <div>
+          <h1 style="margin:0; font-size:22px;">Client Details</h1>
+          <div id="modalSub" class="subtitle" style="margin:6px 0 0;">Loading...</div>
+        </div>
+        <button id="closeModalBtn" type="button" style="width:auto;">Close</button>
+      </div>
+
+      <hr style="opacity:.2; margin:14px 0;" />
+
+      <div id="detail" style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;"></div>
+
+      <div class="modal-actions">
+        <button id="deleteBtn" class="danger" type="button">Delete</button>
+        <button id="closeModalBtn2" type="button">Close</button>
+      </div>
+
+      <div id="modalErr" class="error" style="display:none;"></div>
+    </div>
+  </div>
+
+  <script src="./clients.js"></script>
+</body>
+</html>
