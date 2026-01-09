@@ -739,7 +739,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         expires_at,
         mvola_phone,
         created_at,
-        plans:plans ( id, name, price, duration_minutes, data_mb, max_devices ),
+        plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
         pool:internet_pools ( id, name )
       `, { count: "exact" })
       .order("created_at", { ascending: false })
@@ -768,17 +768,37 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       voucher_code: r.voucher_code,
       client_mac: r.client_mac,
       ap_mac: r.ap_mac,
+      ap_name: null, // will be filled from Tanaza (best-effort)
       pool_id: r.pool_id,
       pool_name: r.pool?.name || null,
       plan_id: r.plan_id,
       plan_name: r.plans?.name || null,
-      plan_price: r.plans?.price ?? null,
+      plan_price: r.plans?.price_ar ?? null, // ✅ FIX
       status: r.status || null,
       mvola_phone: r.mvola_phone || null,
       started_at: r.started_at || null,
       expires_at: r.expires_at || null,
       remaining_seconds: computeRemainingSeconds(r.expires_at),
     }));
+
+    // ✅ Add AP Name from Tanaza (best-effort, does not block response if Tanaza fails)
+    try {
+      const apMacs = Array.from(new Set(items.map(i => i.ap_mac).filter(Boolean)));
+      if (apMacs.length && typeof tanazaBatchDevicesByMac === "function") {
+        const map = await tanazaBatchDevicesByMac(apMacs);
+        for (const it of items) {
+          const d = map?.[it.ap_mac];
+          it.ap_name =
+            d?.name ||
+            d?.deviceName ||
+            d?.label ||
+            d?.hostname ||
+            null;
+        }
+      }
+    } catch (e) {
+      console.error("ADMIN CLIENTS: Tanaza name lookup failed:", e?.message || e);
+    }
 
     // Summary (fast + simple)
     const total = count || 0;
@@ -819,7 +839,7 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
         expires_at,
         mvola_phone,
         created_at,
-        plans:plans ( id, name, price, duration_minutes, data_mb, max_devices ),
+        plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
         pool:internet_pools ( id, name )
       `)
       .eq("id", id)
@@ -829,6 +849,24 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
     if (!data) return res.status(404).json({ error: "not_found" });
 
     data.remaining_seconds = computeRemainingSeconds(data.expires_at);
+
+    // Best-effort Tanaza name for detail view too
+    try {
+      if (data.ap_mac && typeof tanazaBatchDevicesByMac === "function") {
+        const map = await tanazaBatchDevicesByMac([data.ap_mac]);
+        const d = map?.[data.ap_mac];
+        data.ap_name =
+          d?.name ||
+          d?.deviceName ||
+          d?.label ||
+          d?.hostname ||
+          null;
+      } else {
+        data.ap_name = null;
+      }
+    } catch (e) {
+      data.ap_name = null;
+    }
 
     res.json({ item: data });
   } catch (e) {
@@ -858,7 +896,6 @@ app.delete("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => 
     // Optional cleanup (safe to remove if you want ONLY voucher_sessions delete)
     const safeDelete = async (table, col, val) => {
       const r = await supabase.from(table).delete().eq(col, val);
-      // If table doesn't exist, you may get an error; you can ignore it by commenting cleanup lines.
       return r;
     };
 

@@ -98,7 +98,7 @@ function renderTable(items) {
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_price ?? "—")}</td>
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.ap_mac || "—")}</td>
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.ap_name || "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
