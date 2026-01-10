@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>RAZAFI Admin — Revenue</title>
+  <link rel="stylesheet" href="/admin/admin.css" />
+</head>
+<body>
+  <div class="login-container">
+    <div class="card" style="max-width: 1200px; width: 96%;">
+      <div class="topbar">
+        <div class="title">
+          <h1 style="margin:0;">Revenue</h1>
+          <div id="me" class="subtitle">Checking session...</div>
+        </div>
+
+        <div class="nav">
+          <button id="dashBtn" type="button">Dashboard</button>
+          <button id="apsBtn" type="button">APs</button>
+          <button id="plansBtn" type="button">Plans</button>
+          <button id="poolsBtn" type="button">Pools</button>
+          <button id="clientsBtn" type="button">Clients</button>
+          <button id="revenueBtn" type="button" disabled style="opacity:.75; cursor:default;">Revenue</button>
+          <button id="logoutBtn" type="button">Logout</button>
+        </div>
+      </div>
+
+      <!-- Filters -->
+      <div class="sticky-bar">
+        <div class="filters" style="gap:10px; flex-wrap:wrap;">
+          <input id="search" class="filter-search" placeholder="Search: phone / voucher / request_ref / tx_ref / MAC..." />
+
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <label style="font-size:13px; opacity:.8;">From</label>
+            <input id="from" class="filter-select" type="date" style="min-width:160px;" />
+            <label style="font-size:13px; opacity:.8;">To</label>
+            <input id="to" class="filter-select" type="date" style="min-width:160px;" />
+          </div>
+
+          <button id="refreshBtn" class="filter-btn" type="button">Refresh</button>
+          <button id="clearBtn" class="filter-btn" type="button">Clear</button>
+        </div>
+
+        <div id="hint" class="subtitle" style="margin-top:8px;">
+          Paid-only. Summary/By Plan/By Pool are DB truth (all-time). Transactions can be filtered by date/search.
+        </div>
+      </div>
+
+      <!-- Summary -->
+      <div class="stats-row" style="margin-top: 14px;">
+        <div class="stat">
+          <div class="stat-label">Paid (all-time)</div>
+          <div id="paidTotal" class="stat-value">—</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Paid Transactions</div>
+          <div id="paidCount" class="stat-value">—</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Last Paid At</div>
+          <div id="lastPaidAt" class="stat-value" style="font-size:18px;">—</div>
+        </div>
+      </div>
+
+      <!-- Tabs -->
+      <div style="display:flex; gap:10px; margin-top: 16px; flex-wrap:wrap;">
+        <button id="tabTx" class="filter-btn" type="button">Transactions</button>
+        <button id="tabPlan" class="filter-btn" type="button">By Plan</button>
+        <button id="tabPool" class="filter-btn" type="button">By Pool</button>
+      </div>
+
+      <!-- Transactions -->
+      <div id="panelTx" style="margin-top: 14px;">
+        <div class="subtitle" style="margin: 6px 0 10px 0;">
+          Click a row to see details (read-only).
+        </div>
+
+        <div style="overflow:auto; border-radius:12px;">
+          <table id="txTable" style="width:100%; border-collapse: collapse; min-width: 1100px;">
+            <thead>
+              <tr style="text-align:left;">
+                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Date</th>
+                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Amount</th>
+                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Phone</th>
+                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Voucher</th>
+                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Plan</th>
+                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Pool</th>
+                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Client MAC</th>
+                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">AP MAC</th>
+                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Status</th>
+              </tr>
+            </thead>
+            <tbody id="txBody">
+              <tr><td colspan="9" style="padding:12px; opacity:.75;">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; gap:10px; flex-wrap:wrap;">
+          <div class="subtitle" id="txMeta">—</div>
+          <div style="display:flex; gap:10px;">
+            <button id="prevBtn" class="filter-btn" type="button">Prev</button>
+            <button id="nextBtn" class="filter-btn" type="button">Next</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- By Plan -->
+      <div id="panelPlan" style="margin-top: 14px; display:none;">
+        <div class="subtitle" style="margin: 6px 0 10px 0;">All-time paid revenue by plan (DB truth view).</div>
+        <div style="overflow:auto; border-radius:12px;">
+          <table id="planTable" style="width:100%; border-collapse: collapse; min-width: 700px;">
+            <thead>
+              <tr style="text-align:left;">
+                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Plan</th>
+                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Paid Tx</th>
+                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Amount (Ar)</th>
+                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Last Paid</th>
+              </tr>
+            </thead>
+            <tbody id="planBody">
+              <tr><td colspan="4" style="padding:12px; opacity:.75;">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- By Pool -->
+      <div id="panelPool" style="margin-top: 14px; display:none;">
+        <div class="subtitle" style="margin: 6px 0 10px 0;">All-time paid revenue by pool (DB truth view).</div>
+        <div style="overflow:auto; border-radius:12px;">
+          <table id="poolTable" style="width:100%; border-collapse: collapse; min-width: 700px;">
+            <thead>
+              <tr style="text-align:left;">
+                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Pool</th>
+                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Paid Tx</th>
+                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Amount (Ar)</th>
+                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Last Paid</th>
+              </tr>
+            </thead>
+            <tbody id="poolBody">
+              <tr><td colspan="4" style="padding:12px; opacity:.75;">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Detail Modal (read-only) -->
+  <div id="modal" class="modal" style="display:none;">
+    <div class="modal-card" style="max-width: 900px;">
+      <div class="modal-head">
+        <div>
+          <div class="modal-title" id="modalTitle">Transaction Details</div>
+          <div class="subtitle" id="modalSub">—</div>
+        </div>
+        <button id="closeModal" class="filter-btn" type="button">Close</button>
+      </div>
+
+      <div class="modal-body" id="modalBody">
+        <!-- filled by JS -->
+      </div>
+
+      <div class="modal-foot">
+        <button id="closeModal2" class="filter-btn" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/admin/revenue.js"></script>
+</body>
+</html>

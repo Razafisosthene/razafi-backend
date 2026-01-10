@@ -930,6 +930,154 @@ app.delete("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => 
   }
 });
 
+// ------------------------------------------------------------
+// ADMIN: Revenue (NEW system, DB truth views, PAID only)
+// Uses cookie session auth (credentials: include)
+// ------------------------------------------------------------
+
+
+function normalizeDateInput(d) {
+  // Accepts YYYY-MM-DD or ISO, returns ISO string or null
+  if (!d) return null;
+  const s = String(d).trim();
+  if (!s) return null;
+
+  // If user gives "2026-01-09", make it ISO start-of-day
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(s + "T00:00:00.000Z").toISOString();
+
+  const t = new Date(s).getTime();
+  if (!Number.isFinite(t)) return null;
+  return new Date(t).toISOString();
+}
+
+// GET /api/admin/revenue/transactions?from=&to=&search=&limit=200&offset=0
+// Reads ONLY from: public.v_revenue_paid_truth (paid only truth)
+app.get("/api/admin/revenue/transactions", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const from = normalizeDateInput(req.query.from);
+    const to = normalizeDateInput(req.query.to);
+    const search = String(req.query.search || "").trim();
+
+    const limit = Math.min(500, Math.max(1, safeNumber(req.query.limit, 200)));
+    const offset = Math.max(0, safeNumber(req.query.offset, 0));
+
+    let q = supabase
+      .from("v_revenue_paid_truth")
+      .select(
+        `
+        transaction_id,
+        transaction_created_at,
+        transaction_status,
+        amount_num,
+        currency,
+        mvola_phone,
+        request_ref,
+        transaction_reference,
+        server_correlation_id,
+        transaction_voucher,
+
+        voucher_session_id,
+        voucher_code,
+        client_mac,
+        ap_mac,
+
+        plan_id,
+        plan_name,
+        plan_price_ar,
+
+        pool_id,
+        pool_name
+        `,
+        { count: "exact" }
+      )
+      .order("transaction_created_at", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (from) q = q.gte("transaction_created_at", from);
+    if (to) q = q.lte("transaction_created_at", to);
+
+    if (search) {
+      const s = search.replace(/%/g, "\\%"); // avoid wildcard injection
+      q = q.or(
+        [
+          `mvola_phone.ilike.%${s}%`,
+          `voucher_code.ilike.%${s}%`,
+          `client_mac.ilike.%${s}%`,
+          `ap_mac.ilike.%${s}%`,
+          `request_ref.ilike.%${s}%`,
+          `transaction_reference.ilike.%${s}%`,
+          `server_correlation_id.ilike.%${s}%`,
+          `transaction_voucher.ilike.%${s}%`,
+        ].join(",")
+      );
+    }
+
+    const { data, error, count } = await q;
+    if (error) return res.status(500).json({ error: error.message });
+
+    res.json({ items: data || [], total: count || 0 });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// GET /api/admin/revenue/by-plan
+// Reads ONLY from: public.v_revenue_paid_by_plan (paid only truth, all-time)
+app.get("/api/admin/revenue/by-plan", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const { data, error } = await supabase
+      .from("v_revenue_paid_by_plan")
+      .select("*")
+      .order("total_amount_ar", { ascending: false });
+
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ items: data || [] });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// GET /api/admin/revenue/by-pool
+// Reads ONLY from: public.v_revenue_paid_by_pool (paid only truth, all-time)
+app.get("/api/admin/revenue/by-pool", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const { data, error } = await supabase
+      .from("v_revenue_paid_by_pool")
+      .select("*")
+      .order("total_amount_ar", { ascending: false });
+
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ items: data || [] });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// GET /api/admin/revenue/totals
+// Reads ONLY from: public.v_revenue_paid_totals (paid only truth, all-time)
+app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const { data, error } = await supabase
+      .from("v_revenue_paid_totals")
+      .select("*")
+      .maybeSingle();
+
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ item: data || { paid_transactions: 0, total_amount_ar: 0 } });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+
 // ===============================
 // NEW PORTAL — PLANS (DB ONLY)
 // ===============================
