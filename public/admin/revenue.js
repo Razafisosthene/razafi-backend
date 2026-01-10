@@ -31,37 +31,6 @@ function fmtAr(n) {
   return x.toLocaleString() + " Ar";
 }
 
-// Try to show human names even if API column names change
-function getPlanLabel(it) {
-  if (!it) return null;
-  return (
-    it.plan_name ??
-    it.plan ??
-    it.plan_label ??
-    it.plan_title ??
-    it.planName ??
-    it.plan?.name ??
-    it.plans?.name ??
-    it.name ??
-    null
-  );
-}
-
-function getPoolLabel(it) {
-  if (!it) return null;
-  return (
-    it.pool_name ??
-    it.pool ??
-    it.pool_label ??
-    it.pool_title ??
-    it.poolName ??
-    it.pool?.name ??
-    it.internet_pools?.name ??
-    it.name ??
-    null
-  );
-}
-
 function dateToISOStart(d) {
   if (!d) return "";
   // input type="date" gives YYYY-MM-DD
@@ -73,6 +42,40 @@ function dateToISOEnd(d) {
   // end of day
   return new Date(d + "T23:59:59.999Z").toISOString();
 }
+
+function getCurrentFilters() {
+  const search = String(document.getElementById("search")?.value || "").trim();
+  const fromRaw = String(document.getElementById("from")?.value || "").trim();
+  const toRaw = String(document.getElementById("to")?.value || "").trim();
+  const from = dateToISOStart(fromRaw);
+  const to = dateToISOEnd(toRaw);
+  return { search, from, to };
+}
+
+function buildFilterQS(filters) {
+  const qs = new URLSearchParams();
+  if (filters.search) qs.set("search", filters.search);
+  if (filters.from) qs.set("from", filters.from);
+  if (filters.to) qs.set("to", filters.to);
+  return qs;
+}
+
+function labelPlan(it) {
+  const n = it?.plan_name || it?.planName || it?.plan || it?.name || null;
+  if (n) return String(n);
+  const pid = it?.plan_id || it?.planId || null;
+  if (pid) return `#${String(pid).slice(0, 8)}`;
+  return "—";
+}
+
+function labelPool(it) {
+  const n = it?.pool_name || it?.poolName || it?.pool || it?.name || null;
+  if (n) return String(n);
+  const pid = it?.pool_id || it?.poolId || null;
+  if (pid) return `#${String(pid).slice(0, 8)}`;
+  return "—";
+}
+
 
 // -------------------------
 // Session gate
@@ -184,11 +187,15 @@ function wireModal() {
 // -------------------------
 async function loadTotals() {
   try {
-    const r = await fetchJSON("/api/admin/revenue/totals");
+    const filters = getCurrentFilters();
+    const qs = buildFilterQS(filters);
+    const url = "/api/admin/revenue/totals" + (qs.toString() ? `?${qs}` : "");
+    const r = await fetchJSON(url);
     const it = r.item || {};
-    document.getElementById("paidTotal").textContent = fmtAr(it.total_amount_ar ?? 0);
-    document.getElementById("paidCount").textContent = String(it.paid_transactions ?? 0);
-    document.getElementById("lastPaidAt").textContent = fmtDate(it.last_paid_at);
+    // Totals MUST match current filters (date/search)
+    document.getElementById("paidTotal").textContent = fmtAr(it.total_amount_ar ?? it.paid_amount_ar ?? 0);
+    document.getElementById("paidCount").textContent = String(it.paid_transactions ?? it.paid_count ?? 0);
+    document.getElementById("lastPaidAt").textContent = fmtDate(it.last_paid_at ?? it.last_paid ?? it.last_paid_at_utc);
   } catch (e) {
     document.getElementById("paidTotal").textContent = "—";
     document.getElementById("paidCount").textContent = "—";
@@ -200,7 +207,10 @@ async function loadByPlan() {
   const body = document.getElementById("planBody");
   body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Loading...</td></tr>`;
   try {
-    const r = await fetchJSON("/api/admin/revenue/by-plan");
+    const filters = getCurrentFilters();
+    const qs = buildFilterQS(filters);
+    const url = "/api/admin/revenue/by-plan" + (qs.toString() ? `?${qs}` : "");
+    const r = await fetchJSON(url);
     const items = r.items || [];
     if (!items.length) {
       body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">No data.</td></tr>`;
@@ -208,10 +218,10 @@ async function loadByPlan() {
     }
     body.innerHTML = items.map(it => `
       <tr>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(getPlanLabel(it) || "—")}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(labelPlan(it))}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.paid_transactions ?? 0)}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08); font-weight:700;">${fmtAr(it.total_amount_ar ?? 0)}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtDate(it.last_paid_at)}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08); font-weight:700;">${fmtAr(it.total_amount_ar ?? it.paid_amount_ar ?? it.amount_ar ?? 0)}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtDate(it.last_paid_at ?? it.last_paid)}</td>
       </tr>
     `).join("");
   } catch (e) {
@@ -223,7 +233,10 @@ async function loadByPool() {
   const body = document.getElementById("poolBody");
   body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Loading...</td></tr>`;
   try {
-    const r = await fetchJSON("/api/admin/revenue/by-pool");
+    const filters = getCurrentFilters();
+    const qs = buildFilterQS(filters);
+    const url = "/api/admin/revenue/by-pool" + (qs.toString() ? `?${qs}` : "");
+    const r = await fetchJSON(url);
     const items = r.items || [];
     if (!items.length) {
       body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">No data.</td></tr>`;
@@ -231,10 +244,10 @@ async function loadByPool() {
     }
     body.innerHTML = items.map(it => `
       <tr>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(getPoolLabel(it) || "—")}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(labelPool(it))}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.paid_transactions ?? 0)}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08); font-weight:700;">${fmtAr(it.total_amount_ar ?? 0)}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtDate(it.last_paid_at)}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08); font-weight:700;">${fmtAr(it.total_amount_ar ?? it.paid_amount_ar ?? it.amount_ar ?? 0)}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtDate(it.last_paid_at ?? it.last_paid)}</td>
       </tr>
     `).join("");
   } catch (e) {
@@ -275,13 +288,13 @@ async function loadTransactions() {
       <tr data-i="${idx}" style="cursor:pointer;">
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtDate(it.transaction_created_at)}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08); font-weight:700;">${fmtAr(it.amount_num)}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.payer_phone || it.mvola_phone || it.phone || "—")}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || it.transaction_voucher || "—")}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(getPlanLabel(it) || "—")}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(getPoolLabel(it) || "—")}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(labelPlan(it))}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(labelPool(it))}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.client_mac || "—")}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.ap_mac || "—")}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.transaction_status || "—")}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.transaction_status || it.status || "—")}</td>
       </tr>
     `).join("");
 
@@ -309,7 +322,7 @@ function showDetail(it) {
   const rows = [
     ["Amount", fmtAr(it.amount_num), "Currency", esc(it.currency || "—")],
     ["Status", esc(it.transaction_status || "—"), "Phone", esc(it.mvola_phone || "—")],
-    ["Pool", esc(getPoolLabel(it) || "—"), "Plan", esc(getPlanLabel(it) || "—")],
+    ["Pool", esc(it.pool_name || "—"), "Plan", esc(it.plan_name || "—")],
     ["Voucher", esc(it.voucher_code || it.transaction_voucher || "—"), "Voucher Session", esc(it.voucher_session_id || "—")],
     ["Client MAC", esc(it.client_mac || "—"), "AP MAC", esc(it.ap_mac || "—")],
     ["request_ref", esc(it.request_ref || "—"), "tx_ref", esc(it.transaction_reference || "—")],
