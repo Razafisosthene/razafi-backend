@@ -369,12 +369,12 @@ async function loadAll() {
 // -------------------------
 // Boot
 // -------------------------
-(async function init() {
-  await requireAdmin();
+document.addEventListener("DOMContentLoaded", async () => {
+await requireAdmin();
   wireNav();
   wireTabs();
   wireFilters();
   wireModal();
   setTab("tx");
   await loadAll();
-})();
+});
