@@ -33,14 +33,25 @@ function fmtAr(n) {
 
 function dateToISOStart(d) {
   if (!d) return "";
-  // input type="date" gives YYYY-MM-DD
   return new Date(d + "T00:00:00.000Z").toISOString();
 }
 
 function dateToISOEnd(d) {
   if (!d) return "";
-  // end of day
   return new Date(d + "T23:59:59.999Z").toISOString();
+}
+
+// ✅ Common filter params for ALL endpoints
+function buildCommonParams() {
+  const search = document.getElementById("search")?.value?.trim() || "";
+  const fromD = document.getElementById("from")?.value || "";
+  const toD = document.getElementById("to")?.value || "";
+
+  const params = new URLSearchParams();
+  if (search) params.set("search", search);
+  if (fromD) params.set("from", dateToISOStart(fromD));
+  if (toD) params.set("to", dateToISOEnd(toD));
+  return params;
 }
 
 // -------------------------
@@ -94,12 +105,13 @@ function wireTabs() {
 }
 
 function wireFilters() {
-  const refresh = () => {
+  // ✅ "Refresh" refreshes everything
+  const refreshAll = () => {
     txOffset = 0;
     loadAll();
   };
 
-  document.getElementById("refreshBtn").onclick = refresh;
+  document.getElementById("refreshBtn").onclick = refreshAll;
 
   document.getElementById("clearBtn").onclick = () => {
     document.getElementById("search").value = "";
@@ -109,25 +121,27 @@ function wireFilters() {
     loadAll();
   };
 
-  // Debounce search
+  // ✅ Debounce search -> refresh ALL panels
   let t = null;
   document.getElementById("search").addEventListener("input", () => {
     clearTimeout(t);
     t = setTimeout(() => {
       txOffset = 0;
-      loadTransactions();
-    }, 300);
+      loadAll();
+    }, 350);
   });
 
+  // ✅ date change -> refresh ALL panels
   document.getElementById("from").addEventListener("change", () => {
     txOffset = 0;
-    loadTransactions();
+    loadAll();
   });
   document.getElementById("to").addEventListener("change", () => {
     txOffset = 0;
-    loadTransactions();
+    loadAll();
   });
 
+  // ✅ pagination affects only transactions (fast)
   document.getElementById("prevBtn").onclick = () => {
     txOffset = Math.max(0, txOffset - txLimit);
     loadTransactions();
@@ -153,7 +167,8 @@ function wireModal() {
 // -------------------------
 async function loadTotals() {
   try {
-    const r = await fetchJSON("/api/admin/revenue/totals");
+    const params = buildCommonParams();
+    const r = await fetchJSON("/api/admin/revenue/totals?" + params.toString());
     const it = r.item || {};
     document.getElementById("paidTotal").textContent = fmtAr(it.total_amount_ar ?? 0);
     document.getElementById("paidCount").textContent = String(it.paid_transactions ?? 0);
@@ -169,7 +184,8 @@ async function loadByPlan() {
   const body = document.getElementById("planBody");
   body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Loading...</td></tr>`;
   try {
-    const r = await fetchJSON("/api/admin/revenue/by-plan");
+    const params = buildCommonParams();
+    const r = await fetchJSON("/api/admin/revenue/by-plan?" + params.toString());
     const items = r.items || [];
     if (!items.length) {
       body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">No data.</td></tr>`;
@@ -192,7 +208,8 @@ async function loadByPool() {
   const body = document.getElementById("poolBody");
   body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Loading...</td></tr>`;
   try {
-    const r = await fetchJSON("/api/admin/revenue/by-pool");
+    const params = buildCommonParams();
+    const r = await fetchJSON("/api/admin/revenue/by-pool?" + params.toString());
     const items = r.items || [];
     if (!items.length) {
       body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">No data.</td></tr>`;
@@ -254,7 +271,6 @@ async function loadTransactions() {
       </tr>
     `).join("");
 
-    // row click -> modal
     Array.from(body.querySelectorAll("tr[data-i]")).forEach(tr => {
       tr.addEventListener("click", () => {
         const i = Number(tr.getAttribute("data-i"));
@@ -285,8 +301,12 @@ function showDetail(it) {
     ["correlation_id", esc(it.server_correlation_id || "—"), "", ""],
   ];
 
-  const meta = it.metadata ? `<pre style="white-space:pre-wrap; background: rgba(0,0,0,.04); padding:12px; border-radius:12px;">${esc(JSON.stringify(it.metadata, null, 2))}</pre>` : `<div class="subtitle">No metadata.</div>`;
-  const desc = it.description ? `<div style="padding:10px; background: rgba(0,0,0,.04); border-radius:12px;">${esc(it.description)}</div>` : `<div class="subtitle">No description.</div>`;
+  const meta = it.metadata
+    ? `<pre style="white-space:pre-wrap; background: rgba(0,0,0,.04); padding:12px; border-radius:12px;">${esc(JSON.stringify(it.metadata, null, 2))}</pre>`
+    : `<div class="subtitle">No metadata.</div>`;
+  const desc = it.description
+    ? `<div style="padding:10px; background: rgba(0,0,0,.04); border-radius:12px;">${esc(it.description)}</div>`
+    : `<div class="subtitle">No description.</div>`;
 
   document.getElementById("modalBody").innerHTML = `
     <div class="grid2">

@@ -1047,10 +1047,16 @@ app.get("/api/admin/revenue/by-pool", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
+    const from = normalizeDateInput(req.query.from);
+    const to = normalizeDateInput(req.query.to);
+    const search = String(req.query.search || "").trim() || null;
+
     const { data, error } = await supabase
-      .from("v_revenue_paid_by_pool")
-      .select("*")
-      .order("total_amount_ar", { ascending: false });
+      .rpc("fn_revenue_paid_by_pool_filtered", {
+        p_from: from || null,
+        p_to: to || null,
+        p_search: search,
+      });
 
     if (error) return res.status(500).json({ error: error.message });
     res.json({ items: data || [] });
@@ -1065,17 +1071,27 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
+    const from = normalizeDateInput(req.query.from);
+    const to = normalizeDateInput(req.query.to);
+    const search = String(req.query.search || "").trim() || null;
+
     const { data, error } = await supabase
-      .from("v_revenue_paid_totals")
-      .select("*")
-      .maybeSingle();
+      .rpc("fn_revenue_paid_totals_filtered", {
+        p_from: from || null,
+        p_to: to || null,
+        p_search: search,
+      });
 
     if (error) return res.status(500).json({ error: error.message });
-    res.json({ item: data || { paid_transactions: 0, total_amount_ar: 0 } });
+
+    // rpc returns an array of rows
+    const item = (data && data[0]) ? data[0] : { paid_transactions: 0, total_amount_ar: 0 };
+    res.json({ item });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
 });
+
 
 
 // ===============================
