@@ -33,49 +33,26 @@ function fmtAr(n) {
 
 function dateToISOStart(d) {
   if (!d) return "";
-  // input type="date" gives YYYY-MM-DD
   return new Date(d + "T00:00:00.000Z").toISOString();
 }
 
 function dateToISOEnd(d) {
   if (!d) return "";
-  // end of day
   return new Date(d + "T23:59:59.999Z").toISOString();
 }
 
-function getCurrentFilters() {
-  const search = String(document.getElementById("search")?.value || "").trim();
-  const fromRaw = String(document.getElementById("from")?.value || "").trim();
-  const toRaw = String(document.getElementById("to")?.value || "").trim();
-  const from = dateToISOStart(fromRaw);
-  const to = dateToISOEnd(toRaw);
-  return { search, from, to };
-}
+// ✅ Common filter params for ALL endpoints
+function buildCommonParams() {
+  const search = document.getElementById("search")?.value?.trim() || "";
+  const fromD = document.getElementById("from")?.value || "";
+  const toD = document.getElementById("to")?.value || "";
 
-function buildFilterQS(filters) {
-  const qs = new URLSearchParams();
-  if (filters.search) qs.set("search", filters.search);
-  if (filters.from) qs.set("from", filters.from);
-  if (filters.to) qs.set("to", filters.to);
-  return qs;
+  const params = new URLSearchParams();
+  if (search) params.set("search", search);
+  if (fromD) params.set("from", dateToISOStart(fromD));
+  if (toD) params.set("to", dateToISOEnd(toD));
+  return params;
 }
-
-function labelPlan(it) {
-  const n = it?.plan_name || it?.planName || it?.plan || it?.name || null;
-  if (n) return String(n);
-  const pid = it?.plan_id || it?.planId || null;
-  if (pid) return `#${String(pid).slice(0, 8)}`;
-  return "—";
-}
-
-function labelPool(it) {
-  const n = it?.pool_name || it?.poolName || it?.pool || it?.name || null;
-  if (n) return String(n);
-  const pid = it?.pool_id || it?.poolId || null;
-  if (pid) return `#${String(pid).slice(0, 8)}`;
-  return "—";
-}
-
 
 // -------------------------
 // Session gate
@@ -128,12 +105,13 @@ function wireTabs() {
 }
 
 function wireFilters() {
-  const refresh = () => {
+  // ✅ "Refresh" refreshes everything
+  const refreshAll = () => {
     txOffset = 0;
     loadAll();
   };
 
-  document.getElementById("refreshBtn").onclick = refresh;
+  document.getElementById("refreshBtn").onclick = refreshAll;
 
   document.getElementById("clearBtn").onclick = () => {
     document.getElementById("search").value = "";
@@ -143,25 +121,27 @@ function wireFilters() {
     loadAll();
   };
 
-  // Debounce search
+  // ✅ Debounce search -> refresh ALL panels
   let t = null;
   document.getElementById("search").addEventListener("input", () => {
     clearTimeout(t);
     t = setTimeout(() => {
       txOffset = 0;
-      loadTransactions();
-    }, 300);
+      loadAll();
+    }, 350);
   });
 
+  // ✅ date change -> refresh ALL panels
   document.getElementById("from").addEventListener("change", () => {
     txOffset = 0;
-    loadTransactions();
+    loadAll();
   });
   document.getElementById("to").addEventListener("change", () => {
     txOffset = 0;
-    loadTransactions();
+    loadAll();
   });
 
+  // ✅ pagination affects only transactions (fast)
   document.getElementById("prevBtn").onclick = () => {
     txOffset = Math.max(0, txOffset - txLimit);
     loadTransactions();
@@ -187,15 +167,12 @@ function wireModal() {
 // -------------------------
 async function loadTotals() {
   try {
-    const filters = getCurrentFilters();
-    const qs = buildFilterQS(filters);
-    const url = "/api/admin/revenue/totals" + (qs.toString() ? `?${qs}` : "");
-    const r = await fetchJSON(url);
+    const params = buildCommonParams();
+    const r = await fetchJSON("/api/admin/revenue/totals?" + params.toString());
     const it = r.item || {};
-    // Totals MUST match current filters (date/search)
-    document.getElementById("paidTotal").textContent = fmtAr(it.total_amount_ar ?? it.paid_amount_ar ?? 0);
-    document.getElementById("paidCount").textContent = String(it.paid_transactions ?? it.paid_count ?? 0);
-    document.getElementById("lastPaidAt").textContent = fmtDate(it.last_paid_at ?? it.last_paid ?? it.last_paid_at_utc);
+    document.getElementById("paidTotal").textContent = fmtAr(it.total_amount_ar ?? 0);
+    document.getElementById("paidCount").textContent = String(it.paid_transactions ?? 0);
+    document.getElementById("lastPaidAt").textContent = fmtDate(it.last_paid_at);
   } catch (e) {
     document.getElementById("paidTotal").textContent = "—";
     document.getElementById("paidCount").textContent = "—";
@@ -207,10 +184,8 @@ async function loadByPlan() {
   const body = document.getElementById("planBody");
   body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Loading...</td></tr>`;
   try {
-    const filters = getCurrentFilters();
-    const qs = buildFilterQS(filters);
-    const url = "/api/admin/revenue/by-plan" + (qs.toString() ? `?${qs}` : "");
-    const r = await fetchJSON(url);
+    const params = buildCommonParams();
+    const r = await fetchJSON("/api/admin/revenue/by-plan?" + params.toString());
     const items = r.items || [];
     if (!items.length) {
       body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">No data.</td></tr>`;
@@ -218,10 +193,10 @@ async function loadByPlan() {
     }
     body.innerHTML = items.map(it => `
       <tr>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(labelPlan(it))}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.paid_transactions ?? 0)}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08); font-weight:700;">${fmtAr(it.total_amount_ar ?? it.paid_amount_ar ?? it.amount_ar ?? 0)}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtDate(it.last_paid_at ?? it.last_paid)}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08); font-weight:700;">${fmtAr(it.total_amount_ar ?? 0)}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtDate(it.last_paid_at)}</td>
       </tr>
     `).join("");
   } catch (e) {
@@ -233,10 +208,8 @@ async function loadByPool() {
   const body = document.getElementById("poolBody");
   body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Loading...</td></tr>`;
   try {
-    const filters = getCurrentFilters();
-    const qs = buildFilterQS(filters);
-    const url = "/api/admin/revenue/by-pool" + (qs.toString() ? `?${qs}` : "");
-    const r = await fetchJSON(url);
+    const params = buildCommonParams();
+    const r = await fetchJSON("/api/admin/revenue/by-pool?" + params.toString());
     const items = r.items || [];
     if (!items.length) {
       body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">No data.</td></tr>`;
@@ -244,10 +217,10 @@ async function loadByPool() {
     }
     body.innerHTML = items.map(it => `
       <tr>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(labelPool(it))}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.paid_transactions ?? 0)}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08); font-weight:700;">${fmtAr(it.total_amount_ar ?? it.paid_amount_ar ?? it.amount_ar ?? 0)}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtDate(it.last_paid_at ?? it.last_paid)}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08); font-weight:700;">${fmtAr(it.total_amount_ar ?? 0)}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtDate(it.last_paid_at)}</td>
       </tr>
     `).join("");
   } catch (e) {
@@ -288,17 +261,16 @@ async function loadTransactions() {
       <tr data-i="${idx}" style="cursor:pointer;">
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtDate(it.transaction_created_at)}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08); font-weight:700;">${fmtAr(it.amount_num)}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.payer_phone || it.mvola_phone || it.phone || "—")}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || it.transaction_voucher || "—")}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(labelPlan(it))}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(labelPool(it))}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.client_mac || "—")}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.ap_mac || "—")}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.transaction_status || it.status || "—")}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.transaction_status || "—")}</td>
       </tr>
     `).join("");
 
-    // row click -> modal
     Array.from(body.querySelectorAll("tr[data-i]")).forEach(tr => {
       tr.addEventListener("click", () => {
         const i = Number(tr.getAttribute("data-i"));
@@ -329,8 +301,12 @@ function showDetail(it) {
     ["correlation_id", esc(it.server_correlation_id || "—"), "", ""],
   ];
 
-  const meta = it.metadata ? `<pre style="white-space:pre-wrap; background: rgba(0,0,0,.04); padding:12px; border-radius:12px;">${esc(JSON.stringify(it.metadata, null, 2))}</pre>` : `<div class="subtitle">No metadata.</div>`;
-  const desc = it.description ? `<div style="padding:10px; background: rgba(0,0,0,.04); border-radius:12px;">${esc(it.description)}</div>` : `<div class="subtitle">No description.</div>`;
+  const meta = it.metadata
+    ? `<pre style="white-space:pre-wrap; background: rgba(0,0,0,.04); padding:12px; border-radius:12px;">${esc(JSON.stringify(it.metadata, null, 2))}</pre>`
+    : `<div class="subtitle">No metadata.</div>`;
+  const desc = it.description
+    ? `<div style="padding:10px; background: rgba(0,0,0,.04); border-radius:12px;">${esc(it.description)}</div>`
+    : `<div class="subtitle">No description.</div>`;
 
   document.getElementById("modalBody").innerHTML = `
     <div class="grid2">
@@ -369,12 +345,12 @@ async function loadAll() {
 // -------------------------
 // Boot
 // -------------------------
-document.addEventListener("DOMContentLoaded", async () => {
-await requireAdmin();
+(async function init() {
+  await requireAdmin();
   wireNav();
   wireTabs();
   wireFilters();
   wireModal();
   setTab("tx");
   await loadAll();
-});
+})();
