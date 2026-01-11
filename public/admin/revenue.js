@@ -286,51 +286,131 @@ async function loadTransactions() {
 
 function showDetail(it) {
   if (!it) return;
+
   const modal = document.getElementById("modal");
+  const bodyEl = document.getElementById("modalBody");
+
+  // Title / subtitle
   document.getElementById("modalTitle").textContent = "Transaction Details";
+  const txId = it.transaction_id || "—";
   document.getElementById("modalSub").textContent =
-    `Transaction ${it.transaction_id || "—"} • ${fmtDate(it.transaction_created_at)}`;
+    `Transaction ${txId} • ${fmtDate(it.transaction_created_at)}`;
 
-  const rows = [
-    ["Amount", fmtAr(it.amount_num), "Currency", esc(it.currency || "—")],
-    ["Status", esc(it.transaction_status || "—"), "Phone", esc(it.mvola_phone || "—")],
-    ["Pool", esc(it.pool_name || "—"), "Plan", esc(it.plan_name || "—")],
-    ["Voucher", esc(it.voucher_code || it.transaction_voucher || "—"), "Voucher Session", esc(it.voucher_session_id || "—")],
-    ["Client MAC", esc(it.client_mac || "—"), "AP MAC", esc(it.ap_mac || "—")],
-    ["request_ref", esc(it.request_ref || "—"), "tx_ref", esc(it.transaction_reference || "—")],
-    ["correlation_id", esc(it.server_correlation_id || "—"), "", ""],
-  ];
+  // Helpers for this modal
+  const val = (x) => (x === null || x === undefined || x === "" ? "—" : x);
+  const kv = (k, v, strong = false) => `
+    <div style="display:flex; flex-direction:column; gap:6px; min-width: 220px; flex:1;">
+      <div style="opacity:.7; font-size:12px;">${esc(k)}</div>
+      <div style="${strong ? "font-weight:900;" : "font-weight:700;"}">${v}</div>
+    </div>
+  `;
+  const row2 = (a, b) => `
+    <div style="display:flex; gap:14px; flex-wrap:wrap;">
+      ${a}
+      ${b}
+    </div>
+  `;
+  const section = (title, inner, options = {}) => {
+    const { muted=false } = options;
+    return `
+      <div style="margin-top:14px;">
+        <div style="font-weight:900; font-size:13px; letter-spacing:.2px; ${muted ? "opacity:.75;" : ""} margin-bottom:8px;">
+          ${esc(title)}
+        </div>
+        ${inner}
+      </div>
+    `;
+  };
+  const pill = (text, tone="neutral") => {
+    const bg = tone === "ok" ? "rgba(80,200,120,.18)"
+      : tone === "warn" ? "rgba(255,196,0,.22)"
+      : tone === "bad" ? "rgba(255,80,80,.18)"
+      : "rgba(0,0,0,.06)";
+    const fg = tone === "bad" ? "rgba(160, 20, 20, .95)"
+      : "rgba(0,0,0,.75)";
+    return `<span style="display:inline-block; padding:6px 10px; border-radius:999px; background:${bg}; color:${fg}; font-weight:900; font-size:12px;">${esc(text)}</span>`;
+  };
 
-  const meta = it.metadata
-    ? `<pre style="white-space:pre-wrap; background: rgba(0,0,0,.04); padding:12px; border-radius:12px;">${esc(JSON.stringify(it.metadata, null, 2))}</pre>`
-    : `<div class="subtitle">No metadata.</div>`;
-  const desc = it.description
-    ? `<div style="padding:10px; background: rgba(0,0,0,.04); border-radius:12px;">${esc(it.description)}</div>`
+  // Core values (human-first)
+  const amount = fmtAr(it.amount_num);
+  const status = String(val(it.transaction_status || "—"));
+  const statusTone = /completed|success|paid/i.test(status) ? "ok"
+    : /pending|processing/i.test(status) ? "warn"
+    : /failed|error|cancel/i.test(status) ? "bad"
+    : "neutral";
+
+  const phone = esc(val(it.mvola_phone));
+  const voucher = esc(val(it.voucher_code || it.transaction_voucher));
+  const plan = esc(val(it.plan_name));
+  const pool = esc(val(it.pool_name));
+  const clientMac = esc(val(it.client_mac));
+  const apMac = esc(val(it.ap_mac));
+  const currency = esc(val(it.currency || "—"));
+
+  const requestRef = esc(val(it.request_ref));
+  const txRef = esc(val(it.transaction_reference));
+  const correlationId = esc(val(it.server_correlation_id));
+  const voucherSessionId = esc(val(it.voucher_session_id));
+
+  const desc = (it.description && String(it.description).trim())
+    ? `<div style="padding:12px; background: rgba(0,0,0,.04); border-radius:12px; line-height:1.35;">${esc(it.description)}</div>`
     : `<div class="subtitle">No description.</div>`;
 
-  document.getElementById("modalBody").innerHTML = `
-    <div class="grid2">
-      ${rows.map(([a,av,b,bv]) => `
-        <div class="kv">
-          <div class="k">${esc(a)}</div>
-          <div class="v">${av}</div>
+  // Metadata: collapsible, collapsed by default
+  const hasMeta = !!it.metadata;
+  const metaText = hasMeta ? esc(JSON.stringify(it.metadata, null, 2)) : "";
+  const meta = hasMeta
+    ? `
+      <details style="background: rgba(0,0,0,.03); border-radius:12px; padding:10px;">
+        <summary style="cursor:pointer; font-weight:900; list-style:none;">
+          Show metadata (JSON)
+          <span style="opacity:.65; font-weight:700;">(click to expand)</span>
+        </summary>
+        <pre style="white-space:pre-wrap; margin-top:10px; background: rgba(0,0,0,.04); padding:12px; border-radius:12px; overflow:auto;">${metaText}</pre>
+      </details>
+    `
+    : `<div class="subtitle">No metadata.</div>`;
+
+  bodyEl.innerHTML = `
+    <!-- Summary strip -->
+    <div style="padding:12px; border-radius:14px; background: rgba(0,0,0,.03);">
+      <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:flex-start;">
+        <div>
+          <div style="opacity:.7; font-size:12px;">Amount</div>
+          <div style="font-weight:1000; font-size:22px; margin-top:4px;">${amount}</div>
+          <div style="opacity:.7; font-size:12px; margin-top:6px;">Currency: <b>${currency}</b></div>
         </div>
-        <div class="kv">
-          <div class="k">${esc(b)}</div>
-          <div class="v">${bv}</div>
+        <div style="text-align:right;">
+          ${pill(status, statusTone)}
+          <div style="opacity:.7; font-size:12px; margin-top:10px;">Phone</div>
+          <div style="font-weight:900; font-size:16px; margin-top:4px;">${phone}</div>
         </div>
-      `).join("")}
+      </div>
     </div>
 
-    <div style="margin-top:14px;">
-      <div class="subtitle" style="margin-bottom:8px;">Description</div>
-      ${desc}
-    </div>
+    ${section("Purchase", row2(
+      kv("Pool", pool, true),
+      kv("Plan", plan, true)
+    ) + row2(
+      kv("Voucher", voucher, true),
+      kv("Voucher Session", voucherSessionId)
+    ))}
 
-    <div style="margin-top:14px;">
-      <div class="subtitle" style="margin-bottom:8px;">Metadata (JSON)</div>
-      ${meta}
-    </div>
+    ${section("Network", row2(
+      kv("Client MAC", clientMac),
+      kv("AP MAC", apMac)
+    ))}
+
+    ${section("References", row2(
+      kv("request_ref", requestRef),
+      kv("tx_ref", txRef)
+    ) + row2(
+      kv("correlation_id", correlationId),
+      kv("transaction_id", esc(txId))
+    ), { muted: true })}
+
+    ${section("Description", desc)}
+    ${section("Metadata", meta)}
   `;
 
   modal.style.display = "block";
