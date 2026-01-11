@@ -35,6 +35,9 @@
       <div class="sticky-bar" style="margin-top:14px;">
         <div class="filters">
           <input id="q" class="filter-search" placeholder="Search pool / AP..." />
+          <select id="poolFilter" class="filter-search" style="max-width:240px;">
+            <option value="">All pools</option>
+          </select>
           <button type="button" id="refresh" class="filter-btn primary" style="width:auto;">Refresh</button>
         </div>
       </div>
@@ -111,6 +114,7 @@
       const statusEl = $("status");
       const container = $("poolsContainer");
       const qEl = $("q");
+      const poolFilterEl = $("poolFilter");
       const refreshBtn = $("refresh");
 
       if (!container) return;
@@ -146,6 +150,7 @@
 
       function render(pools, allAps) {
         const q = String(qEl?.value || "").trim().toLowerCase();
+        const selectedPool = String(poolFilterEl?.value || "").trim().toLowerCase();
         const liveByPool = poolLiveMap(allAps);
 
         // Group APs by pool for listing (include offline too, but show 0/real connected)
@@ -158,6 +163,13 @@
 
         // Optional client-side filter across pool name + AP label/mac
         const filteredPools = (pools || []).filter(p => {
+          // 1) dropdown filter (fast)
+          if (selectedPool) {
+            const pnameExact = String(p.name || "").toLowerCase();
+            if (pnameExact !== selectedPool) return false;
+          }
+
+          // 2) existing text search (q)
           if (!q) return true;
           const pname = String(p.name || p.id || "").toLowerCase();
           if (pname.includes(q)) return true;
@@ -169,6 +181,7 @@
             return label.includes(q) || mac.includes(q);
           });
         });
+
 
         if (!filteredPools.length) {
           container.innerHTML = `
@@ -263,6 +276,22 @@
           container.innerHTML = `<div class="table-wrap"><div style="padding:12px;">Loading…</div></div>`;
 
           const [allAps, pools] = await Promise.all([fetchAllAps(), fetchPools("")]);
+
+          // Fill pool dropdown (keeps it in sync with fetched pools)
+          if (poolFilterEl) {
+            const current = poolFilterEl.value || "";
+            const names = (pools || [])
+              .map(p => String(p.name || ""))
+              .filter(Boolean)
+              .sort((a, b) => a.localeCompare(b));
+
+            poolFilterEl.innerHTML =
+              `<option value="">All pools</option>` +
+              names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+
+            poolFilterEl.value = names.includes(current) ? current : "";
+          }
+
           render(pools, allAps);
 
           if (statusEl) statusEl.textContent = `Loaded ${pools?.length || 0} pool(s).`;
@@ -273,6 +302,7 @@
       }
 
       refreshBtn?.addEventListener("click", load);
+      poolFilterEl?.addEventListener("change", load);
       qEl?.addEventListener("input", async () => {
         // Keep it light: only client-side filter after initial load.
         // If you want server-side q, we can switch to fetchPools(q) later.
