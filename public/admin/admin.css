@@ -271,3 +271,156 @@ button.danger:hover{filter:brightness(0.95);}
     font-size: 16px;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* RAZAFI Admin - Starlink-style drawer + 2-bar hamburger -> back arrow */
+/* (Inserted at end: minimal risk to existing styles)                   */
+/* ------------------------------------------------------------------ */
+
+.rz-topbar-has-drawer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rz-nav-mount {
+  display: flex;
+  align-items: center;
+}
+
+/* Button */
+.rz-nav-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rz-nav-btn:active { transform: translateY(1px); }
+
+/* Closed: 2 bars */
+.rz-icon-bars {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rz-bar {
+  width: 22px;
+  height: 2.5px;
+  border-radius: 999px;
+  background: currentColor;
+  display: block;
+}
+
+/* Open: show arrow instead of bars */
+.rz-icon-arrow {
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+body.rz-drawer-open .rz-icon-bars { display: none; }
+body.rz-drawer-open .rz-icon-arrow { display: inline-flex; }
+
+/* Overlay */
+.rz-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .18s ease;
+  z-index: 9998;
+}
+
+body.rz-drawer-open .rz-drawer-overlay {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Drawer */
+.rz-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 100vh;
+  width: min(320px, 86vw);
+  background: #ffffff;
+  color: #111;
+  transform: translateX(-110%);
+  transition: transform .22s ease;
+  z-index: 9999;
+  box-shadow: 0 10px 30px rgba(0,0,0,.25);
+  display: flex;
+  flex-direction: column;
+}
+
+body.rz-drawer-open .rz-drawer {
+  transform: translateX(0);
+}
+
+.rz-drawer-head {
+  padding: 16px 16px 12px 16px;
+  border-bottom: 1px solid rgba(0,0,0,.08);
+}
+
+.rz-drawer-title {
+  font-weight: 900;
+  font-size: 16px;
+}
+
+.rz-drawer-sub {
+  margin-top: 8px;
+  opacity: .75;
+  font-size: 13px;
+}
+
+.rz-drawer-nav {
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rz-item {
+  text-decoration: none;
+  color: inherit;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 12px;
+  border-radius: 12px;
+}
+
+.rz-item:hover { background: rgba(0,0,0,.05); }
+
+.rz-item.active {
+  background: rgba(13,110,253,.10);
+  outline: 1px solid rgba(13,110,253,.20);
+}
+
+.rz-item-label {
+  font-weight: 800;
+  font-size: 14px;
+}
+
+.rz-drawer-foot {
+  margin-top: auto;
+  padding: 12px 16px 16px 16px;
+  border-top: 1px solid rgba(0,0,0,.08);
+}
+
+.rz-logout {
+  width: 100%;
+  border: 0;
+  border-radius: 12px;
+  padding: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}

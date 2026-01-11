@@ -15,7 +15,8 @@
           <div id="me" class="subtitle">Loading...</div>
         </div>
 
-            <div class="nav">
+        <!-- legacy nav kept hidden to avoid breaking plans.js -->
+        <div class="nav" style="display:none;">
           <a href="/admin/"><button type="button">Dashboard</button></a>
           <a href="/admin/clients.html"><button type="button">Clients</button></a>
           <a href="/admin/aps.html"><button type="button">APs</button></a>
@@ -23,7 +24,6 @@
           <a href="/admin/revenue.html"><button type="button">Revenue</button></a>
           <button id="logoutBtn" type="button">Logout</button>
         </div>
-
       </div>
 
       <hr style="opacity:.2; margin:18px 0;" />
@@ -40,12 +40,12 @@
           <option value="1">Visible only</option>
           <option value="0">Hidden only</option>
         </select>
-                <select id="deletedFilter" class="filter-select">
+        <select id="deletedFilter" class="filter-select">
           <option value="hide">Deleted: hide</option>
           <option value="show">Deleted: show</option>
           <option value="only">Deleted: only</option>
         </select>
-<button id="refreshBtn" type="button" class="filter-btn">Refresh</button>
+        <button id="refreshBtn" type="button" class="filter-btn">Refresh</button>
         <button id="newBtn" type="button" class="filter-btn primary">+ New plan</button>
       </div>
 
@@ -93,7 +93,6 @@
             </label>
 
             <input id="f_data_gb" placeholder="Data (GB)" required />
-
             <input id="f_max_devices" placeholder="Max devices" required />
             <input id="f_sort_order" placeholder="Sort order" />
 
@@ -116,10 +115,11 @@
         </div>
       </div>
 
-
     </div>
   </div>
 
+  <!-- NEW shared drawer -->
+  <script src="/admin/nav.js"></script>
   <script src="./plans.js"></script>
 </body>
 </html>

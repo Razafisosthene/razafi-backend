@@ -17,7 +17,9 @@
             Manage pools (Starlink) + capacity + AP assignment
           </div>
         </div>
-        <div class="nav">
+
+        <!-- legacy nav kept hidden to avoid breaking pools.js -->
+        <div class="nav" style="display:none;">
           <a href="/admin/"><button type="button">Dashboard</button></a>
           <a href="/admin/clients.html"><button type="button">Clients</button></a>
           <a href="/admin/aps.html"><button type="button">APs</button></a>
@@ -70,6 +72,8 @@
     </div>
   </div>
 
+  <!-- NEW shared drawer -->
+  <script src="/admin/nav.js"></script>
   <script src="/admin/pools.js"></script>
 </body>
 </html>

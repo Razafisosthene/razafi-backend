@@ -17,7 +17,8 @@
           <div id="me" class="subtitle">Checking session...</div>
         </div>
 
-        <div class="nav">
+        <!-- legacy nav kept hidden to avoid breaking old JS assumptions -->
+        <div class="nav" style="display:none;">
           <a href="/admin/"><button type="button">Dashboard</button></a>
           <a href="/admin/clients.html"><button type="button">Clients</button></a>
           <a href="/admin/aps.html"><button type="button">APs</button></a>
@@ -43,12 +44,12 @@
       </div>
 
       <div id="poolsContainer" style="margin-top:12px;"></div>
-
-      
-
       <div id="status" style="margin-top:14px; opacity:.85;"></div>
     </div>
   </div>
+
+  <!-- NEW shared drawer -->
+  <script src="/admin/nav.js"></script>
 
   <script>
     async function fetchJSON(url, opts = {}) {
@@ -61,13 +62,8 @@
       return data;
     }
 
-
     // ---------------------------------------------------------------------------
     // READ-ONLY POOLS DASHBOARD (Tanaza truth)
-    // Uses the same field logic as pools.js:
-    // - Pools: GET /api/admin/pools
-    // - APs + live clients: GET /api/admin/aps (tanaza_* fields)
-    // - Pool live clients = sum(tanaza_connected) for ONLINE APs assigned to pool_id
     // ---------------------------------------------------------------------------
 
     const $ = (id) => document.getElementById(id);
@@ -153,7 +149,6 @@
         const selectedPool = String(poolFilterEl?.value || "").trim().toLowerCase();
         const liveByPool = poolLiveMap(allAps);
 
-        // Group APs by pool for listing (include offline too, but show 0/real connected)
         const apsByPool = {};
         for (const a of allAps || []) {
           const pid = a.pool_id || "";
@@ -161,15 +156,11 @@
           (apsByPool[pid] ||= []).push(a);
         }
 
-        // Optional client-side filter across pool name + AP label/mac
         const filteredPools = (pools || []).filter(p => {
-          // 1) dropdown filter (fast)
           if (selectedPool) {
             const pnameExact = String(p.name || "").toLowerCase();
             if (pnameExact !== selectedPool) return false;
           }
-
-          // 2) existing text search (q)
           if (!q) return true;
           const pname = String(p.name || p.id || "").toLowerCase();
           if (pname.includes(q)) return true;
@@ -181,7 +172,6 @@
             return label.includes(q) || mac.includes(q);
           });
         });
-
 
         if (!filteredPools.length) {
           container.innerHTML = `
@@ -202,7 +192,7 @@
           const aps = (apsByPool[pid] || []).slice().sort((a,b) => {
             const ao = isOnline(a) ? 1 : 0;
             const bo = isOnline(b) ? 1 : 0;
-            if (ao !== bo) return bo - ao; // online first
+            if (ao !== bo) return bo - ao;
             return (apConnected(b) - apConnected(a));
           });
 
@@ -277,7 +267,6 @@
 
           const [allAps, pools] = await Promise.all([fetchAllAps(), fetchPools("")]);
 
-          // Fill pool dropdown (keeps it in sync with fetched pools)
           if (poolFilterEl) {
             const current = poolFilterEl.value || "";
             const names = (pools || [])
@@ -303,12 +292,7 @@
 
       refreshBtn?.addEventListener("click", load);
       poolFilterEl?.addEventListener("change", load);
-      qEl?.addEventListener("input", async () => {
-        // Keep it light: only client-side filter after initial load.
-        // If you want server-side q, we can switch to fetchPools(q) later.
-        // Here: trigger a refresh to ensure up-to-date tanaza numbers.
-        await load();
-      });
+      qEl?.addEventListener("input", async () => { await load(); });
 
       await load();
     }
@@ -327,14 +311,7 @@
       }
     }
 
-    document.getElementById("logoutBtn").onclick = async () => {
-      try {
-        await fetch("/api/admin/logout", { method: "POST", credentials: "include" });
-      } finally {
-        window.location.href = "/admin/login.html";
-      }
-    };
-
+    // NOTE: logout button moved to drawer (nav.js). legacy logout remains hidden.
     checkSession();
   </script>
 </body>

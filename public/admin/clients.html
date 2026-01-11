@@ -14,7 +14,9 @@
           <h1 style="margin:0;">Clients</h1>
           <div id="me" class="subtitle">Checking session...</div>
         </div>
-        <div class="nav">
+
+        <!-- legacy nav kept hidden to avoid breaking clients.js -->
+        <div class="nav" style="display:none;">
           <a href="/admin/"><button type="button">Dashboard</button></a>
           <a href="/admin/aps.html"><button type="button">APs</button></a>
           <a href="/admin/plans.html"><button type="button">Plans</button></a>
@@ -95,6 +97,8 @@
     </div>
   </div>
 
+  <!-- NEW shared drawer -->
+  <script src="/admin/nav.js"></script>
   <script src="./clients.js"></script>
 </body>
 </html>

@@ -15,7 +15,8 @@
           <div id="me" class="subtitle">Checking session...</div>
         </div>
 
-        <div class="nav">
+        <!-- legacy nav kept hidden to avoid breaking revenue.js -->
+        <div class="nav" style="display:none;">
           <button id="dashBtn" type="button">Dashboard</button>
           <button id="apsBtn" type="button">APs</button>
           <button id="plansBtn" type="button">Plans</button>
@@ -170,6 +171,8 @@
     </div>
   </div>
 
+  <!-- NEW shared drawer -->
+  <script src="/admin/nav.js"></script>
   <script src="/admin/revenue.js"></script>
 </body>
 </html>
