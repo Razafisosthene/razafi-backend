@@ -14,14 +14,12 @@
           <h1 style="margin:0;">Revenue</h1>
           <div id="me" class="subtitle">Checking session...</div>
         </div>
-
         <div class="nav">
-          <button id="dashBtn" type="button">Dashboard</button>
-          <button id="apsBtn" type="button">APs</button>
-          <button id="plansBtn" type="button">Plans</button>
-          <button id="poolsBtn" type="button">Pools</button>
-          <button id="clientsBtn" type="button">Clients</button>
-          <button id="revenueBtn" type="button" disabled style="opacity:.75; cursor:default;">Revenue</button>
+          <a href="/admin/"><button type="button">Dashboard</button></a>
+          <a href="/admin/clients.html"><button type="button">Clients</button></a>
+          <a href="/admin/aps.html"><button type="button">APs</button></a>
+          <a href="/admin/plans.html"><button type="button">Plans</button></a>
+          <a href="/admin/pools.html"><button type="button">Pools</button></a>
           <button id="logoutBtn" type="button">Logout</button>
         </div>
       </div>
@@ -151,7 +149,7 @@
 
   <!-- Detail Modal (read-only) -->
   <div id="modal" class="modal" style="display:none;">
-    <div class="modal-card" style="max-width: 900px;">
+    <div class="modal-card" style="max-width: 900px; background:#ffffff;">
       <div class="modal-head">
         <div>
           <div class="modal-title" id="modalTitle">Transaction Details</div>
