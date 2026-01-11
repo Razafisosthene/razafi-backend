@@ -31,6 +31,16 @@
       <hr style="opacity:.2; margin:18px 0;" />
 
       <!-- MAIN ACTIONS (NO DUPLICATES) -->
+      <!-- READ-ONLY POOLS OVERVIEW (Tanaza truth) -->
+      <div class="sticky-bar" style="margin-top:14px;">
+        <div class="filters">
+          <input id="q" class="filter-search" placeholder="Search pool / AP..." />
+          <button type="button" id="refresh" class="filter-btn primary" style="width:auto;">Refresh</button>
+        </div>
+      </div>
+
+      <div id="poolsContainer" style="margin-top:12px;"></div>
+
       
 
       <div id="status" style="margin-top:14px; opacity:.85;"></div>
@@ -48,14 +58,241 @@
       return data;
     }
 
+
+    // ---------------------------------------------------------------------------
+    // READ-ONLY POOLS DASHBOARD (Tanaza truth)
+    // Uses the same field logic as pools.js:
+    // - Pools: GET /api/admin/pools
+    // - APs + live clients: GET /api/admin/aps (tanaza_* fields)
+    // - Pool live clients = sum(tanaza_connected) for ONLINE APs assigned to pool_id
+    // ---------------------------------------------------------------------------
+
+    const $ = (id) => document.getElementById(id);
+
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+      }[c]));
+    }
+
+    function pct(n, d) {
+      const num = Number(n), den = Number(d);
+      if (!Number.isFinite(num) || !Number.isFinite(den) || den <= 0) return null;
+      return Math.min(999, Math.round((num / den) * 100));
+    }
+
+    function pctBar(pctVal) {
+      if (pctVal === null || pctVal === undefined || Number.isNaN(Number(pctVal))) return "—";
+      const p = Math.max(0, Math.min(100, Number(pctVal)));
+      const color = (p >= 90) ? "rgba(255, 80, 80, .90)"
+        : (p >= 70) ? "rgba(255, 196, 0, .90)"
+        : "rgba(80, 200, 120, .90)";
+      return `
+        <div style="min-width:170px;">
+          <div style="opacity:.85; font-size:12px; margin-bottom:6px;">${esc(Math.round(p))}%</div>
+          <div style="height:10px; border-radius:999px; background:rgba(0,0,0,.08); overflow:hidden;">
+            <div style="height:10px; width:${esc(p)}%; background:${color};"></div>
+          </div>
+        </div>
+      `;
+    }
+
+    function isOnline(a) {
+      return (a.tanaza_online === true) || (String(a.tanaza_online).toLowerCase() === "true");
+    }
+
+    function apConnected(a) {
+      const raw = (a.tanaza_connected ?? a.tanaza_connected_clients ?? a.tanaza_connectedClients ?? a.connectedClients ?? 0);
+      const n = Number.isFinite(Number(raw)) ? Number(raw) : 0;
+      return n;
+    }
+
+    async function loadDashboardPools() {
+      const statusEl = $("status");
+      const container = $("poolsContainer");
+      const qEl = $("q");
+      const refreshBtn = $("refresh");
+
+      if (!container) return;
+
+      async function fetchAllAps() {
+        try {
+          const data = await fetchJSON("/api/admin/aps?limit=200&offset=0&active=all&stale=all");
+          return data.aps || [];
+        } catch {
+          return [];
+        }
+      }
+
+      async function fetchPools(query) {
+        const params = new URLSearchParams();
+        params.set("limit", "200");
+        params.set("offset", "0");
+        if (query) params.set("q", query);
+        const data = await fetchJSON(`/api/admin/pools?${params.toString()}`);
+        return data.pools || data.data || data || [];
+      }
+
+      function poolLiveMap(allAps) {
+        const map = {};
+        for (const a of allAps || []) {
+          const pid = a.pool_id || "";
+          if (!pid) continue;
+          if (!isOnline(a)) continue;
+          map[pid] = (map[pid] || 0) + apConnected(a);
+        }
+        return map;
+      }
+
+      function render(pools, allAps) {
+        const q = String(qEl?.value || "").trim().toLowerCase();
+        const liveByPool = poolLiveMap(allAps);
+
+        // Group APs by pool for listing (include offline too, but show 0/real connected)
+        const apsByPool = {};
+        for (const a of allAps || []) {
+          const pid = a.pool_id || "";
+          if (!pid) continue;
+          (apsByPool[pid] ||= []).push(a);
+        }
+
+        // Optional client-side filter across pool name + AP label/mac
+        const filteredPools = (pools || []).filter(p => {
+          if (!q) return true;
+          const pname = String(p.name || p.id || "").toLowerCase();
+          if (pname.includes(q)) return true;
+          const pid = String(p.id || "");
+          const aps = apsByPool[pid] || [];
+          return aps.some(a => {
+            const label = String(a.tanaza_label || a.ap_mac || "").toLowerCase();
+            const mac = String(a.ap_mac || "").toLowerCase();
+            return label.includes(q) || mac.includes(q);
+          });
+        });
+
+        if (!filteredPools.length) {
+          container.innerHTML = `
+            <div class="table-wrap">
+              <div style="padding:12px; opacity:.75;">No pools found.</div>
+            </div>
+          `;
+          return;
+        }
+
+        container.innerHTML = filteredPools.map(p => {
+          const pid = String(p.id || "");
+          const name = p.name || pid;
+          const cap = p.capacity_max;
+          const live = liveByPool[pid] || 0;
+          const percent = pct(live, cap);
+
+          const aps = (apsByPool[pid] || []).slice().sort((a,b) => {
+            const ao = isOnline(a) ? 1 : 0;
+            const bo = isOnline(b) ? 1 : 0;
+            if (ao !== bo) return bo - ao; // online first
+            return (apConnected(b) - apConnected(a));
+          });
+
+          const apListHtml = aps.length
+            ? `
+              <div style="margin-top:10px;">
+                <div style="opacity:.75; font-size:12px; margin-bottom:8px;">APs</div>
+                <div class="table-wrap" style="margin-top:0;">
+                  <table style="width:100%; border-collapse:collapse;">
+                    <thead>
+                      <tr style="text-align:left; border-bottom:1px solid rgba(0,0,0,0.08);">
+                        <th style="padding:10px;">AP</th>
+                        <th style="padding:10px;">Connected</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${aps.map(a => {
+                        const mac = String(a.ap_mac || "");
+                        const label = a.tanaza_label || mac || "—";
+                        const online = isOnline(a);
+                        const connected = apConnected(a);
+                        return `
+                          <tr style="border-top:1px solid rgba(0,0,0,.06); ${online ? "" : "opacity:.6;"}">
+                            <td style="padding:10px;">
+                              <div style="font-weight:700;">${esc(label)}</div>
+                              <div style="opacity:.7; font-size:12px; margin-top:6px;">${esc(mac)}</div>
+                            </td>
+                            <td style="padding:10px; font-weight:800;">${esc(connected)}</td>
+                          </tr>
+                        `;
+                      }).join("")}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            `
+            : `<div style="margin-top:10px; opacity:.7; font-size:13px;">No APs assigned to this pool.</div>`;
+
+          return `
+            <div class="table-wrap" style="margin-bottom:14px;">
+              <div style="padding:12px;">
+                <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:flex-start;">
+                  <div>
+                    <div style="font-weight:900; font-size:18px;">${esc(name)}</div>
+                    <div style="opacity:.75; font-size:12px; margin-top:6px;">ID: ${esc(pid)}</div>
+                  </div>
+
+                  <div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
+                    <div style="text-align:right;">
+                      <div style="opacity:.75; font-size:12px;">Live clients</div>
+                      <div style="font-weight:900; font-size:18px;">${esc(live)}</div>
+                    </div>
+                    <div style="text-align:right;">
+                      <div style="opacity:.75; font-size:12px;">Capacity</div>
+                      <div style="font-weight:900; font-size:18px;">${esc(cap ?? "—")}</div>
+                    </div>
+                    <div>${percent === null ? "—" : pctBar(percent)}</div>
+                  </div>
+                </div>
+
+                ${apListHtml}
+              </div>
+            </div>
+          `;
+        }).join("");
+      }
+
+      async function load() {
+        try {
+          if (statusEl) statusEl.textContent = "Loading pools…";
+          container.innerHTML = `<div class="table-wrap"><div style="padding:12px;">Loading…</div></div>`;
+
+          const [allAps, pools] = await Promise.all([fetchAllAps(), fetchPools("")]);
+          render(pools, allAps);
+
+          if (statusEl) statusEl.textContent = `Loaded ${pools?.length || 0} pool(s).`;
+        } catch (e) {
+          if (statusEl) statusEl.textContent = "";
+          container.innerHTML = `<div class="table-wrap"><div style="padding:12px; color:#d9534f;">Failed to load: ${esc(e.message || e)}</div></div>`;
+        }
+      }
+
+      refreshBtn?.addEventListener("click", load);
+      qEl?.addEventListener("input", async () => {
+        // Keep it light: only client-side filter after initial load.
+        // If you want server-side q, we can switch to fetchPools(q) later.
+        // Here: trigger a refresh to ensure up-to-date tanaza numbers.
+        await load();
+      });
+
+      await load();
+    }
+
     async function checkSession() {
       const meEl = document.getElementById("me");
       const statusEl = document.getElementById("status");
+
       try {
         const admin = await fetchJSON("/api/admin/me");
-        meEl.textContent = "Connected as " + admin.email;
-        statusEl.textContent = "Session OK.";
-      } catch {
+        if (meEl) meEl.textContent = "Connected as " + (admin.email || admin.username || "admin");
+        if (statusEl) statusEl.textContent = "Loading dashboard…";
+        await loadDashboardPools();
+      } catch (e) {
         window.location.href = "/admin/login.html";
       }
     }
