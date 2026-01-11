@@ -881,9 +881,107 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
         ? Number(data.remaining_seconds)
         : null;
 
+    // -----------------------------
+    // Free plan override info (client_mac + plan_id)
+    // Only compute when plan price is 0 (free)
+    // -----------------------------
+    try {
+      const priceAr = Number(data?.plans?.price_ar ?? null);
+      if (data.client_mac && data.plan_id && Number.isFinite(priceAr) && priceAr === 0) {
+        const [usedCount, extraUses] = await Promise.all([
+          getFreePlanUsedCount({ client_mac: data.client_mac, plan_id: data.plan_id }),
+          getFreePlanExtraUses({ client_mac: data.client_mac, plan_id: data.plan_id }),
+        ]);
+        const allowedTotal = 1 + Number(extraUses || 0);
+        data.free_plan = {
+          used_free_count: Number(usedCount || 0),
+          extra_uses: Number(extraUses || 0),
+          allowed_total: allowedTotal,
+          remaining_free: Math.max(0, allowedTotal - Number(usedCount || 0)),
+        };
+      } else {
+        data.free_plan = null;
+      }
+    } catch (_) {
+      data.free_plan = null;
+    }
+
     res.json({ item: data });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// ------------------------------------------------------------
+// ADMIN: Free plan override (extra free uses)
+// Table: free_plan_overrides (client_mac, plan_id) -> extra_uses
+// ------------------------------------------------------------
+
+// GET current override
+// /api/admin/free-plan-overrides?client_mac=...&plan_id=...
+app.get("/api/admin/free-plan-overrides", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const client_mac_raw = String(req.query.client_mac || "").trim();
+    const client_mac = normalizeMacColon(client_mac_raw) || client_mac_raw;
+    const plan_id = String(req.query.plan_id || "").trim();
+    if (!client_mac || !plan_id) return res.status(400).json({ error: "client_mac and plan_id are required" });
+
+    const { data, error } = await supabase
+      .from("free_plan_overrides")
+      .select("client_mac,plan_id,extra_uses,note,updated_at,updated_by")
+      .eq("client_mac", client_mac)
+      .eq("plan_id", plan_id)
+      .maybeSingle();
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({
+      item: data || { client_mac, plan_id, extra_uses: 0, note: null, updated_at: null, updated_by: null }
+    });
+  } catch (e) {
+    return res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// UPSERT override
+// POST /api/admin/free-plan-overrides
+// body: { client_mac, plan_id, extra_uses, note }
+app.post("/api/admin/free-plan-overrides", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const body = req.body || {};
+    const client_mac_raw = String(body.client_mac || "").trim();
+    const client_mac = normalizeMacColon(client_mac_raw) || client_mac_raw;
+    const plan_id = String(body.plan_id || "").trim();
+    const extra_uses_raw = body.extra_uses;
+    const note = (body.note || "").toString().trim() || null;
+
+    if (!client_mac || !plan_id) return res.status(400).json({ error: "client_mac and plan_id are required" });
+
+    const extra_uses = Number(extra_uses_raw);
+    if (!Number.isFinite(extra_uses) || extra_uses < 0 || extra_uses > 1000) {
+      return res.status(400).json({ error: "extra_uses must be a number between 0 and 1000" });
+    }
+
+    const row = {
+      client_mac,
+      plan_id,
+      extra_uses: Math.floor(extra_uses),
+      note,
+      updated_at: new Date().toISOString(),
+      updated_by: req.admin?.email || null,
+    };
+
+    const { data, error } = await supabase
+      .from("free_plan_overrides")
+      .upsert(row, { onConflict: "client_mac,plan_id" })
+      .select("client_mac,plan_id,extra_uses,note,updated_at,updated_by")
+      .single();
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true, item: data });
+  } catch (e) {
+    return res.status(500).json({ error: String(e.message || e) });
   }
 });
 
@@ -3326,6 +3424,41 @@ async function getFreePlanLastUse({ client_mac, plan_id }) {
   }
 }
 
+// Count successful free uses (activated) for a given (client_mac, plan_id)
+async function getFreePlanUsedCount({ client_mac, plan_id }) {
+  if (!supabase || !client_mac || !plan_id) return 0;
+  try {
+    const { count, error } = await supabase
+      .from("voucher_sessions")
+      .select("id", { count: "exact", head: true })
+      .eq("client_mac", client_mac)
+      .eq("plan_id", plan_id)
+      .not("activated_at", "is", null);
+    if (error) return 0;
+    return Number(count || 0);
+  } catch (_) {
+    return 0;
+  }
+}
+
+// Read admin override "extra free uses" for a given (client_mac, plan_id)
+async function getFreePlanExtraUses({ client_mac, plan_id }) {
+  if (!supabase || !client_mac || !plan_id) return 0;
+  try {
+    const { data, error } = await supabase
+      .from("free_plan_overrides")
+      .select("extra_uses")
+      .eq("client_mac", client_mac)
+      .eq("plan_id", plan_id)
+      .maybeSingle();
+    if (error || !data) return 0;
+    const n = Number(data.extra_uses || 0);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
 // Portal pre-check to show message immediately (before MVola input) when free plan already used.
 // Fail-open on errors (never break production).
 app.get("/api/free-plan/check", async (req, res) => {
@@ -3338,9 +3471,24 @@ app.get("/api/free-plan/check", async (req, res) => {
     }
     if (!supabase) return res.json({ ok: true, fail_open: true });
 
-    const last_used_at = await getFreePlanLastUse({ client_mac, plan_id });
-    if (last_used_at) return res.status(409).json({ error: "free_plan_used", last_used_at });
-    return res.json({ ok: true });
+    const [usedCount, extraUses, lastUsedAt] = await Promise.all([
+      getFreePlanUsedCount({ client_mac, plan_id }),
+      getFreePlanExtraUses({ client_mac, plan_id }),
+      getFreePlanLastUse({ client_mac, plan_id }),
+    ]);
+
+    const allowedTotal = 1 + Number(extraUses || 0);
+    if (Number(usedCount || 0) >= allowedTotal) {
+      return res.status(409).json({
+        error: "free_plan_used",
+        last_used_at: lastUsedAt,
+        used_free_count: usedCount,
+        extra_uses: extraUses,
+        allowed_total: allowedTotal,
+      });
+    }
+
+    return res.json({ ok: true, used_free_count: usedCount, extra_uses: extraUses, allowed_total: allowedTotal });
   } catch (e) {
     console.error("free-plan/check error:", e?.message || e);
     return res.json({ ok: true, fail_open: true });
@@ -3563,15 +3711,28 @@ try {
 
   // FREE PLAN FLOW: amount === 0 => generate voucher immediately (no MVola)
   if (amount === 0) {
-// Free plan can be used only once per device (Rule B: used only when activated).
-try {
-  if (supabase && client_mac && plan_id_from_client) {
-    const lastUsedAt = await getFreePlanLastUse({ client_mac, plan_id: (body.plan_id || body.planId || "").toString().trim() || null });
-    if (lastUsedAt) {
-      return res.status(409).json({ error: "free_plan_used", last_used_at: lastUsedAt });
-    }
-  }
-} catch (_) {}
+    // Free plan rule with admin override:
+    // allow when used_free_count < 1 + extra_uses
+    try {
+      const planIdCheck = (body.plan_id || body.planId || "").toString().trim() || null;
+      if (supabase && client_mac && planIdCheck) {
+        const [usedCount, extraUses, lastUsedAt] = await Promise.all([
+          getFreePlanUsedCount({ client_mac, plan_id: planIdCheck }),
+          getFreePlanExtraUses({ client_mac, plan_id: planIdCheck }),
+          getFreePlanLastUse({ client_mac, plan_id: planIdCheck }),
+        ]);
+        const allowedTotal = 1 + Number(extraUses || 0);
+        if (Number(usedCount || 0) >= allowedTotal) {
+          return res.status(409).json({
+            error: "free_plan_used",
+            last_used_at: lastUsedAt,
+            used_free_count: usedCount,
+            extra_uses: extraUses,
+            allowed_total: allowedTotal,
+          });
+        }
+      }
+    } catch (_) {}
 
 
     const voucherCode = "RAZAFI-" + crypto.randomBytes(4).toString("hex").toUpperCase();

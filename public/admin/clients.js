@@ -183,7 +183,7 @@ async function openDetail(id) {
       ["Remaining", fmtRemaining(it.remaining_seconds)],
 
       ["Plan", it.plans?.name || it.plan_name],
-      ["Price", it.plans?.price ?? it.plan_price],
+      ["Price", (it.plans?.price_ar ?? it.plan_price)],
       ["Duration (min)", it.plans?.duration_minutes],
       ["Data (MB)", it.plans?.data_mb],
       ["Max devices", it.plans?.max_devices],
@@ -195,6 +195,96 @@ async function openDetail(id) {
         <div style="font-size:15px; font-weight:700; margin-top:4px; word-break: break-word;">${esc(v ?? "—")}</div>
       </div>
     `).join("");
+
+    // --------------------------------------------------
+    // Free plan override editor (admin)
+    // Enabled only when server returns it.free_plan
+    // --------------------------------------------------
+    if (it && it.free_plan && it.client_mac && it.plan_id) {
+      const fp = it.free_plan;
+      const extra = Number(fp.extra_uses ?? 0);
+      const used = Number(fp.used_free_count ?? 0);
+      const allowed = Number(fp.allowed_total ?? (1 + extra));
+      const remaining = Number(fp.remaining_free ?? Math.max(0, allowed - used));
+
+      const blockId = `freeOverride_${it.id}`;
+      const inputId = `extraUses_${it.id}`;
+      const noteId = `extraNote_${it.id}`;
+      const btnId = `saveExtra_${it.id}`;
+      const msgId = `saveMsg_${it.id}`;
+
+      detail.insertAdjacentHTML("beforeend", `
+        <div id="${blockId}" style="grid-column: 1 / -1; border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+            <div>
+              <div style="font-size:12px; opacity:.7;">Free plan override</div>
+              <div style="font-size:15px; font-weight:800; margin-top:4px;">Used: ${esc(used)} · Allowed: ${esc(allowed)} · Remaining: ${esc(remaining)}</div>
+              <div style="font-size:12px; opacity:.75; margin-top:6px;">Rule: <b>used_free_count &lt; 1 + extra_uses</b></div>
+            </div>
+            <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+              <div>
+                <div style="font-size:12px; opacity:.7;">extra_uses</div>
+                <input id="${inputId}" type="number" min="0" max="1000" value="${esc(extra)}" style="width:120px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
+              </div>
+              <div style="min-width:240px;">
+                <div style="font-size:12px; opacity:.7;">note (optional)</div>
+                <input id="${noteId}" type="text" placeholder="Reason / note" style="width:240px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
+              </div>
+              <button id="${btnId}" type="button" style="width:auto; padding:9px 14px;">Save</button>
+            </div>
+          </div>
+          <div id="${msgId}" class="subtitle" style="margin-top:10px; display:none;"></div>
+        </div>
+      `);
+
+      // Load current note (and canonical extra_uses) from server
+      try {
+        const ov = await fetchJSON(`/api/admin/free-plan-overrides?client_mac=${encodeURIComponent(it.client_mac)}&plan_id=${encodeURIComponent(it.plan_id)}`);
+        const item = ov?.item || null;
+        if (item) {
+          const input = document.getElementById(inputId);
+          const note = document.getElementById(noteId);
+          if (input) input.value = Number(item.extra_uses ?? extra);
+          if (note) note.value = item.note || "";
+        }
+      } catch (_) {
+        // ignore (fail-open)
+      }
+
+      // Save handler
+      const btn = document.getElementById(btnId);
+      if (btn) {
+        btn.onclick = async () => {
+          const msg = document.getElementById(msgId);
+          if (msg) { msg.style.display = "none"; msg.textContent = ""; }
+          const input = document.getElementById(inputId);
+          const note = document.getElementById(noteId);
+          const extraUses = input ? Number(input.value) : 0;
+          const noteVal = note ? String(note.value || "").trim() : "";
+          try {
+            await fetchJSON("/api/admin/free-plan-overrides", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                client_mac: it.client_mac,
+                plan_id: it.plan_id,
+                extra_uses: extraUses,
+                note: noteVal,
+              })
+            });
+            if (msg) {
+              msg.style.display = "block";
+              msg.textContent = "Saved. (Re-open this detail after the next free-plan check to see updated remaining.)";
+            }
+          } catch (e) {
+            if (msg) {
+              msg.style.display = "block";
+              msg.textContent = e?.message || String(e);
+            }
+          }
+        };
+      }
+    }
 
   } catch (e) {
     modalErr.style.display = "block";
