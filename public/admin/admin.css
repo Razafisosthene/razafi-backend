@@ -424,3 +424,7 @@ body.rz-drawer-open .rz-drawer {
   font-weight: 900;
   cursor: pointer;
 }
+/* Ensure hamburger/back arrow is visible on white cards */
+.rz-nav-btn {
+  color: #0d6efd; /* same blue as your titles */
+}
