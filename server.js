@@ -2514,6 +2514,10 @@ async function pollTransactionStatus({
   phone,
   amount,
   plan,
+  plan_id,
+  pool_id,
+  client_mac,
+  ap_mac,
 }) {
   const start = Date.now();
   const timeoutMs = 3 * 60 * 1000; // 3 minutes
@@ -2631,6 +2635,7 @@ async function pollTransactionStatus({
               .update({
                 status: "completed",
                 voucher: voucherCode,
+                code: voucherCode,
                 transaction_reference: sdata.transactionReference || sdata.objectReference || null,
                 metadata: {
                   mvolaResponse: truncate(sdata, 2000),
@@ -2641,6 +2646,44 @@ async function pollTransactionStatus({
           } catch (e) {
             console.error("⚠️ Failed updating transaction after voucher assign:", e?.message || e);
           }
+          // Link MVola completed transaction to voucher_sessions for revenue truth view.
+          // Best-effort: do not fail the whole poll job if this insert fails.
+          try {
+            const { data: txRow2, error: txSelErr } = await supabase
+              .from("transactions")
+              .select("id")
+              .eq("request_ref", requestRef)
+              .maybeSingle();
+
+            const txId2 = txRow2?.id || null;
+
+            if (!txSelErr && txId2 && voucherCode) {
+              const nowIso2 = new Date().toISOString();
+              const { error: vsUpErr } = await supabase
+                .from("voucher_sessions")
+                .upsert({
+                  voucher_code: voucherCode,
+                  plan_id: plan_id || null,
+                  pool_id: pool_id || null,
+                  status: "pending",
+                  client_mac: (normalizeMacColon(client_mac) || client_mac || null),
+                  ap_mac: (normalizeMacColon(ap_mac) || ap_mac || null),
+                  mvola_phone: phone || null,
+                  transaction_id: txId2,
+                  delivered_at: nowIso2,
+                  updated_at: nowIso2,
+                }, { onConflict: "voucher_code" });
+
+              if (vsUpErr) {
+                console.error("⚠️ Failed upserting voucher_session after MVola completion:", vsUpErr?.message || vsUpErr);
+              }
+            } else if (txSelErr) {
+              console.error("⚠️ Failed selecting transaction id for voucher_session link:", txSelErr?.message || txSelErr);
+            }
+          } catch (e2) {
+            console.error("⚠️ voucher_sessions link step failed:", e2?.message || e2);
+          }
+
 
           await insertLog({
             request_ref: requestRef,
@@ -3752,51 +3795,64 @@ if (supabase) {
     });
   }
 
-  const { error: vsErr } = await supabase
-    .from("voucher_sessions")
-    .insert({
-      voucher_code: voucherCode,
-      plan_id: planIdForSession,
-      pool_id: pool_id || null,
-      status: "pending",
-      client_mac: clientMacForSession,
-      ap_mac: apMacForSession,
-      mvola_phone: phone || null,
-      transaction_id: null,
-      delivered_at: nowIso,
-      updated_at: nowIso,
-    });
-
-  if (vsErr) {
-    console.error("voucher_sessions insert failed (free plan):", vsErr);
-    return res.status(500).json({ error: "db_insert_failed", message: "Erreur serveur. Veuillez réessayer." });
-  }
-}
-
-
-
+  // Persist FREE delivery in DB (best-effort, fail-open)
     try {
-      const metadataForInsert = {
-        source: "portal",
-        free: true,
-        created_at_local: toISOStringMG(new Date()),
-      };
+      let txId = null;
 
       if (supabase) {
-        await supabase.from("transactions").insert([{
-          phone,
-          plan,
-          amount,
-          currency: "Ar",
-          description: `Achat WiFi ${plan}`,
-          request_ref: requestRef,
-          status: "completed",
-          voucher: voucherCode,
-          metadata: metadataForInsert,
-        }]);
+        const metadataForInsert = {
+          source: "portal",
+          free: true,
+          created_at_local: toISOStringMG(new Date()),
+        };
+
+        // 1) Create transaction row and capture its UUID
+        const { data: txRow, error: txErr } = await supabase
+          .from("transactions")
+          .insert([{
+            phone,
+            plan,
+            amount,
+            currency: "Ar",
+            description: `Achat WiFi ${plan}`,
+            request_ref: requestRef,
+            status: "completed",
+            voucher: voucherCode,
+            code: voucherCode,
+            metadata: metadataForInsert,
+          }])
+          .select("id")
+          .single();
+
+        if (txErr) {
+          console.error("⚠️ Warning: unable to insert FREE transaction row:", txErr?.message || txErr);
+        } else {
+          txId = txRow?.id || null;
+        }
+
+        // 2) Create/Update voucher session and LINK it to the transaction UUID
+        // NOTE: We use upsert on voucher_code to be safe if the code already exists.
+        const { error: vsErr } = await supabase
+          .from("voucher_sessions")
+          .upsert({
+            voucher_code: voucherCode,
+            plan_id: planIdForSession,
+            pool_id: pool_id || null,
+            status: "pending",
+            client_mac: clientMacForSession,
+            ap_mac: apMacForSession,
+            mvola_phone: phone || null,
+            transaction_id: txId,
+            delivered_at: nowIso,
+            updated_at: nowIso,
+          }, { onConflict: "voucher_code" });
+
+        if (vsErr) {
+          console.error("⚠️ Warning: unable to upsert FREE voucher_session:", vsErr?.message || vsErr);
+        }
       }
     } catch (dbErr) {
-      console.error("⚠️ Warning: unable to insert FREE transaction row:", dbErr?.message || dbErr);
+      console.error("⚠️ Warning: FREE DB persistence error:", dbErr?.message || dbErr);
       // Fail-open: even if DB insert fails, still return the code to the portal.
     }
 
@@ -3890,6 +3946,10 @@ if (supabase) {
           phone,
           amount,
           plan,
+          plan_id: plan_id_from_client,
+          pool_id,
+          client_mac,
+          ap_mac,
         });
       } catch (bgErr) {
         console.error("Background poll job error", bgErr?.message || bgErr);
