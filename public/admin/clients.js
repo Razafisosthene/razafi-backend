@@ -18,15 +18,33 @@ function fmtDate(iso) {
   return d.toLocaleString();
 }
 
-function fmtRemaining(seconds) {
+function fmtDHMS(seconds, alwaysShowSeconds = true) {
   if (seconds == null) return "—";
-  const s = Math.max(0, Number(seconds) || 0);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const r = Math.floor(s % 60);
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${r}s`;
-  return `${r}s`;
+  const s0 = Math.max(0, Number(seconds) || 0);
+  const d = Math.floor(s0 / 86400);
+  const h = Math.floor((s0 % 86400) / 3600);
+  const m = Math.floor((s0 % 3600) / 60);
+  const r = Math.floor(s0 % 60);
+
+  const parts = [];
+  if (d > 0) parts.push(`${d}j`);
+  if (h > 0 || d > 0) parts.push(`${h}h`);
+  if (m > 0 || h > 0 || d > 0) parts.push(`${m}min`);
+
+  if (alwaysShowSeconds || r > 0 || parts.length === 0) parts.push(`${r}s`);
+  return parts.join(" ");
+}
+
+function fmtRemaining(seconds) {
+  // Remaining time shown as: ...j ...h ...min ...s
+  return fmtDHMS(seconds, true);
+}
+
+function fmtDurationMinutes(minutes) {
+  if (minutes == null) return "—";
+  const s = Math.max(0, Number(minutes) || 0) * 60;
+  // Duration shown as: ...j ...h ...min (seconds omitted when 0)
+  return fmtDHMS(s, false);
 }
 
 function esc(s) {
@@ -35,37 +53,9 @@ function esc(s) {
   }[c]));
 }
 
-function escapeCssSel(v) {
-  const s = String(v ?? "");
-  if (window.CSS && typeof CSS.escape === "function") return CSS.escape(s);
-  // basic fallback
-  return s.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
-}
-
-function flashMsg(el, text, ms = 1200) {
-  if (!el) return;
-  el.style.display = "block";
-  el.textContent = text;
-
-  el.style.transition = "opacity 200ms ease";
-  el.style.opacity = "1";
-
-  setTimeout(() => {
-    el.style.opacity = "0";
-    setTimeout(() => {
-      el.style.display = "none";
-      el.textContent = "";
-      el.style.opacity = "1";
-    }, 220);
-  }, ms);
-}
-
 let debounceTimer = null;
 let lastItems = [];
 let currentDetailId = null;
-
-let detailDirty = false;       // refresh list on close only if something changed
-let lastOpenedDetail = null;   // last detail item (for row highlight)
 
 // -------------------------
 // Session gate: page must be inaccessible without login
@@ -181,14 +171,9 @@ async function openDetail(id) {
   sub.textContent = "Loading...";
   modal.style.display = "flex";
 
-  // ✅ Prevent bottom action bar from covering content
-  detail.style.paddingBottom = "96px";
-
   try {
     const data = await fetchJSON("/api/admin/voucher-sessions/" + encodeURIComponent(id));
     const it = data.item;
-
-    lastOpenedDetail = it || null;
 
     sub.textContent = `Voucher ${it.voucher_code || "—"} · Session ID ${it.id}`;
 
@@ -216,7 +201,7 @@ async function openDetail(id) {
 
       ["Plan", it.plans?.name || it.plan_name],
       ["Price", (it.plans?.price_ar ?? it.plan_price)],
-      ["Duration (min)", it.plans?.duration_minutes],
+      ["Duration", fmtDurationMinutes(it.plans?.duration_minutes)],
       ["Data (MB)", it.plans?.data_mb],
       ["Max devices", it.plans?.max_devices],
     ];
@@ -250,7 +235,7 @@ async function openDetail(id) {
           <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
             <div>
               <div style="font-size:12px; opacity:.7;">Free plan override</div>
-              <div id="fpSummary_${it.id}" style="font-size:15px; font-weight:800; margin-top:4px;">Used: ${esc(used)} · Allowed: ${esc(allowed)} · Remaining: ${esc(remaining)}</div>
+              <div style="font-size:15px; font-weight:800; margin-top:4px;">Used: ${esc(used)} · Allowed: ${esc(allowed)} · Remaining: ${esc(remaining)}</div>
               <div style="font-size:12px; opacity:.75; margin-top:6px;">Rule: <b>used_free_count &lt; 1 + extra_uses</b></div>
             </div>
             <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
@@ -265,7 +250,7 @@ async function openDetail(id) {
               <button id="${btnId}" type="button" style="width:auto; padding:9px 14px;">Save</button>
             </div>
           </div>
-          <div id="${msgId}" class="subtitle" style="margin-top:10px; margin-bottom:10px; display:none; position:relative; z-index:5;"></div>
+          <div id="${msgId}" class="subtitle" style="margin-top:10px; display:none;"></div>
         </div>
       `);
 
@@ -303,39 +288,11 @@ async function openDetail(id) {
                 extra_uses: extraUses,
                 note: noteVal,
               })
-            
             });
-
-            // Mark dirty so list auto-syncs on close
-            detailDirty = true;
-            lastOpenedDetail = it || lastOpenedDetail;
-
-            // 🔄 Live UI update (no refresh needed)
-            const allowedNew = 1 + extraUses;
-            const remainingNew = Math.max(0, allowedNew - used);
-
-            const summaryEl = document.getElementById(`fpSummary_${it.id}`);
-            if (summaryEl) {
-              summaryEl.textContent = `Used: ${used} · Allowed: ${allowedNew} · Remaining: ${remainingNew}`;
+            if (msg) {
+              msg.style.display = "block";
+              msg.textContent = "Saved. (Re-open this detail after the next free-plan check to see updated remaining.)";
             }
-
-            // 🟢 Green flash on the free override block
-            const blockEl = document.getElementById(`freeOverride_${it.id}`);
-            if (blockEl) {
-              blockEl.style.transition = "background-color 250ms ease";
-              blockEl.style.backgroundColor = "rgba(25, 135, 84, 0.18)";
-              setTimeout(() => { blockEl.style.backgroundColor = ""; }, 900);
-            }
-
-            // 🟢 Green flash on the table row
-            const row = document.querySelector(`#tbody tr[data-id="${escapeCssSel(it.id)}"]`);
-            if (row) {
-              row.style.transition = "background-color 250ms ease";
-              row.style.backgroundColor = "rgba(25, 135, 84, 0.18)";
-              setTimeout(() => { row.style.backgroundColor = ""; }, 900);
-            }
-
-            flashMsg(msg, "Updated ✅", 1200);
           } catch (e) {
             if (msg) {
               msg.style.display = "block";
@@ -382,12 +339,6 @@ async function deleteCurrent() {
 function closeModal() {
   document.getElementById("modal").style.display = "none";
   currentDetailId = null;
-
-  // 🔁 Auto-sync list only if something changed in this modal
-  if (detailDirty) {
-    detailDirty = false;
-    loadClients().catch(showTopError);
-  }
 }
 
 function wireUI() {
