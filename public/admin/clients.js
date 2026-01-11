@@ -35,9 +35,37 @@ function esc(s) {
   }[c]));
 }
 
+function escapeCssSel(v) {
+  const s = String(v ?? "");
+  if (window.CSS && typeof CSS.escape === "function") return CSS.escape(s);
+  // basic fallback
+  return s.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+}
+
+function flashMsg(el, text, ms = 1200) {
+  if (!el) return;
+  el.style.display = "block";
+  el.textContent = text;
+
+  el.style.transition = "opacity 200ms ease";
+  el.style.opacity = "1";
+
+  setTimeout(() => {
+    el.style.opacity = "0";
+    setTimeout(() => {
+      el.style.display = "none";
+      el.textContent = "";
+      el.style.opacity = "1";
+    }, 220);
+  }, ms);
+}
+
 let debounceTimer = null;
 let lastItems = [];
 let currentDetailId = null;
+
+let detailDirty = false;       // refresh list on close only if something changed
+let lastOpenedDetail = null;   // last detail item (for row highlight)
 
 // -------------------------
 // Session gate: page must be inaccessible without login
@@ -157,6 +185,8 @@ async function openDetail(id) {
     const data = await fetchJSON("/api/admin/voucher-sessions/" + encodeURIComponent(id));
     const it = data.item;
 
+    lastOpenedDetail = it || null;
+
     sub.textContent = `Voucher ${it.voucher_code || "—"} · Session ID ${it.id}`;
 
     const rows = [
@@ -217,7 +247,7 @@ async function openDetail(id) {
           <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
             <div>
               <div style="font-size:12px; opacity:.7;">Free plan override</div>
-              <div style="font-size:15px; font-weight:800; margin-top:4px;">Used: ${esc(used)} · Allowed: ${esc(allowed)} · Remaining: ${esc(remaining)}</div>
+              <div id="fpSummary_${it.id}" style="font-size:15px; font-weight:800; margin-top:4px;">Used: ${esc(used)} · Allowed: ${esc(allowed)} · Remaining: ${esc(remaining)}</div>
               <div style="font-size:12px; opacity:.75; margin-top:6px;">Rule: <b>used_free_count &lt; 1 + extra_uses</b></div>
             </div>
             <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
@@ -270,11 +300,39 @@ async function openDetail(id) {
                 extra_uses: extraUses,
                 note: noteVal,
               })
+            
             });
-            if (msg) {
-              msg.style.display = "block";
-              msg.textContent = "Saved. (Re-open this detail after the next free-plan check to see updated remaining.)";
+
+            // Mark dirty so list auto-syncs on close
+            detailDirty = true;
+            lastOpenedDetail = it || lastOpenedDetail;
+
+            // 🔄 Live UI update (no refresh needed)
+            const allowedNew = 1 + extraUses;
+            const remainingNew = Math.max(0, allowedNew - used);
+
+            const summaryEl = document.getElementById(`fpSummary_${it.id}`);
+            if (summaryEl) {
+              summaryEl.textContent = `Used: ${used} · Allowed: ${allowedNew} · Remaining: ${remainingNew}`;
             }
+
+            // 🟢 Green flash on the free override block
+            const blockEl = document.getElementById(`freeOverride_${it.id}`);
+            if (blockEl) {
+              blockEl.style.transition = "background-color 250ms ease";
+              blockEl.style.backgroundColor = "rgba(25, 135, 84, 0.18)";
+              setTimeout(() => { blockEl.style.backgroundColor = ""; }, 900);
+            }
+
+            // 🟢 Green flash on the table row
+            const row = document.querySelector(`#tbody tr[data-id="${escapeCssSel(it.id)}"]`);
+            if (row) {
+              row.style.transition = "background-color 250ms ease";
+              row.style.backgroundColor = "rgba(25, 135, 84, 0.18)";
+              setTimeout(() => { row.style.backgroundColor = ""; }, 900);
+            }
+
+            flashMsg(msg, "Updated ✅", 1200);
           } catch (e) {
             if (msg) {
               msg.style.display = "block";
@@ -321,6 +379,12 @@ async function deleteCurrent() {
 function closeModal() {
   document.getElementById("modal").style.display = "none";
   currentDetailId = null;
+
+  // 🔁 Auto-sync list only if something changed in this modal
+  if (detailDirty) {
+    detailDirty = false;
+    loadClients().catch(showTopError);
+  }
 }
 
 function wireUI() {
