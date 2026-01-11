@@ -2514,7 +2514,6 @@ async function pollTransactionStatus({
   phone,
   amount,
   plan,
-  txId,
 }) {
   const start = Date.now();
   const timeoutMs = 3 * 60 * 1000; // 3 minutes
@@ -2626,50 +2625,20 @@ async function pollTransactionStatus({
           // Success: voucher assigned
           console.info("✅ Voucher assigned:", voucherCode, voucherId || "(no id)");
 
-          // Fetch the transaction row to get its UUID + initial metadata (plan_id/client_mac/ap_mac/pool_id)
-          let txRow = null;
-          try {
-            const { data: _tx, error: _txErr } = await supabase
-              .from("transactions")
-              .select("id, metadata")
-              .eq("request_ref", requestRef)
-              .maybeSingle();
-            if (!_txErr && _tx) txRow = _tx;
-          } catch (_) {}
+          // Fetch transaction id + existing metadata so we can (1) preserve metadata and (2) link voucher_sessions.transaction_id
+          const { data: txRowForLink, error: txRowErr } = await supabase
+            .from("transactions")
+            .select("id, metadata")
+            .eq("request_ref", requestRef)
+            .maybeSingle();
 
-          const baseMeta = (txRow && txRow.metadata && typeof txRow.metadata === "object") ? txRow.metadata : {};
-          const mergedMeta = {
-            ...baseMeta,
-            mvolaResponse: truncate(sdata, 2000),
-            completed_at_local: toISOStringMG(new Date()),
-          };
-
-          const txUuid = (txId || txRow?.id || null);
-          // Create voucher_session row linked to this transaction so revenue view can JOIN correctly
-          if (supabase && txUuid) {
-            try {
-              const planIdForSession = mergedMeta.plan_id || null;
-              const clientMacForSession = mergedMeta.client_mac || null;
-              const apMacForSession = mergedMeta.ap_mac || null;
-              const poolIdForSession = mergedMeta.pool_id || null;
-              if (planIdForSession && clientMacForSession) {
-                await supabase.from("voucher_sessions").insert({
-                  voucher_code: voucherCode,
-                  plan_id: planIdForSession,
-                  pool_id: poolIdForSession,
-                  status: "pending",
-                  client_mac: clientMacForSession,
-                  ap_mac: apMacForSession,
-                  mvola_phone: phone || null,
-                  transaction_id: txUuid,
-                  delivered_at: new Date().toISOString(),
-                  updated_at: new Date().toISOString(),
-                });
-              }
-            } catch (e) {
-              console.error("⚠️ Failed to insert voucher_session after payment completion:", e?.message || e);
-            }
+          if (txRowErr) {
+            console.error("⚠️ Failed to fetch transaction row for linking:", txRowErr);
           }
+
+          const txIdForLink = txRowForLink?.id || null;
+          const baseMetadata = (txRowForLink && typeof txRowForLink.metadata === "object" && txRowForLink.metadata) ? txRowForLink.metadata : {};
+
 
           try {
             await supabase
@@ -2677,10 +2646,45 @@ async function pollTransactionStatus({
               .update({
                 status: "completed",
                 voucher: voucherCode,
+                code: voucherCode,
                 transaction_reference: sdata.transactionReference || sdata.objectReference || null,
-                metadata: mergedMeta,
+                metadata: {
+                  ...baseMetadata,
+                  mvolaResponse: truncate(sdata, 2000),
+                  completed_at_local: toISOStringMG(new Date()),
+                },
               })
-              .eq(txUuid ? "id" : "request_ref", txUuid ? txUuid : requestRef);
+              .eq("request_ref", requestRef);
+
+            // Link voucher session to this transaction for Revenue view joins
+            if (txIdForLink) {
+              const nowIso = new Date().toISOString();
+              const metaPlanId = baseMetadata.plan_id || null;
+              const metaPoolId = baseMetadata.pool_id || null;
+              const metaClientMac = baseMetadata.client_mac || null;
+              const metaApMac = baseMetadata.ap_mac || null;
+
+              const { error: vsUpsertErr } = await supabase
+                .from("voucher_sessions")
+                .upsert({
+                  voucher_code: voucherCode,
+                  plan_id: metaPlanId,
+                  pool_id: metaPoolId,
+                  status: "pending",
+                  client_mac: metaClientMac,
+                  ap_mac: metaApMac,
+                  mvola_phone: phone || null,
+                  transaction_id: txIdForLink,
+                  delivered_at: nowIso,
+                  updated_at: nowIso,
+                }, { onConflict: "voucher_code" });
+
+              if (vsUpsertErr) {
+                console.error("⚠️ voucher_sessions upsert failed (mvola delivery):", vsUpsertErr);
+              }
+            } else {
+              console.warn("⚠️ Skipping voucher_sessions link: transaction id not found for", requestRef);
+            }
           } catch (e) {
             console.error("⚠️ Failed updating transaction after voucher assign:", e?.message || e);
           }
@@ -2933,7 +2937,7 @@ app.post("/api/new/purchase", async (req, res) => {
         client_mac: (normalizeMacColon(body.client_mac || body.clientMac || body.clientMAC || null) || (body.client_mac || body.clientMac || body.clientMAC || null)),
         ap_mac: (normalizeMacColon(body.ap_mac || body.apMac || null) || (body.ap_mac || body.apMac || null)),
         mvola_phone: phone || null,
-        transaction_id: null,
+        transaction_id: txId,
         delivered_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
@@ -3751,7 +3755,7 @@ try {
 
 
   const requestRef = `RAZAFI_${Date.now()}`;
-  const txId = crypto.randomUUID(); // link transactions <-> voucher_sessions for revenue truth view
+  const txId = crypto.randomUUID();
 
 
   // FREE PLAN FLOW: amount === 0 => generate voucher immediately (no MVola)
@@ -3797,7 +3801,39 @@ if (supabase) {
     });
   }
 
-  const { error: vsErr } = await supabase
+    // Ensure the FREE transaction exists before inserting voucher_sessions (FK on transaction_id)
+  try {
+    const metadataForInsert = {
+      source: "portal",
+      free: true,
+      created_at_local: toISOStringMG(new Date()),
+      plan_id: planIdForSession,
+      pool_id: pool_id || null,
+      client_mac: clientMacForSession,
+      ap_mac: apMacForSession,
+    };
+
+    if (supabase) {
+      await supabase.from("transactions").insert([{
+        id: txId,
+        phone,
+        plan,
+        amount,
+        currency: "Ar",
+        description: `Achat WiFi ${plan}`,
+        request_ref: requestRef,
+        status: "completed",
+        voucher: voucherCode,
+        code: voucherCode,
+        metadata: metadataForInsert,
+      }]);
+    }
+  } catch (dbErr) {
+    console.error("⚠️ Warning: unable to insert FREE transaction row:", dbErr?.message || dbErr);
+    // Fail-open: even if DB insert fails, still return the code to the portal.
+  }
+
+const { error: vsErr } = await supabase
     .from("voucher_sessions")
     .insert({
       voucher_code: voucherCode,
@@ -3807,7 +3843,7 @@ if (supabase) {
       client_mac: clientMacForSession,
       ap_mac: apMacForSession,
       mvola_phone: phone || null,
-      transaction_id: txId,
+      transaction_id: null,
       delivered_at: nowIso,
       updated_at: nowIso,
     });
@@ -3820,31 +3856,8 @@ if (supabase) {
 
 
 
-    try {
-      const metadataForInsert = {
-        source: "portal",
-        free: true,
-        created_at_local: toISOStringMG(new Date()),
-      };
-
-      if (supabase) {
-        await supabase.from("transactions").insert([{
-          id: txId,
-          phone,
-          plan,
-          amount,
-          currency: "Ar",
-          description: `Achat WiFi ${plan}`,
-          request_ref: requestRef,
-          status: "completed",
-          voucher: voucherCode,
-          metadata: metadataForInsert,
-        }]);
-      }
-    } catch (dbErr) {
-      console.error("⚠️ Warning: unable to insert FREE transaction row:", dbErr?.message || dbErr);
-      // Fail-open: even if DB insert fails, still return the code to the portal.
-    }
+    
+    // (transaction row already inserted above for FREE flow)
 
     return res.json({ ok: true, free: true, requestRef, code: voucherCode });
   }
@@ -3854,10 +3867,10 @@ if (supabase) {
     const metadataForInsert = {
       source: "portal",
       created_at_local: toISOStringMG(new Date()),
-      plan_id: plan_id_from_client || null,
+      plan_id: planIdForSession,
+      pool_id: pool_id || null,
       client_mac: client_mac || null,
       ap_mac: ap_mac || null,
-      pool_id: pool_id || null,
     };
 
     if (supabase) {
@@ -3938,7 +3951,6 @@ if (supabase) {
         await pollTransactionStatus({
           serverCorrelationId,
           requestRef,
-          txId,
           phone,
           amount,
           plan,
