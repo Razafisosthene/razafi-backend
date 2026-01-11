@@ -163,8 +163,7 @@ async function openDetail(id) {
       ["Client MAC", it.client_mac],
 
       // ✅ Human AP + MAC visible as requested
-      ["AP", it.ap_name || it.ap_mac || "—"],
-      ["AP MAC", it.ap_mac || "—"],
+          ["AP", it.ap_name || "—"],
 
       ["Pool", it.pool?.name || it.pool_name || it.pool_id],
 
