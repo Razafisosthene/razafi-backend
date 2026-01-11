@@ -181,6 +181,9 @@ async function openDetail(id) {
   sub.textContent = "Loading...";
   modal.style.display = "flex";
 
+  // ✅ Prevent bottom action bar from covering content
+  detail.style.paddingBottom = "96px";
+
   try {
     const data = await fetchJSON("/api/admin/voucher-sessions/" + encodeURIComponent(id));
     const it = data.item;
@@ -262,7 +265,7 @@ async function openDetail(id) {
               <button id="${btnId}" type="button" style="width:auto; padding:9px 14px;">Save</button>
             </div>
           </div>
-          <div id="${msgId}" class="subtitle" style="margin-top:10px; display:none;"></div>
+          <div id="${msgId}" class="subtitle" style="margin-top:10px; margin-bottom:10px; display:none; position:relative; z-index:5;"></div>
         </div>
       `);
 
