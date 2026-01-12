@@ -3917,13 +3917,28 @@ const { error: vsErr } = await supabase
 
     try {
       if (supabase) {
+        // Preserve existing metadata (plan_id, pool_id, client_mac, ap_mac, etc.)
+        // and only append MVola response fields.
+        const { data: txMetaRow, error: txMetaErr } = await supabase
+          .from("transactions")
+          .select("metadata")
+          .eq("request_ref", requestRef)
+          .maybeSingle();
+
+        if (txMetaErr) {
+          console.warn("⚠️ Could not read transaction metadata for merge:", txMetaErr);
+        }
+
+        const baseMeta =
+          txMetaRow && typeof txMetaRow.metadata === "object" && txMetaRow.metadata ? txMetaRow.metadata : {};
+
         await supabase
           .from("transactions")
           .update({
             server_correlation_id: serverCorrelationId,
             status: "pending",
             transaction_reference: data.transactionReference || null,
-            metadata: { ...{ mvolaResponse: truncate(data, 2000) }, updated_at_local: toISOStringMG(new Date()) },
+            metadata: { ...baseMeta, mvolaResponse: truncate(data, 2000), updated_at_local: toISOStringMG(new Date()) },
           })
           .eq("request_ref", requestRef);
       }
