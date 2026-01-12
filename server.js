@@ -2536,224 +2536,143 @@ async function pollTransactionStatus({
       if (statusRaw === "completed" || statusRaw === "success") {
         console.info("🔔 MVola status completed for", requestRef, serverCorrelationId);
 
-        try {
+                try {
           if (!supabase) throw new Error("Supabase not configured");
 
-          const { data: rpcData, error: rpcError } = await supabase.rpc("assign_voucher_atomic", {
-            p_request_ref: requestRef,
-            p_server_corr: serverCorrelationId,
-            p_plan: plan ?? null,
-            p_assign_to: phone ?? null,
-          });
+          // Read transaction row to recover the original metadata (plan_id/pool_id/client_mac/ap_mac).
+          const { data: tx, error: txErr } = await supabase
+            .from("transactions")
+            .select("id,phone,amount,metadata,code,voucher")
+            .eq("request_ref", requestRef)
+            .maybeSingle();
 
-          if (rpcError) {
-            console.error("⚠️ assign_voucher_atomic RPC error", rpcError);
+          if (txErr) {
+            throw txErr;
+          }
+
+          const baseMeta = tx?.metadata && typeof tx.metadata === "object" ? tx.metadata : {};
+          const metaPlanId = (baseMeta.plan_id || null);
+          const metaPoolId = (baseMeta.pool_id || null);
+          const metaClientMac = (baseMeta.client_mac || null);
+          const metaApMac = (baseMeta.ap_mac || null);
+
+          // NEW SYSTEM: if we have plan_id + client_mac in metadata, we must generate & deliver a NEW voucher (no old voucher stock).
+          const isNewSystem = !!metaPlanId && !!metaClientMac;
+
+          if (isNewSystem) {
+            const voucherCode =
+              (tx?.code || tx?.voucher || null) ||
+              ("RAZAFI-" + crypto.randomBytes(4).toString("hex").toUpperCase());
+
+            const nowIso = new Date().toISOString();
+
+            const { error: vsErr } = await supabase
+              .from("voucher_sessions")
+              .upsert([{
+                voucher_code: voucherCode,
+                plan_id: metaPlanId,
+                pool_id: metaPoolId,
+                client_mac: metaClientMac,
+                ap_mac: metaApMac,
+                mvola_phone: (tx?.phone || baseMeta.phone || null),
+                transaction_id: tx?.id || null,
+                status: "pending",
+                delivered_at: nowIso,
+                updated_at: nowIso,
+              }], { onConflict: "voucher_code" });
+
+            if (vsErr) throw vsErr;
+
+            // Mark transaction completed & store the generated voucher code.
+            await supabase
+              .from("transactions")
+              .update({
+                status: "completed",
+                code: voucherCode,
+                voucher: voucherCode,
+                metadata: { ...baseMeta, mvolaStatus: statusRaw, completed_at_local: toISOStringMG(new Date()), updated_at_local: toISOStringMG(new Date()) },
+              })
+              .eq("request_ref", requestRef);
+
             await insertLog({
               request_ref: requestRef,
               server_correlation_id: serverCorrelationId,
-              event_type: "assign_error",
-              status: "failed",
-              masked_phone: maskPhone(phone),
-              amount,
-              attempt,
-              short_message: "assign_voucher_atomic failed",
-              payload: rpcError,
-            });
-
-            // update transaction status to indicate no voucher
-            try {
-              await supabase
-                .from("transactions")
-                .update({ status: "no_voucher_pending", metadata: { assign_error: truncate(rpcError, 2000), updated_at_local: toISOStringMG(new Date()) } })
-                .eq("request_ref", requestRef);
-            } catch (e) {
-              console.error("⚠️ Failed update after rpc error:", e?.message || e);
-            }
-
-            await sendEmailNotification(`[RAZAFI WIFI] ⚠️ No Voucher Available – RequestRef ${requestRef}`, {
-              RequestRef: requestRef,
-              ServerCorrelationId: serverCorrelationId,
-              Phone: maskPhone(phone),
-              Amount: amount,
-              Message: "assign_voucher_atomic returned an error, intervention required.",
-              rpc_error: rpcError,
-              TimestampMadagascar: toISOStringMG(new Date()),
+              event_type: "completed",
+              status: "completed",
+              masked_phone: maskPhone(tx?.phone || baseMeta.phone || ""),
+              payload: { voucherCode, plan_id: metaPlanId, pool_id: metaPoolId, client_mac: metaClientMac, ap_mac: metaApMac },
             });
 
             return;
           }
 
+          // LEGACY fallback: old stock vouchers (assign_voucher_atomic)
+          const { data: rpcData, error: rpcError } = await supabase.rpc("assign_voucher_atomic", {
+            p_request_ref: requestRef,
+          });
+
+          if (rpcError) {
+            console.error("❌ assign_voucher_atomic returned error:", rpcError);
+            await insertLog({
+              request_ref: requestRef,
+              server_correlation_id: serverCorrelationId,
+              event_type: "assign_voucher_atomic_error",
+              status: "error",
+              payload: rpcError,
+            });
+            return;
+          }
+
           const assigned = Array.isArray(rpcData) && rpcData.length ? rpcData[0] : rpcData || null;
           const voucherCode = assigned?.voucher_code || assigned?.code || assigned?.voucher || assigned?.voucherCode || null;
-          const voucherId = assigned?.voucher_id || assigned?.id || null;
 
           if (!assigned || !voucherCode) {
             console.warn("⚠️ No voucher available for", requestRef);
             try {
               await supabase
                 .from("transactions")
-                .update({ status: "no_voucher_pending", metadata: { mvolaResponse: truncate(sdata, 2000), updated_at_local: toISOStringMG(new Date()) } })
+                .update({ status: "no_voucher_pending", metadata: { ...baseMeta, updated_at_local: toISOStringMG(new Date()) } })
                 .eq("request_ref", requestRef);
             } catch (e) {
               console.error("⚠️ Failed updating transaction to no_voucher_pending:", e?.message || e);
             }
-
-            await insertLog({
-              request_ref: requestRef,
-              server_correlation_id: serverCorrelationId,
-              event_type: "no_voucher_pending",
-              status: "no_voucher",
-              masked_phone: maskPhone(phone),
-              amount,
-              attempt,
-              short_message: "Aucun voucher disponible lors de l'assignation",
-              payload: sdata,
-            });
-
-            await sendEmailNotification(`[RAZAFI WIFI] ⚠️ No Voucher Available – RequestRef ${requestRef}`, {
-              RequestRef: requestRef,
-              ServerCorrelationId: serverCorrelationId,
-              Phone: maskPhone(phone),
-              Amount: amount,
-              Message: "Payment completed but no voucher available. OPS intervention required.",
-              TimestampMadagascar: toISOStringMG(new Date()),
-            });
-
             return;
           }
 
-          // Success: voucher assigned
-          console.info("✅ Voucher assigned:", voucherCode, voucherId || "(no id)");
-
-          // Fetch transaction id + existing metadata so we can (1) preserve metadata and (2) link voucher_sessions.transaction_id
-          const { data: txRowForLink, error: txRowErr } = await supabase
+          // If legacy voucher assigned, mark completed & store code
+          await supabase
             .from("transactions")
-            .select("id, metadata")
-            .eq("request_ref", requestRef)
-            .maybeSingle();
-
-          if (txRowErr) {
-            console.error("⚠️ Failed to fetch transaction row for linking:", txRowErr);
-          }
-
-          const txIdForLink = txRowForLink?.id || null;
-          const baseMetadata = (txRowForLink && typeof txRowForLink.metadata === "object" && txRowForLink.metadata) ? txRowForLink.metadata : {};
-
-
-          try {
-            await supabase
-              .from("transactions")
-              .update({
-                status: "completed",
-                voucher: voucherCode,
-                code: voucherCode,
-                transaction_reference: sdata.transactionReference || sdata.objectReference || null,
-                metadata: {
-                  ...baseMetadata,
-                  mvolaResponse: truncate(sdata, 2000),
-                  completed_at_local: toISOStringMG(new Date()),
-                },
-              })
-              .eq("request_ref", requestRef);
-
-            // Link voucher session to this transaction for Revenue view joins
-            if (txIdForLink) {
-              const nowIso = new Date().toISOString();
-              const metaPlanId = baseMetadata.plan_id || null;
-              const metaPoolId = baseMetadata.pool_id || null;
-              const metaClientMac = baseMetadata.client_mac || null;
-              const metaApMac = baseMetadata.ap_mac || null;
-
-              const { error: vsUpsertErr } = await supabase
-                .from("voucher_sessions")
-                .upsert({
-                  voucher_code: voucherCode,
-                  plan_id: metaPlanId,
-                  pool_id: metaPoolId,
-                  status: "pending",
-                  client_mac: metaClientMac,
-                  ap_mac: metaApMac,
-                  mvola_phone: phone || null,
-                  transaction_id: txIdForLink,
-                  delivered_at: nowIso,
-                  updated_at: nowIso,
-                }, { onConflict: "voucher_code" });
-
-              if (vsUpsertErr) {
-                console.error("⚠️ voucher_sessions upsert failed (mvola delivery):", vsUpsertErr);
-              }
-            } else {
-              console.warn("⚠️ Skipping voucher_sessions link: transaction id not found for", requestRef);
-            }
-          } catch (e) {
-            console.error("⚠️ Failed updating transaction after voucher assign:", e?.message || e);
-          }
+            .update({
+              status: "completed",
+              code: voucherCode,
+              voucher: voucherCode,
+              metadata: { ...baseMeta, mvolaStatus: statusRaw, completed_at_local: toISOStringMG(new Date()), updated_at_local: toISOStringMG(new Date()) },
+            })
+            .eq("request_ref", requestRef);
 
           await insertLog({
             request_ref: requestRef,
             server_correlation_id: serverCorrelationId,
             event_type: "completed",
             status: "completed",
-            masked_phone: maskPhone(phone),
-            amount,
-            attempt,
-            short_message: "Paiement confirmé et voucher attribué",
-            payload: { mvolaResponse: truncate(sdata, 2000), voucher: voucherCode, voucher_id: voucherId },
+            masked_phone: maskPhone(tx?.phone || baseMeta.phone || ""),
+            payload: { voucherCode },
           });
 
-          const emailBody = [
-            `RequestRef: ${requestRef}`,
-            `ServerCorrelationId: ${serverCorrelationId}`,
-            `Téléphone (masqué): ${maskPhone(phone)}`,
-            `Montant: ${amount} Ar`,
-            `Plan: ${plan || "—"}`,
-            `Status: completed`,
-            `Voucher: ${voucherCode}`,
-            `VoucherId: ${voucherId || "—"}`,
-            `TransactionReference: ${sdata.transactionReference || "—"}`,
-            `Timestamp (Madagascar): ${toISOStringMG(new Date())}`,
-          ].join("\n");
-
-          await sendEmailNotification(`[RAZAFI WIFI] ✅ Payment Completed – RequestRef ${requestRef}`, emailBody);
           return;
-        } catch (assignErr) {
-          console.error("❌ Error during voucher assignment flow", assignErr?.message || assignErr);
-          await insertLog({
-            request_ref: requestRef,
-            server_correlation_id: serverCorrelationId,
-            event_type: "assign_exception",
-            status: "failed",
-            masked_phone: maskPhone(phone),
-            amount,
-            attempt,
-            short_message: "Exception pendant assignation voucher",
-            payload: truncate(assignErr?.message || assignErr, 2000),
-          });
-
+        } catch (err) {
+          console.error("❌ Error while processing completed MVola payment:", err?.message || err);
           try {
             await supabase
               .from("transactions")
-              .update({ status: "no_voucher_pending", metadata: { assign_exception: truncate(assignErr?.message || assignErr, 2000), updated_at_local: toISOStringMG(new Date()) } })
+              .update({ status: "failed", metadata: { error: truncate(err?.message || err, 2000), updated_at_local: toISOStringMG(new Date()) } })
               .eq("request_ref", requestRef);
-          } catch (e) {
-            console.error("⚠️ Failed updating transaction after assign exception:", e?.message || e);
-          }
-
-          await sendEmailNotification(`[RAZAFI WIFI] ⚠️ No Voucher Available – RequestRef ${requestRef}`, {
-            RequestRef: requestRef,
-            ServerCorrelationId: serverCorrelationId,
-            Phone: maskPhone(phone),
-            Amount: amount,
-            Message: "Erreur système lors de l'attribution du voucher. Intervention requise.",
-            error: truncate(assignErr?.message || assignErr, 2000),
-            TimestampMadagascar: toISOStringMG(new Date()),
-          });
-
-          return;
+          } catch (_) {}
         }
-      }
 
-      if (statusRaw === "failed" || statusRaw === "rejected" || statusRaw === "declined") {
+	      }
+
+	      if (statusRaw === "failed" || statusRaw === "rejected" || statusRaw === "declined") {
         console.warn("MVola reports failed for", requestRef, serverCorrelationId);
         try {
           if (supabase) {
@@ -3563,6 +3482,9 @@ app.post("/api/send-payment", async (req, res) => {
     null
   )?.toString().trim() || null;
 
+  const planIdForSession = plan_id_from_client; // used for transactions.metadata.plan_id (NEW system)
+
+
   let pool_id = null;
 
   let phone = (body.phone || "").trim();
@@ -3917,28 +3839,25 @@ const { error: vsErr } = await supabase
 
     try {
       if (supabase) {
-        // Preserve existing metadata (plan_id, pool_id, client_mac, ap_mac, etc.)
-        // and only append MVola response fields.
-        const { data: txMetaRow, error: txMetaErr } = await supabase
-          .from("transactions")
-          .select("metadata")
-          .eq("request_ref", requestRef)
-          .maybeSingle();
-
-        if (txMetaErr) {
-          console.warn("⚠️ Could not read transaction metadata for merge:", txMetaErr);
-        }
-
-        const baseMeta =
-          txMetaRow && typeof txMetaRow.metadata === "object" && txMetaRow.metadata ? txMetaRow.metadata : {};
-
         await supabase
           .from("transactions")
           .update({
             server_correlation_id: serverCorrelationId,
             status: "pending",
             transaction_reference: data.transactionReference || null,
-            metadata: { ...baseMeta, mvolaResponse: truncate(data, 2000), updated_at_local: toISOStringMG(new Date()) },
+            metadata: (await (async () => {
+            try {
+              const { data: txRow } = await supabase
+                .from("transactions")
+                .select("metadata")
+                .eq("request_ref", requestRef)
+                .maybeSingle();
+              const base = txRow?.metadata && typeof txRow.metadata === 'object' ? txRow.metadata : {};
+              return { ...base, mvolaResponse: truncate(data, 2000), updated_at_local: toISOStringMG(new Date()) };
+            } catch (_) {
+              return { mvolaResponse: truncate(data, 2000), updated_at_local: toISOStringMG(new Date()) };
+            }
+          })()),
           })
           .eq("request_ref", requestRef);
       }
