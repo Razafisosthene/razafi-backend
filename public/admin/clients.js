@@ -158,6 +158,43 @@ async function loadClients() {
   renderTable(data.items || []);
 }
 
+// ✅ small helper: flash a row green + show Updated ✅ effect
+function flashUpdatedRowAndBlock({ sessionId, blockEl }){
+  // Table row flash
+  const tr = document.querySelector(`tr[data-id="${CSS.escape(String(sessionId))}"]`);
+  if (tr) {
+    const prev = tr.style.backgroundColor;
+    tr.style.transition = "background-color 250ms ease";
+    tr.style.backgroundColor = "rgba(25, 135, 84, 0.14)";
+    setTimeout(() => { tr.style.backgroundColor = prev || ""; }, 700);
+    setTimeout(() => { tr.style.transition = ""; }, 900);
+  }
+
+  // Modal block flash
+  if (blockEl) {
+    const prevBg = blockEl.style.backgroundColor;
+    const prevOutline = blockEl.style.outline;
+    blockEl.style.transition = "background-color 250ms ease, outline-color 250ms ease";
+    blockEl.style.backgroundColor = "rgba(25, 135, 84, 0.10)";
+    blockEl.style.outline = "2px solid rgba(25, 135, 84, 0.55)";
+    setTimeout(() => {
+      blockEl.style.backgroundColor = prevBg || "";
+      blockEl.style.outline = prevOutline || "";
+    }, 900);
+    setTimeout(() => { blockEl.style.transition = ""; }, 1100);
+  }
+}
+
+function updateRowRemaining(sessionId, remainingSeconds) {
+  const tr = document.querySelector(`tr[data-id="${CSS.escape(String(sessionId))}"]`);
+  if (!tr) return;
+  const tds = tr.querySelectorAll("td");
+  // Remaining column is the 9th (0-based index 8) in your table
+  if (tds && tds.length >= 10) {
+    tds[8].textContent = fmtRemaining(remainingSeconds);
+  }
+}
+
 async function openDetail(id) {
   currentDetailId = id;
   const modal = document.getElementById("modal");
@@ -179,15 +216,9 @@ async function openDetail(id) {
 
     const rows = [
       ["Client MAC", it.client_mac],
-
-      // ✅ Human AP + MAC visible as requested
-          ["AP", it.ap_name || "—"],
-
+      ["AP", it.ap_name || "—"],
       ["Pool", it.pool?.name || it.pool_name || it.pool_id],
-
-      // ✅ status is DB truth (view); display as-is with fallback
       ["Status", it.status || "—"],
-
       ["Voucher", it.voucher_code],
       ["MVola", it.mvola_phone],
       ["Created", fmtDate(it.created_at)],
@@ -195,10 +226,7 @@ async function openDetail(id) {
       ["Activated", fmtDate(it.activated_at)],
       ["Started", fmtDate(it.started_at)],
       ["Expires", fmtDate(it.expires_at)],
-
-      // ✅ remaining_seconds is DB truth (view); display as-is
       ["Remaining", fmtRemaining(it.remaining_seconds)],
-
       ["Plan", it.plans?.name || it.plan_name],
       ["Price", (it.plans?.price_ar ?? it.plan_price)],
       ["Duration", fmtDurationMinutes(it.plans?.duration_minutes)],
@@ -215,7 +243,6 @@ async function openDetail(id) {
 
     // --------------------------------------------------
     // Free plan override editor (admin)
-    // Enabled only when server returns it.free_plan
     // --------------------------------------------------
     if (it && it.free_plan && it.client_mac && it.plan_id) {
       const fp = it.free_plan;
@@ -225,6 +252,7 @@ async function openDetail(id) {
       const remaining = Number(fp.remaining_free ?? Math.max(0, allowed - used));
 
       const blockId = `freeOverride_${it.id}`;
+      const statsId = `freeStats_${it.id}`;
       const inputId = `extraUses_${it.id}`;
       const noteId = `extraNote_${it.id}`;
       const btnId = `saveExtra_${it.id}`;
@@ -235,7 +263,7 @@ async function openDetail(id) {
           <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
             <div>
               <div style="font-size:12px; opacity:.7;">Free plan override</div>
-              <div style="font-size:15px; font-weight:800; margin-top:4px;">Used: ${esc(used)} · Allowed: ${esc(allowed)} · Remaining: ${esc(remaining)}</div>
+              <div id="${statsId}" style="font-size:15px; font-weight:800; margin-top:4px;">Used: ${esc(used)} · Allowed: ${esc(allowed)} · Remaining: ${esc(remaining)}</div>
               <div style="font-size:12px; opacity:.75; margin-top:6px;">Rule: <b>used_free_count &lt; 1 + extra_uses</b></div>
             </div>
             <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
@@ -268,16 +296,25 @@ async function openDetail(id) {
         // ignore (fail-open)
       }
 
-      // Save handler
+      // Save handler (✅ restored: immediate UI update + highlight)
       const btn = document.getElementById(btnId);
       if (btn) {
         btn.onclick = async () => {
           const msg = document.getElementById(msgId);
-          if (msg) { msg.style.display = "none"; msg.textContent = ""; }
+          const statsEl = document.getElementById(statsId);
+          const blockEl = document.getElementById(blockId);
+
+          if (msg) { msg.style.display = "none"; msg.textContent = ""; msg.style.color = ""; }
           const input = document.getElementById(inputId);
           const note = document.getElementById(noteId);
           const extraUses = input ? Number(input.value) : 0;
           const noteVal = note ? String(note.value || "").trim() : "";
+
+          // disable button while saving
+          const prevText = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = "Saving...";
+
           try {
             await fetchJSON("/api/admin/free-plan-overrides", {
               method: "POST",
@@ -289,15 +326,56 @@ async function openDetail(id) {
                 note: noteVal,
               })
             });
+
+            // ✅ Re-fetch detail so Used/Allowed/Remaining becomes correct immediately
+            let refreshed = null;
+            try {
+              refreshed = await fetchJSON("/api/admin/voucher-sessions/" + encodeURIComponent(it.id));
+            } catch (_) {}
+
+            // Update UI counts
+            if (refreshed?.item?.free_plan && statsEl) {
+              const fp2 = refreshed.item.free_plan;
+              const extra2 = Number(fp2.extra_uses ?? extraUses ?? 0);
+              const used2 = Number(fp2.used_free_count ?? 0);
+              const allowed2 = Number(fp2.allowed_total ?? (1 + extra2));
+              const remaining2 = Number(fp2.remaining_free ?? Math.max(0, allowed2 - used2));
+              statsEl.textContent = `Used: ${used2} · Allowed: ${allowed2} · Remaining: ${remaining2}`;
+            } else if (statsEl) {
+              // fallback compute (still instant)
+              const extra2 = Number(extraUses ?? 0);
+              const used2 = Number(fp.used_free_count ?? 0);
+              const allowed2 = Number(1 + extra2);
+              const remaining2 = Math.max(0, allowed2 - used2);
+              statsEl.textContent = `Used: ${used2} · Allowed: ${allowed2} · Remaining: ${remaining2}`;
+            }
+
+            // Update background row remaining (if server returns remaining_seconds)
+            if (refreshed?.item && typeof refreshed.item.remaining_seconds !== "undefined") {
+              updateRowRemaining(it.id, refreshed.item.remaining_seconds);
+            }
+
+            // ✅ Show "Updated ✅" (green) and flash highlight like before
             if (msg) {
               msg.style.display = "block";
-              msg.textContent = "Saved. (Re-open this detail after the next free-plan check to see updated remaining.)";
+              msg.style.color = "#198754";
+              msg.textContent = "Updated ✅";
+              setTimeout(() => {
+                // fade out, but keep silent (no scary message)
+                if (msg) msg.style.display = "none";
+              }, 1200);
             }
+            flashUpdatedRowAndBlock({ sessionId: it.id, blockEl });
+
           } catch (e) {
             if (msg) {
               msg.style.display = "block";
+              msg.style.color = "#d9534f";
               msg.textContent = e?.message || String(e);
             }
+          } finally {
+            btn.disabled = false;
+            btn.textContent = prevText;
           }
         };
       }
