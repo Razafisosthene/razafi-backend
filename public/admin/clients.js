@@ -18,15 +18,33 @@ function fmtDate(iso) {
   return d.toLocaleString();
 }
 
-function fmtRemaining(seconds) {
+function fmtDHMS(seconds, alwaysShowSeconds = true) {
   if (seconds == null) return "—";
-  const s = Math.max(0, Number(seconds) || 0);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const r = Math.floor(s % 60);
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${r}s`;
-  return `${r}s`;
+  const s0 = Math.max(0, Number(seconds) || 0);
+  const d = Math.floor(s0 / 86400);
+  const h = Math.floor((s0 % 86400) / 3600);
+  const m = Math.floor((s0 % 3600) / 60);
+  const r = Math.floor(s0 % 60);
+
+  const parts = [];
+  if (d > 0) parts.push(`${d}j`);
+  if (h > 0 || d > 0) parts.push(`${h}h`);
+  if (m > 0 || h > 0 || d > 0) parts.push(`${m}min`);
+
+  if (alwaysShowSeconds || r > 0 || parts.length === 0) parts.push(`${r}s`);
+  return parts.join(" ");
+}
+
+function fmtRemaining(seconds) {
+  // Remaining time shown as: ...j ...h ...min ...s
+  return fmtDHMS(seconds, true);
+}
+
+function fmtDurationMinutes(minutes) {
+  if (minutes == null) return "—";
+  const s = Math.max(0, Number(minutes) || 0) * 60;
+  // Duration shown as: ...j ...h ...min (seconds omitted when 0)
+  return fmtDHMS(s, false);
 }
 
 function esc(s) {
@@ -35,59 +53,9 @@ function esc(s) {
   }[c]));
 }
 
-
-function flashMsg(el, text, ms = 1200) {
-  if (!el) return;
-  el.style.display = "block";
-  el.textContent = text;
-  el.style.position = "relative";
-  el.style.zIndex = "5";
-  el.style.marginBottom = "10px";
-  el.style.transition = "opacity 200ms ease";
-  el.style.opacity = "1";
-  setTimeout(() => {
-    el.style.opacity = "0";
-    setTimeout(() => {
-      el.style.display = "none";
-      el.textContent = "";
-      el.style.opacity = "1";
-    }, 220);
-  }, ms);
-}
-
-// Status helpers (keep logic localized)
-function isActiveStatus(statusRaw) {
-  const s = String(statusRaw || "").toLowerCase().trim();
-  return (
-    s.includes("active") ||
-    s.includes("started") ||
-    s.includes("running") ||
-    s.includes("connected")
-  );
-}
-
-function badgeHtml(text, level) {
-  // level: success | warn | danger
-  const styles = {
-    success: { color: "#198754", bg: "rgba(25,135,84,.22)", border: "rgba(25,135,84,.55)" },
-    warn:    { color: "#fd7e14", bg: "rgba(253,126,20,.20)", border: "rgba(253,126,20,.55)" },
-    danger:  { color: "#dc3545", bg: "rgba(220,53,69,.20)", border: "rgba(220,53,69,.55)" },
-  };
-  const st = styles[level] || styles.success;
-  const safe = esc(text);
-  return `<span style="color:${st.color}; font-weight:900; background:${st.bg}; border:1px solid ${st.border}; padding:4px 10px; border-radius:999px; display:inline-block;">${safe}</span>`;
-}
-
-function renderValue(v) {
-  // Allow trusted inline HTML in a very narrow way
-  if (v && typeof v === "object" && v.__html) return v.__html;
-  return esc(v ?? "—");
-}
-
 let debounceTimer = null;
 let lastItems = [];
 let currentDetailId = null;
-let detailDirty = false; // auto-sync list on close if edited
 
 // -------------------------
 // Session gate: page must be inaccessible without login
@@ -138,10 +106,38 @@ function renderTable(items) {
   }
   empty.style.display = "none";
 
+  // status -> row class (visual meaning)
+  function statusToRowClass(statusRaw) {
+    const s = String(statusRaw || "").toLowerCase().trim();
+    if (!s) return "";
+
+    // good/online
+    if (s.includes("active") || s.includes("started") || s.includes("running") || s.includes("connected")) {
+      return "row-status-active";
+    }
+    // waiting
+    if (s.includes("pending") || s.includes("delivered")) {
+      return "row-status-pending";
+    }
+    // finished
+    if (s.includes("expired")) {
+      return "row-status-expired";
+    }
+    // problem
+    if (s.includes("fail") || s.includes("reject") || s.includes("block") || s.includes("error")) {
+      return "row-status-error";
+    }
+    return "";
+  }
+
   for (const it of items) {
     const tr = document.createElement("tr");
     tr.style.cursor = "pointer";
     tr.dataset.id = it.id;
+
+    // ✅ Add row color class based on status (minimal)
+    const rowCls = statusToRowClass(it.status);
+    if (rowCls) tr.classList.add(rowCls);
 
     // ✅ AP: human name if available, else MAC, else —
     const apDisplay = it.ap_name || it.ap_mac || "—";
@@ -190,6 +186,43 @@ async function loadClients() {
   renderTable(data.items || []);
 }
 
+// ✅ small helper: flash a row green + show Updated ✅ effect
+function flashUpdatedRowAndBlock({ sessionId, blockEl }){
+  // Table row flash
+  const tr = document.querySelector(`tr[data-id="${CSS.escape(String(sessionId))}"]`);
+  if (tr) {
+    const prev = tr.style.backgroundColor;
+    tr.style.transition = "background-color 250ms ease";
+    tr.style.backgroundColor = "rgba(25, 135, 84, 0.14)";
+    setTimeout(() => { tr.style.backgroundColor = prev || ""; }, 700);
+    setTimeout(() => { tr.style.transition = ""; }, 900);
+  }
+
+  // Modal block flash
+  if (blockEl) {
+    const prevBg = blockEl.style.backgroundColor;
+    const prevOutline = blockEl.style.outline;
+    blockEl.style.transition = "background-color 250ms ease, outline-color 250ms ease";
+    blockEl.style.backgroundColor = "rgba(25, 135, 84, 0.10)";
+    blockEl.style.outline = "2px solid rgba(25, 135, 84, 0.55)";
+    setTimeout(() => {
+      blockEl.style.backgroundColor = prevBg || "";
+      blockEl.style.outline = prevOutline || "";
+    }, 900);
+    setTimeout(() => { blockEl.style.transition = ""; }, 1100);
+  }
+}
+
+function updateRowRemaining(sessionId, remainingSeconds) {
+  const tr = document.querySelector(`tr[data-id="${CSS.escape(String(sessionId))}"]`);
+  if (!tr) return;
+  const tds = tr.querySelectorAll("td");
+  // Remaining column is the 9th (0-based index 8) in your table
+  if (tds && tds.length >= 10) {
+    tds[8].textContent = fmtRemaining(remainingSeconds);
+  }
+}
+
 async function openDetail(id) {
   currentDetailId = id;
   const modal = document.getElementById("modal");
@@ -200,8 +233,6 @@ async function openDetail(id) {
   modalErr.style.display = "none";
   modalErr.textContent = "";
   detail.innerHTML = "";
-  // Prevent content (e.g., Updated ✅) from hiding behind bottom action buttons
-  detail.style.paddingBottom = "110px";
   sub.textContent = "Loading...";
   modal.style.display = "flex";
 
@@ -213,15 +244,9 @@ async function openDetail(id) {
 
     const rows = [
       ["Client MAC", it.client_mac],
-
-      // ✅ Human AP + MAC visible as requested
-          ["AP", it.ap_name || "—"],
-
+      ["AP", it.ap_name || "—"],
       ["Pool", it.pool?.name || it.pool_name || it.pool_id],
-
-      // ✅ status is DB truth (view); display as-is with fallback
       ["Status", it.status || "—"],
-
       ["Voucher", it.voucher_code],
       ["MVola", it.mvola_phone],
       ["Created", fmtDate(it.created_at)],
@@ -229,20 +254,10 @@ async function openDetail(id) {
       ["Activated", fmtDate(it.activated_at)],
       ["Started", fmtDate(it.started_at)],
       ["Expires", fmtDate(it.expires_at)],
-
-      // ✅ remaining_seconds is DB truth (view); display as-is
-      ["Remaining", (isActiveStatus(it.status)
-        ? { __html: badgeHtml(
-            fmtRemaining(it.remaining_seconds),
-            (it.remaining_seconds != null && Number(it.remaining_seconds) <= 60) ? "danger"
-              : (it.remaining_seconds != null && Number(it.remaining_seconds) <= 600) ? "warn"
-              : "success"
-          ) }
-        : fmtRemaining(it.remaining_seconds))],
-
+      ["Remaining", fmtRemaining(it.remaining_seconds)],
       ["Plan", it.plans?.name || it.plan_name],
       ["Price", (it.plans?.price_ar ?? it.plan_price)],
-      ["Duration (min)", it.plans?.duration_minutes],
+      ["Duration", fmtDurationMinutes(it.plans?.duration_minutes)],
       ["Data (MB)", it.plans?.data_mb],
       ["Max devices", it.plans?.max_devices],
     ];
@@ -250,13 +265,12 @@ async function openDetail(id) {
     detail.innerHTML = rows.map(([k,v]) => `
       <div style="border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
         <div style="font-size:12px; opacity:.7;">${esc(k)}</div>
-        <div style="font-size:15px; font-weight:700; margin-top:4px; word-break: break-word;">${renderValue(v)}</div>
+        <div style="font-size:15px; font-weight:700; margin-top:4px; word-break: break-word;">${esc(v ?? "—")}</div>
       </div>
     `).join("");
 
     // --------------------------------------------------
     // Free plan override editor (admin)
-    // Enabled only when server returns it.free_plan
     // --------------------------------------------------
     if (it && it.free_plan && it.client_mac && it.plan_id) {
       const fp = it.free_plan;
@@ -266,6 +280,7 @@ async function openDetail(id) {
       const remaining = Number(fp.remaining_free ?? Math.max(0, allowed - used));
 
       const blockId = `freeOverride_${it.id}`;
+      const statsId = `freeStats_${it.id}`;
       const inputId = `extraUses_${it.id}`;
       const noteId = `extraNote_${it.id}`;
       const btnId = `saveExtra_${it.id}`;
@@ -276,7 +291,7 @@ async function openDetail(id) {
           <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
             <div>
               <div style="font-size:12px; opacity:.7;">Free plan override</div>
-              <div style="font-size:15px; font-weight:800; margin-top:4px;">Used: ${esc(used)} · Allowed: ${esc(allowed)} · Remaining: ${esc(remaining)}</div>
+              <div id="${statsId}" style="font-size:15px; font-weight:800; margin-top:4px;">Used: ${esc(used)} · Allowed: ${esc(allowed)} · Remaining: ${esc(remaining)}</div>
               <div style="font-size:12px; opacity:.75; margin-top:6px;">Rule: <b>used_free_count &lt; 1 + extra_uses</b></div>
             </div>
             <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
@@ -291,7 +306,7 @@ async function openDetail(id) {
               <button id="${btnId}" type="button" style="width:auto; padding:9px 14px;">Save</button>
             </div>
           </div>
-          <div id="${msgId}" class="subtitle" style="margin-top:10px; display:none; position:relative; z-index:5;"></div>
+          <div id="${msgId}" class="subtitle" style="margin-top:10px; display:none;"></div>
         </div>
       `);
 
@@ -309,16 +324,25 @@ async function openDetail(id) {
         // ignore (fail-open)
       }
 
-      // Save handler
+      // Save handler (✅ restored: immediate UI update + highlight)
       const btn = document.getElementById(btnId);
       if (btn) {
         btn.onclick = async () => {
           const msg = document.getElementById(msgId);
-          if (msg) { msg.style.display = "none"; msg.textContent = ""; }
+          const statsEl = document.getElementById(statsId);
+          const blockEl = document.getElementById(blockId);
+
+          if (msg) { msg.style.display = "none"; msg.textContent = ""; msg.style.color = ""; }
           const input = document.getElementById(inputId);
           const note = document.getElementById(noteId);
           const extraUses = input ? Number(input.value) : 0;
           const noteVal = note ? String(note.value || "").trim() : "";
+
+          // disable button while saving
+          const prevText = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = "Saving...";
+
           try {
             await fetchJSON("/api/admin/free-plan-overrides", {
               method: "POST",
@@ -330,15 +354,56 @@ async function openDetail(id) {
                 note: noteVal,
               })
             });
+
+            // ✅ Re-fetch detail so Used/Allowed/Remaining becomes correct immediately
+            let refreshed = null;
+            try {
+              refreshed = await fetchJSON("/api/admin/voucher-sessions/" + encodeURIComponent(it.id));
+            } catch (_) {}
+
+            // Update UI counts
+            if (refreshed?.item?.free_plan && statsEl) {
+              const fp2 = refreshed.item.free_plan;
+              const extra2 = Number(fp2.extra_uses ?? extraUses ?? 0);
+              const used2 = Number(fp2.used_free_count ?? 0);
+              const allowed2 = Number(fp2.allowed_total ?? (1 + extra2));
+              const remaining2 = Number(fp2.remaining_free ?? Math.max(0, allowed2 - used2));
+              statsEl.textContent = `Used: ${used2} · Allowed: ${allowed2} · Remaining: ${remaining2}`;
+            } else if (statsEl) {
+              // fallback compute (still instant)
+              const extra2 = Number(extraUses ?? 0);
+              const used2 = Number(fp.used_free_count ?? 0);
+              const allowed2 = Number(1 + extra2);
+              const remaining2 = Math.max(0, allowed2 - used2);
+              statsEl.textContent = `Used: ${used2} · Allowed: ${allowed2} · Remaining: ${remaining2}`;
+            }
+
+            // Update background row remaining (if server returns remaining_seconds)
+            if (refreshed?.item && typeof refreshed.item.remaining_seconds !== "undefined") {
+              updateRowRemaining(it.id, refreshed.item.remaining_seconds);
+            }
+
+            // ✅ Show "Updated ✅" (green) and flash highlight like before
             if (msg) {
               msg.style.display = "block";
-              msg.textContent = "Saved. (Re-open this detail after the next free-plan check to see updated remaining.)";
+              msg.style.color = "#198754";
+              msg.textContent = "Updated ✅";
+              setTimeout(() => {
+                // fade out, but keep silent (no scary message)
+                if (msg) msg.style.display = "none";
+              }, 1200);
             }
+            flashUpdatedRowAndBlock({ sessionId: it.id, blockEl });
+
           } catch (e) {
             if (msg) {
               msg.style.display = "block";
+              msg.style.color = "#d9534f";
               msg.textContent = e?.message || String(e);
             }
+          } finally {
+            btn.disabled = false;
+            btn.textContent = prevText;
           }
         };
       }
@@ -380,12 +445,6 @@ async function deleteCurrent() {
 function closeModal() {
   document.getElementById("modal").style.display = "none";
   currentDetailId = null;
-
-  // 🔁 Auto-sync list only if something changed in modal
-  if (detailDirty) {
-    detailDirty = false;
-    loadClients().catch(showTopError);
-  }
 }
 
 function wireUI() {
