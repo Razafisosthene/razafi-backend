@@ -74,6 +74,7 @@ button:hover {
   font-size: 14px;
 }
 
+
 /* Shared admin top bar */
 .topbar {
   display: flex;
@@ -123,47 +124,31 @@ button:hover {
 }
 
 /* ------------------------------------------------------------------ */
-/* CLIENTS – ROW STATUS COLORS (A: strong but elegant)                 */
+/* CLIENTS – ROW STATUS COLORS (A1: no opacity fading)                  */
 /* ------------------------------------------------------------------ */
-
-/* ACTIVE = success green */
 tr.row-status-active {
-  background: rgba(25, 135, 84, 0.18);
-  box-shadow: inset 4px 0 0 rgba(25, 135, 84, 0.9);
+  background: rgba(25, 135, 84, 0.10);
 }
-
-tr.row-status-active td {
-  color: #0f5132;
-  font-weight: 600;
-}
-
-tr.row-status-active:hover {
-  background: rgba(25, 135, 84, 0.24);
-}
-
-/* PENDING */
 tr.row-status-pending {
   background: rgba(13, 110, 253, 0.10);
 }
-
-tr.row-status-pending:hover {
-  background: rgba(13, 110, 253, 0.14);
-}
-
-/* EXPIRED */
 tr.row-status-expired {
   background: rgba(108, 117, 125, 0.12);
 }
-
-tr.row-status-expired:hover {
-  background: rgba(108, 117, 125, 0.16);
-}
-
-/* ERROR */
 tr.row-status-error {
   background: rgba(220, 53, 69, 0.10);
 }
 
+/* keep hover readable (slightly stronger tint) */
+tr.row-status-active:hover {
+  background: rgba(25, 135, 84, 0.14);
+}
+tr.row-status-pending:hover {
+  background: rgba(13, 110, 253, 0.14);
+}
+tr.row-status-expired:hover {
+  background: rgba(108, 117, 125, 0.16);
+}
 tr.row-status-error:hover {
   background: rgba(220, 53, 69, 0.14);
 }
@@ -197,37 +182,18 @@ tr.row-status-error {
   }
 
   input, select {
-    font-size: 16px;
+    font-size: 16px; /* avoid iOS zoom */
   }
 }
 
-/* Badges & danger */
-.badge {
-  display:inline-block;
-  padding:2px 8px;
-  border-radius:999px;
-  font-size:12px;
-  line-height:18px;
-  vertical-align:middle;
-}
+/* Plans: deleted badge + danger button */
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;line-height:18px;vertical-align:middle;}
+.badge-deleted{background:rgba(220,53,69,.18);border:1px solid rgba(220,53,69,.35);color:#ffd1d6;}
+button.danger{background:#dc3545;border-color:#dc3545;}
+button.danger:hover{filter:brightness(0.95);}
 
-.badge-deleted {
-  background:rgba(220,53,69,.18);
-  border:1px solid rgba(220,53,69,.35);
-  color:#ffd1d6;
-}
-
-button.danger {
-  background:#dc3545;
-  border-color:#dc3545;
-}
-
-button.danger:hover {
-  filter:brightness(0.95);
-}
-
-/* Sticky filter bar */
-.sticky-bar {
+/* Plans: sticky filter bar under the header */
+.sticky-bar{
   position: sticky;
   top: 0;
   z-index: 20;
@@ -239,32 +205,41 @@ button.danger:hover {
   margin-top: 10px;
 }
 
-.filters {
+.filters{
   display:flex;
   gap:10px;
   flex-wrap:wrap;
   align-items:center;
 }
 
-.filter-search {
+.filter-search{
   flex: 1 1 260px;
   min-width: 220px;
 }
 
-.filter-select {
+.filter-select{
   width:auto;
 }
 
-.filter-btn {
+.filter-btn{
   width:auto;
 }
 
-.filter-btn.primary {
+.filter-btn.primary{
   font-weight: 700;
 }
 
-/* Modal */
-.modal {
+@media (max-width: 520px){
+  .sticky-bar{
+    top: 0;
+  }
+  .filter-btn.primary{
+    width: 100%;
+  }
+}
+
+/* Modal improvements (mobile-friendly) */
+.modal{
   position: fixed;
   inset: 0;
   background: rgba(0,0,0,.5);
@@ -276,7 +251,8 @@ button.danger:hover {
   z-index: 1000;
 }
 
-.modal-card {
+/* Default modal card */
+.modal-card{
   width: 100%;
   max-width: 520px;
   margin: 6vh auto;
@@ -285,7 +261,21 @@ button.danger:hover {
   padding: 16px;
 }
 
-.modal-actions {
+/* Form layout helpers */
+.form-row{
+  display:flex;
+  gap:10px;
+  align-items:center;
+}
+.check-row{
+  display:flex;
+  gap:10px;
+  align-items:center;
+  margin: 10px 0;
+}
+
+/* Sticky action bar inside modal */
+.modal-actions{
   position: sticky;
   bottom: 0;
   display:flex;
@@ -297,7 +287,182 @@ button.danger:hover {
   margin-top: 12px;
 }
 
-/* Drawer */
+/* On small screens, modal becomes near full-screen */
+@media (max-width: 520px){
+  .modal{
+    padding: 10px;
+    align-items: stretch;
+  }
+  .modal-card{
+    margin: 0;
+    max-height: 94vh;
+    border-radius: 18px;
+  }
+  .modal-actions{
+    justify-content: space-between;
+  }
+  .modal-actions button{
+    width: 48%;
+  }
+  /* Ensure form inputs are readable (avoid iOS zoom) */
+  .modal-card input, .modal-card select, .modal-card button{
+    font-size: 16px;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* RAZAFI Admin - Starlink-style drawer + 2-bar hamburger -> back arrow */
+/* (Inserted at end: minimal risk to existing styles)                   */
+/* ------------------------------------------------------------------ */
+
+.rz-topbar-has-drawer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rz-nav-mount {
+  display: flex;
+  align-items: center;
+}
+
+/* Button */
 .rz-nav-btn {
-  color: #0d6efd;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rz-nav-btn:active { transform: translateY(1px); }
+
+/* Closed: 2 bars */
+.rz-icon-bars {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rz-bar {
+  width: 22px;
+  height: 2.5px;
+  border-radius: 999px;
+  background: currentColor;
+  display: block;
+}
+
+/* Open: show arrow instead of bars */
+.rz-icon-arrow {
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+body.rz-drawer-open .rz-icon-bars { display: none; }
+body.rz-drawer-open .rz-icon-arrow { display: inline-flex; }
+
+/* Overlay */
+.rz-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .18s ease;
+  z-index: 9998;
+}
+
+body.rz-drawer-open .rz-drawer-overlay {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Drawer */
+.rz-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 100vh;
+  width: min(320px, 86vw);
+  background: #ffffff;
+  color: #111;
+  transform: translateX(-110%);
+  transition: transform .22s ease;
+  z-index: 9999;
+  box-shadow: 0 10px 30px rgba(0,0,0,.25);
+  display: flex;
+  flex-direction: column;
+}
+
+body.rz-drawer-open .rz-drawer {
+  transform: translateX(0);
+}
+
+.rz-drawer-head {
+  padding: 16px 16px 12px 16px;
+  border-bottom: 1px solid rgba(0,0,0,.08);
+}
+
+.rz-drawer-title {
+  font-weight: 900;
+  font-size: 16px;
+}
+
+.rz-drawer-sub {
+  margin-top: 8px;
+  opacity: .75;
+  font-size: 13px;
+}
+
+.rz-drawer-nav {
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rz-item {
+  text-decoration: none;
+  color: inherit;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 12px;
+  border-radius: 12px;
+}
+
+.rz-item:hover { background: rgba(0,0,0,.05); }
+
+.rz-item.active {
+  background: rgba(13,110,253,.10);
+  outline: 1px solid rgba(13,110,253,.20);
+}
+
+.rz-item-label {
+  font-weight: 800;
+  font-size: 14px;
+}
+
+.rz-drawer-foot {
+  margin-top: auto;
+  padding: 12px 16px 16px 16px;
+  border-top: 1px solid rgba(0,0,0,.08);
+}
+
+.rz-logout {
+  width: 100%;
+  border: 0;
+  border-radius: 12px;
+  padding: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+/* Ensure hamburger/back arrow is visible on white cards */
+.rz-nav-btn {
+  color: #0d6efd; /* same blue as your titles */
 }
