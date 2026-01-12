@@ -106,38 +106,10 @@ function renderTable(items) {
   }
   empty.style.display = "none";
 
-  // status -> row class (visual meaning)
-  function statusToRowClass(statusRaw) {
-    const s = String(statusRaw || "").toLowerCase().trim();
-    if (!s) return "";
-
-    // good/online
-    if (s.includes("active") || s.includes("started") || s.includes("running") || s.includes("connected")) {
-      return "row-status-active";
-    }
-    // waiting
-    if (s.includes("pending") || s.includes("delivered")) {
-      return "row-status-pending";
-    }
-    // finished
-    if (s.includes("expired")) {
-      return "row-status-expired";
-    }
-    // problem
-    if (s.includes("fail") || s.includes("reject") || s.includes("block") || s.includes("error")) {
-      return "row-status-error";
-    }
-    return "";
-  }
-
   for (const it of items) {
     const tr = document.createElement("tr");
     tr.style.cursor = "pointer";
     tr.dataset.id = it.id;
-
-    // ✅ Add row color class based on status (minimal)
-    const rowCls = statusToRowClass(it.status);
-    if (rowCls) tr.classList.add(rowCls);
 
     // ✅ AP: human name if available, else MAC, else —
     const apDisplay = it.ap_name || it.ap_mac || "—";
