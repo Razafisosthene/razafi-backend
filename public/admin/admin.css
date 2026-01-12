@@ -127,7 +127,13 @@ button:hover {
 /* CLIENTS – ROW STATUS COLORS (A1: no opacity fading)                  */
 /* ------------------------------------------------------------------ */
 tr.row-status-active {
-  background: rgba(25, 135, 84, 0.10);
+  background: rgba(25, 135, 84, 0.18);
+  box-shadow: inset 4px 0 0 rgba(25, 135, 84, 0.90);
+}
+
+tr.row-status-active td {
+  color: #0f5132;
+  font-weight: 600;
 }
 tr.row-status-pending {
   background: rgba(13, 110, 253, 0.10);
@@ -141,7 +147,7 @@ tr.row-status-error {
 
 /* keep hover readable (slightly stronger tint) */
 tr.row-status-active:hover {
-  background: rgba(25, 135, 84, 0.14);
+  background: rgba(25, 135, 84, 0.24);
 }
 tr.row-status-pending:hover {
   background: rgba(13, 110, 253, 0.14);
