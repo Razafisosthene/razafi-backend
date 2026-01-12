@@ -18,63 +18,16 @@ function fmtDate(iso) {
   return d.toLocaleString();
 }
 
-function fmtDHMS(seconds, alwaysShowSeconds = true) {
-  if (seconds == null) return "—";
-  const s0 = Math.max(0, Number(seconds) || 0);
-  const d = Math.floor(s0 / 86400);
-  const h = Math.floor((s0 % 86400) / 3600);
-  const m = Math.floor((s0 % 3600) / 60);
-  const r = Math.floor(s0 % 60);
-
-  const parts = [];
-  if (d > 0) parts.push(`${d}j`);
-  if (h > 0 || d > 0) parts.push(`${h}h`);
-  if (m > 0 || h > 0 || d > 0) parts.push(`${m}min`);
-
-  if (alwaysShowSeconds || r > 0 || parts.length === 0) parts.push(`${r}s`);
-  return parts.join(" ");
-}
-
 function fmtRemaining(seconds) {
-  // Remaining time shown as: ...j ...h ...min ...s
-  return fmtDHMS(seconds, true);
+  if (seconds == null) return "—";
+  const s = Math.max(0, Number(seconds) || 0);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = Math.floor(s % 60);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${r}s`;
+  return `${r}s`;
 }
-
-function fmtDurationMinutes(minutes) {
-  if (minutes == null) return "—";
-  const s = Math.max(0, Number(minutes) || 0) * 60;
-  // Duration shown as: ...j ...h ...min (seconds omitted when 0)
-  return fmtDHMS(s, false);
-}
-
-
-function badgeByRemaining(text, status, remainingSeconds) {
-  // Only colorize for active sessions
-  if (status !== "active") return { __html: esc(text ?? "—") };
-
-  const s = Math.max(0, Number(remainingSeconds) || 0);
-
-  // Thresholds:
-  // <= 1 min  => red
-  // <= 10 min => orange
-  // otherwise => strong green
-  let color = "#198754";
-  let bg = "rgba(25,135,84,.22)";
-
-  if (s <= 60) {
-    color = "#dc3545";
-    bg = "rgba(220,53,69,.18)";
-  } else if (s <= 600) {
-    color = "#fd7e14";
-    bg = "rgba(253,126,20,.18)";
-  }
-
-  const safe = esc(text ?? "—");
-  return {
-    __html: `<span style="color:${color}; font-weight:800; background:${bg}; padding:4px 10px; border-radius:999px; display:inline-block;">${safe}</span>`
-  };
-}
-
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({
@@ -82,9 +35,59 @@ function esc(s) {
   }[c]));
 }
 
+
+function flashMsg(el, text, ms = 1200) {
+  if (!el) return;
+  el.style.display = "block";
+  el.textContent = text;
+  el.style.position = "relative";
+  el.style.zIndex = "5";
+  el.style.marginBottom = "10px";
+  el.style.transition = "opacity 200ms ease";
+  el.style.opacity = "1";
+  setTimeout(() => {
+    el.style.opacity = "0";
+    setTimeout(() => {
+      el.style.display = "none";
+      el.textContent = "";
+      el.style.opacity = "1";
+    }, 220);
+  }, ms);
+}
+
+// Status helpers (keep logic localized)
+function isActiveStatus(statusRaw) {
+  const s = String(statusRaw || "").toLowerCase().trim();
+  return (
+    s.includes("active") ||
+    s.includes("started") ||
+    s.includes("running") ||
+    s.includes("connected")
+  );
+}
+
+function badgeHtml(text, level) {
+  // level: success | warn | danger
+  const styles = {
+    success: { color: "#198754", bg: "rgba(25,135,84,.22)", border: "rgba(25,135,84,.55)" },
+    warn:    { color: "#fd7e14", bg: "rgba(253,126,20,.20)", border: "rgba(253,126,20,.55)" },
+    danger:  { color: "#dc3545", bg: "rgba(220,53,69,.20)", border: "rgba(220,53,69,.55)" },
+  };
+  const st = styles[level] || styles.success;
+  const safe = esc(text);
+  return `<span style="color:${st.color}; font-weight:900; background:${st.bg}; border:1px solid ${st.border}; padding:4px 10px; border-radius:999px; display:inline-block;">${safe}</span>`;
+}
+
+function renderValue(v) {
+  // Allow trusted inline HTML in a very narrow way
+  if (v && typeof v === "object" && v.__html) return v.__html;
+  return esc(v ?? "—");
+}
+
 let debounceTimer = null;
 let lastItems = [];
 let currentDetailId = null;
+let detailDirty = false; // auto-sync list on close if edited
 
 // -------------------------
 // Session gate: page must be inaccessible without login
@@ -197,6 +200,8 @@ async function openDetail(id) {
   modalErr.style.display = "none";
   modalErr.textContent = "";
   detail.innerHTML = "";
+  // Prevent content (e.g., Updated ✅) from hiding behind bottom action buttons
+  detail.style.paddingBottom = "110px";
   sub.textContent = "Loading...";
   modal.style.display = "flex";
 
@@ -226,26 +231,28 @@ async function openDetail(id) {
       ["Expires", fmtDate(it.expires_at)],
 
       // ✅ remaining_seconds is DB truth (view); display as-is
-      ["Remaining", badgeByRemaining(fmtRemaining(it.remaining_seconds), it.status, it.remaining_seconds)],
+      ["Remaining", (isActiveStatus(it.status)
+        ? { __html: badgeHtml(
+            fmtRemaining(it.remaining_seconds),
+            (it.remaining_seconds != null && Number(it.remaining_seconds) <= 60) ? "danger"
+              : (it.remaining_seconds != null && Number(it.remaining_seconds) <= 600) ? "warn"
+              : "success"
+          ) }
+        : fmtRemaining(it.remaining_seconds))],
 
       ["Plan", it.plans?.name || it.plan_name],
       ["Price", (it.plans?.price_ar ?? it.plan_price)],
-      ["Duration", badgeByRemaining(fmtDurationMinutes(it.plans?.duration_minutes), it.status, it.remaining_seconds)],
+      ["Duration (min)", it.plans?.duration_minutes],
       ["Data (MB)", it.plans?.data_mb],
       ["Max devices", it.plans?.max_devices],
     ];
 
-    detail.innerHTML = rows.map(([k,v]) => {
-      const valueHtml = (v && typeof v === "object" && v.__html != null)
-        ? v.__html
-        : esc(v ?? "—");
-      return `
+    detail.innerHTML = rows.map(([k,v]) => `
       <div style="border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
         <div style="font-size:12px; opacity:.7;">${esc(k)}</div>
-        <div style="font-size:15px; font-weight:700; margin-top:4px; word-break: break-word;">${valueHtml}</div>
+        <div style="font-size:15px; font-weight:700; margin-top:4px; word-break: break-word;">${renderValue(v)}</div>
       </div>
-    `;
-    }).join("");
+    `).join("");
 
     // --------------------------------------------------
     // Free plan override editor (admin)
@@ -284,7 +291,7 @@ async function openDetail(id) {
               <button id="${btnId}" type="button" style="width:auto; padding:9px 14px;">Save</button>
             </div>
           </div>
-          <div id="${msgId}" class="subtitle" style="margin-top:10px; display:none;"></div>
+          <div id="${msgId}" class="subtitle" style="margin-top:10px; display:none; position:relative; z-index:5;"></div>
         </div>
       `);
 
@@ -373,6 +380,12 @@ async function deleteCurrent() {
 function closeModal() {
   document.getElementById("modal").style.display = "none";
   currentDetailId = null;
+
+  // 🔁 Auto-sync list only if something changed in modal
+  if (detailDirty) {
+    detailDirty = false;
+    loadClients().catch(showTopError);
+  }
 }
 
 function wireUI() {
