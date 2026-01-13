@@ -66,6 +66,9 @@
           <a class="rz-item" data-href="/admin/revenue.html" href="/admin/revenue.html">
             <span class="rz-item-label">Revenue</span>
           </a>
+          <a class="rz-item" data-href="/admin/audit.html" href="/admin/audit.html">
+            <span class="rz-item-label">AUDIT</span>
+          </a>
         </nav>
 
         <div class="rz-drawer-foot">
