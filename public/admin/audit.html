@@ -26,10 +26,14 @@
 
           <select id="status" class="filter-select">
             <option value="">Status (all)</option>
+            <option value="success">success</option>
+            <option value="info">info</option>
+            <option value="pending">pending</option>
+            <option value="warning">warning</option>
+            <option value="blocked">blocked</option>
+            <option value="failed">failed</option>
             <option value="ok">ok</option>
             <option value="error">error</option>
-            <option value="blocked">blocked</option>
-            <option value="pending">pending</option>
           </select>
 
           <select id="event_type" class="filter-select">
@@ -61,7 +65,6 @@
               <th style="padding:10px;">Client MAC</th>
               <th style="padding:10px;">Plan</th>
               <th style="padding:10px;">Pool</th>
-              
             </tr>
           </thead>
           <tbody id="rows"></tbody>
@@ -73,24 +76,54 @@
         <button id="next" type="button" style="width:auto;">Next</button>
       </div>
 
-      <!-- Simple details modal -->
+      <!-- Details modal -->
       <div id="modal" class="modal" style="display:none;">
-        <div class="card modal-card">
+        <div class="card modal-card audit-modal-card">
           <div style="display:flex; justify-content:space-between; gap:10px; align-items:center;">
             <div style="font-weight:900;">Audit event</div>
             <button id="closeModal" type="button" style="width:auto;">Close</button>
           </div>
-          <div id="modalBody" style="margin-top:12px;">
-  <div id="modalSummary" style="display:grid; grid-template-columns: 160px 1fr; gap:8px 12px; align-items:start;"></div>
 
-  <div style="margin-top:14px; font-weight:900;">Metadata</div>
-  <pre id="modalMeta" style="margin-top:10px; white-space:pre-wrap; word-break:break-word; background:rgba(0,0,0,0.05); padding:12px; border-radius:12px;"></pre>
+          <div class="audit-modal-summary">
+            <div class="audit-kv">
+              <div class="k">Event</div><div class="v" id="m_event">—</div>
+            </div>
+            <div class="audit-kv">
+              <div class="k">Status</div><div class="v"><span id="m_status_badge" class="badge audit-badge">—</span></div>
+            </div>
+            <div class="audit-kv">
+              <div class="k">Date</div><div class="v" id="m_date">—</div>
+            </div>
+            <div class="audit-kv">
+              <div class="k">RequestRef</div><div class="v" id="m_request_ref">—</div>
+            </div>
+            <div class="audit-kv">
+              <div class="k">MVola</div><div class="v" id="m_mvola_phone">—</div>
+            </div>
+            <div class="audit-kv">
+              <div class="k">Client MAC</div><div class="v" id="m_client_mac">—</div>
+            </div>
+            <div class="audit-kv">
+              <div class="k">AP MAC</div><div class="v" id="m_ap_mac">—</div>
+            </div>
+            <div class="audit-kv">
+              <div class="k">Plan</div><div class="v" id="m_plan_id">—</div>
+            </div>
+            <div class="audit-kv">
+              <div class="k">Pool</div><div class="v" id="m_pool_id">—</div>
+            </div>
+            <div class="audit-kv audit-kv-wide">
+              <div class="k">Message</div><div class="v" id="m_message">—</div>
+            </div>
+          </div>
 
-  <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
-    <button id="copyEventBtn" type="button" style="width:auto; padding:10px 12px;">Copy event JSON</button>
-    <button id="copyMetaBtn" type="button" style="width:auto; padding:10px 12px;">Copy metadata JSON</button>
-  </div>
-</div>
+          <div style="display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap;">
+            <div style="font-weight:800;">Metadata</div>
+            <button id="copyMeta" type="button" class="audit-copy-btn" style="width:auto;">Copy metadata</button>
+            <button id="copyEvent" type="button" class="audit-copy-btn" style="width:auto;">Copy event</button>
+          </div>
+
+          <pre id="m_metadata" class="audit-meta-pre"></pre>
         </div>
       </div>
 

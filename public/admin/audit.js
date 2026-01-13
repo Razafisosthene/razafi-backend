@@ -12,7 +12,7 @@
 
   function esc(s) {
     return String(s ?? "").replace(/[&<>"']/g, (c) => ({
-      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
     }[c]));
   }
 
@@ -26,16 +26,43 @@
   function setDefaultDates() {
     const now = new Date();
     const from = new Date(now.getTime() - 24 * 3600 * 1000);
-    // datetime-local wants: YYYY-MM-DDTHH:mm
     const fmt = (d) => {
       const pad = (n) => String(n).padStart(2, "0");
-      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
     };
-    if ($("from") && !$("from").value) $("from").value = fmt(from);
-    if ($("to") && !$("to").value) $("to").value = fmt(now);
+    const fromEl = $("from");
+    const toEl = $("to");
+    if (fromEl && !fromEl.value) fromEl.value = fmt(from);
+    if (toEl && !toEl.value) toEl.value = fmt(now);
   }
 
-  let cursorStack = []; // for Prev
+  function normalizeStatus(raw) {
+    const s = String(raw || "").trim().toLowerCase();
+    if (!s) return "";
+    if (s === "ok") return "success";
+    if (s === "error") return "failed";
+    return s;
+  }
+
+  function safeJSONParse(v) {
+    if (v == null) return null;
+    if (typeof v === "object") return v;
+    if (typeof v !== "string") return null;
+    const t = v.trim();
+    if (!t) return null;
+    if (!(t.startsWith("{") || t.startsWith("["))) return null;
+    try { return JSON.parse(t); } catch { return null; }
+  }
+
+  function prettyJSON(v) {
+    const obj = safeJSONParse(v);
+    if (obj !== null) return JSON.stringify(obj, null, 2);
+    if (typeof v === "string") return v;
+    return JSON.stringify(v ?? null, null, 2);
+  }
+
+  // Pagination
+  let cursorStack = [];
   let nextCursor = "";
 
   function buildParams() {
@@ -61,105 +88,79 @@
     return params;
   }
 
-  function safeParseJSON(v) {
-  if (v == null) return null;
-  if (typeof v === "object") return v;
-  if (typeof v !== "string") return null;
-  const s = v.trim();
-  if (!s) return null;
-  try { return JSON.parse(s); } catch { return null; }
-}
+  function openModal(ev) {
+    const modal = $("modal");
+    if (!modal) return;
 
-function prettyJSON(v) {
-  const parsed = safeParseJSON(v);
-  if (parsed) return JSON.stringify(parsed, null, 2);
-  if (typeof v === "string") return v;
-  if (v == null) return "";
-  try { return JSON.stringify(v, null, 2); } catch { return String(v); }
-}
+    // Summary fields
+    const createdAt = ev.created_at || ev.createdAt || "—";
+    const statusRaw = ev.status || "—";
+    const status = normalizeStatus(statusRaw) || "—";
+    const eventType = ev.event_type || ev.eventType || "—";
+    const requestRef = ev.request_ref || "—";
+    const mvola = ev.mvola_phone || "—";
+    const clientMac = ev.client_mac || "—";
+    const apMac = ev.ap_mac || "—";
+    const planId = ev.plan_id || "—";
+    const poolId = ev.pool_id || "—";
+    const message = ev.message || "—";
 
-function statusNorm(s) {
-  return String(s || "").trim().toLowerCase();
-}
-
-function statusLabel(s) {
-  const v = statusNorm(s);
-  return v ? v : "—";
-}
-
-function openModal(obj) {
-  const s = statusNorm(obj?.status);
-  const createdAt = obj?.created_at || obj?.createdAt || "";
-  const eventType = obj?.event_type || obj?.eventType || "";
-  const requestRef = obj?.request_ref || "";
-  const mvola = obj?.mvola_phone || "";
-  const clientMac = obj?.client_mac || "";
-  const apMac = obj?.ap_mac || "";
-  const planId = obj?.plan_id || "";
-  const poolId = obj?.pool_id || "";
-  const message = obj?.message || "";
-
-  const summary = $("modalSummary");
-  if (summary) {
-    const badge = s
-      ? `<span class="audit-badge audit-badge-${esc(s)}">${esc(s)}</span>`
-      : `<span class="audit-badge">${esc("—")}</span>`;
-
-    summary.innerHTML = `
-      <div class="audit-k">Event</div><div class="audit-v"><span style="font-weight:900;">${esc(eventType || "—")}</span></div>
-      <div class="audit-k">Status</div><div class="audit-v">${badge}</div>
-      <div class="audit-k">Date</div><div class="audit-v">${esc(createdAt || "—")}</div>
-      <div class="audit-k">RequestRef</div><div class="audit-v" style="word-break:break-word;">${esc(requestRef || "—")}</div>
-      <div class="audit-k">MVola</div><div class="audit-v">${esc(mvola || "—")}</div>
-      <div class="audit-k">Client MAC</div><div class="audit-v">${esc(clientMac || "—")}</div>
-      <div class="audit-k">AP MAC</div><div class="audit-v">${esc(apMac || "—")}</div>
-      <div class="audit-k">Plan</div><div class="audit-v" style="word-break:break-word;">${esc(planId || "—")}</div>
-      <div class="audit-k">Pool</div><div class="audit-v" style="word-break:break-word;">${esc(poolId || "—")}</div>
-      <div class="audit-k">Message</div><div class="audit-v" style="word-break:break-word;">${esc(message || "—")}</div>
-    `;
-  }
-
-  // Metadata formatting (parse nested response if JSON string)
-  let meta = obj?.metadata;
-  const metaParsed = safeParseJSON(meta);
-  if (metaParsed) meta = metaParsed;
-
-  // If response inside metadata is JSON string, pretty-print it
-  if (meta && typeof meta === "object" && typeof meta.response === "string") {
-    const r = safeParseJSON(meta.response);
-    if (r) meta = { ...meta, response: r };
-  }
-
-  const metaEl = $("modalMeta");
-  if (metaEl) metaEl.textContent = prettyJSON(meta || {});
-
-  // Copy buttons
-  const copyEventBtn = $("copyEventBtn");
-  const copyMetaBtn = $("copyMetaBtn");
-  if (copyEventBtn) {
-    copyEventBtn.onclick = async () => {
-      try {
-        await navigator.clipboard.writeText(JSON.stringify(obj, null, 2));
-        copyEventBtn.textContent = "Copied ✅";
-        setTimeout(() => (copyEventBtn.textContent = "Copy event JSON"), 900);
-      } catch {}
+    const setText = (id, value) => {
+      const el = $(id);
+      if (el) el.textContent = value;
     };
-  }
-  if (copyMetaBtn) {
-    copyMetaBtn.onclick = async () => {
-      try {
-        await navigator.clipboard.writeText(JSON.stringify(meta || {}, null, 2));
-        copyMetaBtn.textContent = "Copied ✅";
-        setTimeout(() => (copyMetaBtn.textContent = "Copy metadata JSON"), 900);
-      } catch {}
-    };
-  }
 
-  $("modal").style.display = "flex";
-}
+    setText("m_date", createdAt);
+    setText("m_status", statusRaw || "—");
+    setText("m_event", eventType);
+    setText("m_request_ref", requestRef);
+    setText("m_mvola_phone", mvola);
+    setText("m_client_mac", clientMac);
+    setText("m_ap_mac", apMac);
+    setText("m_plan_id", planId);
+    setText("m_pool_id", poolId);
+    setText("m_message", message);
+
+    // Status badge class
+    const badge = $("m_status_badge");
+    if (badge) {
+      badge.className = `badge audit-badge status-${status || "info"}`;
+      badge.textContent = statusRaw || "—";
+    }
+
+    // Metadata
+    const metaPre = $("m_metadata");
+    if (metaPre) {
+      const meta = ev.metadata ?? null;
+      // If metadata.response is a JSON-string, parse & pretty-print it.
+      const metaObj = safeJSONParse(meta) ?? meta;
+      if (metaObj && typeof metaObj === "object" && metaObj.response) {
+        const parsedResp = safeJSONParse(metaObj.response);
+        if (parsedResp) metaObj.response_parsed = parsedResp;
+      }
+      metaPre.textContent = prettyJSON(metaObj);
+    }
+
+    // Copy buttons
+    const copyEventBtn = $("copyEvent");
+    if (copyEventBtn) {
+      copyEventBtn.onclick = async () => {
+        try { await navigator.clipboard.writeText(JSON.stringify(ev, null, 2)); } catch {}
+      };
+    }
+    const copyMetaBtn = $("copyMeta");
+    if (copyMetaBtn) {
+      copyMetaBtn.onclick = async () => {
+        try { await navigator.clipboard.writeText(prettyJSON(ev.metadata ?? null)); } catch {}
+      };
+    }
+
+    modal.style.display = "flex";
+  }
 
   function closeModal() {
-    $("modal").style.display = "none";
+    const modal = $("modal");
+    if (modal) modal.style.display = "none";
   }
 
   async function loadEventTypes() {
@@ -177,7 +178,7 @@ function openModal(obj) {
           return `<option value="${esc(v)}">${esc(v)}${c ? " (" + esc(c) + ")" : ""}</option>`;
         }).join("");
     } catch {
-      // keep dropdown with default option only
+      // ignore
     }
   }
 
@@ -207,52 +208,48 @@ function openModal(obj) {
       }
 
       tbody.innerHTML = items.map(it => {
-  const createdAt = it.created_at || it.createdAt || "";
-  const status = it.status || "";
-  const sNorm = statusNorm(status);
-  const eventType = it.event_type || it.eventType || "";
-  const mvola = it.mvola_phone || "";
-  const requestRef = it.request_ref || "";
-  const clientMac = it.client_mac || "";
-  const planId = it.plan_id || "";
-  const poolId = it.pool_id || "";
-  const payload = esc(JSON.stringify(it));
+        const createdAt = it.created_at || it.createdAt || "";
+        const statusRaw = it.status || "";
+        const statusNorm = normalizeStatus(statusRaw);
+        const eventType = it.event_type || it.eventType || "";
+        const mvola = it.mvola_phone || "";
+        const requestRef = it.request_ref || "";
+        const clientMac = it.client_mac || "";
+        const planId = it.plan_id || "";
+        const poolId = it.pool_id || "";
 
-  const badge = sNorm
-    ? `<span class="audit-badge audit-badge-${esc(sNorm)}">${esc(sNorm)}</span>`
-    : `<span class="audit-badge">—</span>`;
+        const payload = esc(JSON.stringify(it));
 
-  return `
-    <tr class="audit-row status-${esc(sNorm || "none")}" data-payload="${payload}" style="border-top:1px solid rgba(0,0,0,.06);">
-      <td style="padding:10px; white-space:nowrap;">${esc(createdAt)}</td>
-      <td style="padding:10px;">${badge}</td>
-      <td style="padding:10px; font-weight:800;">${esc(eventType || "—")}</td>
-      <td style="padding:10px; white-space:nowrap;">${esc(mvola || "—")}</td>
-      <td style="padding:10px; white-space:nowrap;">${esc(requestRef || "—")}</td>
-      <td style="padding:10px; white-space:nowrap;">${esc(clientMac || "—")}</td>
-      <td style="padding:10px; white-space:nowrap;">${esc(planId || "—")}</td>
-      <td style="padding:10px; white-space:nowrap;">${esc(poolId || "—")}</td>
-    </tr>
-  `;
-}).join("");
+        const badge = statusRaw
+          ? `<span class="badge audit-badge status-${esc(statusNorm || "info")}">${esc(statusRaw)}</span>`
+          : "—";
+
+        return `
+          <tr class="audit-row status-${esc(statusNorm || "info")}" data-payload="${payload}">
+            <td style="padding:10px; white-space:nowrap;">${esc(createdAt)}</td>
+            <td style="padding:10px;">${badge}</td>
+            <td style="padding:10px; font-weight:800;">${esc(eventType || "—")}</td>
+            <td style="padding:10px; white-space:nowrap;">${esc(mvola || "—")}</td>
+            <td style="padding:10px; white-space:nowrap;">${esc(requestRef || "—")}</td>
+            <td style="padding:10px; white-space:nowrap;">${esc(clientMac || "—")}</td>
+            <td style="padding:10px; white-space:nowrap;">${esc(planId || "—")}</td>
+            <td style="padding:10px; white-space:nowrap;">${esc(poolId || "—")}</td>
+          </tr>
+        `;
+      }).join("");
 
       if (statusLine) statusLine.textContent = `Loaded ${items.length} event(s).` +
         (nextCursor ? " (More available)" : "");
 
-// Row click opens modal
-document.querySelectorAll("tr.audit-row").forEach(tr => {
-  tr.addEventListener("click", () => {
-    try {
-      const raw = tr.getAttribute("data-payload") || "{}";
-      const obj = JSON.parse(raw);
-      openModal(obj);
-    } catch {
-      openModal({ error: "Failed to parse payload" });
-    }
-  });
-});
-
-    } catch {
+      // bind rows
+      document.querySelectorAll("tr.audit-row").forEach(tr => {
+        tr.addEventListener("click", (e) => {
+          // avoid selecting text causing click? keep simple
+          try {
+            const raw = tr.getAttribute("data-payload") || "{}";
+            const obj = JSON.parse(raw);
+            openModal(obj);
+          } catch {
             openModal({ error: "Failed to parse payload" });
           }
         });
@@ -275,13 +272,15 @@ document.querySelectorAll("tr.audit-row").forEach(tr => {
   }
 
   // UI actions
-  $("apply")?.addEventListener("click", async () => {
+  const applyBtn = $("apply");
+  if (applyBtn) applyBtn.addEventListener("click", async () => {
     cursorStack = [];
     nextCursor = "";
     await loadPage(false);
   });
 
-  $("clear")?.addEventListener("click", async () => {
+  const clearBtn = $("clear");
+  if (clearBtn) clearBtn.addEventListener("click", async () => {
     if ($("q")) $("q").value = "";
     if ($("status")) $("status").value = "";
     if ($("event_type")) $("event_type").value = "";
@@ -293,20 +292,25 @@ document.querySelectorAll("tr.audit-row").forEach(tr => {
     await loadPage(false);
   });
 
-  $("next")?.addEventListener("click", async () => {
+  const nextBtn = $("next");
+  if (nextBtn) nextBtn.addEventListener("click", async () => {
     if (!nextCursor) return;
     await loadPage(true);
   });
 
-  $("prev")?.addEventListener("click", async () => {
+  const prevBtn = $("prev");
+  if (prevBtn) prevBtn.addEventListener("click", async () => {
     if (!cursorStack.length) return;
     nextCursor = cursorStack.pop() || "";
     await loadPage(false);
   });
 
-  $("closeModal")?.addEventListener("click", closeModal);
-  $("modal")?.addEventListener("click", (e) => {
-    if (e.target === $("modal")) closeModal();
+  const closeBtn = $("closeModal");
+  if (closeBtn) closeBtn.addEventListener("click", closeModal);
+
+  const modal = $("modal");
+  if (modal) modal.addEventListener("click", (e) => {
+    if (e.target === modal) closeModal();
   });
 
   // init
