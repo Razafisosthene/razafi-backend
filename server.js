@@ -2485,21 +2485,6 @@ function truncate(x, max = 2000) {
   return s.length <= max ? s : s.slice(0, max);
 }
 
-// Parse a JSON object that may be stored as JSONB or as a stringified JSON
-function parseJsonObject(v) {
-  try {
-    if (!v) return {};
-    if (typeof v === "object") return v;
-    if (typeof v === "string") {
-      const s = v.trim();
-      if (!s) return {};
-      const obj = JSON.parse(s);
-      return obj && typeof obj === "object" ? obj : {};
-    }
-  } catch (_) {}
-  return {};
-}
-
 function nowMGDate() {
   return new Date(Date.now() + 3 * 3600 * 1000);
 }
@@ -2706,7 +2691,7 @@ async function pollTransactionStatus({
             throw txErr;
           }
 
-          const baseMeta = parseJsonObject(tx?.metadata);
+          const baseMeta = tx?.metadata && typeof tx.metadata === "object" ? tx.metadata : {};
           const metaPlanId = (baseMeta.plan_id || null);
           const metaPoolId = (baseMeta.pool_id || null);
           const metaClientMac = (baseMeta.client_mac || null);
@@ -2922,7 +2907,7 @@ async function pollTransactionStatus({
           if (!txErr && tx) {
             txId = tx.id || null;
             txPhone = tx.phone || txPhone;
-            const baseMeta = parseJsonObject(tx.metadata);
+            const baseMeta = tx.metadata && typeof tx.metadata === "object" ? tx.metadata : {};
             metaPlanId = baseMeta.plan_id || null;
             metaPoolId = baseMeta.pool_id || null;
             metaClientMac = baseMeta.client_mac || null;
@@ -3025,7 +3010,7 @@ async function pollTransactionStatus({
       if (!txErr && tx) {
         txId = tx.id || null;
         txPhone = tx.phone || txPhone;
-        const baseMeta = parseJsonObject(tx.metadata);
+        const baseMeta = tx.metadata && typeof tx.metadata === "object" ? tx.metadata : {};
         metaPlanId = baseMeta.plan_id || null;
         metaPoolId = baseMeta.pool_id || null;
         metaClientMac = baseMeta.client_mac || null;
