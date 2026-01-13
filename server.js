@@ -2890,15 +2890,44 @@ async function pollTransactionStatus({
               .eq("request_ref", requestRef);
 
         // NEW system audit: MVola failed/rejected/declined
+        let txId = null;
+        let metaPlanId = null;
+        let metaPoolId = null;
+        let metaClientMac = null;
+        let metaApMac = null;
+        let txPhone = phone || null;
+
+        try {
+          const { data: tx, error: txErr } = await supabase
+            .from("transactions")
+            .select("id,phone,metadata")
+            .eq("request_ref", requestRef)
+            .maybeSingle();
+
+          if (!txErr && tx) {
+            txId = tx.id || null;
+            txPhone = tx.phone || txPhone;
+            const baseMeta = tx.metadata && typeof tx.metadata === "object" ? tx.metadata : {};
+            metaPlanId = baseMeta.plan_id || null;
+            metaPoolId = baseMeta.pool_id || null;
+            metaClientMac = baseMeta.client_mac || null;
+            metaApMac = baseMeta.ap_mac || null;
+          }
+        } catch (_) {}
+
         await insertAudit({
           event_type: "mvola_failed",
           status: "failed",
           entity_type: "transaction",
-          entity_id: null,
+          entity_id: txId,
           actor_type: "client",
-          actor_id: null,
+          actor_id: metaClientMac || null,
           request_ref: requestRef || null,
-          mvola_phone: phone || null,
+          mvola_phone: txPhone,
+          client_mac: metaClientMac || null,
+          ap_mac: metaApMac || null,
+          pool_id: metaPoolId || null,
+          plan_id: metaPlanId || null,
           message: "MVola payment failed",
           metadata: { mvola_status: statusRaw, response: truncate(sdata, 2000), serverCorrelationId },
         });
@@ -2964,15 +2993,44 @@ async function pollTransactionStatus({
         .eq("request_ref", requestRef);
 
     // NEW system audit: MVola poll timeout
+    let txId = null;
+    let metaPlanId = null;
+    let metaPoolId = null;
+    let metaClientMac = null;
+    let metaApMac = null;
+    let txPhone = phone || null;
+
+    try {
+      const { data: tx, error: txErr } = await supabase
+        .from("transactions")
+        .select("id,phone,metadata")
+        .eq("request_ref", requestRef)
+        .maybeSingle();
+
+      if (!txErr && tx) {
+        txId = tx.id || null;
+        txPhone = tx.phone || txPhone;
+        const baseMeta = tx.metadata && typeof tx.metadata === "object" ? tx.metadata : {};
+        metaPlanId = baseMeta.plan_id || null;
+        metaPoolId = baseMeta.pool_id || null;
+        metaClientMac = baseMeta.client_mac || null;
+        metaApMac = baseMeta.ap_mac || null;
+      }
+    } catch (_) {}
+
     await insertAudit({
       event_type: "mvola_poll_timeout",
       status: "warning",
       entity_type: "transaction",
-      entity_id: null,
+      entity_id: txId,
       actor_type: "system",
       actor_id: null,
       request_ref: requestRef || null,
-      mvola_phone: phone || null,
+      mvola_phone: txPhone,
+      client_mac: metaClientMac || null,
+      ap_mac: metaApMac || null,
+      pool_id: metaPoolId || null,
+      plan_id: metaPlanId || null,
       message: "MVola polling timed out",
       metadata: { attempts: attempt, serverCorrelationId },
     });
