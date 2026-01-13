@@ -279,7 +279,7 @@ app.use((req, res, next) => {
           res.cookie("ap_allowed", "1", {
             maxAge: 5 * 60 * 1000,
             httpOnly: true,
-            secure: true,
+            secure: IS_PROD,
             sameSite: "lax",
           });
         } catch (_) {}
@@ -1189,6 +1189,113 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
     res.status(500).json({ error: String(e.message || e) });
   }
 });
+
+
+// ------------------ Audit (NEW system) ------------------
+
+app.get("/api/admin/audit/event-types", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    // Distinct event types (last 30 days) + counts computed in JS.
+    const since = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+    const { data, error } = await supabase
+      .from("audit_logs")
+      .select("event_type")
+      .gte("created_at", since)
+      .order("created_at", { ascending: false })
+      .limit(2000);
+
+    if (error) throw error;
+
+    const counts = {};
+    for (const r of data || []) {
+      const k = (r?.event_type || "").toString().trim();
+      if (!k) continue;
+      counts[k] = (counts[k] || 0) + 1;
+    }
+    const items = Object.entries(counts)
+      .map(([event_type, count]) => ({ event_type, count }))
+      .sort((a, b) => b.count - a.count || a.event_type.localeCompare(b.event_type));
+
+    return res.json({ event_types: items });
+  } catch (e) {
+    console.error("audit/event-types error:", e?.message || e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+app.get("/api/admin/audit", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const limit = Math.min(Number(req.query.limit || 100) || 100, 500);
+
+    const from = (req.query.from || "").toString().trim();
+    const to = (req.query.to || "").toString().trim();
+    const status = (req.query.status || "").toString().trim();
+    const event_type = (req.query.event_type || "").toString().trim();
+    const plan_id = (req.query.plan_id || "").toString().trim();
+    const pool_id = (req.query.pool_id || "").toString().trim();
+    const client_mac = (req.query.client_mac || "").toString().trim();
+    const ap_mac = (req.query.ap_mac || "").toString().trim();
+    const request_ref = (req.query.request_ref || "").toString().trim();
+    const mvola_phone = (req.query.mvola_phone || "").toString().trim();
+    const q = (req.query.q || "").toString().trim();
+    const cursorRaw = (req.query.cursor || "").toString().trim();
+
+    let query = supabase
+      .from("audit_logs")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(limit);
+
+    if (from) query = query.gte("created_at", from);
+    if (to) query = query.lte("created_at", to);
+    if (status) query = query.eq("status", status);
+    if (event_type) query = query.eq("event_type", event_type);
+    if (plan_id) query = query.eq("plan_id", plan_id);
+    if (pool_id) query = query.eq("pool_id", pool_id);
+    if (client_mac) query = query.eq("client_mac", client_mac);
+    if (ap_mac) query = query.eq("ap_mac", ap_mac);
+    if (request_ref) query = query.eq("request_ref", request_ref);
+    if (mvola_phone) query = query.ilike("mvola_phone", `%${mvola_phone}%`);
+
+    if (q) {
+      const qq = q.replace(/[%]/g, "");
+      // Search across common fields
+      query = query.or(
+        `request_ref.ilike.%${qq}%,client_mac.ilike.%${qq}%,ap_mac.ilike.%${qq}%,mvola_phone.ilike.%${qq}%,event_type.ilike.%${qq}%,message.ilike.%${qq}%`
+      );
+    }
+
+    // Cursor pagination (seek): cursor = "<created_at>|<id>" (simple: created_at only to avoid OR conflicts)
+    if (cursorRaw) {
+      const parts = cursorRaw.split("|");
+      if (parts.length >= 1 && parts[0]) {
+        const cAt = parts[0];
+        query = query.lt("created_at", cAt);
+      }
+    }
+
+     
+   
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    const items = data || [];
+    const last = items.length ? items[items.length - 1] : null;
+    const next_cursor = last ? `${last.created_at}|${last.id}` : "";
+
+    return res.json({ items, next_cursor });
+  } catch (e) {
+    console.error("audit list error:", e?.message || e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
 
 
 
@@ -2508,6 +2615,37 @@ function parseAriaryFromString(s) {
 }
 
 // ----------------- Polling logic (waits up to 3 minutes) -----------------
+
+
+// Dedicated NEW-system audit trail (separate from legacy `logs` table).
+// This must never break production flows: fail-open on any error.
+async function insertAudit(payload = {}) {
+  try {
+    if (!supabase) return;
+
+    const row = {
+      event_type: payload.event_type || "unknown",
+      status: payload.status || "info",
+      entity_type: payload.entity_type || null,
+      entity_id: payload.entity_id || null,
+      actor_type: payload.actor_type || null,
+      actor_id: payload.actor_id || null,
+      request_ref: payload.request_ref || null,
+      mvola_phone: payload.mvola_phone || null,
+      client_mac: payload.client_mac || null,
+      ap_mac: payload.ap_mac || null,
+      pool_id: payload.pool_id || null,
+      plan_id: payload.plan_id || null,
+      message: payload.message || null,
+      metadata: payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {},
+    };
+
+    await supabase.from("audit_logs").insert([row]);
+  } catch (e) {
+    console.warn("audit_logs insert failed:", e?.message || e);
+  }
+}
+
 async function pollTransactionStatus({
   serverCorrelationId,
   requestRef,
@@ -2603,7 +2741,41 @@ async function pollTransactionStatus({
               payload: { voucherCode, plan_id: metaPlanId, pool_id: metaPoolId, client_mac: metaClientMac, ap_mac: metaApMac },
             });
 
-            return;
+            
+            await insertAudit({
+              event_type: "mvola_completed",
+              status: "success",
+              entity_type: "transaction",
+              entity_id: tx?.id || null,
+              actor_type: "system",
+              actor_id: "mvola_poll",
+              request_ref: requestRef,
+              mvola_phone: (tx?.phone || baseMeta.phone || null),
+              client_mac: metaClientMac,
+              ap_mac: metaApMac,
+              pool_id: metaPoolId,
+              plan_id: metaPlanId,
+              message: "MVola completed (NEW system)",
+              metadata: { mvola_status: statusRaw },
+            });
+
+            await insertAudit({
+              event_type: "voucher_generated",
+              status: "success",
+              entity_type: "voucher_code",
+              entity_id: voucherCode,
+              actor_type: "system",
+              actor_id: "mvola_poll",
+              request_ref: requestRef,
+              mvola_phone: (tx?.phone || baseMeta.phone || null),
+              client_mac: metaClientMac,
+              ap_mac: metaApMac,
+              pool_id: metaPoolId,
+              plan_id: metaPlanId,
+              message: "Voucher generated & delivered (NEW system)",
+              metadata: { transaction_id: tx?.id || null },
+            });
+return;
           }
 
           // LEGACY fallback: old stock vouchers (assign_voucher_atomic)
@@ -2662,6 +2834,33 @@ async function pollTransactionStatus({
           return;
         } catch (err) {
           console.error("❌ Error while processing completed MVola payment:", err?.message || err);
+          // NEW system audit only (best-effort)
+          try {
+            const { data: tRow } = await supabase
+              .from("transactions")
+              .select("id,phone,metadata")
+              .eq("request_ref", requestRef)
+              .maybeSingle();
+            const m = tRow?.metadata && typeof tRow.metadata === "object" ? tRow.metadata : {};
+            if (m.plan_id && m.client_mac) {
+              await insertAudit({
+                event_type: "voucher_generate_failed",
+                status: "failed",
+                entity_type: "transaction",
+                entity_id: tRow?.id || null,
+                actor_type: "system",
+                actor_id: "mvola_poll",
+                request_ref: requestRef,
+                mvola_phone: (tRow?.phone || null),
+                client_mac: m.client_mac || null,
+                ap_mac: m.ap_mac || null,
+                pool_id: m.pool_id || null,
+                plan_id: m.plan_id || null,
+                message: "Failed to generate/deliver voucher after MVola completed (NEW system)",
+                metadata: { error: String(err?.message || err) },
+              });
+            }
+          } catch (_) {}
           try {
             await supabase
               .from("transactions")
@@ -2697,6 +2896,34 @@ async function pollTransactionStatus({
           payload: sdata,
         });
 
+        // NEW system audit only (plan_id + client_mac present in transactions.metadata)
+        try {
+          const aMeta = tx?.metadata && typeof tx.metadata === "object" ? tx.metadata : {};
+          const aPlanId = (aMeta.plan_id || null);
+          const aPoolId = (aMeta.pool_id || null);
+          const aClientMac = (aMeta.client_mac || null);
+          const aApMac = (aMeta.ap_mac || null);
+          const isNew = !!aPlanId && !!aClientMac;
+          if (isNew) {
+            await insertAudit({
+              event_type: "mvola_failed",
+              status: "failed",
+              entity_type: "transaction",
+              entity_id: tx?.id || null,
+              actor_type: "system",
+              actor_id: "mvola_poll",
+              request_ref: requestRef,
+              mvola_phone: (tx?.phone || null),
+              client_mac: aClientMac,
+              ap_mac: aApMac,
+              pool_id: aPoolId,
+              plan_id: aPlanId,
+              message: "MVola failed/rejected/declined (NEW system)",
+              metadata: { mvola_status: statusRaw },
+            });
+          }
+        } catch (_) {}
+
         const emailBody = [
           `RequestRef: ${requestRef}`,
           `ServerCorrelationId: ${serverCorrelationId}`,
@@ -2725,6 +2952,34 @@ async function pollTransactionStatus({
         short_message: "Erreur lors du polling MVola",
         payload: truncate(err?.response?.data || err?.message || err, 2000),
       });
+
+      // NEW system audit only (best-effort)
+      try {
+        const { data: tRow } = await supabase
+          .from("transactions")
+          .select("id,phone,metadata")
+          .eq("request_ref", requestRef)
+          .maybeSingle();
+        const m = tRow?.metadata && typeof tRow.metadata === "object" ? tRow.metadata : {};
+        if (m.plan_id && m.client_mac) {
+          await insertAudit({
+            event_type: "mvola_poll_error",
+            status: "error",
+            entity_type: "transaction",
+            entity_id: tRow?.id || null,
+            actor_type: "system",
+            actor_id: "mvola_poll",
+            request_ref: requestRef,
+            mvola_phone: (tRow?.phone || phone || null),
+            client_mac: m.client_mac || null,
+            ap_mac: m.ap_mac || null,
+            pool_id: m.pool_id || null,
+            plan_id: m.plan_id || null,
+            message: "Error while polling MVola status (NEW system)",
+            metadata: { error: String(err?.message || err) },
+          });
+        }
+      } catch (_) {}
       // continue to retry
     }
 
@@ -2756,6 +3011,34 @@ async function pollTransactionStatus({
     short_message: "Temps d'attente dépassé lors du polling MVola",
     payload: null,
   });
+
+  // NEW system audit only (best-effort)
+  try {
+    const { data: tRow } = await supabase
+      .from("transactions")
+      .select("id,phone,metadata")
+      .eq("request_ref", requestRef)
+      .maybeSingle();
+    const m = tRow?.metadata && typeof tRow.metadata === "object" ? tRow.metadata : {};
+    if (m.plan_id && m.client_mac) {
+      await insertAudit({
+        event_type: "mvola_poll_timeout",
+        status: "timeout",
+        entity_type: "transaction",
+        entity_id: tRow?.id || null,
+        actor_type: "system",
+        actor_id: "mvola_poll",
+        request_ref: requestRef,
+        mvola_phone: (tRow?.phone || phone || null),
+        client_mac: m.client_mac || null,
+        ap_mac: m.ap_mac || null,
+        pool_id: m.pool_id || null,
+        plan_id: m.plan_id || null,
+        message: "MVola polling timed out (NEW system)",
+        metadata: { elapsed_ms: elapsed },
+      });
+    }
+  } catch (_) {}
 
   await sendEmailNotification(`[RAZAFI WIFI] ⚠️ Payment Timeout – RequestRef ${requestRef}`, {
     RequestRef: requestRef,
@@ -3146,7 +3429,23 @@ app.post("/api/voucher/activate", async (req, res) => {
     const ap_mac = normalizeMacColon(ap_mac_raw) || String(ap_mac_raw || "").trim() || null;
 
     if (!voucher_code || !client_mac) {
-      return res.status(400).json({ error: "voucher_code and client_mac are required" });
+            await insertAudit({
+        event_type: "voucher_activate_invalid",
+        status: "error",
+        entity_type: "voucher_code",
+        entity_id: voucher_code || null,
+        actor_type: "client",
+        actor_id: client_mac || null,
+        request_ref: null,
+        mvola_phone: null,
+        client_mac: client_mac || null,
+        ap_mac: ap_mac_raw || null,
+        pool_id: null,
+        plan_id: null,
+        message: "Activation request missing voucher_code or client_mac (NEW system)",
+        metadata: { body: { ...body, phone: undefined, password: undefined } },
+      });
+return res.status(400).json({ error: "voucher_code and client_mac are required" });
     }
 
     // Load session + plan
@@ -3158,11 +3457,37 @@ app.post("/api/voucher/activate", async (req, res) => {
       .maybeSingle();
 
     if (sErr || !session) {
-      return res.status(404).json({ error: "invalid_voucher", message: "Code invalide ou introuvable." });
+            await insertAudit({
+        event_type: "voucher_activate_invalid",
+        status: "failed",
+        entity_type: "voucher_code",
+        entity_id: voucher_code || null,
+        actor_type: "client",
+        actor_id: client_mac || null,
+        client_mac: client_mac || null,
+        ap_mac: ap_mac_raw || null,
+        message: "Invalid voucher code (NEW system)",
+        metadata: {},
+      });
+return res.status(404).json({ error: "invalid_voucher", message: "Code invalide ou introuvable." });
     }
 
     if (session.status === "blocked") {
-      return res.status(403).json({ error: "voucher_blocked", message: "Ce code a été bloqué." });
+            await insertAudit({
+        event_type: "voucher_activate_blocked",
+        status: "blocked",
+        entity_type: "voucher_session",
+        entity_id: session?.id || null,
+        actor_type: "client",
+        actor_id: client_mac || null,
+        client_mac: client_mac || null,
+        ap_mac: ap_mac_raw || null,
+        pool_id: session?.pool_id || null,
+        plan_id: session?.plan_id || null,
+        message: "Voucher activation blocked (NEW system)",
+        metadata: { voucher_status: session?.status || null },
+      });
+return res.status(403).json({ error: "voucher_blocked", message: "Ce code a été bloqué." });
     }
 
     const now = new Date();
@@ -3177,7 +3502,21 @@ app.post("/api/voucher/activate", async (req, res) => {
             .update({ status: "expired", updated_at: nowIso })
             .eq("id", session.id);
         } catch (_) {}
-        return res.status(403).json({ error: "voucher_expired", message: "Ce code a expiré." });
+              await insertAudit({
+        event_type: "voucher_activate_expired",
+        status: "failed",
+        entity_type: "voucher_session",
+        entity_id: session?.id || null,
+        actor_type: "client",
+        actor_id: client_mac || null,
+        client_mac: client_mac || null,
+        ap_mac: ap_mac_raw || null,
+        pool_id: session?.pool_id || null,
+        plan_id: session?.plan_id || null,
+        message: "Voucher expired at activation (NEW system)",
+        metadata: { expires_at: session?.expires_at || null },
+      });
+return res.status(403).json({ error: "voucher_expired", message: "Ce code a expiré." });
       }
       return res.json({
         ok: true,
@@ -3227,14 +3566,44 @@ app.post("/api/voucher/activate", async (req, res) => {
         .eq("id", session.id)
         .maybeSingle();
       if (reread?.status === "active") {
-        return res.json({
+        
+        await insertAudit({
+          event_type: "voucher_activate_success",
+          status: "success",
+          entity_type: "voucher_session",
+          entity_id: session?.id || null,
+          actor_type: "client",
+          actor_id: client_mac || null,
+          client_mac: client_mac || null,
+          ap_mac: ap_mac_raw || null,
+          pool_id: session?.pool_id || null,
+          plan_id: session?.plan_id || null,
+          message: "Voucher activated (NEW system)",
+          metadata: { voucher_code, started_at: activatePayload.started_at || null, expires_at: activatePayload.expires_at || null },
+        });
+
+return res.json({
           ok: true,
           already_active: true,
           activated_at: reread.activated_at || null,
           expires_at: reread.expires_at || null,
         });
       }
-      return res.status(409).json({ error: "voucher_already_activated" });
+            await insertAudit({
+        event_type: "voucher_activate_already_active",
+        status: "warning",
+        entity_type: "voucher_session",
+        entity_id: session?.id || null,
+        actor_type: "client",
+        actor_id: client_mac || null,
+        client_mac: client_mac || null,
+        ap_mac: ap_mac_raw || null,
+        pool_id: session?.pool_id || null,
+        plan_id: session?.plan_id || null,
+        message: "Voucher already active (NEW system)",
+        metadata: { activated_at: session?.activated_at || null, expires_at: session?.expires_at || null },
+      });
+return res.status(409).json({ error: "voucher_already_activated" });
     }
 
     return res.json({
@@ -3875,6 +4244,30 @@ const { error: vsErr } = await supabase
       attempt: 0,
       short_message: "Initiation de la transaction auprès de MVola",
       payload: data,
+    });
+
+    await insertAudit({
+      event_type: "payment_initiated",
+      status: "info",
+      entity_type: "transaction",
+      entity_id: transactionId || null,
+      actor_type: "client",
+      actor_id: (client_mac || clientMacForSession || null),
+      request_ref: requestRef,
+      mvola_phone: phone,
+      client_mac: (client_mac || clientMacForSession || null),
+      ap_mac: ap_mac || null,
+      pool_id: pool_id || null,
+      plan_id: planIdForSession || null,
+      message: "MVola payment initiated (NEW system)",
+      metadata: {
+        amount,
+        currency: "MGA",
+        host: req.headers?.host || null,
+        path: req.path,
+        ip: req.headers["x-forwarded-for"] || req.socket?.remoteAddress || null,
+        user_agent: req.headers["user-agent"] || null,
+      },
     });
 
     res.json({ ok: true, requestRef, serverCorrelationId, mvola: data });

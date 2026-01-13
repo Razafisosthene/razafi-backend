@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>RAZAFI Admin — Audit</title>
+  <link rel="stylesheet" href="/admin/admin.css" />
+</head>
+<body>
+  <div class="login-container">
+    <div class="card" style="max-width: 1100px; width: 96%;">
+      <div class="topbar">
+        <div class="title">
+          <h1 style="margin:0;">Audit</h1>
+          <div id="me" class="subtitle">Checking session...</div>
+        </div>
+        <div class="nav" style="display:none;"></div>
+      </div>
+
+      <hr style="opacity:.2; margin:18px 0;" />
+
+      <!-- Filters -->
+      <div class="sticky-bar">
+        <div class="filters">
+          <input id="q" class="filter-search" placeholder="Search: request_ref / client_mac / phone..." />
+
+          <select id="status" class="filter-select">
+            <option value="">Status (all)</option>
+            <option value="ok">ok</option>
+            <option value="error">error</option>
+            <option value="blocked">blocked</option>
+            <option value="pending">pending</option>
+          </select>
+
+          <select id="event_type" class="filter-select">
+            <option value="">Event type (all)</option>
+          </select>
+
+          <input id="plan_id" class="filter-search" style="max-width:220px;" placeholder="plan_id (optional)" />
+          <input id="pool_id" class="filter-search" style="max-width:220px;" placeholder="pool_id (optional)" />
+
+          <input id="from" type="datetime-local" class="filter-search" style="max-width:220px;" />
+          <input id="to" type="datetime-local" class="filter-search" style="max-width:220px;" />
+
+          <button type="button" id="apply" class="filter-btn primary" style="width:auto;">Apply</button>
+          <button type="button" id="clear" class="filter-btn" style="width:auto;">Clear</button>
+        </div>
+      </div>
+
+      <div id="statusLine" style="margin-top:14px; opacity:.85;"></div>
+
+      <div class="table-wrap">
+        <table style="width:100%; border-collapse:collapse;">
+          <thead>
+            <tr style="text-align:left; border-bottom:1px solid rgba(0,0,0,0.08);">
+              <th style="padding:10px;">Date</th>
+              <th style="padding:10px;">Status</th>
+              <th style="padding:10px;">Event</th>
+              <th style="padding:10px;">MVola</th>
+              <th style="padding:10px;">RequestRef</th>
+              <th style="padding:10px;">Client MAC</th>
+              <th style="padding:10px;">Plan</th>
+              <th style="padding:10px;">Pool</th>
+              <th style="padding:10px;">Details</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:12px; flex-wrap:wrap;">
+        <button id="prev" type="button" style="width:auto;">Prev</button>
+        <button id="next" type="button" style="width:auto;">Next</button>
+      </div>
+
+      <!-- Simple details modal -->
+      <div id="modal" class="modal" style="display:none;">
+        <div class="card modal-card">
+          <div style="display:flex; justify-content:space-between; gap:10px; align-items:center;">
+            <div style="font-weight:900;">Audit event</div>
+            <button id="closeModal" type="button" style="width:auto;">Close</button>
+          </div>
+          <pre id="modalPre" style="margin-top:12px; white-space:pre-wrap; word-break:break-word; background:rgba(0,0,0,0.05); padding:12px; border-radius:12px;"></pre>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="/admin/nav.js"></script>
+  <script src="/admin/audit.js"></script>
+</body>
+</html>
