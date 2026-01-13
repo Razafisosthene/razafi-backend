@@ -2485,6 +2485,7 @@ function truncate(x, max = 2000) {
   return s.length <= max ? s : s.slice(0, max);
 }
 
+// Parse a JSON object that may be stored as JSONB or as a stringified JSON
 function parseJsonObject(v) {
   try {
     if (!v) return {};
@@ -2492,15 +2493,11 @@ function parseJsonObject(v) {
     if (typeof v === "string") {
       const s = v.trim();
       if (!s) return {};
-      if ((s.startsWith("{") && s.endsWith("}")) || (s.startsWith("[") && s.endsWith("]"))) {
-        const j = JSON.parse(s);
-        return (j && typeof j === "object") ? j : {};
-      }
+      const obj = JSON.parse(s);
+      return obj && typeof obj === "object" ? obj : {};
     }
-    return {};
-  } catch (_) {
-    return {};
-  }
+  } catch (_) {}
+  return {};
 }
 
 function nowMGDate() {
@@ -2715,6 +2712,24 @@ async function pollTransactionStatus({
           const metaClientMac = (baseMeta.client_mac || null);
           const metaApMac = (baseMeta.ap_mac || null);
 
+          // NEW system audit: MVola completed (will generate voucher if NEW)
+          await insertAudit({
+            event_type: "mvola_completed",
+            status: "success",
+            entity_type: "transaction",
+            entity_id: tx?.id || null,
+            actor_type: "client",
+            actor_id: metaClientMac || null,
+            request_ref: requestRef || null,
+            mvola_phone: (tx?.phone || baseMeta.phone || null),
+            client_mac: metaClientMac || null,
+            ap_mac: metaApMac || null,
+            pool_id: metaPoolId || null,
+            plan_id: metaPlanId || null,
+            message: "MVola payment completed",
+            metadata: { mvola_status: statusRaw, serverCorrelationId },
+          });
+
           // NEW SYSTEM: if we have plan_id + client_mac in metadata, we must generate & deliver a NEW voucher (no old voucher stock).
           const isNewSystem = !!metaPlanId && !!metaClientMac;
 
@@ -2725,6 +2740,24 @@ async function pollTransactionStatus({
 
             const nowIso = new Date().toISOString();
 
+
+            // NEW system audit: voucher generation starting
+            await insertAudit({
+              event_type: "voucher_generate_start",
+              status: "info",
+              entity_type: "transaction",
+              entity_id: tx?.id || null,
+              actor_type: "client",
+              actor_id: metaClientMac || null,
+              request_ref: requestRef || null,
+              mvola_phone: (tx?.phone || baseMeta.phone || null),
+              client_mac: metaClientMac || null,
+              ap_mac: metaApMac || null,
+              pool_id: metaPoolId || null,
+              plan_id: metaPlanId || null,
+              message: "Generating voucher after MVola completion",
+              metadata: { voucher_code_hint: String(voucherCode || "").slice(0, 8) + "***" },
+            });
             const { error: vsErr } = await supabase
               .from("voucher_sessions")
               .upsert([{
@@ -2752,6 +2785,24 @@ async function pollTransactionStatus({
                 metadata: { ...baseMeta, mvolaStatus: statusRaw, completed_at_local: toISOStringMG(new Date()), updated_at_local: toISOStringMG(new Date()) },
               })
               .eq("request_ref", requestRef);
+
+            // NEW system audit: voucher generated and delivered (code returned later via /api/tx)
+            await insertAudit({
+              event_type: "voucher_generated",
+              status: "success",
+              entity_type: "voucher_session",
+              entity_id: null,
+              actor_type: "client",
+              actor_id: metaClientMac || null,
+              request_ref: requestRef || null,
+              mvola_phone: (tx?.phone || baseMeta.phone || null),
+              client_mac: metaClientMac || null,
+              ap_mac: metaApMac || null,
+              pool_id: metaPoolId || null,
+              plan_id: metaPlanId || null,
+              message: "Voucher session created (pending) after payment",
+              metadata: { voucher_code: String(voucherCode || ""), delivered_at: nowIso },
+            });
 
             await insertLog({
               request_ref: requestRef,
@@ -2821,6 +2872,19 @@ async function pollTransactionStatus({
           return;
         } catch (err) {
           console.error("❌ Error while processing completed MVola payment:", err?.message || err);
+          // NEW system audit: voucher generation failed
+          await insertAudit({
+            event_type: "voucher_generate_failed",
+            status: "failed",
+            entity_type: "transaction",
+            entity_id: null,
+            actor_type: "client",
+            actor_id: null,
+            request_ref: requestRef || null,
+            mvola_phone: phone || null,
+            message: "Error while generating voucher after MVola completion",
+            metadata: { error: truncate(err?.message || err, 2000), serverCorrelationId },
+          });
           try {
             await supabase
               .from("transactions")
@@ -2839,6 +2903,49 @@ async function pollTransactionStatus({
               .from("transactions")
               .update({ status: "failed", metadata: { mvolaResponse: truncate(sdata, 2000), updated_at_local: toISOStringMG(new Date()) } })
               .eq("request_ref", requestRef);
+
+        // NEW system audit: MVola failed/rejected/declined
+        let txId = null;
+        let metaPlanId = null;
+        let metaPoolId = null;
+        let metaClientMac = null;
+        let metaApMac = null;
+        let txPhone = phone || null;
+
+        try {
+          const { data: tx, error: txErr } = await supabase
+            .from("transactions")
+            .select("id,phone,metadata")
+            .eq("request_ref", requestRef)
+            .maybeSingle();
+
+          if (!txErr && tx) {
+            txId = tx.id || null;
+            txPhone = tx.phone || txPhone;
+            const baseMeta = parseJsonObject(tx.metadata);
+            metaPlanId = baseMeta.plan_id || null;
+            metaPoolId = baseMeta.pool_id || null;
+            metaClientMac = baseMeta.client_mac || null;
+            metaApMac = baseMeta.ap_mac || null;
+          }
+        } catch (_) {}
+
+        await insertAudit({
+          event_type: "mvola_failed",
+          status: "failed",
+          entity_type: "transaction",
+          entity_id: txId,
+          actor_type: "client",
+          actor_id: metaClientMac || null,
+          request_ref: requestRef || null,
+          mvola_phone: txPhone,
+          client_mac: metaClientMac || null,
+          ap_mac: metaApMac || null,
+          pool_id: metaPoolId || null,
+          plan_id: metaPlanId || null,
+          message: "MVola payment failed",
+          metadata: { mvola_status: statusRaw, response: truncate(sdata, 2000), serverCorrelationId },
+        });
           }
         } catch (e) {
           console.error("⚠️ Failed updating transaction to failed:", e?.message || e);
@@ -2899,6 +3006,49 @@ async function pollTransactionStatus({
         .from("transactions")
         .update({ status: "timeout", metadata: { note: "poll_timeout", updated_at_local: toISOStringMG(new Date()) } })
         .eq("request_ref", requestRef);
+
+    // NEW system audit: MVola poll timeout
+    let txId = null;
+    let metaPlanId = null;
+    let metaPoolId = null;
+    let metaClientMac = null;
+    let metaApMac = null;
+    let txPhone = phone || null;
+
+    try {
+      const { data: tx, error: txErr } = await supabase
+        .from("transactions")
+        .select("id,phone,metadata")
+        .eq("request_ref", requestRef)
+        .maybeSingle();
+
+      if (!txErr && tx) {
+        txId = tx.id || null;
+        txPhone = tx.phone || txPhone;
+        const baseMeta = parseJsonObject(tx.metadata);
+        metaPlanId = baseMeta.plan_id || null;
+        metaPoolId = baseMeta.pool_id || null;
+        metaClientMac = baseMeta.client_mac || null;
+        metaApMac = baseMeta.ap_mac || null;
+      }
+    } catch (_) {}
+
+    await insertAudit({
+      event_type: "mvola_poll_timeout",
+      status: "warning",
+      entity_type: "transaction",
+      entity_id: txId,
+      actor_type: "system",
+      actor_id: null,
+      request_ref: requestRef || null,
+      mvola_phone: txPhone,
+      client_mac: metaClientMac || null,
+      ap_mac: metaApMac || null,
+      pool_id: metaPoolId || null,
+      plan_id: metaPlanId || null,
+      message: "MVola polling timed out",
+      metadata: { attempts: attempt, serverCorrelationId },
+    });
     }
   } catch (e) {
     console.error("⚠️ Failed updating transaction to timeout:", e?.message || e);
@@ -3073,6 +3223,20 @@ app.post("/api/new/authorize", async (req, res) => {
       .single();
 
     if (sErr || !session) {
+    // NEW system audit: voucher invalid on activation
+    await insertAudit({
+      event_type: "voucher_activate_invalid",
+      status: "failed",
+      entity_type: "voucher_session",
+      entity_id: null,
+      actor_type: "client",
+      actor_id: null,
+      request_ref: null,
+      client_mac: null,
+      ap_mac: ap_mac || null,
+      message: "Voucher code not found",
+      metadata: { voucher_code_hint: String(voucher_code || "").slice(0, 6) + "***" },
+    });
       return res.status(404).json({ error: "Invalid voucher" });
     }
 
@@ -3125,6 +3289,24 @@ const expiresAt = new Date(startedAt.getTime() + minutes * 60 * 1000);
         return res.status(409).json({ error: "Voucher already activated" });
       }
 
+
+      // NEW system audit: voucher activation success (Model B starts now)
+      await insertAudit({
+        event_type: "voucher_activate_success",
+        status: "success",
+        entity_type: "voucher_session",
+        entity_id: session.id || null,
+        actor_type: "client",
+        actor_id: device_mac || null,
+        request_ref: null,
+        mvola_phone: session.mvola_phone || null,
+        client_mac: session.client_mac || null,
+        ap_mac: ap_mac || null,
+        pool_id: apRow.pool_id || null,
+        plan_id: session.plan_id || null,
+        message: "Voucher activated and started",
+        metadata: { started_at: startedAt.toISOString(), expires_at: expiresAt.toISOString(), device_mac },
+      });
       // Create owner device
       await supabase.from("voucher_devices").insert({
         voucher_session_id: session.id,
@@ -4030,7 +4212,7 @@ const { error: vsErr } = await supabase
                 .select("metadata")
                 .eq("request_ref", requestRef)
                 .maybeSingle();
-              const base = parseJsonObject(txRow?.metadata);
+              const base = txRow?.metadata && typeof txRow.metadata === 'object' ? txRow.metadata : {};
               return { ...base, mvolaResponse: truncate(data, 2000), updated_at_local: toISOStringMG(new Date()) };
             } catch (_) {
               return { mvolaResponse: truncate(data, 2000), updated_at_local: toISOStringMG(new Date()) };
@@ -4075,6 +4257,23 @@ const { error: vsErr } = await supabase
     return;
   } catch (err) {
     console.error("❌ MVola a rejeté la requête", err.response?.data || err?.message || err);
+    // NEW system audit: MVola initiate error
+    await insertAudit({
+      event_type: "mvola_initiate_error",
+      status: "failed",
+      entity_type: "transaction",
+      entity_id: null,
+      actor_type: "client",
+      actor_id: client_mac || null,
+      request_ref: requestRef || null,
+      mvola_phone: phone || null,
+      client_mac: client_mac || null,
+      ap_mac: ap_mac || null,
+      pool_id: pool_id || null,
+      plan_id: planIdForSession || null,
+      message: "MVola initiation failed (NEW system)",
+      metadata: { error: truncate(err.response?.data || err?.message || err, 2000), correlationId },
+    });
     try {
       if (supabase) {
         await supabase
