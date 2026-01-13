@@ -686,6 +686,101 @@ app.post("/api/admin/logout", requireAdmin, async (req, res) => {
 // ===============================
 // ADMIN AUTH — ME
 // ===============================
+
+
+// ===============================
+// ADMIN AUDIT (NEW system only)
+// ===============================
+app.get("/api/admin/audit/event-types", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const { data, error } = await supabase
+      .from("audit_logs")
+      .select("event_type")
+      .order("created_at", { ascending: false })
+      .limit(500);
+
+    if (error) throw error;
+
+    const uniq = [];
+    const seen = new Set();
+    for (const row of (data || [])) {
+      const v = row?.event_type;
+      if (!v || seen.has(v)) continue;
+      seen.add(v);
+      uniq.push(v);
+    }
+
+    return res.json({ event_types: uniq });
+  } catch (e) {
+    console.error("audit event-types error:", e?.message || e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+app.get("/api/admin/audit", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const {
+      q = "",
+      status = "",
+      event_type = "",
+      plan_id = "",
+      pool_id = "",
+      client_mac = "",
+      ap_mac = "",
+      request_ref = "",
+      mvola_phone = "",
+      from = "",
+      to = "",
+    } = req.query || {};
+
+    const limit = Math.min(200, Math.max(1, Number(req.query?.limit || 100)));
+    const offset = Math.max(0, Number(req.query?.offset || 0));
+
+    let query = supabase
+      .from("audit_logs")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (status) query = query.eq("status", String(status));
+    if (event_type) query = query.eq("event_type", String(event_type));
+    if (plan_id) query = query.eq("plan_id", String(plan_id));
+    if (pool_id) query = query.eq("pool_id", String(pool_id));
+    if (client_mac) query = query.ilike("client_mac", `%${String(client_mac)}%`);
+    if (ap_mac) query = query.ilike("ap_mac", `%${String(ap_mac)}%`);
+    if (request_ref) query = query.ilike("request_ref", `%${String(request_ref)}%`);
+    if (mvola_phone) query = query.ilike("mvola_phone", `%${String(mvola_phone)}%`);
+
+    if (from) query = query.gte("created_at", String(from));
+    if (to) query = query.lte("created_at", String(to));
+
+    const qq = String(q || "").trim();
+    if (qq) {
+      query = query.or([
+        `request_ref.ilike.%${qq}%`,
+        `client_mac.ilike.%${qq}%`,
+        `ap_mac.ilike.%${qq}%`,
+        `mvola_phone.ilike.%${qq}%`,
+        `event_type.ilike.%${qq}%`,
+        `message.ilike.%${qq}%`,
+      ].join(","));
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    const items = data || [];
+    return res.json({ items, next_cursor: "" });
+  } catch (e) {
+    console.error("audit list error:", e?.message || e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
 app.get("/api/admin/me", requireAdmin, async (req, res) => {
   return res.json({
     id: req.admin.id,
@@ -2491,6 +2586,52 @@ async function insertLog({
   }
 }
 
+
+
+// ---------------- Audit helper (writes to supabase.audit_logs) ----------------
+async function insertAudit({
+  event_type = "unknown",
+  status = "info",
+  entity_type = null,
+  entity_id = null,
+  actor_type = null,
+  actor_id = null,
+  request_ref = null,
+  mvola_phone = null,
+  client_mac = null,
+  ap_mac = null,
+  pool_id = null,
+  plan_id = null,
+  message = null,
+  metadata = null,
+} = {}) {
+  try {
+    if (!supabase) return;
+
+    const row = {
+      event_type,
+      status,
+      entity_type,
+      entity_id,
+      actor_type,
+      actor_id,
+      request_ref,
+      mvola_phone,
+      client_mac,
+      ap_mac,
+      pool_id,
+      plan_id,
+      message,
+      metadata: (metadata && typeof metadata === "object") ? metadata : {},
+    };
+
+    await supabase.from("audit_logs").insert([row]);
+  } catch (e) {
+    // fail-open: never break prod
+    console.warn("audit_logs insert failed:", e?.message || e);
+  }
+}
+
 // ----------------- Parse Ariary helper (unchanged) -----------------
 function parseAriaryFromString(s) {
   try {
@@ -3807,6 +3948,25 @@ const { error: vsErr } = await supabase
         status: "initiated",
         metadata: metadataForInsert,
       }]);
+
+      // NEW system audit: payment initiated
+      await insertAudit({
+        event_type: "payment_initiated",
+        status: "info",
+        entity_type: "transaction",
+        entity_id: txId || null,
+        actor_type: "client",
+        actor_id: client_mac || null,
+        request_ref: requestRef || null,
+        mvola_phone: phone || null,
+        client_mac: client_mac || null,
+        ap_mac: apMacForSession || null,
+        pool_id: pool_id || null,
+        plan_id: planIdForSession || null,
+        message: "MVola payment initiated (NEW system)",
+        metadata: { amount, plan, correlationId }
+      });
+
     }
   } catch (dbErr) {
     console.error("⚠️ Warning: unable to insert initial transaction row:", dbErr?.message || dbErr);
