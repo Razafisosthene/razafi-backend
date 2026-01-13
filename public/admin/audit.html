@@ -61,7 +61,7 @@
               <th style="padding:10px;">Client MAC</th>
               <th style="padding:10px;">Plan</th>
               <th style="padding:10px;">Pool</th>
-              <th style="padding:10px;">Details</th>
+              
             </tr>
           </thead>
           <tbody id="rows"></tbody>
@@ -80,7 +80,17 @@
             <div style="font-weight:900;">Audit event</div>
             <button id="closeModal" type="button" style="width:auto;">Close</button>
           </div>
-          <pre id="modalPre" style="margin-top:12px; white-space:pre-wrap; word-break:break-word; background:rgba(0,0,0,0.05); padding:12px; border-radius:12px;"></pre>
+          <div id="modalBody" style="margin-top:12px;">
+  <div id="modalSummary" style="display:grid; grid-template-columns: 160px 1fr; gap:8px 12px; align-items:start;"></div>
+
+  <div style="margin-top:14px; font-weight:900;">Metadata</div>
+  <pre id="modalMeta" style="margin-top:10px; white-space:pre-wrap; word-break:break-word; background:rgba(0,0,0,0.05); padding:12px; border-radius:12px;"></pre>
+
+  <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
+    <button id="copyEventBtn" type="button" style="width:auto; padding:10px 12px;">Copy event JSON</button>
+    <button id="copyMetaBtn" type="button" style="width:auto; padding:10px 12px;">Copy metadata JSON</button>
+  </div>
+</div>
         </div>
       </div>
 
