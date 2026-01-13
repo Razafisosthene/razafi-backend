@@ -4324,9 +4324,65 @@ app.get("/api/tx/:requestRef", async (req, res) => {
       // ignore conversion errors
     }
 
+
+    // AUDIT (NEW): deliver code to client (portal) — write once per request_ref when voucher is present
+    try {
+      const deliveredCode = (row && (row.voucher || row.code)) || null;
+      const txStatus = (row && row.status) ? String(row.status).toLowerCase() : "";
+      const meta = (row && row.metadata && typeof row.metadata === "object") ? row.metadata : {};
+
+      if (deliveredCode && txStatus === "completed") {
+        const { data: already, error: alreadyErr } = await supabase
+          .from("audit_logs")
+          .select("id")
+          .eq("request_ref", requestRef)
+          .eq("event_type", "deliver_code_ok")
+          .limit(1);
+
+        if (!alreadyErr && (!already || already.length === 0)) {
+          await insertAudit({
+            event_type: "deliver_code_ok",
+            status: "success",
+            entity_type: "transaction",
+            entity_id: row.id || null,
+            actor_type: "client",
+            actor_id: null,
+            request_ref: requestRef,
+            mvola_phone: data?.phone || null,
+            client_mac: meta.client_mac || null,
+            ap_mac: meta.ap_mac || null,
+            pool_id: meta.pool_id || null,
+            plan_id: meta.plan_id || null,
+            message: "Code delivered to client",
+            metadata: { channel: "portal", voucher_preview: String(deliveredCode).slice(0, 4) + "****" },
+          });
+        }
+      }
+    } catch (e) {
+      console.error("deliver_code_ok audit failed:", e?.message || e);
+    }
     return res.json({ ok: true, transaction: row });
   } catch (e) {
     console.error("Error in /api/tx/:", e?.message || e);
+
+    // AUDIT (NEW): deliver code error (best-effort)
+    try {
+      if (supabase) {
+        await insertAudit({
+          event_type: "deliver_code_error",
+          status: "failed",
+          entity_type: "transaction",
+          entity_id: null,
+          actor_type: "client",
+          actor_id: null,
+          request_ref: requestRef,
+          message: "Failed to deliver code",
+          metadata: { error: String(e?.message || e) },
+        });
+      }
+    } catch (e2) {
+      console.error("deliver_code_error audit failed:", e2?.message || e2);
+    }
     return res.status(500).json({ error: "internal error" });
   }
 });
