@@ -5,6 +5,41 @@
    =============================== */
 
 (function () {
+  // -------- Madagascar Timezone helpers --------
+  const MG_TZ = "Indian/Antananarivo";
+
+  function fmtTimeMG(ts) {
+    try {
+      const d = new Date(Number(ts) || Date.now());
+      if (Number.isNaN(d.getTime())) return "";
+      return new Intl.DateTimeFormat("fr-FR", {
+        timeZone: MG_TZ,
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(d);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function fmtDateTimeMG(isoOrMs) {
+    try {
+      const d = new Date(isoOrMs);
+      if (Number.isNaN(d.getTime())) return String(isoOrMs ?? "");
+      return new Intl.DateTimeFormat("fr-FR", {
+        timeZone: MG_TZ,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }).format(d);
+    } catch (_) {
+      return String(isoOrMs ?? "");
+    }
+  }
+
   // -------- Utils --------
   function qsAll(name) {
     try { return new URLSearchParams(window.location.search).getAll(name); } catch { return []; }
@@ -41,7 +76,7 @@
     const v = pickLastValidParam([name], (x) => !isPlaceholder(x));
     return v;
   }
-function $(id) {
+  function $(id) {
     return document.getElementById(id);
   }
 
@@ -62,166 +97,161 @@ function $(id) {
       h = (h * 31 + s.charCodeAt(i)) >>> 0;
     }
     return h;
-}
-
-function escapeHtml(str) {
-  return String(str ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-// OLD exact MVola normalization/validation (copied behavior)
-function normalizeMvolaNumber(entered) {
-  let cleaned = String(entered ?? "").trim().replace(/\s+/g, "");
-  const intRegex = /^(?:\+?261)(34|37|38)(\d{7})$/;
-  if (intRegex.test(cleaned)) {
-    cleaned = cleaned.replace(intRegex, "0$1$2");
   }
-  const isMvola = /^0(34|37|38)\d{7}$/.test(cleaned);
-  return { cleaned, isMvola };
-}
 
-
-// -------- UX helpers (auto-scroll, highlight, resume banner, friendly errors) --------
-function ensureFlashStyle() {
-  if (document.getElementById("razafi-flash-style")) return;
-  const st = document.createElement("style");
-  st.id = "razafi-flash-style";
-  st.textContent = `
-    .razafi-flash { outline: 3px solid rgba(255,255,255,0.65); outline-offset: 4px; transition: outline-color 0.2s ease; }
-    .razafi-banner { margin: 10px 0 10px; padding: 10px 12px; border-radius: 12px; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.10); }
-    .razafi-banner .small { font-size: 12px; opacity: 0.85; }
-  `;
-  document.head.appendChild(st);
-}
-
-function focusVoucherBlock({ highlightMs = 1100 } = {}) {
-  const el = document.getElementById("voucherHas");
-  if (!el) return;
-  // Make sure it's visible even if HTML shipped with class="hidden"
-  el.classList.remove("hidden");
-  el.style.display = "";
-  try {
-    el.scrollIntoView({ behavior: "smooth", block: "start" });
-  } catch (_) {
-    // no-op
+  function escapeHtml(str) {
+    return String(str ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
   }
-  ensureFlashStyle();
-  el.classList.add("razafi-flash");
-  window.setTimeout(() => el.classList.remove("razafi-flash"), highlightMs);
-}
 
-function formatLocalTime(ts) {
-  try {
-    const d = new Date(Number(ts) || Date.now());
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  } catch (_) {
-    return "";
+  // OLD exact MVola normalization/validation (copied behavior)
+  function normalizeMvolaNumber(entered) {
+    let cleaned = String(entered ?? "").trim().replace(/\s+/g, "");
+    const intRegex = /^(?:\+?261)(34|37|38)(\d{7})$/;
+    if (intRegex.test(cleaned)) {
+      cleaned = cleaned.replace(intRegex, "0$1$2");
+    }
+    const isMvola = /^0(34|37|38)\d{7}$/.test(cleaned);
+    return { cleaned, isMvola };
   }
-}
 
-function writeLastCode({ code, planName, durationMinutes, maxDevices } = {}) {
-  const safeCode = String(code || "").trim();
-  if (!safeCode) return;
-  const payload = {
-    code: safeCode,
-    ts: Date.now(),
-    planName: planName || null,
-    durationMinutes: (durationMinutes ?? null),
-    maxDevices: (maxDevices ?? null),
-  };
-  try { sessionStorage.setItem("razafi_last_code", JSON.stringify(payload)); } catch (_) {}
-}
-
-function readLastCode() {
-  try {
-    const raw = sessionStorage.getItem("razafi_last_code");
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch (_) {
-    return null;
+  // -------- UX helpers (auto-scroll, highlight, resume banner, friendly errors) --------
+  function ensureFlashStyle() {
+    if (document.getElementById("razafi-flash-style")) return;
+    const st = document.createElement("style");
+    st.id = "razafi-flash-style";
+    st.textContent = `
+      .razafi-flash { outline: 3px solid rgba(255,255,255,0.65); outline-offset: 4px; transition: outline-color 0.2s ease; }
+      .razafi-banner { margin: 10px 0 10px; padding: 10px 12px; border-radius: 12px; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.10); }
+      .razafi-banner .small { font-size: 12px; opacity: 0.85; }
+    `;
+    document.head.appendChild(st);
   }
-}
 
-function ensureLastCodeBanner() {
-  const wrap = document.getElementById("voucherHas");
-  if (!wrap) return null;
-
-  let banner = wrap.querySelector("#razafiLastCodeBanner");
-  if (!banner) {
-    banner = document.createElement("div");
-    banner.id = "razafiLastCodeBanner";
-    banner.className = "razafi-banner";
-    // insert after the success message if possible
-    const msg = document.getElementById("hasVoucherMsg");
-    if (msg && msg.parentElement === wrap) msg.insertAdjacentElement("afterend", banner);
-    else wrap.insertAdjacentElement("afterbegin", banner);
+  function focusVoucherBlock({ highlightMs = 1100 } = {}) {
+    const el = document.getElementById("voucherHas");
+    if (!el) return;
+    // Make sure it's visible even if HTML shipped with class="hidden"
+    el.classList.remove("hidden");
+    el.style.display = "";
+    try {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (_) {
+      // no-op
+    }
+    ensureFlashStyle();
+    el.classList.add("razafi-flash");
+    window.setTimeout(() => el.classList.remove("razafi-flash"), highlightMs);
   }
-  return banner;
-}
 
-function renderLastCodeBanner() {
-  const last = readLastCode();
-  const banner = ensureLastCodeBanner();
-  if (!banner) return;
-
-  if (!last?.code) {
-    banner.style.display = "none";
-    return;
+  // ✅ Changed: always Madagascar time
+  function formatLocalTime(ts) {
+    return fmtTimeMG(ts);
   }
-  banner.style.display = "";
-  const when = last.ts ? formatLocalTime(last.ts) : "";
-  const plan = last.planName ? escapeHtml(last.planName) : "Plan";
-  const dur = (last.durationMinutes != null) ? escapeHtml(formatDuration(Number(last.durationMinutes))) : "—";
-  const dev = (last.maxDevices != null) ? escapeHtml(String(last.maxDevices)) : "—";
 
-  banner.innerHTML = `
-    <div><strong>Dernier code généré :</strong> <span style="letter-spacing:1px;">${escapeHtml(last.code)}</span> ${when ? `<span class="small">(${escapeHtml(when)})</span>` : ""}</div>
-    <div class="small" style="margin-top:4px;">Plan: ${plan} · Durée: ${dur} · Appareils: ${dev}</div>
-    <div class="small" style="margin-top:6px;">👉 Cliquez <strong>« Utiliser ce code »</strong> pour activer Internet.</div>
-  `;
-}
-
-function friendlyErrorMessage(err) {
-  // Network errors from fetch are often TypeError
-  const name = String(err?.name || "");
-  const msg = String(err?.message || err || "").toLowerCase();
-
-  if (name === "TypeError" || msg.includes("failed to fetch") || msg.includes("network")) {
-    return "Connexion instable. Réessayez.";
+  function writeLastCode({ code, planName, durationMinutes, maxDevices } = {}) {
+    const safeCode = String(code || "").trim();
+    if (!safeCode) return;
+    const payload = {
+      code: safeCode,
+      ts: Date.now(),
+      planName: planName || null,
+      durationMinutes: (durationMinutes ?? null),
+      maxDevices: (maxDevices ?? null),
+    };
+    try { sessionStorage.setItem("razafi_last_code", JSON.stringify(payload)); } catch (_) {}
   }
-  if (msg.includes("no_voucher") || msg.includes("no voucher") || msg.includes("409")) {
-    return "Codes tempor. indisponibles. Réessayez plus tard.";
+
+  function readLastCode() {
+    try {
+      const raw = sessionStorage.getItem("razafi_last_code");
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch (_) {
+      return null;
+    }
   }
-  // Default: keep original message but avoid technical noise
-  return String(err?.message || "Erreur serveur");
-}
-// Toast (top-center, safe-area)
-function ensureToastContainer() {
-  let c = document.getElementById("toastContainer");
-  if (c) return c;
-  c = document.createElement("div");
-  c.id = "toastContainer";
-  document.body.appendChild(c);
-  return c;
-}
 
-function showToast(message, kind = "info", ms = 3200) {
-  const c = ensureToastContainer();
-  const t = document.createElement("div");
-  t.className = "toast toast-" + kind;
-  t.textContent = message;
-  c.appendChild(t);
-  requestAnimationFrame(() => t.classList.add("show"));
-  setTimeout(() => {
-    t.classList.remove("show");
-    setTimeout(() => t.remove(), 250);
-  }, ms);
-}
+  function ensureLastCodeBanner() {
+    const wrap = document.getElementById("voucherHas");
+    if (!wrap) return null;
 
+    let banner = wrap.querySelector("#razafiLastCodeBanner");
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = "razafiLastCodeBanner";
+      banner.className = "razafi-banner";
+      // insert after the success message if possible
+      const msg = document.getElementById("hasVoucherMsg");
+      if (msg && msg.parentElement === wrap) msg.insertAdjacentElement("afterend", banner);
+      else wrap.insertAdjacentElement("afterbegin", banner);
+    }
+    return banner;
+  }
+
+  function renderLastCodeBanner() {
+    const last = readLastCode();
+    const banner = ensureLastCodeBanner();
+    if (!banner) return;
+
+    if (!last?.code) {
+      banner.style.display = "none";
+      return;
+    }
+    banner.style.display = "";
+    const when = last.ts ? formatLocalTime(last.ts) : "";
+    const plan = last.planName ? escapeHtml(last.planName) : "Plan";
+    const dur = (last.durationMinutes != null) ? escapeHtml(formatDuration(Number(last.durationMinutes))) : "—";
+    const dev = (last.maxDevices != null) ? escapeHtml(String(last.maxDevices)) : "—";
+
+    banner.innerHTML = `
+      <div><strong>Dernier code généré :</strong> <span style="letter-spacing:1px;">${escapeHtml(last.code)}</span> ${when ? `<span class="small">(${escapeHtml(when)})</span>` : ""}</div>
+      <div class="small" style="margin-top:4px;">Plan: ${plan} · Durée: ${dur} · Appareils: ${dev}</div>
+      <div class="small" style="margin-top:6px;">👉 Cliquez <strong>« Utiliser ce code »</strong> pour activer Internet.</div>
+    `;
+  }
+
+  function friendlyErrorMessage(err) {
+    // Network errors from fetch are often TypeError
+    const name = String(err?.name || "");
+    const msg = String(err?.message || err || "").toLowerCase();
+
+    if (name === "TypeError" || msg.includes("failed to fetch") || msg.includes("network")) {
+      return "Connexion instable. Réessayez.";
+    }
+    if (msg.includes("no_voucher") || msg.includes("no voucher") || msg.includes("409")) {
+      return "Codes tempor. indisponibles. Réessayez plus tard.";
+    }
+    // Default: keep original message but avoid technical noise
+    return String(err?.message || "Erreur serveur");
+  }
+
+  // Toast (top-center, safe-area)
+  function ensureToastContainer() {
+    let c = document.getElementById("toastContainer");
+    if (c) return c;
+    c = document.createElement("div");
+    c.id = "toastContainer";
+    document.body.appendChild(c);
+    return c;
+  }
+
+  function showToast(message, kind = "info", ms = 3200) {
+    const c = ensureToastContainer();
+    const t = document.createElement("div");
+    t.className = "toast toast-" + kind;
+    t.textContent = message;
+    c.appendChild(t);
+    requestAnimationFrame(() => t.classList.add("show"));
+    setTimeout(() => {
+      t.classList.remove("show");
+      setTimeout(() => t.remove(), 250);
+    }, ms);
+  }
 
   // C) Plan info formatters (Approved C, Option 2)
   function formatData(dataMb) {
@@ -271,7 +301,7 @@ function showToast(message, kind = "info", ms = 3200) {
 
   // -------- Read Tanaza params (robust) --------
   const isLocalhost = (location.hostname === "localhost" || location.hostname === "127.0.0.1");
-    const apMac = (pickLastValidParam(["ap_mac","apMac"], isProbablyMac) || (isLocalhost ? "DEV_AP" : ""));
+  const apMac = (pickLastValidParam(["ap_mac","apMac"], isProbablyMac) || (isLocalhost ? "DEV_AP" : ""));
   const clientMac = (pickLastValidParam(["client_mac","clientMac"], isProbablyMac) || (isLocalhost ? "DEV_CLIENT" : ""));
   const loginUrl = pickLastValidParam(["login_url","loginUrl"], (v) => {
     if (isPlaceholder(v)) return false;
@@ -293,8 +323,6 @@ function showToast(message, kind = "info", ms = 3200) {
   });
   console.log("[RAZAFI] Tanaza params chosen", { apMac, clientMac, loginUrl, continueUrl });
 
-
-
   // Expose Tanaza params for support/debug (not shown to end-users)
   window.apMac = apMac || "";
   window.clientMac = clientMac || "";
@@ -307,10 +335,8 @@ function showToast(message, kind = "info", ms = 3200) {
   window.loginUrl = loginUrl;
   window.continueUrl = continueUrl;
 
-
-
   // -------- Status elements --------
-    const voucherCodeEl = $("voucher-code");
+  const voucherCodeEl = $("voucher-code");
   const timeLeftEl = $("time-left");
   const dataLeftEl = $("data-left");
   const devicesEl = $("devices-used");
@@ -318,17 +344,14 @@ function showToast(message, kind = "info", ms = 3200) {
   const copyBtn = $("copyVoucherBtn");
 
   const themeToggle = $("themeToggle");
+
   // -------- Voucher status (PROD) --------
-  // No simulated values in production. We only display a code if we actually have one.
   function renderStatus({ hasActiveVoucher = false, voucherCode = "" } = {}) {
     const has = !!hasActiveVoucher;
 
-    // Toggle blocks if they exist in HTML
     const noneEl = document.getElementById("voucherNone");
     const hasEl = document.getElementById("voucherHas");
 
-    // Some pages ship with a `.hidden { display:none !important; }` class.
-    // Use class toggling (not only inline styles) so the voucher panel can actually appear.
     if (noneEl) {
       noneEl.classList.toggle("hidden", has);
       noneEl.style.display = has ? "none" : "";
@@ -341,7 +364,6 @@ function showToast(message, kind = "info", ms = 3200) {
     const codeEl = $("voucher-code");
     if (codeEl) codeEl.textContent = has ? (voucherCode || "—") : "—";
 
-    // These fields are intentionally unknown in PROD (no fake values)
     const timeLeftEl = $("time-left");
     const dataLeftEl = $("data-left");
     const devicesEl = $("devices-used");
@@ -350,11 +372,7 @@ function showToast(message, kind = "info", ms = 3200) {
     if (devicesEl) devicesEl.textContent = "—";
   }
 
-
-
   // -------- Internet connectivity check (PROD) --------
-  // We can't reliably ask Tanaza for session status from the browser.
-  // Best-effort: try loading an HTTPS asset (not interceptable by captive portals without cert errors).
   function checkInternet({ timeoutMs = 5000 } = {}) {
     return new Promise((resolve) => {
       let done = false;
@@ -370,18 +388,15 @@ function showToast(message, kind = "info", ms = 3200) {
       img.onload = () => { clearTimeout(t); finish(true); };
       img.onerror = () => { clearTimeout(t); finish(false); };
 
-      // Cache-buster to avoid false positives from cache
       img.src = "https://www.google.com/favicon.ico?_=" + Date.now();
     });
   }
 
   function pickContinueTarget() {
-    // Option A: use Tanaza continue_url if it is a safe absolute http(s) URL; otherwise default to Google.
     const fallback = "https://www.google.com/";
     const raw = (continueUrl || "").trim();
     if (!raw) return fallback;
     try {
-      // Reject javascript:, data:, etc.
       const u = new URL(raw, window.location.href);
       if (u.protocol === "http:" || u.protocol === "https:") return u.toString();
       return fallback;
@@ -391,11 +406,9 @@ function showToast(message, kind = "info", ms = 3200) {
   }
 
   function setConnectedUI() {
-    // When internet is confirmed active: show only "connected" state (no purchase prompts).
     const accessMsg = document.getElementById("accessMsg");
     if (accessMsg) accessMsg.textContent = "✅ Accès Internet activé. Vous pouvez naviguer.";
 
-    // Hide "no active code" + purchase hint
     const voucherNone = document.getElementById("voucherNone");
     if (voucherNone) {
       voucherNone.classList.add("hidden");
@@ -404,11 +417,9 @@ function showToast(message, kind = "info", ms = 3200) {
     const noVoucherMsg = document.getElementById("noVoucherMsg");
     if (noVoucherMsg) noVoucherMsg.style.display = "none";
 
-    // Update "has voucher" heading if present (avoid confusion)
     const hasMsg = document.getElementById("hasVoucherMsg");
     if (hasMsg) hasMsg.textContent = "✅ Accès Internet activé";
 
-    // Hide purchase UI: plans + info banner + headings
     const plansSection = document.getElementById("plans-section") || document.getElementById("plansSection");
     if (plansSection) plansSection.style.display = "none";
 
@@ -430,7 +441,6 @@ function showToast(message, kind = "info", ms = 3200) {
       .find((el) => (el.textContent || "").trim().toLowerCase().includes("choisissez un plan"));
     if (plansHeading) plansHeading.style.display = "none";
 
-    // Hide FAQ in connected mode
     const faq = document.querySelector("section.card.faq, section.faq, .card.faq, .faq");
     if (faq) faq.style.display = "none";
 
@@ -438,9 +448,7 @@ function showToast(message, kind = "info", ms = 3200) {
     ensurePurchaseSummary();
   }
 
-
   function ensureContinueButton() {
-    // Place a "Continuer" button inside the status card when internet is OK
     const card = document.querySelector(".status-card");
     if (!card) return null;
 
@@ -456,8 +464,6 @@ function showToast(message, kind = "info", ms = 3200) {
     btn.style.justifyContent = "center";
     btn.style.marginTop = "10px";
     btn.textContent = "Continuer vers Internet";
-
-    // Prefer Tanaza continue_url when provided; otherwise go to a safe default
     btn.href = pickContinueTarget();
     btn.target = "_self";
 
@@ -514,11 +520,7 @@ function showToast(message, kind = "info", ms = 3200) {
     return box;
   }
 
-
-
   async function updateConnectedUI({ force = false } = {}) {
-    // If we just attempted a login, we should check quickly.
-    // Otherwise, keep it lightweight (still useful if user already has an active session).
     const accessMsg = document.getElementById("accessMsg");
     if (accessMsg && (force || accessMsg.textContent.includes("Vérification"))) {
       accessMsg.textContent = "Vérification de votre accès en cours…";
@@ -529,14 +531,10 @@ function showToast(message, kind = "info", ms = 3200) {
     if (ok) {
       setConnectedUI();
     } else {
-      // Do not show scary errors; user may simply not be connected yet.
-      // Keep default texts.
       const btn = document.getElementById("continueInternetBtn");
       if (btn) btn.remove();
     }
   }
-
-
 
   // -------- Voucher buttons + state --------
   let currentPhone = "";
@@ -544,24 +542,20 @@ function showToast(message, kind = "info", ms = 3200) {
   let purchaseLockedByVoucher = false;
   let blockingVoucherMeta = null;
 
-  
   function setVoucherUI({ phone = "", code = "", meta = null, focus = false } = {}) {
     currentPhone = phone || currentPhone || "";
     currentVoucherCode = code || currentVoucherCode || "";
 
     const has = !!currentVoucherCode;
 
-    // Update UI blocks + code
     renderStatus({
       hasActiveVoucher: has,
       voucherCode: currentVoucherCode || "—",
     });
 
-    // Enable/disable actions
     if (useBtn) useBtn.disabled = !has;
     if (copyBtn) copyBtn.disabled = !has;
 
-    // Persist “last code” meta for better resume-after-refresh
     if (has) {
       let m = meta && typeof meta === "object" ? { ...meta } : {};
       try {
@@ -578,44 +572,39 @@ function showToast(message, kind = "info", ms = 3200) {
       writeLastCode({ code: currentVoucherCode, planName: m.planName, durationMinutes: m.durationMinutes, maxDevices: m.maxDevices });
     }
 
-    // Update banner (if any)
     renderLastCodeBanner();
 
-    // Auto-focus the voucher area when a new code is produced
     if (focus && has) focusVoucherBlock();
   }
 
-// 1) Try resume from server (reliable after closing the browser/phone) when Tanaza params are present
-(async () => {
-  try {
-    if (!clientMac) return;
-    const qs = new URLSearchParams({ client_mac: clientMac });
-    if (apMac) qs.set("ap_mac", apMac);
-    const r = await fetch("/api/voucher/last?" + qs.toString(), { method: "GET" });
-    if (!r.ok) return;
-    const j = await r.json().catch(() => ({}));
-    if (j && j.found && (j.code || j.voucher_code)) {
-      const code = String(j.code || j.voucher_code || "").trim();
-      if (!code) return;
-      purchaseLockedByVoucher = true;
-      blockingVoucherMeta = j.plan || null;
-      setVoucherUI({ code, meta: j.plan || null, focus: false });
-      // Also persist locally for quick refresh
-      try {
-        sessionStorage.setItem("razafi_last_code", JSON.stringify({
-          code,
-          ts: Date.now(),
-          planName: (j.plan && (j.plan.name || j.plan.plan_name)) || null,
-          durationMinutes: (j.plan && (j.plan.duration_minutes ?? j.plan.durationMinutes)) ?? null,
-          maxDevices: (j.plan && (j.plan.max_devices ?? j.plan.maxDevices)) ?? null
-        }));
-      } catch (_) {}
-      try { renderLastCodeBanner(); } catch (_) {}
-    }
-  } catch (_) {}
-})();
-
-
+  // 1) Try resume from server (reliable after closing the browser/phone) when Tanaza params are present
+  (async () => {
+    try {
+      if (!clientMac) return;
+      const qs = new URLSearchParams({ client_mac: clientMac });
+      if (apMac) qs.set("ap_mac", apMac);
+      const r = await fetch("/api/voucher/last?" + qs.toString(), { method: "GET" });
+      if (!r.ok) return;
+      const j = await r.json().catch(() => ({}));
+      if (j && j.found && (j.code || j.voucher_code)) {
+        const code = String(j.code || j.voucher_code || "").trim();
+        if (!code) return;
+        purchaseLockedByVoucher = true;
+        blockingVoucherMeta = j.plan || null;
+        setVoucherUI({ code, meta: j.plan || null, focus: false });
+        try {
+          sessionStorage.setItem("razafi_last_code", JSON.stringify({
+            code,
+            ts: Date.now(),
+            planName: (j.plan && (j.plan.name || j.plan.plan_name)) || null,
+            durationMinutes: (j.plan && (j.plan.duration_minutes ?? j.plan.durationMinutes)) ?? null,
+            maxDevices: (j.plan && (j.plan.max_devices ?? j.plan.maxDevices)) ?? null
+          }));
+        } catch (_) {}
+        try { renderLastCodeBanner(); } catch (_) {}
+      }
+    } catch (_) {}
+  })();
 
   async function pollDernierCode(phone, { timeoutMs = 180000, intervalMs = 3000, baselineCode = null } = {}) {
     const started = Date.now();
@@ -633,7 +622,6 @@ function showToast(message, kind = "info", ms = 3200) {
             if (!baselineCode || c !== String(baselineCode)) return c;
           }
         } else {
-          // if server returns error, stop early
           let msg = "Erreur serveur";
           try { const t = await r.text(); msg = t || msg; } catch(_) {}
           throw new Error(msg);
@@ -655,14 +643,12 @@ function showToast(message, kind = "info", ms = 3200) {
     }
     const action = loginUrl;
 
-    // Mark that we are attempting to login (helps show the right UI after redirect)
     try {
       sessionStorage.setItem("razafi_login_attempt", JSON.stringify({ ts: Date.now(), continueUrl: continueUrl || "" }));
     } catch (_) {}
     const accessMsg = document.getElementById("accessMsg");
     if (accessMsg) accessMsg.textContent = "Connexion en cours…";
 
-    // Build a POST form (most captive portals expect POST)
     const form = document.createElement("form");
     form.method = "POST";
     form.action = action;
@@ -677,17 +663,13 @@ function showToast(message, kind = "info", ms = 3200) {
       form.appendChild(input);
     };
 
-    // Captive portals vary: some expect success_url, some expect dst. Send both.
     const redirect = continueUrl || location.href;
     add("success_url", redirect);
     add("dst", redirect);
 
-    // Helpful extras (ignored if not needed)
     if (clientMac) add("client_mac", clientMac);
     if (apMac) add("ap_mac", apMac);
 
-    // Credentials expected by Tanaza external splash login form
-    // username: client MAC (stable) ; password: voucher code
     add("username", clientMac || "username");
     add("password", code);
 
@@ -701,40 +683,38 @@ function showToast(message, kind = "info", ms = 3200) {
         showToast("❌ Aucun code disponible pour le moment.", "error");
         return;
       }
-      // Prevent double-click spam
       try { useBtn.setAttribute("disabled", "disabled"); } catch (_) {}
       showToast("Connexion en cours…", "info");
-(async () => {
-  // Model B: start expiry only when user clicks "Utiliser ce code"
-  try {
-    const resp = await fetch("/api/voucher/activate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        voucher_code: currentVoucherCode,
-        client_mac: clientMac || null,
-        ap_mac: apMac || null,
-      }),
-    });
 
-    if (resp && resp.status === 403) {
-      let msg = "❌ Ce code n’est plus valide.";
-      try {
-        const j = await resp.json();
-        if (j && j.message) msg = "❌ " + String(j.message);
-      } catch (_) {}
-      showToast(msg, "error", 7000);
-      try { useBtn.removeAttribute("disabled"); } catch (_) {}
-      return;
-    }
-  } catch (e) {
-    // Fail-open: do not block login if the API is down
-    console.warn("[RAZAFI] voucher activate fail-open:", e?.message || e);
-  }
+      (async () => {
+        try {
+          const resp = await fetch("/api/voucher/activate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              voucher_code: currentVoucherCode,
+              client_mac: clientMac || null,
+              ap_mac: apMac || null,
+            }),
+          });
 
-  submitToLoginUrl(currentVoucherCode);
-})();
-// If Tanaza takes time / redirect is blocked, guide the user
+          if (resp && resp.status === 403) {
+            let msg = "❌ Ce code n’est plus valide.";
+            try {
+              const j = await resp.json();
+              if (j && j.message) msg = "❌ " + String(j.message);
+            } catch (_) {}
+            showToast(msg, "error", 7000);
+            try { useBtn.removeAttribute("disabled"); } catch (_) {}
+            return;
+          }
+        } catch (e) {
+          console.warn("[RAZAFI] voucher activate fail-open:", e?.message || e);
+        }
+
+        submitToLoginUrl(currentVoucherCode);
+      })();
+
       window.setTimeout(() => {
         showToast("Activation en cours… si Internet ne s’ouvre pas, reconnectez-vous au Wi-Fi.", "info", 6500);
         try { useBtn.removeAttribute("disabled"); } catch (_) {}
@@ -752,7 +732,6 @@ function showToast(message, kind = "info", ms = 3200) {
         if (navigator.clipboard?.writeText) {
           await navigator.clipboard.writeText(currentVoucherCode);
         } else {
-          // fallback
           const ta = document.createElement("textarea");
           ta.value = currentVoucherCode;
           ta.style.position = "fixed";
@@ -769,8 +748,6 @@ function showToast(message, kind = "info", ms = 3200) {
     });
   }
 
-  // init voucher UI
-  // Try to resume from previous session (after refresh)
   const last = readLastCode();
   if (last && last.code) {
     setVoucherUI({ phone: "", code: String(last.code), meta: { planName: last.planName, durationMinutes: last.durationMinutes, maxDevices: last.maxDevices }, focus: false });
@@ -779,14 +756,14 @@ function showToast(message, kind = "info", ms = 3200) {
     renderLastCodeBanner();
   }
 
-// -------- Plans: fetch + render (DB only) --------
+  // -------- Plans: fetch + render (DB only) --------
   const plansGrid = $("plansGrid");
   const plansLoading = $("plansLoading");
+
   // -------- Pool context (AP -> Pool) --------
   let poolContext = { pool_name: null, pool_percent: null, is_full: false };
   let poolIsFull = false;
 
-  // Keep original texts so we can restore them when the WiFi is no longer saturated
   const _uiEls = {
     accessMsg: document.getElementById("accessMsg"),
     noVoucherMsg: document.getElementById("noVoucherMsg"),
@@ -801,9 +778,7 @@ function showToast(message, kind = "info", ms = 3200) {
     choosePlanHint: _uiEls.choosePlanHint ? _uiEls.choosePlanHint.textContent : null,
   };
 
-
   function ensurePoolNameLine() {
-    // Insert under the main title ("Bienvenue sur WiFi RAZAFI") without changing HTML
     const existing = document.getElementById("poolNameLine");
     if (existing) return existing;
 
@@ -827,7 +802,6 @@ function showToast(message, kind = "info", ms = 3200) {
     const div = document.createElement("div");
     div.id = "poolStatusBanner";
     div.className = "banner hidden";
-    // minimal inline styling to avoid CSS dependency changes
     div.style.margin = "12px auto";
     div.style.maxWidth = "680px";
     div.style.padding = "10px 12px";
@@ -864,7 +838,6 @@ function showToast(message, kind = "info", ms = 3200) {
       }
     }
 
-    // Update the “no voucher” texts when the WiFi is saturated (pool full)
     try {
       const showingNoVoucher = _uiEls.voucherNone && !_uiEls.voucherNone.classList.contains("hidden");
       const showingHasVoucher = _uiEls.voucherHas && !_uiEls.voucherHas.classList.contains("hidden");
@@ -876,19 +849,16 @@ function showToast(message, kind = "info", ms = 3200) {
         if (_uiEls.choosePlanHint) _uiEls.choosePlanHint.textContent =
           "Les achats sont temporairement indisponibles. Veuillez patienter ou contacter l’assistance sur place.";
       } else if (!poolIsFull) {
-        // Restore defaults (only if we had them)
         if (_uiEls.accessMsg && _uiDefaults.accessMsg) _uiEls.accessMsg.textContent = _uiDefaults.accessMsg;
         if (_uiEls.noVoucherMsg && _uiDefaults.noVoucherMsg) _uiEls.noVoucherMsg.textContent = _uiDefaults.noVoucherMsg;
         if (_uiEls.choosePlanHint && _uiDefaults.choosePlanHint) _uiEls.choosePlanHint.textContent = _uiDefaults.choosePlanHint;
       }
     } catch (_) {}
-
   }
 
   function applyPoolFullLockToPlans() {
     if (!poolIsFull) return;
 
-    // Disable purchase-related controls, but keep plans visible
     const planCards = getPlanCards();
     planCards.forEach((card) => {
       card.classList.remove("selected");
@@ -897,7 +867,6 @@ function showToast(message, kind = "info", ms = 3200) {
 
       const inputs = card.querySelectorAll("input, button");
       inputs.forEach((el) => {
-        // keep cancel buttons disabled too, to avoid confusion
         el.setAttribute("disabled", "disabled");
       });
 
@@ -938,7 +907,6 @@ function showToast(message, kind = "info", ms = 3200) {
     }
   }
 
-
   function planCardHTML(plan) {
     const name = plan.name || "Plan";
     const price = formatAr(plan.price_ar);
@@ -953,82 +921,81 @@ function showToast(message, kind = "info", ms = 3200) {
     const familyClass = isUnlimited ? "plan-unlimited" : "plan-limited";
     const variantClass = "v" + (hashToInt(plan.id) % 4);
     const badgeHtml = isUnlimited ? `<span class="plan-badge">ILLIMITÉ</span>` : "";
-    // Approved A+D: 2-line plan info (bigger)
     const line1 = `⏳ Durée: ${formatDuration(durationMinutes)} • 📊 Data: ${formatData(dataMb)}`;
     const line2 = `🔌 ${formatDevices(maxDevices)}`;
 
-return `
-  <div class="card plan-card ${familyClass} ${variantClass}" 
-       data-plan-id="${escapeHtml(plan.id)}"
-       data-plan-name="${escapeHtml(name)}"
-       data-plan-price="${escapeHtml(String(plan.price_ar ?? ""))}"
-       data-plan-duration="${escapeHtml(String(durationMinutes))}"
-       data-plan-data="${(dataMb === null || dataMb === undefined) ? "" : escapeHtml(String(dataMb))}"
-       data-plan-unlimited="${isUnlimited ? "1" : "0"}"
-       data-plan-devices="${escapeHtml(String(maxDevices))}">
-    ${badgeHtml}
-    <h4>${escapeHtml(name)}</h4>
-    <p class="price">${price}</p>
-    <p class="plan-meta">${line1}</p>
-    <p class="plan-devices">${line2}</p>
+    return `
+      <div class="card plan-card ${familyClass} ${variantClass}" 
+           data-plan-id="${escapeHtml(plan.id)}"
+           data-plan-name="${escapeHtml(name)}"
+           data-plan-price="${escapeHtml(String(plan.price_ar ?? ""))}"
+           data-plan-duration="${escapeHtml(String(durationMinutes))}"
+           data-plan-data="${(dataMb === null || dataMb === undefined) ? "" : escapeHtml(String(dataMb))}"
+           data-plan-unlimited="${isUnlimited ? "1" : "0"}"
+           data-plan-devices="${escapeHtml(String(maxDevices))}">
+        ${badgeHtml}
+        <h4>${escapeHtml(name)}</h4>
+        <p class="price">${price}</p>
+        <p class="plan-meta">${line1}</p>
+        <p class="plan-devices">${line2}</p>
 
-    <button class="choose-plan-btn">Choisir</button>
+        <button class="choose-plan-btn">Choisir</button>
 
-    <div class="plan-payment hidden" aria-live="polite">
-      <h5>Paiement</h5>
+        <div class="plan-payment hidden" aria-live="polite">
+          <h5>Paiement</h5>
 
-      <label>Numéro MVola</label>
-      <input class="mvola-input"
-        type="tel"
-        placeholder="0341234567 ou +26134xxxxxxx"
-        inputmode="numeric"
-        autocomplete="tel"
-      />
+          <label>Numéro MVola</label>
+          <input class="mvola-input"
+            type="tel"
+            placeholder="0341234567 ou +26134xxxxxxx"
+            inputmode="numeric"
+            autocomplete="tel"
+          />
 
-      <div class="phone-hint muted small"></div>
+          <div class="phone-hint muted small"></div>
 
-      <button class="primary-btn pay-btn" disabled>
-        Payer avec MVola
-      </button>
+          <button class="primary-btn pay-btn" disabled>
+            Payer avec MVola
+          </button>
 
-      <button class="secondary-btn cancel-btn">
-        Annuler
-      </button>
+          <button class="secondary-btn cancel-btn">
+            Annuler
+          </button>
 
-      <!-- Confirmation inline -->
-      <div class="pay-confirm hidden" role="dialog" aria-label="Confirmation paiement">
-        <div class="pay-confirm-inner">
-          <h6>Confirmer le paiement</h6>
-          <div class="pay-summary"></div>
-          <div class="pay-confirm-actions">
-            <button class="primary-btn confirm-btn">Confirmer</button>
-            <button class="secondary-btn confirm-cancel-btn">Annuler</button>
+          <!-- Confirmation inline -->
+          <div class="pay-confirm hidden" role="dialog" aria-label="Confirmation paiement">
+            <div class="pay-confirm-inner">
+              <h6>Confirmer le paiement</h6>
+              <div class="pay-summary"></div>
+              <div class="pay-confirm-actions">
+                <button class="primary-btn confirm-btn">Confirmer</button>
+                <button class="secondary-btn confirm-cancel-btn">Annuler</button>
+              </div>
+            </div>
           </div>
+
+          <!-- Processing overlay (local) -->
+          <div class="processing-overlay hidden" aria-live="assertive">
+            <div class="processing-card">
+              <div class="spinner" aria-hidden="true"></div>
+              <div class="processing-text">
+                <div class="processing-title">Traitement du paiement…</div>
+                <div class="processing-sub">Merci de valider la transaction sur votre mobile MVola.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="mvola-badge">
+            <span class="secure-text">🔒 Paiement sécurisé via</span>
+            <img src="/portal/assets/img/mvola.png" alt="MVola">
+          </div>
+
+          <p class="muted small">
+            💼 Paiement en espèces possible avec assistance du staff.
+          </p>
         </div>
       </div>
-
-      <!-- Processing overlay (local) -->
-      <div class="processing-overlay hidden" aria-live="assertive">
-        <div class="processing-card">
-          <div class="spinner" aria-hidden="true"></div>
-          <div class="processing-text">
-            <div class="processing-title">Traitement du paiement…</div>
-            <div class="processing-sub">Merci de valider la transaction sur votre mobile MVola.</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="mvola-badge">
-        <span class="secure-text">🔒 Paiement sécurisé via</span>
-        <img src="/portal/assets/img/mvola.png" alt="MVola">
-      </div>
-
-      <p class="muted small">
-        💼 Paiement en espèces possible avec assistance du staff.
-      </p>
-    </div>
-  </div>
-`;
+    `;
   }
 
   async function loadPlans() {
@@ -1061,9 +1028,8 @@ return `
 
       plansGrid.innerHTML = plans.map(planCardHTML).join("");
 
-      // bind behaviors after rendering
       bindPlanHandlers();
-      closeAllPayments(); // ensure closed on load
+      closeAllPayments();
       applyPoolFullLockToPlans();
     } catch (e) {
       console.error("[RAZAFI] loadPlans error", e);
@@ -1085,371 +1051,348 @@ return `
     });
   }
 
-  
-function setProcessing(card, isProcessing) {
-  card.classList.toggle("processing", !!isProcessing);
-  const overlay = card.querySelector(".processing-overlay");
-  if (overlay) overlay.classList.toggle("hidden", !isProcessing);
+  function setProcessing(card, isProcessing) {
+    card.classList.toggle("processing", !!isProcessing);
+    const overlay = card.querySelector(".processing-overlay");
+    if (overlay) overlay.classList.toggle("hidden", !isProcessing);
 
-  const inputs = card.querySelectorAll("input, button");
-  inputs.forEach((el) => {
-    if (isProcessing) el.setAttribute("disabled", "disabled");
-    else el.removeAttribute("disabled");
-  });
-}
-
-function buildPlanSummary(card) {
-  const name = card.getAttribute("data-plan-name") || "Plan";
-  const priceAr = card.getAttribute("data-plan-price") || "";
-  const durationM = card.getAttribute("data-plan-duration") || "0";
-  const dataMb = card.getAttribute("data-plan-data"); // empty if unlimited
-  const isUnlimited = card.getAttribute("data-plan-unlimited") === "1";
-  const devices = card.getAttribute("data-plan-devices") || "1";
-
-  const price = formatAr(priceAr);
-  const duration = formatDuration(Number(durationM));
-  const data = isUnlimited ? "Illimité" : formatData(Number(dataMb));
-  const dev = formatDevices(Number(devices));
-
-  return `
-    <div class="summary-row"><span>Plan</span><strong>${escapeHtml(name)}</strong></div>
-    <div class="summary-row"><span>Prix</span><strong>${escapeHtml(price)}</strong></div>
-    <div class="summary-row"><span>Durée</span><strong>${escapeHtml(duration)}</strong></div>
-    <div class="summary-row"><span>Data</span><strong>${escapeHtml(data)}</strong></div>
-    <div class="summary-row"><span>Appareils</span><strong>${escapeHtml(dev)}</strong></div>
-  `;
-}
-
-function updatePayButtonState(card) {
-  const input = card.querySelector(".mvola-input");
-  const hint = card.querySelector(".phone-hint");
-  const payBtn = card.querySelector(".pay-btn");
-  if (!input || !hint || !payBtn) return;
-
-  const raw = input.value;
-  const { cleaned, isMvola } = normalizeMvolaNumber(raw);
-
-  if (!raw.trim()) {
-    hint.textContent = "";
-    hint.classList.remove("hint-ok", "hint-error");
-    payBtn.disabled = true;
-    return;
-  }
-
-  if (isMvola) {
-    hint.textContent = "✅ Numéro MVola valide : " + cleaned;
-    hint.classList.remove("hint-error");
-    hint.classList.add("hint-ok");
-    payBtn.disabled = false;
-  } else {
-    hint.textContent = "❌ Numéro MVola invalide. Entrez 034xxxxxxx ou +26134xxxxxxx (ex : 0341234567).";
-    hint.classList.remove("hint-ok");
-    hint.classList.add("hint-error");
-    payBtn.disabled = true;
-  }
-}
-
-function bindPlanHandlers() {
-  const planCards = getPlanCards();
-
-  planCards.forEach((card) => {
-    const chooseBtn = card.querySelector(".choose-plan-btn");
-    const cancelBtn = card.querySelector(".cancel-btn");
-    const payBtn = card.querySelector(".pay-btn");
-    const input = card.querySelector(".mvola-input");
-
-    const confirmWrap = card.querySelector(".pay-confirm");
-    const confirmCancelBtn = card.querySelector(".confirm-cancel-btn");
-    const confirmBtn = card.querySelector(".confirm-btn");
-    const summaryEl = card.querySelector(".pay-summary");
-
-    // Make the whole card clickable (same as "Choisir"), except for interactive elements
-    card.addEventListener("click", function (e) {
-      // If already selected, don't re-trigger (avoids resetting payment state)
-      if (card.classList.contains("selected")) return;
-
-      // Ignore clicks on interactive controls or inside the payment area
-      const t = e.target;
-      if (!t || typeof t.closest !== "function") return;
-      if (t.closest(".plan-payment")) return;
-      if (t.closest("button, a, input, textarea, select, label")) return;
-
-      if (chooseBtn) chooseBtn.click();
+    const inputs = card.querySelectorAll("input, button");
+    inputs.forEach((el) => {
+      if (isProcessing) el.setAttribute("disabled", "disabled");
+      else el.removeAttribute("disabled");
     });
+  }
 
-    if (chooseBtn) {
-      chooseBtn.addEventListener("click", async function () {
-        if (poolIsFull) {
-          showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
-          return;
-        }
-if (purchaseLockedByVoucher && currentVoucherCode) {
-  showToast("⚠️ Achat désactivé : vous avez déjà un code en attente/actif. Utilisez d’abord le code ci-dessous.", "info", 7500);
-  try { focusVoucherBlock(); } catch (_) {}
-  return;
-}
-// Free plan pre-check (price=0): show "already used" message immediately after selecting the plan,
-// BEFORE asking for MVola number. Fail-open on errors.
-try {
-  const planPrice = Number(card.getAttribute("data-plan-price") || card.dataset.planPrice || 0);
-  const planId = (card.getAttribute("data-plan-id") || card.dataset.planId || "").toString().trim() || null;
-  if (planPrice === 0 && planId && clientMac) {
-    const qs = new URLSearchParams({ client_mac: clientMac, plan_id: planId });
-    if (apMac) qs.set("ap_mac", apMac);
-    const r = await fetch("/api/free-plan/check?" + qs.toString(), { method: "GET" });
-    if (r.status === 409) {
-      const j = await r.json().catch(() => ({}));
-      const whenIso = j.last_used_at || null;
-      let whenTxt = "";
-      if (whenIso) {
-        const d = new Date(whenIso);
-        if (!Number.isNaN(d.getTime())) whenTxt = " (" + d.toLocaleString("fr-FR") + ")";
-      }
-      showToast("Ce plan gratuit a déjà été utilisé sur cet appareil" + whenTxt + ". Merci de choisir un autre plan.", "warning", 7500);
+  function buildPlanSummary(card) {
+    const name = card.getAttribute("data-plan-name") || "Plan";
+    const priceAr = card.getAttribute("data-plan-price") || "";
+    const durationM = card.getAttribute("data-plan-duration") || "0";
+    const dataMb = card.getAttribute("data-plan-data");
+    const isUnlimited = card.getAttribute("data-plan-unlimited") === "1";
+    const devices = card.getAttribute("data-plan-devices") || "1";
+
+    const price = formatAr(priceAr);
+    const duration = formatDuration(Number(durationM));
+    const data = isUnlimited ? "Illimité" : formatData(Number(dataMb));
+    const dev = formatDevices(Number(devices));
+
+    return `
+      <div class="summary-row"><span>Plan</span><strong>${escapeHtml(name)}</strong></div>
+      <div class="summary-row"><span>Prix</span><strong>${escapeHtml(price)}</strong></div>
+      <div class="summary-row"><span>Durée</span><strong>${escapeHtml(duration)}</strong></div>
+      <div class="summary-row"><span>Data</span><strong>${escapeHtml(data)}</strong></div>
+      <div class="summary-row"><span>Appareils</span><strong>${escapeHtml(dev)}</strong></div>
+    `;
+  }
+
+  function updatePayButtonState(card) {
+    const input = card.querySelector(".mvola-input");
+    const hint = card.querySelector(".phone-hint");
+    const payBtn = card.querySelector(".pay-btn");
+    if (!input || !hint || !payBtn) return;
+
+    const raw = input.value;
+    const { cleaned, isMvola } = normalizeMvolaNumber(raw);
+
+    if (!raw.trim()) {
+      hint.textContent = "";
+      hint.classList.remove("hint-ok", "hint-error");
+      payBtn.disabled = true;
       return;
     }
+
+    if (isMvola) {
+      hint.textContent = "✅ Numéro MVola valide : " + cleaned;
+      hint.classList.remove("hint-error");
+      hint.classList.add("hint-ok");
+      payBtn.disabled = false;
+    } else {
+      hint.textContent = "❌ Numéro MVola invalide. Entrez 034xxxxxxx ou +26134xxxxxxx (ex : 0341234567).";
+      hint.classList.remove("hint-ok");
+      hint.classList.add("hint-error");
+      payBtn.disabled = true;
+    }
   }
-} catch (_) {}
 
+  function bindPlanHandlers() {
+    const planCards = getPlanCards();
 
+    planCards.forEach((card) => {
+      const chooseBtn = card.querySelector(".choose-plan-btn");
+      const cancelBtn = card.querySelector(".cancel-btn");
+      const payBtn = card.querySelector(".pay-btn");
+      const input = card.querySelector(".mvola-input");
 
+      const confirmWrap = card.querySelector(".pay-confirm");
+      const confirmCancelBtn = card.querySelector(".confirm-cancel-btn");
+      const confirmBtn = card.querySelector(".confirm-btn");
+      const summaryEl = card.querySelector(".pay-summary");
 
-        closeAllPayments();
-        card.classList.add("selected");
-        const payment = card.querySelector(".plan-payment");
-        if (payment) payment.classList.remove("hidden");
-        if (input) {
-          input.focus({ preventScroll: false });
-          updatePayButtonState(card);
-        }
+      card.addEventListener("click", function (e) {
+        if (card.classList.contains("selected")) return;
+
+        const t = e.target;
+        if (!t || typeof t.closest !== "function") return;
+        if (t.closest(".plan-payment")) return;
+        if (t.closest("button, a, input, textarea, select, label")) return;
+
+        if (chooseBtn) chooseBtn.click();
       });
-    }
 
-    if (input) {
-      input.addEventListener("input", function () {
-        if (card.classList.contains("processing")) return;
-        updatePayButtonState(card);
-      });
-    }
-
-    if (cancelBtn) {
-      cancelBtn.addEventListener("click", function () {
-        if (card.classList.contains("processing")) return; // lock A
-        card.classList.remove("selected");
-        const payment = card.querySelector(".plan-payment");
-        if (payment) payment.classList.add("hidden");
-        if (confirmWrap) confirmWrap.classList.add("hidden");
-        showToast("Choisissez un autre plan pour continuer.", "info");
-      });
-    }
-
-    if (payBtn) {
-      payBtn.addEventListener("click", function () {
-        if (poolIsFull) {
-          showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
-          return;
-        }
-        if (card.classList.contains("processing")) return;
-
-        const raw = input ? input.value.trim() : "";
-        const { isMvola } = normalizeMvolaNumber(raw);
-        if (!isMvola) {
-          showToast("❌ Numéro MVola invalide. Entrez 034xxxxxxx ou +26134xxxxxxx (ex : 0341234567).", "error");
-          updatePayButtonState(card);
-          return;
-        }
-
-        if (summaryEl) summaryEl.innerHTML = buildPlanSummary(card);
-        if (confirmWrap) {
-          confirmWrap.classList.remove("hidden");
-
-          // Auto-scroll to confirmation on desktop (and focus the confirm button)
-          try {
-            requestAnimationFrame(function () {
-              if (typeof confirmWrap.scrollIntoView === "function") {
-                confirmWrap.scrollIntoView({ behavior: "smooth", block: "center" });
-              }
-              if (confirmBtn && typeof confirmBtn.focus === "function") {
-                // Small delay so the element is visible before focusing
-                setTimeout(function () { confirmBtn.focus({ preventScroll: true }); }, 200);
-              }
-            });
-          } catch (_) {
-            // no-op: keep UX functional on very old browsers
+      if (chooseBtn) {
+        chooseBtn.addEventListener("click", async function () {
+          if (poolIsFull) {
+            showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
+            return;
           }
-        }
-      });
-    }
+          if (purchaseLockedByVoucher && currentVoucherCode) {
+            showToast("⚠️ Achat désactivé : vous avez déjà un code en attente/actif. Utilisez d’abord le code ci-dessous.", "info", 7500);
+            try { focusVoucherBlock(); } catch (_) {}
+            return;
+          }
 
-    if (confirmCancelBtn) {
-      confirmCancelBtn.addEventListener("click", function () {
-        if (card.classList.contains("processing")) return;
-        if (confirmWrap) confirmWrap.classList.add("hidden");
-      });
-    }
-
-    if (confirmBtn) {
-      confirmBtn.addEventListener("click", function () {
-        if (poolIsFull) {
-          showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
-          return;
-        }
-        if (card.classList.contains("processing")) return;
-
-        const raw = input ? input.value.trim() : "";
-        const { cleaned, isMvola } = normalizeMvolaNumber(raw);
-        if (!isMvola) {
-          showToast("❌ Numéro MVola invalide. Entrez 034xxxxxxx ou +26134xxxxxxx (ex : 0341234567).", "error");
-          if (confirmWrap) confirmWrap.classList.add("hidden");
-          updatePayButtonState(card);
-          return;
-        }
-
-        if (confirmWrap) confirmWrap.classList.add("hidden");
-        showToast("⏳ Paiement lancé. Merci de valider la transaction sur votre mobile MVola.", "info");
-        setProcessing(card, true);
-
-        // NEW: Real MVola payment + real “utiliser ce code”
-        (async () => {
+          // Free plan pre-check (price=0)
           try {
-            const planId = card.getAttribute("data-plan-id") || "";
-            const planName = card.getAttribute("data-plan-name") || "Plan";
-            const planPrice = card.getAttribute("data-plan-price") || "";
-            const planStr = `${planName} ${planPrice}`.trim();
-
-            // Build receipt draft (store ONLY after code is actually received)
-            let receiptDraft = null;
-            try {
-              const durationMinutes = Number(card.getAttribute("data-plan-duration") || "") || 0;
-              const dataStr = card.getAttribute("data-plan-data") || "";
-              const dataMb = (dataStr === "" ? null : Number(dataStr));
-              const isUnlimited = (card.getAttribute("data-plan-unlimited") || "0") === "1";
-              const maxDevices = Number(card.getAttribute("data-plan-devices") || "1") || 1;
-              receiptDraft = {
-                id: planId || null,
-                name: planName,
-                price_ar: planPrice ? Number(planPrice) : null,
-                duration_minutes: durationMinutes || null,
-                data_mb: isUnlimited ? null : (Number.isFinite(dataMb) ? dataMb : null),
-                unlimited: isUnlimited,
-                devices: maxDevices,
-                at: Date.now(),
-              };
-            } catch (_) {}
-
-            // Capture last known code before starting payment, to avoid showing an old code if payment fails
-            let baselineCode = null;
-            try {
-              const pre = await fetch(`/api/dernier-code?phone=${encodeURIComponent(cleaned)}`, { method: "GET" });
-              if (pre.ok) {
-                const pj = await pre.json().catch(() => ({}));
-                if (pj && pj.code) baselineCode = String(pj.code);
-              }
-            } catch (_) {}
-            const resp = await fetch("/api/send-payment", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                phone: cleaned,
-                plan: planStr || planId || planPrice || "plan",
-                plan_id: planId || null,
-                client_mac: clientMac || null,
-                ap_mac: apMac || null,
-              }),
-            });
-
-            const data = await resp.json().catch(() => ({}));
-
-            // If server blocks because an existing voucher is still pending/active, show it directly (anti-bypass UX).
-            if (resp && resp.status === 409 && data && (data.code || data.voucher_code) && (data.status === "pending" || data.status === "active" || data.status)) {
-              const existingCode = String(data.code || data.voucher_code || "").trim();
-              if (existingCode) {
-                setVoucherUI({
-                  phone: cleaned,
-                  code: existingCode,
-                  meta: {
-                    planName: data?.plan?.name || data?.plan?.id || "Plan",
-                    durationMinutes: data?.plan?.duration_minutes || null,
-                    durationHours: data?.plan?.duration_hours || null,
-                    dataMb: data?.plan?.data_mb || null,
-                    maxDevices: data?.plan?.max_devices || null,
-                    deliveredAt: data?.delivered_at || null,
-                    activatedAt: data?.activated_at || null,
-                    expiresAt: data?.expires_at || null,
-                    status: data?.status || null,
-                  },
-                }, { focus: true });
-                showToast("⚠️ Achat désactivé : vous avez déjà un code en attente/actif. Utilisez d’abord le code ci-dessous.", "warning", 8000);
-                try { focusVoucherBlock(); } catch (_) {}
+            const planPrice = Number(card.getAttribute("data-plan-price") || card.dataset.planPrice || 0);
+            const planId = (card.getAttribute("data-plan-id") || card.dataset.planId || "").toString().trim() || null;
+            if (planPrice === 0 && planId && clientMac) {
+              const qs = new URLSearchParams({ client_mac: clientMac, plan_id: planId });
+              if (apMac) qs.set("ap_mac", apMac);
+              const r = await fetch("/api/free-plan/check?" + qs.toString(), { method: "GET" });
+              if (r.status === 409) {
+                const j = await r.json().catch(() => ({}));
+                const whenIso = j.last_used_at || null;
+                let whenTxt = "";
+                if (whenIso) {
+                  // ✅ Changed: always Madagascar datetime
+                  whenTxt = " (" + fmtDateTimeMG(whenIso) + ")";
+                }
+                showToast("Ce plan gratuit a déjà été utilisé sur cet appareil" + whenTxt + ". Merci de choisir un autre plan.", "warning", 7500);
                 return;
               }
             }
+          } catch (_) {}
 
-            if (!resp.ok || !data.ok) {
-              const msg = data?.message || data?.error || "Erreur lors du paiement";
-              throw new Error(msg);
-            }
-
-
-            
-            // FREE FLOW: if server generated a voucher immediately (0 Ar plan), show it now and skip MVola polling
-            if (data && data.free && data.code) {
-              const freeCode = String(data.code || "").trim();
-              if (freeCode) {
-                try {
-                  if (receiptDraft) {
-                    receiptDraft.code = freeCode;
-                    receiptDraft.ts = Date.now();
-                    sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
-                  }
-                } catch (_) {}
-                setVoucherUI({ phone: cleaned, code: freeCode, meta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.max_devices } : null, focus: true });
-                showToast("🎉 Code gratuit généré ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
-                return;
-              }
-            }
-
-showToast("✅ Paiement initié. Validez la transaction sur votre mobile MVola…", "success", 5200);
-            showToast("⏳ En attente du code…", "info", 5200);
-
-            const code = await pollDernierCode(cleaned, { timeoutMs: 180000, intervalMs: 3000, baselineCode });
-            if (!code) {
-              showToast("⏰ Pas de code reçu pour le moment. Si vous avez validé MVola, réessayez dans 1-2 minutes.", "info", 6500);
-              setProcessing(card, false);
-              updatePayButtonState(card);
-              return;
-            }
-
-            
-            // Store receipt ONLY now (payment succeeded + code received)
-            try {
-              if (receiptDraft) sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
-            } catch (_) {}
-
-            setVoucherUI({ phone: cleaned, code, meta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.max_devices } : null, focus: true });
-            showToast("🎉 Code reçu ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
-          } catch (e) {
-            console.error("[RAZAFI] payment error", e);
-            showToast("❌ " + friendlyErrorMessage(e), "error", 6500);
-          } finally {
-            setProcessing(card, false);
+          closeAllPayments();
+          card.classList.add("selected");
+          const payment = card.querySelector(".plan-payment");
+          if (payment) payment.classList.remove("hidden");
+          if (input) {
+            input.focus({ preventScroll: false });
             updatePayButtonState(card);
           }
-        })();
-});
-    }
+        });
+      }
 
-    // initial state
-    if (input) updatePayButtonState(card);
-  });
-}
+      if (input) {
+        input.addEventListener("input", function () {
+          if (card.classList.contains("processing")) return;
+          updatePayButtonState(card);
+        });
+      }
 
-// -------- Theme toggle --------
+      if (cancelBtn) {
+        cancelBtn.addEventListener("click", function () {
+          if (card.classList.contains("processing")) return;
+          card.classList.remove("selected");
+          const payment = card.querySelector(".plan-payment");
+          if (payment) payment.classList.add("hidden");
+          if (confirmWrap) confirmWrap.classList.add("hidden");
+          showToast("Choisissez un autre plan pour continuer.", "info");
+        });
+      }
 
+      if (payBtn) {
+        payBtn.addEventListener("click", function () {
+          if (poolIsFull) {
+            showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
+            return;
+          }
+          if (card.classList.contains("processing")) return;
+
+          const raw = input ? input.value.trim() : "";
+          const { isMvola } = normalizeMvolaNumber(raw);
+          if (!isMvola) {
+            showToast("❌ Numéro MVola invalide. Entrez 034xxxxxxx ou +26134xxxxxxx (ex : 0341234567).", "error");
+            updatePayButtonState(card);
+            return;
+          }
+
+          if (summaryEl) summaryEl.innerHTML = buildPlanSummary(card);
+          if (confirmWrap) {
+            confirmWrap.classList.remove("hidden");
+            try {
+              requestAnimationFrame(function () {
+                if (typeof confirmWrap.scrollIntoView === "function") {
+                  confirmWrap.scrollIntoView({ behavior: "smooth", block: "center" });
+                }
+                if (confirmBtn && typeof confirmBtn.focus === "function") {
+                  setTimeout(function () { confirmBtn.focus({ preventScroll: true }); }, 200);
+                }
+              });
+            } catch (_) {}
+          }
+        });
+      }
+
+      if (confirmCancelBtn) {
+        confirmCancelBtn.addEventListener("click", function () {
+          if (card.classList.contains("processing")) return;
+          if (confirmWrap) confirmWrap.classList.add("hidden");
+        });
+      }
+
+      if (confirmBtn) {
+        confirmBtn.addEventListener("click", function () {
+          if (poolIsFull) {
+            showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
+            return;
+          }
+          if (card.classList.contains("processing")) return;
+
+          const raw = input ? input.value.trim() : "";
+          const { cleaned, isMvola } = normalizeMvolaNumber(raw);
+          if (!isMvola) {
+            showToast("❌ Numéro MVola invalide. Entrez 034xxxxxxx ou +26134xxxxxxx (ex : 0341234567).", "error");
+            if (confirmWrap) confirmWrap.classList.add("hidden");
+            updatePayButtonState(card);
+            return;
+          }
+
+          if (confirmWrap) confirmWrap.classList.add("hidden");
+          showToast("⏳ Paiement lancé. Merci de valider la transaction sur votre mobile MVola.", "info");
+          setProcessing(card, true);
+
+          (async () => {
+            try {
+              const planId = card.getAttribute("data-plan-id") || "";
+              const planName = card.getAttribute("data-plan-name") || "Plan";
+              const planPrice = card.getAttribute("data-plan-price") || "";
+              const planStr = `${planName} ${planPrice}`.trim();
+
+              let receiptDraft = null;
+              try {
+                const durationMinutes = Number(card.getAttribute("data-plan-duration") || "") || 0;
+                const dataStr = card.getAttribute("data-plan-data") || "";
+                const dataMb = (dataStr === "" ? null : Number(dataStr));
+                const isUnlimited = (card.getAttribute("data-plan-unlimited") || "0") === "1";
+                const maxDevices = Number(card.getAttribute("data-plan-devices") || "1") || 1;
+                receiptDraft = {
+                  id: planId || null,
+                  name: planName,
+                  price_ar: planPrice ? Number(planPrice) : null,
+                  duration_minutes: durationMinutes || null,
+                  data_mb: isUnlimited ? null : (Number.isFinite(dataMb) ? dataMb : null),
+                  unlimited: isUnlimited,
+                  devices: maxDevices,
+                  at: Date.now(),
+                };
+              } catch (_) {}
+
+              let baselineCode = null;
+              try {
+                const pre = await fetch(`/api/dernier-code?phone=${encodeURIComponent(cleaned)}`, { method: "GET" });
+                if (pre.ok) {
+                  const pj = await pre.json().catch(() => ({}));
+                  if (pj && pj.code) baselineCode = String(pj.code);
+                }
+              } catch (_) {}
+
+              const resp = await fetch("/api/send-payment", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  phone: cleaned,
+                  plan: planStr || planId || planPrice || "plan",
+                  plan_id: planId || null,
+                  client_mac: clientMac || null,
+                  ap_mac: apMac || null,
+                }),
+              });
+
+              const data = await resp.json().catch(() => ({}));
+
+              if (resp && resp.status === 409 && data && (data.code || data.voucher_code) && (data.status === "pending" || data.status === "active" || data.status)) {
+                const existingCode = String(data.code || data.voucher_code || "").trim();
+                if (existingCode) {
+                  setVoucherUI({
+                    phone: cleaned,
+                    code: existingCode,
+                    meta: {
+                      planName: data?.plan?.name || data?.plan?.id || "Plan",
+                      durationMinutes: data?.plan?.duration_minutes || null,
+                      durationHours: data?.plan?.duration_hours || null,
+                      dataMb: data?.plan?.data_mb || null,
+                      maxDevices: data?.plan?.max_devices || null,
+                      deliveredAt: data?.delivered_at || null,
+                      activatedAt: data?.activated_at || null,
+                      expiresAt: data?.expires_at || null,
+                      status: data?.status || null,
+                    },
+                  }, { focus: true });
+                  showToast("⚠️ Achat désactivé : vous avez déjà un code en attente/actif. Utilisez d’abord le code ci-dessous.", "warning", 8000);
+                  try { focusVoucherBlock(); } catch (_) {}
+                  return;
+                }
+              }
+
+              if (!resp.ok || !data.ok) {
+                const msg = data?.message || data?.error || "Erreur lors du paiement";
+                throw new Error(msg);
+              }
+
+              if (data && data.free && data.code) {
+                const freeCode = String(data.code || "").trim();
+                if (freeCode) {
+                  try {
+                    if (receiptDraft) {
+                      receiptDraft.code = freeCode;
+                      receiptDraft.ts = Date.now();
+                      sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
+                    }
+                  } catch (_) {}
+                  setVoucherUI({ phone: cleaned, code: freeCode, meta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.max_devices } : null, focus: true });
+                  showToast("🎉 Code gratuit généré ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
+                  return;
+                }
+              }
+
+              showToast("✅ Paiement initié. Validez la transaction sur votre mobile MVola…", "success", 5200);
+              showToast("⏳ En attente du code…", "info", 5200);
+
+              const code = await pollDernierCode(cleaned, { timeoutMs: 180000, intervalMs: 3000, baselineCode });
+              if (!code) {
+                showToast("⏰ Pas de code reçu pour le moment. Si vous avez validé MVola, réessayez dans 1-2 minutes.", "info", 6500);
+                setProcessing(card, false);
+                updatePayButtonState(card);
+                return;
+              }
+
+              try {
+                if (receiptDraft) sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
+              } catch (_) {}
+
+              setVoucherUI({ phone: cleaned, code, meta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.max_devices } : null, focus: true });
+              showToast("🎉 Code reçu ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
+            } catch (e) {
+              console.error("[RAZAFI] payment error", e);
+              showToast("❌ " + friendlyErrorMessage(e), "error", 6500);
+            } finally {
+              setProcessing(card, false);
+              updatePayButtonState(card);
+            }
+          })();
+        });
+      }
+
+      if (input) updatePayButtonState(card);
+    });
+  }
+
+  // -------- Theme toggle --------
   function updateThemeIcon() {
     if (!themeToggle) return;
     const isDark = document.body.classList.contains("theme-dark");
-    // Light mode shows moon, dark mode shows sun
     themeToggle.textContent = isDark ? "☀️" : "🌙";
   }
 
@@ -1473,13 +1416,10 @@ showToast("✅ Paiement initié. Validez la transaction sur votre mobile MVola�
     else applyTheme("light", false);
   }
 
-
   // -------- Init --------
   renderStatus({ hasActiveVoucher: false, voucherCode: "" });
   loadPlans();
 
-  // Best-effort: if user already has an active Tanaza session, show "Internet activé"
-  // If we just attempted login, force the check once after load.
   try {
     const raw = sessionStorage.getItem("razafi_login_attempt");
     if (raw) {
@@ -1489,12 +1429,10 @@ showToast("✅ Paiement initié. Validez la transaction sur votre mobile MVola�
       updateConnectedUI({ force: false });
     }
   } catch (_) {
-    // If sessionStorage is blocked, still do a lightweight check.
     updateConnectedUI({ force: false });
   }
 
-  // Load pool context (pool name + saturation) for this AP
   fetchPortalContext();
 
-console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac });
+  console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac });
 })();
