@@ -70,6 +70,7 @@ if (currentSystem !== SYSTEMS.portal && currentSystem !== SYSTEMS.mikrotik) curr
 
 let mikrotikPoolsCache = null; // [{id,name}]
 let editingId = null;
+let editingSystem = null;
 let lastPlansById = {};
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -98,6 +99,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   const f_price_ar = document.getElementById("f_price_ar");
     const f_duration_value = document.getElementById("f_duration_value");
   const f_duration_unit = document.getElementById("f_duration_unit");
+  // Fix: ensure duration input remains readable (some layouts shrink it too much)
+  try {
+    if (f_duration_value) {
+      f_duration_value.style.width = "140px";
+      f_duration_value.style.minWidth = "140px";
+      f_duration_value.style.flex = "0 0 140px";
+      f_duration_value.setAttribute("inputmode", "numeric");
+    }
+  } catch (_) {}
   const poolRow = document.getElementById("poolRow");
   const poolHint = document.getElementById("poolHint");
   const f_pool_id = document.getElementById("f_pool_id");
@@ -111,6 +121,7 @@ const f_unlimited_data = document.getElementById("f_unlimited_data");
   function openModal(mode, plan) {
     formError.textContent = "";
     modal.style.display = "block";
+    editingSystem = (mode === "new") ? currentSystem : ((plan && plan.system) ? plan.system : currentSystem);
     if (mode === "new") {
       editingId = null;
       modalTitle.textContent = "New plan";
@@ -401,6 +412,25 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
           is_active: false,
         };
 
+// System/pool handling
+const effectiveSystem = editingSystem || currentSystem || SYSTEMS.portal;
+if (!editingId) {
+  // On create: we persist the system
+  payload.system = effectiveSystem;
+}
+if (effectiveSystem === SYSTEMS.mikrotik) {
+  const pid = String((f_pool_id && f_pool_id.value) || "").trim();
+  if (!pid) {
+    formError.textContent = "pool_id_required";
+    return;
+  }
+  payload.pool_id = pid;
+} else {
+  // portal: ensure no pool is set
+  if (!editingId) payload.pool_id = null;
+}
+
+
         await fetchJSON(`/api/admin/plans/${deleteId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -531,6 +561,16 @@ let data_mb = null;
       return;
     }
 try {
+
+// Safety: system cannot change after creation
+if (editingId) {
+  const existing = lastPlansById[editingId];
+  const existingSystem = existing && existing.system ? existing.system : null;
+  if (existingSystem && (editingSystem || currentSystem) !== existingSystem) {
+    throw new Error("system_immutable");
+  }
+}
+
       if (!editingId) {
         await fetchJSON("/api/admin/plans", {
           method: "POST",
@@ -562,4 +602,14 @@ try {
       errEl.textContent = e.message;
     }
   });
+
+// Pool field is only for MikroTik plans
+const isMk = (editingSystem === SYSTEMS.mikrotik);
+if (poolRow) poolRow.style.display = isMk ? "flex" : "none";
+if (poolHint) poolHint.style.display = isMk ? "block" : "none";
+if (f_pool_id) {
+  if (!isMk) {
+    f_pool_id.value = "";
+  }
+}
 });
