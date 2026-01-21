@@ -72,21 +72,54 @@ document.addEventListener("DOMContentLoaded", async () => {
   const activeEl = document.getElementById("activeFilter");
   const visibleEl = document.getElementById("visibleFilter");
   const deletedEl = document.getElementById("deletedFilter");
+
+  const sysPortalBtn = document.getElementById("sysPortalBtn");
+  const sysMikrotikBtn = document.getElementById("sysMikrotikBtn");
+  const poolFilter = document.getElementById("poolFilter");
+
+  // Modal pool select (mikrotik)
+  const poolRow = document.getElementById("poolRow");
+  const f_pool_id = document.getElementById("f_pool_id");
+
+  // Active system view for this page
+  let activeSystem = "portal";
+  let cachedMikrotikPools = [];
+
+  function setActiveSystem(sys) {
+    activeSystem = (sys === "mikrotik") ? "mikrotik" : "portal";
+    if (sysPortalBtn) sysPortalBtn.className = "filter-btn" + (activeSystem === "portal" ? " primary" : "");
+    if (sysMikrotikBtn) sysMikrotikBtn.className = "filter-btn" + (activeSystem === "mikrotik" ? " primary" : "");
+
+    if (poolFilter) {
+      poolFilter.style.display = (activeSystem === "mikrotik") ? "" : "none";
+      if (activeSystem !== "mikrotik") poolFilter.value = "";
+    }
+
+    if (poolRow) poolRow.style.display = (activeSystem === "mikrotik") ? "" : "none";
+    if (f_pool_id) f_pool_id.required = (activeSystem === "mikrotik");
+  }
+
+  async function loadMikrotikPoolsIntoSelects() {
+    try {
+      const resp = await fetchJSON("/api/admin/pools?limit=200&offset=0&system=mikrotik");
+      cachedMikrotikPools = resp.pools || resp.data || [];
+    } catch {
+      cachedMikrotikPools = [];
+    }
+
+    const filterOpts = ['<option value="">Pool: all</option>'].concat(
+      cachedMikrotikPools.map(p => `<option value="${esc(p.id)}">${esc(p.name || p.id)}</option>`)
+    ).join("");
+    if (poolFilter) poolFilter.innerHTML = filterOpts;
+
+    const modalOpts = ['<option value="">Select pool…</option>'].concat(
+      cachedMikrotikPools.map(p => `<option value="${esc(p.id)}">${esc(p.name || p.id)}</option>`)
+    ).join("");
+    if (f_pool_id) f_pool_id.innerHTML = modalOpts;
+  }
   const refreshBtn = document.getElementById("refreshBtn");
   const newBtn = document.getElementById("newBtn");
   const logoutBtn = document.getElementById("logoutBtn");
-
-  // system toggle (portal vs mikrotik)
-  const sysPortalBtn = document.getElementById("sysPortalBtn");
-  const sysMikrotikBtn = document.getElementById("sysMikrotikBtn");
-  let activeSystem = "portal";
-
-  function setActiveSystem(sys) {
-    activeSystem = (String(sys).toLowerCase() === "mikrotik") ? "mikrotik" : "portal";
-    if (sysPortalBtn) sysPortalBtn.className = "filter-btn" + (activeSystem === "portal" ? " primary" : "");
-    if (sysMikrotikBtn) sysMikrotikBtn.className = "filter-btn" + (activeSystem === "mikrotik" ? " primary" : "");
-  }
-
 
   // modal refs
   const modal = document.getElementById("modal");
@@ -109,7 +142,17 @@ const f_unlimited_data = document.getElementById("f_unlimited_data");
   function openModal(mode, plan) {
     formError.textContent = "";
     modal.style.display = "block";
+
+    // Mikrotik-only pool selector
+    if (poolRow) poolRow.style.display = (activeSystem === "mikrotik") ? "" : "none";
+    if (f_pool_id) f_pool_id.required = (activeSystem === "mikrotik");
     if (mode === "new") {
+      if (activeSystem === "mikrotik" && f_pool_id) {
+        // Default to currently selected pool filter (if any)
+        f_pool_id.value = (poolFilter?.value || "");
+      } else if (f_pool_id) {
+        f_pool_id.value = "";
+      }
       editingId = null;
       modalTitle.textContent = "New plan";
       f_name.value = "";
@@ -125,6 +168,7 @@ const f_unlimited_data = document.getElementById("f_unlimited_data");
       f_is_active.checked = true;
     } else {
       editingId = plan.id;
+      if (f_pool_id) f_pool_id.value = (plan.pool_id || "");
       modalTitle.textContent = "Edit plan";
       f_name.value = plan.name ?? "";
       f_price_ar.value = plan.price_ar ?? 0;
@@ -184,6 +228,11 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
     rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="9">Loading...</td></tr>`;
 
     const params = new URLSearchParams();
+    params.set("system", activeSystem);
+    if (activeSystem === "mikrotik") {
+      const pf = (poolFilter?.value || "").trim();
+      if (pf) params.set("pool_id", pf);
+    }
     const q = qEl.value.trim();
     if (q) params.set("q", q);
     // If admin wants to include deleted plans, we must fetch without server-side active/visible filtering
@@ -195,7 +244,6 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
       params.set("active", activeEl.value);
       params.set("visible", visibleEl.value);
     }
-    params.set("system", activeSystem);
     params.set("limit", "200");
     params.set("offset", "0");
 
@@ -268,14 +316,21 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
 
   // init
   if (!(await guardSession())) return;
-  // init system
-  setActiveSystem("portal");
-  sysPortalBtn?.addEventListener("click", () => { setActiveSystem("portal"); loadPlans().catch(e => errEl.textContent = e.message); });
-  sysMikrotikBtn?.addEventListener("click", () => { setActiveSystem("mikrotik"); loadPlans().catch(e => errEl.textContent = e.message); });
-
   await loadPlans();
 
   refreshBtn.addEventListener("click", () => loadPlans().catch(e => errEl.textContent = e.message));
+
+  // System toggle (Portal / Mikrotik)
+  sysPortalBtn?.addEventListener("click", async () => {
+    setActiveSystem("portal");
+    await loadPlans();
+  });
+  sysMikrotikBtn?.addEventListener("click", async () => {
+    await loadMikrotikPoolsIntoSelects();
+    setActiveSystem("mikrotik");
+    await loadPlans();
+  });
+  poolFilter?.addEventListener("change", () => loadPlans().catch(e => { errEl.textContent = e.message; }));
   newBtn.addEventListener("click", () => openModal("new"));
 
   // Unlimited data toggle
@@ -308,7 +363,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
     try {
       if (editId) {
         // quick fetch list and find the plan locally by reloading (simple and safe)
-        const data = await fetchJSON(`/api/admin/plans?limit=200&offset=0&system=${encodeURIComponent(activeSystem)}`);
+        const data = await fetchJSON("/api/admin/plans?limit=200&offset=0");
         const plan = (data.plans || []).find(x => x.id === editId);
         if (!plan) throw new Error("Plan not found");
         openModal("edit", plan);
@@ -323,7 +378,6 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
         if (!plan) throw new Error("Plan not found");
         const payload = {
           name: plan.name,
-          system: activeSystem,
           price_ar: plan.price_ar,
           duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
           data_mb: plan.data_mb ?? null,
@@ -396,6 +450,8 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
     if (unit === "minutes") duration_minutes = Math.round(durationValue);
     else if (unit === "hours") duration_minutes = Math.round(durationValue * 60);
     else if (unit === "days") duration_minutes = Math.round(durationValue * 24 * 60);
+
+    const duration_seconds = Math.round(duration_minutes * 60);
     else duration_minutes = Math.round(durationValue);
 
     // Legacy compatibility for existing server (old version expects duration_hours)
@@ -406,11 +462,22 @@ let data_mb = null;
       data_mb = Math.round(gb * 1024);
     }
 
+    const system = activeSystem;
+    const pool_id = (system === "mikrotik") ? String(f_pool_id?.value || "").trim() : null;
+
+    if (system === "mikrotik" && !pool_id) {
+      formError.textContent = "Pool is required for Mikrotik plans";
+      return;
+    }
+
     const payload = {
       name: f_name.value.trim(),
       price_ar: Number(f_price_ar.value),
       duration_hours,
       duration_minutes,
+      duration_seconds,
+      system,
+      pool_id,
       data_mb,
       max_devices: Number(f_max_devices.value),
       sort_order: Number(f_sort_order.value || 0),

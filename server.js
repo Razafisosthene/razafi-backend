@@ -1673,6 +1673,11 @@ app.get("/api/admin/plans", requireAdmin, async (req, res) => {
     if (visible === "1") query = query.eq("is_visible", true);
     if (visible === "0") query = query.eq("is_visible", false);
 
+    if (system) query = query.eq("system", system);
+
+    const pool_id = req.query.pool_id === undefined || req.query.pool_id === null ? "" : String(req.query.pool_id).trim();
+    if (pool_id) query = query.eq("pool_id", pool_id);
+
     query = query
       .order("sort_order", { ascending: true })
       .order("updated_at", { ascending: false })
@@ -2314,6 +2319,13 @@ app.post("/api/admin/plans", requireAdmin, async (req, res) => {
     const price_ar = toInt(b.price_ar);
     const duration_hours = toInt(b.duration_hours);
     const duration_minutes = toInt(b.duration_minutes);
+    const duration_seconds_in = toInt(b.duration_seconds);
+
+    const systemRaw = b.system;
+    const system = systemRaw === undefined || systemRaw === null || String(systemRaw).trim() === "" ? "portal" : String(systemRaw).trim();
+    if (!["portal", "mikrotik"].includes(system)) return res.status(400).json({ error: "system_invalid" });
+
+    const pool_id = (b.pool_id === undefined || b.pool_id === null) ? null : String(b.pool_id).trim();
     let data_mb = null;
     if (b.data_mb === null) {
       data_mb = null;
@@ -2324,11 +2336,6 @@ app.post("/api/admin/plans", requireAdmin, async (req, res) => {
     const is_active = toBool(b.is_active);
     const is_visible = toBool(b.is_visible);
     const sort_order = toInt(b.sort_order);
-
-    // system separation (portal vs mikrotik)
-    const systemRaw = (typeof b.system === "string" ? b.system.trim().toLowerCase() : "portal");
-    const system = (systemRaw === "mikrotik") ? "mikrotik" : "portal";
-    const pool_id = (typeof b.pool_id === "string" && b.pool_id.trim()) ? b.pool_id.trim() : null;
 
     // validations (simple, strict)
     if (!isNonEmptyString(name)) return res.status(400).json({ error: "name required" });
@@ -2345,17 +2352,35 @@ if (duration_minutes !== null) {
 if (data_mb !== null && data_mb < 0) return res.status(400).json({ error: "data_mb invalid" });
     if (max_devices === null || max_devices <= 0) return res.status(400).json({ error: "max_devices invalid" });
 
-    const payload = {
+    
+    // Duration normalization
+    let durMin = duration_minutes;
+    if ((durMin === null || durMin === undefined) && duration_hours !== null && duration_hours !== undefined) {
+      durMin = duration_hours * 60;
+    }
+    if ((durMin === null || durMin === undefined) && duration_seconds_in !== null && duration_seconds_in !== undefined) {
+      durMin = Math.ceil(duration_seconds_in / 60);
+    }
+    if (durMin === null || durMin === undefined || durMin <= 0) return res.status(400).json({ error: "duration invalid" });
+    const duration_seconds = Math.max(60, Math.round(durMin * 60));
+    const duration_hours_norm = Math.max(1, Math.ceil(durMin / 60));
+
+    // Mikrotik rules
+    if (system === "mikrotik" && !pool_id) return res.status(400).json({ error: "pool_id_required" });
+    const pool_id_norm = (system === "mikrotik") ? pool_id : null;
+const payload = {
       name,
       price_ar,
-      duration_hours,
+      duration_hours: duration_hours_norm,
+      duration_minutes: durMin,
+      duration_seconds,
+      system,
+      pool_id: pool_id_norm,
       data_mb,
       max_devices,
       is_active: is_active ?? true,
       is_visible: is_visible ?? true,
       sort_order: sort_order ?? 0,
-      system,
-      pool_id,
     };
 
     const { data, error } = await supabase
@@ -2385,6 +2410,14 @@ app.patch("/api/admin/plans/:id", requireAdmin, async (req, res) => {
 
     const patch = {};
 
+    if (b.system !== undefined) {
+      const v = String(b.system || "").trim();
+      if (!v || !["portal","mikrotik"].includes(v)) return res.status(400).json({ error: "system_invalid" });
+      patch.system = v;
+      // If switching back to portal, drop pool_id
+      if (v === "portal") patch.pool_id = null;
+    }
+
     if (b.name !== undefined) {
       const name = typeof b.name === "string" ? b.name.trim() : "";
       if (!isNonEmptyString(name)) return res.status(400).json({ error: "name invalid" });
@@ -2400,6 +2433,7 @@ app.patch("/api/admin/plans/:id", requireAdmin, async (req, res) => {
   if (v === null || v <= 0) return res.status(400).json({ error: "duration_hours invalid" });
   patch.duration_hours = v;
   patch.duration_minutes = v * 60;
+  patch.duration_seconds = Math.max(60, Math.round(v * 60 * 60));
 }
 
 if (b.duration_minutes !== undefined) {
@@ -2407,6 +2441,23 @@ if (b.duration_minutes !== undefined) {
   if (v === null || v <= 0) return res.status(400).json({ error: "duration_minutes invalid" });
   patch.duration_minutes = v;
   patch.duration_hours = Math.ceil(v / 60);
+  patch.duration_seconds = Math.max(60, Math.round(v * 60));
+}
+
+    if (b.pool_id !== undefined) {
+      const v = b.pool_id === null ? null : String(b.pool_id || "").trim();
+      if (v !== null && v.length < 5) return res.status(400).json({ error: "pool_id invalid" });
+      patch.pool_id = v;
+    }
+
+
+if (b.duration_seconds !== undefined) {
+  const v = toInt(b.duration_seconds);
+  if (v === null || v <= 0) return res.status(400).json({ error: "duration_seconds invalid" });
+  patch.duration_seconds = v;
+  const mins = Math.ceil(v / 60);
+  patch.duration_minutes = mins;
+  patch.duration_hours = Math.ceil(mins / 60);
 }
 
 if (b.data_mb !== undefined) {
@@ -2439,13 +2490,15 @@ if (b.data_mb !== undefined) {
       patch.sort_order = v;
     }
 
-    if (b.system !== undefined) {
-      const v = (typeof b.system === "string" ? b.system.trim().toLowerCase() : "");
-      patch.system = (v === "mikrotik") ? "mikrotik" : "portal";
-    }
-    if (b.pool_id !== undefined) {
-      // allow null/empty to mean "all pools"
-      patch.pool_id = (typeof b.pool_id === "string" && b.pool_id.trim()) ? b.pool_id.trim() : null;
+
+    // Enforce Mikrotik: pool_id required
+    if (patch.system !== undefined || patch.pool_id !== undefined) {
+      const { data: cur, error: curErr } = await supabase.from("plans").select("id,system,pool_id").eq("id", id).single();
+      if (curErr || !cur) return res.status(404).json({ error: "plan not found" });
+      const nextSystem = (patch.system ?? cur.system ?? "portal");
+      const nextPool = (patch.pool_id ?? cur.pool_id ?? null);
+      if (nextSystem === "mikrotik" && !nextPool) return res.status(400).json({ error: "pool_id_required" });
+      if (nextSystem !== "mikrotik" && patch.pool_id !== undefined) patch.pool_id = null;
     }
 
     if (Object.keys(patch).length === 0) {
