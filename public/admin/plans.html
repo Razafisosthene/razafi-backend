@@ -30,13 +30,7 @@
 
       <div class="filters sticky-bar">
         <input id="q" class="filter-search" placeholder="Search by name…" />
-        
-        <button id="sysPortalBtn" type="button" class="filter-btn primary" title="Plans Portal (Tanaza grant)">Portal</button>
-        <button id="sysMikrotikBtn" type="button" class="filter-btn" title="Plans MikroTik (RADIUS grant)">Mikrotik</button>
-        <select id="poolFilter" class="filter-select" style="display:none; min-width:220px;">
-          <option value="">Pool: all</option>
-        </select>
-<select id="activeFilter" class="filter-select">
+        <select id="activeFilter" class="filter-select">
           <option value="all">Active: all</option>
           <option value="1">Active only</option>
           <option value="0">Inactive only</option>
@@ -51,6 +45,10 @@
           <option value="show">Deleted: show</option>
           <option value="only">Deleted: only</option>
         </select>
+        <div class="filter-select" style="display:flex; gap:6px; padding:0; border:none; background:transparent;">
+          <button id="systemPortalBtn" type="button" class="filter-btn primary" style="width:auto; padding:8px 12px;">Portal</button>
+          <button id="systemMikrotikBtn" type="button" class="filter-btn" style="width:auto; padding:8px 12px;">MikroTik</button>
+        </div>
         <button id="refreshBtn" type="button" class="filter-btn">Refresh</button>
         <button id="newBtn" type="button" class="filter-btn primary">+ New plan</button>
       </div>
@@ -84,15 +82,7 @@
             <input id="f_name" placeholder="Name" required />
             <input id="f_price_ar" placeholder="Price (Ar)" required />
 
-            
-
-            <!-- Mikrotik only -->
-            <div id="poolRow" class="form-row" style="display:none;">
-              <select id="f_pool_id" style="flex:1;" required>
-                <option value="">Select pool…</option>
-              </select>
-            </div>
-<div class="form-row">
+            <div class="form-row">
               <input id="f_duration_value" placeholder="Duration" required style="flex:1;" />
               <select id="f_duration_unit" style="width:auto;">
                 <option value="minutes">minutes</option>
