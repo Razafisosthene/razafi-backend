@@ -75,62 +75,66 @@
         </table>
       </div>
 
-      <!-- Simple modal -->
-      <div id="modal" class="modal" style="display:none;">
-        <div class="card modal-card">
-          <h2 id="modalTitle" style="margin-top:0;">New plan</h2>
-          <form id="form">
-            <input id="f_name" placeholder="Name" required />
-            <input id="f_price_ar" placeholder="Price (Ar)" required />
+    <!-- Simple modal -->
+<div id="modal" class="modal" style="display:none;">
+  <div class="card modal-card">
+    <h2 id="modalTitle" style="margin-top:0;">New plan</h2>
+    <form id="form">
+      <input id="f_name" placeholder="Name" required />
+      <input id="f_price_ar" placeholder="Price (Ar)" required />
 
-            <div class="form-row">
-              <input id="f_duration_value" placeholder="Duration" required style="flex:1;" />
-              <select id="f_duration_unit" style="width:auto;">
-                <option value="minutes">minutes</option>
-                <option value="hours">hours</option>
-                <option value="days">days</option>
-              </select>
-            
-            <div class="form-row" id="poolRow" style="display:none;">
-              <select id="f_pool_id" style="flex:1;">
-                <option value="">Select MikroTik pool…</option>
-              </select>
-            </div>
-            <div id="poolHint" class="subtitle" style="display:none; margin:4px 0 10px 0; opacity:.8;">
-              Required for MikroTik plans (enforcement is done by the pool/router).
-            </div>
-</div>
+      <div class="form-row" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <input
+          id="f_duration_value"
+          placeholder="Duration"
+          required
+          style="width:140px; min-width:140px; flex:0 0 140px;"
+        />
 
-            <label class="check-row">
-              <input id="f_unlimited_data" type="checkbox" />
-              <span>Unlimited data</span>
-            </label>
-
-            <input id="f_data_gb" placeholder="Data (GB)" required />
-            <input id="f_max_devices" placeholder="Max devices" required />
-            <input id="f_sort_order" placeholder="Sort order" />
-
-            <label class="check-row">
-              <input id="f_is_visible" type="checkbox" checked />
-              <span>Visible</span>
-            </label>
-            <label class="check-row">
-              <input id="f_is_active" type="checkbox" checked />
-              <span>Active</span>
-            </label>
-
-            <div id="formError" class="error" style="margin:8px 0;"></div>
-
-            <div style="display:flex; gap:10px; justify-content:flex-end;">
-              <button id="cancelBtn" type="button" style="width:auto;">Cancel</button>
-              <button id="saveBtn" type="submit" style="width:auto;">Save</button>
-            </div>
-          </form>
-        </div>
+        <select id="f_duration_unit" style="width:auto;">
+          <option value="minutes">minutes</option>
+          <option value="hours">hours</option>
+          <option value="days">days</option>
+        </select>
       </div>
 
-    </div>
+      <div class="form-row" id="poolRow" style="display:none;">
+        <select id="f_pool_id" style="flex:1;">
+          <option value="">Select MikroTik pool…</option>
+        </select>
+      </div>
+      <div id="poolHint" class="subtitle" style="display:none; margin:4px 0 10px 0; opacity:.8;">
+        Required for MikroTik plans (enforcement is done by the pool/router).
+      </div>
+
+      <label class="check-row">
+        <input id="f_unlimited_data" type="checkbox" />
+        <span>Unlimited data</span>
+      </label>
+
+      <input id="f_data_gb" placeholder="Data (GB)" required />
+      <input id="f_max_devices" placeholder="Max devices" required />
+      <input id="f_sort_order" placeholder="Sort order" />
+
+      <label class="check-row">
+        <input id="f_is_visible" type="checkbox" checked />
+        <span>Visible</span>
+      </label>
+      <label class="check-row">
+        <input id="f_is_active" type="checkbox" checked />
+        <span>Active</span>
+      </label>
+
+      <div id="formError" class="error" style="margin:8px 0;"></div>
+
+      <div style="display:flex; gap:10px; justify-content:flex-end;">
+        <button id="cancelBtn" type="button" style="width:auto;">Cancel</button>
+        <button id="saveBtn" type="submit" style="width:auto;">Save</button>
+      </div>
+    </form>
   </div>
+</div>
+
 
   <!-- NEW shared drawer -->
   <script src="/admin/nav.js"></script>
