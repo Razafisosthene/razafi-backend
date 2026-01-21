@@ -1332,7 +1332,7 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
     // 2) Pool info
     const { data: pool, error: poolErr } = await supabase
       .from("internet_pools")
-      .select("id,name,capacity_max")
+      .select("id,name,capacity_max,system,mikrotik_ip,radius_nas_id")
       .eq("id", pool_id)
       .maybeSingle();
 
@@ -1652,6 +1652,12 @@ app.get("/api/admin/plans", requireAdmin, async (req, res) => {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
     const q = String(req.query.q || "").trim();
+
+    const systemRaw = req.query.system;
+    const system = systemRaw === undefined || systemRaw === null ? "" : String(systemRaw).trim();
+    if (system && !["portal", "mikrotik"].includes(system)) {
+      return res.status(400).json({ error: "system_invalid" });
+    }
     const active = String(req.query.active || "all"); // 1|0|all
     const visible = String(req.query.visible || "all"); // 1|0|all
     const limit = Math.min(Math.max(toInt(req.query.limit) ?? 50, 1), 200);
@@ -1781,7 +1787,7 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
     if (poolIds.length) {
       const { data: poolRows, error: poolErr } = await supabase
         .from("internet_pools")
-        .select("id,name,capacity_max")
+        .select("id,name,capacity_max,system,mikrotik_ip,radius_nas_id")
         .in("id", poolIds);
 
       if (poolErr) {
@@ -2065,12 +2071,13 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
 
     let query = supabase
       .from("internet_pools")
-      .select("id,name,capacity_max", { count: "exact" });
+      .select("id,name,capacity_max,system,mikrotik_ip,radius_nas_id", { count: "exact" });
 
     // safest filter: by id only (schema-stable)
     if (q) {
       query = query.ilike("id", `%${q}%`);
     }
+    if (system) query = query.eq("system", system);
 
     query = query.order("id", { ascending: true }).range(offset, offset + limit - 1);
 
@@ -2096,12 +2103,27 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
     const capRaw = req.body?.capacity_max;
     const capacity_max = capRaw === undefined || capRaw === null || capRaw === "" ? null : Number(capRaw);
 
+    const systemRaw = req.body?.system;
+    const system = systemRaw === undefined || systemRaw === null || String(systemRaw).trim() === "" ? "portal" : String(systemRaw).trim();
+    if (!["portal", "mikrotik"].includes(system)) return res.status(400).json({ error: "system_invalid" });
+
+    const mikrotik_ip_raw = req.body?.mikrotik_ip;
+    const mikrotik_ip = mikrotik_ip_raw === undefined || mikrotik_ip_raw === null ? null : String(mikrotik_ip_raw).trim();
+
+    const radius_nas_id_raw = req.body?.radius_nas_id;
+    const radius_nas_id = radius_nas_id_raw === undefined || radius_nas_id_raw === null ? null : String(radius_nas_id_raw).trim();
+
     if (!name) return res.status(400).json({ error: "name_required" });
+    if (system === "mikrotik" && (!mikrotik_ip || mikrotik_ip.length < 3)) {
+      return res.status(400).json({ error: "mikrotik_ip_required" });
+    }
     if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
       return res.status(400).json({ error: "capacity_max_invalid" });
     }
 
-    const payload = { name };
+    const payload = { name, system };
+    if (mikrotik_ip) payload.mikrotik_ip = mikrotik_ip;
+    if (radius_nas_id) payload.radius_nas_id = radius_nas_id;
     if (capacity_max !== null) payload.capacity_max = Math.round(capacity_max);
 
     const { data, error } = await supabase
@@ -2138,6 +2160,31 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       }
       updates.capacity_max = capacity_max === null ? null : Math.round(capacity_max);
     }
+    const hasMikrotikIp = Object.prototype.hasOwnProperty.call(req.body || {}, "mikrotik_ip");
+    if (hasMikrotikIp) {
+      const v = req.body.mikrotik_ip === null || req.body.mikrotik_ip === "" ? null : String(req.body.mikrotik_ip).trim();
+      updates.mikrotik_ip = v && v.length ? v : null;
+    }
+
+    const hasRadiusNasId = Object.prototype.hasOwnProperty.call(req.body || {}, "radius_nas_id");
+    if (hasRadiusNasId) {
+      const v = req.body.radius_nas_id === null || req.body.radius_nas_id === "" ? null : String(req.body.radius_nas_id).trim();
+      updates.radius_nas_id = v && v.length ? v : null;
+    }
+
+    // Safety: don't allow clearing mikrotik_ip on an existing mikrotik pool
+    if (hasMikrotikIp && updates.mikrotik_ip === null) {
+      const { data: curPool, error: curErr } = await supabase
+        .from("internet_pools")
+        .select("id,system")
+        .eq("id", id)
+        .single();
+      if (curErr) return res.status(400).json({ error: curErr.message, details: curErr });
+      if (curPool?.system === "mikrotik") {
+        return res.status(400).json({ error: "mikrotik_ip_required" });
+      }
+    }
+
 
     if (!Object.keys(updates).length) return res.status(400).json({ error: "no_updates" });
 
@@ -2182,7 +2229,7 @@ app.get("/api/admin/pools/:id/aps", requireAdmin, async (req, res) => {
     // Pool row
     const { data: pool, error: poolErr } = await supabase
       .from("internet_pools")
-      .select("id,name,capacity_max")
+      .select("id,name,capacity_max,system,mikrotik_ip,radius_nas_id")
       .eq("id", id)
       .single();
 
@@ -2244,7 +2291,7 @@ app.get("/api/admin/pools/:id/aps", requireAdmin, async (req, res) => {
 
     return res.json({
       ok: true,
-      pool: { id: pool.id, name: pool.name, capacity_max: pool.capacity_max ?? null },
+      pool: { id: pool.id, name: pool.name, capacity_max: pool.capacity_max ?? null, system: pool.system ?? null, mikrotik_ip: pool.mikrotik_ip ?? null, radius_nas_id: pool.radius_nas_id ?? null },
       pool_active_clients,
       aps: rows,
     });

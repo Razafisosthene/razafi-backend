@@ -80,12 +80,52 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const newPoolName = $id("newName", "newPoolName");
   const newPoolCap = $id("newCap", "newPoolCap");
+  const newSystemEl = $id("newSystem");
+  const newMikrotikIpEl = $id("newMikrotikIp");
+  const newRadiusNasIdEl = $id("newRadiusNasId");
   const createPoolBtn = $id("createPoolBtn");
+
+  const sysPortalBtn = $id("sysPortalBtn");
+  const sysMikrotikBtn = $id("sysMikrotikBtn");
 
   let pools = [];
   let allAps = [];
 
+  // Active system view for this page (portal vs mikrotik)
+  let activeSystem = "portal";
+
+  function setActiveSystem(sys) {
+    const next = (sys === "mikrotik") ? "mikrotik" : "portal";
+    activeSystem = next;
+
+    // Toggle button styles (primary = active)
+    if (sysPortalBtn) sysPortalBtn.className = "filter-btn" + (activeSystem === "portal" ? " primary" : "");
+    if (sysMikrotikBtn) sysMikrotikBtn.className = "filter-btn" + (activeSystem === "mikrotik" ? " primary" : "");
+
+    // Keep create form in sync with current system
+    if (newSystemEl) newSystemEl.value = activeSystem;
+    updateCreateFieldsVisibility();
+  }
+
+  function updateCreateFieldsVisibility() {
+    const sys = (newSystemEl?.value || activeSystem);
+    const isM = sys === "mikrotik";
+    if (newMikrotikIpEl) newMikrotikIpEl.style.display = isM ? "" : "none";
+    if (newRadiusNasIdEl) newRadiusNasIdEl.style.display = isM ? "" : "none";
+    if (newMikrotikIpEl) newMikrotikIpEl.required = isM;
+  }
+
+
   if (!(await guardSession(meEl))) return;
+
+  // System toggle
+  sysPortalBtn?.addEventListener("click", () => { setActiveSystem("portal"); loadPools().catch(err => showMsg(msgEl, err.message, true)); });
+  sysMikrotikBtn?.addEventListener("click", () => { setActiveSystem("mikrotik"); loadPools().catch(err => showMsg(msgEl, err.message, true)); });
+  newSystemEl?.addEventListener("change", () => { updateCreateFieldsVisibility(); });
+
+  // Init UI state
+  setActiveSystem("portal");
+
 
   async function loadAllAps() {
     try {
@@ -126,6 +166,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (q) params.set("q", q);
     params.set("limit", "200");
     params.set("offset", "0");
+    params.set("system", activeSystem);
 
     const data = await fetchJSON(`/api/admin/pools?${params.toString()}`);
     pools = data.pools || data.data || data || [];
@@ -139,15 +180,28 @@ document.addEventListener("DOMContentLoaded", async () => {
       const pid = String(p.id || "");
       const name = p.name || "";
       const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "" : String(p.capacity_max);
+      const system = String(p.system || "portal").toLowerCase() === "mikrotik" ? "mikrotik" : "portal";
+      const isMikrotik = system === "mikrotik";
+      const mikrotikIp = p.mikrotik_ip || p.mikrotikIp || "";
+      const radiusNasId = p.radius_nas_id || p.radiusNasId || "";
       const liveClients = liveByPool[pid] || 0;
       const pp = pct(liveClients, p.capacity_max);
 
       return `
         <tr style="border-top:1px solid rgba(0,0,0,.06);" data-poolrow="${esc(pid)}">
           <td style="padding:10px;">
-            <div style="font-weight:700;">
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-weight:700;">
               <input data-name="${esc(pid)}" value="${esc(name)}" style="width:260px; max-width:100%; margin-bottom:0;" />
+              <span style="font-size:12px; padding:2px 10px; border-radius:999px; background:${system === "mikrotik" ? "rgba(13,110,253,.12)" : "rgba(0,0,0,.06)"}; color:${system === "mikrotik" ? "#0d6efd" : "rgba(0,0,0,.75)"};">
+                ${system}
+              </span>
             </div>
+            ${isMikrotik ? `
+              <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+                <input data-mtik-ip="${esc(pid)}" value="${esc(mikrotikIp)}" placeholder="MikroTik IP (ex: 192.168.88.1)" style="width:220px; margin-bottom:0;" />
+                <input data-nas-id="${esc(pid)}" value="${esc(radiusNasId)}" placeholder="NAS ID (ex: razafi-pool-1)" style="width:200px; margin-bottom:0;" />
+              </div>
+            ` : ``}
             <div style="opacity:.7; font-size:12px; margin-top:6px;">ID: ${esc(pid)}</div>
           </td>
           <td style="padding:10px;">
@@ -179,12 +233,25 @@ document.addEventListener("DOMContentLoaded", async () => {
         const capStr = String(capInput?.value || "").trim();
         const capacity_max = capStr === "" ? null : Number(capStr);
 
+        // Optional Mikrotik fields (only present for system=mikrotik rows)
+        const mtikIpInput = rowsEl.querySelector(`input[data-mtik-ip="${CSS.escape(pid)}"]`);
+        const nasInput = rowsEl.querySelector(`input[data-nas-id="${CSS.escape(pid)}"]`);
+        const mikrotik_ip = (mtikIpInput?.value || "").trim();
+        const radius_nas_id = (nasInput?.value || "").trim();
+
+        const payload = { name, capacity_max };
+        if (mtikIpInput || nasInput) {
+          // If these inputs exist, pool is mikrotik; allow saving IP/NAS.
+          payload.mikrotik_ip = mikrotik_ip || null;
+          payload.radius_nas_id = radius_nas_id || null;
+        }
+
         try {
           btn.disabled = true;
           await fetchJSON(`/api/admin/pools/${encodeURIComponent(pid)}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, capacity_max }),
+            body: JSON.stringify(payload),
           });
           await loadPools();
           showMsg(msgEl, "Saved ✅", false);
@@ -240,7 +307,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const pool = data.pool || {};
       const aps = data.aps || [];
 
-      const poolOptions = (pools || []).map(p => `<option value="${esc(p.id)}">${esc(p.name || p.id)}</option>`).join("");
+      const poolOptions = (pools || []).filter(p => (String(p.system || "portal").toLowerCase() === activeSystem)).map(p => `<option value="${esc(p.id)}">${esc(p.name || p.id)}</option>`).join("");
 
       cell.innerHTML = `
         <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:flex-start;">
@@ -393,6 +460,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     const name = (newPoolName?.value || "").trim();
     const capStr = String(newPoolCap?.value || "").trim();
     const capacity_max = capStr === "" ? null : Number(capStr);
+    const system = (newSystemEl?.value || activeSystem) === "mikrotik" ? "mikrotik" : "portal";
+    const mikrotik_ip = (newMikrotikIpEl?.value || "").trim();
+    const radius_nas_id = (newRadiusNasIdEl?.value || "").trim();
 
     if (!name) {
       showMsg(msgEl, "Pool name is required", true);
@@ -402,6 +472,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       showMsg(msgEl, "Invalid pool capacity", true);
       return;
     }
+    if (system === "mikrotik" && !mikrotik_ip) {
+      showMsg(msgEl, "MikroTik IP is required for system=mikrotik", true);
+      return;
+    }
 
     try {
       createPoolBtn.disabled = true;
@@ -409,10 +483,12 @@ document.addEventListener("DOMContentLoaded", async () => {
       await fetchJSON("/api/admin/pools", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, capacity_max }),
+        body: JSON.stringify({ name, capacity_max, system, mikrotik_ip: system === "mikrotik" ? mikrotik_ip : null, radius_nas_id: system === "mikrotik" ? (radius_nas_id || null) : null }),
       });
       if (newPoolName) newPoolName.value = "";
       if (newPoolCap) newPoolCap.value = "";
+      if (newMikrotikIpEl) newMikrotikIpEl.value = "";
+      if (newRadiusNasIdEl) newRadiusNasIdEl.value = "";
       showMsg(msgEl, "Created ✅", false);
       await loadPools();
     } catch (e) {

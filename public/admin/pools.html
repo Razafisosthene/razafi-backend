@@ -39,6 +39,13 @@
             <div class="subtitle" style="text-align:left; margin:6px 0 0;">Capacity = max concurrent clients for this Starlink</div>
           </div>
           <div class="form-row" style="flex:1 1 520px; justify-content:flex-end;">
+            <select id="newSystem" style="max-width:160px; margin-bottom:0;">
+              <option value="portal">Portal</option>
+              <option value="mikrotik">Mikrotik</option>
+            </select>
+            <input id="newMikrotikIp" placeholder="MikroTik IP (ex: 192.168.88.1)" style="max-width:260px; margin-bottom:0; display:none;" />
+            <input id="newRadiusNasId" placeholder="NAS ID (ex: razafi-pool-1)" style="max-width:240px; margin-bottom:0; display:none;" />
+
             <input id="newName" placeholder="Pool name" style="max-width:320px; margin-bottom:0;" />
             <input id="newCap" type="number" min="0" placeholder="capacity_max" style="max-width:220px; margin-bottom:0;" />
             <button type="button" id="createPoolBtn" style="width:auto;">Create</button>
@@ -49,6 +56,8 @@
       <!-- Filters -->
       <div class="sticky-bar">
         <div class="filters">
+          <button type="button" id="sysPortalBtn" class="filter-btn primary" style="width:auto;">Portal</button>
+          <button type="button" id="sysMikrotikBtn" class="filter-btn" style="width:auto;">Mikrotik</button>
           <input id="q" class="filter-search" placeholder="Search pool name / id..." />
           <button type="button" id="refresh" class="filter-btn primary" style="width:auto;">Refresh</button>
         </div>
