@@ -2069,6 +2069,9 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 200;
     const offset = Number.isFinite(offsetRaw) ? Math.max(offsetRaw, 0) : 0;
 
+    const systemRaw = String(req.query.system || "").trim().toLowerCase();
+    const system = (systemRaw === "mikrotik" || systemRaw === "portal") ? systemRaw : "";
+
     let query = supabase
       .from("internet_pools")
       .select("id,name,capacity_max,system,mikrotik_ip,radius_nas_id", { count: "exact" });
