@@ -10,6 +10,14 @@ async function fetchJSON(url, opts = {}) {
   return data;
 }
 
+function $id(...ids) {
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (el) return el;
+  }
+  return null;
+}
+
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
     "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
@@ -66,22 +74,22 @@ let editingId = null;
 let lastPlansById = {};
 
 document.addEventListener("DOMContentLoaded", async () => {
-  const meEl = document.getElementById("me");
-  const errEl = document.getElementById("error");
-  const rowsEl = document.getElementById("rows");
+  const meEl = $id("me");
+  const errEl = $id("error");
+  const rowsEl = $id("rows");
 
-  const qEl = document.getElementById("q");
-  const activeEl = document.getElementById("activeFilter");
-  const visibleEl = document.getElementById("visibleFilter");
-  const deletedEl = document.getElementById("deletedFilter");
+  const qEl = $id("q");
+  const activeEl = $id("activeFilter");
+  const visibleEl = $id("visibleFilter");
+  const deletedEl = $id("deletedFilter");
 
-  const sysPortalBtn = document.getElementById("sysPortalBtn");
-  const sysMikrotikBtn = document.getElementById("sysMikrotikBtn");
-  const poolFilter = document.getElementById("poolFilter");
+  const sysPortalBtn = $id("sysPortalBtn");
+  const sysMikrotikBtn = $id("sysMikrotikBtn");
+  const poolFilter = $id("poolFilter");
 
   // Modal pool select (mikrotik)
-  const poolRow = document.getElementById("poolRow");
-  const f_pool_id = document.getElementById("f_pool_id");
+  const poolRow = $id("poolRow");
+  const f_pool_id = $id("f_pool_id");
 
   // Active system view for this page
   let activeSystem = "portal";
@@ -120,7 +128,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (f_pool_id) f_pool_id.innerHTML = modalOpts;
   }
   const refreshBtn = document.getElementById("refreshBtn");
-  const newBtn = document.getElementById("newBtn");
+  const newBtn = $id("newBtn","newPlanBtn");
   const logoutBtn = document.getElementById("logoutBtn");
 
   // modal refs
@@ -320,7 +328,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
   if (!(await guardSession())) return;
   await loadPlans();
 
-  refreshBtn.addEventListener("click", () => loadPlans().catch(e => errEl.textContent = e.message));
+  refreshBtn?.addEventListener("click", () => loadPlans().catch(e => errEl.textContent = e.message));
 
   // System toggle (Portal / Mikrotik)
   sysPortalBtn?.addEventListener("click", async () => {
@@ -333,7 +341,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
     await loadPlans();
   });
   poolFilter?.addEventListener("change", () => loadPlans().catch(e => { errEl.textContent = e.message; }));
-  newBtn.addEventListener("click", () => openModal("new"));
+  newBtn?.addEventListener("click", () => openModal("new"));
 
   // Unlimited data toggle
   f_unlimited_data.addEventListener("change", () => {
@@ -349,7 +357,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
   cancelBtn.addEventListener("click", closeModal);
   modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
 
-  qEl.addEventListener("keydown", (e) => {
+  qEl?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") loadPlans().catch(e => errEl.textContent = e.message);
   });
 
@@ -534,7 +542,7 @@ try {
     }
   });
 
-  logoutBtn.addEventListener("click", async () => {
+  logoutBtn?.addEventListener("click", async () => {
     try {
       await fetchJSON("/api/admin/logout", { method: "POST" });
       window.location.href = "/admin/login.html";
