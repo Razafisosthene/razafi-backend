@@ -60,17 +60,17 @@ function formatDataDisplay(plan) {
 
 
 
+
+// -------------------------------
+// System (portal vs mikrotik)
+// -------------------------------
+const SYSTEMS = { portal: "portal", mikrotik: "mikrotik" };
+let currentSystem = (localStorage.getItem("plans_system") || SYSTEMS.portal);
+if (currentSystem !== SYSTEMS.portal && currentSystem !== SYSTEMS.mikrotik) currentSystem = SYSTEMS.portal;
+
+let mikrotikPoolsCache = null; // [{id,name}]
 let editingId = null;
 let lastPlansById = {};
-
-// System filter (Portal / MikroTik)
-let currentSystem = "portal"; // default (safe for existing installs)
-
-function normalizeSystem(v) {
-  const s = String(v || "").trim().toLowerCase();
-  return (s === "mikrotik" || s === "portal") ? s : "portal";
-}
-
 
 document.addEventListener("DOMContentLoaded", async () => {
   const meEl = document.getElementById("me");
@@ -81,35 +81,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   const activeEl = document.getElementById("activeFilter");
   const visibleEl = document.getElementById("visibleFilter");
   const deletedEl = document.getElementById("deletedFilter");
+  const systemPortalBtn = document.getElementById("systemPortalBtn");
+  const systemMikrotikBtn = document.getElementById("systemMikrotikBtn");
   const refreshBtn = document.getElementById("refreshBtn");
   const newBtn = document.getElementById("newBtn");
   const logoutBtn = document.getElementById("logoutBtn");
-
-  const systemPortalBtn = document.getElementById("systemPortalBtn");
-  const systemMikrotikBtn = document.getElementById("systemMikrotikBtn");
-
-  // Persist the last chosen system in this browser (admin convenience)
-  try {
-    const saved = window.localStorage.getItem("razafi_admin_plans_system");
-    if (saved) currentSystem = normalizeSystem(saved);
-  } catch (_) {}
-
-  function applySystemUI() {
-    if (systemPortalBtn) systemPortalBtn.classList.toggle("primary", currentSystem === "portal");
-    if (systemMikrotikBtn) systemMikrotikBtn.classList.toggle("primary", currentSystem === "mikrotik");
-  }
-
-  function setSystem(next) {
-    currentSystem = normalizeSystem(next);
-    try { window.localStorage.setItem("razafi_admin_plans_system", currentSystem); } catch (_) {}
-    applySystemUI();
-    loadPlans().catch(e => errEl.textContent = e.message);
-  }
-
-  if (systemPortalBtn) systemPortalBtn.addEventListener("click", () => setSystem("portal"));
-  if (systemMikrotikBtn) systemMikrotikBtn.addEventListener("click", () => setSystem("mikrotik"));
-
-  applySystemUI();
 
   // modal refs
   const modal = document.getElementById("modal");
@@ -122,6 +98,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   const f_price_ar = document.getElementById("f_price_ar");
     const f_duration_value = document.getElementById("f_duration_value");
   const f_duration_unit = document.getElementById("f_duration_unit");
+  const poolRow = document.getElementById("poolRow");
+  const poolHint = document.getElementById("poolHint");
+  const f_pool_id = document.getElementById("f_pool_id");
 const f_unlimited_data = document.getElementById("f_unlimited_data");
   const f_data_gb = document.getElementById("f_data_gb");
   const f_max_devices = document.getElementById("f_max_devices");
@@ -184,6 +163,26 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
       f_is_visible.checked = !!plan.is_visible;
       f_is_active.checked = !!plan.is_active;
     }
+
+    // System-specific UI
+    const isMikrotik = (currentSystem === SYSTEMS.mikrotik);
+    if (poolRow) poolRow.style.display = isMikrotik ? "flex" : "none";
+    if (poolHint) poolHint.style.display = isMikrotik ? "block" : "none";
+    if (f_pool_id) {
+      f_pool_id.required = isMikrotik;
+      if (!isMikrotik) {
+        f_pool_id.value = "";
+      }
+    }
+    if (isMikrotik) {
+      // Ensure pools are loaded before user saves
+      loadMikrotikPools().catch(() => {});
+      // Set existing plan pool_id (edit)
+      if (mode !== "new" && plan && plan.pool_id && f_pool_id) {
+        f_pool_id.value = String(plan.pool_id);
+      }
+    }
+
   }
 
   function closeModal() {
@@ -202,6 +201,36 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
     }
   }
 
+
+  function applySystemUI() {
+    // Visual state (use .primary if available)
+    const setBtn = (btn, on) => {
+      if (!btn) return;
+      btn.classList.toggle("primary", !!on);
+    };
+    setBtn(systemPortalBtn, currentSystem === SYSTEMS.portal);
+    setBtn(systemMikrotikBtn, currentSystem === SYSTEMS.mikrotik);
+  }
+
+  async function loadMikrotikPools(force = false) {
+    if (!f_pool_id) return [];
+    if (!force && Array.isArray(mikrotikPoolsCache)) return mikrotikPoolsCache;
+
+    const data = await fetchJSON("/api/admin/pools?system=mikrotik&limit=500&offset=0");
+    const items = data.items || data.pools || [];
+    mikrotikPoolsCache = (items || [])
+      .filter(p => p && p.id)
+      .map(p => ({ id: p.id, name: p.name || p.id }))
+      .sort((a,b) => String(a.name).localeCompare(String(b.name)));
+
+    // populate select
+    const current = f_pool_id.value;
+    f_pool_id.innerHTML = '<option value="">Select MikroTik pool…</option>' +
+      mikrotikPoolsCache.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
+
+    if (current) f_pool_id.value = current;
+    return mikrotikPoolsCache;
+  }
   async function loadPlans() {
     errEl.textContent = "";
     rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="9">Loading...</td></tr>`;
@@ -291,10 +320,31 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
 
   // init
   if (!(await guardSession())) return;
+  applySystemUI();
+  if (currentSystem === SYSTEMS.mikrotik) { try { await loadMikrotikPools(true); } catch (_) {} }
   await loadPlans();
 
-  if (refreshBtn) refreshBtn.addEventListener("click", () => loadPlans().catch(e => errEl.textContent = e.message));
-  if (newBtn) newBtn.addEventListener("click", () => openModal("new"));
+  refreshBtn.addEventListener("click", () => loadPlans().catch(e => errEl.textContent = e.message));
+
+  newBtn.addEventListener("click", () => openModal("new"));
+
+  // System toggle
+  const setSystem = async (sys) => {
+    if (sys !== SYSTEMS.portal && sys !== SYSTEMS.mikrotik) return;
+    currentSystem = sys;
+    localStorage.setItem("plans_system", currentSystem);
+    applySystemUI();
+    if (currentSystem === SYSTEMS.mikrotik) {
+      try { await loadMikrotikPools(true); } catch (_) {}
+    }
+    applySystemUI();
+  if (currentSystem === SYSTEMS.mikrotik) { try { await loadMikrotikPools(true); } catch (_) {} }
+  await loadPlans();
+  };
+
+  if (systemPortalBtn) systemPortalBtn.addEventListener("click", () => setSystem(SYSTEMS.portal).catch(e => errEl.textContent = e.message));
+  if (systemMikrotikBtn) systemMikrotikBtn.addEventListener("click", () => setSystem(SYSTEMS.mikrotik).catch(e => errEl.textContent = e.message));
+
 
   // Unlimited data toggle
   f_unlimited_data.addEventListener("change", () => {
@@ -340,13 +390,13 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
 
         if (!plan) throw new Error("Plan not found");
         const payload = {
+      system: currentSystem,
           name: plan.name,
           price_ar: plan.price_ar,
           duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
           data_mb: plan.data_mb ?? null,
           max_devices: plan.max_devices ?? 1,
           sort_order: plan.sort_order ?? 0,
-          system: plan.system ?? currentSystem,
           is_visible: false,
           is_active: false,
         };
@@ -356,7 +406,9 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        await loadPlans();
+        applySystemUI();
+  if (currentSystem === SYSTEMS.mikrotik) { try { await loadMikrotikPools(true); } catch (_) {} }
+  await loadPlans();
       }
 
       if (restoreId) {
@@ -367,13 +419,13 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
 
         if (!plan) throw new Error("Plan not found");
         const payload = {
+      system: currentSystem,
           name: plan.name,
           price_ar: plan.price_ar,
           duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
           data_mb: plan.data_mb ?? null,
           max_devices: plan.max_devices ?? 1,
           sort_order: plan.sort_order ?? 0,
-          system: plan.system ?? currentSystem,
           is_visible: true,
           is_active: false, // safer: restore as visible but inactive
         };
@@ -383,7 +435,9 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        await loadPlans();
+        applySystemUI();
+  if (currentSystem === SYSTEMS.mikrotik) { try { await loadMikrotikPools(true); } catch (_) {} }
+  await loadPlans();
       }
 
       if (toggleId) {
@@ -392,7 +446,9 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({}),
         });
-        await loadPlans();
+        applySystemUI();
+  if (currentSystem === SYSTEMS.mikrotik) { try { await loadMikrotikPools(true); } catch (_) {} }
+  await loadPlans();
       }
     } catch (err) {
       errEl.textContent = err.message;
@@ -426,6 +482,7 @@ let data_mb = null;
     }
 
     const payload = {
+      system: currentSystem,
       name: f_name.value.trim(),
       price_ar: Number(f_price_ar.value),
       duration_hours,
@@ -433,9 +490,9 @@ let data_mb = null;
       data_mb,
       max_devices: Number(f_max_devices.value),
       sort_order: Number(f_sort_order.value || 0),
+      pool_id: (currentSystem === SYSTEMS.mikrotik) ? (f_pool_id ? String(f_pool_id.value || "") : "") : null,
       is_visible: f_is_visible.checked,
       is_active: f_is_active.checked,
-      system: currentSystem,
     };
 
     
@@ -451,6 +508,16 @@ let data_mb = null;
     if (!Number.isFinite(payload.duration_minutes) || payload.duration_minutes <= 0) {
       formError.textContent = "Total duration must be > 0";
       return;
+    }
+
+    if (payload.system === SYSTEMS.mikrotik) {
+      const pid = String(payload.pool_id || "").trim();
+      if (!pid) {
+        formError.textContent = "Please select a MikroTik pool";
+        return;
+      }
+    } else {
+      payload.pool_id = null;
     }
     if (!f_unlimited_data.checked) {
       const gbVal = Number(f_data_gb.value);
@@ -479,13 +546,15 @@ try {
       }
 
       closeModal();
-      await loadPlans();
+      applySystemUI();
+  if (currentSystem === SYSTEMS.mikrotik) { try { await loadMikrotikPools(true); } catch (_) {} }
+  await loadPlans();
     } catch (err) {
       formError.textContent = err.message;
     }
   });
 
-  if (logoutBtn) logoutBtn.addEventListener("click", async () => {
+  logoutBtn.addEventListener("click", async () => {
     try {
       await fetchJSON("/api/admin/logout", { method: "POST" });
       window.location.href = "/admin/login.html";
