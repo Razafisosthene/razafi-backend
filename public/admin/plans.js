@@ -1,3 +1,5 @@
+try {
+console.log("[plans.js] loaded", new Date().toISOString());
 async function fetchJSON(url, opts = {}) {
   const res = await fetch(url, { credentials: "include", ...opts });
   const text = await res.text();
@@ -541,3 +543,5 @@ try {
     }
   });
 });
+
+} catch (e) { console.error("plans.js fatal", e); alert("plans.js error: "+(e?.message||e)); }
