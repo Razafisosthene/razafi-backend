@@ -76,6 +76,18 @@ document.addEventListener("DOMContentLoaded", async () => {
   const newBtn = document.getElementById("newBtn");
   const logoutBtn = document.getElementById("logoutBtn");
 
+  // system toggle (portal vs mikrotik)
+  const sysPortalBtn = document.getElementById("sysPortalBtn");
+  const sysMikrotikBtn = document.getElementById("sysMikrotikBtn");
+  let activeSystem = "portal";
+
+  function setActiveSystem(sys) {
+    activeSystem = (String(sys).toLowerCase() === "mikrotik") ? "mikrotik" : "portal";
+    if (sysPortalBtn) sysPortalBtn.className = "filter-btn" + (activeSystem === "portal" ? " primary" : "");
+    if (sysMikrotikBtn) sysMikrotikBtn.className = "filter-btn" + (activeSystem === "mikrotik" ? " primary" : "");
+  }
+
+
   // modal refs
   const modal = document.getElementById("modal");
   const modalTitle = document.getElementById("modalTitle");
@@ -183,6 +195,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
       params.set("active", activeEl.value);
       params.set("visible", visibleEl.value);
     }
+    params.set("system", activeSystem);
     params.set("limit", "200");
     params.set("offset", "0");
 
@@ -255,6 +268,11 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
 
   // init
   if (!(await guardSession())) return;
+  // init system
+  setActiveSystem("portal");
+  sysPortalBtn?.addEventListener("click", () => { setActiveSystem("portal"); loadPlans().catch(e => errEl.textContent = e.message); });
+  sysMikrotikBtn?.addEventListener("click", () => { setActiveSystem("mikrotik"); loadPlans().catch(e => errEl.textContent = e.message); });
+
   await loadPlans();
 
   refreshBtn.addEventListener("click", () => loadPlans().catch(e => errEl.textContent = e.message));
@@ -290,7 +308,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
     try {
       if (editId) {
         // quick fetch list and find the plan locally by reloading (simple and safe)
-        const data = await fetchJSON("/api/admin/plans?limit=200&offset=0");
+        const data = await fetchJSON(`/api/admin/plans?limit=200&offset=0&system=${encodeURIComponent(activeSystem)}`);
         const plan = (data.plans || []).find(x => x.id === editId);
         if (!plan) throw new Error("Plan not found");
         openModal("edit", plan);
@@ -305,6 +323,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
         if (!plan) throw new Error("Plan not found");
         const payload = {
           name: plan.name,
+          system: activeSystem,
           price_ar: plan.price_ar,
           duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
           data_mb: plan.data_mb ?? null,

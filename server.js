@@ -2325,6 +2325,11 @@ app.post("/api/admin/plans", requireAdmin, async (req, res) => {
     const is_visible = toBool(b.is_visible);
     const sort_order = toInt(b.sort_order);
 
+    // system separation (portal vs mikrotik)
+    const systemRaw = (typeof b.system === "string" ? b.system.trim().toLowerCase() : "portal");
+    const system = (systemRaw === "mikrotik") ? "mikrotik" : "portal";
+    const pool_id = (typeof b.pool_id === "string" && b.pool_id.trim()) ? b.pool_id.trim() : null;
+
     // validations (simple, strict)
     if (!isNonEmptyString(name)) return res.status(400).json({ error: "name required" });
     if (price_ar === null || price_ar < 0) return res.status(400).json({ error: "price_ar invalid" });
@@ -2349,6 +2354,8 @@ if (data_mb !== null && data_mb < 0) return res.status(400).json({ error: "data_
       is_active: is_active ?? true,
       is_visible: is_visible ?? true,
       sort_order: sort_order ?? 0,
+      system,
+      pool_id,
     };
 
     const { data, error } = await supabase
@@ -2430,6 +2437,15 @@ if (b.data_mb !== undefined) {
       const v = toInt(b.sort_order);
       if (v === null) return res.status(400).json({ error: "sort_order invalid" });
       patch.sort_order = v;
+    }
+
+    if (b.system !== undefined) {
+      const v = (typeof b.system === "string" ? b.system.trim().toLowerCase() : "");
+      patch.system = (v === "mikrotik") ? "mikrotik" : "portal";
+    }
+    if (b.pool_id !== undefined) {
+      // allow null/empty to mean "all pools"
+      patch.pool_id = (typeof b.pool_id === "string" && b.pool_id.trim()) ? b.pool_id.trim() : null;
     }
 
     if (Object.keys(patch).length === 0) {
