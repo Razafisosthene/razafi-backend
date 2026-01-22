@@ -3835,6 +3835,22 @@ function isAllowedRadiusCaller(req) {
 
 app.post("/api/radius/authorize", async (req, res) => {
   try {
+    // Helper: always return in FreeRADIUS rlm_rest expected JSON (no nested objects)
+    const radiusReject = (reason) => {
+      return res.status(200).json({
+        control: [{ attribute: "Auth-Type", value: "Reject" }],
+        reply: reason ? [{ attribute: "Reply-Message", value: String(reason).slice(0, 200) }] : []
+      });
+    };
+
+    const radiusAccept = (sessionTimeoutSeconds, extraReply = []) => {
+      const st = Math.max(1, Math.floor(Number(sessionTimeoutSeconds) || 0));
+      return res.status(200).json({
+        control: [{ attribute: "Auth-Type", value: "Accept" }],
+        reply: [{ attribute: "Session-Timeout", value: st }, ...extraReply]
+      });
+    };
+
     if (!supabase) {
       return res.status(500).json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
     }
