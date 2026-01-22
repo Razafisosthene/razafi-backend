@@ -1432,6 +1432,9 @@ app.get("/api/new/plans", async (req, res) => {
       .select("id,name,price_ar,duration_hours,duration_minutes,data_mb,max_devices,is_active,is_visible,sort_order,updated_at")
       .eq("is_active", true)
       .eq("is_visible", true)
+      // ✅ Portal SSID must only show PORTAL plans (never MikroTik plans)
+      .eq("system", "portal")
+      .is("pool_id", null)
       .order("sort_order", { ascending: true })
       .order("updated_at", { ascending: false });
 
@@ -2326,9 +2329,6 @@ app.post("/api/admin/plans", requireAdmin, async (req, res) => {
     if (!["portal", "mikrotik"].includes(system)) return res.status(400).json({ error: "system_invalid" });
 
     const pool_id = (b.pool_id === undefined || b.pool_id === null) ? null : String(b.pool_id).trim();
-if (system === "mikrotik" && !pool_id) {
-  return res.status(400).json({ error: "pool_id_required" });
-}
     let data_mb = null;
     if (b.data_mb === null) {
       data_mb = null;
@@ -2410,35 +2410,16 @@ app.patch("/api/admin/plans/:id", requireAdmin, async (req, res) => {
 
     const id = req.params.id;
     const b = req.body || {};
-// Load existing plan to enforce invariants (system is immutable)
-const { data: existingPlan, error: existingErr } = await supabase
-  .from("plans")
-  .select("id, system, pool_id")
-  .eq("id", id)
-  .maybeSingle();
-
-if (existingErr) {
-  console.error("ADMIN PLANS PATCH LOAD ERROR", existingErr);
-  return res.status(500).json({ error: "db_error" });
-}
-if (!existingPlan) return res.status(404).json({ error: "not_found" });
-
 
     const patch = {};
 
-// System is immutable after creation.
-// If client sends it, only allow if it matches existing system; otherwise reject.
-if (b.system !== undefined) {
-  const incoming = String(b.system || "").trim();
-  if (!incoming || !["portal", "mikrotik"].includes(incoming)) {
-    return res.status(400).json({ error: "system_invalid" });
-  }
-  if ((existingPlan.system || "portal") !== incoming) {
-    return res.status(400).json({ error: "system_immutable" });
-  }
-  // Do NOT set patch.system (keep DB unchanged).
-}
-
+    if (b.system !== undefined) {
+      const v = String(b.system || "").trim();
+      if (!v || !["portal","mikrotik"].includes(v)) return res.status(400).json({ error: "system_invalid" });
+      patch.system = v;
+      // If switching back to portal, drop pool_id
+      if (v === "portal") patch.pool_id = null;
+    }
 
     if (b.name !== undefined) {
       const name = typeof b.name === "string" ? b.name.trim() : "";
@@ -2471,25 +2452,6 @@ if (b.duration_minutes !== undefined) {
       if (v !== null && v.length < 5) return res.status(400).json({ error: "pool_id invalid" });
       patch.pool_id = v;
     }
-
-// Enforce pool_id requirement for MikroTik plans
-const existingSystem = (existingPlan.system || "portal");
-if (existingSystem === "mikrotik") {
-  // If pool_id not being patched, keep existing value; but must be non-null.
-  const effectivePoolId = (patch.pool_id !== undefined) ? patch.pool_id : existingPlan.pool_id;
-  if (!effectivePoolId) {
-    return res.status(400).json({ error: "pool_id_required" });
-  }
-} else {
-  // Portal plans must not be attached to a pool
-  if (patch.pool_id !== undefined && patch.pool_id) {
-    return res.status(400).json({ error: "pool_id_not_allowed" });
-  }
-  if (patch.pool_id !== undefined && patch.pool_id === null) {
-    // ok
-  }
-}
-
 
 
 if (b.duration_seconds !== undefined) {
@@ -2531,6 +2493,16 @@ if (b.data_mb !== undefined) {
       patch.sort_order = v;
     }
 
+
+    // Enforce Mikrotik: pool_id required
+    if (patch.system !== undefined || patch.pool_id !== undefined) {
+      const { data: cur, error: curErr } = await supabase.from("plans").select("id,system,pool_id").eq("id", id).single();
+      if (curErr || !cur) return res.status(404).json({ error: "plan not found" });
+      const nextSystem = (patch.system ?? cur.system ?? "portal");
+      const nextPool = (patch.pool_id ?? cur.pool_id ?? null);
+      if (nextSystem === "mikrotik" && !nextPool) return res.status(400).json({ error: "pool_id_required" });
+      if (nextSystem !== "mikrotik" && patch.pool_id !== undefined) patch.pool_id = null;
+    }
 
     if (Object.keys(patch).length === 0) {
       return res.status(400).json({ error: "no fields to update" });
