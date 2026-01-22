@@ -3838,21 +3838,21 @@ app.post("/api/radius/authorize", async (req, res) => {
     // Helper: always return in FreeRADIUS rlm_rest expected JSON (no nested objects)
     const radiusReject = (reason) => {
       return res.status(200).json({
-        control: [{ attribute: "Auth-Type", value: "Reject" }],
-        reply: reason ? [{ attribute: "Reply-Message", value: String(reason).slice(0, 200) }] : []
+        control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }],
+        reply: reason ? [{ attribute: "Reply-Message", op: ":=", value: String(reason).slice(0, 200) }] : []
       });
     };
 
     const radiusAccept = (sessionTimeoutSeconds, extraReply = []) => {
       const st = Math.max(1, Math.floor(Number(sessionTimeoutSeconds) || 0));
       return res.status(200).json({
-        control: [{ attribute: "Auth-Type", value: "Accept" }],
-        reply: [{ attribute: "Session-Timeout", value: st }, ...extraReply]
+        control: [{ attribute: "Auth-Type", op: ":=", value: "Accept" }],
+        reply: [{ attribute: "Session-Timeout", op: ":=", value: String(st) }, ...extraReply]
       });
     };
 
     if (!supabase) {
-      return res.status(500).json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
+      return res.status(500).json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
     }
 
     // Security gate (do not expose radius auth to the public internet)
@@ -3878,7 +3878,7 @@ app.post("/api/radius/authorize", async (req, res) => {
           });
         }
       } catch (_) {}
-      return res.status(403).json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
+      return res.status(403).json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
     }
 
     const body = req.body || {};
@@ -3901,12 +3901,12 @@ app.post("/api/radius/authorize", async (req, res) => {
     const nas_id = String(body.nas_id || body.nasId || body["NAS-Identifier"] || "").trim() || null;
 
     if (!username || !password) {
-      return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
+      return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
     }
 
     // Must match (voucher code style: same for user/pass)
     if (username !== password) {
-      return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
+      return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
     }
 
     const nowIso = new Date().toISOString();
@@ -3943,7 +3943,7 @@ app.post("/api/radius/authorize", async (req, res) => {
           });
         }
       } catch (_) {}
-      return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
+      return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
     }
 
     const session = rows[0];
@@ -3970,7 +3970,7 @@ app.post("/api/radius/authorize", async (req, res) => {
           });
         }
       } catch (_) {}
-      return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
+      return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
     }
 
     // Optional: enforce pool/system by NAS-Identifier (Système 3)
@@ -3984,10 +3984,10 @@ app.post("/api/radius/authorize", async (req, res) => {
 
       if (!poolErr && poolRow) {
         if (poolRow?.system && poolRow.system !== "mikrotik") {
-          return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
+          return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
         }
         if (poolRow?.radius_nas_id && String(poolRow.radius_nas_id) !== nas_id) {
-          return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
+          return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
         }
       }
     }
@@ -4014,7 +4014,7 @@ app.post("/api/radius/authorize", async (req, res) => {
           });
         }
       } catch (_) {}
-      return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
+      return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
     }
 
     if (!session.expires_at || String(session.expires_at) <= nowIso) {
@@ -4038,7 +4038,7 @@ app.post("/api/radius/authorize", async (req, res) => {
           });
         }
       } catch (_) {}
-      return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
+      return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
     }
 
     // Remaining seconds => Session-Timeout
@@ -4070,11 +4070,10 @@ app.post("/api/radius/authorize", async (req, res) => {
       }
     } catch (_) {}
 
-    return res.json({
-      control: [{ attribute: "Cleartext-Password", value: username }],
-      reply: [{ attribute: "Session-Timeout", value: remainingSeconds }],
-    });
-  } catch (e) {
+    return res.json(accept(remainingSeconds));
+  
+
+} catch (e) {
     console.error("/api/radius/authorize error:", e?.message || e);
     try {
       if (typeof insertAudit === "function") {
@@ -4096,7 +4095,7 @@ app.post("/api/radius/authorize", async (req, res) => {
         });
       }
     } catch (_) {}
-    return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
+    return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
   }
 });
 
