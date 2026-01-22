@@ -3835,93 +3835,252 @@ function isAllowedRadiusCaller(req) {
 
 app.post("/api/radius/authorize", async (req, res) => {
   try {
-    if (!supabase) return res.status(500).json({ control: { "Auth-Type": "Reject" } });
+    if (!supabase) {
+      return res.status(500).json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
+    }
 
     // Security gate (do not expose radius auth to the public internet)
     if (!isAllowedRadiusCaller(req)) {
-      return res.status(403).json({ control: { "Auth-Type": "Reject" } });
+      // log best-effort (don't block response if logging fails)
+      try {
+        if (typeof insertAudit === "function") {
+          await insertAudit({
+            event_type: "radius_authorize_reject",
+            status: "failed",
+            entity_type: "radius",
+            entity_id: null,
+            actor_type: "radius",
+            actor_id: getCallerIp(req),
+            request_ref: null,
+            mvola_phone: null,
+            client_mac: null,
+            ap_mac: null,
+            pool_id: null,
+            plan_id: null,
+            message: "RADIUS caller not allowed",
+            metadata: { ip: getCallerIp(req) },
+          });
+        }
+      } catch (_) {}
+      return res.status(403).json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
     }
 
     const body = req.body || {};
-    const username = String(body.username || "").trim();
-    const password = String(body.password || "").trim();
-    const client_mac = normalizeMacColon(body.client_mac || body.clientMac || body.calling_station_id || body.calling_station_id) 
-                      || normalizeMacColon(body.calling_station_id) 
-                      || normalizeMacColon(body.calling_station_id) 
-                      || normalizeMacColon(body.calling_station_id) 
-                      || normalizeMacColon(body.calling_station_id) 
-                      || normalizeMacColon(body.calling_station_id) 
-                      || normalizeMacColon(body.calling_station_id) 
-                      || normalizeMacColon(body.calling_station_id) 
-                      || normalizeMacColon(body.calling_station_id)
-                      || normalizeMacColon(body.calling_station_id || "")
-                      || null;
 
-    const nas_id = String(body.nas_id || body.nasId || "").trim() || null;
+    // rlm_rest usually maps RADIUS attrs -> json keys like:
+    // username, password, calling_station_id, nas_id, nas_ip_address, event_timestamp, etc.
+    const username = String(body.username || body["User-Name"] || "").trim();
+    const password = String(body.password || body["User-Password"] || "").trim();
 
-    // Basic sanity: MikroTik sends username=password=code (your flow)
-    if (!username || !password || username !== password || !client_mac) {
-      return res.json({ control: { "Auth-Type": "Reject" } });
+    // Client MAC (Calling-Station-Id) — normalize to AA:BB:CC:DD:EE:FF
+    const client_mac_raw =
+      body.client_mac ||
+      body.clientMac ||
+      body.calling_station_id ||
+      body.callingStationId ||
+      body["Calling-Station-Id"] ||
+      "";
+    const client_mac = normalizeMacColon(client_mac_raw) || null;
+
+    const nas_id = String(body.nas_id || body.nasId || body["NAS-Identifier"] || "").trim() || null;
+
+    if (!username || !password) {
+      return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
+    }
+
+    // Must match (voucher code style: same for user/pass)
+    if (username !== password) {
+      return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
     }
 
     const nowIso = new Date().toISOString();
 
-    // Load session + plan (we accept only if ACTIVE and not expired)
-    // NOTE: We DO NOT require .eq("client_mac", ...) at first read if you want "first device locks".
-    // But because your portal already has client_mac in URL, keeping strict is safest.
-    const { data: session, error: sErr } = await supabase
+    // Fetch session by voucher_code + lock it to this device when available
+    // We select pool_id/plan_id/expires_at for enforcement + audit.
+    let q = supabase
       .from("voucher_sessions")
-      .select("id,voucher_code,plan_id,status,expires_at,client_mac,pool_id,plans(id,name,duration_minutes,duration_hours,max_devices)")
+      .select("id,voucher_code,status,client_mac,pool_id,plan_id,expires_at,activated_at,started_at")
       .eq("voucher_code", username)
-      .maybeSingle();
+      .order("created_at", { ascending: false })
+      .limit(1);
 
-    if (sErr || !session) {
-      return res.json({ control: { "Auth-Type": "Reject" } });
+    const { data: rows, error } = await q;
+    if (error || !rows || !rows.length) {
+      // Unknown code
+      try {
+        if (typeof insertAudit === "function") {
+          await insertAudit({
+            event_type: "radius_authorize_reject",
+            status: "failed",
+            entity_type: "voucher_session",
+            entity_id: null,
+            actor_type: "radius",
+            actor_id: nas_id || getCallerIp(req),
+            request_ref: null,
+            mvola_phone: null,
+            client_mac: client_mac,
+            ap_mac: null,
+            pool_id: null,
+            plan_id: null,
+            message: "Unknown voucher_code",
+            metadata: { username, nas_id },
+          });
+        }
+      } catch (_) {}
+      return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
     }
 
-    // Device lock: if session has a client_mac, enforce strict match
-    if (session.client_mac && normalizeMacColon(session.client_mac) !== client_mac) {
-      return res.json({ control: { "Auth-Type": "Reject" } });
+    const session = rows[0];
+
+    // Device lock: if session already has client_mac, enforce same device
+    if (session.client_mac && client_mac && normalizeMacColon(session.client_mac) !== client_mac) {
+      try {
+        if (typeof insertAudit === "function") {
+          await insertAudit({
+            event_type: "radius_authorize_reject",
+            status: "failed",
+            entity_type: "voucher_session",
+            entity_id: session.id,
+            actor_type: "radius",
+            actor_id: nas_id || getCallerIp(req),
+            request_ref: null,
+            mvola_phone: null,
+            client_mac: client_mac,
+            ap_mac: null,
+            pool_id: session.pool_id || null,
+            plan_id: session.plan_id || null,
+            message: "Device mismatch (code already used on another device)",
+            metadata: { expected_client_mac: session.client_mac, got_client_mac: client_mac, nas_id },
+          });
+        }
+      } catch (_) {}
+      return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
     }
 
-    // Optional: enforce NAS-ID belongs to the same pool (if you store it in internet_pools.radius_nas_id)
-    // If you don't have these columns yet, this block will simply be skipped safely.
-    if (nas_id && session.pool_id) {
-      const { data: poolRow } = await supabase
+    // Optional: enforce pool/system by NAS-Identifier (Système 3)
+    // Only if session.pool_id exists AND pool is configured as mikrotik.
+    if (session.pool_id && nas_id) {
+      const { data: poolRow, error: poolErr } = await supabase
         .from("internet_pools")
         .select("id,system,radius_nas_id")
         .eq("id", session.pool_id)
         .maybeSingle();
 
-      if (poolRow?.system && poolRow.system !== "mikrotik") {
-        return res.json({ control: { "Auth-Type": "Reject" } });
-      }
-      if (poolRow?.radius_nas_id && String(poolRow.radius_nas_id) !== nas_id) {
-        return res.json({ control: { "Auth-Type": "Reject" } });
+      if (!poolErr && poolRow) {
+        if (poolRow?.system && poolRow.system !== "mikrotik") {
+          return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
+        }
+        if (poolRow?.radius_nas_id && String(poolRow.radius_nas_id) !== nas_id) {
+          return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
+        }
       }
     }
 
-    // Model B: pending must be activated via /api/voucher/activate first :contentReference[oaicite:6]{index=6}
+    // Model B: must activate first (click "Utiliser ce code")
     if (session.status !== "active") {
-      return res.json({ control: { "Auth-Type": "Reject" } });
+      try {
+        if (typeof insertAudit === "function") {
+          await insertAudit({
+            event_type: "radius_authorize_reject",
+            status: "failed",
+            entity_type: "voucher_session",
+            entity_id: session.id,
+            actor_type: "radius",
+            actor_id: nas_id || getCallerIp(req),
+            request_ref: null,
+            mvola_phone: null,
+            client_mac: client_mac,
+            ap_mac: null,
+            pool_id: session.pool_id || null,
+            plan_id: session.plan_id || null,
+            message: "Session not active (pending)",
+            metadata: { status: session.status, nas_id },
+          });
+        }
+      } catch (_) {}
+      return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
     }
 
     if (!session.expires_at || String(session.expires_at) <= nowIso) {
-      return res.json({ control: { "Auth-Type": "Reject" } });
+      try {
+        if (typeof insertAudit === "function") {
+          await insertAudit({
+            event_type: "radius_authorize_reject",
+            status: "failed",
+            entity_type: "voucher_session",
+            entity_id: session.id,
+            actor_type: "radius",
+            actor_id: nas_id || getCallerIp(req),
+            request_ref: null,
+            mvola_phone: null,
+            client_mac: client_mac,
+            ap_mac: null,
+            pool_id: session.pool_id || null,
+            plan_id: session.plan_id || null,
+            message: "Session expired",
+            metadata: { expires_at: session.expires_at, nas_id },
+          });
+        }
+      } catch (_) {}
+      return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
     }
 
     // Remaining seconds => Session-Timeout
-    const remainingSeconds = Math.max(1, Math.floor((new Date(session.expires_at).getTime() - Date.now()) / 1000));
+    const remainingSeconds = Math.max(
+      1,
+      Math.floor((new Date(session.expires_at).getTime() - Date.now()) / 1000)
+    );
 
-    // IMPORTANT: set Cleartext-Password so PAP can succeed
+    // ✅ FreeRADIUS rlm_rest JSON format (avoids: "Value key missing, skipping...")
+    // Return attributes as arrays of {attribute, value}
+    try {
+      if (typeof insertAudit === "function") {
+        await insertAudit({
+          event_type: "radius_authorize_accept",
+          status: "success",
+          entity_type: "voucher_session",
+          entity_id: session.id,
+          actor_type: "radius",
+          actor_id: nas_id || getCallerIp(req),
+          request_ref: null,
+          mvola_phone: null,
+          client_mac: client_mac,
+          ap_mac: null,
+          pool_id: session.pool_id || null,
+          plan_id: session.plan_id || null,
+          message: "Access-Accept",
+          metadata: { remaining_seconds: remainingSeconds, expires_at: session.expires_at, nas_id },
+        });
+      }
+    } catch (_) {}
+
     return res.json({
-      control: { "Cleartext-Password": username },
-      reply: { "Session-Timeout": remainingSeconds },
+      control: [{ attribute: "Cleartext-Password", value: username }],
+      reply: [{ attribute: "Session-Timeout", value: remainingSeconds }],
     });
-
   } catch (e) {
     console.error("/api/radius/authorize error:", e?.message || e);
-    return res.json({ control: { "Auth-Type": "Reject" } });
+    try {
+      if (typeof insertAudit === "function") {
+        await insertAudit({
+          event_type: "radius_authorize_error",
+          status: "failed",
+          entity_type: "radius",
+          entity_id: null,
+          actor_type: "radius",
+          actor_id: getCallerIp(req),
+          request_ref: null,
+          mvola_phone: null,
+          client_mac: null,
+          ap_mac: null,
+          pool_id: null,
+          plan_id: null,
+          message: String(e?.message || e),
+          metadata: { stack: String(e?.stack || "").slice(0, 1500) },
+        });
+      }
+    } catch (_) {}
+    return res.json({ control: [{ attribute: "Auth-Type", value: "Reject" }] });
   }
 });
 
