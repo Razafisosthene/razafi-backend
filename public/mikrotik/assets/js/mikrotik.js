@@ -643,9 +643,11 @@
     }
     const action = loginUrl;
 
+    // Persist attempt for post-login connectivity check
     try {
       sessionStorage.setItem("razafi_login_attempt", JSON.stringify({ ts: Date.now(), continueUrl: continueUrl || "" }));
     } catch (_) {}
+
     const accessMsg = document.getElementById("accessMsg");
     if (accessMsg) accessMsg.textContent = "Connexion en cours…";
 
@@ -663,15 +665,25 @@
       form.appendChild(input);
     };
 
-    const redirect = continueUrl || location.href;
-    add("success_url", redirect);
+    // MikroTik Hotspot: username/password = code (validated by RADIUS/backend)
+    const v = String(code || "").trim();
+    if (!v) {
+      showToast("❌ Code invalide.", "error", 4500);
+      return;
+    }
+
+    // After login, redirect user to continue_url (or current page)
+    const redirect = (continueUrl || "").trim() || location.href;
     add("dst", redirect);
+    add("dsturl", redirect);
+    add("popup", "false");
 
-    if (clientMac) add("client_mac", clientMac);
-    if (apMac) add("ap_mac", apMac);
+    // Some setups accept success_url; harmless if ignored
+    add("success_url", redirect);
 
-    add("username", clientMac || "username");
-    add("password", code);
+    // Credentials expected by MikroTik Hotspot
+    add("username", v);
+    add("password", v);
 
     document.body.appendChild(form);
     form.submit();
