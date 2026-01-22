@@ -3803,6 +3803,130 @@ app.post("/api/voucher/activate", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// ENDPOINT: /api/radius/authorize   (SYSTEM 3: MikroTik)
+// Called by FreeRADIUS (rlm_rest). No UI here: JSON only.
+// Rules:
+// - pending => REJECT (Model B: must click "Utiliser ce code" first) :contentReference[oaicite:4]{index=4}
+// - active + not expired => ACCEPT + Session-Timeout (remaining seconds)
+// - 1 device / code strict (client_mac lock)
+// - Optional: enforce pool via nas_id (NAS-Identifier)
+// Security: allow only your RADIUS droplet IP + header secret (recommended)
+// ---------------------------------------------------------------------------
+const RADIUS_ALLOWED_IPS = (process.env.RADIUS_ALLOWED_IPS || "159.89.16.34").split(",").map(s => s.trim()).filter(Boolean);
+const RADIUS_API_SECRET = process.env.RADIUS_API_SECRET || ""; // set this in Render env
+
+function getCallerIp(req) {
+  // trust proxy already enabled :contentReference[oaicite:5]{index=5}
+  const cf = req.headers["cf-connecting-ip"];
+  if (cf) return String(cf).trim();
+  const xff = req.headers["x-forwarded-for"];
+  if (xff) return String(xff).split(",")[0].trim();
+  return String(req.ip || req.socket?.remoteAddress || "").replace(/^::ffff:/, "");
+}
+
+function isAllowedRadiusCaller(req) {
+  const ip = getCallerIp(req);
+  const secret = String(req.headers["x-radius-secret"] || "").trim();
+  const ipOk = RADIUS_ALLOWED_IPS.includes(ip);
+  const secretOk = !!RADIUS_API_SECRET && secret === RADIUS_API_SECRET;
+  // Require BOTH if secret is configured; else fallback to IP only
+  return RADIUS_API_SECRET ? (ipOk && secretOk) : ipOk;
+}
+
+app.post("/api/radius/authorize", async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ control: { "Auth-Type": "Reject" } });
+
+    // Security gate (do not expose radius auth to the public internet)
+    if (!isAllowedRadiusCaller(req)) {
+      return res.status(403).json({ control: { "Auth-Type": "Reject" } });
+    }
+
+    const body = req.body || {};
+    const username = String(body.username || "").trim();
+    const password = String(body.password || "").trim();
+    const client_mac = normalizeMacColon(body.client_mac || body.clientMac || body.calling_station_id || body.calling_station_id) 
+                      || normalizeMacColon(body.calling_station_id) 
+                      || normalizeMacColon(body.calling_station_id) 
+                      || normalizeMacColon(body.calling_station_id) 
+                      || normalizeMacColon(body.calling_station_id) 
+                      || normalizeMacColon(body.calling_station_id) 
+                      || normalizeMacColon(body.calling_station_id) 
+                      || normalizeMacColon(body.calling_station_id) 
+                      || normalizeMacColon(body.calling_station_id)
+                      || normalizeMacColon(body.calling_station_id || "")
+                      || null;
+
+    const nas_id = String(body.nas_id || body.nasId || "").trim() || null;
+
+    // Basic sanity: MikroTik sends username=password=code (your flow)
+    if (!username || !password || username !== password || !client_mac) {
+      return res.json({ control: { "Auth-Type": "Reject" } });
+    }
+
+    const nowIso = new Date().toISOString();
+
+    // Load session + plan (we accept only if ACTIVE and not expired)
+    // NOTE: We DO NOT require .eq("client_mac", ...) at first read if you want "first device locks".
+    // But because your portal already has client_mac in URL, keeping strict is safest.
+    const { data: session, error: sErr } = await supabase
+      .from("voucher_sessions")
+      .select("id,voucher_code,plan_id,status,expires_at,client_mac,pool_id,plans(id,name,duration_minutes,duration_hours,max_devices)")
+      .eq("voucher_code", username)
+      .maybeSingle();
+
+    if (sErr || !session) {
+      return res.json({ control: { "Auth-Type": "Reject" } });
+    }
+
+    // Device lock: if session has a client_mac, enforce strict match
+    if (session.client_mac && normalizeMacColon(session.client_mac) !== client_mac) {
+      return res.json({ control: { "Auth-Type": "Reject" } });
+    }
+
+    // Optional: enforce NAS-ID belongs to the same pool (if you store it in internet_pools.radius_nas_id)
+    // If you don't have these columns yet, this block will simply be skipped safely.
+    if (nas_id && session.pool_id) {
+      const { data: poolRow } = await supabase
+        .from("internet_pools")
+        .select("id,system,radius_nas_id")
+        .eq("id", session.pool_id)
+        .maybeSingle();
+
+      if (poolRow?.system && poolRow.system !== "mikrotik") {
+        return res.json({ control: { "Auth-Type": "Reject" } });
+      }
+      if (poolRow?.radius_nas_id && String(poolRow.radius_nas_id) !== nas_id) {
+        return res.json({ control: { "Auth-Type": "Reject" } });
+      }
+    }
+
+    // Model B: pending must be activated via /api/voucher/activate first :contentReference[oaicite:6]{index=6}
+    if (session.status !== "active") {
+      return res.json({ control: { "Auth-Type": "Reject" } });
+    }
+
+    if (!session.expires_at || String(session.expires_at) <= nowIso) {
+      return res.json({ control: { "Auth-Type": "Reject" } });
+    }
+
+    // Remaining seconds => Session-Timeout
+    const remainingSeconds = Math.max(1, Math.floor((new Date(session.expires_at).getTime() - Date.now()) / 1000));
+
+    // IMPORTANT: set Cleartext-Password so PAP can succeed
+    return res.json({
+      control: { "Cleartext-Password": username },
+      reply: { "Session-Timeout": remainingSeconds },
+    });
+
+  } catch (e) {
+    console.error("/api/radius/authorize error:", e?.message || e);
+    return res.json({ control: { "Auth-Type": "Reject" } });
+  }
+});
+
+
+// ---------------------------------------------------------------------------
 // ENDPOINT: /api/voucher/last
 // Resume the latest voucher for a device (client_mac), preferring:
 // 1) pending delivered-but-not-activated code (Model B)
