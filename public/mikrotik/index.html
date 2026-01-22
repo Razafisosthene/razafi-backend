@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <link rel="icon" href="/favicon.ico">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WiFi RAZAFI — MikroTik</title>
+
+  <link rel="stylesheet" href="/portal/assets/css/style.css">
+  <meta name="theme-color" content="#ffffff">
+</head>
+
+<body class="theme-light">
+
+  <!-- ================= HEADER ================= -->
+  <header class="portal-header">
+    <div class="brand">
+      <img src="/portal/assets/img/RAZAFI.png" alt="RAZAFI" style="height:40px;">
+    </div>
+
+    <button id="themeToggle" class="theme-toggle" aria-label="Changer de thème">
+      🌙
+    </button>
+  </header>
+
+  <!-- ================= MAIN ================= -->
+  <main class="portal-container">
+
+    <!-- ========= STATUS BLOCK ========= -->
+    <section id="status-block" class="card status-card">
+
+      <h2>Bienvenue sur WiFi RAZAFI (Radius 2)</h2>
+      <p class="muted" id="accessMsg">Vérification de votre accès en cours…</p>
+
+      <!-- State: NO active voucher -->
+      <div id="voucherNone" class="voucher-state">
+        <p class="muted" id="noVoucherMsg">Vous n’avez pas de code actif.</p>
+        <p class="muted small">Choisissez un plan ci-dessous pour acheter un code.</p>
+      </div>
+
+      <!-- State: HAS active voucher -->
+      <div id="voucherHas" class="voucher-state hidden">
+        <p class="success" id="hasVoucherMsg">✅ Vous avez un code actif</p>
+
+        <ul class="voucher-info">
+          <li>🔑 <strong id="voucher-code">—</strong></li>
+          <li>⏳ Temps restant : <strong id="time-left">—</strong></li>
+          <li>📊 Données restantes : <strong id="data-left">—</strong></li>
+          <li>🔌 Appareils utilisés : <strong id="devices-used">—</strong></li>
+        </ul>
+
+        <button class="primary-btn" id="useVoucherBtn" disabled>
+          Utiliser ce code
+        </button>
+
+        <button class="secondary-btn" id="copyVoucherBtn" disabled>
+          Copier le code
+        </button>
+      </div>
+
+    </section>
+
+    <!-- ========= PLANS ========= -->
+    <section id="plans-section">
+
+      <h3>Plans</h3>
+
+      <div class="plans-grid" id="plansGrid">
+
+        <p class="muted small" id="plansLoading">Chargement des plans…</p>
+
+      </div>
+    </section>
+
+    <!-- ========= FAQ ========= -->
+<section class="card faq">
+  <h3>🛟 Assistance</h3>
+
+  <p>
+    <strong>🔌 Comment se connecter ?</strong><br>
+    Sélectionnez un plan et effectuez le paiement via MVola.
+  </p>
+
+  <p>
+    <strong>📞 Besoin d’aide ?</strong><br>
+    Service client : <strong>038 75 00 592</strong>
+  </p>
+</section>
+
+
+  <!-- ================= FOOTER ================= -->
+  <footer class="portal-footer">
+    <p class="muted small">
+      © RAZAFI — Portail sécurisé
+    </p>
+  </footer>
+
+  <!-- ================= JS ================= -->
+  <script src="/mikrotik/assets/js/mikrotik.js?v=20260126a" defer></script>
+
+</body>
+</html>
