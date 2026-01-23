@@ -636,12 +636,33 @@
     return null;
   }
 
-  function submitToLoginUrl(code) {
+  function submitToLoginUrl(code, ev) {
+    if (ev && typeof ev.preventDefault === "function") {
+      try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+    }
+
     if (!loginUrl) {
       showToast("❌ login_url manquant (Tanaza). Impossible d'activer la connexion.", "error", 5200);
       return;
     }
-    const action = loginUrl;
+
+    // MikroTik Hotspot: username/password = code (validated by RADIUS/backend)
+    const v = String(code || "").trim();
+    if (!v) {
+      showToast("❌ Code invalide.", "error", 4500);
+      return;
+    }
+
+    // Normalize login_url (strip query from action, keep params as hidden inputs)
+    let action = loginUrl;
+    let extraParams = {};
+    try {
+      const u = new URL(loginUrl);
+      action = u.origin + u.pathname; // e.g. http://192.168.88.1/login
+      u.searchParams.forEach((val, key) => { extraParams[key] = val; });
+    } catch (_) {
+      // keep raw action; still try
+    }
 
     // Persist attempt for post-login connectivity check
     try {
@@ -665,17 +686,21 @@
       form.appendChild(input);
     };
 
-    // MikroTik Hotspot: username/password = code (validated by RADIUS/backend)
-    const v = String(code || "").trim();
-    if (!v) {
-      showToast("❌ Code invalide.", "error", 4500);
-      return;
+    // Carry over any params already present in login_url (if any)
+    for (const [k, val] of Object.entries(extraParams || {})) {
+      // We'll override credentials and dst below
+      if (k === "username" || k === "password") continue;
+      add(k, val);
     }
 
     // After login, redirect user to continue_url (or current page)
     const redirect = (continueUrl || "").trim() || location.href;
+
+    // Some MikroTik versions use dst / dsturl; harmless if ignored
     add("dst", redirect);
     add("dsturl", redirect);
+
+    // Ensure popup is not used (avoid popup captive browsers)
     add("popup", "false");
 
     // Some setups accept success_url; harmless if ignored
@@ -689,8 +714,9 @@
     form.submit();
   }
 
+
   if (useBtn) {
-    useBtn.addEventListener("click", function () {
+    useBtn.addEventListener("click", function (event) {
       if (!currentVoucherCode) {
         showToast("❌ Aucun code disponible pour le moment.", "error");
         return;
@@ -724,7 +750,7 @@
           console.warn("[RAZAFI] voucher activate fail-open:", e?.message || e);
         }
 
-        submitToLoginUrl(currentVoucherCode);
+        submitToLoginUrl(currentVoucherCode, event);
       })();
 
       window.setTimeout(() => {
