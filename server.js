@@ -3835,56 +3835,88 @@ function isAllowedRadiusCaller(req) {
 
 app.post("/api/radius/authorize", async (req, res) => {
   try {
-    // Helper: always return in FreeRADIUS rlm_rest expected JSON (no nested objects)
-    const radiusReject = (reason) => {
-      return res.status(200).json({
-        control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }],
-        reply: reason ? [{ attribute: "Reply-Message", op: ":=", value: String(reason).slice(0, 200) }] : []
-      });
-    };
+    // IMPORTANT (MikroTik Hotspot CHAP):
+    // - FreeRADIUS requires "control:Cleartext-Password" to validate CHAP.
+    // - rlm_rest in FreeRADIUS does NOT support nested objects (it logs: "Found nested VP... skipping").
+    // Therefore we return a FLAT JSON map with keys like "control:..." and "reply:...".
+    //
+    // We always respond 200 to FreeRADIUS (reject is expressed via "control:Auth-Type" := Reject),
+    // so MikroTik doesn't show "RADIUS server not responding".
 
-    const radiusAccept = (sessionTimeoutSeconds, extraReply = []) => {
-      const st = Math.max(1, Math.floor(Number(sessionTimeoutSeconds) || 0));
-      return res.status(200).json({
-        control: [{ attribute: "Auth-Type", op: ":=", value: "Accept" }],
-        reply: [{ attribute: "Session-Timeout", op: ":=", value: String(st) }, ...extraReply]
-      });
-    };
-
-    if (!supabase) {
-      return res.status(500).json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
-    }
-
-    // Security gate (do not expose radius auth to the public internet)
-    if (!isAllowedRadiusCaller(req)) {
-      // log best-effort (don't block response if logging fails)
+    const sendReject = async (reason, auditExtra = {}) => {
       try {
         if (typeof insertAudit === "function") {
           await insertAudit({
             event_type: "radius_authorize_reject",
             status: "failed",
-            entity_type: "radius",
-            entity_id: null,
+            entity_type: auditExtra.entity_type || "radius",
+            entity_id: auditExtra.entity_id || null,
             actor_type: "radius",
-            actor_id: getCallerIp(req),
+            actor_id: auditExtra.actor_id || (auditExtra.nas_id || getCallerIp(req)),
             request_ref: null,
             mvola_phone: null,
-            client_mac: null,
+            client_mac: auditExtra.client_mac || null,
             ap_mac: null,
-            pool_id: null,
-            plan_id: null,
-            message: "RADIUS caller not allowed",
-            metadata: { ip: getCallerIp(req) },
+            pool_id: auditExtra.pool_id || null,
+            plan_id: auditExtra.plan_id || null,
+            message: reason || "Reject",
+            metadata: auditExtra.metadata || {},
           });
         }
       } catch (_) {}
-      return res.status(403).json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
+      return res.status(200).json({
+        "control:Auth-Type": "Reject",
+        ...(reason ? { "reply:Reply-Message": String(reason).slice(0, 200) } : {})
+      });
+    };
+
+    const sendAccept = async (voucherCode, sessionTimeoutSeconds, auditExtra = {}, replyExtra = {}) => {
+      const st = Math.max(1, Math.floor(Number(sessionTimeoutSeconds) || 0));
+      try {
+        if (typeof insertAudit === "function") {
+          await insertAudit({
+            event_type: "radius_authorize_accept",
+            status: "success",
+            entity_type: auditExtra.entity_type || "voucher_session",
+            entity_id: auditExtra.entity_id || null,
+            actor_type: "radius",
+            actor_id: auditExtra.actor_id || (auditExtra.nas_id || getCallerIp(req)),
+            request_ref: null,
+            mvola_phone: null,
+            client_mac: auditExtra.client_mac || null,
+            ap_mac: null,
+            pool_id: auditExtra.pool_id || null,
+            plan_id: auditExtra.plan_id || null,
+            message: "Access-Accept",
+            metadata: auditExtra.metadata || {},
+          });
+        }
+      } catch (_) {}
+      return res.status(200).json({
+        // CHAP validation needs this:
+        "control:Cleartext-Password": String(voucherCode),
+        // MikroTik enforcement:
+        "reply:Session-Timeout": st,
+        ...replyExtra
+      });
+    };
+
+    if (!supabase) {
+      return sendReject("Supabase not configured");
+    }
+
+    // Security gate: only accept calls from your FreeRADIUS droplet (+ optional header secret)
+    if (!isAllowedRadiusCaller(req)) {
+      return sendReject("RADIUS caller not allowed", {
+        actor_id: getCallerIp(req),
+        metadata: { ip: getCallerIp(req) }
+      });
     }
 
     const body = req.body || {};
 
-    // rlm_rest usually maps RADIUS attrs -> json keys like:
-    // username, password, calling_station_id, nas_id, nas_ip_address, event_timestamp, etc.
+    // FreeRADIUS rlm_rest sends RADIUS attrs as JSON keys like:
+    // "User-Name", "User-Password", "Calling-Station-Id", "NAS-Identifier", etc.
     const username = String(body.username || body["User-Name"] || "").trim();
     const password = String(body.password || body["User-Password"] || "").trim();
 
@@ -3901,80 +3933,44 @@ app.post("/api/radius/authorize", async (req, res) => {
     const nas_id = String(body.nas_id || body.nasId || body["NAS-Identifier"] || "").trim() || null;
 
     if (!username || !password) {
-      return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
+      return sendReject("missing_credentials", { nas_id, client_mac });
     }
 
     // Must match (voucher code style: same for user/pass)
     if (username !== password) {
-      return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
+      return sendReject("bad_credentials", { nas_id, client_mac });
     }
 
-    const nowIso = new Date().toISOString();
+    const now = new Date();
 
-    // Fetch session by voucher_code + lock it to this device when available
-    // We select pool_id/plan_id/expires_at for enforcement + audit.
-    let q = supabase
+    // Fetch latest session for this voucher_code
+    const { data: rows, error } = await supabase
       .from("voucher_sessions")
       .select("id,voucher_code,status,client_mac,pool_id,plan_id,expires_at,activated_at,started_at")
       .eq("voucher_code", username)
       .order("created_at", { ascending: false })
       .limit(1);
 
-    const { data: rows, error } = await q;
     if (error || !rows || !rows.length) {
-      // Unknown code
-      try {
-        if (typeof insertAudit === "function") {
-          await insertAudit({
-            event_type: "radius_authorize_reject",
-            status: "failed",
-            entity_type: "voucher_session",
-            entity_id: null,
-            actor_type: "radius",
-            actor_id: nas_id || getCallerIp(req),
-            request_ref: null,
-            mvola_phone: null,
-            client_mac: client_mac,
-            ap_mac: null,
-            pool_id: null,
-            plan_id: null,
-            message: "Unknown voucher_code",
-            metadata: { username, nas_id },
-          });
-        }
-      } catch (_) {}
-      return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
+      return sendReject("unknown_code", { nas_id, client_mac, metadata: { username } });
     }
 
     const session = rows[0];
 
-    // Device lock: if session already has client_mac, enforce same device
+    // Device lock: if already bound, enforce same MAC
     if (session.client_mac && client_mac && normalizeMacColon(session.client_mac) !== client_mac) {
-      try {
-        if (typeof insertAudit === "function") {
-          await insertAudit({
-            event_type: "radius_authorize_reject",
-            status: "failed",
-            entity_type: "voucher_session",
-            entity_id: session.id,
-            actor_type: "radius",
-            actor_id: nas_id || getCallerIp(req),
-            request_ref: null,
-            mvola_phone: null,
-            client_mac: client_mac,
-            ap_mac: null,
-            pool_id: session.pool_id || null,
-            plan_id: session.plan_id || null,
-            message: "Device mismatch (code already used on another device)",
-            metadata: { expected_client_mac: session.client_mac, got_client_mac: client_mac, nas_id },
-          });
-        }
-      } catch (_) {}
-      return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
+      return sendReject("device_mismatch", {
+        entity_type: "voucher_session",
+        entity_id: session.id,
+        nas_id,
+        client_mac,
+        pool_id: session.pool_id || null,
+        plan_id: session.plan_id || null,
+        metadata: { expected_client_mac: session.client_mac, got_client_mac: client_mac }
+      });
     }
 
-    // Optional: enforce pool/system by NAS-Identifier (Système 3)
-    // Only if session.pool_id exists AND pool is configured as mikrotik.
+    // Optional: enforce pool via NAS-Identifier if pool is mikrotik and radius_nas_id is set
     if (session.pool_id && nas_id) {
       const { data: poolRow, error: poolErr } = await supabase
         .from("internet_pools")
@@ -3983,97 +3979,70 @@ app.post("/api/radius/authorize", async (req, res) => {
         .maybeSingle();
 
       if (!poolErr && poolRow) {
-        if (poolRow?.system && poolRow.system !== "mikrotik") {
-          return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
+        if (poolRow.system && poolRow.system !== "mikrotik") {
+          return sendReject("wrong_system", {
+            entity_type: "voucher_session",
+            entity_id: session.id,
+            nas_id,
+            client_mac,
+            pool_id: session.pool_id || null,
+            plan_id: session.plan_id || null
+          });
         }
-        if (poolRow?.radius_nas_id && String(poolRow.radius_nas_id) !== nas_id) {
-          return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
+        if (poolRow.radius_nas_id && String(poolRow.radius_nas_id) !== nas_id) {
+          return sendReject("wrong_pool", {
+            entity_type: "voucher_session",
+            entity_id: session.id,
+            nas_id,
+            client_mac,
+            pool_id: session.pool_id || null,
+            plan_id: session.plan_id || null,
+            metadata: { expected_nas_id: poolRow.radius_nas_id, got_nas_id: nas_id }
+          });
         }
       }
     }
 
-    // Model B: must activate first (click "Utiliser ce code")
+    // Model B: must be activated first (click "Utiliser ce code")
     if (session.status !== "active") {
-      try {
-        if (typeof insertAudit === "function") {
-          await insertAudit({
-            event_type: "radius_authorize_reject",
-            status: "failed",
-            entity_type: "voucher_session",
-            entity_id: session.id,
-            actor_type: "radius",
-            actor_id: nas_id || getCallerIp(req),
-            request_ref: null,
-            mvola_phone: null,
-            client_mac: client_mac,
-            ap_mac: null,
-            pool_id: session.pool_id || null,
-            plan_id: session.plan_id || null,
-            message: "Session not active (pending)",
-            metadata: { status: session.status, nas_id },
-          });
-        }
-      } catch (_) {}
-      return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
+      return sendReject("not_active", {
+        entity_type: "voucher_session",
+        entity_id: session.id,
+        nas_id,
+        client_mac,
+        pool_id: session.pool_id || null,
+        plan_id: session.plan_id || null,
+        metadata: { status: session.status }
+      });
     }
 
-    if (!session.expires_at || String(session.expires_at) <= nowIso) {
-      try {
-        if (typeof insertAudit === "function") {
-          await insertAudit({
-            event_type: "radius_authorize_reject",
-            status: "failed",
-            entity_type: "voucher_session",
-            entity_id: session.id,
-            actor_type: "radius",
-            actor_id: nas_id || getCallerIp(req),
-            request_ref: null,
-            mvola_phone: null,
-            client_mac: client_mac,
-            ap_mac: null,
-            pool_id: session.pool_id || null,
-            plan_id: session.plan_id || null,
-            message: "Session expired",
-            metadata: { expires_at: session.expires_at, nas_id },
-          });
-        }
-      } catch (_) {}
-      return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
+    const expiresAt = session.expires_at ? new Date(session.expires_at) : null;
+    if (!expiresAt || expiresAt <= now) {
+      return sendReject("expired", {
+        entity_type: "voucher_session",
+        entity_id: session.id,
+        nas_id,
+        client_mac,
+        pool_id: session.pool_id || null,
+        plan_id: session.plan_id || null,
+        metadata: { expires_at: session.expires_at }
+      });
     }
 
     // Remaining seconds => Session-Timeout
-    const remainingSeconds = Math.max(
-      1,
-      Math.floor((new Date(session.expires_at).getTime() - Date.now()) / 1000)
-    );
+    const remainingSeconds = Math.max(1, Math.floor((expiresAt.getTime() - now.getTime()) / 1000));
 
-    // ✅ FreeRADIUS rlm_rest JSON format (avoids: "Value key missing, skipping...")
-    // Return attributes as arrays of {attribute, value}
-    try {
-      if (typeof insertAudit === "function") {
-        await insertAudit({
-          event_type: "radius_authorize_accept",
-          status: "success",
-          entity_type: "voucher_session",
-          entity_id: session.id,
-          actor_type: "radius",
-          actor_id: nas_id || getCallerIp(req),
-          request_ref: null,
-          mvola_phone: null,
-          client_mac: client_mac,
-          ap_mac: null,
-          pool_id: session.pool_id || null,
-          plan_id: session.plan_id || null,
-          message: "Access-Accept",
-          metadata: { remaining_seconds: remainingSeconds, expires_at: session.expires_at, nas_id },
-        });
-      }
-    } catch (_) {}
+    return sendAccept(username, remainingSeconds, {
+      entity_type: "voucher_session",
+      entity_id: session.id,
+      nas_id,
+      client_mac,
+      pool_id: session.pool_id || null,
+      plan_id: session.plan_id || null,
+      metadata: { remaining_seconds: remainingSeconds, expires_at: session.expires_at }
+    });
 
-    return res.json(accept(remainingSeconds));
-  
-
-} catch (e) {
+  } catch (e) {
     console.error("/api/radius/authorize error:", e?.message || e);
     try {
       if (typeof insertAudit === "function") {
@@ -4095,7 +4064,8 @@ app.post("/api/radius/authorize", async (req, res) => {
         });
       }
     } catch (_) {}
-    return res.json({ control: [{ attribute: "Auth-Type", op: ":=", value: "Reject" }] });
+    // still return 200 to avoid "server not responding"
+    return res.status(200).json({ "control:Auth-Type": "Reject" });
   }
 });
 
