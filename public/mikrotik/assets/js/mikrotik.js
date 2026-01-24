@@ -636,7 +636,43 @@
     return null;
   }
 
-  function submitToLoginUrl(code, ev) {
+  
+  // Build MikroTik login URL (GET) for Option C redirect-based login
+  function buildMikrotikLoginTarget(code) {
+    const v = String(code || "").trim();
+    if (!loginUrl || !v) return null;
+
+    const redirect = (continueUrl || "").trim() || location.href;
+
+    let target = loginUrl;
+    try {
+      const u = new URL(loginUrl, window.location.href);
+      if (!u.pathname || u.pathname === "/") u.pathname = "/login";
+
+      u.searchParams.set("username", v);
+      u.searchParams.set("password", v);
+      u.searchParams.set("dst", redirect);
+      u.searchParams.set("dsturl", redirect);
+      u.searchParams.set("popup", "false");
+      u.searchParams.set("success_url", redirect);
+
+      target = u.toString();
+    } catch (_) {
+      const sep = loginUrl.includes("?") ? "&" : "?";
+      target =
+        loginUrl +
+        sep +
+        "username=" + encodeURIComponent(v) +
+        "&password=" + encodeURIComponent(v) +
+        "&dst=" + encodeURIComponent(redirect) +
+        "&dsturl=" + encodeURIComponent(redirect) +
+        "&popup=false" +
+        "&success_url=" + encodeURIComponent(redirect);
+    }
+    return target;
+  }
+
+function submitToLoginUrl(code, ev) {
     if (ev && typeof ev.preventDefault === "function") {
       try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
     }
@@ -662,45 +698,11 @@
     if (accessMsg) accessMsg.textContent = "Connexion en cours…";
 
     // ✅ OPTION C — Redirect-based login (GET) to avoid HTTPS -> HTTP form POST blocking
-    // Top-level navigation to http://mikrotik/login?... is allowed even from an HTTPS page.
-    const redirect = (continueUrl || "").trim() || location.href;
-
-    let target = loginUrl;
-    try {
-      const u = new URL(loginUrl, window.location.href);
-
-      // Safety: if Tanaza gives only origin or "/", force /login
-      if (!u.pathname || u.pathname === "/") u.pathname = "/login";
-
-      // Keep any existing params from login_url, but override credentials + redirect params
-      u.searchParams.set("username", v);
-      u.searchParams.set("password", v);
-
-      // MikroTik commonly uses dst; dsturl is harmless if ignored
-      u.searchParams.set("dst", redirect);
-      u.searchParams.set("dsturl", redirect);
-
-      // Avoid popup behavior
-      u.searchParams.set("popup", "false");
-
-      // Some setups accept success_url; harmless if ignored
-      u.searchParams.set("success_url", redirect);
-
-      target = u.toString();
-    } catch (_) {
-      // Fallback if URL() fails
-      const sep = loginUrl.includes("?") ? "&" : "?";
-      target =
-        loginUrl +
-        sep +
-        "username=" + encodeURIComponent(v) +
-        "&password=" + encodeURIComponent(v) +
-        "&dst=" + encodeURIComponent(redirect) +
-        "&dsturl=" + encodeURIComponent(redirect) +
-        "&popup=false" +
-        "&success_url=" + encodeURIComponent(redirect);
+    const target = buildMikrotikLoginTarget(v);
+    if (!target) {
+      showToast("❌ login_url manquant (Tanaza). Impossible d'activer la connexion.", "error", 5200);
+      return;
     }
-
     window.location.assign(target);
   }
 
@@ -711,44 +713,46 @@
         showToast("❌ Aucun code disponible pour le moment.", "error");
         return;
       }
+
+      // Build target URL *synchronously* (important for mobile captive browsers: user gesture)
+      const target = buildMikrotikLoginTarget(currentVoucherCode);
+      if (!target) {
+        showToast("❌ login_url manquant (Tanaza). Impossible d'activer la connexion.", "error", 5200);
+        return;
+      }
+
       try { useBtn.setAttribute("disabled", "disabled"); } catch (_) {}
       showToast("Connexion en cours…", "info");
 
-      (async () => {
-        try {
-          const resp = await fetch("/api/voucher/activate", {
+      // Fire-and-forget activation (don't await; keep user-gesture for navigation)
+      try {
+        const payload = JSON.stringify({
+          voucher_code: currentVoucherCode,
+          client_mac: clientMac || null,
+          ap_mac: apMac || null,
+        });
+
+        // Prefer sendBeacon when available (works even if we navigate away)
+        if (navigator && typeof navigator.sendBeacon === "function") {
+          const blob = new Blob([payload], { type: "application/json" });
+          navigator.sendBeacon("/api/voucher/activate", blob);
+        } else {
+          fetch("/api/voucher/activate", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              voucher_code: currentVoucherCode,
-              client_mac: clientMac || null,
-              ap_mac: apMac || null,
-            }),
-          });
-
-          if (resp && resp.status === 403) {
-            let msg = "❌ Ce code n’est plus valide.";
-            try {
-              const j = await resp.json();
-              if (j && j.message) msg = "❌ " + String(j.message);
-            } catch (_) {}
-            showToast(msg, "error", 7000);
-            try { useBtn.removeAttribute("disabled"); } catch (_) {}
-            return;
-          }
-        } catch (e) {
-          console.warn("[RAZAFI] voucher activate fail-open:", e?.message || e);
+            body: payload,
+            keepalive: true,
+          }).catch(() => {});
         }
+      } catch (e) {
+        console.warn("[RAZAFI] voucher activate fire-and-forget failed:", e?.message || e);
+      }
 
-        submitToLoginUrl(currentVoucherCode, event);
-      })();
-
-      window.setTimeout(() => {
-        showToast("Activation en cours… si Internet ne s’ouvre pas, reconnectez-vous au Wi-Fi.", "info", 6500);
-        try { useBtn.removeAttribute("disabled"); } catch (_) {}
-      }, 2200);
+      // Navigate to MikroTik login (should trigger RADIUS)
+      window.location.assign(target);
     });
   }
+
 
   if (copyBtn) {
     copyBtn.addEventListener("click", async function () {
