@@ -653,17 +653,6 @@
       return;
     }
 
-    // Normalize login_url (strip query from action, keep params as hidden inputs)
-    let action = loginUrl;
-    let extraParams = {};
-    try {
-      const u = new URL(loginUrl);
-      action = u.origin + u.pathname; // e.g. http://192.168.88.1/login
-      u.searchParams.forEach((val, key) => { extraParams[key] = val; });
-    } catch (_) {
-      // keep raw action; still try
-    }
-
     // Persist attempt for post-login connectivity check
     try {
       sessionStorage.setItem("razafi_login_attempt", JSON.stringify({ ts: Date.now(), continueUrl: continueUrl || "" }));
@@ -672,46 +661,47 @@
     const accessMsg = document.getElementById("accessMsg");
     if (accessMsg) accessMsg.textContent = "Connexion en cours…";
 
-    const form = document.createElement("form");
-    form.method = "POST";
-    form.action = action;
-    form.style.display = "none";
-
-    const add = (name, value) => {
-      if (value === null || value === undefined) return;
-      const input = document.createElement("input");
-      input.type = "hidden";
-      input.name = name;
-      input.value = String(value);
-      form.appendChild(input);
-    };
-
-    // Carry over any params already present in login_url (if any)
-    for (const [k, val] of Object.entries(extraParams || {})) {
-      // We'll override credentials and dst below
-      if (k === "username" || k === "password") continue;
-      add(k, val);
-    }
-
-    // After login, redirect user to continue_url (or current page)
+    // ✅ OPTION C — Redirect-based login (GET) to avoid HTTPS -> HTTP form POST blocking
+    // Top-level navigation to http://mikrotik/login?... is allowed even from an HTTPS page.
     const redirect = (continueUrl || "").trim() || location.href;
 
-    // Some MikroTik versions use dst / dsturl; harmless if ignored
-    add("dst", redirect);
-    add("dsturl", redirect);
+    let target = loginUrl;
+    try {
+      const u = new URL(loginUrl, window.location.href);
 
-    // Ensure popup is not used (avoid popup captive browsers)
-    add("popup", "false");
+      // Safety: if Tanaza gives only origin or "/", force /login
+      if (!u.pathname || u.pathname === "/") u.pathname = "/login";
 
-    // Some setups accept success_url; harmless if ignored
-    add("success_url", redirect);
+      // Keep any existing params from login_url, but override credentials + redirect params
+      u.searchParams.set("username", v);
+      u.searchParams.set("password", v);
 
-    // Credentials expected by MikroTik Hotspot
-    add("username", v);
-    add("password", v);
+      // MikroTik commonly uses dst; dsturl is harmless if ignored
+      u.searchParams.set("dst", redirect);
+      u.searchParams.set("dsturl", redirect);
 
-    document.body.appendChild(form);
-    form.submit();
+      // Avoid popup behavior
+      u.searchParams.set("popup", "false");
+
+      // Some setups accept success_url; harmless if ignored
+      u.searchParams.set("success_url", redirect);
+
+      target = u.toString();
+    } catch (_) {
+      // Fallback if URL() fails
+      const sep = loginUrl.includes("?") ? "&" : "?";
+      target =
+        loginUrl +
+        sep +
+        "username=" + encodeURIComponent(v) +
+        "&password=" + encodeURIComponent(v) +
+        "&dst=" + encodeURIComponent(redirect) +
+        "&dsturl=" + encodeURIComponent(redirect) +
+        "&popup=false" +
+        "&success_url=" + encodeURIComponent(redirect);
+    }
+
+    window.location.assign(target);
   }
 
 
