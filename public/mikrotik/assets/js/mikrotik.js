@@ -309,6 +309,7 @@
     return /^https?:\/\//i.test(s) || s.startsWith("/");
   }) || "";
   const continueUrl = pickLastValidParam(["continue_url","continueUrl","dst","url"], (v) => !isPlaceholder(v)) || "";
+  const HOTSPOT_LOGIN_FALLBACK = "http://192.168.88.185:8080/login";
 
   // Debug: show duplicated Tanaza params (placeholders + real values)
   const __apMacAll = qsAll("ap_mac");
@@ -640,17 +641,24 @@
   // Build MikroTik login URL (GET) for Option C redirect-based login
   function buildMikrotikLoginTarget(code) {
     const v = String(code || "").trim();
-    if (!loginUrl || !v) return null;
+    if (!v) return null;
+
+    // Use Tanaza-provided login_url when present; otherwise fall back to the hotspot gateway.
+    const base = (loginUrl && /^https?:\/\//i.test(loginUrl)) ? loginUrl : HOTSPOT_LOGIN_FALLBACK;
 
     const redirect = (continueUrl || "").trim() || location.href;
 
-    let target = loginUrl;
+    let target = base;
     try {
-      const u = new URL(loginUrl, window.location.href);
+      const u = new URL(base, window.location.href);
       if (!u.pathname || u.pathname === "/") u.pathname = "/login";
 
-      u.searchParams.set("username", v);
-      u.searchParams.set("password", v);
+      // IMPORTANT: We do NOT pass username/password here.
+      // We pass the voucher via "code", and the MikroTik hotspot login.html will submit the real login form (POST),
+      // which correctly triggers RADIUS.
+      u.searchParams.set("code", v);
+
+      // keep dst parameters for post-login navigation
       u.searchParams.set("dst", redirect);
       u.searchParams.set("dsturl", redirect);
       u.searchParams.set("popup", "false");
@@ -658,12 +666,11 @@
 
       target = u.toString();
     } catch (_) {
-      const sep = loginUrl.includes("?") ? "&" : "?";
+      const sep = String(base).includes("?") ? "&" : "?";
       target =
-        loginUrl +
+        String(base) +
         sep +
-        "username=" + encodeURIComponent(v) +
-        "&password=" + encodeURIComponent(v) +
+        "code=" + encodeURIComponent(v) +
         "&dst=" + encodeURIComponent(redirect) +
         "&dsturl=" + encodeURIComponent(redirect) +
         "&popup=false" +
@@ -676,13 +683,7 @@ function submitToLoginUrl(code, ev) {
     if (ev && typeof ev.preventDefault === "function") {
       try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
     }
-
-    if (!loginUrl) {
-      showToast("❌ login_url manquant (Tanaza). Impossible d'activer la connexion.", "error", 5200);
-      return;
-    }
-
-    // MikroTik Hotspot: username/password = code (validated by RADIUS/backend)
+    // Voucher code to be submitted to MikroTik hotspot (validated by RADIUS/backend)
     const v = String(code || "").trim();
     if (!v) {
       showToast("❌ Code invalide.", "error", 4500);
@@ -697,10 +698,10 @@ function submitToLoginUrl(code, ev) {
     const accessMsg = document.getElementById("accessMsg");
     if (accessMsg) accessMsg.textContent = "Connexion en cours…";
 
-    // ✅ OPTION C — Redirect-based login (GET) to avoid HTTPS -> HTTP form POST blocking
+    // ✅ Redirect to MikroTik hotspot login page (which will POST the login form and trigger RADIUS)
     const target = buildMikrotikLoginTarget(v);
     if (!target) {
-      showToast("❌ login_url manquant (Tanaza). Impossible d'activer la connexion.", "error", 5200);
+      showToast("❌ Impossible d'ouvrir la page de connexion du Hotspot.", "error", 5200);
       return;
     }
     window.location.assign(target);
@@ -717,7 +718,7 @@ function submitToLoginUrl(code, ev) {
       // Build target URL *synchronously* (important for mobile captive browsers: user gesture)
       const target = buildMikrotikLoginTarget(currentVoucherCode);
       if (!target) {
-        showToast("❌ login_url manquant (Tanaza). Impossible d'activer la connexion.", "error", 5200);
+        showToast("❌ Impossible d'ouvrir la page de connexion du Hotspot.", "error", 5200);
         return;
       }
 
