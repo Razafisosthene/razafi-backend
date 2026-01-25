@@ -750,7 +750,24 @@ function submitToLoginUrl(code, ev) {
       }
 
       // Navigate to MikroTik login (should trigger RADIUS)
-      window.location.assign(target);
+      // Mobile captive browsers can be picky: try several navigation methods.
+      try {
+        window.location.replace(target);
+      } catch (_) {
+        try { window.location.href = target; } catch (_) {}
+      }
+      // Fallback: force an anchor click shortly after (some WebViews allow this even if replace is ignored).
+      setTimeout(function () {
+        try {
+          var a = document.createElement("a");
+          a.href = target;
+          a.target = "_self";
+          a.rel = "noreferrer";
+          a.style.display = "none";
+          document.body.appendChild(a);
+          a.click();
+        } catch (_) {}
+      }, 120);
     });
   }
 
