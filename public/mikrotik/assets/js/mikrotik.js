@@ -310,6 +310,28 @@
   }) || "";
   const continueUrl = pickLastValidParam(["continue_url","continueUrl","dst","url"], (v) => !isPlaceholder(v)) || "";
 
+// -------------------------------------------------
+// Normalize Tanaza-provided login_url for MikroTik
+// Tanaza sometimes passes a wrong gateway/port (e.g. 192.168.88.185:8080).
+// For this pool, the Hotspot gateway is 192.168.88.1 and login endpoint is /login.
+// -------------------------------------------------
+let normalizedLoginUrl = loginUrl;
+try {
+  const raw = String(loginUrl || "").trim();
+  if (raw) {
+    const u = new URL(raw, window.location.href);
+
+    const hostIsWrong = (u.hostname && u.hostname !== "192.168.88.1");
+    const portIsWrong = (u.port && u.port !== "" && u.port !== "80" && u.port !== "443");
+
+    if (hostIsWrong || u.port === "8080" || portIsWrong) {
+      u.hostname = "192.168.88.1";
+      u.port = "";
+      u.pathname = "/login";
+      normalizedLoginUrl = u.toString();
+    }
+  }
+} catch (_) {}
   // Debug: show duplicated Tanaza params (placeholders + real values)
   const __apMacAll = qsAll("ap_mac");
   const __clientMacAll = qsAll("client_mac");
@@ -701,7 +723,7 @@ function submitToLoginUrl(code, ev) {
   try {
     const form = document.createElement("form");
     form.method = "POST";
-    form.action = loginUrl;
+    form.action = normalizedLoginUrl || loginUrl;
 
     const u = document.createElement("input");
     u.type = "hidden";
@@ -736,7 +758,7 @@ function submitToLoginUrl(code, ev) {
   } catch (e) {
     console.warn("[RAZAFI] POST login submit failed:", e?.message || e);
     // Fallback: at least open the login page (user can still login manually)
-    try { window.location.assign(loginUrl); } catch (_) {}
+    try { window.location.assign(normalizedLoginUrl || loginUrl); } catch (_) {}
   }
 }
 
