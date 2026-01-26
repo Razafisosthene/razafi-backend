@@ -309,7 +309,6 @@
     return /^https?:\/\//i.test(s) || s.startsWith("/");
   }) || "";
   const continueUrl = pickLastValidParam(["continue_url","continueUrl","dst","url"], (v) => !isPlaceholder(v)) || "";
-  const HOTSPOT_LOGIN_FALLBACK = "http://192.168.88.185:8080/login";
 
   // Debug: show duplicated Tanaza params (placeholders + real values)
   const __apMacAll = qsAll("ap_mac");
@@ -638,195 +637,58 @@
   }
 
   
-  // Build MikroTik login URL (GET) for Option C redirect-based login
-  function buildMikrotikLoginTarget(code) {
-    const v = String(code || "").trim();
-    if (!v) return null;
-
-    // Use Tanaza-provided login_url when present; otherwise fall back to the hotspot gateway.
-    const base = (loginUrl && /^https?:\/\//i.test(loginUrl)) ? loginUrl : HOTSPOT_LOGIN_FALLBACK;
-
-    const redirect = (continueUrl || "").trim() || location.href;
-
-    let target = base;
-    try {
-      const u = new URL(base, window.location.href);
-      if (!u.pathname || u.pathname === "/") u.pathname = "/login";
-
-      // IMPORTANT: We do NOT pass username/password here.
-      // We pass the voucher via "code", and the MikroTik hotspot login.html will submit the real login form (POST),
-      // which correctly triggers RADIUS.
-      u.searchParams.set("code", v);
-
-      // keep dst parameters for post-login navigation
-      u.searchParams.set("dst", redirect);
-      u.searchParams.set("dsturl", redirect);
-      u.searchParams.set("popup", "false");
-      u.searchParams.set("success_url", redirect);
-
-      target = u.toString();
-    } catch (_) {
-      const sep = String(base).includes("?") ? "&" : "?";
-      target =
-        String(base) +
-        sep +
-        "code=" + encodeURIComponent(v) +
-        "&dst=" + encodeURIComponent(redirect) +
-        "&dsturl=" + encodeURIComponent(redirect) +
-        "&popup=false" +
-        "&success_url=" + encodeURIComponent(redirect);
-    }
-    return target;
-  }
-
-function submitToLoginUrl(code, ev) {
+  // Trigger captive portal to show MikroTik login.html, which will fetch the pending code
+  // and submit the real Hotspot login (=> RADIUS).
+  function submitToLoginUrl(code, ev) {
     if (ev && typeof ev.preventDefault === "function") {
       try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
     }
-    // Voucher code to be submitted to MikroTik hotspot (validated by RADIUS/backend)
-    const v = String(code || "").trim();
-    if (!v) {
-      showToast("❌ Code invalide.", "error", 4500);
-      return;
-    }
 
-    // Persist attempt for post-login connectivity check
+    // We do NOT try to hit http://192.168.x.x/login from this HTTPS portal because
+    // mobile captive browsers often block mixed-content / local-IP navigation.
+    // Instead, we navigate to a plain HTTP URL which forces the Hotspot to redirect
+    // to its own login page (hotspot/login.html).
+    const trigger = (() => {
+      const cu = (continueUrl || "").trim();
+      if (/^http:\/\//i.test(cu)) return cu;
+      // safest HTTP endpoint to trigger captive portal
+      return "http://neverssl.com/";
+    })();
+
     try {
-      sessionStorage.setItem("razafi_login_attempt", JSON.stringify({ ts: Date.now(), continueUrl: continueUrl || "" }));
+      sessionStorage.setItem("razafi_login_attempt", JSON.stringify({ ts: Date.now(), trigger }));
     } catch (_) {}
 
     const accessMsg = document.getElementById("accessMsg");
     if (accessMsg) accessMsg.textContent = "Connexion en cours…";
 
-    // ✅ Redirect to MikroTik hotspot login page (which will POST the login form and trigger RADIUS)
-    const target = buildMikrotikLoginTarget(v);
-    if (!target) {
-      showToast("❌ Impossible d'ouvrir la page de connexion du Hotspot.", "error", 5200);
-      return;
-    }
-    window.location.assign(target);
+    // Best-effort: try multiple navigation methods for captive/WebView
+    try { window.location.href = trigger; } catch (_) {}
+    try { window.location.assign(trigger); } catch (_) {}
+    try { window.location.replace(trigger); } catch (_) {}
+
+    // Last-resort: create a clickable link for browsers that block JS redirects
+    try {
+      const box = document.getElementById("razafiOpenLink") || document.createElement("div");
+      box.id = "razafiOpenLink";
+      box.style.marginTop = "12px";
+      box.innerHTML = '';
+      const a = document.createElement("a");
+      a.href = trigger;
+      a.textContent = "👉 Ouvrir la connexion";
+      a.style.display = "inline-block";
+      a.style.padding = "10px 14px";
+      a.style.borderRadius = "10px";
+      a.style.background = "#111";
+      a.style.color = "#fff";
+      a.style.textDecoration = "none";
+      a.style.fontSize = "14px";
+      box.appendChild(a);
+      const parent = accessMsg ? accessMsg.parentElement : document.body;
+      if (parent && !document.getElementById("razafiOpenLink")) parent.appendChild(box);
+    } catch (_) {}
   }
 
-
-  if (useBtn) {
-    useBtn.addEventListener("click", function (event) {
-      if (!currentVoucherCode) {
-        showToast("❌ Aucun code disponible pour le moment.", "error");
-        return;
-      }
-
-      // Build target URL *synchronously* (important for mobile captive browsers: user gesture)
-      const target = buildMikrotikLoginTarget(currentVoucherCode);
-      if (!target) {
-        showToast("❌ Impossible d'ouvrir la page de connexion du Hotspot.", "error", 5200);
-        return;
-      }
-
-      try { useBtn.setAttribute("disabled", "disabled"); } catch (_) {}
-      showToast("Connexion en cours…", "info");
-
-      // Fire-and-forget activation (don't await; keep user-gesture for navigation)
-      try {
-        const payload = JSON.stringify({
-          voucher_code: currentVoucherCode,
-          client_mac: clientMac || null,
-          ap_mac: apMac || null,
-        });
-
-        // Prefer sendBeacon when available (works even if we navigate away)
-        if (navigator && typeof navigator.sendBeacon === "function") {
-          const blob = new Blob([payload], { type: "application/json" });
-          navigator.sendBeacon("/api/voucher/activate", blob);
-        } else {
-          fetch("/api/voucher/activate", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: payload,
-            keepalive: true,
-          }).catch(() => {});
-        }
-      } catch (e) {
-        console.warn("[RAZAFI] voucher activate fire-and-forget failed:", e?.message || e);
-      }
-
-      // Navigate to MikroTik login (should trigger RADIUS)
-      // Mobile captive browsers can be picky: try several navigation methods.
-      try {
-        window.location.replace(target);
-      } catch (_) {
-        try { window.location.href = target; } catch (_) {}
-      }
-      // Fallback: force an anchor click shortly after (some WebViews allow this even if replace is ignored).
-      setTimeout(function () {
-        try {
-          var a = document.createElement("a");
-          a.href = target;
-          a.target = "_self";
-          a.rel = "noreferrer";
-          a.style.display = "none";
-          document.body.appendChild(a);
-          a.click();
-        } catch (_) {}
-      }, 120);
-    });
-  }
-
-
-  if (copyBtn) {
-    copyBtn.addEventListener("click", async function () {
-      if (!currentVoucherCode) {
-        showToast("❌ Aucun code à copier.", "error");
-        return;
-      }
-      try {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(currentVoucherCode);
-        } else {
-          const ta = document.createElement("textarea");
-          ta.value = currentVoucherCode;
-          ta.style.position = "fixed";
-          ta.style.left = "-9999px";
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand("copy");
-          ta.remove();
-        }
-        showToast("✅ Code copié.", "success");
-      } catch (e) {
-        showToast("❌ Impossible de copier le code.", "error");
-      }
-    });
-  }
-
-  const last = readLastCode();
-  if (last && last.code) {
-    setVoucherUI({ phone: "", code: String(last.code), meta: { planName: last.planName, durationMinutes: last.durationMinutes, maxDevices: last.maxDevices }, focus: false });
-  } else {
-    setVoucherUI({ phone: "", code: "" });
-    renderLastCodeBanner();
-  }
-
-  // -------- Plans: fetch + render (DB only) --------
-  const plansGrid = $("plansGrid");
-  const plansLoading = $("plansLoading");
-
-  // -------- Pool context (AP -> Pool) --------
-  let poolContext = { pool_name: null, pool_percent: null, is_full: false };
-  let poolIsFull = false;
-
-  const _uiEls = {
-    accessMsg: document.getElementById("accessMsg"),
-    noVoucherMsg: document.getElementById("noVoucherMsg"),
-    voucherNone: document.getElementById("voucherNone"),
-    voucherHas: document.getElementById("voucherHas"),
-  };
-  _uiEls.choosePlanHint = _uiEls.voucherNone ? _uiEls.voucherNone.querySelector("p.muted.small") : null;
-
-  const _uiDefaults = {
-    accessMsg: _uiEls.accessMsg ? _uiEls.accessMsg.textContent : null,
-    noVoucherMsg: _uiEls.noVoucherMsg ? _uiEls.noVoucherMsg.textContent : null,
-    choosePlanHint: _uiEls.choosePlanHint ? _uiEls.choosePlanHint.textContent : null,
-  };
 
   function ensurePoolNameLine() {
     const existing = document.getElementById("poolNameLine");

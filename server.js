@@ -3749,15 +3749,15 @@ app.post("/api/voucher/activate", async (req, res) => {
       return res.status(500).json({ error: "invalid_plan_duration", message: "Durée du plan invalide." });
     }
 
-    const startedAt = now;
-    const expiresAt = new Date(startedAt.getTime() + minutes * 60 * 1000);
-
+    
     const updatePayload = {
+      // Arm the voucher (user clicked "Utiliser ce code")
+      // Timer will start on the FIRST successful RADIUS Access-Accept
       status: "active",
-      activated_at: startedAt.toISOString(),
-      started_at: startedAt.toISOString(),
-      expires_at: expiresAt.toISOString(),
-      updated_at: startedAt.toISOString(),
+      activated_at: nowIso,
+      started_at: null,
+      expires_at: null,
+      updated_at: nowIso,
     };
 
     // Keep the first AP that activated it (optional)
@@ -3798,6 +3798,39 @@ app.post("/api/voucher/activate", async (req, res) => {
 
   } catch (e) {
     console.error("/api/voucher/activate error:", e?.message || e);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// ENDPOINT: /api/hotspot/pending-code   (SYSTEM 3 helper)
+// Used by MikroTik hotspot login.html before authentication.
+// Returns the latest "armed" voucher code for this client_mac (activated but not started yet).
+// ---------------------------------------------------------------------------
+app.get("/api/hotspot/pending-code", async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const client_mac_raw = (req.query.client_mac || req.query.clientMac || "");
+    const client_mac = normalizeMacColon(client_mac_raw) || String(client_mac_raw || "").trim();
+    if (!client_mac) return res.status(400).json({ error: "client_mac_required" });
+
+    const { data, error } = await supabase
+      .from("voucher_sessions")
+      .select("voucher_code,status,activated_at,started_at,expires_at")
+      .eq("client_mac", client_mac)
+      .eq("status", "active")
+      .not("activated_at", "is", null)
+      .is("started_at", null)
+      .order("activated_at", { ascending: false })
+      .limit(1);
+
+    if (error || !data || !data.length) return res.status(404).json({ error: "no_pending_code" });
+
+    return res.json({ ok: true, voucher_code: data[0].voucher_code });
+  } catch (e) {
+    console.error("/api/hotspot/pending-code error:", e?.message || e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -4014,6 +4047,64 @@ app.post("/api/radius/authorize", async (req, res) => {
         plan_id: session.plan_id || null,
         metadata: { status: session.status }
       });
+    }
+
+    
+    // Start timer on FIRST successful RADIUS auth (if not started yet)
+    if (!session.started_at || !session.expires_at) {
+      try {
+        // Load plan duration
+        const { data: planRow, error: pErr } = await supabase
+          .from("plans")
+          .select("duration_minutes,duration_hours")
+          .eq("id", session.plan_id)
+          .maybeSingle();
+
+        const dm = Number(planRow?.duration_minutes ?? NaN);
+        const minutes = (Number.isFinite(dm) && dm > 0)
+          ? dm
+          : (Number(planRow?.duration_hours ?? 0) > 0 ? Number(planRow.duration_hours) * 60 : 0);
+
+        if (!minutes || minutes <= 0) {
+          return sendReject("invalid_plan_duration", {
+            entity_type: "voucher_session",
+            entity_id: session.id,
+            nas_id,
+            client_mac,
+            pool_id: session.pool_id || null,
+            plan_id: session.plan_id || null,
+            metadata: { plan_id: session.plan_id }
+          });
+        }
+
+        const startedAtIso = now.toISOString();
+        const expiresAtIso = new Date(now.getTime() + minutes * 60 * 1000).toISOString();
+
+        // Atomic: only start once
+        const { error: stErr } = await supabase
+          .from("voucher_sessions")
+          .update({ started_at: startedAtIso, expires_at: expiresAtIso, updated_at: startedAtIso })
+          .eq("id", session.id)
+          .is("started_at", null);
+
+        // If already started by another concurrent auth, ignore
+        if (stErr) {
+          // Best-effort continue: we'll use current session fields below
+        } else {
+          session.started_at = startedAtIso;
+          session.expires_at = expiresAtIso;
+        }
+      } catch (_) {
+        // If anything fails, reject to be safe
+        return sendReject("start_failed", {
+          entity_type: "voucher_session",
+          entity_id: session.id,
+          nas_id,
+          client_mac,
+          pool_id: session.pool_id || null,
+          plan_id: session.plan_id || null
+        });
+      }
     }
 
     const expiresAt = session.expires_at ? new Date(session.expires_at) : null;
