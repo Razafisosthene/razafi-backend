@@ -709,13 +709,21 @@ function submitToLoginUrl(code, ev) {
 
   if (useBtn) {
     useBtn.addEventListener("click", function (event) {
+// 🔍 DEBUG — click handler fires
+alert("CLICK OK");
       if (!currentVoucherCode) {
         showToast("❌ Aucun code disponible pour le moment.", "error");
         return;
       }
 
+// 🔍 DEBUG — show voucher
+alert("VOUCHER = " + currentVoucherCode);
+
       // Build target URL *synchronously* (important for mobile captive browsers: user gesture)
       const target = buildMikrotikLoginTarget(currentVoucherCode);
+// 🔍 DEBUG — show target URL
+alert("TARGET = " + target);
+
       if (!target) {
         showToast("❌ login_url manquant (Tanaza). Impossible d'activer la connexion.", "error", 5200);
         return;
@@ -748,7 +756,10 @@ function submitToLoginUrl(code, ev) {
         console.warn("[RAZAFI] voucher activate fire-and-forget failed:", e?.message || e);
       }
 
-      // Navigate to MikroTik login (should trigger RADIUS)
+            // 🔍 DEBUG — just before redirect
+      alert("REDIRECT NOW");
+
+// Navigate to MikroTik login (should trigger RADIUS)
       window.location.assign(target);
     });
   }
