@@ -673,109 +673,89 @@
   }
 
 function submitToLoginUrl(code, ev) {
-    if (ev && typeof ev.preventDefault === "function") {
-      try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
-    }
-
-    if (!loginUrl) {
-      showToast("❌ login_url manquant (Tanaza). Impossible d'activer la connexion.", "error", 5200);
-      return;
-    }
-
-    // MikroTik Hotspot: username/password = code (validated by RADIUS/backend)
-    const v = String(code || "").trim();
-    if (!v) {
-      showToast("❌ Code invalide.", "error", 4500);
-      return;
-    }
-
-    // Persist attempt for post-login connectivity check
-    try {
-      sessionStorage.setItem("razafi_login_attempt", JSON.stringify({ ts: Date.now(), continueUrl: continueUrl || "" }));
-    } catch (_) {}
-
-    const accessMsg = document.getElementById("accessMsg");
-    if (accessMsg) accessMsg.textContent = "Connexion en cours…";
-
-    // ✅ PRODUCTION — Proper MikroTik login requires a POST form submit (GET params won't authenticate)
-    try {
-      const form = document.createElement("form");
-      form.method = "POST";
-      form.action = loginUrl;
-
-      const u = document.createElement("input");
-      u.type = "hidden";
-      u.name = "username";
-      u.value = v;
-
-      const p = document.createElement("input");
-      p.type = "hidden";
-      p.name = "password";
-      p.value = v;
-
-      form.appendChild(u);
-      form.appendChild(p);
-
-      // Provide dst if we have it (MikroTik uses dst/popup commonly)
-      if (continueUrl) {
-        const dst = document.createElement("input");
-        dst.type = "hidden";
-        dst.name = "dst";
-        dst.value = continueUrl;
-        form.appendChild(dst);
-      }
-
-      const popup = document.createElement("input");
-      popup.type = "hidden";
-      popup.name = "popup";
-      popup.value = "false";
-      form.appendChild(popup);
-
-      document.body.appendChild(form);
-      form.submit();
-    } catch (e) {
-      console.warn("[RAZAFI] POST login submit failed:", e?.message || e);
-      // Fallback: navigate to login page (user may still login manually)
-      try { window.location.assign(loginUrl); } catch (_) {}
-    }
+  if (ev && typeof ev.preventDefault === "function") {
+    try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
   }
 
-    if (!loginUrl) {
-      showToast("❌ login_url manquant (Tanaza). Impossible d'activer la connexion.", "error", 5200);
-      return;
-    }
-
-    // MikroTik Hotspot: username/password = code (validated by RADIUS/backend)
-    const v = String(code || "").trim();
-    if (!v) {
-      showToast("❌ Code invalide.", "error", 4500);
-      return;
-    }
-
-    // Persist attempt for post-login connectivity check
-    try {
-      sessionStorage.setItem("razafi_login_attempt", JSON.stringify({ ts: Date.now(), continueUrl: continueUrl || "" }));
-    } catch (_) {}
-
-    const accessMsg = document.getElementById("accessMsg");
-    if (accessMsg) accessMsg.textContent = "Connexion en cours…";
-
-    // ✅ OPTION C — Redirect-based login (GET) to avoid HTTPS -> HTTP form POST blocking
-    const target = buildMikrotikLoginTarget(v);
-    if (!target) {
-      showToast("❌ login_url manquant (Tanaza). Impossible d'activer la connexion.", "error", 5200);
-      return;
-    }
-    window.location.assign(target);
+  if (!loginUrl) {
+    showToast("❌ login_url manquant (Tanaza). Impossible d'activer la connexion.", "error", 5200);
+    return;
   }
+
+  // MikroTik Hotspot: username/password = code (validated by RADIUS/backend)
+  const v = String(code || "").trim();
+  if (!v) {
+    showToast("❌ Code invalide.", "error", 4500);
+    return;
+  }
+
+  // Persist attempt for post-login connectivity check
+  try {
+    sessionStorage.setItem("razafi_login_attempt", JSON.stringify({ ts: Date.now(), continueUrl: continueUrl || "" }));
+  } catch (_) {}
+
+  const accessMsg = document.getElementById("accessMsg");
+  if (accessMsg) accessMsg.textContent = "Connexion en cours…";
+
+  // ✅ PRODUCTION — MikroTik login requires POST form submit (GET params won't authenticate)
+  try {
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = loginUrl;
+
+    const u = document.createElement("input");
+    u.type = "hidden";
+    u.name = "username";
+    u.value = v;
+
+    const p = document.createElement("input");
+    p.type = "hidden";
+    p.name = "password";
+    p.value = v;
+
+    form.appendChild(u);
+    form.appendChild(p);
+
+    // If we have a continue/dst URL, pass it to MikroTik
+    if (continueUrl) {
+      const dst = document.createElement("input");
+      dst.type = "hidden";
+      dst.name = "dst";
+      dst.value = continueUrl;
+      form.appendChild(dst);
+    }
+
+    const popup = document.createElement("input");
+    popup.type = "hidden";
+    popup.name = "popup";
+    popup.value = "false";
+    form.appendChild(popup);
+
+    document.body.appendChild(form);
+    form.submit();
+  } catch (e) {
+    console.warn("[RAZAFI] POST login submit failed:", e?.message || e);
+    // Fallback: at least open the login page (user can still login manually)
+    try { window.location.assign(loginUrl); } catch (_) {}
+  }
+}
+
 
 
   if (useBtn) {
     useBtn.addEventListener("click", function (event) {
-if (!currentVoucherCode) {
+// 🔍 DEBUG — click handler fires
+/*debug removed*/
+      if (!currentVoucherCode) {
         showToast("❌ Aucun code disponible pour le moment.", "error");
         return;
       }
+
+// 🔍 DEBUG — show voucher
+/*debug removed*/
+
+      
+      // (target URL build removed — we submit a POST form)
       try { useBtn.setAttribute("disabled", "disabled"); } catch (_) {}
       showToast("Connexion en cours…", "info");
 
@@ -802,8 +782,13 @@ if (!currentVoucherCode) {
       } catch (e) {
         console.warn("[RAZAFI] voucher activate fire-and-forget failed:", e?.message || e);
       }
+
+            // 🔍 DEBUG — just before redirect
+      /*debug removed*/
+
 // Navigate to MikroTik login (POST form submit)
-      submitToLoginUrl(currentVoucherCode, event);});
+      submitToLoginUrl(currentVoucherCode, event);
+    });
   }
 
 
