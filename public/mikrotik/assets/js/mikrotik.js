@@ -311,25 +311,21 @@
   const continueUrl = pickLastValidParam(["continue_url","continueUrl","dst","url"], (v) => !isPlaceholder(v)) || "";
 
 // -------------------------------------------------
-// Normalize Tanaza-provided login_url for MikroTik
-// Tanaza sometimes passes a wrong gateway/port (e.g. 192.168.88.185:8080).
-// For this pool, the Hotspot gateway is 192.168.88.1 and login endpoint is /login.
+// Normalize Tanaza-provided login_url for MikroTik (FORCE HTTPS)
+// Tanaza may pass a wrong gateway/port (e.g. 192.168.88.185:8080) and may use http.
+// For this pool, always POST to: https://192.168.88.1/login
 // -------------------------------------------------
-let normalizedLoginUrl = loginUrl;
+let normalizedLoginUrl = "https://192.168.88.1/login";
 try {
+  // If Tanaza provides a URL, we only keep its shape but force scheme/host/path
   const raw = String(loginUrl || "").trim();
   if (raw) {
     const u = new URL(raw, window.location.href);
-
-    const hostIsWrong = (u.hostname && u.hostname !== "192.168.88.1");
-    const portIsWrong = (u.port && u.port !== "" && u.port !== "80" && u.port !== "443");
-
-    if (hostIsWrong || u.port === "8080" || portIsWrong) {
-      u.hostname = "192.168.88.1";
-      u.port = "";
-      u.pathname = "/login";
-      normalizedLoginUrl = u.toString();
-    }
+    u.protocol = "https:";
+    u.hostname = "192.168.88.1";
+    u.port = "";
+    u.pathname = "/login";
+    normalizedLoginUrl = u.toString();
   }
 } catch (_) {}
   // Debug: show duplicated Tanaza params (placeholders + real values)
