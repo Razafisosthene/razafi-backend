@@ -310,6 +310,48 @@
   }) || "";
   const continueUrl = pickLastValidParam(["continue_url","continueUrl","dst","url"], (v) => !isPlaceholder(v)) || "";
 
+  // Optional: allow forcing the MikroTik gateway IP from Tanaza URL
+  // Example Tanaza Splash URL: https://portal.razafistore.com/mikrotik/?gw=192.168.88.1
+  const gwIp = pickLastValidParam(["gw","gateway","router_ip","hotspot_ip","mikrotik_ip"], (v) => {
+    if (isPlaceholder(v)) return false;
+    const s = String(v || "").trim();
+    return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(s);
+  }) || "";
+
+  function normalizeMikrotikLoginUrl(rawUrl) {
+    const raw = String(rawUrl || "").trim();
+    if (!raw) return "";
+
+    // If gwIp provided, it is authoritative (prevents wrong login_url like client-ip:8080)
+    if (gwIp) {
+      // Prefer the scheme from rawUrl when possible, default to http
+      let scheme = "http";
+      try {
+        const u0 = new URL(raw, window.location.href);
+        scheme = (u0.protocol || "http:").replace(":", "") || "http";
+      } catch (_) {}
+      return `${scheme}://${gwIp}/login`;
+    }
+
+    // Otherwise, sanitize common wrong ports/paths (e.g., :8080)
+    try {
+      const u = new URL(raw, window.location.href);
+      if (!u.pathname || u.pathname === "/") u.pathname = "/login";
+      // MikroTik hotspot login is normally on 80/443. Strip odd ports if present.
+      const p = u.port ? parseInt(u.port, 10) : 0;
+      if (p && p !== 80 && p !== 443) u.port = "";
+      return u.toString();
+    } catch (_) {
+      let s = raw;
+      // strip :8080 or any :port
+      s = s.replace(/:(\d{2,5})(?=\/|$)/, "");
+      if (!/\/login(\?|$)/i.test(s)) s = s.replace(/\/+$/, "") + "/login";
+      return s;
+    }
+  }
+
+  const loginUrlNormalized = normalizeMikrotikLoginUrl(loginUrl);
+
   // Debug: show duplicated Tanaza params (placeholders + real values)
   const __apMacAll = qsAll("ap_mac");
   const __clientMacAll = qsAll("client_mac");
@@ -640,13 +682,13 @@
   // Build MikroTik login URL (GET) for Option C redirect-based login
   function buildMikrotikLoginTarget(code) {
     const v = String(code || "").trim();
-    if (!loginUrl || !v) return null;
+    if (!loginUrlNormalized || !v) return null;
 
     const redirect = (continueUrl || "").trim() || location.href;
 
-    let target = loginUrl;
+    let target = loginUrlNormalized;
     try {
-      const u = new URL(loginUrl, window.location.href);
+      const u = new URL(loginUrlNormalized, window.location.href);
       if (!u.pathname || u.pathname === "/") u.pathname = "/login";
 
       u.searchParams.set("username", v);
@@ -658,9 +700,9 @@
 
       target = u.toString();
     } catch (_) {
-      const sep = loginUrl.includes("?") ? "&" : "?";
+      const sep = loginUrlNormalized.includes("?") ? "&" : "?";
       target =
-        loginUrl +
+        loginUrlNormalized +
         sep +
         "username=" + encodeURIComponent(v) +
         "&password=" + encodeURIComponent(v) +
@@ -678,7 +720,7 @@ function submitToLoginUrl(code, ev) {
   }
   const v = String(code || "").trim();
   if (!v) { showToast("❌ Code invalide.", "error", 4500); return; }
-  const raw = String(loginUrl || "").trim();
+  const raw = String(loginUrlNormalized || "").trim();
   if (!raw) { showToast("❌ login_url manquant (Tanaza).", "error", 5200); return; }
   const redirect = (continueUrl && String(continueUrl).trim()) || (window.location && window.location.href) || "http://fixwifi.it";
 
