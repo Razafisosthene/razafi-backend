@@ -467,17 +467,12 @@
   }
 
   function pickContinueTarget() {
-    const fallback = "https://www.google.com/";
-    const raw = (continueUrl || "").trim();
-    if (!raw) return fallback;
-    try {
-      const u = new URL(raw, window.location.href);
-      if (u.protocol === "http:" || u.protocol === "https:") return u.toString();
-      return fallback;
-    } catch {
-      return fallback;
-    }
+    // System 3 (MikroTik): after successful login we must land on a real Internet page
+    // to exit captive mode reliably. We intentionally do NOT use continueUrl here
+    // to avoid redirect loops back to the portal.
+    return "https://www.google.com/";
   }
+
 
   function setConnectedUI() {
     const accessMsg = document.getElementById("accessMsg");
@@ -754,7 +749,7 @@ function submitToLoginUrl(code, ev) {
   if (!v) { showToast("❌ Code invalide.", "error", 4500); return; }
   const raw = String(loginUrlNormalized || "").trim();
   if (!raw) { showToast("❌ login_url manquant (Tanaza).", "error", 5200); return; }
-  const redirect = (continueUrl && String(continueUrl).trim()) || (window.location && window.location.href) || "http://fixwifi.it";
+  const redirect = pickContinueTarget();
 
   let action = raw;
   try {
@@ -766,6 +761,10 @@ function submitToLoginUrl(code, ev) {
   }
 
   try { sessionStorage.setItem("razafi_last_login_url", action); } catch (_) {}
+
+  // Mark that we attempted an automatic MikroTik login (used to force a stronger "connected" check on return)
+  try { sessionStorage.setItem("razafi_login_attempt", "1"); } catch (_) {}
+
 
   const form = document.createElement("form");
   form.method = "POST";
