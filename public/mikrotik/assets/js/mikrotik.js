@@ -311,23 +311,28 @@
   const continueUrl = pickLastValidParam(["continue_url","continueUrl","dst","url"], (v) => !isPlaceholder(v)) || "";
 
 // -------------------------------------------------
-// Normalize Tanaza-provided login_url for MikroTik (FORCE HTTPS)
-// Tanaza may pass a wrong gateway/port (e.g. 192.168.88.185:8080) and may use http.
-// For this pool, always POST to: https://192.168.88.1/login
+// Normalize Tanaza-provided login_url for MikroTik (PRODUCTION SAFE)
+// Tanaza may pass a wrong gateway/port (e.g. :8080). MikroTik Hotspot login is typically HTTP on /login.
+// We keep a private-IP host if provided, strip custom ports, and force path = /login.
 // -------------------------------------------------
-let normalizedLoginUrl = "https://192.168.88.1/login";
+let normalizedLoginUrl = "";
 try {
-  // If Tanaza provides a URL, we only keep its shape but force scheme/host/path
   const raw = String(loginUrl || "").trim();
+  let host = "192.168.88.1"; // default hotspot gateway (your bridge-lan IP)
+
   if (raw) {
-    const u = new URL(raw, window.location.href);
-    u.protocol = "https:";
-    u.hostname = "192.168.88.1";
-    u.port = "";
-    u.pathname = "/login";
-    normalizedLoginUrl = u.toString();
+    // If Tanaza gave an absolute URL, keep its host when it is a private IP (e.g. 192.168.x.x)
+    if (/^https?:\/\//i.test(raw)) {
+      const u0 = new URL(raw);
+      if (u0.hostname) host = u0.hostname;
+    }
   }
-} catch (_) {}
+
+  // Always build a clean login URL
+  normalizedLoginUrl = "http://" + host + "/login";
+} catch (_) {
+  normalizedLoginUrl = "http://192.168.88.1/login";
+}
   // Debug: show duplicated Tanaza params (placeholders + real values)
   const __apMacAll = qsAll("ap_mac");
   const __clientMacAll = qsAll("client_mac");
@@ -695,7 +700,7 @@ function submitToLoginUrl(code, ev) {
     try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
   }
 
-  if (!loginUrl) {
+  if (!(normalizedLoginUrl || loginUrl)) {
     showToast("❌ login_url manquant (Tanaza). Impossible d'activer la connexion.", "error", 5200);
     return;
   }
