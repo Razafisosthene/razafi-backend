@@ -310,6 +310,13 @@
   }) || "";
   const continueUrl = pickLastValidParam(["continue_url","continueUrl","dst","url"], (v) => !isPlaceholder(v)) || "";
 
+  const clientIp = pickLastValidParam(["client_ip","clientIp","ip","ua_ip"], (v) => {
+    if (isPlaceholder(v)) return false;
+    const s = String(v || "").trim();
+    return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(s);
+  }) || "";
+
+
   // Optional: allow forcing the MikroTik gateway IP from Tanaza URL
   // Example Tanaza Splash URL: https://portal.razafistore.com/mikrotik/?gw=192.168.88.1
   const gwIp = pickLastValidParam(["gw","gateway","router_ip","hotspot_ip","mikrotik_ip"], (v) => {
@@ -331,6 +338,31 @@
         scheme = (u0.protocol || "http:").replace(":", "") || "http";
       } catch (_) {}
       return `${scheme}://${gwIp}/login`;
+    }
+
+
+    // Heuristic fallback (Tanaza bug): sometimes login_url points to the CLIENT IP (or port 8080)
+    // Example wrong: http://192.168.88.185:8080/login   (client_ip=192.168.88.117)
+    // If we have clientIp and login_url is in same /24 but NOT x.x.x.1, assume gateway is x.x.x.1
+    if (clientIp) {
+      try {
+        const uH = new URL(raw, window.location.href);
+        const host = (uH.hostname || "").trim();
+        const isIp = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
+        if (isIp) {
+          const cip = String(clientIp).trim();
+          const p1 = host.split(".");
+          const p2 = cip.split(".");
+          if (p1.length === 4 && p2.length === 4 && p1[0] === p2[0] && p1[1] === p2[1] && p1[2] === p2[2]) {
+            const assumedGw = `${p2[0]}.${p2[1]}.${p2[2]}.1`;
+            const suspicious = (host === cip) || (uH.port === "8080") || (host !== assumedGw);
+            if (suspicious) {
+              const scheme = (uH.protocol || "http:").replace(":", "") || "http";
+              return `${scheme}://${assumedGw}/login`;
+            }
+          }
+        }
+      } catch (_) {}
     }
 
     // Otherwise, sanitize common wrong ports/paths (e.g., :8080)
