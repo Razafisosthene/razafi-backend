@@ -467,12 +467,17 @@
   }
 
   function pickContinueTarget() {
-    // System 3 (MikroTik): after successful login we must land on a real Internet page
-    // to exit captive mode reliably. We intentionally do NOT use continueUrl here
-    // to avoid redirect loops back to the portal.
-    return "https://www.google.com/";
+    const fallback = "https://www.google.com/";
+    const raw = (continueUrl || "").trim();
+    if (!raw) return fallback;
+    try {
+      const u = new URL(raw, window.location.href);
+      if (u.protocol === "http:" || u.protocol === "https:") return u.toString();
+      return fallback;
+    } catch {
+      return fallback;
+    }
   }
-
 
   function setConnectedUI() {
     const accessMsg = document.getElementById("accessMsg");
@@ -745,27 +750,38 @@ function submitToLoginUrl(code, ev) {
   if (ev && typeof ev.preventDefault === "function") {
     try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
   }
+
   const v = String(code || "").trim();
   if (!v) { showToast("❌ Code invalide.", "error", 4500); return; }
-  const raw = String(loginUrlNormalized || "").trim();
+
+  // login_url is provided by MikroTik (via Tanaza redirect). If missing, try gw= (optional).
+  let raw = String(loginUrlNormalized || "").trim();
+  if (!raw) {
+    const gw = String(gwIp || "").trim();
+    if (gw) raw = "http://" + gw.replace(/^https?:\/\//i, "").replace(/\/.*$/, "") + "/login";
+  }
   if (!raw) { showToast("❌ login_url manquant (Tanaza).", "error", 5200); return; }
-  const redirect = pickContinueTarget();
+
+  const redirect =
+    (continueUrl && String(continueUrl).trim()) ||
+    (window.location && window.location.href) ||
+    "http://fixwifi.it";
 
   let action = raw;
   try {
     const u = new URL(raw, window.location.href);
+    // Ensure /login endpoint
     if (!u.pathname || u.pathname === "/") u.pathname = "/login";
+    if (!/\/login$/i.test(u.pathname)) u.pathname = u.pathname.replace(/\/+$/, "") + "/login";
     action = u.toString();
   } catch (_) {
+    // Raw might be "http://192.168.88.1" or "http://192.168.88.1/login"
     if (!/\/login(\?|$)/i.test(action)) action = action.replace(/\/+$/, "") + "/login";
   }
 
   try { sessionStorage.setItem("razafi_last_login_url", action); } catch (_) {}
 
-  // Mark that we attempted an automatic MikroTik login (used to force a stronger "connected" check on return)
-  try { sessionStorage.setItem("razafi_login_attempt", "1"); } catch (_) {}
-
-
+  // Prefer POST form (most compatible with MikroTik Hotspot). Keep it in SAME window.
   const form = document.createElement("form");
   form.method = "POST";
   form.action = action;
@@ -789,13 +805,25 @@ function submitToLoginUrl(code, ev) {
 
   try {
     form.submit();
+    return;
   } catch (_) {
+    // Fallback: GET with query (less ideal, but useful if a browser blocks mixed POST)
     try {
       const sep = action.includes("?") ? "&" : "?";
-      window.location.assign(action + sep + "username=" + encodeURIComponent(v) + "&password=" + encodeURIComponent(v));
+      const qs =
+        "username=" + encodeURIComponent(v) +
+        "&password=" + encodeURIComponent(v) +
+        "&dst=" + encodeURIComponent(redirect) +
+        "&dsturl=" + encodeURIComponent(redirect) +
+        "&popup=false";
+      window.location.assign(action + sep + qs);
+      return;
     } catch (_) {}
   }
+
+  showToast("❌ Impossible de lancer la connexion MikroTik.", "error", 5200);
 }
+
 
 
   if (useBtn) {
