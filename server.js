@@ -4035,18 +4035,89 @@ app.post("/api/radius/authorize", async (req, res) => {
         }
       }
     }
-
-    // Model B: must be activated first (click "Utiliser ce code")
+    // Model B (anti-race): allow FIRST RADIUS auth to activate a pending voucher.
+    // Why: portal click + network latency can cause /login (RADIUS) to arrive before /api/voucher/activate finished.
+    // Rule:
+    // - active  -> continue
+    // - pending -> atomically promote to active, bind client_mac if empty, then continue
+    // - other   -> reject
     if (session.status !== "active") {
-      return sendReject("not_active", {
-        entity_type: "voucher_session",
-        entity_id: session.id,
-        nas_id,
-        client_mac,
-        pool_id: session.pool_id || null,
-        plan_id: session.plan_id || null,
-        metadata: { status: session.status }
-      });
+      if (session.status === "pending") {
+        try {
+          const nowIso = now.toISOString();
+          const upd = {
+            status: "active",
+            activated_at: nowIso,
+            updated_at: nowIso,
+          };
+
+          // bind client MAC at first activation if not already bound
+          if (!session.client_mac && client_mac) {
+            upd.client_mac = client_mac;
+          }
+
+          // Atomic: only one request can promote pending -> active
+          const { data: promoted, error: upErr } = await supabase
+            .from("voucher_sessions")
+            .update(upd)
+            .eq("id", session.id)
+            .eq("status", "pending")
+            .select("id,voucher_code,status,client_mac,pool_id,plan_id,expires_at,activated_at,started_at")
+            .maybeSingle();
+
+          if (upErr) {
+            return sendReject("activate_failed", {
+              entity_type: "voucher_session",
+              entity_id: session.id,
+              nas_id,
+              client_mac,
+              pool_id: session.pool_id || null,
+              plan_id: session.plan_id || null,
+              metadata: { error: upErr.message || String(upErr) }
+            });
+          }
+
+          // If another concurrent request already promoted it, promoted may be null; refetch latest.
+          if (promoted && promoted.status === "active") {
+            Object.assign(session, promoted);
+          } else {
+            const { data: rows2, error: e2 } = await supabase
+              .from("voucher_sessions")
+              .select("id,voucher_code,status,client_mac,pool_id,plan_id,expires_at,activated_at,started_at")
+              .eq("voucher_code", username)
+              .order("created_at", { ascending: false })
+              .limit(1);
+
+            if (e2 || !rows2 || !rows2.length) {
+              return sendReject("unknown_code", { nas_id, client_mac, metadata: { username } });
+            }
+            Object.assign(session, rows2[0]);
+          }
+        } catch (e) {
+          return sendReject("activate_failed", {
+            entity_type: "voucher_session",
+            entity_id: session.id,
+            nas_id,
+            client_mac,
+            pool_id: session.pool_id || null,
+            plan_id: session.plan_id || null,
+            metadata: { err: String(e?.message || e) }
+          });
+        }
+      }
+
+      // After best-effort promotion, enforce active
+      if (session.status !== "active") {
+        return sendReject("not_active", {
+          entity_type: "voucher_session",
+          entity_id: session.id,
+          nas_id,
+          client_mac,
+          pool_id: session.pool_id || null,
+          plan_id: session.plan_id || null,
+          metadata: { status: session.status }
+        });
+      }
     }
 
     
