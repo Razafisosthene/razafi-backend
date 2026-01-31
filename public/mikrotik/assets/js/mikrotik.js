@@ -798,6 +798,8 @@ function getQueryParamsSafe() {
 }
 
 function submitToLoginUrl(code, ev) {
+  // IMPORTANT: Captive browsers often block HTTPS ➜ HTTP form POST.
+  // So we force a GET redirect to the MikroTik hotspot login_url (most compatible).
   if (ev && typeof ev.preventDefault === "function") {
     try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
   }
@@ -805,72 +807,56 @@ function submitToLoginUrl(code, ev) {
   const v = String(code || "").trim();
   if (!v) { showToast("❌ Code invalide.", "error", 4500); return; }
 
-  // login_url is provided by MikroTik (via Tanaza redirect). If missing, try gw= (optional).
+  // MikroTik provides login_url in the query string (via Tanaza). This is the ONLY reliable target.
   let raw = String(loginUrlNormalized || "").trim();
+
+  // Fallback: reuse last known working login_url (helps if Tanaza duplicates / truncates params)
   if (!raw) {
-    const gw = String(gwIp || "").trim();
-    if (gw) raw = "http://" + gw.replace(/^https?:\/\//i, "").replace(/\/.*$/, "") + "/login";
+    try { raw = String(sessionStorage.getItem("razafi_last_login_url") || "").trim(); } catch (_) {}
   }
-  if (!raw) { showToast("❌ login_url manquant (Tanaza).", "error", 5200); return; }
+
+  if (!raw) {
+    showToast("❌ login_url manquant. Le Hotspot n'a pas fourni l'URL de connexion.", "error", 6500);
+    return;
+  }
 
   const redirect =
     (continueUrl && String(continueUrl).trim()) ||
     (window.location && window.location.href) ||
     "http://fixwifi.it";
 
+  // Keep the login_url EXACT (do not rebuild from gw), but normalize if it is a bare host.
   let action = raw;
   try {
     const u = new URL(raw, window.location.href);
-    // Ensure /login endpoint
+    // If someone gave only "http://IP:PORT" without path, default to /login
     if (!u.pathname || u.pathname === "/") u.pathname = "/login";
-    if (!/\/login$/i.test(u.pathname)) u.pathname = u.pathname.replace(/\/+$/, "") + "/login";
     action = u.toString();
   } catch (_) {
-    // Raw might be "http://192.168.88.1" or "http://192.168.88.1/login"
-    if (!/\/login(\?|$)/i.test(action)) action = action.replace(/\/+$/, "") + "/login";
+    // If it's not a full URL, try to make it one
+    if (/^[0-9.]+(?::\d+)?$/.test(action)) action = "http://" + action + "/login";
+    if (!/^https?:\/\//i.test(action)) {
+      showToast("❌ login_url invalide (format).", "error", 6500);
+      return;
+    }
   }
 
   try { sessionStorage.setItem("razafi_last_login_url", action); } catch (_) {}
 
-  // Prefer POST form (most compatible with MikroTik Hotspot). Keep it in SAME window.
-  const form = document.createElement("form");
-  form.method = "POST";
-  form.action = action;
-  form.style.display = "none";
-
-  const add = (name, value) => {
-    const i = document.createElement("input");
-    i.type = "hidden";
-    i.name = name;
-    i.value = String(value ?? "");
-    form.appendChild(i);
-  };
-
-  add("username", v);
-  add("password", v);
-  add("dst", redirect);
-  add("dsturl", redirect);
-  add("popup", "false");
-
-  document.body.appendChild(form);
-
+  // ✅ Force GET redirect
   try {
-    form.submit();
+    const sep = action.includes("?") ? "&" : "?";
+    const qs =
+      "username=" + encodeURIComponent(v) +
+      "&password=" + encodeURIComponent(v) +
+      "&dst=" + encodeURIComponent(redirect) +
+      "&dsturl=" + encodeURIComponent(redirect) +
+      "&popup=false";
+
+    // Use location.href (not form.submit) to avoid "form not secure" block on Chrome/Android captive webviews
+    window.location.href = action + sep + qs;
     return;
-  } catch (_) {
-    // Fallback: GET with query (less ideal, but useful if a browser blocks mixed POST)
-    try {
-      const sep = action.includes("?") ? "&" : "?";
-      const qs =
-        "username=" + encodeURIComponent(v) +
-        "&password=" + encodeURIComponent(v) +
-        "&dst=" + encodeURIComponent(redirect) +
-        "&dsturl=" + encodeURIComponent(redirect) +
-        "&popup=false";
-      window.location.assign(action + sep + qs);
-      return;
-    } catch (_) {}
-  }
+  } catch (_) {}
 
   showToast("❌ Impossible de lancer la connexion MikroTik.", "error", 5200);
 }
