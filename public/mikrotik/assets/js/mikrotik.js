@@ -747,7 +747,8 @@
   }
 
 function submitToLoginUrl(code, ev) {
-  // We want the browser to *navigate* to MikroTik, not POST a form (mixed-content can block POST silently)
+  // Goal: force a REAL navigation to MikroTik /login (so MikroTik triggers RADIUS)
+  // Captive portals often block background fetch/XHR, but allow top-level navigation.
   if (ev && typeof ev.preventDefault === "function") {
     try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
   }
@@ -755,71 +756,59 @@ function submitToLoginUrl(code, ev) {
   const v = String(code || "").trim();
   if (!v) { showToast("❌ Code invalide.", "error", 4500); return; }
 
+  // login_url may come from Tanaza (login_url=...) OR we fallback to gw=...
+  let raw = String(loginUrlNormalized || "").trim();
+  if (!raw) {
+    const gw = String(gwIp || "").trim();
+    if (gw) raw = "http://" + gw.replace(/^https?:\/\//i, "").replace(/\/.*$/, "") + "/login";
+  }
+  if (!raw) { showToast("❌ login_url manquant (Tanaza).", "error", 5200); return; }
+
   const redirect =
     (continueUrl && String(continueUrl).trim()) ||
     (window.location && window.location.href) ||
     "http://fixwifi.it";
 
-  // Preferred: build full MikroTik /login target with query params (GET navigation)
-  let target = null;
-
+  // Normalize to /login endpoint
+  let action = raw;
   try {
-    target = buildMikrotikLoginTarget(v); // uses loginUrlNormalized (+ dst params)
+    const u = new URL(raw, window.location.href);
+    if (!u.pathname || u.pathname === "/") u.pathname = "/login";
+    if (!/\/login$/i.test(u.pathname)) u.pathname = u.pathname.replace(/\/+$/, "") + "/login";
+    action = u.toString();
   } catch (_) {
-    target = null;
+    if (!/\/login(\?|$)/i.test(action)) action = action.replace(/\/+$/, "") + "/login";
   }
 
-  // Fallback: if login_url missing, try gw= (Tanaza Splash URL param)
-  if (!target) {
-    const gw = String(gwIp || "").trim();
-    if (gw) {
-      const host = gw.replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
-      const base = "http://" + host.replace(/\/+$/, "") + "/login";
-      try {
-        const u = new URL(base);
-        u.searchParams.set("username", v);
-        u.searchParams.set("password", v);
-        u.searchParams.set("dst", redirect);
-        u.searchParams.set("dsturl", redirect);
-        u.searchParams.set("popup", "false");
-        u.searchParams.set("success_url", redirect);
-        target = u.toString();
-      } catch (_) {
-        const qs =
-          "username=" + encodeURIComponent(v) +
-          "&password=" + encodeURIComponent(v) +
-          "&dst=" + encodeURIComponent(redirect) +
-          "&dsturl=" + encodeURIComponent(redirect) +
-          "&popup=false" +
-          "&success_url=" + encodeURIComponent(redirect);
-        target = base + "?" + qs;
-      }
-    }
-  }
+  // Build GET target (most compatible with captive portals + avoids HTTPS->HTTP POST mixed content)
+  const sep = action.includes("?") ? "&" : "?";
+  const target =
+    action + sep +
+    "username=" + encodeURIComponent(v) +
+    "&password=" + encodeURIComponent(v) +
+    "&dst=" + encodeURIComponent(redirect) +
+    "&dsturl=" + encodeURIComponent(redirect) +
+    "&popup=false";
 
-  if (!target) {
-    showToast("❌ login_url manquant (Tanaza).", "error", 5200);
-    return;
-  }
-
-  // Remember we attempted a login so we can re-check connectivity on return
-  try { sessionStorage.setItem("razafi_login_attempt", "1"); } catch (_) {}
-
-  // Helpful debug for field troubleshooting
-  try { sessionStorage.setItem("razafi_last_login_url", String(target)); } catch (_) {}
+  try { sessionStorage.setItem("razafi_last_login_url", target); } catch (_) {}
   console.log("[RAZAFI] MikroTik login NAV →", target);
 
-  // Navigate (GET). This avoids HTTPS->HTTP form POST mixed-content blocking.
+  // Captive-portal safe navigation order:
+  // 1) simulate a user click (often allowed when JS redirects are restricted)
   try {
-    window.location.assign(target);
+    const a = document.createElement("a");
+    a.href = target;
+    a.style.display = "none";
+    a.rel = "noreferrer";
+    document.body.appendChild(a);
+    a.click();
     return;
   } catch (_) {}
 
-  // Ultimate fallback
-  try {
-    window.location.href = target;
-    return;
-  } catch (_) {}
+  // 2) hard navigation
+  try { window.location.assign(target); return; } catch (_) {}
+  // 3) ultimate fallback
+  try { window.location.href = target; return; } catch (_) {}
 
   showToast("❌ Impossible de lancer la connexion MikroTik.", "error", 5200);
 }
