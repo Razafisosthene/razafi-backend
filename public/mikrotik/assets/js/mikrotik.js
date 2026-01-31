@@ -339,22 +339,23 @@
 
   
 function normalizeMikrotikLoginUrl(rawUrl) {
+  // ✅ RAZAFI rule: if gw= is present, ALWAYS use MikroTik as the login endpoint.
+  // Because Tanaza may pass its own local captive login_url (ex: 192.168.88.185:8080),
+  // which will NEVER trigger MikroTik → RADIUS.
+  if (gwIp) return `http://${gwIp}/login`;
+
   const raw = String(rawUrl || "").trim();
   if (raw) {
-    // Trust MikroTik-provided login_url (it may legitimately include :8080).
     try {
       const u = new URL(raw, window.location.href);
       if (!u.pathname || u.pathname === "/") u.pathname = "/login";
       return u.toString();
     } catch (_) {
-      // If it's a relative path, keep as-is
       if (raw.startsWith("/")) return raw;
       return raw;
     }
   }
 
-  // Fallback ONLY when login_url is missing: use gw= as a last resort.
-  if (gwIp) return `http://${gwIp}/login`;
   return "";
 }
 
@@ -769,13 +770,17 @@ function submitToLoginUrl(code, ev) {
   const v = String(code || "").trim();
   if (!v) { showToast("❌ Code invalide.", "error", 4500); return; }
 
-  // login_url is provided by MikroTik (via Tanaza redirect). If missing, try gw= (optional).
-  let raw = String(loginUrlNormalized || "").trim();
-  if (!raw) {
-    const gw = String(gwIp || "").trim();
-    if (gw) raw = "http://" + gw.replace(/^https?:\/\//i, "").replace(/\/.*$/, "") + "/login";
+  // ✅ IMPORTANT: force MikroTik as login endpoint when gw= is present.
+// Tanaza may send its own captive login_url (ex: 192.168.88.185:8080/login) which causes 400
+// and produces ZERO RADIUS logs. For System 3 we ALWAYS want MikroTik Hotspot → RADIUS.
+  let raw = "";
+  if (gwIp) {
+    raw = "http://" + String(gwIp).trim().replace(/^https?:\/\//i, "").replace(/\/.*$/, "") + "/login";
+  } else {
+    raw = String(loginUrlNormalized || "").trim();
   }
-  if (!raw) { showToast("❌ login_url manquant (Tanaza).", "error", 5200); return; }
+
+  if (!raw) { showToast("❌ login_url manquant.", "error", 5200); return; }
 
   const redirect =
     (continueUrl && String(continueUrl).trim()) ||
