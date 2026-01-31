@@ -338,30 +338,17 @@
   }) || "";
 
   
-function normalizeMikrotikLoginUrl(rawUrl) {
-  // ✅ RAZAFI rule: if gw= is present, ALWAYS use MikroTik as the login endpoint.
-  // Because Tanaza may pass its own local captive login_url (ex: 192.168.88.185:8080),
-  // which will NEVER trigger MikroTik → RADIUS.
-  if (gwIp) return `http://${gwIp}/login`;
-
-  const raw = String(rawUrl || "").trim();
-  if (raw) {
-    try {
-      const u = new URL(raw, window.location.href);
-      if (!u.pathname || u.pathname === "/") u.pathname = "/login";
-      return u.toString();
-    } catch (_) {
-      if (raw.startsWith("/")) return raw;
-      return raw;
-    }
-  }
-
-  return "";
+  // ✅ RAZAFI System 3 rule: NEVER trust Tanaza login_url for MikroTik login.
+  // Always force the MikroTik gateway /login.
+  function getForcedMikrotikLoginEndpoint() {
+  const gw = (gwIp || "").trim();
+  const ip = gw ? gw : "192.168.88.1";
+  return `http://${ip}/login`;
 }
 
-const loginUrlNormalized = normalizeMikrotikLoginUrl(loginUrl);
-
-  // Debug: show duplicated Tanaza params (placeholders + real values)
+  // Keep the variable name used elsewhere
+  const loginUrlNormalized = getForcedMikrotikLoginEndpoint();
+// Debug: show duplicated Tanaza params (placeholders + real values)
   const __apMacAll = qsAll("ap_mac");
   const __clientMacAll = qsAll("client_mac");
   const __loginUrlAll = qsAll("login_url");
@@ -773,13 +760,8 @@ function submitToLoginUrl(code, ev) {
   // ✅ IMPORTANT: force MikroTik as login endpoint when gw= is present.
 // Tanaza may send its own captive login_url (ex: 192.168.88.185:8080/login) which causes 400
 // and produces ZERO RADIUS logs. For System 3 we ALWAYS want MikroTik Hotspot → RADIUS.
-  let raw = "";
-  if (gwIp) {
-    raw = "http://" + String(gwIp).trim().replace(/^https?:\/\//i, "").replace(/\/.*$/, "") + "/login";
-  } else {
-    raw = String(loginUrlNormalized || "").trim();
-  }
-
+  // ✅ Always force MikroTik gateway /login (ignore Tanaza login_url completely)
+  const raw = getForcedMikrotikLoginEndpoint();
   if (!raw) { showToast("❌ login_url manquant.", "error", 5200); return; }
 
   const redirect =
