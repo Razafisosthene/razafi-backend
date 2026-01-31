@@ -337,64 +337,28 @@
     return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(s);
   }) || "";
 
-  function normalizeMikrotikLoginUrl(rawUrl) {
-    const raw = String(rawUrl || "").trim();
-    if (!raw) return "";
-
-    // If gwIp provided, it is authoritative (prevents wrong login_url like client-ip:8080)
-    if (gwIp) {
-      // Prefer the scheme from rawUrl when possible, default to http
-      let scheme = "http";
-      try {
-        const u0 = new URL(raw, window.location.href);
-        scheme = (u0.protocol || "http:").replace(":", "") || "http";
-      } catch (_) {}
-      return `${scheme}://${gwIp}/login`;
-    }
-
-
-    // Heuristic fallback (Tanaza bug): sometimes login_url points to the CLIENT IP (or port 8080)
-    // Example wrong: http://192.168.88.185:8080/login   (client_ip=192.168.88.117)
-    // If we have clientIp and login_url is in same /24 but NOT x.x.x.1, assume gateway is x.x.x.1
-    if (clientIp) {
-      try {
-        const uH = new URL(raw, window.location.href);
-        const host = (uH.hostname || "").trim();
-        const isIp = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
-        if (isIp) {
-          const cip = String(clientIp).trim();
-          const p1 = host.split(".");
-          const p2 = cip.split(".");
-          if (p1.length === 4 && p2.length === 4 && p1[0] === p2[0] && p1[1] === p2[1] && p1[2] === p2[2]) {
-            const assumedGw = `${p2[0]}.${p2[1]}.${p2[2]}.1`;
-            const suspicious = (host === cip) || (uH.port === "8080") || (host !== assumedGw);
-            if (suspicious) {
-              const scheme = (uH.protocol || "http:").replace(":", "") || "http";
-              return `${scheme}://${assumedGw}/login`;
-            }
-          }
-        }
-      } catch (_) {}
-    }
-
-    // Otherwise, sanitize common wrong ports/paths (e.g., :8080)
+  
+function normalizeMikrotikLoginUrl(rawUrl) {
+  const raw = String(rawUrl || "").trim();
+  if (raw) {
+    // Trust MikroTik-provided login_url (it may legitimately include :8080).
     try {
       const u = new URL(raw, window.location.href);
       if (!u.pathname || u.pathname === "/") u.pathname = "/login";
-      // MikroTik hotspot login is normally on 80/443. Strip odd ports if present.
-      const p = u.port ? parseInt(u.port, 10) : 0;
-      if (p && p !== 80 && p !== 443) u.port = "";
       return u.toString();
     } catch (_) {
-      let s = raw;
-      // strip :8080 or any :port
-      s = s.replace(/:(\d{2,5})(?=\/|$)/, "");
-      if (!/\/login(\?|$)/i.test(s)) s = s.replace(/\/+$/, "") + "/login";
-      return s;
+      // If it's a relative path, keep as-is
+      if (raw.startsWith("/")) return raw;
+      return raw;
     }
   }
 
-  const loginUrlNormalized = normalizeMikrotikLoginUrl(loginUrl);
+  // Fallback ONLY when login_url is missing: use gw= as a last resort.
+  if (gwIp) return `http://${gwIp}/login`;
+  return "";
+}
+
+const loginUrlNormalized = normalizeMikrotikLoginUrl(loginUrl);
 
   // Debug: show duplicated Tanaza params (placeholders + real values)
   const __apMacAll = qsAll("ap_mac");
@@ -798,8 +762,6 @@ function getQueryParamsSafe() {
 }
 
 function submitToLoginUrl(code, ev) {
-  // IMPORTANT: Captive browsers often block HTTPS ➜ HTTP form POST.
-  // So we force a GET redirect to the MikroTik hotspot login_url (most compatible).
   if (ev && typeof ev.preventDefault === "function") {
     try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
   }
@@ -807,56 +769,72 @@ function submitToLoginUrl(code, ev) {
   const v = String(code || "").trim();
   if (!v) { showToast("❌ Code invalide.", "error", 4500); return; }
 
-  // MikroTik provides login_url in the query string (via Tanaza). This is the ONLY reliable target.
+  // login_url is provided by MikroTik (via Tanaza redirect). If missing, try gw= (optional).
   let raw = String(loginUrlNormalized || "").trim();
-
-  // Fallback: reuse last known working login_url (helps if Tanaza duplicates / truncates params)
   if (!raw) {
-    try { raw = String(sessionStorage.getItem("razafi_last_login_url") || "").trim(); } catch (_) {}
+    const gw = String(gwIp || "").trim();
+    if (gw) raw = "http://" + gw.replace(/^https?:\/\//i, "").replace(/\/.*$/, "") + "/login";
   }
-
-  if (!raw) {
-    showToast("❌ login_url manquant. Le Hotspot n'a pas fourni l'URL de connexion.", "error", 6500);
-    return;
-  }
+  if (!raw) { showToast("❌ login_url manquant (Tanaza).", "error", 5200); return; }
 
   const redirect =
     (continueUrl && String(continueUrl).trim()) ||
     (window.location && window.location.href) ||
     "http://fixwifi.it";
 
-  // Keep the login_url EXACT (do not rebuild from gw), but normalize if it is a bare host.
   let action = raw;
   try {
     const u = new URL(raw, window.location.href);
-    // If someone gave only "http://IP:PORT" without path, default to /login
+    // Ensure /login endpoint
     if (!u.pathname || u.pathname === "/") u.pathname = "/login";
+    if (!/\/login$/i.test(u.pathname)) u.pathname = u.pathname.replace(/\/+$/, "") + "/login";
     action = u.toString();
   } catch (_) {
-    // If it's not a full URL, try to make it one
-    if (/^[0-9.]+(?::\d+)?$/.test(action)) action = "http://" + action + "/login";
-    if (!/^https?:\/\//i.test(action)) {
-      showToast("❌ login_url invalide (format).", "error", 6500);
-      return;
-    }
+    // Raw might be "http://192.168.88.1" or "http://192.168.88.1/login"
+    if (!/\/login(\?|$)/i.test(action)) action = action.replace(/\/+$/, "") + "/login";
   }
 
   try { sessionStorage.setItem("razafi_last_login_url", action); } catch (_) {}
 
-  // ✅ Force GET redirect
-  try {
-    const sep = action.includes("?") ? "&" : "?";
-    const qs =
-      "username=" + encodeURIComponent(v) +
-      "&password=" + encodeURIComponent(v) +
-      "&dst=" + encodeURIComponent(redirect) +
-      "&dsturl=" + encodeURIComponent(redirect) +
-      "&popup=false";
+  // Prefer POST form (most compatible with MikroTik Hotspot). Keep it in SAME window.
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = action;
+  form.style.display = "none";
 
-    // Use location.href (not form.submit) to avoid "form not secure" block on Chrome/Android captive webviews
-    window.location.href = action + sep + qs;
+  const add = (name, value) => {
+    const i = document.createElement("input");
+    i.type = "hidden";
+    i.name = name;
+    i.value = String(value ?? "");
+    form.appendChild(i);
+  };
+
+  add("username", v);
+  add("password", v);
+  add("dst", redirect);
+  add("dsturl", redirect);
+  add("popup", "false");
+
+  document.body.appendChild(form);
+
+  try {
+    form.submit();
     return;
-  } catch (_) {}
+  } catch (_) {
+    // Fallback: GET with query (less ideal, but useful if a browser blocks mixed POST)
+    try {
+      const sep = action.includes("?") ? "&" : "?";
+      const qs =
+        "username=" + encodeURIComponent(v) +
+        "&password=" + encodeURIComponent(v) +
+        "&dst=" + encodeURIComponent(redirect) +
+        "&dsturl=" + encodeURIComponent(redirect) +
+        "&popup=false";
+      window.location.assign(action + sep + qs);
+      return;
+    } catch (_) {}
+  }
 
   showToast("❌ Impossible de lancer la connexion MikroTik.", "error", 5200);
 }
