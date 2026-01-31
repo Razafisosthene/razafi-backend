@@ -327,9 +327,22 @@
 
   function normalizeMikrotikLoginUrl(rawUrl) {
     const raw = String(rawUrl || "").trim();
-    if (!raw) return "";
 
-    // If gwIp provided, it is authoritative (prevents wrong login_url like client-ip:8080)
+    // If login_url is missing/placeholder, build it from gw (or infer .1 from clientIp)
+    if (!raw || isPlaceholder(raw)) {
+      if (gwIp) return `http://${gwIp}/login`;
+      if (clientIp) {
+        const cip = String(clientIp).trim();
+        const p2 = cip.split(".");
+        if (p2.length === 4) {
+          const assumedGw = `${p2[0]}.${p2[1]}.${p2[2]}.1`;
+          return `http://${assumedGw}/login`;
+        }
+      }
+      return "";
+    }
+
+// If gwIp provided, it is authoritative (prevents wrong login_url like client-ip:8080)
     if (gwIp) {
       // Prefer the scheme from rawUrl when possible, default to http
       let scheme = "http";
