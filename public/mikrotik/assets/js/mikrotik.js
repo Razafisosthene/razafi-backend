@@ -327,22 +327,9 @@
 
   function normalizeMikrotikLoginUrl(rawUrl) {
     const raw = String(rawUrl || "").trim();
+    if (!raw) return "";
 
-    // If login_url is missing/placeholder, build it from gw (or infer .1 from clientIp)
-    if (!raw || isPlaceholder(raw)) {
-      if (gwIp) return `http://${gwIp}/login`;
-      if (clientIp) {
-        const cip = String(clientIp).trim();
-        const p2 = cip.split(".");
-        if (p2.length === 4) {
-          const assumedGw = `${p2[0]}.${p2[1]}.${p2[2]}.1`;
-          return `http://${assumedGw}/login`;
-        }
-      }
-      return "";
-    }
-
-// If gwIp provided, it is authoritative (prevents wrong login_url like client-ip:8080)
+    // If gwIp provided, it is authoritative (prevents wrong login_url like client-ip:8080)
     if (gwIp) {
       // Prefer the scheme from rawUrl when possible, default to http
       let scheme = "http";
@@ -759,72 +746,89 @@
     return target;
   }
 
-function submitToLoginUrl(code, ev) {
-  // Goal: force a REAL navigation to MikroTik /login (so MikroTik triggers RADIUS)
-  // Captive portals often block background fetch/XHR, but allow top-level navigation.
-  if (ev && typeof ev.preventDefault === "function") {
-    try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+function submitToLoginUrl(voucherCode) {
+  // ✅ Méthode MikroTik officielle : POST /login (crée une vraie session Hotspot et déclenche RADIUS)
+  // But : forcer une navigation HTTP réelle vers le gateway, avec un vrai POST "application/x-www-form-urlencoded".
+  //
+  // Sources possibles :
+  // - login_url (tanaza captive params)  => ex: http://192.168.88.185:8080/login
+  // - gw=192.168.88.1 (fallback)         => ex: http://192.168.88.1/login
+  //
+  // On force /login et on envoie username/password/dst/popup.
+
+  const info = getCaptiveInfo();
+
+  // 1) Déterminer l'URL de login (priorité: login_url, sinon gw)
+  let loginUrl = info.login_url || null;
+
+  if (!loginUrl) {
+    // fallback GW : gw peut être 192.168.88.1 ou http://192.168.88.1
+    const gw = info.gw || null;
+    if (gw) {
+      if (/^https?:\/\//i.test(gw)) {
+        loginUrl = gw.replace(/\/$/, '') + '/login';
+      } else {
+        loginUrl = 'http://' + String(gw).replace(/\/$/, '') + '/login';
+      }
+    }
   }
 
-  const v = String(code || "").trim();
-  if (!v) { showToast("❌ Code invalide.", "error", 4500); return; }
-
-  // login_url may come from Tanaza (login_url=...) OR we fallback to gw=...
-  let raw = String(loginUrlNormalized || "").trim();
-  if (!raw) {
-    const gw = String(gwIp || "").trim();
-    if (gw) raw = "http://" + gw.replace(/^https?:\/\//i, "").replace(/\/.*$/, "") + "/login";
-  }
-  if (!raw) { showToast("❌ login_url manquant (Tanaza).", "error", 5200); return; }
-
-  const redirect =
-    (continueUrl && String(continueUrl).trim()) ||
-    (window.location && window.location.href) ||
-    "http://fixwifi.it";
-
-  // Normalize to /login endpoint
-  let action = raw;
-  try {
-    const u = new URL(raw, window.location.href);
-    if (!u.pathname || u.pathname === "/") u.pathname = "/login";
-    if (!/\/login$/i.test(u.pathname)) u.pathname = u.pathname.replace(/\/+$/, "") + "/login";
-    action = u.toString();
-  } catch (_) {
-    if (!/\/login(\?|$)/i.test(action)) action = action.replace(/\/+$/, "") + "/login";
-  }
-
-  // Build GET target (most compatible with captive portals + avoids HTTPS->HTTP POST mixed content)
-  const sep = action.includes("?") ? "&" : "?";
-  const target =
-    action + sep +
-    "username=" + encodeURIComponent(v) +
-    "&password=" + encodeURIComponent(v) +
-    "&dst=" + encodeURIComponent(redirect) +
-    "&dsturl=" + encodeURIComponent(redirect) +
-    "&popup=false";
-
-  try { sessionStorage.setItem("razafi_last_login_url", target); } catch (_) {}
-  console.log("[RAZAFI] MikroTik login NAV →", target);
-
-  // Captive-portal safe navigation order:
-  // 1) simulate a user click (often allowed when JS redirects are restricted)
-  try {
-    const a = document.createElement("a");
-    a.href = target;
-    a.style.display = "none";
-    a.rel = "noreferrer";
-    document.body.appendChild(a);
-    a.click();
+  if (!loginUrl) {
+    console.warn('[RAZAFI] submitToLoginUrl: loginUrl introuvable (ni login_url ni gw).');
+    showToast('Login gateway introuvable. (login_url/gw manquant)');
     return;
-  } catch (_) {}
+  }
 
-  // 2) hard navigation
-  try { window.location.assign(target); return; } catch (_) {}
-  // 3) ultimate fallback
-  try { window.location.href = target; return; } catch (_) {}
+  // 2) Normaliser: forcer /login
+  try {
+    // Si loginUrl contient déjà /login ou /something/login, on garde. Sinon, on ajoute /login
+    const u = new URL(loginUrl, window.location.href);
+    if (!/\/login$/i.test(u.pathname)) {
+      u.pathname = u.pathname.replace(/\/$/, '') + '/login';
+    }
+    // Retirer query/hash : MikroTik attend les champs en POST, pas en query
+    u.search = '';
+    u.hash = '';
+    loginUrl = u.toString();
+  } catch (e) {
+    // URL() peut échouer si loginUrl est "192.168.88.1/login" sans protocole
+    if (!/^https?:\/\//i.test(loginUrl)) loginUrl = 'http://' + loginUrl;
+    if (!/\/login$/i.test(loginUrl)) loginUrl = loginUrl.replace(/\/$/, '') + '/login';
+    loginUrl = loginUrl.split('#')[0].split('?')[0];
+  }
 
-  showToast("❌ Impossible de lancer la connexion MikroTik.", "error", 5200);
+  // 3) Destination après login (continue_url si fourni, sinon une URL neutre)
+  const dst = info.continue_url || 'http://fixwifi.it';
+
+  // 4) Créer un FORM POST et submit (top-level navigation)
+  // Note: même si la page actuelle est en https, une navigation POST vers http://GW/login est autorisée
+  // (c'est une navigation, pas un fetch). Ça déclenche ensuite l'Access-Request RADIUS.
+  const form = document.createElement('form');
+  form.method = 'post';
+  form.action = loginUrl;
+  form.style.display = 'none';
+
+  const add = (name, value) => {
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = value == null ? '' : String(value);
+    form.appendChild(input);
+  };
+
+  add('username', voucherCode);
+  add('password', voucherCode);
+  add('dst', dst);
+  add('popup', 'false');
+
+  document.body.appendChild(form);
+
+  console.log('[RAZAFI] Auto-login POST ->', loginUrl, { username: voucherCode, dst });
+
+  // On submit immédiatement
+  form.submit();
 }
+
 
 
 
