@@ -750,6 +750,8 @@ function getQueryParamsSafe() {
 }
 
 function submitToLoginUrl(code, ev) {
+  // ✅ Captive-portal safe login: TOP-LEVEL GET redirect (no hidden POST form)
+  // Modern captive browsers often block HTTPS → HTTP private-IP POST requests.
   if (ev && typeof ev.preventDefault === "function") {
     try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
   }
@@ -757,9 +759,6 @@ function submitToLoginUrl(code, ev) {
   const v = String(code || "").trim();
   if (!v) { showToast("❌ Code invalide.", "error", 4500); return; }
 
-  // ✅ IMPORTANT: force MikroTik as login endpoint when gw= is present.
-// Tanaza may send its own captive login_url (ex: 192.168.88.185:8080/login) which causes 400
-// and produces ZERO RADIUS logs. For System 3 we ALWAYS want MikroTik Hotspot → RADIUS.
   // ✅ Always force MikroTik gateway /login (ignore Tanaza login_url completely)
   const raw = getForcedMikrotikLoginEndpoint();
   if (!raw) { showToast("❌ login_url manquant.", "error", 5200); return; }
@@ -769,62 +768,45 @@ function submitToLoginUrl(code, ev) {
     (window.location && window.location.href) ||
     "http://fixwifi.it";
 
-  let action = raw;
+  let target = raw;
+
   try {
     const u = new URL(raw, window.location.href);
+
     // Ensure /login endpoint
     if (!u.pathname || u.pathname === "/") u.pathname = "/login";
     if (!/\/login$/i.test(u.pathname)) u.pathname = u.pathname.replace(/\/+$/, "") + "/login";
-    action = u.toString();
+
+    // Required fields for MikroTik Hotspot login (PAP mode)
+    u.searchParams.set("username", v);
+    u.searchParams.set("password", v);
+    u.searchParams.set("dst", redirect);
+    u.searchParams.set("dsturl", redirect);
+    u.searchParams.set("popup", "false");
+    u.searchParams.set("success_url", redirect);
+
+    target = u.toString();
   } catch (_) {
-    // Raw might be "http://192.168.88.1" or "http://192.168.88.1/login"
-    if (!/\/login(\?|$)/i.test(action)) action = action.replace(/\/+$/, "") + "/login";
+    const base = String(raw).replace(/\/+$/, "");
+    const sep = base.includes("?") ? "&" : "?";
+    target =
+      base +
+      sep +
+      "username=" + encodeURIComponent(v) +
+      "&password=" + encodeURIComponent(v) +
+      "&dst=" + encodeURIComponent(redirect) +
+      "&dsturl=" + encodeURIComponent(redirect) +
+      "&popup=false" +
+      "&success_url=" + encodeURIComponent(redirect);
   }
 
-  try { sessionStorage.setItem("razafi_last_login_url", action); } catch (_) {}
+  try { sessionStorage.setItem("razafi_last_login_url", target); } catch (_) {}
+  try { sessionStorage.setItem("razafi_login_attempt", "1"); } catch (_) {}
 
-  // Prefer POST form (most compatible with MikroTik Hotspot). Keep it in SAME window.
-  const form = document.createElement("form");
-  form.method = "POST";
-  form.action = action;
-  form.style.display = "none";
-
-  const add = (name, value) => {
-    const i = document.createElement("input");
-    i.type = "hidden";
-    i.name = name;
-    i.value = String(value ?? "");
-    form.appendChild(i);
-  };
-
-  add("username", v);
-  add("password", v);
-  add("dst", redirect);
-  add("dsturl", redirect);
-  add("popup", "false");
-
-  document.body.appendChild(form);
-
-  try {
-    form.submit();
-    return;
-  } catch (_) {
-    // Fallback: GET with query (less ideal, but useful if a browser blocks mixed POST)
-    try {
-      const sep = action.includes("?") ? "&" : "?";
-      const qs =
-        "username=" + encodeURIComponent(v) +
-        "&password=" + encodeURIComponent(v) +
-        "&dst=" + encodeURIComponent(redirect) +
-        "&dsturl=" + encodeURIComponent(redirect) +
-        "&popup=false";
-      window.location.assign(action + sep + qs);
-      return;
-    } catch (_) {}
-  }
-
-  showToast("❌ Impossible de lancer la connexion MikroTik.", "error", 5200);
+  // ✅ Must be a real navigation (works in captive browsers)
+  window.location.href = target;
 }
+
 
 
 
