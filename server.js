@@ -3704,7 +3704,7 @@ app.post("/api/voucher/activate", async (req, res) => {
     // Load session + plan
     const { data: session, error: sErr } = await supabase
       .from("voucher_sessions")
-      .select("id,voucher_code,plan_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)")
+      .select("id,voucher_code,plan_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,plans(id,name,system,price_ar,duration_minutes,duration_hours,data_mb,max_devices)")
       .eq("voucher_code", voucher_code)
       .eq("client_mac", client_mac)
       .maybeSingle();
@@ -3749,16 +3749,26 @@ app.post("/api/voucher/activate", async (req, res) => {
       return res.status(500).json({ error: "invalid_plan_duration", message: "Durée du plan invalide." });
     }
 
-    
+    const planSystem = String(session?.plans?.system || "").trim().toLowerCase();
+    const isMikrotik = (planSystem === "mikrotik");
+
     const updatePayload = {
-      // Arm the voucher (user clicked "Utiliser ce code")
-      // Timer will start on the FIRST successful RADIUS Access-Accept
       status: "active",
       activated_at: nowIso,
-      started_at: null,
-      expires_at: null,
       updated_at: nowIso,
     };
+
+    if (isMikrotik) {
+      // ✅ SYSTEM 3 (MikroTik + RADIUS): ARM ONLY
+      // Timer will start on the FIRST successful RADIUS Access-Accept.
+      updatePayload.started_at = null;
+      updatePayload.expires_at = null;
+    } else {
+      // ✅ SYSTEM 1 & 2 (Tanaza / non-RADIUS): keep legacy behavior
+      // Start timer on click ("Utiliser ce code").
+      updatePayload.started_at = nowIso;
+      updatePayload.expires_at = new Date(now.getTime() + minutes * 60 * 1000).toISOString();
+    }
 
     // Keep the first AP that activated it (optional)
     if (ap_mac && !session.ap_mac) updatePayload.ap_mac = ap_mac;
