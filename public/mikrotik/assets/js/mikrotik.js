@@ -340,11 +340,27 @@
   
   // ✅ RAZAFI System 3 rule: NEVER trust Tanaza login_url for MikroTik login.
   // Always force the MikroTik gateway /login.
-  function getForcedMikrotikLoginEndpoint() {
+function getForcedMikrotikLoginEndpoint() {
+  // 1) Prefer explicit gw param if provided
   const gw = (gwIp || "").trim();
-  const ip = gw ? gw : "192.168.88.1";
-  return `http://${ip}/login`;
+  if (gw) return `http://${gw}/login`;
+
+  // 2) Otherwise, extract host (and port) from Tanaza login_url if it's valid
+  const lu = String(loginUrl || "").trim();
+  if (lu && /^https?:\/\//i.test(lu)) {
+    try {
+      const u = new URL(lu);
+      // Use same host:port, force /login path
+      return `${u.protocol}//${u.host}/login`;
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  // 3) Hard fallback
+  return "http://192.168.88.1/login";
 }
+
 
   // Keep the variable name used elsewhere
   const loginUrlNormalized = getForcedMikrotikLoginEndpoint();
