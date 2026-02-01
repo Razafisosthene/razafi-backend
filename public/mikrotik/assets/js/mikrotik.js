@@ -763,10 +763,7 @@ function submitToLoginUrl(code, ev) {
   const raw = getForcedMikrotikLoginEndpoint();
   if (!raw) { showToast("❌ login_url manquant.", "error", 5200); return; }
 
-  const redirect =
-    (continueUrl && String(continueUrl).trim()) ||
-    (window.location && window.location.href) ||
-    "http://fixwifi.it";
+const redirect = "http://neverssl.com/";
 
   let target = raw;
 
