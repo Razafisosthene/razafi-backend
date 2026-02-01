@@ -817,7 +817,13 @@ const redirect = "http://neverssl.com/";
   try { sessionStorage.setItem("razafi_login_attempt", "1"); } catch (_) {}
 
   // ✅ Must be a real navigation (works in captive browsers)
+  // Force TOP-LEVEL navigation (escape Tanaza iframe / captive wrapper)
+if (window.top) {
+  window.top.location.href = target;
+} else {
   window.location.href = target;
+}
+
 }
 
 
