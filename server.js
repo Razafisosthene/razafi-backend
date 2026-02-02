@@ -279,7 +279,7 @@ app.use((req, res, next) => {
           res.cookie("ap_allowed", "1", {
             maxAge: 5 * 60 * 1000,
             httpOnly: true,
-            secure: true,
+            secure: IS_PROD,
             sameSite: "lax",
           });
         } catch (_) {}
@@ -3297,121 +3297,16 @@ function toISOStringMG(d) {
 
 // ===== NEW SYSTEM: Purchase by plan =====
 app.post("/api/new/purchase", async (req, res) => {
-  try {
-    if (!req.isNewSystem) {
-      return res.status(404).json({ error: "Not found" });
-    }
-
-    const { plan_id } = req.body;
-    if (!plan_id) {
-      return res.status(400).json({ error: "Missing plan_id" });
-    }
-
-    // 1) Read plan from DB (source of truth)
-    const { data: plan, error: planErr } = await supabase
-      .from("plans")
-      .select("*")
-      .eq("id", plan_id)
-      .eq("is_active", true)
-      .single();
-
-    if (planErr || !plan) {
-      return res.status(400).json({ error: "Invalid or inactive plan" });
-    }
-
-    // 2) Determine pool from AP (to check saturation)
-    const apMac = req.query.ap_mac || req.body.ap_mac;
-    if (!apMac) {
-      return res.status(400).json({ error: "Missing ap_mac" });
-    }
-
-    const { data: apRow } = await supabase
-      .from("ap_registry")
-      .select("pool_id")
-      .eq("ap_mac", apMac)
-      .eq("is_active", true)
-      .single();
-
-    if (!apRow?.pool_id) {
-      return res.status(400).json({ error: "Unknown or inactive AP" });
-    }
-
-    // 3) Check saturation (BLOCK PURCHASE ONLY)
-    const { data: poolStats } = await supabase
-      .from("pool_live_stats")
-      .select("is_saturated")
-      .eq("pool_id", apRow.pool_id)
-      .single();
-
-    if (poolStats?.is_saturated) {
-      return res.status(423).json({
-        error: "SERVICE_SATURATED",
-        message: "Service momentanément saturé. Veuillez réessayer plus tard."
-      });
-    }
-
-    // 4) Initiate payment (MVola)
-    // IMPORTANT: amount is read from plan.price_ar (integer)
-    // Replace this with your existing MVola initiation function
-    const paymentResult = await initiateMvolaPayment({
-      amount: plan.price_ar,
-      description: plan.name
-    });
-
-    if (!paymentResult?.success) {
-      return res.status(402).json({ error: "Payment failed" });
-    }
-
-    // 5) Generate voucher code (backend only)
-    const voucherCode = "RAZAFI-" + crypto.randomBytes(4).toString("hex").toUpperCase();
-
-    // 6) Create voucher session (PENDING)
-    const { data: session, error: vsErr } = await supabase
-      .from("voucher_sessions")
-      .insert({
-        voucher_code: voucherCode,
-        plan_id: plan.id,
-        pool_id: pool_id || null,
-        status: "pending",
-        client_mac: (normalizeMacColon(body.client_mac || body.clientMac || body.clientMAC || null) || (body.client_mac || body.clientMac || body.clientMAC || null)),
-        ap_mac: (normalizeMacColon(body.ap_mac || body.apMac || null) || (body.ap_mac || body.apMac || null)),
-        mvola_phone: phone || null,
-        transaction_id: txId,
-        delivered_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .select()
-      .single();
-
-    if (vsErr) {
-      return res.status(500).json({ error: "Failed to create voucher session" });
-    }
-
-    // 7) Link voucher to plan (snapshot)
-    await supabase
-      .from("voucher_plan_links")
-      .insert({
-        voucher_code: voucherCode,
-        plan_id: plan.id,
-        plan_name_snapshot: plan.name
-      });
-
-    // 8) Return voucher (duration NOT started)
-    return res.json({
-      success: true,
-      voucher_code: voucherCode,
-      plan: {
-        name: plan.name,
-        duration_hours: plan.duration_hours,
-        data_mb: plan.data_mb,
-        max_devices: plan.max_devices
-      }
-    });
-
-  } catch (err) {
-    console.error("NEW purchase error:", err);
-    return res.status(500).json({ error: "Internal error" });
-  }
+  // This endpoint was an unfinished/legacy draft and referenced undefined vars.
+  // Keeping the route so nothing breaks, but making it explicitly unavailable.
+  // Use:
+  //   - POST /api/send-payment
+  //   - POST /api/poll-payment
+  return res.status(410).json({
+    ok: false,
+    error: "deprecated_endpoint",
+    message: "This endpoint is deprecated. Use /api/send-payment then /api/poll-payment.",
+  });
 });
 
 // ===== NEW SYSTEM: Authorize device & start voucher =====
@@ -3704,7 +3599,7 @@ app.post("/api/voucher/activate", async (req, res) => {
     // Load session + plan
     const { data: session, error: sErr } = await supabase
       .from("voucher_sessions")
-      .select("id,voucher_code,plan_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,plans(id,name,system,price_ar,duration_minutes,duration_hours,data_mb,max_devices)")
+      .select("id,voucher_code,plan_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)")
       .eq("voucher_code", voucher_code)
       .eq("client_mac", client_mac)
       .maybeSingle();
@@ -3749,26 +3644,16 @@ app.post("/api/voucher/activate", async (req, res) => {
       return res.status(500).json({ error: "invalid_plan_duration", message: "Durée du plan invalide." });
     }
 
-    const planSystem = String(session?.plans?.system || "").trim().toLowerCase();
-    const isMikrotik = (planSystem === "mikrotik");
-
+    
     const updatePayload = {
+      // Arm the voucher (user clicked "Utiliser ce code")
+      // Timer will start on the FIRST successful RADIUS Access-Accept
       status: "active",
       activated_at: nowIso,
+      started_at: null,
+      expires_at: null,
       updated_at: nowIso,
     };
-
-    if (isMikrotik) {
-      // ✅ SYSTEM 3 (MikroTik + RADIUS): ARM ONLY
-      // Timer will start on the FIRST successful RADIUS Access-Accept.
-      updatePayload.started_at = null;
-      updatePayload.expires_at = null;
-    } else {
-      // ✅ SYSTEM 1 & 2 (Tanaza / non-RADIUS): keep legacy behavior
-      // Start timer on click ("Utiliser ce code").
-      updatePayload.started_at = nowIso;
-      updatePayload.expires_at = new Date(now.getTime() + minutes * 60 * 1000).toISOString();
-    }
 
     // Keep the first AP that activated it (optional)
     if (ap_mac && !session.ap_mac) updatePayload.ap_mac = ap_mac;
@@ -4600,6 +4485,7 @@ try {
 
   const requestRef = `RAZAFI_${Date.now()}`;
   const txId = crypto.randomUUID();
+  const correlationId = crypto.randomUUID();
 
 
   // FREE PLAN FLOW: amount === 0 => generate voucher immediately (no MVola)
@@ -4687,7 +4573,8 @@ const { error: vsErr } = await supabase
       client_mac: clientMacForSession,
       ap_mac: apMacForSession,
       mvola_phone: phone || null,
-      transaction_id: null,
+      // Keep FK integrity (voucher_sessions.transaction_id -> transactions.id)
+      transaction_id: txId,
       delivered_at: nowIso,
       updated_at: nowIso,
     });
@@ -4707,6 +4594,8 @@ const { error: vsErr } = await supabase
   }
 
   try {
+    const apMacForSession = ap_mac || null;
+
     // insert initial transaction row with Madagascar local created timestamp in metadata
     const metadataForInsert = {
       source: "portal",
@@ -4714,7 +4603,7 @@ const { error: vsErr } = await supabase
       plan_id: planIdForSession,
       pool_id: pool_id || null,
       client_mac: client_mac || null,
-      ap_mac: ap_mac || null,
+      ap_mac: apMacForSession,
     };
 
     if (supabase) {
@@ -4741,7 +4630,7 @@ const { error: vsErr } = await supabase
         request_ref: requestRef || null,
         mvola_phone: phone || null,
         client_mac: client_mac || null,
-        ap_mac: apMacForSession || null,
+        ap_mac: apMacForSession,
         pool_id: pool_id || null,
         plan_id: planIdForSession || null,
         message: "MVola payment initiated (NEW system)",
@@ -4763,8 +4652,6 @@ const { error: vsErr } = await supabase
     creditParty: [{ key: "msisdn", value: PARTNER_MSISDN }],
     metadata: [{ key: "partnerName", value: PARTNER_NAME }],
   };
-
-  const correlationId = crypto.randomUUID();
 
   try {
     const token = await getAccessToken();
