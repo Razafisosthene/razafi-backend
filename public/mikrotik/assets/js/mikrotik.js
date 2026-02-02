@@ -8,6 +8,58 @@
   // -------- Madagascar Timezone helpers --------
   const MG_TZ = "Indian/Antananarivo";
 
+
+  // -------- Backend base URL (Option A: page served from MikroTik) --------
+  // When the captive page is served from the MikroTik router (e.g. http://192.168.88.1),
+  // relative /api/* requests would hit the router and fail. We therefore force API calls
+  // to the backend domain.
+  //
+  // You can override this per-site with a query param:
+  //   ?backend=https://razafi-backend.onrender.com
+  // or ?api_base=https://razafi-backend.onrender.com
+  //
+  // ✅ FIX: default backend must be the real API server (Render), not wifi.razafistore.com
+  const DEFAULT_BACKEND_BASE = "https://razafi-backend.onrender.com";
+
+  function getQueryParam(name) {
+    try { return new URLSearchParams(window.location.search).get(name); } catch { return null; }
+  }
+
+  function normalizeBaseUrl(v) {
+    if (!v) return null;
+    try {
+      let s = String(v).trim();
+      if (!s) return null;
+      if (!/^https?:\/\//i.test(s)) s = "https://" + s; // allow passing hostname
+      const u = new URL(s);
+      return u.origin;
+    } catch {
+      return null;
+    }
+  }
+
+  const API_BASE = (function () {
+    const override =
+      normalizeBaseUrl(getQueryParam("backend")) ||
+      normalizeBaseUrl(getQueryParam("backend_url")) ||
+      normalizeBaseUrl(getQueryParam("api_base")) ||
+      normalizeBaseUrl(getQueryParam("api"));
+    // If this page is being served from a razafistore.com host, allow same-origin relative calls.
+    try {
+      const host = String(window.location.hostname || "");
+      if (!override && /(^|\.)razafistore\.com$/i.test(host)) return "";
+    } catch {}
+    return override || DEFAULT_BACKEND_BASE;
+  })();
+
+  function apiUrl(path) {
+    if (!path) return path;
+    const p = String(path);
+    if (/^https?:\/\//i.test(p)) return p;
+    if (!API_BASE) return p;
+    return p.startsWith("/") ? (API_BASE + p) : (API_BASE + "/" + p);
+  }
+
   function fmtTimeMG(ts) {
     try {
       const d = new Date(Number(ts) || Date.now());
@@ -340,27 +392,11 @@
   
   // ✅ RAZAFI System 3 rule: NEVER trust Tanaza login_url for MikroTik login.
   // Always force the MikroTik gateway /login.
-function getForcedMikrotikLoginEndpoint() {
-  // 1) Prefer explicit gw param if provided
+  function getForcedMikrotikLoginEndpoint() {
   const gw = (gwIp || "").trim();
-  if (gw) return `http://${gw}/login`;
-
-  // 2) Otherwise, extract host (and port) from Tanaza login_url if it's valid
-  const lu = String(loginUrl || "").trim();
-  if (lu && /^https?:\/\//i.test(lu)) {
-    try {
-      const u = new URL(lu);
-      // Use same host:port, force /login path
-      return `${u.protocol}//${u.host}/login`;
-    } catch (_) {
-      // ignore
-    }
-  }
-
-  // 3) Hard fallback
-  return "http://192.168.88.1/login";
+  const ip = gw ? gw : "192.168.88.1";
+  return `http://${ip}/login`;
 }
-
 
   // Keep the variable name used elsewhere
   const loginUrlNormalized = getForcedMikrotikLoginEndpoint();
@@ -637,7 +673,7 @@ function getForcedMikrotikLoginEndpoint() {
       if (!clientMac) return;
       const qs = new URLSearchParams({ client_mac: clientMac });
       if (apMac) qs.set("ap_mac", apMac);
-      const r = await fetch("/api/voucher/last?" + qs.toString(), { method: "GET" });
+      const r = await fetch(apiUrl("/api/voucher/last?") + qs.toString(), { method: "GET" });
       if (!r.ok) return;
       const j = await r.json().catch(() => ({}));
       if (j && j.found && (j.code || j.voucher_code)) {
@@ -666,7 +702,7 @@ function getForcedMikrotikLoginEndpoint() {
     while (Date.now() - started < timeoutMs) {
       try {
         const url = `/api/dernier-code?phone=${encodeURIComponent(phone)}`;
-        const r = await fetch(url, { method: "GET" });
+        const r = await fetch(apiUrl(url), { method: "GET" });
         if (r.status === 204) {
           // no code yet
         } else if (r.ok) {
@@ -779,7 +815,10 @@ function submitToLoginUrl(code, ev) {
   const raw = getForcedMikrotikLoginEndpoint();
   if (!raw) { showToast("❌ login_url manquant.", "error", 5200); return; }
 
-const redirect = "http://neverssl.com/";
+  const redirect =
+    (continueUrl && String(continueUrl).trim()) ||
+    (window.location && window.location.href) ||
+    "http://fixwifi.it";
 
   let target = raw;
 
@@ -817,13 +856,7 @@ const redirect = "http://neverssl.com/";
   try { sessionStorage.setItem("razafi_login_attempt", "1"); } catch (_) {}
 
   // ✅ Must be a real navigation (works in captive browsers)
-  // Force TOP-LEVEL navigation (escape Tanaza iframe / captive wrapper)
-if (window.top) {
-  window.top.location.href = target;
-} else {
   window.location.href = target;
-}
-
 }
 
 
@@ -850,9 +883,9 @@ if (window.top) {
 
         if (navigator && typeof navigator.sendBeacon === "function") {
           const blob = new Blob([payload], { type: "application/json" });
-          navigator.sendBeacon("/api/voucher/activate", blob);
+          navigator.sendBeacon(apiUrl("/api/voucher/activate"), blob);
         } else {
-          fetch("/api/voucher/activate", {
+          fetch(apiUrl("/api/voucher/activate"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: payload,
@@ -1035,7 +1068,7 @@ if (window.top) {
     }
 
     try {
-      const r = await fetch(`/api/portal/context?ap_mac=${encodeURIComponent(apMac)}`, { method: "GET" });
+      const r = await fetch(apiUrl(`/api/portal/context?ap_mac=${encodeURIComponent(apMac)}`), { method: "GET" });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j?.ok) throw new Error(j?.error || "context_failed");
 
@@ -1134,7 +1167,7 @@ if (window.top) {
 
           <div class="mvola-badge">
             <span class="secure-text">🔒 Paiement sécurisé via</span>
-            <img src="/portal/assets/img/mvola.png" alt="MVola">
+            <img src="assets/img/mvola.png" alt="MVola">
           </div>
 
           <p class="muted small">
@@ -1155,7 +1188,7 @@ if (window.top) {
         ? `/api/mikrotik/plans?ap_mac=${encodeURIComponent(apMac)}&client_mac=${encodeURIComponent(clientMac)}`
         : `/api/mikrotik/plans`;
 
-      const res = await fetch(url);
+      const res = await fetch(apiUrl(url));
 
       const text = await res.text();
       let data;
@@ -1305,7 +1338,7 @@ if (window.top) {
             if (planPrice === 0 && planId && clientMac) {
               const qs = new URLSearchParams({ client_mac: clientMac, plan_id: planId });
               if (apMac) qs.set("ap_mac", apMac);
-              const r = await fetch("/api/free-plan/check?" + qs.toString(), { method: "GET" });
+              const r = await fetch(apiUrl("/api/free-plan/check?") + qs.toString(), { method: "GET" });
               if (r.status === 409) {
                 const j = await r.json().catch(() => ({}));
                 const whenIso = j.last_used_at || null;
@@ -1438,14 +1471,14 @@ if (window.top) {
 
               let baselineCode = null;
               try {
-                const pre = await fetch(`/api/dernier-code?phone=${encodeURIComponent(cleaned)}`, { method: "GET" });
+                const pre = await fetch(apiUrl(`/api/dernier-code?phone=${encodeURIComponent(cleaned)}`), { method: "GET" });
                 if (pre.ok) {
                   const pj = await pre.json().catch(() => ({}));
                   if (pj && pj.code) baselineCode = String(pj.code);
                 }
               } catch (_) {}
 
-              const resp = await fetch("/api/send-payment", {
+              const resp = await fetch(apiUrl("/api/send-payment"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
