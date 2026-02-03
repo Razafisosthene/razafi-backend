@@ -1,16 +1,17 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-  <link rel="icon" href="assets/img/favicon.ico">
-  <link rel="icon" type="image/svg+xml" href="assets/img/favicon.svg">
-  <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">
-
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>WiFi RAZAFI — MikroTik</title>
+  <title>WiFi RAZAFI</title>
 
-  <link rel="stylesheet" href="assets/css/style.css">
-  <meta name="theme-color" content="#ffffff">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#ffffff" />
+
+  <link rel="icon" href="assets/img/favicon.ico" />
+  <link rel="icon" type="image/svg+xml" href="assets/img/favicon.svg" />
+  <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png" />
+
+  <link rel="stylesheet" href="assets/css/style.css" />
 </head>
 
 <body class="theme-light">
@@ -29,31 +30,38 @@
   <!-- ================= MAIN ================= -->
   <main class="portal-container">
 
-    <!-- ========= STATUS BLOCK ========= -->
-    <section id="status-block" class="card status-card">
+    <!-- ========= STATUS ========= -->
+    <section class="card status-card">
 
       <h2>Bienvenue sur WiFi RAZAFI</h2>
 
-      <!-- ✅ Option C: pool/site name placeholder (filled by mikrotik.js using nas_id) -->
-      <p class="muted small" id="poolName" style="margin-top:-6px;"></p>
+      <!-- 🔹 Option C: pool/site name (filled by mikrotik.js using nas_id) -->
+      <p id="poolName" class="muted small"></p>
 
-      <p class="muted" id="accessMsg">Vérification de votre accès en cours…</p>
+      <p class="muted">Vérification de votre accès en cours…</p>
 
-      <!-- ✅ Option C: pool full banner placeholder -->
-      <div id="poolFullBanner" class="banner" style="display:none; margin:10px 0; padding:10px 12px; border-radius:10px; border:1px solid rgba(200,120,0,0.35); background: rgba(255,200,0,0.10);">
+      <!-- 🔹 Pool full banner (optional, controlled by backend) -->
+      <div
+        id="poolFullBanner"
+        style="display:none; margin:10px 0; padding:10px 12px;
+               border-radius:10px;
+               border:1px solid rgba(200,120,0,0.35);
+               background:rgba(255,200,0,0.10);">
         <strong>⚠️ Réseau momentanément saturé.</strong><br>
-        Les achats sont temporairement indisponibles. Veuillez patienter ou contacter l’assistance sur place.
+        Les achats sont temporairement indisponibles.
       </div>
 
-      <!-- State: NO active voucher -->
-      <div id="voucherNone" class="voucher-state">
-        <p class="muted" id="noVoucherMsg">Vous n’avez pas de code actif.</p>
-        <p class="muted small">Choisissez un plan ci-dessous pour acheter un code.</p>
+      <!-- NO ACTIVE VOUCHER -->
+      <div id="voucherNone">
+        <p class="muted">Vous n’avez pas de code actif.</p>
+        <p class="muted small">
+          Choisissez un plan ci-dessous pour acheter un code.
+        </p>
       </div>
 
-      <!-- State: HAS active voucher -->
-      <div id="voucherHas" class="voucher-state hidden">
-        <p class="success" id="hasVoucherMsg">✅ Vous avez un code actif</p>
+      <!-- ACTIVE VOUCHER -->
+      <div id="voucherHas" class="hidden">
+        <p class="success">✅ Vous avez un code actif</p>
 
         <ul class="voucher-info">
           <li>🔑 <strong id="voucher-code">—</strong></li>
@@ -62,11 +70,11 @@
           <li>🔌 Appareils utilisés : <strong id="devices-used">—</strong></li>
         </ul>
 
-        <button class="primary-btn" id="useVoucherBtn" disabled>
+        <button id="useVoucherBtn" class="primary-btn" disabled>
           Utiliser ce code
         </button>
 
-        <button class="secondary-btn" id="copyVoucherBtn" disabled>
+        <button id="copyVoucherBtn" class="secondary-btn" disabled>
           Copier le code
         </button>
       </div>
@@ -74,18 +82,14 @@
     </section>
 
     <!-- ========= PLANS ========= -->
-    <section id="plans-section">
-
+    <section>
       <h3>Plans</h3>
-
-      <div class="plans-grid" id="plansGrid">
-
-        <p class="muted small" id="plansLoading">Chargement des plans…</p>
-
+      <div id="plansGrid" class="plans-grid">
+        <p class="muted small">Chargement des plans…</p>
       </div>
     </section>
 
-    <!-- ========= FAQ ========= -->
+    <!-- ========= ASSISTANCE ========= -->
     <section class="card faq">
       <h3>🛟 Assistance</h3>
 
@@ -110,6 +114,7 @@
   </footer>
 
   <!-- ================= JS ================= -->
+  <!-- 🔑 Identity (nas_id / ap_mac) is handled ONLY in mikrotik.js -->
   <script src="assets/js/mikrotik.js" defer></script>
 
 </body>
