@@ -8,6 +8,58 @@
   // -------- Madagascar Timezone helpers --------
   const MG_TZ = "Indian/Antananarivo";
 
+
+  // -------- Backend base URL (Option A: page served from MikroTik) --------
+  // When the captive page is served from the MikroTik router (e.g. http://192.168.88.1),
+  // relative /api/* requests would hit the router and fail. We therefore force API calls
+  // to the backend domain.
+  //
+  // You can override this per-site with a query param:
+  //   ?backend=https://razafi-backend.onrender.com
+  // or ?api_base=https://razafi-backend.onrender.com
+  //
+  // ✅ FIX: default backend must be the real API server (Render), not wifi.razafistore.com
+  const DEFAULT_BACKEND_BASE = "https://razafi-backend.onrender.com";
+
+  function getQueryParam(name) {
+    try { return new URLSearchParams(window.location.search).get(name); } catch { return null; }
+  }
+
+  function normalizeBaseUrl(v) {
+    if (!v) return null;
+    try {
+      let s = String(v).trim();
+      if (!s) return null;
+      if (!/^https?:\/\//i.test(s)) s = "https://" + s; // allow passing hostname
+      const u = new URL(s);
+      return u.origin;
+    } catch {
+      return null;
+    }
+  }
+
+  const API_BASE = (function () {
+    const override =
+      normalizeBaseUrl(getQueryParam("backend")) ||
+      normalizeBaseUrl(getQueryParam("backend_url")) ||
+      normalizeBaseUrl(getQueryParam("api_base")) ||
+      normalizeBaseUrl(getQueryParam("api"));
+    // If this page is being served from a razafistore.com host, allow same-origin relative calls.
+    try {
+      const host = String(window.location.hostname || "");
+      if (!override && /(^|\.)razafistore\.com$/i.test(host)) return "";
+    } catch {}
+    return override || DEFAULT_BACKEND_BASE;
+  })();
+
+  function apiUrl(path) {
+    if (!path) return path;
+    const p = String(path);
+    if (/^https?:\/\//i.test(p)) return p;
+    if (!API_BASE) return p;
+    return p.startsWith("/") ? (API_BASE + p) : (API_BASE + "/" + p);
+  }
+
   function fmtTimeMG(ts) {
     try {
       const d = new Date(Number(ts) || Date.now());
@@ -316,8 +368,8 @@
   const apMac = (pickLastValidParam(["ap_mac","apMac"], isProbablyMac) || (isLocalhost ? "DEV_AP" : ""));
   const clientMac = (pickLastValidParam(["client_mac","clientMac"], isProbablyMac) || (isLocalhost ? "DEV_CLIENT" : ""));
   // -------- Option C (MikroTik external portal) --------
-  // In Option C, Tanaza AP MAC is not reliable. Identify site/pool by NAS-ID.
-  // Passed from MikroTik login.html as: nas_id=$(identity)
+  // In Option C, Tanaza AP MAC is not available reliably. We identify the site/pool by NAS-ID.
+  // We pass this from MikroTik login.html as: nas_id=$(identity)
   const nasId = (pickLastValidParam(["nas_id","nasId","nas"], (v) => !isPlaceholder(v)) || "");
   const loginUrl = pickLastValidParam(["login_url","loginUrl"], (v) => {
     if (isPlaceholder(v)) return false;
@@ -364,19 +416,20 @@
     continue_url_all: __continueUrlAll
   });
   console.log("[RAZAFI] Tanaza params chosen", { apMac, clientMac, loginUrl, continueUrl });
+  console.log("[RAZAFI] Option C params", { nasId });
 
   // Expose Tanaza params for support/debug (not shown to end-users)
   window.apMac = apMac || "";
   window.clientMac = clientMac || "";
   window.loginUrl = loginUrl || "";
   window.continueUrl = continueUrl || "";
+  window.nasId = nasId || "";
 
   // Expose Tanaza parameters for field-debug (safe)
   window.apMac = apMac;
   window.clientMac = clientMac;
   window.loginUrl = loginUrl;
   window.continueUrl = continueUrl;
-  window.nasId = nasId || "";
 
   // -------- Status elements --------
   const voucherCodeEl = $("voucher-code");
@@ -627,7 +680,7 @@
       const qs = new URLSearchParams({ client_mac: clientMac });
       if (nasId) qs.set("nas_id", nasId);
       else if (apMac) qs.set("ap_mac", apMac);
-      const r = await fetch("/api/voucher/last?" + qs.toString(), { method: "GET" });
+      const r = await fetch(apiUrl("/api/voucher/last?") + qs.toString(), { method: "GET" });
       if (!r.ok) return;
       const j = await r.json().catch(() => ({}));
       if (j && j.found && (j.code || j.voucher_code)) {
@@ -656,7 +709,7 @@
     while (Date.now() - started < timeoutMs) {
       try {
         const url = `/api/dernier-code?phone=${encodeURIComponent(phone)}`;
-        const r = await fetch(url, { method: "GET" });
+        const r = await fetch(apiUrl(url), { method: "GET" });
         if (r.status === 204) {
           // no code yet
         } else if (r.ok) {
@@ -832,15 +885,15 @@ function submitToLoginUrl(code, ev) {
         const payload = JSON.stringify({
           voucher_code: currentVoucherCode,
           client_mac: clientMac || null,
-            nas_id: nasId || null,
-            ap_mac: nasId ? null : (apMac || null),
+          nas_id: nasId || null,
+          ap_mac: nasId ? null : (apMac || null),
         });
 
         if (navigator && typeof navigator.sendBeacon === "function") {
           const blob = new Blob([payload], { type: "application/json" });
-          navigator.sendBeacon("/api/voucher/activate", blob);
+          navigator.sendBeacon(apiUrl("/api/voucher/activate"), blob);
         } else {
-          fetch("/api/voucher/activate", {
+          fetch(apiUrl("/api/voucher/activate"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: payload,
@@ -1023,7 +1076,7 @@ function submitToLoginUrl(code, ev) {
     }
 
     try {
-            const qp = new URLSearchParams();
+      const qp = new URLSearchParams();
       if (nasId) qp.set("nas_id", nasId);
       else qp.set("ap_mac", apMac);
       const r = await fetch(apiUrl(`/api/portal/context?${qp.toString()}`), { method: "GET" });
@@ -1125,7 +1178,7 @@ function submitToLoginUrl(code, ev) {
 
           <div class="mvola-badge">
             <span class="secure-text">🔒 Paiement sécurisé via</span>
-            <img src="/portal/assets/img/mvola.png" alt="MVola">
+            <img src="assets/img/mvola.png" alt="MVola">
           </div>
 
           <p class="muted small">
@@ -1142,11 +1195,13 @@ function submitToLoginUrl(code, ev) {
     if (plansLoading) plansLoading.textContent = "Chargement des plans…";
 
     try {
-      const url = (apMac && clientMac)
-        ? `/api/mikrotik/plans?ap_mac=${encodeURIComponent(apMac)}&client_mac=${encodeURIComponent(clientMac)}`
-        : `/api/mikrotik/plans`;
+      const url = (nasId && clientMac)
+        ? `/api/mikrotik/plans?nas_id=${encodeURIComponent(nasId)}&client_mac=${encodeURIComponent(clientMac)}`
+        : (apMac && clientMac)
+          ? `/api/mikrotik/plans?ap_mac=${encodeURIComponent(apMac)}&client_mac=${encodeURIComponent(clientMac)}`
+          : `/api/mikrotik/plans`;
 
-      const res = await fetch(url);
+      const res = await fetch(apiUrl(url));
 
       const text = await res.text();
       let data;
@@ -1295,8 +1350,9 @@ function submitToLoginUrl(code, ev) {
             const planId = (card.getAttribute("data-plan-id") || card.dataset.planId || "").toString().trim() || null;
             if (planPrice === 0 && planId && clientMac) {
               const qs = new URLSearchParams({ client_mac: clientMac, plan_id: planId });
-              if (apMac) qs.set("ap_mac", apMac);
-              const r = await fetch("/api/free-plan/check?" + qs.toString(), { method: "GET" });
+              if (nasId) qs.set("nas_id", nasId);
+              else if (apMac) qs.set("ap_mac", apMac);
+              const r = await fetch(apiUrl("/api/free-plan/check?") + qs.toString(), { method: "GET" });
               if (r.status === 409) {
                 const j = await r.json().catch(() => ({}));
                 const whenIso = j.last_used_at || null;
@@ -1429,14 +1485,14 @@ function submitToLoginUrl(code, ev) {
 
               let baselineCode = null;
               try {
-                const pre = await fetch(`/api/dernier-code?phone=${encodeURIComponent(cleaned)}`, { method: "GET" });
+                const pre = await fetch(apiUrl(`/api/dernier-code?phone=${encodeURIComponent(cleaned)}`), { method: "GET" });
                 if (pre.ok) {
                   const pj = await pre.json().catch(() => ({}));
                   if (pj && pj.code) baselineCode = String(pj.code);
                 }
               } catch (_) {}
 
-              const resp = await fetch("/api/send-payment", {
+              const resp = await fetch(apiUrl("/api/send-payment"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -1444,7 +1500,8 @@ function submitToLoginUrl(code, ev) {
                   plan: planStr || planId || planPrice || "plan",
                   plan_id: planId || null,
                   client_mac: clientMac || null,
-                  ap_mac: apMac || null,
+                  nas_id: nasId || null,
+                  ap_mac: nasId ? null : (apMac || null),
                 }),
               });
 
@@ -1572,5 +1629,5 @@ function submitToLoginUrl(code, ev) {
 
   fetchPortalContext();
 
-  console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac });
+  console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac, nasId });
 })();
