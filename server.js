@@ -271,22 +271,10 @@ app.use((req, res, next) => {
     } catch (_) {}
 
     // --------------------------------------------------
-    // WiFi RAZAFI CHECK
-    // - System 1 & 2 (Tanaza): ap_mac REQUIRED (unchanged)
-    // - System 3 Option C (MikroTik): ONLY for /mikrotik* allow nas_id OR ap_mac
+    // WiFi RAZAFI CHECK (ap_mac REQUIRED)
     // --------------------------------------------------
     normalizeApMac(req, res, () => {
-      const p = (req.path || "").toString();
-      const isMikrotikPortal = p === "/mikrotik" || p.startsWith("/mikrotik/");
-
-      // Option C: if we're on the MikroTik portal entry, accept nas_id too
-      const rawNas = req.query.nas_id || req.query.nasId || req.query.radius_nas_id || "";
-      const nas_id = String(rawNas || "").trim();
-
-      const allowByApMac = !!req.ap_mac;
-      const allowByNasId = isMikrotikPortal && !!nas_id;
-
-      if (allowByApMac || allowByNasId) {
+      if (req.ap_mac) {
         try {
           res.cookie("ap_allowed", "1", {
             maxAge: 5 * 60 * 1000,
@@ -1312,45 +1300,86 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
     if (!ensureSupabase(res)) return;
 
     const ap_mac = req.ap_mac || null;
-    if (!ap_mac) return res.status(400).json({ ok: false, error: "ap_mac_required" });
+    const nas_id_raw = req.query.nas_id || req.query.nasId || req.query.nasID || req.headers["x-nas-id"] || req.headers["x-nas_id"] || "";
+    const nas_id = String(nas_id_raw || "").trim() || null;
 
-    // 1) Find pool for this AP
-    const { data: apRow, error: apErr } = await supabase
-      .from("ap_registry")
-      .select("ap_mac,pool_id,is_active")
-      .eq("ap_mac", ap_mac)
-      .maybeSingle();
-
-    if (apErr) {
-      console.error("PORTAL CONTEXT AP ERROR", apErr);
-      return res.status(500).json({ ok: false, error: "db_error" });
+    // Option C (MikroTik external portal): allow pool resolution by NAS-ID
+    // Systems 1 & 2 remain AP-mac based.
+    if (!ap_mac && !nas_id) {
+      return res.status(400).json({ ok: false, error: "ap_mac_or_nas_id_required" });
     }
 
-    const pool_id = apRow?.pool_id || null;
+    let pool_id = null;
+    let poolFromNas = null;
+
+    // 1A) If NAS-ID provided, resolve pool directly (mikrotik pools)
+    if (nas_id) {
+      const { data: poolRow, error: poolRowErr } = await supabase
+        .from("internet_pools")
+        .select("id,name,capacity_max,system,mikrotik_ip,radius_nas_id")
+        .eq("radius_nas_id", nas_id)
+        .maybeSingle();
+
+      if (poolRowErr) {
+        console.error("PORTAL CONTEXT NAS POOL ERROR", poolRowErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+
+      if (!poolRow?.id) {
+        return res.status(404).json({ ok: false, error: "pool_not_assigned" });
+      }
+
+      pool_id = poolRow.id;
+      poolFromNas = poolRow;
+    }
+
+    // 1B) Otherwise resolve pool via AP registry (Tanaza AP MAC)
     if (!pool_id) {
-      // AP not registered or not assigned: fail-open (allow purchase)
-      return res.json({
-        ok: true,
-        ap_mac,
-        pool_id: null,
-        pool_name: null,
-        pool_capacity_max: null,
-        pool_active_clients: 0,
-        pool_percent: null,
-        is_full: false,
-      });
+      // 1) Find pool for this AP
+      const { data: apRow, error: apErr } = await supabase
+        .from("ap_registry")
+        .select("ap_mac,pool_id,is_active")
+        .eq("ap_mac", ap_mac)
+        .maybeSingle();
+
+      if (apErr) {
+        console.error("PORTAL CONTEXT AP ERROR", apErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+
+      pool_id = apRow?.pool_id || null;
+      if (!pool_id) {
+        // AP not registered or not assigned: fail-open (allow purchase)
+        return res.json({
+          ok: true,
+          ap_mac,
+          nas_id,
+          pool_id: null,
+          pool_name: null,
+          pool_capacity_max: null,
+          pool_active_clients: 0,
+          pool_percent: null,
+          is_full: false,
+        });
+      }
     }
+
 
     // 2) Pool info
-    const { data: pool, error: poolErr } = await supabase
-      .from("internet_pools")
-      .select("id,name,capacity_max,system,mikrotik_ip,radius_nas_id")
-      .eq("id", pool_id)
-      .maybeSingle();
+    let pool = poolFromNas;
+    if (!pool) {
+      const { data: poolDb, error: poolErr } = await supabase
+        .from("internet_pools")
+        .select("id,name,capacity_max,system,mikrotik_ip,radius_nas_id")
+        .eq("id", pool_id)
+        .maybeSingle();
 
-    if (poolErr) {
-      console.error("PORTAL CONTEXT POOL ERROR", poolErr);
-      return res.status(500).json({ ok: false, error: "db_error" });
+      if (poolErr) {
+        console.error("PORTAL CONTEXT POOL ERROR", poolErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+
+      pool = poolDb || null;
     }
 
     const capacity_max = (pool?.capacity_max === null || pool?.capacity_max === undefined) ? null : Number(pool.capacity_max);
@@ -1471,35 +1500,73 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     if (!ensureSupabase(res)) return;
 
     const ap_mac = req.ap_mac || null;
-    if (!ap_mac) return res.status(400).json({ ok: false, error: "ap_mac_required" });
+    const nas_id_raw = req.query.nas_id || req.query.nasId || req.query.nasID || req.headers["x-nas-id"] || req.headers["x-nas_id"] || "";
+    const nas_id = String(nas_id_raw || "").trim() || null;
 
-    // 1) Resolve pool_id from AP registry
-    const { data: apRow, error: apErr } = await supabase
-      .from("ap_registry")
-      .select("ap_mac,pool_id,is_active")
-      .eq("ap_mac", ap_mac)
-      .maybeSingle();
-
-    if (apErr) {
-      console.error("MIKROTIK PLANS AP ERROR", apErr);
-      return res.status(500).json({ ok: false, error: "db_error" });
+    // Option C: allow pool resolution by NAS-ID (external portal)
+    if (!ap_mac && !nas_id) {
+      return res.status(400).json({ ok: false, error: "ap_mac_or_nas_id_required" });
     }
 
-    const pool_id = apRow?.pool_id || null;
+    let pool_id = null;
+    let pool = null;
+
+    // 1A) If NAS-ID provided, resolve pool directly
+    if (nas_id) {
+      const { data: poolRow, error: poolErr } = await supabase
+        .from("internet_pools")
+        .select("id,name,system")
+        .eq("radius_nas_id", nas_id)
+        .maybeSingle();
+
+      if (poolErr) {
+        console.error("MIKROTIK PLANS NAS POOL ERROR", poolErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+
+      if (!poolRow?.id) {
+        return res.status(404).json({ ok: false, error: "pool_not_assigned" });
+      }
+
+      pool_id = poolRow.id;
+      pool = poolRow;
+    }
+
+    // 1B) Otherwise resolve pool via AP registry (Tanaza AP MAC)
     if (!pool_id) {
-      return res.status(404).json({ ok: false, error: "pool_not_assigned" });
+      // 1) Resolve pool_id from AP registry
+      const { data: apRow, error: apErr } = await supabase
+        .from("ap_registry")
+        .select("ap_mac,pool_id,is_active")
+        .eq("ap_mac", ap_mac)
+        .maybeSingle();
+
+      if (apErr) {
+        console.error("MIKROTIK PLANS AP ERROR", apErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+
+      pool_id = apRow?.pool_id || null;
+      if (!pool_id) {
+        return res.status(404).json({ ok: false, error: "pool_not_assigned" });
+      }
     }
+
 
     // 2) Ensure pool is a Mikrotik pool
-    const { data: pool, error: poolErr } = await supabase
-      .from("internet_pools")
-      .select("id,name,system")
-      .eq("id", pool_id)
-      .maybeSingle();
+    if (!pool) {
+      const { data: poolDb, error: poolErr } = await supabase
+        .from("internet_pools")
+        .select("id,name,system")
+        .eq("id", pool_id)
+        .maybeSingle();
 
-    if (poolErr) {
-      console.error("MIKROTIK PLANS POOL ERROR", poolErr);
-      return res.status(500).json({ ok: false, error: "db_error" });
+      if (poolErr) {
+        console.error("MIKROTIK PLANS POOL ERROR", poolErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+
+      pool = poolDb || null;
     }
 
     if (!pool || String(pool.system || "").trim() !== "mikrotik") {
