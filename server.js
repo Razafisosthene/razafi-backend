@@ -1367,26 +1367,66 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
     if (!ensureSupabase(res)) return;
 
     const ap_mac = req.ap_mac || null;
-    if (!ap_mac) return res.status(400).json({ ok: false, error: "ap_mac_required" });
 
-    // 1) Find pool for this AP
-    const { data: apRow, error: apErr } = await supabase
-      .from("ap_registry")
-      .select("ap_mac,pool_id,is_active")
-      .eq("ap_mac", ap_mac)
-      .maybeSingle();
+    const nas_id_raw =
+      req.query.nas_id ||
+      req.query.nasId ||
+      req.query.nasID ||
+      req.query.nasid ||
+      req.headers["x-nas-id"] ||
+      req.headers["x-nas_id"] ||
+      "";
+    const nas_id = String(nas_id_raw || "").trim() || null;
 
-    if (apErr) {
-      console.error("PORTAL CONTEXT AP ERROR", apErr);
-      return res.status(500).json({ ok: false, error: "db_error" });
+    // Allow both Tanaza AP based context (ap_mac) and MikroTik context (nas_id).
+    if (!ap_mac && !nas_id) {
+      return res.status(400).json({ ok: false, error: "ap_mac_or_nas_id_required" });
     }
 
-    const pool_id = apRow?.pool_id || null;
+    let pool_id = null;
+    let pool = null;
+
+    // 1A) Resolve pool by NAS-ID (preferred for MikroTik)
+    if (nas_id) {
+      const { data: poolRow, error: poolRowErr } = await supabase
+        .from("internet_pools")
+        .select("id,name,capacity_max,system,mikrotik_ip,radius_nas_id")
+        .eq("radius_nas_id", nas_id)
+        .maybeSingle();
+
+      if (poolRowErr) {
+        console.error("PORTAL CONTEXT NAS POOL ERROR", poolRowErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+
+      if (poolRow?.id) {
+        pool_id = poolRow.id;
+        pool = poolRow;
+      }
+    }
+
+    // 1B) Resolve pool by AP registry (Tanaza AP MAC)
+    if (!pool_id && ap_mac) {
+      const { data: apRow, error: apErr } = await supabase
+        .from("ap_registry")
+        .select("ap_mac,pool_id,is_active")
+        .eq("ap_mac", ap_mac)
+        .maybeSingle();
+
+      if (apErr) {
+        console.error("PORTAL CONTEXT AP ERROR", apErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+
+      pool_id = apRow?.pool_id || null;
+    }
+
     if (!pool_id) {
-      // AP not registered or not assigned: fail-open (allow purchase)
+      // Not registered or not assigned: fail-open (allow purchase)
       return res.json({
         ok: true,
         ap_mac,
+        nas_id,
         pool_id: null,
         pool_name: null,
         pool_capacity_max: null,
@@ -1396,92 +1436,98 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
       });
     }
 
-    // 2) Pool info
-    const { data: pool, error: poolErr } = await supabase
-      .from("internet_pools")
-      .select("id,name,capacity_max,system,mikrotik_ip,radius_nas_id")
-      .eq("id", pool_id)
-      .maybeSingle();
+    // 2) Pool info (if not already loaded)
+    if (!pool) {
+      const { data: poolDb, error: poolErr } = await supabase
+        .from("internet_pools")
+        .select("id,name,capacity_max,system,mikrotik_ip,radius_nas_id")
+        .eq("id", pool_id)
+        .maybeSingle();
 
-    if (poolErr) {
-      console.error("PORTAL CONTEXT POOL ERROR", poolErr);
-      return res.status(500).json({ ok: false, error: "db_error" });
-    }
-
-    const capacity_max = (pool?.capacity_max === null || pool?.capacity_max === undefined) ? null : Number(pool.capacity_max);
-
-    // 3) Active clients in pool = sum of ap_live_stats.active_clients across active APs in that pool
-    const { data: aps, error: apsErr } = await supabase
-      .from("ap_registry")
-      .select("ap_mac,is_active")
-      .eq("pool_id", pool_id);
-
-    if (apsErr) {
-      console.error("PORTAL CONTEXT POOL APS ERROR", apsErr);
-      return res.status(500).json({ ok: false, error: "db_error" });
-    }
-
-    const apMacs = (aps || [])
-      .filter((a) => a && a.ap_mac && a.is_active !== false)
-      .map((a) => a.ap_mac);
-
-    let pool_active_clients = 0;
-
-    // Prefer real-time Tanaza connected clients (same as Admin), fail-open to cached DB stats.
-    if (apMacs.length) {
-      let usedTanaza = false;
-
-      try {
-        if (TANAZA_API_TOKEN) {
-          const tanazaMap = await tanazaBatchDevicesByMac(apMacs);
-          for (const mac of apMacs) {
-            const dev = tanazaMap[_tanazaNormalizeMac(mac)] || null;
-            const n = Number(dev?.connectedClients);
-            if (Number.isFinite(n)) {
-              pool_active_clients += n;
-              usedTanaza = true;
-            }
-          }
-        }
-      } catch (e) {
-        console.error("PORTAL CONTEXT TANAZA ERROR", e?.message || e);
+      if (poolErr) {
+        console.error("PORTAL CONTEXT POOL ERROR", poolErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
       }
 
-      // Fallback: DB cached stats (ap_live_stats.active_clients)
-      if (!usedTanaza) {
-        const { data: statsRows, error: statsErr } = await supabase
+      pool = poolDb || null;
+    }
+
+    const capacity_max =
+      pool?.capacity_max === null || pool?.capacity_max === undefined
+        ? null
+        : Number(pool.capacity_max);
+
+    let active_clients = 0;
+
+    // 3) Active clients calculation
+    if (String(pool?.system || "").trim() === "mikrotik") {
+      // For MikroTik pools, we rely on active_device_sessions (populated by RADIUS/accounting pipeline).
+      // If not present yet, this will return 0 but still provides pool_name for UI.
+      const { count, error: cErr } = await supabase
+        .from("active_device_sessions")
+        .select("*", { count: "exact", head: true })
+        .eq("pool_id", pool_id)
+        .eq("is_active", true);
+
+      if (cErr) {
+        console.error("PORTAL CONTEXT MIKROTIK ACTIVE COUNT ERROR", cErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+
+      active_clients = Number(count || 0);
+    } else {
+      // For Tanaza pools, sum ap_live_stats.active_clients across active APs in that pool
+      const { data: aps, error: apsErr } = await supabase
+        .from("ap_registry")
+        .select("ap_mac,is_active")
+        .eq("pool_id", pool_id);
+
+      if (apsErr) {
+        console.error("PORTAL CONTEXT POOL APS ERROR", apsErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+
+      const apMacs = (aps || [])
+        .filter((a) => a && a.ap_mac && a.is_active !== false)
+        .map((a) => String(a.ap_mac).trim());
+
+      if (apMacs.length) {
+        const { data: stats, error: statsErr } = await supabase
           .from("ap_live_stats")
           .select("ap_mac,active_clients")
           .in("ap_mac", apMacs);
 
         if (statsErr) {
-          console.error("PORTAL CONTEXT STATS ERROR", statsErr);
+          console.error("PORTAL CONTEXT POOL STATS ERROR", statsErr);
           return res.status(500).json({ ok: false, error: "db_error" });
         }
 
-        for (const s of statsRows || []) {
-          pool_active_clients += Number(s?.active_clients || 0);
-        }
+        active_clients = (stats || []).reduce((sum, s) => {
+          const n =
+            s?.active_clients === null || s?.active_clients === undefined
+              ? 0
+              : Number(s.active_clients) || 0;
+          return sum + n;
+        }, 0);
       }
     }
 
-// STRICT: full at 100% (>= capacity_max)
-    let pool_percent = null;
-    let is_full = false;
+    const percent =
+      capacity_max && capacity_max > 0
+        ? Math.max(0, Math.min(100, Math.round((active_clients / capacity_max) * 100)))
+        : null;
 
-    if (Number.isFinite(capacity_max) && capacity_max > 0) {
-      pool_percent = Math.round((pool_active_clients / capacity_max) * 100);
-      is_full = pool_active_clients >= capacity_max;
-    }
+    const is_full = capacity_max && capacity_max > 0 ? active_clients >= capacity_max : false;
 
     return res.json({
       ok: true,
       ap_mac,
+      nas_id,
       pool_id,
       pool_name: pool?.name ?? null,
-      pool_capacity_max: Number.isFinite(capacity_max) ? capacity_max : null,
-      pool_active_clients,
-      pool_percent,
+      pool_capacity_max: capacity_max,
+      pool_active_clients: active_clients,
+      pool_percent: percent,
       is_full,
     });
   } catch (e) {
