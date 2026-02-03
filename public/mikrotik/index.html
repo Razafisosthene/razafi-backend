@@ -33,7 +33,17 @@
     <section id="status-block" class="card status-card">
 
       <h2>Bienvenue sur WiFi RAZAFI</h2>
+
+      <!-- ✅ Option C: pool/site name placeholder (filled by mikrotik.js using nas_id) -->
+      <p class="muted small" id="poolName" style="margin-top:-6px;"></p>
+
       <p class="muted" id="accessMsg">Vérification de votre accès en cours…</p>
+
+      <!-- ✅ Option C: pool full banner placeholder -->
+      <div id="poolFullBanner" class="banner" style="display:none; margin:10px 0; padding:10px 12px; border-radius:10px; border:1px solid rgba(200,120,0,0.35); background: rgba(255,200,0,0.10);">
+        <strong>⚠️ Réseau momentanément saturé.</strong><br>
+        Les achats sont temporairement indisponibles. Veuillez patienter ou contacter l’assistance sur place.
+      </div>
 
       <!-- State: NO active voucher -->
       <div id="voucherNone" class="voucher-state">

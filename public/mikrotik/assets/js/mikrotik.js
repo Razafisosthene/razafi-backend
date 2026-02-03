@@ -367,6 +367,10 @@
   const isLocalhost = (location.hostname === "localhost" || location.hostname === "127.0.0.1");
   const apMac = (pickLastValidParam(["ap_mac","apMac"], isProbablyMac) || (isLocalhost ? "DEV_AP" : ""));
   const clientMac = (pickLastValidParam(["client_mac","clientMac"], isProbablyMac) || (isLocalhost ? "DEV_CLIENT" : ""));
+  // -------- Option C (MikroTik external portal) --------
+  // In Option C, Tanaza AP MAC is not available reliably. We identify the site/pool by NAS-ID.
+  // We pass this from MikroTik login.html as: nas_id=$(identity)
+  const nasId = (pickLastValidParam(["nas_id","nasId","nas"], (v) => !isPlaceholder(v)) || "");
   const loginUrl = pickLastValidParam(["login_url","loginUrl"], (v) => {
     if (isPlaceholder(v)) return false;
     const s = String(v || "").trim();
@@ -412,12 +416,14 @@
     continue_url_all: __continueUrlAll
   });
   console.log("[RAZAFI] Tanaza params chosen", { apMac, clientMac, loginUrl, continueUrl });
+  console.log("[RAZAFI] Option C params", { nasId });
 
   // Expose Tanaza params for support/debug (not shown to end-users)
   window.apMac = apMac || "";
   window.clientMac = clientMac || "";
   window.loginUrl = loginUrl || "";
   window.continueUrl = continueUrl || "";
+  window.nasId = nasId || "";
 
   // Expose Tanaza parameters for field-debug (safe)
   window.apMac = apMac;
@@ -672,7 +678,8 @@
     try {
       if (!clientMac) return;
       const qs = new URLSearchParams({ client_mac: clientMac });
-      if (apMac) qs.set("ap_mac", apMac);
+      if (nasId) qs.set("nas_id", nasId);
+      else if (apMac) qs.set("ap_mac", apMac);
       const r = await fetch(apiUrl("/api/voucher/last?") + qs.toString(), { method: "GET" });
       if (!r.ok) return;
       const j = await r.json().catch(() => ({}));
@@ -878,7 +885,8 @@ function submitToLoginUrl(code, ev) {
         const payload = JSON.stringify({
           voucher_code: currentVoucherCode,
           client_mac: clientMac || null,
-          ap_mac: apMac || null,
+          nas_id: nasId || null,
+          ap_mac: nasId ? null : (apMac || null),
         });
 
         if (navigator && typeof navigator.sendBeacon === "function") {
@@ -1060,7 +1068,7 @@ function submitToLoginUrl(code, ev) {
   }
 
   async function fetchPortalContext() {
-    if (!apMac) {
+    if (!nasId && !apMac) {
       poolContext = { pool_name: null, pool_percent: null, is_full: false };
       poolIsFull = false;
       applyPoolContextUI();
@@ -1068,7 +1076,10 @@ function submitToLoginUrl(code, ev) {
     }
 
     try {
-      const r = await fetch(apiUrl(`/api/portal/context?ap_mac=${encodeURIComponent(apMac)}`), { method: "GET" });
+      const qp = new URLSearchParams();
+      if (nasId) qp.set("nas_id", nasId);
+      else qp.set("ap_mac", apMac);
+      const r = await fetch(apiUrl(`/api/portal/context?${qp.toString()}`), { method: "GET" });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j?.ok) throw new Error(j?.error || "context_failed");
 
@@ -1184,9 +1195,11 @@ function submitToLoginUrl(code, ev) {
     if (plansLoading) plansLoading.textContent = "Chargement des plans…";
 
     try {
-      const url = (apMac && clientMac)
-        ? `/api/mikrotik/plans?ap_mac=${encodeURIComponent(apMac)}&client_mac=${encodeURIComponent(clientMac)}`
-        : `/api/mikrotik/plans`;
+      const url = (nasId && clientMac)
+        ? `/api/mikrotik/plans?nas_id=${encodeURIComponent(nasId)}&client_mac=${encodeURIComponent(clientMac)}`
+        : (apMac && clientMac)
+          ? `/api/mikrotik/plans?ap_mac=${encodeURIComponent(apMac)}&client_mac=${encodeURIComponent(clientMac)}`
+          : `/api/mikrotik/plans`;
 
       const res = await fetch(apiUrl(url));
 
@@ -1337,7 +1350,8 @@ function submitToLoginUrl(code, ev) {
             const planId = (card.getAttribute("data-plan-id") || card.dataset.planId || "").toString().trim() || null;
             if (planPrice === 0 && planId && clientMac) {
               const qs = new URLSearchParams({ client_mac: clientMac, plan_id: planId });
-              if (apMac) qs.set("ap_mac", apMac);
+              if (nasId) qs.set("nas_id", nasId);
+              else if (apMac) qs.set("ap_mac", apMac);
               const r = await fetch(apiUrl("/api/free-plan/check?") + qs.toString(), { method: "GET" });
               if (r.status === 409) {
                 const j = await r.json().catch(() => ({}));
@@ -1486,7 +1500,8 @@ function submitToLoginUrl(code, ev) {
                   plan: planStr || planId || planPrice || "plan",
                   plan_id: planId || null,
                   client_mac: clientMac || null,
-                  ap_mac: apMac || null,
+                  nas_id: nasId || null,
+                  ap_mac: nasId ? null : (apMac || null),
                 }),
               });
 
@@ -1614,5 +1629,5 @@ function submitToLoginUrl(code, ev) {
 
   fetchPortalContext();
 
-  console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac });
+  console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac, nasId });
 })();
