@@ -1526,35 +1526,77 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     if (!ensureSupabase(res)) return;
 
     const ap_mac = req.ap_mac || null;
-    if (!ap_mac) return res.status(400).json({ ok: false, error: "ap_mac_required" });
+    const nas_id_raw =
+      req.query.nas_id ||
+      req.query.nasId ||
+      req.query.nasID ||
+      req.headers["x-nas-id"] ||
+      req.headers["x-nas_id"] ||
+      "";
+    const nas_id = String(nas_id_raw || "").trim() || null;
 
-    // 1) Resolve pool_id from AP registry
-    const { data: apRow, error: apErr } = await supabase
-      .from("ap_registry")
-      .select("ap_mac,pool_id,is_active")
-      .eq("ap_mac", ap_mac)
-      .maybeSingle();
-
-    if (apErr) {
-      console.error("MIKROTIK PLANS AP ERROR", apErr);
-      return res.status(500).json({ ok: false, error: "db_error" });
+    // Allow MikroTik external portal to resolve by NAS-ID (preferred),
+    // while keeping AP-MAC based resolution for backward compatibility.
+    if (!ap_mac && !nas_id) {
+      return res.status(400).json({ ok: false, error: "ap_mac_or_nas_id_required" });
     }
 
-    const pool_id = apRow?.pool_id || null;
+    let pool_id = null;
+    let pool = null;
+
+    // 1A) Resolve pool by NAS-ID (mikrotik pools)
+    if (nas_id) {
+      const { data: poolRow, error: poolRowErr } = await supabase
+        .from("internet_pools")
+        .select("id,name,system,radius_nas_id")
+        .eq("radius_nas_id", nas_id)
+        .maybeSingle();
+
+      if (poolRowErr) {
+        console.error("MIKROTIK PLANS NAS POOL ERROR", poolRowErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+
+      if (poolRow?.id) {
+        pool_id = poolRow.id;
+        pool = poolRow;
+      }
+    }
+
+    // 1B) Resolve pool by AP registry (Tanaza AP MAC)
+    if (!pool_id && ap_mac) {
+      const { data: apRow, error: apErr } = await supabase
+        .from("ap_registry")
+        .select("ap_mac,pool_id,is_active")
+        .eq("ap_mac", ap_mac)
+        .maybeSingle();
+
+      if (apErr) {
+        console.error("MIKROTIK PLANS AP ERROR", apErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+
+      pool_id = apRow?.pool_id || null;
+    }
+
     if (!pool_id) {
       return res.status(404).json({ ok: false, error: "pool_not_assigned" });
     }
 
     // 2) Ensure pool is a Mikrotik pool
-    const { data: pool, error: poolErr } = await supabase
-      .from("internet_pools")
-      .select("id,name,system")
-      .eq("id", pool_id)
-      .maybeSingle();
+    if (!pool) {
+      const { data: poolDb, error: poolErr } = await supabase
+        .from("internet_pools")
+        .select("id,name,system,radius_nas_id")
+        .eq("id", pool_id)
+        .maybeSingle();
 
-    if (poolErr) {
-      console.error("MIKROTIK PLANS POOL ERROR", poolErr);
-      return res.status(500).json({ ok: false, error: "db_error" });
+      if (poolErr) {
+        console.error("MIKROTIK PLANS POOL ERROR", poolErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+
+      pool = poolDb || null;
     }
 
     if (!pool || String(pool.system || "").trim() !== "mikrotik") {
@@ -1580,9 +1622,10 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     return res.json({
       ok: true,
       ap_mac,
+      nas_id,
       pool_id,
       pool_name: pool?.name ?? null,
-      plans: plans || []
+      plans: plans || [],
     });
   } catch (e) {
     console.error("MIKROTIK PLANS EX", e);
