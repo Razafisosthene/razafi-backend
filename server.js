@@ -4200,21 +4200,44 @@ app.post("/api/radius/authorize", async (req, res) => {
 
     const now = new Date();
 
-    // Fetch latest session for this voucher_code
-    const { data: rows, error } = await supabase
-      .from("voucher_sessions")
-      .select("id,voucher_code,status,client_mac,pool_id,plan_id,expires_at,activated_at,started_at")
-      .eq("voucher_code", username)
-      .order("created_at", { ascending: false })
-      .limit(1);
+    // Fetch latest session for this voucher_code (case-insensitive)
+// NOTE: use TRUTH VIEW first (it exists in your DB and is already used by admin endpoints)
+// so we don't miss sessions due to status normalization / computed fields.
+let rows = null;
+let error = null;
 
-    if (error || !rows || !rows.length) {
-      return sendReject("unknown_code", { nas_id, client_mac, metadata: { username } });
-    }
+try {
+  const r1 = await supabase
+    .from("vw_voucher_sessions_truth")
+    .select("id,voucher_code,status,truth_status,client_mac,pool_id,plan_id,expires_at,activated_at,started_at,created_at")
+    .ilike("voucher_code", username)
+    .order("created_at", { ascending: false })
+    .limit(1);
+  rows = r1.data;
+  error = r1.error;
+} catch (_) {
+  // ignore and fallback below
+}
 
-    const session = rows[0];
+// Fallback to base table (in case the view is missing or permissions differ)
+if (error || !rows || !rows.length) {
+  const r2 = await supabase
+    .from("voucher_sessions")
+    .select("id,voucher_code,status,client_mac,pool_id,plan_id,expires_at,activated_at,started_at,created_at")
+    .ilike("voucher_code", username)
+    .order("created_at", { ascending: false })
+    .limit(1);
+  rows = r2.data;
+  error = r2.error;
+}
 
-    // Device lock: if already bound, enforce same MAC
+if (error || !rows || !rows.length) {
+  return sendReject("unknown_code", { nas_id, client_mac, metadata: { username } });
+}
+
+const session = rows[0];
+
+// Device lock: if already bound, enforce same MAC
     if (session.client_mac && client_mac && normalizeMacColon(session.client_mac) !== client_mac) {
       return sendReject("device_mismatch", {
         entity_type: "voucher_session",
