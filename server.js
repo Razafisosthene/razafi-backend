@@ -3845,25 +3845,76 @@ app.get("/api/hotspot/pending-code", async (req, res) => {
 // - Optional: enforce pool via nas_id (NAS-Identifier)
 // Security: allow only your RADIUS droplet IP + header secret (recommended)
 // ---------------------------------------------------------------------------
-const RADIUS_ALLOWED_IPS = (process.env.RADIUS_ALLOWED_IPS || "159.89.16.34").split(",").map(s => s.trim()).filter(Boolean);
-const RADIUS_API_SECRET = process.env.RADIUS_API_SECRET || ""; // set this in Render env
+const RADIUS_ALLOWED_IPS = (process.env.RADIUS_ALLOWED_IPS || "159.89.16.34")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
-function getCallerIp(req) {
-  // trust proxy already enabled :contentReference[oaicite:5]{index=5}
-  const cf = req.headers["cf-connecting-ip"];
-  if (cf) return String(cf).trim();
+const RADIUS_API_SECRET = process.env.RADIUS_API_SECRET || ""; // set this in Render env (recommended)
+
+/**
+ * Normalize IP strings that may come as:
+ * - "::ffff:1.2.3.4"
+ * - "1.2.3.4"
+ * - IPv6 literals
+ */
+function normalizeIp(ip) {
+  if (!ip) return "";
+  return String(ip).trim().replace(/^::ffff:/, "");
+}
+
+/**
+ * Collect all plausible caller IPs (Cloudflare, proxies, req.ip, socket).
+ * IMPORTANT: for proxied deployments, X-Forwarded-For can contain multiple IPs.
+ */
+function getCallerIps(req) {
+  const out = [];
+
+  // Cloudflare (if zone is proxied)
+  const cf = normalizeIp(req.headers["cf-connecting-ip"]);
+  if (cf) out.push(cf);
+
+  // Render / proxies
   const xff = req.headers["x-forwarded-for"];
-  if (xff) return String(xff).split(",")[0].trim();
-  return String(req.ip || req.socket?.remoteAddress || "").replace(/^::ffff:/, "");
+  if (xff) {
+    for (const part of String(xff).split(",")) {
+      const ip = normalizeIp(part);
+      if (ip) out.push(ip);
+    }
+  }
+
+  // Some proxies set X-Real-IP
+  const xri = normalizeIp(req.headers["x-real-ip"]);
+  if (xri) out.push(xri);
+
+  // Express-calculated IP (respects trust proxy)
+  const rip = normalizeIp(req.ip);
+  if (rip) out.push(rip);
+
+  // Last resort
+  const sock = normalizeIp(req.socket?.remoteAddress);
+  if (sock) out.push(sock);
+
+  // de-dup while preserving order
+  const uniq = [];
+  const seen = new Set();
+  for (const ip of out) {
+    if (!ip || seen.has(ip)) continue;
+    seen.add(ip);
+    uniq.push(ip);
+  }
+  return uniq;
 }
 
 function isAllowedRadiusCaller(req) {
-  const ip = getCallerIp(req);
+  const ips = getCallerIps(req);
   const secret = String(req.headers["x-radius-secret"] || "").trim();
-  const ipOk = RADIUS_ALLOWED_IPS.includes(ip);
+
+  const ipOk = ips.some((ip) => RADIUS_ALLOWED_IPS.includes(ip));
   const secretOk = !!RADIUS_API_SECRET && secret === RADIUS_API_SECRET;
+
   // Require BOTH if secret is configured; else fallback to IP only
-  return RADIUS_API_SECRET ? (secretOk || ipOk) : ipOk;
+  return RADIUS_API_SECRET ? (ipOk && secretOk) : ipOk;
 }
 
 app.post("/api/radius/authorize", async (req, res) => {
