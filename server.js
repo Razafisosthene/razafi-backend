@@ -4019,7 +4019,7 @@ function isAllowedRadiusCaller(req) {
   const ipOk = RADIUS_ALLOWED_IPS.includes(ip);
   const secretOk = !!RADIUS_API_SECRET && secret === RADIUS_API_SECRET;
   // Require BOTH if secret is configured; else fallback to IP only
-  return RADIUS_API_SECRET ? (ipOk && secretOk) : ipOk;
+  return RADIUS_API_SECRET ? secretOk : ipOk;
 }
 
 app.post("/api/radius/authorize", async (req, res) => {
