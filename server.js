@@ -4270,17 +4270,8 @@ const session = rows[0];
             plan_id: session.plan_id || null
           });
         }
-        if (poolRow.radius_nas_id && String(poolRow.radius_nas_id) !== nas_id) {
-          return sendReject("wrong_pool", {
-            entity_type: "voucher_session",
-            entity_id: session.id,
-            nas_id,
-            client_mac,
-            pool_id: session.pool_id || null,
-            plan_id: session.plan_id || null,
-            metadata: { expected_nas_id: poolRow.radius_nas_id, got_nas_id: nas_id }
-          });
-        }
+        // NOTE: vouchers are network-wide on the SSID; do NOT restrict by NAS-ID at auth time.
+        // If poolRow.radius_nas_id is set and differs, we still allow.
       }
     }
 
@@ -4700,6 +4691,47 @@ app.post("/api/send-payment", async (req, res) => {
   // normalize to local 0XXXXXXXXX
   phone = normalizePhone(phone);
 
+  // ----------------------------
+  // System 3 context (MikroTik)
+  // If nas_id is provided by the MikroTik captive portal, we treat this as System 3.
+  // Pool resolution MUST be done from nas_id (NAS-Identifier) during generation.
+  // NOTE: vouchers are usable network-wide on the same SSID (NOT restricted to a specific NAS at auth time),
+  // but we still attach pool_id for reporting/capacity.
+  // ----------------------------
+  const nas_id_raw = body.nas_id || body.nasId || body.nasID || "";
+  let nas_id = String(nas_id_raw || "").trim();
+  if (nas_id) {
+    nas_id = nas_id.replace(/[^A-Za-z0-9_.:-]/g, "");
+  }
+  if (!nas_id) nas_id = null;
+
+  const isMikrotik = !!nas_id;
+
+  // If System 3, resolve pool_id by NAS-ID now (mandatory).
+  if (isMikrotik) {
+    const { data: poolByNas, error: poolByNasErr } = await supabase
+      .from("internet_pools")
+      .select("id,name,system,radius_nas_id")
+      .eq("radius_nas_id", nas_id)
+      .maybeSingle();
+
+    if (poolByNasErr) {
+      console.error("MIKROTIK SEND-PAYMENT NAS POOL ERROR", poolByNasErr);
+      return res.status(500).json({ error: "db_error" });
+    }
+
+    if (!poolByNas?.id) {
+      return res.status(404).json({ error: "pool_not_assigned", message: "Pool introuvable pour ce NAS-ID." });
+    }
+
+    // Enforce pool is MikroTik
+    if (poolByNas.system && poolByNas.system !== "mikrotik") {
+      return res.status(400).json({ error: "wrong_system", message: "Ce NAS-ID n'appartient pas à un pool MikroTik." });
+    }
+
+    pool_id = poolByNas.id;
+  }
+
   // Optional: block purchase when the WiFi (pool) is full (source of truth: Tanaza connected clients by AP)
   // Fail-open if ap_mac is missing or if any error happens (never break production).
   let ap_mac = null;
@@ -4924,7 +4956,7 @@ if (supabase) {
       plan_id: planIdForSession,
       pool_id: pool_id || null,
       client_mac: clientMacForSession,
-      ap_mac: apMacForSession,
+      ap_mac: isMikrotik ? null : apMacForSession,
     };
 
     if (supabase) {
@@ -4953,9 +4985,10 @@ const { error: vsErr } = await supabase
       voucher_code: voucherCode,
       plan_id: planIdForSession,
       pool_id: pool_id || null,
-      status: "pending",
+      status: isMikrotik ? "active" : "pending",
+        activated_at: isMikrotik ? new Date().toISOString() : null,
       client_mac: clientMacForSession,
-      ap_mac: apMacForSession,
+      ap_mac: isMikrotik ? null : apMacForSession,
       mvola_phone: phone || null,
       transaction_id: null,
       delivered_at: nowIso,
@@ -4984,7 +5017,7 @@ const { error: vsErr } = await supabase
       plan_id: planIdForSession,
       pool_id: pool_id || null,
       client_mac: client_mac || null,
-      ap_mac: ap_mac || null,
+      ap_mac: isMikrotik ? null : ap_mac || null,
     };
 
     if (supabase) {
@@ -5011,7 +5044,7 @@ const { error: vsErr } = await supabase
         request_ref: requestRef || null,
         mvola_phone: phone || null,
         client_mac: client_mac || null,
-        ap_mac: apMacForSession || null,
+        ap_mac: isMikrotik ? null : apMacForSession || null,
         pool_id: pool_id || null,
         plan_id: planIdForSession || null,
         message: "MVola payment initiated (NEW system)",
@@ -5054,7 +5087,8 @@ const { error: vsErr } = await supabase
           .from("transactions")
           .update({
             server_correlation_id: serverCorrelationId,
-            status: "pending",
+            status: isMikrotik ? "active" : "pending",
+        activated_at: isMikrotik ? new Date().toISOString() : null,
             transaction_reference: data.transactionReference || null,
             metadata: (await (async () => {
             try {
@@ -5119,7 +5153,7 @@ const { error: vsErr } = await supabase
       request_ref: requestRef || null,
       mvola_phone: phone || null,
       client_mac: client_mac || null,
-      ap_mac: ap_mac || null,
+      ap_mac: isMikrotik ? null : ap_mac || null,
       pool_id: pool_id || null,
       plan_id: planIdForSession || null,
       message: "MVola initiation failed (NEW system)",
