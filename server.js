@@ -4087,14 +4087,16 @@ function getCallerIp(req) {
 
 function isAllowedRadiusCaller(req) {
   const ips = getCallerIps(req);
-  const secret = String(req.headers["x-radius-secret"] || "").trim();
+  const secret = String(req.headers["x-radius-secret"] || req.headers["x_radius_secret"] || "").trim();
 
   const ipOk = ips.some((ip) => RADIUS_ALLOWED_IPS.includes(ip));
   const secretOk = !!RADIUS_API_SECRET && secret === RADIUS_API_SECRET;
 
   // If a secret is configured, rely on the secret (IP can be unreliable behind Cloudflare/Render).
   // If no secret is configured, fall back to IP allow-list.
-  return RADIUS_API_SECRET ? secretOk : ipOk;
+  // If a secret is configured, accept if either the secret matches OR the caller IP is allow-listed.
+  // This avoids accidental lockouts if the secret is misconfigured while IP allow-list is still valid.
+  return RADIUS_API_SECRET ? (secretOk || ipOk) : ipOk;
 }
 
 app.post("/api/radius/authorize", async (req, res) => {
