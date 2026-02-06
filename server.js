@@ -4078,25 +4078,16 @@ function getCallerIps(req) {
   return uniq;
 }
 
-// Helper: return the first/primary caller IP (used in audits / security logs)
-function getCallerIp(req) {
-  const ips = getCallerIps(req);
-  return (ips && ips.length) ? ips[0] : "";
-}
-
-
 function isAllowedRadiusCaller(req) {
   const ips = getCallerIps(req);
-  const secret = String(req.headers["x-radius-secret"] || req.headers["x_radius_secret"] || "").trim();
+  const secret = String(req.headers["x-radius-secret"] || "").trim();
 
   const ipOk = ips.some((ip) => RADIUS_ALLOWED_IPS.includes(ip));
   const secretOk = !!RADIUS_API_SECRET && secret === RADIUS_API_SECRET;
 
   // If a secret is configured, rely on the secret (IP can be unreliable behind Cloudflare/Render).
   // If no secret is configured, fall back to IP allow-list.
-  // If a secret is configured, accept if either the secret matches OR the caller IP is allow-listed.
-  // This avoids accidental lockouts if the secret is misconfigured while IP allow-list is still valid.
-  return RADIUS_API_SECRET ? (secretOk || ipOk) : ipOk;
+  return RADIUS_API_SECRET ? secretOk : ipOk;
 }
 
 app.post("/api/radius/authorize", async (req, res) => {
@@ -4173,7 +4164,6 @@ app.post("/api/radius/authorize", async (req, res) => {
     }
 
     // Security gate: only accept calls from your FreeRADIUS droplet (+ optional header secret)
-    console.log("RADIUS HEADERS:", req.headers);
     if (!isAllowedRadiusCaller(req)) {
       return sendReject("RADIUS caller not allowed", {
         actor_id: getCallerIp(req),
@@ -4294,17 +4284,50 @@ const session = rows[0];
       }
     }
 
-    // Model B: must be activated first (click "Utiliser ce code")
-    if (session.status !== "active") {
-      return sendReject("not_active", {
-        entity_type: "voucher_session",
-        entity_id: session.id,
-        nas_id,
-        client_mac,
-        pool_id: session.pool_id || null,
-        plan_id: session.plan_id || null,
-        metadata: { status: session.status }
-      });
+    // Auto-activation (System 3 / MikroTik):
+    // As soon as a voucher is generated, we want the very first RADIUS auth to be accepted.
+    // Some sessions may be created as "pending" (depending on your generation flow / truth view),
+    // so on first auth we upgrade them to "active" (and attach pool_id if we can resolve it from nas_id).
+    const currentStatus = String(session.status || "").toLowerCase();
+
+    if (currentStatus !== "active") {
+      const canAutoActivate = ["pending", "created", "issued"].includes(currentStatus);
+
+      if (!canAutoActivate) {
+        return sendReject("not_active", {
+          entity_type: "voucher_session",
+          entity_id: session.id,
+          nas_id,
+          client_mac,
+          pool_id: poolId || session.pool_id || null,
+          plan_id: session.plan_id || null,
+          metadata: { status: session.status }
+        });
+      }
+
+      try {
+        const updatePayload = {
+          status: "active",
+          activated_at: now.toISOString(),
+          updated_at: now.toISOString()
+        };
+
+        if (!session.pool_id && poolId) updatePayload.pool_id = poolId;
+
+        const { error: actErr } = await supabase
+          .from("voucher_sessions")
+          .update(updatePayload)
+          .eq("id", session.id);
+
+        if (actErr) {
+          console.warn("RADIUS auto-activate failed:", actErr);
+        } else {
+          session.status = "active";
+          if (updatePayload.pool_id) session.pool_id = updatePayload.pool_id;
+        }
+      } catch (e) {
+        console.warn("RADIUS auto-activate exception:", e);
+      }
     }
 
     
