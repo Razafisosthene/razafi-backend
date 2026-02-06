@@ -4078,10 +4078,12 @@ function getCallerIps(req) {
   return uniq;
 }
 
+// Helper: return the first/primary caller IP (used in audits / security logs)
 function getCallerIp(req) {
   const ips = getCallerIps(req);
-  return (ips && ips.length) ? ips[0] : null;
+  return (ips && ips.length) ? ips[0] : "";
 }
+
 
 function isAllowedRadiusCaller(req) {
   const ips = getCallerIps(req);
@@ -4275,8 +4277,17 @@ const session = rows[0];
             plan_id: session.plan_id || null
           });
         }
-        // NOTE (System 3): vouchers are NAS-unrestricted within the same SSID.
-        // We intentionally do NOT enforce poolRow.radius_nas_id here.
+        if (poolRow.radius_nas_id && String(poolRow.radius_nas_id) !== nas_id) {
+          return sendReject("wrong_pool", {
+            entity_type: "voucher_session",
+            entity_id: session.id,
+            nas_id,
+            client_mac,
+            pool_id: session.pool_id || null,
+            plan_id: session.plan_id || null,
+            metadata: { expected_nas_id: poolRow.radius_nas_id, got_nas_id: nas_id }
+          });
+        }
       }
     }
 
@@ -4833,7 +4844,6 @@ try {
 
   const requestRef = `RAZAFI_${Date.now()}`;
   const txId = crypto.randomUUID();
-  const correlationId = crypto.randomUUID();
 
 
   // FREE PLAN FLOW: amount === 0 => generate voucher immediately (no MVola)
@@ -4870,7 +4880,7 @@ if (supabase) {
   const nowIso = new Date().toISOString();
   const planIdForSession = (body.plan_id || body.planId || "").toString().trim() || null;
   const clientMacForSession = (client_mac || body.client_mac || body.clientMac || "").toString().trim() || null;
-  const ap_mac = (ap_mac || body.ap_mac || body.apMac || "").toString().trim() || null;
+  const apMacForSession = (ap_mac || body.ap_mac || body.apMac || "").toString().trim() || null;
 
   if (!planIdForSession || !clientMacForSession) {
     return res.status(400).json({
@@ -4888,7 +4898,7 @@ if (supabase) {
       plan_id: planIdForSession,
       pool_id: pool_id || null,
       client_mac: clientMacForSession,
-      ap_mac: ap_mac,
+      ap_mac: apMacForSession,
     };
 
     if (supabase) {
@@ -4919,7 +4929,7 @@ const { error: vsErr } = await supabase
       pool_id: pool_id || null,
       status: "pending",
       client_mac: clientMacForSession,
-      ap_mac: ap_mac,
+      ap_mac: apMacForSession,
       mvola_phone: phone || null,
       transaction_id: null,
       delivered_at: nowIso,
@@ -4975,7 +4985,7 @@ const { error: vsErr } = await supabase
         request_ref: requestRef || null,
         mvola_phone: phone || null,
         client_mac: client_mac || null,
-        ap_mac: ap_mac || null,
+        ap_mac: apMacForSession || null,
         pool_id: pool_id || null,
         plan_id: planIdForSession || null,
         message: "MVola payment initiated (NEW system)",
@@ -4997,6 +5007,9 @@ const { error: vsErr } = await supabase
     creditParty: [{ key: "msisdn", value: PARTNER_MSISDN }],
     metadata: [{ key: "partnerName", value: PARTNER_NAME }],
   };
+
+  const correlationId = crypto.randomUUID();
+
   try {
     const token = await getAccessToken();
     const initiateUrl = `${MVOLA_BASE}/mvola/mm/transactions/type/merchantpay/1.0.0/`;
