@@ -3141,17 +3141,26 @@ async function pollTransactionStatus({
               message: "Generating voucher after MVola completion",
               metadata: { voucher_code_hint: String(voucherCode || "").slice(0, 8) + "***" },
             });
+            let poolId = metaPoolId;
+            if (!poolId && metaNasId) {
+              poolId = await resolvePoolIdFromNasId(metaNasId);
+            }
+            if (!poolId) {
+              throw new Error("pool_id_missing");
+            }
+
             const { error: vsErr } = await supabase
               .from("voucher_sessions")
               .upsert([{
                 voucher_code: voucherCode,
                 plan_id: metaPlanId,
-                pool_id: metaPoolId,
+                pool_id: poolId,
                 client_mac: metaClientMac,
                 ap_mac: metaApMac,
                 mvola_phone: (tx?.phone || baseMeta.phone || null),
                 transaction_id: tx?.id || null,
-                status: "pending",
+                status: "active",
+                activated_at: nowIso,
                 delivered_at: nowIso,
                 updated_at: nowIso,
               }], { onConflict: "voucher_code" });
@@ -4030,12 +4039,6 @@ const RADIUS_API_SECRET = process.env.RADIUS_API_SECRET || ""; // set this in Re
  * - "1.2.3.4"
  * - IPv6 literals
  */
-/**
- * Normalize IP strings that may come as:
- * - "::ffff:1.2.3.4"
- * - "1.2.3.4"
- * - IPv6 literals
- */
 function normalizeIp(ip) {
   if (!ip) return "";
   return String(ip).trim().replace(/^::ffff:/, "");
@@ -4046,33 +4049,93 @@ function normalizeIp(ip) {
  * IMPORTANT: for proxied deployments, X-Forwarded-For can contain multiple IPs.
  */
 function getCallerIps(req) {
-  const ips = new Set();
-
-  const add = (v) => {
-    const x = normalizeIp(v);
-    if (x) ips.add(x);
-  };
+  const out = [];
 
   // Cloudflare (if zone is proxied)
-  add(req && req.headers ? req.headers["cf-connecting-ip"] : undefined);
+  const cf = normalizeIp(req.headers["cf-connecting-ip"]);
+  if (cf) out.push(cf);
 
-  // Render / proxies (may contain multiple)
-  const xff = req && req.headers ? req.headers["x-forwarded-for"] : undefined;
+  // Render / proxies
+  const xff = req.headers["x-forwarded-for"];
   if (xff) {
-    for (const part of String(xff).split(",")) add(part);
+    for (const part of String(xff).split(",")) {
+      const ip = normalizeIp(part);
+      if (ip) out.push(ip);
+    }
   }
 
-  // Direct connection / Express
-  add(req && req.socket ? req.socket.remoteAddress : undefined);
-  add(req && req.connection ? req.connection.remoteAddress : undefined);
-  add(req ? req.ip : undefined);
+  // Some proxies set X-Real-IP
+  const xri = normalizeIp(req.headers["x-real-ip"]);
+  if (xri) out.push(xri);
 
-  return Array.from(ips);
+  // Express-calculated IP (respects trust proxy)
+  const rip = normalizeIp(req.ip);
+  if (rip) out.push(rip);
+
+  // Last resort
+  const sock = normalizeIp(req.socket?.remoteAddress);
+  if (sock) out.push(sock);
+
+  // de-dup while preserving order
+  const uniq = [];
+  const seen = new Set();
+  for (const ip of out) {
+    if (!ip || seen.has(ip)) continue;
+    seen.add(ip);
+    uniq.push(ip);
+  }
+  return uniq;
 }
 
+// Helper: return the first/primary caller IP (used in audits / security logs)
 function getCallerIp(req) {
   const ips = getCallerIps(req);
-  return ips.length ? ips[0] : "";
+  return (ips && ips.length) ? ips[0] : "";
+}
+
+
+
+// Resolve pool_id from MikroTik/FreeRADIUS NAS-Identifier (nas_id).
+// IMPORTANT (System 3): vouchers are NAS-unrestricted, but we still need nas_id to map the request to a pool.
+async function resolvePoolIdFromNasId(nas_id) {
+  const id = String(nas_id || "").trim();
+  if (!id || !supabase) return null;
+
+  // 1) Prefer internet_pools.radius_nas_id (direct mapping)
+  {
+    const { data, error } = await supabase
+      .from("internet_pools")
+      .select("id,radius_nas_id")
+      .eq("radius_nas_id", id)
+      .limit(1)
+      .maybeSingle();
+    if (!error && data?.id) return data.id;
+  }
+
+  // 2) Fallback: ap_registry.radius_nas_id -> pool_id
+  {
+    const { data, error } = await supabase
+      .from("ap_registry")
+      .select("pool_id,radius_nas_id")
+      .eq("radius_nas_id", id)
+      .limit(1)
+      .maybeSingle();
+    if (!error && data?.pool_id) return data.pool_id;
+  }
+
+  return null;
+}
+
+function isAllowedRadiusCaller(req) {
+  const ips = getCallerIps(req);
+  const secret = String(req.headers["x-radius-secret"] || "").trim();
+
+  const ipOk = ips.some((ip) => RADIUS_ALLOWED_IPS.includes(ip));
+  const secretOk = !!RADIUS_API_SECRET && secret === RADIUS_API_SECRET;
+
+  // If a secret is configured, rely on the secret (IP can be unreliable behind Cloudflare/Render).
+  // If no secret is configured, fall back to IP allow-list.
+  return RADIUS_API_SECRET ? secretOk : ipOk;
 }
 
 app.post("/api/radius/authorize", async (req, res) => {
@@ -4236,54 +4299,38 @@ const session = rows[0];
       });
     }
 
-    // Optional: enforce pool via NAS-Identifier if pool is mikrotik and radius_nas_id is set
-    if (session.pool_id && nas_id) {
-      const { data: poolRow, error: poolErr } = await supabase
-        .from("internet_pools")
-        .select("id,system,radius_nas_id")
-        .eq("id", session.pool_id)
-        .maybeSingle();
+    // Resolve pool context from nas_id (MANDATORY for System 3).
+    // IMPORTANT: vouchers are NAS-unrestricted, but we still need nas_id to map this login to a pool.
+    if (!nas_id) {
+      return sendReject("nas_id_required", { client_mac });
+    }
 
-      if (!poolErr && poolRow) {
-        if (poolRow.system && poolRow.system !== "mikrotik") {
-          return sendReject("wrong_system", {
-            entity_type: "voucher_session",
-            entity_id: session.id,
-            nas_id,
-            client_mac,
-            pool_id: session.pool_id || null,
-            plan_id: session.plan_id || null
-          });
-        }
-        if (poolRow.radius_nas_id && String(poolRow.radius_nas_id) !== nas_id) {
-          return sendReject("wrong_pool", {
-            entity_type: "voucher_session",
-            entity_id: session.id,
-            nas_id,
-            client_mac,
-            pool_id: session.pool_id || null,
-            plan_id: session.plan_id || null,
-            metadata: { expected_nas_id: poolRow.radius_nas_id, got_nas_id: nas_id }
-          });
-        }
+    // Ensure session has pool_id (legacy rows can have NULL pool_id)
+    if (!sessionRow.pool_id) {
+      const resolvedPoolId = await resolvePoolIdFromNasId(nas_id);
+      if (!resolvedPoolId) {
+        return sendReject("pool_not_found", { nas_id, client_mac });
       }
+      try {
+        await supabase.from("voucher_sessions").update({ pool_id: resolvedPoolId }).eq("id", sessionRow.id);
+      } catch (_) {}
+      sessionRow.pool_id = resolvedPoolId;
     }
 
-    // Model B: must be activated first (click "Utiliser ce code")
-    if (session.status !== "active") {
-      return sendReject("not_active", {
-        entity_type: "voucher_session",
-        entity_id: session.id,
-        nas_id,
-        client_mac,
-        pool_id: session.pool_id || null,
-        plan_id: session.plan_id || null,
-        metadata: { status: session.status }
-      });
+    // Load pool row (system sanity only)
+    const { data: poolRow, error: poolErr } = await supabase
+      .from("internet_pools")
+      .select("id,name,system")
+      .eq("id", sessionRow.pool_id)
+      .maybeSingle();
+    if (poolErr) {
+      return sendReject("pool_lookup_failed", { pool_id: sessionRow.pool_id, nas_id, client_mac });
+    }
+    if (poolRow?.system && String(poolRow.system).toLowerCase() !== "mikrotik") {
+      return sendReject("wrong_system", { pool_id: sessionRow.pool_id, nas_id, client_mac });
     }
 
-    
-    // Start timer on FIRST successful RADIUS auth (if not started yet)
+// Start timer on FIRST successful RADIUS auth (if not started yet)
     if (!session.started_at || !session.expires_at) {
       try {
         // Load plan duration
@@ -4338,6 +4385,22 @@ const session = rows[0];
           plan_id: session.plan_id || null
         });
       }
+    }
+
+    // Ensure voucher becomes usable (active) once generated / first used.
+    // This also helps vw_voucher_sessions_truth compute truth_status = active.
+    if (sessionRow?.status !== "active") {
+      try {
+        const activatedAtIso = sessionRow.activated_at || new Date().toISOString();
+        await supabase
+          .from("voucher_sessions")
+          .update({ status: "active", activated_at: activatedAtIso })
+          .eq("id", sessionRow.id);
+        sessionRow.status = "active";
+        sessionRow.activated_at = activatedAtIso;
+        session.status = "active";
+        session.activated_at = activatedAtIso;
+      } catch (_) {}
     }
 
     const expiresAt = session.expires_at ? new Date(session.expires_at) : null;
@@ -4630,6 +4693,15 @@ app.post("/api/send-payment", async (req, res) => {
 
 
   let pool_id = null;
+
+    // System 3: allow pool resolution from nas_id (NAS-Identifier) instead of ap_mac.
+    const nas_id = String(body.nas_id || body.nasId || body["NAS-Identifier"] || "").trim() || null;
+    if (!ap_mac && nas_id && supabase) {
+      try {
+        pool_id = await resolvePoolIdFromNasId(nas_id);
+      } catch (_) {}
+    }
+
 
   let phone = (body.phone || "").trim();
   const plan = body.plan;
