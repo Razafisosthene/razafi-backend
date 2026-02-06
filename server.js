@@ -4171,6 +4171,7 @@ app.post("/api/radius/authorize", async (req, res) => {
     }
 
     // Security gate: only accept calls from your FreeRADIUS droplet (+ optional header secret)
+    console.log("RADIUS HEADERS:", req.headers);
     if (!isAllowedRadiusCaller(req)) {
       return sendReject("RADIUS caller not allowed", {
         actor_id: getCallerIp(req),
