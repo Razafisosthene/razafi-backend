@@ -4094,7 +4094,8 @@ function isAllowedRadiusCaller(req) {
 
   // If a secret is configured, rely on the secret (IP can be unreliable behind Cloudflare/Render).
   // If no secret is configured, fall back to IP allow-list.
-  return RADIUS_API_SECRET ? secretOk : ipOk;
+  // If a secret is configured, accept if secret OK OR IP OK (since some proxies may drop custom headers)
+return RADIUS_API_SECRET ? (secretOk || ipOk) : ipOk;
 }
 
 app.post("/api/radius/authorize", async (req, res) => {
