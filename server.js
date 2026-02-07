@@ -673,7 +673,7 @@ app.post(
   async (req, res) => {
     try {
 
-conconsole.log(
+console.log(
         "HIT /api/admin/login",
         new Date().toISOString(),
         req.headers["content-type"]
@@ -5416,5 +5416,5 @@ app.get("/api/new/pool-status", async (req, res) => {
 app.listen(PORT, () => {
   const now = new Date().toISOString();
   console.log(`🚀 Server started at ${now} on port ${PORT}`);
-  conconsole.log(`[INFO] Endpoint ready: POST /api/send-payment`);
+  console.log(`[INFO] Endpoint ready: POST /api/send-payment`);
 });
