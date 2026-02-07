@@ -5415,6 +5415,6 @@ app.get("/api/new/pool-status", async (req, res) => {
 
 app.listen(PORT, () => {
   const now = new Date().toISOString();
-  conconsole.log(`🚀 Server started at ${now} on port ${PORT}`);
+  console.log(`🚀 Server started at ${now} on port ${PORT}`);
   conconsole.log(`[INFO] Endpoint ready: POST /api/send-payment`);
 });
