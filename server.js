@@ -4762,31 +4762,26 @@ if (supabase) {
       let apRow = null;
       let apErr = null;
 
-      // First try radius_nas_id
+      // First try radius_nas_id => internet_pools.id (System 3)
       const r1 = await supabase
-        .from("ap_registry")
-        .select("pool_id,radius_nas_id")
-        .eq("radius_nas_id", nas_id)
+        .from("internet_pools")
+        .select("id,name,radius_nas_id")
+        .ilike("radius_nas_id", nas_id)
         .maybeSingle();
+
       apRow = r1.data;
       apErr = r1.error;
 
-      // Fallback: some schemas may store it as "nas_id"
-      if ((!apRow || !apRow.pool_id) && !apErr) {
-        try {
-          const r2 = await supabase
-            .from("ap_registry")
-            .select("pool_id,nas_id")
-            .eq("nas_id", nas_id)
-            .maybeSingle();
-          if (r2?.data?.pool_id) apRow = r2.data;
-        } catch (_) {}
+      if (apErr) {
+        console.error("SEND-PAYMENT NAS POOL ERROR", apErr);
+        return res.status(500).json({ ok: false, error: "db_error_pool_lookup", nas_id });
       }
 
-      if (!apRow || !apRow.pool_id) {
+      if (!apRow || !apRow.id) {
         return res.json({ ok: false, error: "pool_not_found_for_nas_id", nas_id });
       }
-      pool_id = apRow.pool_id;
+
+      pool_id = apRow.id;
       poolId = pool_id;
     } else if (ap_mac) {
       // Legacy: pool resolution from AP MAC
