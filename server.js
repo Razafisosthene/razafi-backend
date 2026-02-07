@@ -4086,16 +4086,10 @@ function getCallerIp(req) {
 
 
 function isAllowedRadiusCaller(req) {
+  // IP-only allow-list (Option A): ignore secret headers completely
   const ips = getCallerIps(req);
-  const secret = String(req.headers["x-radius-secret"] || "").trim();
-
   const ipOk = ips.some((ip) => RADIUS_ALLOWED_IPS.includes(ip));
-  const secretOk = !!RADIUS_API_SECRET && secret === RADIUS_API_SECRET;
-
-  // If a secret is configured, rely on the secret (IP can be unreliable behind Cloudflare/Render).
-  // If no secret is configured, fall back to IP allow-list.
-  // If a secret is configured, accept if secret OK OR IP OK (since some proxies may drop custom headers)
-return RADIUS_API_SECRET ? (secretOk || ipOk) : ipOk;
+  return ipOk;
 }
 
 app.post("/api/radius/authorize", async (req, res) => {
