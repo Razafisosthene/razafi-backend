@@ -4175,9 +4175,11 @@ app.post("/api/radius/authorize", async (req, res) => {
     }
 
     // Security gate: only accept calls from your FreeRADIUS droplet (+ optional header secret)
-    console.log("RADIUS_API_SECRET =", RADIUS_API_SECRET);
-    console.log("RADIUS header x-radius-secret =", req.headers["x-radius-secret"]);
-    console.log("ALL HEADERS KEYS =", Object.keys(req.headers));
+// DEBUG (à enlever après)
+console.log("RADIUS_API_SECRET set? =", !!RADIUS_API_SECRET);
+console.log("RADIUS header x-radius-secret =", req.headers["x-radius-secret"]);
+console.log("x-forwarded-for =", req.headers["x-forwarded-for"]);
+console.log("cf-connecting-ip =", req.headers["cf-connecting-ip"]);
      
     if (!isAllowedRadiusCaller(req)) {
       return sendReject("RADIUS caller not allowed", {
