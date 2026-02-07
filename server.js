@@ -4099,6 +4099,9 @@ function isAllowedRadiusCaller(req) {
 
 app.post("/api/radius/authorize", async (req, res) => {
   try {
+    console.log("RADIUS_API_SECRET =", RADIUS_API_SECRET);
+    console.log("RADIUS HEADERS =", req.headers);
+
     // IMPORTANT (MikroTik Hotspot CHAP):
     // - FreeRADIUS requires "control:Cleartext-Password" to validate CHAP.
     // - rlm_rest in FreeRADIUS does NOT support nested objects (it logs: "Found nested VP... skipping").
