@@ -3141,26 +3141,17 @@ async function pollTransactionStatus({
               message: "Generating voucher after MVola completion",
               metadata: { voucher_code_hint: String(voucherCode || "").slice(0, 8) + "***" },
             });
-            let poolId = metaPoolId;
-            if (!poolId && metaNasId) {
-              poolId = await resolvePoolIdFromNasId(metaNasId);
-            }
-            if (!poolId) {
-              throw new Error("pool_id_missing");
-            }
-
             const { error: vsErr } = await supabase
               .from("voucher_sessions")
               .upsert([{
                 voucher_code: voucherCode,
                 plan_id: metaPlanId,
-                pool_id: poolId,
+                pool_id: metaPoolId,
                 client_mac: metaClientMac,
                 ap_mac: metaApMac,
                 mvola_phone: (tx?.phone || baseMeta.phone || null),
                 transaction_id: tx?.id || null,
-                status: "active",
-                activated_at: nowIso,
+                status: "pending",
                 delivered_at: nowIso,
                 updated_at: nowIso,
               }], { onConflict: "voucher_code" });
@@ -4087,44 +4078,12 @@ function getCallerIps(req) {
   return uniq;
 }
 
-// Helper: return the first/primary caller IP (used in audits / security logs)
+/** Return the most reliable single caller IP (first from getCallerIps). */
 function getCallerIp(req) {
   const ips = getCallerIps(req);
-  return (ips && ips.length) ? ips[0] : "";
+  return ips[0] || null;
 }
 
-
-
-// Resolve pool_id from MikroTik/FreeRADIUS NAS-Identifier (nas_id).
-// IMPORTANT (System 3): vouchers are NAS-unrestricted, but we still need nas_id to map the request to a pool.
-async function resolvePoolIdFromNasId(nas_id) {
-  const id = String(nas_id || "").trim();
-  if (!id || !supabase) return null;
-
-  // 1) Prefer internet_pools.radius_nas_id (direct mapping)
-  {
-    const { data, error } = await supabase
-      .from("internet_pools")
-      .select("id,radius_nas_id")
-      .eq("radius_nas_id", id)
-      .limit(1)
-      .maybeSingle();
-    if (!error && data?.id) return data.id;
-  }
-
-  // 2) Fallback: ap_registry.radius_nas_id -> pool_id
-  {
-    const { data, error } = await supabase
-      .from("ap_registry")
-      .select("pool_id,radius_nas_id")
-      .eq("radius_nas_id", id)
-      .limit(1)
-      .maybeSingle();
-    if (!error && data?.pool_id) return data.pool_id;
-  }
-
-  return null;
-}
 
 function isAllowedRadiusCaller(req) {
   const ips = getCallerIps(req);
@@ -4299,38 +4258,87 @@ const session = rows[0];
       });
     }
 
-    // Resolve pool context from nas_id (MANDATORY for System 3).
-    // IMPORTANT: vouchers are NAS-unrestricted, but we still need nas_id to map this login to a pool.
-    if (!nas_id) {
-      return sendReject("nas_id_required", { client_mac });
-    }
+    // Optional: enforce pool via NAS-Identifier if pool is mikrotik and radius_nas_id is set
+    if (session.pool_id && nas_id) {
+      const { data: poolRow, error: poolErr } = await supabase
+        .from("internet_pools")
+        .select("id,system,radius_nas_id")
+        .eq("id", session.pool_id)
+        .maybeSingle();
 
-    // Ensure session has pool_id (legacy rows can have NULL pool_id)
-    if (!sessionRow.pool_id) {
-      const resolvedPoolId = await resolvePoolIdFromNasId(nas_id);
-      if (!resolvedPoolId) {
-        return sendReject("pool_not_found", { nas_id, client_mac });
+      if (!poolErr && poolRow) {
+        if (poolRow.system && poolRow.system !== "mikrotik") {
+          return sendReject("wrong_system", {
+            entity_type: "voucher_session",
+            entity_id: session.id,
+            nas_id,
+            client_mac,
+            pool_id: session.pool_id || null,
+            plan_id: session.plan_id || null
+          });
+        }
+        if (poolRow.radius_nas_id && String(poolRow.radius_nas_id) !== nas_id) {
+          return sendReject("wrong_pool", {
+            entity_type: "voucher_session",
+            entity_id: session.id,
+            nas_id,
+            client_mac,
+            pool_id: session.pool_id || null,
+            plan_id: session.plan_id || null,
+            metadata: { expected_nas_id: poolRow.radius_nas_id, got_nas_id: nas_id }
+          });
+        }
       }
+    }
+
+    // Auto-activation (System 3 / MikroTik):
+    // As soon as a voucher is generated, we want the very first RADIUS auth to be accepted.
+    // Some sessions may be created as "pending" (depending on your generation flow / truth view),
+    // so on first auth we upgrade them to "active" (and attach pool_id if we can resolve it from nas_id).
+    const currentStatus = String(session.status || "").toLowerCase();
+
+    if (currentStatus !== "active") {
+      const canAutoActivate = ["pending", "created", "issued"].includes(currentStatus);
+
+      if (!canAutoActivate) {
+        return sendReject("not_active", {
+          entity_type: "voucher_session",
+          entity_id: session.id,
+          nas_id,
+          client_mac,
+          pool_id: poolId || session.pool_id || null,
+          plan_id: session.plan_id || null,
+          metadata: { status: session.status }
+        });
+      }
+
       try {
-        await supabase.from("voucher_sessions").update({ pool_id: resolvedPoolId }).eq("id", sessionRow.id);
-      } catch (_) {}
-      sessionRow.pool_id = resolvedPoolId;
+        const updatePayload = {
+          status: "active",
+          activated_at: now.toISOString(),
+          updated_at: now.toISOString()
+        };
+
+        if (!session.pool_id && poolId) updatePayload.pool_id = poolId;
+
+        const { error: actErr } = await supabase
+          .from("voucher_sessions")
+          .update(updatePayload)
+          .eq("id", session.id);
+
+        if (actErr) {
+          console.warn("RADIUS auto-activate failed:", actErr);
+        } else {
+          session.status = "active";
+          if (updatePayload.pool_id) session.pool_id = updatePayload.pool_id;
+        }
+      } catch (e) {
+        console.warn("RADIUS auto-activate exception:", e);
+      }
     }
 
-    // Load pool row (system sanity only)
-    const { data: poolRow, error: poolErr } = await supabase
-      .from("internet_pools")
-      .select("id,name,system")
-      .eq("id", sessionRow.pool_id)
-      .maybeSingle();
-    if (poolErr) {
-      return sendReject("pool_lookup_failed", { pool_id: sessionRow.pool_id, nas_id, client_mac });
-    }
-    if (poolRow?.system && String(poolRow.system).toLowerCase() !== "mikrotik") {
-      return sendReject("wrong_system", { pool_id: sessionRow.pool_id, nas_id, client_mac });
-    }
-
-// Start timer on FIRST successful RADIUS auth (if not started yet)
+    
+    // Start timer on FIRST successful RADIUS auth (if not started yet)
     if (!session.started_at || !session.expires_at) {
       try {
         // Load plan duration
@@ -4385,22 +4393,6 @@ const session = rows[0];
           plan_id: session.plan_id || null
         });
       }
-    }
-
-    // Ensure voucher becomes usable (active) once generated / first used.
-    // This also helps vw_voucher_sessions_truth compute truth_status = active.
-    if (sessionRow?.status !== "active") {
-      try {
-        const activatedAtIso = sessionRow.activated_at || new Date().toISOString();
-        await supabase
-          .from("voucher_sessions")
-          .update({ status: "active", activated_at: activatedAtIso })
-          .eq("id", sessionRow.id);
-        sessionRow.status = "active";
-        sessionRow.activated_at = activatedAtIso;
-        session.status = "active";
-        session.activated_at = activatedAtIso;
-      } catch (_) {}
     }
 
     const expiresAt = session.expires_at ? new Date(session.expires_at) : null;
@@ -4693,15 +4685,6 @@ app.post("/api/send-payment", async (req, res) => {
 
 
   let pool_id = null;
-
-    // System 3: allow pool resolution from nas_id (NAS-Identifier) instead of ap_mac.
-    const nas_id = String(body.nas_id || body.nasId || body["NAS-Identifier"] || "").trim() || null;
-    if (!ap_mac && nas_id && supabase) {
-      try {
-        pool_id = await resolvePoolIdFromNasId(nas_id);
-      } catch (_) {}
-    }
-
 
   let phone = (body.phone || "").trim();
   const plan = body.plan;
