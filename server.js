@@ -4092,6 +4092,7 @@ function isAllowedRadiusCaller(req) {
 
 app.post("/api/radius/authorize", async (req, res) => {
   try {
+
     // IMPORTANT (MikroTik Hotspot CHAP):
     // - FreeRADIUS requires "control:Cleartext-Password" to validate CHAP.
     // - rlm_rest in FreeRADIUS does NOT support nested objects (it logs: "Found nested VP... skipping").
@@ -4099,6 +4100,12 @@ app.post("/api/radius/authorize", async (req, res) => {
     //
     // We always respond 200 to FreeRADIUS (reject is expressed via "control:Auth-Type" := Reject),
     // so MikroTik doesn't show "RADIUS server not responding".
+console.log("=== RADIUS AUTHORIZE DEBUG ===");
+console.log("headers =", req.headers);
+console.log("body =", JSON.stringify(req.body, null, 2));
+console.log("body keys =", Object.keys(req.body || {}));
+console.log("typeof body.username =", typeof (req.body && req.body.username));
+console.log("typeof body['User-Name'] =", typeof (req.body && req.body["User-Name"]));
 
     const sendReject = async (reason, auditExtra = {}) => {
       try {
@@ -4382,7 +4389,7 @@ const session = rows[0];
     });
 
   } catch (e) {
-    console.error("/api/radius/authorize error:", e?.message || e);
+    console.error(" error:", e?.message || e);
     try {
       if (typeof insertAudit === "function") {
         await insertAudit({
