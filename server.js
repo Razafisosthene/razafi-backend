@@ -4289,23 +4289,21 @@ const session = rows[0];
             plan_id: session.plan_id || null
           });
         }
+
         if (poolRow.radius_nas_id && String(poolRow.radius_nas_id) !== nas_id) {
-          return sendReject("wrong_pool", {
-            entity_type: "voucher_session",
-            entity_id: session.id,
-            nas_id,
-            client_mac,
-            pool_id: session.pool_id || null,
-            plan_id: session.plan_id || null,
-            metadata: { expected_nas_id: poolRow.radius_nas_id, got_nas_id: nas_id }
-          });
+          // NOTE (System 3): voucher is usable network-wide on the same SSID.
+          // We DO NOT reject on NAS mismatch. We only keep this info for audit/debug.
+          // (If you ever want to enforce again, re-enable a reject here.)
         }
       }
     }
 
-    // Model B: must be activated first (click "Utiliser ce code")
-    if (session.status !== "active") {
-      return sendReject("not_active", {
+    // System 3 logic B:
+    // - Accept if truth status is "pending" OR "active"
+    // - Start timer on FIRST successful RADIUS accept
+    // - Reject other statuses (expired/used/cancelled/etc.)
+    if (session.status !== "active" && session.status !== "pending") {
+      return sendReject("not_usable_status", {
         entity_type: "voucher_session",
         entity_id: session.id,
         nas_id,
@@ -4316,7 +4314,6 @@ const session = rows[0];
       });
     }
 
-    
     // Start timer on FIRST successful RADIUS auth (if not started yet)
     if (!session.started_at || !session.expires_at) {
       try {
@@ -4350,7 +4347,7 @@ const session = rows[0];
         // Atomic: only start once
         const { error: stErr } = await supabase
           .from("voucher_sessions")
-          .update({ started_at: startedAtIso, expires_at: expiresAtIso, updated_at: startedAtIso })
+          .update({ started_at: startedAtIso, expires_at: expiresAtIso, updated_at: startedAtIso, status: "active", activated_at: startedAtIso, ...(client_mac ? { client_mac } : {}) })
           .eq("id", session.id)
           .is("started_at", null);
 
@@ -4360,6 +4357,8 @@ const session = rows[0];
         } else {
           session.started_at = startedAtIso;
           session.expires_at = expiresAtIso;
+          session.status = "active";
+          if (!session.client_mac && client_mac) session.client_mac = client_mac;
         }
       } catch (_) {
         // If anything fails, reject to be safe
