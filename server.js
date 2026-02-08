@@ -4078,6 +4078,13 @@ function getCallerIps(req) {
   return uniq;
 }
 
+/** Return the most reliable single caller IP (first from getCallerIps). */
+function getCallerIp(req) {
+  const ips = getCallerIps(req);
+  return ips[0] || null;
+}
+
+
 function isAllowedRadiusCaller(req) {
   const ips = getCallerIps(req);
   const secret = String(req.headers["x-radius-secret"] || "").trim();
@@ -4087,11 +4094,15 @@ function isAllowedRadiusCaller(req) {
 
   // If a secret is configured, rely on the secret (IP can be unreliable behind Cloudflare/Render).
   // If no secret is configured, fall back to IP allow-list.
-  return RADIUS_API_SECRET ? secretOk : ipOk;
+  // If a secret is configured, accept if secret OK OR IP OK (since some proxies may drop custom headers)
+return RADIUS_API_SECRET ? (secretOk || ipOk) : ipOk;
 }
 
 app.post("/api/radius/authorize", async (req, res) => {
   try {
+    console.log("RADIUS_API_SECRET =", RADIUS_API_SECRET);
+    console.log("RADIUS HEADERS =", req.headers);
+
     // IMPORTANT (MikroTik Hotspot CHAP):
     // - FreeRADIUS requires "control:Cleartext-Password" to validate CHAP.
     // - rlm_rest in FreeRADIUS does NOT support nested objects (it logs: "Found nested VP... skipping").
@@ -4164,6 +4175,12 @@ app.post("/api/radius/authorize", async (req, res) => {
     }
 
     // Security gate: only accept calls from your FreeRADIUS droplet (+ optional header secret)
+// DEBUG (à enlever après)
+console.log("RADIUS_API_SECRET set? =", !!RADIUS_API_SECRET);
+console.log("RADIUS header x-radius-secret =", req.headers["x-radius-secret"]);
+console.log("x-forwarded-for =", req.headers["x-forwarded-for"]);
+console.log("cf-connecting-ip =", req.headers["cf-connecting-ip"]);
+     
     if (!isAllowedRadiusCaller(req)) {
       return sendReject("RADIUS caller not allowed", {
         actor_id: getCallerIp(req),
@@ -4271,45 +4288,67 @@ const session = rows[0];
           });
         }
         if (poolRow.radius_nas_id && String(poolRow.radius_nas_id) !== nas_id) {
-  // Vouchers are NAS-unrestricted (usable anywhere the same SSID/RAZAFI is available).
-  // So we DO NOT reject on NAS mismatch. We just keep this info for logs/audit.
-  try {
-    if (typeof insertAudit === "function") {
-      await insertAudit({
-        event_type: "radius_authorize_nas_mismatch",
-        status: "success",
-        entity_type: "voucher_session",
-        entity_id: session.id,
-        actor_type: "radius",
-        actor_id: nas_id || getCallerIp(req),
-        client_mac,
-        pool_id: session.pool_id || null,
-        plan_id: session.plan_id || null,
-        message: "NAS mismatch ignored (NAS-unrestricted vouchers)",
-        metadata: { expected_nas_id: poolRow.radius_nas_id, got_nas_id: nas_id }
-      });
-    }
-  } catch (_) {}
-}
-}
+          return sendReject("wrong_pool", {
+            entity_type: "voucher_session",
+            entity_id: session.id,
+            nas_id,
+            client_mac,
+            pool_id: session.pool_id || null,
+            plan_id: session.plan_id || null,
+            metadata: { expected_nas_id: poolRow.radius_nas_id, got_nas_id: nas_id }
+          });
+        }
+      }
     }
 
-    // Voucher usability for SYSTEM 3:
-// - Newly generated vouchers can be "pending" until the first successful RADIUS authorize.
-// - We allow both "pending" and "active" here.
-const statusOk = ["active", "pending"].includes(String(session.status || "").toLowerCase());
-if (!statusOk) {
-  return sendReject("not_usable", {
-    entity_type: "voucher_session",
-    entity_id: session.id,
-    nas_id,
-    client_mac,
-    pool_id: session.pool_id || null,
-    plan_id: session.plan_id || null,
-    metadata: { status: session.status }
-  });
-}
-// Start timer on FIRST successful RADIUS auth (if not started yet)
+    // Auto-activation (System 3 / MikroTik):
+    // As soon as a voucher is generated, we want the very first RADIUS auth to be accepted.
+    // Some sessions may be created as "pending" (depending on your generation flow / truth view),
+    // so on first auth we upgrade them to "active" (and attach pool_id if we can resolve it from nas_id).
+    const currentStatus = String(session.status || "").toLowerCase();
+
+    if (currentStatus !== "active") {
+      const canAutoActivate = ["pending", "created", "issued"].includes(currentStatus);
+
+      if (!canAutoActivate) {
+        return sendReject("not_active", {
+          entity_type: "voucher_session",
+          entity_id: session.id,
+          nas_id,
+          client_mac,
+          pool_id: poolId || session.pool_id || null,
+          plan_id: session.plan_id || null,
+          metadata: { status: session.status }
+        });
+      }
+
+      try {
+        const updatePayload = {
+          status: "active",
+          activated_at: now.toISOString(),
+          updated_at: now.toISOString()
+        };
+
+        if (!session.pool_id && poolId) updatePayload.pool_id = poolId;
+
+        const { error: actErr } = await supabase
+          .from("voucher_sessions")
+          .update(updatePayload)
+          .eq("id", session.id);
+
+        if (actErr) {
+          console.warn("RADIUS auto-activate failed:", actErr);
+        } else {
+          session.status = "active";
+          if (updatePayload.pool_id) session.pool_id = updatePayload.pool_id;
+        }
+      } catch (e) {
+        console.warn("RADIUS auto-activate exception:", e);
+      }
+    }
+
+    
+    // Start timer on FIRST successful RADIUS auth (if not started yet)
     if (!session.started_at || !session.expires_at) {
       try {
         // Load plan duration
@@ -4380,28 +4419,6 @@ if (!statusOk) {
     }
 
     // Remaining seconds => Session-Timeout
-
-// If voucher is still pending, activate it now (first successful RADIUS authorize)
-if (String(session.status || "").toLowerCase() === "pending") {
-  try {
-    const upd = {};
-    upd.status = "active";
-    if (!session.activated_at) upd.activated_at = now.toISOString();
-    if (!session.started_at) upd.started_at = now.toISOString();
-    // If expires_at is null, we set it using plan duration from now
-    if (!session.expires_at && expiresAt instanceof Date) upd.expires_at = expiresAt.toISOString();
-
-    await supabase.from("voucher_sessions").update(upd).eq("id", session.id);
-    session.status = "active";
-    if (!session.activated_at) session.activated_at = upd.activated_at || session.activated_at;
-    if (!session.started_at) session.started_at = upd.started_at || session.started_at;
-    if (!session.expires_at) session.expires_at = upd.expires_at || session.expires_at;
-  } catch (e2) {
-    // Do not block access if the status update fails; we'll still accept based on current validity.
-    console.warn("radius pending->active update failed:", e2?.message || e2);
-  }
-}
-
     const remainingSeconds = Math.max(1, Math.floor((expiresAt.getTime() - now.getTime()) / 1000));
 
     return sendAccept(username, remainingSeconds, {
@@ -4744,62 +4761,90 @@ try {
   }
 } catch (_) {}
 
-  // Resolve pool_id:
-// - System 1/2: uses ap_mac (Tanaza style)
-// - System 3 (MikroTik/RADIUS): MUST use nas_id (NAS-Identifier)
-const system = String(body.system || "").toLowerCase();
-const nas_id = String(body.nas_id || body.nasId || body["NAS-Identifier"] || "").trim() || null;
-const is_mikrotik = system === "mikrotik" || !!nas_id;
-
-if (is_mikrotik && !nas_id) {
-  return res.json({ ok: false, error: "nas_id_required" });
-}
-
-if (supabase) {
-  try {
-    if (is_mikrotik) {
-      // Pool resolution from NAS-ID (mandatory for System 3)
-      let apRow = null;
-      let apErr = null;
-
-      // First try radius_nas_id => internet_pools.id (System 3)
-      const r1 = await supabase
-        .from("internet_pools")
-        .select("id,name,radius_nas_id")
-        .ilike("radius_nas_id", nas_id)
-        .maybeSingle();
-
-      apRow = r1.data;
-      apErr = r1.error;
-
-      if (apErr) {
-        console.error("SEND-PAYMENT NAS POOL ERROR", apErr);
-        return res.status(500).json({ ok: false, error: "db_error_pool_lookup", nas_id });
-      }
-
-      if (!apRow || !apRow.id) {
-        return res.json({ ok: false, error: "pool_not_found_for_nas_id", nas_id });
-      }
-
-      pool_id = apRow.id;
-      poolId = pool_id;
-    } else if (ap_mac) {
-      // Legacy: pool resolution from AP MAC
-      const apRowRes = await supabase
+  if (ap_mac && supabase) {
+    try {
+      // 1) Find pool for this AP
+      const { data: apRow, error: apErr } = await supabase
         .from("ap_registry")
-        .select("pool_id")
+        .select("ap_mac,pool_id,is_active")
         .eq("ap_mac", ap_mac)
         .maybeSingle();
-      if (apRowRes.data && apRowRes.data.pool_id) {
-        pool_id = apRowRes.data.pool_id;
-        poolId = pool_id;
-      }
-    }
-  } catch (err) {
-    console.error("send-payment pool resolution error:", err);
-  }
-}
 
+      if (!apErr && apRow?.pool_id) {
+
+ pool_id = apRow.pool_id; // ✅ garde la variable globale
+  const poolId = pool_id;  // ✅ variable locale pour les queries
+         // 2) Pool info (capacity)
+        const { data: pool, error: poolErr } = await supabase
+          .from("internet_pools")
+          .select("id,name,capacity_max")
+          .eq("id", pool_id)
+          .maybeSingle();
+
+        const capacity_max = (pool?.capacity_max === null || pool?.capacity_max === undefined) ? null : Number(pool.capacity_max);
+
+        // 3) APs in this pool (active only)
+        const { data: aps, error: apsErr } = await supabase
+          .from("ap_registry")
+          .select("ap_mac,is_active")
+          .eq("pool_id", pool_id);
+
+        let apMacs = [];
+        if (!apsErr && Array.isArray(aps)) {
+          apMacs = aps.filter(a => a && a.ap_mac && a.is_active !== false).map(a => a.ap_mac);
+        }
+
+        let pool_active_clients = 0;
+        let usedTanaza = false;
+
+        // Prefer Tanaza realtime counts
+        try {
+          if (TANAZA_API_TOKEN && apMacs.length) {
+            const tanazaMap = await tanazaBatchDevicesByMac(apMacs);
+            for (const mac of apMacs) {
+              const dev = tanazaMap[_tanazaNormalizeMac(mac)] || null;
+              const n = Number(dev?.connectedClients);
+              if (Number.isFinite(n)) {
+                pool_active_clients += n;
+                usedTanaza = true;
+              }
+            }
+          }
+        } catch (e) {
+          console.error("SEND-PAYMENT TANAZA CHECK ERROR", e?.message || e);
+        }
+
+        // Fallback to cached stats
+        if (!usedTanaza && apMacs.length) {
+          const { data: statsRows, error: statsErr } = await supabase
+            .from("ap_live_stats")
+            .select("ap_mac,active_clients")
+            .in("ap_mac", apMacs);
+
+          if (!statsErr && Array.isArray(statsRows)) {
+            for (const s of statsRows) pool_active_clients += Number(s?.active_clients || 0);
+          }
+        }
+
+        const is_full = (Number.isFinite(capacity_max) && capacity_max > 0) ? (pool_active_clients >= capacity_max) : false;
+
+        if (is_full) {
+          const placeName = pool?.name ? String(pool.name) : "ce point WiFi";
+          return res.status(409).json({
+            ok: false,
+            error: "wifi_sature",
+            message: `Le WiFi ${placeName} est momentanément saturé. Les achats sont temporairement indisponibles. Veuillez patienter ou contacter l’assistance sur place.`,
+            pool_name: pool?.name ?? null,
+            pool_active_clients,
+            pool_capacity_max: Number.isFinite(capacity_max) ? capacity_max : null,
+          });
+        }
+      }
+    } catch (e) {
+      // Fail-open
+      console.error("SEND-PAYMENT POOL CHECK EX", e?.message || e);
+    }
+  }
 
 // Prefer authoritative plan price from DB (fixes free plan parsing issues).
 // Fail-open: if any error occurs, fallback to the string parsing below.
@@ -4897,7 +4942,6 @@ if (supabase) {
       pool_id: pool_id || null,
       client_mac: clientMacForSession,
       ap_mac: apMacForSession,
-      nas_id: (typeof nas_id !== "undefined" ? nas_id : null),
     };
 
     if (supabase) {
@@ -4929,7 +4973,6 @@ const { error: vsErr } = await supabase
       status: "pending",
       client_mac: clientMacForSession,
       ap_mac: apMacForSession,
-      nas_id: (typeof nas_id !== "undefined" ? nas_id : null),
       mvola_phone: phone || null,
       transaction_id: null,
       delivered_at: nowIso,
