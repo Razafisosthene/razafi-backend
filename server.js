@@ -4078,13 +4078,6 @@ function getCallerIps(req) {
   return uniq;
 }
 
-/** Return the most reliable single caller IP (first from getCallerIps). */
-function getCallerIp(req) {
-  const ips = getCallerIps(req);
-  return ips[0] || null;
-}
-
-
 function isAllowedRadiusCaller(req) {
   const ips = getCallerIps(req);
   const secret = String(req.headers["x-radius-secret"] || "").trim();
@@ -4094,15 +4087,11 @@ function isAllowedRadiusCaller(req) {
 
   // If a secret is configured, rely on the secret (IP can be unreliable behind Cloudflare/Render).
   // If no secret is configured, fall back to IP allow-list.
-  // If a secret is configured, accept if secret OK OR IP OK (since some proxies may drop custom headers)
-return RADIUS_API_SECRET ? (secretOk || ipOk) : ipOk;
+  return RADIUS_API_SECRET ? secretOk : ipOk;
 }
 
 app.post("/api/radius/authorize", async (req, res) => {
   try {
-    console.log("RADIUS_API_SECRET =", RADIUS_API_SECRET);
-    console.log("RADIUS HEADERS =", req.headers);
-
     // IMPORTANT (MikroTik Hotspot CHAP):
     // - FreeRADIUS requires "control:Cleartext-Password" to validate CHAP.
     // - rlm_rest in FreeRADIUS does NOT support nested objects (it logs: "Found nested VP... skipping").
@@ -4175,12 +4164,6 @@ app.post("/api/radius/authorize", async (req, res) => {
     }
 
     // Security gate: only accept calls from your FreeRADIUS droplet (+ optional header secret)
-// DEBUG (à enlever après)
-console.log("RADIUS_API_SECRET set? =", !!RADIUS_API_SECRET);
-console.log("RADIUS header x-radius-secret =", req.headers["x-radius-secret"]);
-console.log("x-forwarded-for =", req.headers["x-forwarded-for"]);
-console.log("cf-connecting-ip =", req.headers["cf-connecting-ip"]);
-     
     if (!isAllowedRadiusCaller(req)) {
       return sendReject("RADIUS caller not allowed", {
         actor_id: getCallerIp(req),
@@ -4301,50 +4284,17 @@ const session = rows[0];
       }
     }
 
-    // Auto-activation (System 3 / MikroTik):
-    // As soon as a voucher is generated, we want the very first RADIUS auth to be accepted.
-    // Some sessions may be created as "pending" (depending on your generation flow / truth view),
-    // so on first auth we upgrade them to "active" (and attach pool_id if we can resolve it from nas_id).
-    const currentStatus = String(session.status || "").toLowerCase();
-
-    if (currentStatus !== "active") {
-      const canAutoActivate = ["pending", "created", "issued"].includes(currentStatus);
-
-      if (!canAutoActivate) {
-        return sendReject("not_active", {
-          entity_type: "voucher_session",
-          entity_id: session.id,
-          nas_id,
-          client_mac,
-          pool_id: poolId || session.pool_id || null,
-          plan_id: session.plan_id || null,
-          metadata: { status: session.status }
-        });
-      }
-
-      try {
-        const updatePayload = {
-          status: "active",
-          activated_at: now.toISOString(),
-          updated_at: now.toISOString()
-        };
-
-        if (!session.pool_id && poolId) updatePayload.pool_id = poolId;
-
-        const { error: actErr } = await supabase
-          .from("voucher_sessions")
-          .update(updatePayload)
-          .eq("id", session.id);
-
-        if (actErr) {
-          console.warn("RADIUS auto-activate failed:", actErr);
-        } else {
-          session.status = "active";
-          if (updatePayload.pool_id) session.pool_id = updatePayload.pool_id;
-        }
-      } catch (e) {
-        console.warn("RADIUS auto-activate exception:", e);
-      }
+    // Model B: must be activated first (click "Utiliser ce code")
+    if (session.status !== "active") {
+      return sendReject("not_active", {
+        entity_type: "voucher_session",
+        entity_id: session.id,
+        nas_id,
+        client_mac,
+        pool_id: session.pool_id || null,
+        plan_id: session.plan_id || null,
+        metadata: { status: session.status }
+      });
     }
 
     
@@ -4693,6 +4643,8 @@ app.post("/api/send-payment", async (req, res) => {
 
   const planIdForSession = plan_id_from_client; // used for transactions.metadata.plan_id (NEW system)
 
+  // System 3 (MikroTik) can send nas_id; when present we MUST resolve pool from internet_pools.radius_nas_id
+  const nas_id = (body.nas_id || body.nasId || body["NAS-Identifier"] || "").toString().trim() || null;
 
   let pool_id = null;
 
@@ -4761,9 +4713,32 @@ try {
   }
 } catch (_) {}
 
-  if (ap_mac && supabase) {
-    try {
-      // 1) Find pool for this AP
+// Resolve pool_id (System 3: by nas_id mandatory when provided; legacy: by ap_mac)
+// Fail-open only for legacy paths. For System 3 (nas_id present), fail-closed (stop before payment) if pool not found.
+if (supabase) {
+  try {
+    // System 3: pool resolution from NAS-Identifier (radius_nas_id)
+    if (nas_id) {
+      const { data: poolRow, error: poolErr } = await supabase
+        .from("internet_pools")
+        .select("id,name,capacity_max,system,radius_nas_id")
+        .eq("radius_nas_id", nas_id)
+        .maybeSingle();
+
+      if (poolErr || !poolRow?.id) {
+        return res.status(404).json({ ok: false, error: "pool_not_found_for_nas_id", nas_id });
+      }
+
+      // Optional safety: ensure this pool is for mikrotik
+      if (poolRow.system && String(poolRow.system).toLowerCase() !== "mikrotik") {
+        return res.status(400).json({ ok: false, error: "wrong_system_for_nas_id", nas_id, system: poolRow.system });
+      }
+
+      pool_id = poolRow.id;
+    }
+
+    // Legacy: pool resolution from AP MAC (System 1/2)
+    if (!pool_id && ap_mac) {
       const { data: apRow, error: apErr } = await supabase
         .from("ap_registry")
         .select("ap_mac,pool_id,is_active")
@@ -4771,80 +4746,90 @@ try {
         .maybeSingle();
 
       if (!apErr && apRow?.pool_id) {
+        pool_id = apRow.pool_id;
+      }
+    }
 
- pool_id = apRow.pool_id; // ✅ garde la variable globale
-  const poolId = pool_id;  // ✅ variable locale pour les queries
-         // 2) Pool info (capacity)
-        const { data: pool, error: poolErr } = await supabase
-          .from("internet_pools")
-          .select("id,name,capacity_max")
-          .eq("id", pool_id)
-          .maybeSingle();
+    // Optional: block purchase when pool is full (capacity_max)
+    // For System 3 we can do this using pool_id even if ap_mac is missing.
+    if (pool_id) {
+      const { data: pool, error: poolErr } = await supabase
+        .from("internet_pools")
+        .select("id,name,capacity_max")
+        .eq("id", pool_id)
+        .maybeSingle();
 
-        const capacity_max = (pool?.capacity_max === null || pool?.capacity_max === undefined) ? null : Number(pool.capacity_max);
+      const capacity_max = (pool?.capacity_max === null || pool?.capacity_max === undefined)
+        ? null
+        : Number(pool.capacity_max);
 
-        // 3) APs in this pool (active only)
-        const { data: aps, error: apsErr } = await supabase
-          .from("ap_registry")
-          .select("ap_mac,is_active")
-          .eq("pool_id", pool_id);
+      // APs in this pool (active only)
+      const { data: aps, error: apsErr } = await supabase
+        .from("ap_registry")
+        .select("ap_mac,is_active")
+        .eq("pool_id", pool_id);
 
-        let apMacs = [];
-        if (!apsErr && Array.isArray(aps)) {
-          apMacs = aps.filter(a => a && a.ap_mac && a.is_active !== false).map(a => a.ap_mac);
-        }
+      let apMacs = [];
+      if (!apsErr && Array.isArray(aps)) {
+        apMacs = aps
+          .filter(a => a && a.ap_mac && a.is_active !== false)
+          .map(a => a.ap_mac);
+      }
 
-        let pool_active_clients = 0;
-        let usedTanaza = false;
+      let pool_active_clients = 0;
+      let usedTanaza = false;
 
-        // Prefer Tanaza realtime counts
-        try {
-          if (TANAZA_API_TOKEN && apMacs.length) {
-            const tanazaMap = await tanazaBatchDevicesByMac(apMacs);
-            for (const mac of apMacs) {
-              const dev = tanazaMap[_tanazaNormalizeMac(mac)] || null;
-              const n = Number(dev?.connectedClients);
-              if (Number.isFinite(n)) {
-                pool_active_clients += n;
-                usedTanaza = true;
-              }
+      // Prefer Tanaza realtime counts
+      try {
+        if (TANAZA_API_TOKEN && apMacs.length) {
+          const tanazaMap = await tanazaBatchDevicesByMac(apMacs);
+          for (const mac of apMacs) {
+            const dev = tanazaMap[_tanazaNormalizeMac(mac)] || null;
+            const n = Number(dev?.connectedClients);
+            if (Number.isFinite(n)) {
+              pool_active_clients += n;
+              usedTanaza = true;
             }
           }
-        } catch (e) {
-          console.error("SEND-PAYMENT TANAZA CHECK ERROR", e?.message || e);
         }
+      } catch (e) {
+        console.error("SEND-PAYMENT TANAZA CHECK ERROR", e?.message || e);
+      }
 
-        // Fallback to cached stats
-        if (!usedTanaza && apMacs.length) {
-          const { data: statsRows, error: statsErr } = await supabase
-            .from("ap_live_stats")
-            .select("ap_mac,active_clients")
-            .in("ap_mac", apMacs);
+      // Fallback to cached stats
+      if (!usedTanaza && apMacs.length) {
+        const { data: statsRows, error: statsErr } = await supabase
+          .from("ap_live_stats")
+          .select("ap_mac,active_clients")
+          .in("ap_mac", apMacs);
 
-          if (!statsErr && Array.isArray(statsRows)) {
-            for (const s of statsRows) pool_active_clients += Number(s?.active_clients || 0);
-          }
-        }
-
-        const is_full = (Number.isFinite(capacity_max) && capacity_max > 0) ? (pool_active_clients >= capacity_max) : false;
-
-        if (is_full) {
-          const placeName = pool?.name ? String(pool.name) : "ce point WiFi";
-          return res.status(409).json({
-            ok: false,
-            error: "wifi_sature",
-            message: `Le WiFi ${placeName} est momentanément saturé. Les achats sont temporairement indisponibles. Veuillez patienter ou contacter l’assistance sur place.`,
-            pool_name: pool?.name ?? null,
-            pool_active_clients,
-            pool_capacity_max: Number.isFinite(capacity_max) ? capacity_max : null,
-          });
+        if (!statsErr && Array.isArray(statsRows)) {
+          for (const s of statsRows) pool_active_clients += Number(s?.active_clients || 0);
         }
       }
-    } catch (e) {
-      // Fail-open
-      console.error("SEND-PAYMENT POOL CHECK EX", e?.message || e);
+
+      const is_full = (Number.isFinite(capacity_max) && capacity_max > 0)
+        ? (pool_active_clients >= capacity_max)
+        : false;
+
+      if (is_full) {
+        const placeName = pool?.name ? String(pool.name) : "ce point WiFi";
+        return res.status(409).json({
+          ok: false,
+          error: "wifi_sature",
+          message: `Le WiFi ${placeName} est momentanément saturé. Les achats sont temporairement indisponibles. Veuillez patienter ou contacter l’assistance sur place.`,
+          pool_name: pool?.name ?? null,
+          pool_active_clients,
+          pool_capacity_max: Number.isFinite(capacity_max) ? capacity_max : null,
+        });
+      }
     }
+  } catch (e) {
+    // Fail-open for legacy only; for System 3 (nas_id), we prefer to stop (but we can't reliably distinguish here if exception thrown).
+    console.error("SEND-PAYMENT POOL CHECK EX", e?.message || e);
   }
+}
+
 
 // Prefer authoritative plan price from DB (fixes free plan parsing issues).
 // Fail-open: if any error occurs, fallback to the string parsing below.
@@ -4974,7 +4959,7 @@ const { error: vsErr } = await supabase
       client_mac: clientMacForSession,
       ap_mac: apMacForSession,
       mvola_phone: phone || null,
-      transaction_id: null,
+            transaction_id: txId,
       delivered_at: nowIso,
       updated_at: nowIso,
     });
