@@ -4977,6 +4977,7 @@ const { error: vsErr } = await supabase
 
     return res.json({ ok: true, free: true, requestRef, code: voucherCode });
   }
+  const apMacForSession = ap_mac || null;
 
   try {
     // insert initial transaction row with Madagascar local created timestamp in metadata
