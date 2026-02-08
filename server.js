@@ -4100,12 +4100,6 @@ app.post("/api/radius/authorize", async (req, res) => {
     //
     // We always respond 200 to FreeRADIUS (reject is expressed via "control:Auth-Type" := Reject),
     // so MikroTik doesn't show "RADIUS server not responding".
-console.log("=== RADIUS AUTHORIZE DEBUG ===");
-console.log("headers =", req.headers);
-console.log("body =", JSON.stringify(req.body, null, 2));
-console.log("body keys =", Object.keys(req.body || {}));
-console.log("typeof body.username =", typeof (req.body && req.body.username));
-console.log("typeof body['User-Name'] =", typeof (req.body && req.body["User-Name"]));
 
     const sendReject = async (reason, auditExtra = {}) => {
       try {
@@ -4180,22 +4174,40 @@ console.log("typeof body['User-Name'] =", typeof (req.body && req.body["User-Nam
 
     const body = req.body || {};
 
-    // FreeRADIUS rlm_rest sends RADIUS attrs as JSON keys like:
+    // FreeRADIUS rlm_rest can send attributes in two formats:
+    //  A) flat: { "User-Name": "RAZAFI-XXXX", "NAS-Identifier": "razafi-pool-test", ... }
+    //  B) typed: { "User-Name": { "type": "string", "value": ["RAZAFI-XXXX"] }, ... }
+    // We normalize both to plain scalar strings/numbers here.
+    const radiusScalar = (v) => {
+      if (v == null) return undefined;
+      if (Array.isArray(v)) return v.length ? v[0] : undefined;
+      if (typeof v === "object") {
+        // common rlm_rest typed object: { type, value: [ ... ] }
+        const vv = v.value ?? v.Value ?? v.values ?? v.Values;
+        if (Array.isArray(vv)) return vv.length ? vv[0] : undefined;
+        if (typeof vv === "string" || typeof vv === "number" || typeof vv === "boolean") return vv;
+      }
+      return v;
+    };
+
+    const radiusGet = (key) => radiusScalar(body[key]);
+
+    // FreeRADIUS sends RADIUS attrs as JSON keys like:
     // "User-Name", "User-Password", "Calling-Station-Id", "NAS-Identifier", etc.
-    const username = String(body.username || body["User-Name"] || "").trim();
-    const password = String(body.password || body["User-Password"] || "").trim();
+    const username = String(body.username ?? radiusGet("User-Name") ?? "").trim();
+    const password = String(body.password ?? radiusGet("User-Password") ?? "").trim();
 
     // Client MAC (Calling-Station-Id) — normalize to AA:BB:CC:DD:EE:FF
     const client_mac_raw =
-      body.client_mac ||
-      body.clientMac ||
-      body.calling_station_id ||
-      body.callingStationId ||
-      body["Calling-Station-Id"] ||
+      body.client_mac ??
+      body.clientMac ??
+      body.calling_station_id ??
+      body.callingStationId ??
+      radiusGet("Calling-Station-Id") ??
       "";
-    const client_mac = normalizeMacColon(client_mac_raw) || null;
+    const client_mac = normalizeMacColon(String(client_mac_raw || "")) || null;
 
-    const nas_id = String(body.nas_id || body.nasId || body["NAS-Identifier"] || "").trim() || null;
+    const nas_id = String(body.nas_id ?? body.nasId ?? radiusGet("NAS-Identifier") ?? "").trim() || null;
 
     if (!username || !password) {
       return sendReject("missing_credentials", { nas_id, client_mac });
