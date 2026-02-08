@@ -4625,7 +4625,7 @@ app.get("/api/free-plan/check", async (req, res) => {
 // ---------------------------------------------------------------------------
 app.post("/api/send-payment", async (req, res) => {
   const body = req.body || {};
-
+  const correlationId = crypto.randomUUID();
   const client_mac_raw = (
     body.client_mac ||
     body.clientMac ||
@@ -5037,7 +5037,7 @@ const { error: vsErr } = await supabase
     metadata: [{ key: "partnerName", value: PARTNER_NAME }],
   };
 
-  const correlationId = crypto.randomUUID();
+
 
   try {
     const token = await getAccessToken();
