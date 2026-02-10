@@ -4220,6 +4220,9 @@ app.post("/api/radius/authorize", async (req, res) => {
 
     const now = new Date();
 
+    // Plan metadata (duration + data quota). Loaded lazily.
+    let planMeta = null;
+
     // Fetch latest session for this voucher_code (case-insensitive)
 // NOTE: use TRUTH VIEW first (it exists in your DB and is already used by admin endpoints)
 // so we don't miss sessions due to status normalization / computed fields.
@@ -4320,9 +4323,11 @@ const session = rows[0];
         // Load plan duration
         const { data: planRow, error: pErr } = await supabase
           .from("plans")
-          .select("duration_minutes,duration_hours")
+          .select("duration_minutes,duration_hours,data_mb")
           .eq("id", session.plan_id)
           .maybeSingle();
+
+        planMeta = planRow || null;
 
         const dm = Number(planRow?.duration_minutes ?? NaN);
         const minutes = (Number.isFinite(dm) && dm > 0)
@@ -4389,6 +4394,34 @@ const session = rows[0];
     // Remaining seconds => Session-Timeout
     const remainingSeconds = Math.max(1, Math.floor((expiresAt.getTime() - now.getTime()) / 1000));
 
+    // Data quota (Option A): send TOTAL limit once (MikroTik enforces it).
+    // - plans.data_mb NULL => unlimited (no Mikrotik-Total-Limit)
+    // - plans.data_mb number (MB) => bytes = MB * 1024 * 1024
+    if (!planMeta && session.plan_id) {
+      try {
+        const { data: p2 } = await supabase
+          .from("plans")
+          .select("data_mb")
+          .eq("id", session.plan_id)
+          .maybeSingle();
+        planMeta = p2 || null;
+      } catch (_) {
+        // ignore; we'll treat as unlimited if we can't load it
+      }
+    }
+
+    const dataMbRaw = planMeta?.data_mb;
+    const dataMb = (dataMbRaw === null || dataMbRaw === undefined) ? null : Number(dataMbRaw);
+    const totalBytes =
+      (dataMb !== null && Number.isFinite(dataMb) && dataMb > 0)
+        ? Math.floor(dataMb * 1024 * 1024)
+        : null;
+
+    const replyExtra = {};
+    if (totalBytes !== null) {
+      replyExtra["reply:Mikrotik-Total-Limit"] = totalBytes;
+    }
+
     return sendAccept(username, remainingSeconds, {
       entity_type: "voucher_session",
       entity_id: session.id,
@@ -4396,8 +4429,8 @@ const session = rows[0];
       client_mac,
       pool_id: session.pool_id || null,
       plan_id: session.plan_id || null,
-      metadata: { remaining_seconds: remainingSeconds, expires_at: session.expires_at }
-    });
+      metadata: { remaining_seconds: remainingSeconds, expires_at: session.expires_at, total_bytes: totalBytes }
+    }, replyExtra);
 
   } catch (e) {
     console.error(" error:", e?.message || e);
