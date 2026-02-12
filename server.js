@@ -4220,9 +4220,6 @@ app.post("/api/radius/authorize", async (req, res) => {
 
     const now = new Date();
 
-    // Plan metadata (duration + data quota). Loaded lazily.
-    let planMeta = null;
-
     // Fetch latest session for this voucher_code (case-insensitive)
 // NOTE: use TRUTH VIEW first (it exists in your DB and is already used by admin endpoints)
 // so we don't miss sessions due to status normalization / computed fields.
@@ -4323,11 +4320,9 @@ const session = rows[0];
         // Load plan duration
         const { data: planRow, error: pErr } = await supabase
           .from("plans")
-          .select("duration_minutes,duration_hours,data_mb")
+          .select("duration_minutes,duration_hours")
           .eq("id", session.plan_id)
           .maybeSingle();
-
-        planMeta = planRow || null;
 
         const dm = Number(planRow?.duration_minutes ?? NaN);
         const minutes = (Number.isFinite(dm) && dm > 0)
@@ -4394,34 +4389,6 @@ const session = rows[0];
     // Remaining seconds => Session-Timeout
     const remainingSeconds = Math.max(1, Math.floor((expiresAt.getTime() - now.getTime()) / 1000));
 
-    // Data quota (Option A): send TOTAL limit once (MikroTik enforces it).
-    // - plans.data_mb NULL => unlimited (no Mikrotik-Total-Limit)
-    // - plans.data_mb number (MB) => bytes = MB * 1024 * 1024
-    if (!planMeta && session.plan_id) {
-      try {
-        const { data: p2 } = await supabase
-          .from("plans")
-          .select("data_mb")
-          .eq("id", session.plan_id)
-          .maybeSingle();
-        planMeta = p2 || null;
-      } catch (_) {
-        // ignore; we'll treat as unlimited if we can't load it
-      }
-    }
-
-    const dataMbRaw = planMeta?.data_mb;
-    const dataMb = (dataMbRaw === null || dataMbRaw === undefined) ? null : Number(dataMbRaw);
-    const totalBytes =
-      (dataMb !== null && Number.isFinite(dataMb) && dataMb > 0)
-        ? Math.floor(dataMb * 1024 * 1024)
-        : null;
-
-    const replyExtra = {};
-    if (totalBytes !== null) {
-      replyExtra["reply:Mikrotik-Total-Limit"] = totalBytes;
-    }
-
     return sendAccept(username, remainingSeconds, {
       entity_type: "voucher_session",
       entity_id: session.id,
@@ -4429,8 +4396,8 @@ const session = rows[0];
       client_mac,
       pool_id: session.pool_id || null,
       plan_id: session.plan_id || null,
-      metadata: { remaining_seconds: remainingSeconds, expires_at: session.expires_at, total_bytes: totalBytes }
-    }, replyExtra);
+      metadata: { remaining_seconds: remainingSeconds, expires_at: session.expires_at }
+    });
 
   } catch (e) {
     console.error(" error:", e?.message || e);
@@ -4461,6 +4428,217 @@ const session = rows[0];
 
 
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// ENDPOINT: /api/radius/accounting   (SYSTEM 3: MikroTik)
+// Called by FreeRADIUS (rlm_rest) from the "accounting" section.
+// Purpose (Option B):
+// - Persist accounting counters (bytes) for analytics + "data restante"
+// - Update voucher_sessions.data_used_bytes (monotonic) and keep data_total_bytes
+//
+// IMPORTANT:
+// - Accounting packets are per-session and counters reset on reconnect.
+// - To avoid double-counting, we store last_total_bytes per (voucher_code, acct_session_id)
+//   in "radius_acct_sessions" and only add deltas.
+//
+// Security:
+// - Same gate as authorize: allow only whitelisted IP OR x-radius-secret header.
+// - Always return JSON 200 so FreeRADIUS doesn't spam retries.
+// ---------------------------------------------------------------------------
+
+/** Parse integer-like values safely (returns null if missing/invalid). */
+function parseIntSafe(v) {
+  if (v === undefined || v === null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
+/**
+ * Compute 64-bit counter from Octets + optional Gigawords.
+ * We use BigInt to avoid precision loss and to support >4GB correctly.
+ */
+function bytesFromOctetsAndGigawords(octets, gigawords) {
+  const o = BigInt(octets ?? 0);
+  const g = BigInt(gigawords ?? 0);
+  return (g << 32n) + o; // g * 2^32 + octets
+}
+
+app.post("/api/radius/accounting", async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ ok: false, error: "supabase_not_configured" });
+
+    // Security gate (same as authorize)
+    if (!isAllowedRadiusCaller(req)) {
+      return res.status(200).json({ ok: false, error: "radius_caller_not_allowed" });
+    }
+
+    // rlm_rest sends keys like "User-Name", "Acct-Input-Octets", etc.
+    const username = String(req.body?.["User-Name"] || "").trim(); // voucher_code (RAZAFI-XXXX)
+    const acctStatusType = String(req.body?.["Acct-Status-Type"] || "").trim(); // Start / Interim-Update / Stop
+    const acctSessionId = String(req.body?.["Acct-Session-Id"] || "").trim();
+
+    if (!username || !acctSessionId) {
+      return res.status(200).json({ ok: false, error: "missing_required_fields", got: { username: !!username, acct_session_id: !!acctSessionId } });
+    }
+
+    // Network identifiers
+    const callingStationId = String(req.body?.["Calling-Station-Id"] || "").trim() || null; // client MAC (may be formatted)
+    const calledStationId = String(req.body?.["Called-Station-Id"] || "").trim() || null;
+    const nasIdentifier = String(req.body?.["NAS-Identifier"] || "").trim() || null;
+    const nasIpAddress = String(req.body?.["NAS-IP-Address"] || "").trim() || null;
+    const framedIpAddress = String(req.body?.["Framed-IP-Address"] || "").trim() || null;
+    const mikrotikHostIp = String(req.body?.["Mikrotik-Host-IP"] || "").trim() || null;
+    const nasPortId = String(req.body?.["NAS-Port-Id"] || "").trim() || null;
+
+    // Counters (Octets + Gigawords, input and output)
+    const inOct = parseIntSafe(req.body?.["Acct-Input-Octets"]);
+    const outOct = parseIntSafe(req.body?.["Acct-Output-Octets"]);
+    const inG = parseIntSafe(req.body?.["Acct-Input-Gigawords"]);
+    const outG = parseIntSafe(req.body?.["Acct-Output-Gigawords"]);
+
+    const inBytes = bytesFromOctetsAndGigawords(inOct, inG);
+    const outBytes = bytesFromOctetsAndGigawords(outOct, outG);
+    const totalBytes = inBytes + outBytes;
+
+    const acctSessionTime = parseIntSafe(req.body?.["Acct-Session-Time"]); // seconds
+    const terminateCause = String(req.body?.["Acct-Terminate-Cause"] || "").trim() || null;
+
+    const nowIso = new Date().toISOString();
+
+    // 1) Fetch voucher session (to know totals + current used)
+    const { data: vsRow, error: vsErr } = await supabase
+      .from("voucher_sessions")
+      .select("id, voucher_code, plan_id, status, data_total_bytes, data_used_bytes")
+      .eq("voucher_code", username)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (vsErr) {
+      return res.status(200).json({ ok: false, error: "voucher_sessions_lookup_failed", details: vsErr.message || String(vsErr) });
+    }
+    if (!vsRow) {
+      // Still store accounting row if you want, but voucher isn't in DB => return ok=false to be explicit.
+      return res.status(200).json({ ok: false, error: "voucher_not_found" });
+    }
+
+    // Ensure data_total_bytes is set (derive from plan.data_mb if missing and plan has data limit)
+    let dataTotalBytes = vsRow.data_total_bytes;
+    if (dataTotalBytes === null || dataTotalBytes === undefined) {
+      // Try derive from plan (data_mb). data_mb=0 or null can mean unlimited.
+      const { data: planRow } = await supabase.from("plans").select("data_mb").eq("id", vsRow.plan_id).maybeSingle();
+      const mb = planRow?.data_mb ?? null;
+      if (mb !== null && mb > 0) {
+        dataTotalBytes = String(BigInt(mb) * 1024n * 1024n);
+        // Persist it once
+        await supabase.from("voucher_sessions").update({ data_total_bytes: dataTotalBytes, updated_at: nowIso }).eq("id", vsRow.id);
+      }
+    }
+
+    // 2) Compute delta vs last_total_bytes for this session (avoid double counting)
+    let prevTotalBytes = null;
+    try {
+      const { data: acctPrev } = await supabase
+        .from("radius_acct_sessions")
+        .select("id, last_total_bytes")
+        .eq("voucher_code", username)
+        .eq("acct_session_id", acctSessionId)
+        .limit(1)
+        .maybeSingle();
+
+      if (acctPrev?.last_total_bytes !== null && acctPrev?.last_total_bytes !== undefined) {
+        prevTotalBytes = BigInt(acctPrev.last_total_bytes);
+      }
+    } catch (e) {
+      // If table doesn't exist yet, we won't block accounting; we will still update voucher_sessions safely below.
+      prevTotalBytes = null;
+    }
+
+    let deltaBytes = totalBytes;
+    if (prevTotalBytes !== null) {
+      // Normal: counters increase within a session
+      deltaBytes = totalBytes >= prevTotalBytes ? (totalBytes - prevTotalBytes) : totalBytes;
+    }
+
+    // 3) Upsert accounting row (best effort)
+    const acctPayload = {
+      voucher_code: username,
+      acct_session_id: acctSessionId,
+      acct_status_type: acctStatusType || null,
+
+      nas_identifier: nasIdentifier,
+      nas_ip_address: nasIpAddress,
+      nas_port_id: nasPortId,
+      calling_station_id: callingStationId,
+      called_station_id: calledStationId,
+      framed_ip_address: framedIpAddress,
+      mikrotik_host_ip: mikrotikHostIp,
+
+      acct_session_time: acctSessionTime,
+      acct_terminate_cause: terminateCause,
+
+      acct_input_octets: inOct,
+      acct_output_octets: outOct,
+      acct_input_gigawords: inG,
+      acct_output_gigawords: outG,
+
+      total_bytes: String(totalBytes),
+      last_total_bytes: String(totalBytes),
+
+      updated_at: nowIso,
+    };
+
+    // Set created_at for first insert
+    acctPayload.created_at = nowIso;
+
+    try {
+      await supabase
+        .from("radius_acct_sessions")
+        .upsert(acctPayload, { onConflict: "voucher_code,acct_session_id" });
+    } catch (e) {
+      // If the table isn't created yet, ignore (we still update voucher_sessions).
+      // You can check your server logs to confirm.
+      console.warn("[radius/accounting] radius_acct_sessions upsert failed:", e?.message || e);
+    }
+
+    // 4) Update voucher_sessions.data_used_bytes (monotonic add)
+    const usedBefore = vsRow.data_used_bytes ? BigInt(vsRow.data_used_bytes) : 0n;
+    const usedAfter = usedBefore + (deltaBytes < 0n ? 0n : deltaBytes);
+
+    const vsUpdate = {
+      data_used_bytes: String(usedAfter),
+      updated_at: nowIso,
+    };
+
+    // If status is pending, do not mutate usage (shouldn't happen after Accept, but keep safety)
+    if (String(vsRow.status || "").toLowerCase() !== "pending") {
+      await supabase.from("voucher_sessions").update(vsUpdate).eq("id", vsRow.id);
+    }
+
+    // Remaining (if total exists)
+    let remainingBytes = null;
+    if (dataTotalBytes !== null && dataTotalBytes !== undefined) {
+      const total = BigInt(dataTotalBytes);
+      remainingBytes = total > usedAfter ? String(total - usedAfter) : "0";
+    }
+
+    return res.status(200).json({
+      ok: true,
+      voucher_code: username,
+      acct_session_id: acctSessionId,
+      acct_status_type: acctStatusType,
+      delta_bytes: String(deltaBytes),
+      data_used_bytes: String(usedAfter),
+      data_total_bytes: dataTotalBytes === null || dataTotalBytes === undefined ? null : String(dataTotalBytes),
+      data_remaining_bytes: remainingBytes,
+    });
+  } catch (e) {
+    console.error("[radius/accounting] error:", e?.message || e);
+    return res.status(200).json({ ok: false, error: "server_error" });
+  }
+});
+
+
 // ENDPOINT: /api/voucher/last
 // Resume the latest voucher for a device (client_mac), preferring:
 // 1) pending delivered-but-not-activated code (Model B)
