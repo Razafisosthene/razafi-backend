@@ -4508,6 +4508,14 @@ const session = rows[0];
 // ---------------------------------------------------------------------------
 app.post("/api/radius/accounting", async (req, res) => {
   try {
+
+console.log("[radius][accounting] raw body keys:", Object.keys(req.body || {}));
+
+console.log("[radius][accounting] raw User-Name:", req.body?.["User-Name"]);
+console.log("[radius][accounting] raw Acct-Session-Id:", req.body?.["Acct-Session-Id"]);
+console.log("[radius][accounting] raw Acct-Status-Type:", req.body?.["Acct-Status-Type"]);
+
+
     // DEBUG: confirm the endpoint is hit
     console.log("[radius][accounting] hit", {
       ip: getCallerIp(req),
