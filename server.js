@@ -4085,11 +4085,15 @@ function getCallerIps(req) {
 function getCallerIp(req) {
   return (getCallerIps(req)[0] || "");
 }
+console.log("[RADIUS CHECK]", {
+  receivedSecret: secret,
+  expectedSecret: RADIUS_API_SECRET
+});
 
 
 function isAllowedRadiusCaller(req) {
   const ips = getCallerIps(req);
-  const secret = String(req.headers["x-radius-secret"] || "").trim();
+  const secret = String(req.get("x-radius-secret") || "").trim();
 
   const ipOk = ips.some((ip) => RADIUS_ALLOWED_IPS.includes(ip));
   const secretOk = !!RADIUS_API_SECRET && secret === RADIUS_API_SECRET;
