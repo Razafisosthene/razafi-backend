@@ -4078,6 +4078,15 @@ function getCallerIps(req) {
   return uniq;
 }
 
+/**
+ * Return a single best-effort caller IP (string).
+ * Uses the first value from getCallerIps().
+ */
+function getCallerIp(req) {
+  return (getCallerIps(req)[0] || "");
+}
+
+
 function isAllowedRadiusCaller(req) {
   const ips = getCallerIps(req);
   const secret = String(req.headers["x-radius-secret"] || "").trim();
@@ -4091,6 +4100,16 @@ function isAllowedRadiusCaller(req) {
 }
 
 app.post("/api/radius/authorize", async (req, res) => {
+  // --- DEBUG LOGS (Render): trace authorize hits
+  console.log("[radius][authorize] hit", {
+    ip: getCallerIp(req),
+    xff: req.headers["x-forwarded-for"] || "",
+    user: req.body && (req.body["User-Name"] || req.body.username) || "",
+    acct_session_id: req.body && (req.body["Acct-Session-Id"] || req.body.acct_session_id) || "",
+    nas_id: req.body && (req.body["NAS-Identifier"] || req.body.nas_id) || "",
+    nas_ip: req.body && (req.body["NAS-IP-Address"] || req.body.nas_ip_address) || ""
+  });
+
   try {
 
     // IMPORTANT (MikroTik Hotspot CHAP):
@@ -4166,6 +4185,7 @@ app.post("/api/radius/authorize", async (req, res) => {
 
     // Security gate: only accept calls from your FreeRADIUS droplet (+ optional header secret)
     if (!isAllowedRadiusCaller(req)) {
+      console.log("[radius] blocked: caller not allowed", { ip: getCallerIp(req), ips: getCallerIps(req) });
       return sendReject("RADIUS caller not allowed", {
         actor_id: getCallerIp(req),
         metadata: { ip: getCallerIp(req) }
@@ -4464,11 +4484,21 @@ function bytesFromOctetsAndGigawords(octets, gigawords) {
 }
 
 app.post("/api/radius/accounting", async (req, res) => {
+  // --- DEBUG LOGS (Render): trace accounting hits (Start/Interim/Stop)
+  console.log("[radius][accounting] hit", {
+    ip: getCallerIp(req),
+    xff: req.headers["x-forwarded-for"] || "",
+    status: req.body && (req.body["Acct-Status-Type"] || req.body.acct_status_type) || "",
+    user: req.body && (req.body["User-Name"] || req.body.username) || "",
+    acct_session_id: req.body && (req.body["Acct-Session-Id"] || req.body.acct_session_id) || "",
+    in: req.body && (req.body["Acct-Input-Octets"] || req.body.acct_input_octets) || "",
+    out: req.body && (req.body["Acct-Output-Octets"] || req.body.acct_output_octets) || "",
+    in_gw: req.body && (req.body["Acct-Input-Gigawords"] || req.body.acct_input_gigawords) || "",
+    out_gw: req.body && (req.body["Acct-Output-Gigawords"] || req.body.acct_output_gigawords) || "",
+    nas_id: req.body && (req.body["NAS-Identifier"] || req.body.nas_id) || ""
+  });
+
   try {
-
-console.log("ACCOUNTING HIT", req.body);
-
-
     if (!supabase) return res.status(500).json({ ok: false, error: "supabase_not_configured" });
 
     // Security gate (same as authorize)
