@@ -154,8 +154,10 @@ function renderTable(items) {
       <!-- ✅ status now is DB truth (view); just display it -->
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}</td>
 
-      <!-- ✅ remaining_seconds now is DB truth (view); just display it -->
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
+      <!-- ✅ remaining_seconds now is DB truth (view); display time + (optional) remaining data -->
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(
+        fmtRemaining(it.remaining_seconds) + (it.data_remaining_human ? (" · " + it.data_remaining_human) : "")
+      )}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
     `;
 
@@ -219,7 +221,11 @@ function updateRowRemaining(sessionId, remainingSeconds) {
   const tds = tr.querySelectorAll("td");
   // Remaining column is the 9th (0-based index 8) in your table
   if (tds && tds.length >= 10) {
-    tds[8].textContent = fmtRemaining(remainingSeconds);
+    // Preserve data suffix if present (e.g. "12min 3s · 512 MB")
+    const cur = String(tds[8].textContent || "");
+    const parts = cur.split("·").map(s => s.trim()).filter(Boolean);
+    const suffix = (parts.length > 1) ? parts.slice(1).join(" · ") : "";
+    tds[8].textContent = fmtRemaining(remainingSeconds) + (suffix ? (" · " + suffix) : "");
   }
 }
 
@@ -258,7 +264,11 @@ async function openDetail(id) {
       ["Plan", it.plans?.name || it.plan_name],
       ["Price", (it.plans?.price_ar ?? it.plan_price)],
       ["Duration", fmtDurationMinutes(it.plans?.duration_minutes)],
-      ["Data (MB)", it.plans?.data_mb],
+
+      // ✅ Data quota (human readable) from voucher_sessions_usage_view
+      ["Data total", it.data_total_human],
+      ["Data used", it.data_used_human],
+      ["Data remaining", it.data_remaining_human],
       ["Max devices", it.plans?.max_devices],
     ];
 

@@ -981,6 +981,42 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       console.error("ADMIN CLIENTS: Tanaza name lookup failed:", e?.message || e);
     }
 
+    // ✅ Merge data usage (human readable) from DB view (fail-open)
+    // This is read-only and keeps the rest of the setup intact.
+    try {
+      const ids = Array.from(new Set(items.map((i) => i.id).filter(Boolean)));
+      if (ids.length > 0) {
+        const { data: usageRows, error: uErr } = await supabase
+          .from("voucher_sessions_usage_view")
+          .select("id,data_total_human,data_used_human,data_remaining_human")
+          .in("id", ids);
+
+        if (!uErr && Array.isArray(usageRows)) {
+          const map = Object.create(null);
+          for (const r of usageRows) map[r.id] = r;
+          for (const it of items) {
+            const u = map[it.id];
+            it.data_total_human = u?.data_total_human ?? null;
+            it.data_used_human = u?.data_used_human ?? null;
+            it.data_remaining_human = u?.data_remaining_human ?? null;
+          }
+        } else {
+          for (const it of items) {
+            it.data_total_human = null;
+            it.data_used_human = null;
+            it.data_remaining_human = null;
+          }
+        }
+      }
+    } catch (_) {
+      // fail-open: keep response compatible even if view is missing
+      for (const it of items) {
+        it.data_total_human = null;
+        it.data_used_human = null;
+        it.data_remaining_human = null;
+      }
+    }
+
     // ✅ Summary based on DB truth_status
     const total = count || 0;
     const active = items.filter(i => i.truth_status === "active").length;
@@ -1082,6 +1118,30 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
       }
     } catch (_) {
       data.free_plan = null;
+    }
+
+    // ✅ Merge data usage (human readable) from DB view (fail-open)
+    // Adds: data_total_human, data_used_human, data_remaining_human
+    try {
+      const { data: u, error: uErr } = await supabase
+        .from("voucher_sessions_usage_view")
+        .select("id,data_total_human,data_used_human,data_remaining_human")
+        .eq("id", data.id)
+        .maybeSingle();
+
+      if (!uErr && u) {
+        data.data_total_human = u.data_total_human ?? null;
+        data.data_used_human = u.data_used_human ?? null;
+        data.data_remaining_human = u.data_remaining_human ?? null;
+      } else {
+        data.data_total_human = null;
+        data.data_used_human = null;
+        data.data_remaining_human = null;
+      }
+    } catch (_) {
+      data.data_total_human = null;
+      data.data_used_human = null;
+      data.data_remaining_human = null;
     }
 
     res.json({ item: data });
@@ -4084,12 +4144,6 @@ function getCallerIp(req) {
 }
 
 
-
-
-// Helper: rlm_rest may send attribute values as arrays (e.g. {"User-Name":["X"]}).
-function firstVal(v) {
-  return Array.isArray(v) ? (v.length ? v[0] : "") : (v ?? "");
-}
 function isAllowedRadiusCaller(req) {
   const ips = getCallerIps(req);
   const secret = String(req.headers["x-radius-secret"] || "").trim();
@@ -4508,166 +4562,109 @@ const session = rows[0];
 // ---------------------------------------------------------------------------
 app.post("/api/radius/accounting", async (req, res) => {
   try {
-    // -----------------------------------------------------------------------
-    // SYSTEM 3 (Option B) - Accounting endpoint (persistent data quota)
-    // - Robustly parse rlm_rest JSON, which may encode attributes as:
-    //   - plain strings/numbers
-    //   - arrays: ["value"]
-    //   - typed objects: { type: "string|integer", value: ["value"] }
-    // -----------------------------------------------------------------------
-
-    // DEBUG (safe): log keys + a few raw attrs to see the exact shape
-    console.log("[radius][accounting] raw body keys:", Object.keys(req.body || {}));
-    console.log("[radius][accounting] raw User-Name:", req.body?.["User-Name"]);
-    console.log("[radius][accounting] raw Acct-Session-Id:", req.body?.["Acct-Session-Id"]);
-    console.log("[radius][accounting] raw Acct-Status-Type:", req.body?.["Acct-Status-Type"]);
-
+    // DEBUG: confirm the endpoint is hit
     console.log("[radius][accounting] hit", {
       ip: getCallerIp(req),
       xff: req.headers["x-forwarded-for"] || "",
       keys: req.body ? Object.keys(req.body) : [],
     });
 
-    // Security gate (IP allowlist + x-radius-secret)
     if (!isAllowedRadiusCaller(req)) {
       return res.status(403).json({});
     }
 
     const b = req.body || {};
+    const username = b["User-Name"] || b.username || "";
+    const acctSessionId = b["Acct-Session-Id"] || b.acct_session_id || "";
+    const statusType = b["Acct-Status-Type"] || b.acct_status_type || "";
+    const callingStationId = b["Calling-Station-Id"] || b.calling_station_id || "";
+    const calledStationId = b["Called-Station-Id"] || b.called_station_id || "";
+    const nasId = b["NAS-Identifier"] || b.nas_id || "";
+    const nasIp = b["NAS-IP-Address"] || b.nas_ip_address || "";
+    const framedIp = b["Framed-IP-Address"] || b.framed_ip_address || "";
+    const nasPortId = b["NAS-Port-Id"] || b.nas_port_id || "";
+    const mikrotikHostIp = b["Mikrotik-Host-IP"] || b.mikrotik_host_ip || "";
+    const terminateCause = b["Acct-Terminate-Cause"] || b.acct_terminate_cause || "";
+    const sessionTime = Number(b["Acct-Session-Time"] || b.acct_session_time || 0) || 0;
 
-    const radiusScalar = (v) => {
-      // rlm_rest typed object: { type: "...", value: ["..."] }
-      if (v && typeof v === "object" && !Array.isArray(v)) {
-        if (Array.isArray(v.value) && v.value.length) return v.value[0];
-        if (typeof v.value === "string" || typeof v.value === "number") return v.value;
-      }
-      // array: ["..."]
-      if (Array.isArray(v)) return v.length ? v[0] : "";
-      return v;
-    };
+    // Counters: 32-bit + optional 64-bit gigawords
+    const inOct = Number(b["Acct-Input-Octets"] || b.acct_input_octets || 0) || 0;
+    const outOct = Number(b["Acct-Output-Octets"] || b.acct_output_octets || 0) || 0;
+    const inGw = Number(b["Acct-Input-Gigawords"] || b.acct_input_gigawords || 0) || 0;
+    const outGw = Number(b["Acct-Output-Gigawords"] || b.acct_output_gigawords || 0) || 0;
 
-    const getAttr = (key, fallbackKey) => radiusScalar(b[key] ?? (fallbackKey ? b[fallbackKey] : undefined));
-
-    const username = String(getAttr("User-Name", "username") || "").trim();
-    const acctSessionId = String(getAttr("Acct-Session-Id", "acct_session_id") || "").trim();
-    const statusType = String(getAttr("Acct-Status-Type", "acct_status_type") || "").trim();
-
-    const callingStationId = String(getAttr("Calling-Station-Id", "calling_station_id") || "").trim();
-    const calledStationId = String(getAttr("Called-Station-Id", "called_station_id") || "").trim();
-
-    const nasId = String(getAttr("NAS-Identifier", "nas_id") || "").trim();
-    const framedIpAddress = String(getAttr("Framed-IP-Address", "framed_ip_address") || "").trim();
-    const mikrotikHostIp = String(getAttr("Mikrotik-Host-IP", "mikrotik_host_ip") || "").trim();
-    const terminateCause = String(getAttr("Acct-Terminate-Cause", "acct_terminate_cause") || "").trim();
-
-    const sessionTime = Number(getAttr("Acct-Session-Time", "acct_session_time") || 0) || 0;
-
-    // Counters: 32-bit + optional 64-bit gigawords (support > 4GB)
-    const inOct = Number(getAttr("Acct-Input-Octets", "acct_input_octets") || 0) || 0;
-    const outOct = Number(getAttr("Acct-Output-Octets", "acct_output_octets") || 0) || 0;
-    const inGw = Number(getAttr("Acct-Input-Gigawords", "acct_input_gigawords") || 0) || 0;
-    const outGw = Number(getAttr("Acct-Output-Gigawords", "acct_output_gigawords") || 0) || 0;
-
-    const inputBytes = inGw * 4294967296 + inOct; // 2^32
-    const outputBytes = outGw * 4294967296 + outOct;
+    const inputBytes = (inGw * 4294967296) + inOct;   // 2^32
+    const outputBytes = (outGw * 4294967296) + outOct;
     const totalBytes = inputBytes + outputBytes;
 
-    // Log parsed/normalized values once (helps confirm the fix)
-    console.log("[radius][accounting] parsed", {
-      username,
-      acctSessionId,
-      statusType,
-      callingStationId,
-      nasId,
-      framedIpAddress,
-      mikrotikHostIp,
-      sessionTime,
-      totalBytes,
-      terminateCause,
-    });
-
-    // If we cannot identify the voucher/session, just ACK (don't break RADIUS)
-    if (!username || !acctSessionId) {
-      console.log("[radius][accounting] missing username/acctSessionId -> ack");
-      return res.status(200).json({});
-    }
-
-    // NOTE: MikroTik often sends Start with zero counters. We still upsert audit row,
-    // and deltas will come from Interim-Update/Stop when counters increase.
-
-    if (supabase) {
-      // 1) Read previous last_total_bytes for delta calculation (anti double-count)
-      let prevLastTotal = 0;
-      try {
-        const { data: prevRows, error: prevErr } = await supabase
-          .from("radius_acct_sessions")
-          .select("last_total_bytes")
-          .eq("voucher_code", username)
-          .eq("acct_session_id", acctSessionId)
-          .limit(1);
-
-        if (!prevErr && prevRows && prevRows.length) {
-          prevLastTotal = Number(prevRows[0].last_total_bytes || 0) || 0;
-        }
-      } catch (_) {}
-
-      const delta = Math.max(0, totalBytes - prevLastTotal);
-
-      // 2) Upsert audit row (keep to columns that EXIST in your current table schema)
-      // (You can add more audit columns later via ALTER; this endpoint will keep working.)
+    if (supabase && acctSessionId) {
       const upsertRow = {
-        voucher_code: username,
-        acct_session_id: acctSessionId,
-        client_mac: callingStationId || null,
-        nas_id: nasId || null,
-        last_in_bytes: inputBytes,
-        last_out_bytes: outputBytes,
-        last_total_bytes: totalBytes,
+        acct_session_id: String(acctSessionId),
+        voucher_code: String(username || ""),
+        nas_id: String(nasId || ""),
+        nas_ip: String(nasIp || ""),
+        calling_station_id: String(callingStationId || ""),
+        called_station_id: String(calledStationId || ""),
+        framed_ip: String(framedIp || ""),
+        nas_port_id: String(nasPortId || ""),
+        mikrotik_host_ip: String(mikrotikHostIp || ""),
+        acct_status_type: String(statusType || ""),
+        acct_session_time: sessionTime,
+        acct_input_bytes: inputBytes,
+        acct_output_bytes: outputBytes,
+        acct_total_bytes: totalBytes,
+        acct_terminate_cause: String(terminateCause || ""),
         updated_at: new Date().toISOString(),
       };
 
       const { error: upsertErr } = await supabase
         .from("radius_acct_sessions")
-        .upsert(upsertRow, { onConflict: "voucher_code,acct_session_id" });
+        .upsert(upsertRow, { onConflict: "acct_session_id" });
 
       if (upsertErr) {
         console.log("[radius][accounting] radius_acct_sessions upsert error", upsertErr);
       }
 
-      // 3) Apply delta to voucher_sessions.data_used_bytes (monotonic)
-      // Use order(created_at desc) because you may have historical rows per code.
-      const { data: vsRows, error: vsErr } = await supabase
-        .from("voucher_sessions")
-        .select("id,data_used_bytes")
-        .eq("voucher_code", username)
-        .order("created_at", { ascending: false })
-        .limit(1);
+      if (username) {
+        const { data: vsRows, error: vsErr } = await supabase
+          .from("voucher_sessions")
+          .select("id,data_used_bytes")
+          .eq("voucher_code", String(username))
+          .order("created_at", { ascending: false })
+          .limit(1);
 
-      if (vsErr) {
-        console.log("[radius][accounting] voucher_sessions select error", vsErr);
-      } else if (vsRows && vsRows.length) {
-        if (delta > 0) {
+        if (vsErr) {
+          console.log("[radius][accounting] voucher_sessions select error", vsErr);
+        } else if (vsRows && vsRows.length) {
           const vs = vsRows[0];
           const prevUsed = Number(vs.data_used_bytes || 0) || 0;
-          const newUsed = prevUsed + delta;
+          const newUsed = Math.max(prevUsed, totalBytes);
 
           const { error: vsUpErr } = await supabase
             .from("voucher_sessions")
             .update({
               data_used_bytes: newUsed,
-              updated_at: new Date().toISOString(),
+              last_acct_session_id: String(acctSessionId),
+              last_seen_at: new Date().toISOString(),
+              calling_station_id: String(callingStationId || ""),
+              framed_ip: String(framedIp || ""),
+              nas_id: String(nasId || ""),
+              nas_ip: String(nasIp || ""),
             })
             .eq("id", vs.id);
 
           if (vsUpErr) {
             console.log("[radius][accounting] voucher_sessions update error", vsUpErr);
-          } else {
-            console.log("[radius][accounting] applied delta", { username, acctSessionId, delta, newUsed });
           }
+        } else {
+          console.log("[radius][accounting] no voucher_sessions row found for", username);
         }
-      } else {
-        console.log("[radius][accounting] no voucher_sessions row found for", username);
       }
+    } else {
+      console.log("[radius][accounting] supabase not configured or missing acct_session_id", {
+        supabase: !!supabase,
+        acctSessionId,
+      });
     }
 
     return res.status(200).json({});
