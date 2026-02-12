@@ -53,6 +53,54 @@ function esc(s) {
   }[c]));
 }
 
+// ---- helpers: unwrap Supabase/REST objects and format bytes ----
+function v(x) {
+  if (x && typeof x === "object" && "value" in x) return x.value;
+  return x;
+}
+function toNum(x, fallback = 0) {
+  const n = Number(v(x));
+  return Number.isFinite(n) ? n : fallback;
+}
+function fmtBytes(bytes) {
+  const b = toNum(bytes, 0);
+  if (!b) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let val = b;
+  let i = 0;
+  while (val >= 1024 && i < units.length - 1) {
+    val /= 1024;
+    i++;
+  }
+  const digits = val >= 100 || i === 0 ? 0 : val >= 10 ? 1 : 2;
+  return `${val.toFixed(digits)} ${units[i]}`;
+}
+function computeQuota(it) {
+  const totalBytes =
+    toNum(it?.data_total_bytes) ||
+    toNum(it?.plan_data_total_bytes) ||
+    toNum(it?.data_quota_bytes) ||
+    toNum(it?.plan_data_quota_bytes) ||
+    toNum(it?.plan?.data_quota_bytes) ||
+    toNum(it?.plans?.data_quota_bytes);
+
+  const usedBytes =
+    toNum(it?.data_used_bytes) ||
+    toNum(it?.used_bytes) ||
+    toNum(it?.total_bytes) ||
+    toNum(it?.acct_total_bytes);
+
+  const remainingBytes =
+    toNum(it?.data_remaining_bytes) ||
+    (totalBytes ? Math.max(totalBytes - usedBytes, 0) : 0);
+
+  const totalHuman = it?.data_total_human || (totalBytes ? fmtBytes(totalBytes) : "—");
+  const usedHuman = it?.data_used_human || (usedBytes ? fmtBytes(usedBytes) : "—");
+  const remainingHuman = it?.data_remaining_human || (remainingBytes ? fmtBytes(remainingBytes) : "—");
+
+  return { totalBytes, usedBytes, remainingBytes, totalHuman, usedHuman, remainingHuman };
+}
+
 let debounceTimer = null;
 let lastItems = [];
 let currentDetailId = null;
@@ -156,7 +204,7 @@ function renderTable(items) {
 
       <!-- ✅ remaining_seconds now is DB truth (view); display time + (optional) remaining data -->
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(
-        fmtRemaining(it.remaining_seconds) + (it.data_remaining_human ? (" · " + it.data_remaining_human) : "")
+        fmtRemaining(it.remaining_seconds) + (computeQuota(it).remainingHuman !== '—' ? (' · ' + computeQuota(it).remainingHuman) : '')
       )}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
     `;
@@ -266,9 +314,9 @@ async function openDetail(id) {
       ["Duration", fmtDurationMinutes(it.plans?.duration_minutes)],
 
       // ✅ Data quota (human readable) from voucher_sessions_usage_view
-      ["Data total", it.data_total_human],
-      ["Data used", it.data_used_human],
-      ["Data remaining", it.data_remaining_human],
+      ["Data total", computeQuota(it).totalHuman],
+      ["Data used", computeQuota(it).usedHuman],
+      ["Data remaining", computeQuota(it).remainingHuman],
       ["Max devices", it.plans?.max_devices],
     ];
 
