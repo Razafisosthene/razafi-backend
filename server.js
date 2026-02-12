@@ -4465,6 +4465,10 @@ function bytesFromOctetsAndGigawords(octets, gigawords) {
 
 app.post("/api/radius/accounting", async (req, res) => {
   try {
+
+console.log("ACCOUNTING HIT", req.body);
+
+
     if (!supabase) return res.status(500).json({ ok: false, error: "supabase_not_configured" });
 
     // Security gate (same as authorize)
