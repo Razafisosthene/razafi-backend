@@ -4011,7 +4011,7 @@ app.get("/api/hotspot/pending-code", async (req, res) => {
 // ENDPOINT: /api/radius/authorize   (SYSTEM 3: MikroTik)
 // Called by FreeRADIUS (rlm_rest). No UI here: JSON only.
 // Rules:
-// - pending => REJECT (Model B: must click "Utiliser ce code" first) :contentReference[oaicite:4]{index=4}
+// - pending => REJECT (Model B: must click "Utiliser ce code" first) 
 // - active + not expired => ACCEPT + Session-Timeout (remaining seconds)
 // - 1 device / code strict (client_mac lock)
 // - Optional: enforce pool via nas_id (NAS-Identifier)
@@ -4078,6 +4078,12 @@ function getCallerIps(req) {
   return uniq;
 }
 
+// Return a single best-effort caller IP (string). Uses the first value from getCallerIps().
+function getCallerIp(req) {
+  return (getCallerIps(req)[0] || "");
+}
+
+
 function isAllowedRadiusCaller(req) {
   const ips = getCallerIps(req);
   const secret = String(req.headers["x-radius-secret"] || "").trim();
@@ -4085,10 +4091,34 @@ function isAllowedRadiusCaller(req) {
   const ipOk = ips.some((ip) => RADIUS_ALLOWED_IPS.includes(ip));
   const secretOk = !!RADIUS_API_SECRET && secret === RADIUS_API_SECRET;
 
-  // If a secret is configured, rely on the secret (IP can be unreliable behind Cloudflare/Render).
-  // If no secret is configured, fall back to IP allow-list.
-  return RADIUS_API_SECRET ? secretOk : ipOk;
+  // SECURITY: require BOTH IP allow-list AND header secret when secret is configured.
+  // If secret is not configured, fall back to IP allow-list only.
+  const allowed = RADIUS_API_SECRET ? (ipOk && secretOk) : ipOk;
+
+  // DEBUG (Render): log the decision without leaking the secret value.
+  if (!allowed) {
+    console.log("[radius] blocked: caller not allowed", {
+      ips,
+      ipOk,
+      secret_present: !!secret,
+      secret_len: secret ? secret.length : 0,
+      secretOk,
+      xff: req.headers["x-forwarded-for"] || "",
+      ip: req.ip || ""
+    });
+  } else {
+    console.log("[radius] caller allowed", {
+      ips,
+      ipOk,
+      secret_present: !!secret,
+      secret_len: secret ? secret.length : 0,
+      secretOk
+    });
+  }
+
+  return allowed;
 }
+
 
 app.post("/api/radius/authorize", async (req, res) => {
   try {
@@ -4458,6 +4488,132 @@ const session = rows[0];
     return res.status(200).json({ "control:Auth-Type": "Reject" });
   }
 });
+
+
+// ---------------------------------------------------------------------------
+// ENDPOINT: /api/radius/accounting   (SYSTEM 3: MikroTik)
+// Called by FreeRADIUS (rlm_rest) from the "accounting" section.
+// Updates Supabase:
+// - radius_acct_sessions (per Acct-Session-Id)
+// - voucher_sessions (data_used_bytes + last seen info)
+//
+// IMPORTANT: Respond with JSON {} to avoid rlm_rest warnings about unknown attributes.
+// Security: same as /api/radius/authorize (IP allow + x-radius-secret).
+// ---------------------------------------------------------------------------
+app.post("/api/radius/accounting", async (req, res) => {
+  try {
+    // DEBUG: confirm the endpoint is hit
+    console.log("[radius][accounting] hit", {
+      ip: getCallerIp(req),
+      xff: req.headers["x-forwarded-for"] || "",
+      keys: req.body ? Object.keys(req.body) : [],
+    });
+
+    if (!isAllowedRadiusCaller(req)) {
+      return res.status(403).json({});
+    }
+
+    const b = req.body || {};
+    const username = b["User-Name"] || b.username || "";
+    const acctSessionId = b["Acct-Session-Id"] || b.acct_session_id || "";
+    const statusType = b["Acct-Status-Type"] || b.acct_status_type || "";
+    const callingStationId = b["Calling-Station-Id"] || b.calling_station_id || "";
+    const calledStationId = b["Called-Station-Id"] || b.called_station_id || "";
+    const nasId = b["NAS-Identifier"] || b.nas_id || "";
+    const nasIp = b["NAS-IP-Address"] || b.nas_ip_address || "";
+    const framedIp = b["Framed-IP-Address"] || b.framed_ip_address || "";
+    const nasPortId = b["NAS-Port-Id"] || b.nas_port_id || "";
+    const mikrotikHostIp = b["Mikrotik-Host-IP"] || b.mikrotik_host_ip || "";
+    const terminateCause = b["Acct-Terminate-Cause"] || b.acct_terminate_cause || "";
+    const sessionTime = Number(b["Acct-Session-Time"] || b.acct_session_time || 0) || 0;
+
+    // Counters: 32-bit + optional 64-bit gigawords
+    const inOct = Number(b["Acct-Input-Octets"] || b.acct_input_octets || 0) || 0;
+    const outOct = Number(b["Acct-Output-Octets"] || b.acct_output_octets || 0) || 0;
+    const inGw = Number(b["Acct-Input-Gigawords"] || b.acct_input_gigawords || 0) || 0;
+    const outGw = Number(b["Acct-Output-Gigawords"] || b.acct_output_gigawords || 0) || 0;
+
+    const inputBytes = (inGw * 4294967296) + inOct;   // 2^32
+    const outputBytes = (outGw * 4294967296) + outOct;
+    const totalBytes = inputBytes + outputBytes;
+
+    if (supabase && acctSessionId) {
+      const upsertRow = {
+        acct_session_id: String(acctSessionId),
+        voucher_code: String(username || ""),
+        nas_id: String(nasId || ""),
+        nas_ip: String(nasIp || ""),
+        calling_station_id: String(callingStationId || ""),
+        called_station_id: String(calledStationId || ""),
+        framed_ip: String(framedIp || ""),
+        nas_port_id: String(nasPortId || ""),
+        mikrotik_host_ip: String(mikrotikHostIp || ""),
+        acct_status_type: String(statusType || ""),
+        acct_session_time: sessionTime,
+        acct_input_bytes: inputBytes,
+        acct_output_bytes: outputBytes,
+        acct_total_bytes: totalBytes,
+        acct_terminate_cause: String(terminateCause || ""),
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error: upsertErr } = await supabase
+        .from("radius_acct_sessions")
+        .upsert(upsertRow, { onConflict: "acct_session_id" });
+
+      if (upsertErr) {
+        console.log("[radius][accounting] radius_acct_sessions upsert error", upsertErr);
+      }
+
+      if (username) {
+        const { data: vsRows, error: vsErr } = await supabase
+          .from("voucher_sessions")
+          .select("id,data_used_bytes")
+          .eq("voucher_code", String(username))
+          .order("created_at", { ascending: false })
+          .limit(1);
+
+        if (vsErr) {
+          console.log("[radius][accounting] voucher_sessions select error", vsErr);
+        } else if (vsRows && vsRows.length) {
+          const vs = vsRows[0];
+          const prevUsed = Number(vs.data_used_bytes || 0) || 0;
+          const newUsed = Math.max(prevUsed, totalBytes);
+
+          const { error: vsUpErr } = await supabase
+            .from("voucher_sessions")
+            .update({
+              data_used_bytes: newUsed,
+              last_acct_session_id: String(acctSessionId),
+              last_seen_at: new Date().toISOString(),
+              calling_station_id: String(callingStationId || ""),
+              framed_ip: String(framedIp || ""),
+              nas_id: String(nasId || ""),
+              nas_ip: String(nasIp || ""),
+            })
+            .eq("id", vs.id);
+
+          if (vsUpErr) {
+            console.log("[radius][accounting] voucher_sessions update error", vsUpErr);
+          }
+        } else {
+          console.log("[radius][accounting] no voucher_sessions row found for", username);
+        }
+      }
+    } else {
+      console.log("[radius][accounting] supabase not configured or missing acct_session_id", {
+        supabase: !!supabase,
+        acctSessionId,
+      });
+    }
+
+    return res.status(200).json({});
+  } catch (e) {
+    console.log("[radius][accounting] error", e);
+    return res.status(200).json({});
+  }
+});
+
 
 
 // ---------------------------------------------------------------------------
