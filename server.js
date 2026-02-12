@@ -4037,63 +4037,49 @@ function normalizeIp(ip) {
 
 /**
  * Collect all plausible caller IPs (Cloudflare, proxies, req.ip, socket).
- * IMPORTANT: for proxied deployments, X-Forwarded-For can contain multiple IPs.
+ * Returns an array of normalized IP strings (unique, ordered).
  */
 function getCallerIps(req) {
   const out = [];
 
-  // Cloudflare (if zone is proxied)
-  const cf = normalizeIp(req.headers["cf-connecting-ip"]);
-  if (cf) out.push(cf);
+  // Cloudflare connecting IP (most reliable when behind CF)
+  const cf = req.headers["cf-connecting-ip"];
+  if (cf) out.push(String(cf));
 
-  // Render / proxies
+  // X-Forwarded-For may contain multiple IPs
   const xff = req.headers["x-forwarded-for"];
   if (xff) {
-    for (const part of String(xff).split(",")) {
-      const ip = normalizeIp(part);
-      if (ip) out.push(ip);
-    }
+    String(xff)
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .forEach((ip) => out.push(ip));
   }
 
-  // Some proxies set X-Real-IP
-  const xri = normalizeIp(req.headers["x-real-ip"]);
-  if (xri) out.push(xri);
+  // Express-calculated IP (may already be the proxy)
+  if (req.ip) out.push(String(req.ip));
 
-  // Express-calculated IP (respects trust proxy)
-  const rip = normalizeIp(req.ip);
-  if (rip) out.push(rip);
+  // Raw socket address
+  if (req.socket && req.socket.remoteAddress) out.push(String(req.socket.remoteAddress));
 
-  // Last resort
-  const sock = normalizeIp(req.socket?.remoteAddress);
-  if (sock) out.push(sock);
-
-  // de-dup while preserving order
-  const uniq = [];
+  // Normalize + uniq, keep order
   const seen = new Set();
-  for (const ip of out) {
-    if (!ip || seen.has(ip)) continue;
-    seen.add(ip);
-    uniq.push(ip);
-  }
-  return uniq;
+  return out
+    .map(normalizeIp)
+    .filter(Boolean)
+    .filter((ip) => (seen.has(ip) ? false : (seen.add(ip), true)));
 }
 
 /**
  * Return a single best-effort caller IP (string).
- * Uses the first value from getCallerIps().
  */
 function getCallerIp(req) {
-  return (getCallerIps(req)[0] || "");
+  return getCallerIps(req)[0] || "";
 }
-console.log("[RADIUS CHECK]", {
-  receivedSecret: secret,
-  expectedSecret: RADIUS_API_SECRET
-});
-
 
 function isAllowedRadiusCaller(req) {
   const ips = getCallerIps(req);
-  const secret = String(req.get("x-radius-secret") || "").trim();
+  const secret = String(req.headers["x-radius-secret"] || "").trim();
 
   const ipOk = ips.some((ip) => RADIUS_ALLOWED_IPS.includes(ip));
   const secretOk = !!RADIUS_API_SECRET && secret === RADIUS_API_SECRET;
@@ -4104,16 +4090,6 @@ function isAllowedRadiusCaller(req) {
 }
 
 app.post("/api/radius/authorize", async (req, res) => {
-  // --- DEBUG LOGS (Render): trace authorize hits
-  console.log("[radius][authorize] hit", {
-    ip: getCallerIp(req),
-    xff: req.headers["x-forwarded-for"] || "",
-    user: req.body && (req.body["User-Name"] || req.body.username) || "",
-    acct_session_id: req.body && (req.body["Acct-Session-Id"] || req.body.acct_session_id) || "",
-    nas_id: req.body && (req.body["NAS-Identifier"] || req.body.nas_id) || "",
-    nas_ip: req.body && (req.body["NAS-IP-Address"] || req.body.nas_ip_address) || ""
-  });
-
   try {
 
     // IMPORTANT (MikroTik Hotspot CHAP):
@@ -4189,10 +4165,18 @@ app.post("/api/radius/authorize", async (req, res) => {
 
     // Security gate: only accept calls from your FreeRADIUS droplet (+ optional header secret)
     if (!isAllowedRadiusCaller(req)) {
-      console.log("[radius] blocked: caller not allowed", { ip: getCallerIp(req), ips: getCallerIps(req) });
+      const _ips = getCallerIps(req);
+      const _secret = String(req.headers["x-radius-secret"] || "");
+      console.log("[radius][authorize] blocked: caller not allowed", {
+        ips: _ips,
+        ip: _ips[0] || "",
+        xff: req.headers["x-forwarded-for"] || "",
+        secret_len: _secret.length,
+        secret_set: !!RADIUS_API_SECRET
+      });
       return sendReject("RADIUS caller not allowed", {
         actor_id: getCallerIp(req),
-        metadata: { ip: getCallerIp(req) }
+        metadata: { ip: getCallerIp(req), ips: _ips, secret_len: _secret.length, secret_set: !!RADIUS_API_SECRET }
       });
     }
 
@@ -4488,26 +4472,25 @@ function bytesFromOctetsAndGigawords(octets, gigawords) {
 }
 
 app.post("/api/radius/accounting", async (req, res) => {
-  // --- DEBUG LOGS (Render): trace accounting hits (Start/Interim/Stop)
-  console.log("[radius][accounting] hit", {
-    ip: getCallerIp(req),
-    xff: req.headers["x-forwarded-for"] || "",
-    status: req.body && (req.body["Acct-Status-Type"] || req.body.acct_status_type) || "",
-    user: req.body && (req.body["User-Name"] || req.body.username) || "",
-    acct_session_id: req.body && (req.body["Acct-Session-Id"] || req.body.acct_session_id) || "",
-    in: req.body && (req.body["Acct-Input-Octets"] || req.body.acct_input_octets) || "",
-    out: req.body && (req.body["Acct-Output-Octets"] || req.body.acct_output_octets) || "",
-    in_gw: req.body && (req.body["Acct-Input-Gigawords"] || req.body.acct_input_gigawords) || "",
-    out_gw: req.body && (req.body["Acct-Output-Gigawords"] || req.body.acct_output_gigawords) || "",
-    nas_id: req.body && (req.body["NAS-Identifier"] || req.body.nas_id) || ""
-  });
-
   try {
+
+console.log("ACCOUNTING HIT", req.body);
+
+
     if (!supabase) return res.status(500).json({ ok: false, error: "supabase_not_configured" });
 
     // Security gate (same as authorize)
     if (!isAllowedRadiusCaller(req)) {
-      return res.status(200).json({ ok: false, error: "radius_caller_not_allowed" });
+      const _ips = getCallerIps(req);
+      const _secret = String(req.headers["x-radius-secret"] || "");
+      console.log("[radius][accounting] blocked: caller not allowed", {
+        ips: _ips,
+        ip: _ips[0] || "",
+        xff: req.headers["x-forwarded-for"] || "",
+        secret_len: _secret.length,
+        secret_set: !!RADIUS_API_SECRET
+      });
+      return res.status(200).json({});
     }
 
     // rlm_rest sends keys like "User-Name", "Acct-Input-Octets", etc.
@@ -4516,7 +4499,7 @@ app.post("/api/radius/accounting", async (req, res) => {
     const acctSessionId = String(req.body?.["Acct-Session-Id"] || "").trim();
 
     if (!username || !acctSessionId) {
-      return res.status(200).json({ ok: false, error: "missing_required_fields", got: { username: !!username, acct_session_id: !!acctSessionId } });
+      return res.status(200).json({});
     }
 
     // Network identifiers
@@ -4553,11 +4536,11 @@ app.post("/api/radius/accounting", async (req, res) => {
       .maybeSingle();
 
     if (vsErr) {
-      return res.status(200).json({ ok: false, error: "voucher_sessions_lookup_failed", details: vsErr.message || String(vsErr) });
+      return res.status(200).json({});
     }
     if (!vsRow) {
       // Still store accounting row if you want, but voucher isn't in DB => return ok=false to be explicit.
-      return res.status(200).json({ ok: false, error: "voucher_not_found" });
+      return res.status(200).json({});
     }
 
     // Ensure data_total_bytes is set (derive from plan.data_mb if missing and plan has data limit)
@@ -4660,19 +4643,10 @@ app.post("/api/radius/accounting", async (req, res) => {
       remainingBytes = total > usedAfter ? String(total - usedAfter) : "0";
     }
 
-    return res.status(200).json({
-      ok: true,
-      voucher_code: username,
-      acct_session_id: acctSessionId,
-      acct_status_type: acctStatusType,
-      delta_bytes: String(deltaBytes),
-      data_used_bytes: String(usedAfter),
-      data_total_bytes: dataTotalBytes === null || dataTotalBytes === undefined ? null : String(dataTotalBytes),
-      data_remaining_bytes: remainingBytes,
-    });
+    return res.status(200).json({});
   } catch (e) {
     console.error("[radius/accounting] error:", e?.message || e);
-    return res.status(200).json({ ok: false, error: "server_error" });
+    return res.status(200).json({});
   }
 });
 
