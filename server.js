@@ -4276,7 +4276,7 @@ try {
 if (error || !rows || !rows.length) {
   const r2 = await supabase
     .from("voucher_sessions")
-    .select("id,voucher_code,status,client_mac,pool_id,plan_id,expires_at,activated_at,started_at,created_at")
+    .select("id,voucher_code,status,client_mac,pool_id,plan_id,expires_at,activated_at,started_at,created_at,data_total_bytes,data_used_bytes")
     .ilike("voucher_code", username)
     .order("created_at", { ascending: false })
     .limit(1);
@@ -4424,43 +4424,81 @@ const session = rows[0];
     // Remaining seconds => Session-Timeout
     const remainingSeconds = Math.max(1, Math.floor((expiresAt.getTime() - now.getTime()) / 1000));
 
-    // Data quota (Option A): send TOTAL limit once (MikroTik enforces it).
-    // - plans.data_mb NULL => unlimited (no Mikrotik-Total-Limit)
-    // - plans.data_mb number (MB) => bytes = MB * 1024 * 1024
-    if (!planMeta && session.plan_id) {
-      try {
-        const { data: p2 } = await supabase
-          .from("plans")
-          .select("data_mb")
-          .eq("id", session.plan_id)
-          .maybeSingle();
-        planMeta = p2 || null;
-      } catch (_) {
-        // ignore; we'll treat as unlimited if we can't load it
-      }
-    }
+    // Data quota (System 3 – Option B): persistent quota across reconnects.
+// - plans.data_mb NULL/0 => unlimited (no Mikrotik-Total-Limit)
+// - if limited: data_total_bytes is stored once on voucher_sessions
+// - data_used_bytes is accumulated by /api/radius/accounting (delta logic)
+// - on every (re)connect, we send Mikrotik-Total-Limit = remaining_bytes
+if (!planMeta && session.plan_id) {
+  try {
+    const { data: p2 } = await supabase
+      .from("plans")
+      .select("data_mb")
+      .eq("id", session.plan_id)
+      .maybeSingle();
+    planMeta = p2 || null;
+  } catch (_) {
+    // ignore; treat as unlimited if we can't load it
+  }
+}
 
-    const dataMbRaw = planMeta?.data_mb;
-    const dataMb = (dataMbRaw === null || dataMbRaw === undefined) ? null : Number(dataMbRaw);
-    const totalBytes =
-      (dataMb !== null && Number.isFinite(dataMb) && dataMb > 0)
-        ? Math.floor(dataMb * 1024 * 1024)
-        : null;
+const dataMbRaw = planMeta?.data_mb;
+const dataMb = (dataMbRaw === null || dataMbRaw === undefined) ? null : Number(dataMbRaw);
+const planTotalBytes =
+  (dataMb !== null && Number.isFinite(dataMb) && dataMb > 0)
+    ? Math.floor(dataMb * 1024 * 1024)
+    : null;
 
-    const replyExtra = {};
-    if (totalBytes !== null) {
-      replyExtra["reply:Mikrotik-Total-Limit"] = totalBytes;
-    }
+// Ensure session.data_total_bytes is set once (best-effort, race-safe enough).
+let dataTotalBytes = (session.data_total_bytes === null || session.data_total_bytes === undefined)
+  ? null
+  : Number(session.data_total_bytes);
+if (planTotalBytes !== null && (!Number.isFinite(dataTotalBytes) || dataTotalBytes <= 0)) {
+  dataTotalBytes = planTotalBytes;
+  try {
+    const { error: dtErr } = await supabase
+      .from("voucher_sessions")
+      .update({ data_total_bytes: dataTotalBytes, updated_at: new Date().toISOString() })
+      .eq("id", session.id)
+      .or("data_total_bytes.is.null,data_total_bytes.lte.0");
+    if (!dtErr) session.data_total_bytes = dataTotalBytes;
+  } catch (_) {}
+}
 
-    return sendAccept(username, remainingSeconds, {
+const usedBytes = Number(session.data_used_bytes || 0) || 0;
+
+const replyExtra = {};
+if (dataTotalBytes !== null && Number.isFinite(dataTotalBytes) && dataTotalBytes > 0) {
+  const remainingBytes = Math.max(0, Math.floor(dataTotalBytes - usedBytes));
+  if (remainingBytes <= 0) {
+    return sendReject("quota_reached", {
       entity_type: "voucher_session",
       entity_id: session.id,
       nas_id,
       client_mac,
       pool_id: session.pool_id || null,
       plan_id: session.plan_id || null,
-      metadata: { remaining_seconds: remainingSeconds, expires_at: session.expires_at, total_bytes: totalBytes }
-    }, replyExtra);
+      metadata: { data_total_bytes: dataTotalBytes, data_used_bytes: usedBytes }
+    });
+  }
+  replyExtra["reply:Mikrotik-Total-Limit"] = remainingBytes;
+}
+
+return sendAccept(username, remainingSeconds, {
+  entity_type: "voucher_session",
+  entity_id: session.id,
+  nas_id,
+  client_mac,
+  pool_id: session.pool_id || null,
+  plan_id: session.plan_id || null,
+  metadata: {
+    remaining_seconds: remainingSeconds,
+    expires_at: session.expires_at,
+    data_total_bytes: dataTotalBytes,
+    data_used_bytes: usedBytes,
+    mikrotik_total_limit: replyExtra["reply:Mikrotik-Total-Limit"] || null
+  }
+}, replyExtra);
 
   } catch (e) {
     console.error(" error:", e?.message || e);
@@ -4538,6 +4576,29 @@ app.post("/api/radius/accounting", async (req, res) => {
     const totalBytes = inputBytes + outputBytes;
 
     if (supabase && acctSessionId) {
+      // Load previous last_total_bytes for this (voucher_code, acct_session_id) to compute DELTA safely.
+      let prevLastTotal = 0;
+      try {
+        if (username) {
+          const { data: prevRow, error: prevErr } = await supabase
+            .from("radius_acct_sessions")
+            .select("last_total_bytes")
+            .eq("voucher_code", String(username))
+            .eq("acct_session_id", String(acctSessionId))
+            .maybeSingle();
+          if (!prevErr && prevRow && prevRow.last_total_bytes !== null && prevRow.last_total_bytes !== undefined) {
+            const n = Number(prevRow.last_total_bytes);
+            if (Number.isFinite(n) && n > 0) prevLastTotal = n;
+          }
+        }
+      } catch (_) {}
+
+      const currentTotal = Number.isFinite(totalBytes) && totalBytes > 0 ? Math.floor(totalBytes) : 0;
+      const safeLastTotal = Math.max(prevLastTotal, currentTotal);
+
+      // DELTA: only count forward progress (avoid double-count + avoid counter reset creating negative deltas)
+      const deltaBytes = (currentTotal >= prevLastTotal) ? (currentTotal - prevLastTotal) : 0;
+
       const upsertRow = {
         acct_session_id: String(acctSessionId),
         voucher_code: String(username || ""),
@@ -4550,16 +4611,19 @@ app.post("/api/radius/accounting", async (req, res) => {
         mikrotik_host_ip: String(mikrotikHostIp || ""),
         acct_status_type: String(statusType || ""),
         acct_session_time: sessionTime,
-        acct_input_bytes: inputBytes,
-        acct_output_bytes: outputBytes,
-        acct_total_bytes: totalBytes,
+        acct_input_octets: inOct,
+        acct_input_gigawords: inGw,
+        acct_output_octets: outOct,
+        acct_output_gigawords: outGw,
+        total_bytes: currentTotal,
+        last_total_bytes: safeLastTotal,
         acct_terminate_cause: String(terminateCause || ""),
         updated_at: new Date().toISOString(),
       };
 
       const { error: upsertErr } = await supabase
         .from("radius_acct_sessions")
-        .upsert(upsertRow, { onConflict: "acct_session_id" });
+        .upsert(upsertRow, { onConflict: "voucher_code,acct_session_id" });
 
       if (upsertErr) {
         console.log("[radius][accounting] radius_acct_sessions upsert error", upsertErr);
@@ -4568,7 +4632,7 @@ app.post("/api/radius/accounting", async (req, res) => {
       if (username) {
         const { data: vsRows, error: vsErr } = await supabase
           .from("voucher_sessions")
-          .select("id,data_used_bytes")
+          .select("id,data_used_bytes,data_total_bytes")
           .eq("voucher_code", String(username))
           .order("created_at", { ascending: false })
           .limit(1);
@@ -4578,7 +4642,7 @@ app.post("/api/radius/accounting", async (req, res) => {
         } else if (vsRows && vsRows.length) {
           const vs = vsRows[0];
           const prevUsed = Number(vs.data_used_bytes || 0) || 0;
-          const newUsed = Math.max(prevUsed, totalBytes);
+          const newUsed = prevUsed + (deltaBytes > 0 ? deltaBytes : 0);
 
           const { error: vsUpErr } = await supabase
             .from("voucher_sessions")
