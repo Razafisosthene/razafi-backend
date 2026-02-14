@@ -4262,7 +4262,7 @@ let error = null;
 try {
   const r1 = await supabase
     .from("vw_voucher_sessions_truth")
-    .select("id,voucher_code,status,truth_status,client_mac,pool_id,plan_id,expires_at,activated_at,started_at,created_at")
+    .select("id,voucher_code,status,truth_status,client_mac,pool_id,plan_id,data_used_bytes,expires_at,activated_at,started_at,created_at")
     .ilike("voucher_code", username)
     .order("created_at", { ascending: false })
     .limit(1);
@@ -4276,7 +4276,7 @@ try {
 if (error || !rows || !rows.length) {
   const r2 = await supabase
     .from("voucher_sessions")
-    .select("id,voucher_code,status,client_mac,pool_id,plan_id,expires_at,activated_at,started_at,created_at")
+    .select("id,voucher_code,status,client_mac,pool_id,plan_id,data_used_bytes,expires_at,activated_at,started_at,created_at")
     .ilike("voucher_code", username)
     .order("created_at", { ascending: false })
     .limit(1);
@@ -4446,6 +4446,35 @@ const session = rows[0];
       (dataMb !== null && Number.isFinite(dataMb) && dataMb > 0)
         ? Math.floor(dataMb * 1024 * 1024)
         : null;
+
+
+    // If data quota already exhausted (backend truth), reject.
+    // This protects you even if MikroTik didn't enforce the total limit for some reason.
+    let usedBytes = 0n;
+    try {
+      usedBytes = BigInt(Number(session?.data_used_bytes ?? 0) || 0);
+    } catch (_) {
+      usedBytes = 0n;
+    }
+
+    if (totalBytes !== null && usedBytes >= BigInt(totalBytes)) {
+      // Best-effort mark session as used (do not fail auth on DB write errors).
+      try {
+        await supabase
+          .from("voucher_sessions")
+          .update({ status: "used", updated_at: now.toISOString() })
+          .eq("id", session.id);
+      } catch (_) {}
+      return sendReject("quota_data_exhausted", {
+        entity_type: "voucher_session",
+        entity_id: session.id,
+        nas_id,
+        client_mac,
+        pool_id: session.pool_id || null,
+        plan_id: session.plan_id || null,
+        metadata: { used_bytes: usedBytes.toString(), total_bytes: totalBytes }
+      });
+    }
 
     const replyExtra = {};
     if (totalBytes !== null) {
@@ -4653,7 +4682,7 @@ app.post("/api/radius/accounting", async (req, res) => {
     // Update the latest voucher_session row for this voucher
     const { data: vsRows, error: vsErr } = await supabase
       .from("voucher_sessions")
-      .select("id")
+      .select("id,plan_id,status")
       .eq("voucher_code", voucherCode)
       .order("created_at", { ascending: false })
       .limit(1);
@@ -4670,19 +4699,76 @@ app.post("/api/radius/accounting", async (req, res) => {
 
     const vsId = vsRows[0].id;
 
-    const { error: vsUpErr } = await supabase
-      .from("voucher_sessions")
-      .update({
-        data_used_bytes: aggregatedUsed.toString(),
-        last_acct_session_id: acctSessionId,
-        last_seen_at: new Date().toISOString(),
-        calling_station_id: callingStationId || null,
-        framed_ip: framedIp || null,
-        nas_id: nasId || null,
-        nas_ip: nasIp || null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", vsId);
+    // Determine whether data quota is exhausted (if plan has data_mb)
+    let quotaReached = false;
+    let totalLimitBytes = null;
+    try {
+      const planId = vsRows[0].plan_id || null;
+      if (planId) {
+        const { data: planRow } = await supabase
+          .from("plans")
+          .select("data_mb")
+          .eq("id", planId)
+          .maybeSingle();
+
+        const dataMbRaw = planRow?.data_mb;
+        const dataMb = (dataMbRaw === null || dataMbRaw === undefined) ? null : Number(dataMbRaw);
+        totalLimitBytes =
+          (dataMb !== null && Number.isFinite(dataMb) && dataMb > 0)
+            ? Math.floor(dataMb * 1024 * 1024)
+            : null;
+
+        if (totalLimitBytes !== null) {
+          quotaReached = aggregatedUsed >= BigInt(totalLimitBytes);
+        }
+      }
+    } catch (_) {
+      // ignore
+    }
+
+    // Build patch (only columns that really exist will be kept by the safe-updater below)
+    const vsPatchBase = {
+      data_used_bytes: aggregatedUsed.toString(),
+      last_acct_session_id: acctSessionId,
+      last_seen_at: new Date().toISOString(),
+      // status is updated when quota is reached so admin panel reflects reality
+      ...(quotaReached ? { status: "used" } : {}),
+      updated_at: new Date().toISOString(),
+    };
+
+    // Try updating voucher_sessions, but auto-strip unknown columns (Supabase schema cache mismatch)
+    async function updateVoucherSessionSafe(vsId, patch) {
+      let current = { ...patch };
+      for (let i = 0; i < 8; i++) {
+        const { error } = await supabase
+          .from("voucher_sessions")
+          .update(current)
+          .eq("id", vsId);
+
+        if (!error) return null;
+
+        if (String(error.code || "") !== "PGRST204") {
+          return error;
+        }
+
+        const msg = String(error.message || "");
+        const m = msg.match(/Could not find the '([^']+)' column/);
+        if (!m) return error;
+
+        const col = m[1];
+        if (col && Object.prototype.hasOwnProperty.call(current, col)) {
+          delete current[col];
+          if (!Object.keys(current).length) return error;
+          continue;
+        }
+
+        // Column not in our patch => nothing more we can do
+        return error;
+      }
+      return { message: "voucher_sessions update failed after retries", code: "PGRST204" };
+    }
+
+    const vsUpErr = await updateVoucherSessionSafe(vsId, vsPatchBase);
 
     if (vsUpErr) {
       console.log("[radius][accounting] voucher_sessions update error", vsUpErr);
