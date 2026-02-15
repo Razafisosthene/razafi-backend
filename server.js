@@ -1,4 +1,4 @@
-// RAZAFI MVola Backend (User-side only) — Hardened Security Edition
+// RAZAFI Backend - OFFICIAL VERSION DU 15 FEVRIER 2026
 // ---------------------------------------------------------------------------
 
 import express from "express";
@@ -910,6 +910,15 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         expires_at,
         mvola_phone,
         created_at,
+        
+        -- ✅ NEW (System 3 data fields from truth view)
+        data_total_bytes,
+        data_used_bytes,
+        data_remaining_bytes,
+        data_total_human,
+        data_used_human,
+        data_remaining_human,
+
         plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
         pool:internet_pools ( id, name )
       `, { count: "exact" })
@@ -1022,6 +1031,15 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
         expires_at,
         mvola_phone,
         created_at,
+        
+        -- ✅ NEW (System 3 data fields from truth view)
+        data_total_bytes,
+        data_used_bytes,
+        data_remaining_bytes,
+        data_total_human,
+        data_used_human,
+        data_remaining_human,
+
         plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
         pool:internet_pools ( id, name )
       `)
