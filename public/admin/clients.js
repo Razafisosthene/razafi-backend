@@ -126,6 +126,7 @@ function renderSummary(summary) {
   const cards = [
     { label: "Active", value: summary.active ?? 0 },
     { label: "Pending", value: summary.pending ?? 0 },
+    { label: "Used", value: summary.used ?? 0 },
     { label: "Expired", value: summary.expired ?? 0 },
     { label: "Total", value: summary.total ?? 0 },
   ];
@@ -141,28 +142,23 @@ function renderSummary(summary) {
 
 // -------------------------
 // UI: Counters + status grouping (UI only)
-// Rule: treat "used" as "expired" in counters and in the Expired filter/tab.
-// Backend remains intact.
+// Goal: show "used" as its own tab/counter, separate from "expired".
+// Backend stays intact (status comes from DB truth view).
 // -------------------------
 function normStatus(statusRaw) {
   return String(statusRaw || "").toLowerCase().trim();
 }
 
-function groupedStatus(statusRaw) {
-  const s = normStatus(statusRaw);
-  if (s === "used") return "expired";
-  return s;
-}
-
 function computeSummaryFromItems(items) {
-  const summary = { total: 0, active: 0, pending: 0, expired: 0 };
+  const summary = { total: 0, active: 0, pending: 0, used: 0, expired: 0 };
   if (!Array.isArray(items)) return summary;
   summary.total = items.length;
 
   for (const it of items) {
-    const s = groupedStatus(it?.status);
+    const s = normStatus(it?.status);
     if (s === "active") summary.active++;
     else if (s === "pending") summary.pending++;
+    else if (s === "used") summary.used++;
     else if (s === "expired") summary.expired++;
   }
   return summary;
@@ -171,16 +167,7 @@ function computeSummaryFromItems(items) {
 function filterItemsByStatus(items, uiStatusFilter) {
   const f = normStatus(uiStatusFilter);
   if (!Array.isArray(items) || f === "all" || !f) return items || [];
-
-  if (f === "expired") {
-    return (items || []).filter(it => {
-      const s = normStatus(it?.status);
-      return s === "expired" || s === "used";
-    });
-  }
-
-  // active / pending (exact match)
-  return (items || []).filter(it => groupedStatus(it?.status) === f);
+  return (items || []).filter(it => normStatus(it?.status) === f);
 }
 
 // -------------------------
@@ -213,7 +200,7 @@ function renderTable(items) {
       return "row-status-pending";
     }
     // finished
-    if (s.includes("expired")) {
+    if (s.includes("expired") || s.includes("used")) {
       return "row-status-expired";
     }
     // problem
