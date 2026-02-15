@@ -999,13 +999,14 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     // ✅ Summary based on DB truth_status
     const total = count || 0;
     const active = items.filter(i => i.truth_status === "active").length;
-    const expired = items.filter(i => i.truth_status === "expired").length;
     const pending = items.filter(i => i.truth_status === "pending").length;
+    const used = items.filter(i => i.truth_status === "used").length;
+    const expired = items.filter(i => i.truth_status === "expired").length;
 
     res.json({
       items,
       total,
-      summary: { total, active, pending, expired }
+      summary: { total, active, pending, used, expired }
     });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
