@@ -138,6 +138,51 @@ function renderSummary(summary) {
   `).join("");
 }
 
+
+// -------------------------
+// UI: Counters + status grouping (UI only)
+// Rule: treat "used" as "expired" in counters and in the Expired filter/tab.
+// Backend remains intact.
+// -------------------------
+function normStatus(statusRaw) {
+  return String(statusRaw || "").toLowerCase().trim();
+}
+
+function groupedStatus(statusRaw) {
+  const s = normStatus(statusRaw);
+  if (s === "used") return "expired";
+  return s;
+}
+
+function computeSummaryFromItems(items) {
+  const summary = { total: 0, active: 0, pending: 0, expired: 0 };
+  if (!Array.isArray(items)) return summary;
+  summary.total = items.length;
+
+  for (const it of items) {
+    const s = groupedStatus(it?.status);
+    if (s === "active") summary.active++;
+    else if (s === "pending") summary.pending++;
+    else if (s === "expired") summary.expired++;
+  }
+  return summary;
+}
+
+function filterItemsByStatus(items, uiStatusFilter) {
+  const f = normStatus(uiStatusFilter);
+  if (!Array.isArray(items) || f === "all" || !f) return items || [];
+
+  if (f === "expired") {
+    return (items || []).filter(it => {
+      const s = normStatus(it?.status);
+      return s === "expired" || s === "used";
+    });
+  }
+
+  // active / pending (exact match)
+  return (items || []).filter(it => groupedStatus(it?.status) === f);
+}
+
 // -------------------------
 // UI: Table
 // -------------------------
@@ -202,10 +247,11 @@ function renderTable(items) {
       <!-- ✅ status now is DB truth (view); just display it -->
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}</td>
 
-      <!-- ✅ remaining_seconds now is DB truth (view); display time + (optional) remaining data -->
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(
-        fmtRemaining(it.remaining_seconds) + (computeQuota(it).remainingHuman !== '—' ? (' · ' + computeQuota(it).remainingHuman) : '')
-      )}</td>
+      <!-- ✅ remaining_seconds now is DB truth (view); display time remaining -->
+<td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
+
+<!-- ✅ data remaining (human) -->
+<td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(computeQuota(it).remainingHuman || "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
     `;
 
@@ -222,21 +268,27 @@ async function loadClients() {
   err.style.display = "none";
   err.textContent = "";
 
-  const status = document.getElementById("status").value;
+  const uiStatus = document.getElementById("status").value;
   const search = document.getElementById("search").value.trim();
 
+  // Always fetch "all" so counters stay correct and "used" can be grouped under Expired.
   const qs = new URLSearchParams();
-  qs.set("status", status);
+  qs.set("status", "all");
   if (search) qs.set("search", search);
   qs.set("limit", "200");
   qs.set("offset", "0");
 
   const data = await fetchJSON("/api/admin/clients?" + qs.toString());
-  renderSummary(data.summary || { total: data.total, active: 0, pending: 0, expired: 0 });
-  renderTable(data.items || []);
+
+  const allItems = data.items || [];
+  const summary = computeSummaryFromItems(allItems);
+  renderSummary(summary);
+
+  const filtered = filterItemsByStatus(allItems, uiStatus);
+  renderTable(filtered);
 }
 
-// ✅ small helper: flash a row green + show Updated ✅ effect
+// ✅ small helper: flash a row green + show Updated ✅ effect + show Updated ✅ effect
 function flashUpdatedRowAndBlock({ sessionId, blockEl }){
   // Table row flash
   const tr = document.querySelector(`tr[data-id="${CSS.escape(String(sessionId))}"]`);
@@ -267,13 +319,9 @@ function updateRowRemaining(sessionId, remainingSeconds) {
   const tr = document.querySelector(`tr[data-id="${CSS.escape(String(sessionId))}"]`);
   if (!tr) return;
   const tds = tr.querySelectorAll("td");
-  // Remaining column is the 9th (0-based index 8) in your table
-  if (tds && tds.length >= 10) {
-    // Preserve data suffix if present (e.g. "12min 3s · 512 MB")
-    const cur = String(tds[8].textContent || "");
-    const parts = cur.split("·").map(s => s.trim()).filter(Boolean);
-    const suffix = (parts.length > 1) ? parts.slice(1).join(" · ") : "";
-    tds[8].textContent = fmtRemaining(remainingSeconds) + (suffix ? (" · " + suffix) : "");
+  // Time Remaining column is now the 9th column (0-based index 8)
+  if (tds && tds.length >= 11) {
+    tds[8].textContent = fmtRemaining(remainingSeconds);
   }
 }
 
