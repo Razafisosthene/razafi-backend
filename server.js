@@ -888,6 +888,8 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
 
     const status = String(req.query.status || "all").toLowerCase();
     const search = String(req.query.search || "").trim();
+    const plan_id = String(req.query.plan_id || "all").trim();
+    const pool_id = String(req.query.pool_id || "all").trim();
     const limit = Math.min(500, Math.max(1, safeNumber(req.query.limit, 200)));
     const offset = Math.max(0, safeNumber(req.query.offset, 0));
 
@@ -933,6 +935,14 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     // ✅ Filter by DB truth
     if (status !== "all") {
       q = q.eq("truth_status", status);
+    }
+
+    // ✅ Optional filters (UI dropdowns)
+    if (plan_id && plan_id !== "all") {
+      q = q.eq("plan_id", plan_id);
+    }
+    if (pool_id && pool_id !== "all") {
+      q = q.eq("pool_id", pool_id);
     }
 
     const { data, error, count } = await q;

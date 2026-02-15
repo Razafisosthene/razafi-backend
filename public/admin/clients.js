@@ -164,6 +164,45 @@ function computeSummaryFromItems(items) {
   return summary;
 }
 
+let __planPoolOptionsLoaded = false;
+function initPlanAndPoolFiltersFromItems(items) {
+  if (__planPoolOptionsLoaded) return;
+  const planSel = document.getElementById("planFilter");
+  const poolSel = document.getElementById("poolFilter");
+  if (!planSel || !poolSel) return;
+
+  const plans = new Map(); // id -> name
+  const pools = new Map(); // id -> name
+
+  for (const it of (items || [])) {
+    if (it?.plan_id && it?.plan_name) plans.set(String(it.plan_id), String(it.plan_name));
+    if (it?.pool_id && it?.pool_name) pools.set(String(it.pool_id), String(it.pool_name));
+  }
+
+  // Only populate if we actually have data (prevents empty dropdowns)
+  if (!plans.size && !pools.size) return;
+
+  // Plans
+  const planEntries = Array.from(plans.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  for (const [id, name] of planEntries) {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = name;
+    planSel.appendChild(opt);
+  }
+
+  // Pools
+  const poolEntries = Array.from(pools.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  for (const [id, name] of poolEntries) {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = name;
+    poolSel.appendChild(opt);
+  }
+
+  __planPoolOptionsLoaded = true;
+}
+
 function filterItemsByStatus(items, uiStatusFilter) {
   const f = normStatus(uiStatusFilter);
   if (!Array.isArray(items) || f === "all" || !f) return items || [];
@@ -257,17 +296,22 @@ async function loadClients() {
 
   const uiStatus = document.getElementById("status").value;
   const search = document.getElementById("search").value.trim();
+  const planId = document.getElementById("planFilter")?.value || "all";
+  const poolId = document.getElementById("poolFilter")?.value || "all";
 
   // Always fetch "all" so counters stay correct and "used" can be grouped under Expired.
   const qs = new URLSearchParams();
   qs.set("status", "all");
   if (search) qs.set("search", search);
+  if (planId && planId !== "all") qs.set("plan_id", planId);
+  if (poolId && poolId !== "all") qs.set("pool_id", poolId);
   qs.set("limit", "200");
   qs.set("offset", "0");
 
   const data = await fetchJSON("/api/admin/clients?" + qs.toString());
 
   const allItems = data.items || [];
+  initPlanAndPoolFiltersFromItems(allItems);
   const summary = computeSummaryFromItems(allItems);
   renderSummary(summary);
 
@@ -553,12 +597,30 @@ function wireUI() {
   document.getElementById("clearBtn").onclick = () => {
     document.getElementById("search").value = "";
     document.getElementById("status").value = "all";
+    const pf = document.getElementById("planFilter");
+    const pof = document.getElementById("poolFilter");
+    if (pf) pf.value = "all";
+    if (pof) pof.value = "all";
     loadClients().catch(showTopError);
   };
 
   document.getElementById("status").addEventListener("change", () => {
     loadClients().catch(showTopError);
   });
+
+  const planFilterEl = document.getElementById("planFilter");
+  if (planFilterEl) {
+    planFilterEl.addEventListener("change", () => {
+      loadClients().catch(showTopError);
+    });
+  }
+
+  const poolFilterEl = document.getElementById("poolFilter");
+  if (poolFilterEl) {
+    poolFilterEl.addEventListener("change", () => {
+      loadClients().catch(showTopError);
+    });
+  }
 
   document.getElementById("search").addEventListener("input", () => {
     clearTimeout(debounceTimer);
