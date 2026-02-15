@@ -1,4 +1,4 @@
-// RAZAFI Backend - OFFICIAL VERSION DU 15 FEVRIER 2026
+// RAZAFI MVola Backend (User-side only) — Hardened Security Edition
 // ---------------------------------------------------------------------------
 
 import express from "express";
@@ -910,8 +910,6 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         expires_at,
         mvola_phone,
         created_at,
-        
-        -- ✅ NEW (System 3 data fields from truth view)
         data_total_bytes,
         data_used_bytes,
         data_remaining_bytes,
@@ -1031,8 +1029,6 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
         expires_at,
         mvola_phone,
         created_at,
-        
-        -- ✅ NEW (System 3 data fields from truth view)
         data_total_bytes,
         data_used_bytes,
         data_remaining_bytes,
@@ -5694,18 +5690,16 @@ setInterval(async () => {
     const now = new Date();
     const cutoff = new Date(now.getTime() - DEVICE_TIMEOUT_MS).toISOString();
 
-    /* --------------------------------------------------
-       1) Mark inactive device sessions
-    -------------------------------------------------- */
+    // --------------------------------------------------
+    // 1) Mark inactive device sessions
     await supabase
       .from("active_device_sessions")
       .update({ is_active: false })
       .lt("last_seen_at", cutoff)
       .eq("is_active", true);
 
-/* --------------------------------------------------
-   2) AP live stats (FIXED – no group())
--------------------------------------------------- */
+    // --------------------------------------------------
+    // 2) AP live stats (FIXED – no group())
 const { data: activeSessions, error: apErr } = await supabase
   .from("active_device_sessions")
   .select("ap_mac")
@@ -5739,9 +5733,8 @@ if (apErr) {
 }
 
 
-    /* --------------------------------------------------
-       3) Pool live stats
-    -------------------------------------------------- */
+    // --------------------------------------------------
+    // 3) Pool live stats
     const { data: pools } = await supabase
       .from("internet_pools")
       .select("id, capacity_max");
