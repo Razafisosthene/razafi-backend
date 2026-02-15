@@ -202,10 +202,13 @@ function renderTable(items) {
       <!-- ✅ status now is DB truth (view); just display it -->
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}</td>
 
-      <!-- ✅ remaining_seconds now is DB truth (view); display time + (optional) remaining data -->
+      <!-- ✅ remaining_seconds now is DB truth (view); display time -->
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(
-        fmtRemaining(it.remaining_seconds) + (computeQuota(it).remainingHuman !== '—' ? (' · ' + computeQuota(it).remainingHuman) : '')
+        fmtRemaining(it.remaining_seconds)
       )}</td>
+
+      <!-- ✅ Data remaining (System 3) -->
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(computeQuota(it).remainingHuman)}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
     `;
 
@@ -268,12 +271,9 @@ function updateRowRemaining(sessionId, remainingSeconds) {
   if (!tr) return;
   const tds = tr.querySelectorAll("td");
   // Remaining column is the 9th (0-based index 8) in your table
-  if (tds && tds.length >= 10) {
-    // Preserve data suffix if present (e.g. "12min 3s · 512 MB")
-    const cur = String(tds[8].textContent || "");
-    const parts = cur.split("·").map(s => s.trim()).filter(Boolean);
-    const suffix = (parts.length > 1) ? parts.slice(1).join(" · ") : "";
-    tds[8].textContent = fmtRemaining(remainingSeconds) + (suffix ? (" · " + suffix) : "");
+  if (tds && tds.length >= 11) {
+    // Only update time; data remaining is shown in its own column.
+    tds[8].textContent = fmtRemaining(remainingSeconds);
   }
 }
 
