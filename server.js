@@ -910,13 +910,13 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         expires_at,
         mvola_phone,
         created_at,
-
         data_total_bytes,
         data_used_bytes,
         data_remaining_bytes,
         data_total_human,
         data_used_human,
         data_remaining_human,
+
         plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
         pool:internet_pools ( id, name )
       `, { count: "exact" })
@@ -967,14 +967,6 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         (r.remaining_seconds === 0 || r.remaining_seconds)
           ? Number(r.remaining_seconds)
           : null,
-
-      // ✅ Data quota fields (System 3)
-      data_total_bytes: r.data_total_bytes ?? null,
-      data_used_bytes: r.data_used_bytes ?? null,
-      data_remaining_bytes: r.data_remaining_bytes ?? null,
-      data_total_human: r.data_total_human ?? null,
-      data_used_human: r.data_used_human ?? null,
-      data_remaining_human: r.data_remaining_human ?? null,
     }));
 
     // ✅ Add AP Name from Tanaza (best-effort, does not block response if Tanaza fails)
@@ -1037,6 +1029,13 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
         expires_at,
         mvola_phone,
         created_at,
+        data_total_bytes,
+        data_used_bytes,
+        data_remaining_bytes,
+        data_total_human,
+        data_used_human,
+        data_remaining_human,
+
         plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
         pool:internet_pools ( id, name )
       `)
@@ -5691,18 +5690,16 @@ setInterval(async () => {
     const now = new Date();
     const cutoff = new Date(now.getTime() - DEVICE_TIMEOUT_MS).toISOString();
 
-    /* --------------------------------------------------
-       1) Mark inactive device sessions
-    -------------------------------------------------- */
+    // --------------------------------------------------
+    // 1) Mark inactive device sessions
     await supabase
       .from("active_device_sessions")
       .update({ is_active: false })
       .lt("last_seen_at", cutoff)
       .eq("is_active", true);
 
-/* --------------------------------------------------
-   2) AP live stats (FIXED – no group())
--------------------------------------------------- */
+    // --------------------------------------------------
+    // 2) AP live stats (FIXED – no group())
 const { data: activeSessions, error: apErr } = await supabase
   .from("active_device_sessions")
   .select("ap_mac")
@@ -5736,9 +5733,8 @@ if (apErr) {
 }
 
 
-    /* --------------------------------------------------
-       3) Pool live stats
-    -------------------------------------------------- */
+    // --------------------------------------------------
+    // 3) Pool live stats
     const { data: pools } = await supabase
       .from("internet_pools")
       .select("id, capacity_max");
