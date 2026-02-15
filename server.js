@@ -967,6 +967,14 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         (r.remaining_seconds === 0 || r.remaining_seconds)
           ? Number(r.remaining_seconds)
           : null,
+        // ✅ ADD THIS BLOCK RIGHT HERE
+  data_total_bytes: r.data_total_bytes ?? null,
+  data_used_bytes: r.data_used_bytes ?? null,
+  data_remaining_bytes: r.data_remaining_bytes ?? null,
+  data_total_human: r.data_total_human ?? null,
+  data_used_human: r.data_used_human ?? null,
+  data_remaining_human: r.data_remaining_human ?? null,
+
     }));
 
     // ✅ Add AP Name from Tanaza (best-effort, does not block response if Tanaza fails)
