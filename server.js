@@ -4864,6 +4864,10 @@ app.post("/api/radius/accounting", async (req, res) => {
       data_used_bytes: aggregatedUsed.toString(),
       last_acct_session_id: acctSessionId,
       last_seen_at: new Date().toISOString(),
+
+      // ✅ STORE ACTIVE CLIENT IP (from Framed-IP-Address)
+  ...(framedIp ? { client_ip: framedIp } : {}),
+
       // status is updated when quota is reached so admin panel reflects reality
       ...(quotaReached ? { status: "used" } : (timeExpired ? { status: "expired" } : {})),
       updated_at: new Date().toISOString(),
