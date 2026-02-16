@@ -4664,12 +4664,17 @@ app.post("/api/radius/accounting", async (req, res) => {
       return res.status(200).json({});
     }
 
+    // Response payload for FreeRADIUS (keep minimal)
+    // We normally return {} to avoid rlm_rest warnings. If a CoA disconnect is needed,
+    // we set Tmp-* control attributes (known to FreeRADIUS) so unlang can act on it.
+    let responseJson = {};
+
     // --------------------------
     // 1) Load existing session row (for delta)
     // --------------------------
     const { data: existingRows, error: existingErr } = await supabase
       .from("radius_acct_sessions")
-      .select("id,last_total_bytes,total_bytes")
+      .select("id,last_total_bytes,total_bytes,coa_sent_at,coa_attempts")
       .eq("nas_id", nasId)
       .eq("acct_session_id", acctSessionId)
       .limit(1);
@@ -4757,7 +4762,7 @@ app.post("/api/radius/accounting", async (req, res) => {
     // Update the latest voucher_session row for this voucher
     const { data: vsRows, error: vsErr } = await supabase
       .from("voucher_sessions")
-      .select("id,plan_id,status")
+      .select("id,plan_id,status,expires_at")
       .eq("voucher_code", voucherCode)
       .order("created_at", { ascending: false })
       .limit(1);
@@ -4801,13 +4806,66 @@ app.post("/api/radius/accounting", async (req, res) => {
       // ignore
     }
 
+
+    // Determine whether time quota is expired (voucher_sessions.expires_at)
+    const now = new Date();
+    const expiresAtIso = vsRows[0].expires_at || null;
+    const timeExpired = !!(
+      expiresAtIso &&
+      !Number.isNaN(Date.parse(expiresAtIso)) &&
+      now >= new Date(expiresAtIso)
+    );
+
+    // Decide whether we should request a CoA Disconnect-Request (premium UX):
+    // - ONLY on Interim-Update (not Start/Stop)
+    // - ONLY once per (nas_id, acct_session_id) using radius_acct_sessions.coa_sent_at as an idempotency latch
+    const coaAlreadySent = !!(existing && existing.coa_sent_at);
+
+    let coaReason = null;
+    if (quotaReached) coaReason = "used";
+    else if (timeExpired) coaReason = "expired";
+
+    const shouldRequestCoa =
+      String(statusType || "").toLowerCase() === "interim-update" &&
+      !!coaReason &&
+      !coaAlreadySent &&
+      !!nasId &&
+      !!acctSessionId;
+
+    if (shouldRequestCoa) {
+      const nowIso = now.toISOString();
+      const prevAttempts = Number(existing?.coa_attempts || 0) || 0;
+
+      const { error: coaUpErr } = await supabase
+        .from("radius_acct_sessions")
+        .update({
+          coa_sent_at: nowIso,
+          coa_reason: coaReason,
+          coa_attempts: prevAttempts + 1,
+          updated_at: nowIso,
+        })
+        .eq("nas_id", nasId)
+        .eq("acct_session_id", acctSessionId);
+
+      if (coaUpErr) {
+        console.log("[radius][accounting] coa latch update error", coaUpErr);
+      } else {
+        // Tell FreeRADIUS: send a Disconnect-Request (CoA).
+        // We use Tmp-* attributes to avoid "unknown attribute" warnings.
+        responseJson = {
+          "control:Tmp-Integer-0": 1,
+          "control:Tmp-String-0": coaReason,
+        };
+      }
+    }
+
     // Build patch (only columns that really exist will be kept by the safe-updater below)
     const vsPatchBase = {
       data_used_bytes: aggregatedUsed.toString(),
       last_acct_session_id: acctSessionId,
       last_seen_at: new Date().toISOString(),
       // status is updated when quota is reached so admin panel reflects reality
-      ...(quotaReached ? { status: "used" } : {}),
+      ...(quotaReached ? { status: "used" } : (timeExpired ? { status: "expired" } : {})),
       updated_at: new Date().toISOString(),
     };
 
@@ -4849,7 +4907,7 @@ app.post("/api/radius/accounting", async (req, res) => {
       console.log("[radius][accounting] voucher_sessions update error", vsUpErr);
     }
 
-    return res.status(200).json({});
+    return res.status(200).json(responseJson);
   } catch (e) {
     console.log("[radius][accounting] fatal error", e);
     return res.status(200).json({});
