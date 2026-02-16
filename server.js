@@ -1,4 +1,4 @@
-// RAZAFI Bakend fevrier 2026 edition
+// RAZAFI Backend - February 2026 Edition
 // ---------------------------------------------------------------------------
 
 import express from "express";
@@ -3750,11 +3750,12 @@ const expiresAt = new Date(startedAt.getTime() + minutes * 60 * 1000);
         actor_type: "client",
         actor_id: device_mac || null,
         request_ref: null,
-        mvola_phone: session.mvola_phone || null,
+      mvola_phone: session.mvola_phone || null,
         client_mac: session.client_mac || null,
         ap_mac: ap_mac || null,
         pool_id: apRow.pool_id || null,
         plan_id: session.plan_id || null,
+      mvola_phone: session.mvola_phone || null,
         message: "Voucher activated and started",
         metadata: { started_at: startedAt.toISOString(), expires_at: expiresAt.toISOString(), device_mac },
       });
@@ -4330,7 +4331,7 @@ let error = null;
 try {
   const r1 = await supabase
     .from("vw_voucher_sessions_truth")
-    .select("id,voucher_code,status,truth_status,client_mac,pool_id,plan_id,data_used_bytes,expires_at,activated_at,started_at,created_at")
+    .select("id,voucher_code,status,truth_status,client_mac,pool_id,plan_id,mvola_phone,data_used_bytes,expires_at,activated_at,started_at,created_at")
     .ilike("voucher_code", username)
     .order("created_at", { ascending: false })
     .limit(1);
@@ -4344,7 +4345,7 @@ try {
 if (error || !rows || !rows.length) {
   const r2 = await supabase
     .from("voucher_sessions")
-    .select("id,voucher_code,status,client_mac,pool_id,plan_id,data_used_bytes,expires_at,activated_at,started_at,created_at")
+    .select("id,voucher_code,status,client_mac,pool_id,plan_id,mvola_phone,data_used_bytes,expires_at,activated_at,started_at,created_at")
     .ilike("voucher_code", username)
     .order("created_at", { ascending: false })
     .limit(1);
@@ -4367,7 +4368,7 @@ const session = rows[0];
         client_mac,
         pool_id: session.pool_id || null,
         plan_id: session.plan_id || null,
-        mvola_phone: session.mvola_phone || null,
+      mvola_phone: session.mvola_phone || null,
         metadata: { expected_client_mac: session.client_mac, got_client_mac: client_mac }
       });
     }
@@ -4412,7 +4413,7 @@ const session = rows[0];
         client_mac,
         pool_id: session.pool_id || null,
         plan_id: session.plan_id || null,
-        mvola_phone: session.mvola_phone || null,
+      mvola_phone: session.mvola_phone || null,
         metadata: { status: session.status }
       });
     }
@@ -4442,7 +4443,7 @@ const session = rows[0];
             client_mac,
             pool_id: session.pool_id || null,
             plan_id: session.plan_id || null,
-        mvola_phone: session.mvola_phone || null,
+      mvola_phone: session.mvola_phone || null,
             metadata: { plan_id: session.plan_id }
           });
         }
@@ -4488,7 +4489,7 @@ const session = rows[0];
         client_mac,
         pool_id: session.pool_id || null,
         plan_id: session.plan_id || null,
-        mvola_phone: session.mvola_phone || null,
+      mvola_phone: session.mvola_phone || null,
         metadata: { expires_at: session.expires_at }
       });
     }
@@ -4544,7 +4545,7 @@ const session = rows[0];
         client_mac,
         pool_id: session.pool_id || null,
         plan_id: session.plan_id || null,
-        mvola_phone: session.mvola_phone || null,
+      mvola_phone: session.mvola_phone || null,
         metadata: { used_bytes: usedBytes.toString(), total_bytes: totalBytes }
       });
     }
@@ -4561,7 +4562,7 @@ const session = rows[0];
       client_mac,
       pool_id: session.pool_id || null,
       plan_id: session.plan_id || null,
-        mvola_phone: session.mvola_phone || null,
+      mvola_phone: session.mvola_phone || null,
       metadata: { remaining_seconds: remainingSeconds, expires_at: session.expires_at, total_bytes: totalBytes }
     }, replyExtra);
 
@@ -4577,7 +4578,7 @@ const session = rows[0];
           actor_type: "radius",
           actor_id: getCallerIp(req),
           request_ref: null,
-          mvola_phone: null,
+          mvola_phone: auditExtra.mvola_phone || null,
           client_mac: null,
           ap_mac: null,
           pool_id: null,
