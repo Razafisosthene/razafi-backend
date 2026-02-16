@@ -1,4 +1,4 @@
-// RAZAFI MVola Backend (User-side only) — Hardened Security Edition
+// RAZAFI Bakend fevrier 2026 edition
 // ---------------------------------------------------------------------------
 
 import express from "express";
@@ -856,7 +856,42 @@ app.get("/api/admin/audit", requireAdmin, async (req, res) => {
     const { data, error } = await query;
     if (error) throw error;
 
-    const items = data || [];
+    const itemsRaw = data || [];
+
+    // Enrich with human-readable plan/pool names (Option A: backend-enriched)
+    // This is deliberately "FK-agnostic": we fetch by id lists to avoid relying on DB foreign keys.
+    const planIds = Array.from(new Set(itemsRaw.map(x => x?.plan_id).filter(Boolean)));
+    const poolIds = Array.from(new Set(itemsRaw.map(x => x?.pool_id).filter(Boolean)));
+
+    let planMap = {};
+    let poolMap = {};
+
+    if (planIds.length) {
+      const { data: plansData, error: plansErr } = await supabase
+        .from("plans")
+        .select("id,name")
+        .in("id", planIds);
+      if (!plansErr && Array.isArray(plansData)) {
+        for (const p of plansData) planMap[p.id] = p.name || "";
+      }
+    }
+
+    if (poolIds.length) {
+      const { data: poolsData, error: poolsErr } = await supabase
+        .from("internet_pools")
+        .select("id,name")
+        .in("id", poolIds);
+      if (!poolsErr && Array.isArray(poolsData)) {
+        for (const p of poolsData) poolMap[p.id] = p.name || "";
+      }
+    }
+
+    const items = itemsRaw.map((it) => ({
+      ...it,
+      plan_name: it?.plan_id ? (planMap[it.plan_id] || null) : null,
+      pool_name: it?.pool_id ? (poolMap[it.pool_id] || null) : null,
+    }));
+
     return res.json({ items, next_cursor: "" });
   } catch (e) {
     console.error("audit list error:", e?.message || e);
@@ -4175,7 +4210,7 @@ app.post("/api/radius/authorize", async (req, res) => {
             actor_type: "radius",
             actor_id: auditExtra.actor_id || (auditExtra.nas_id || getCallerIp(req)),
             request_ref: null,
-            mvola_phone: null,
+            mvola_phone: auditExtra.mvola_phone || null,
             client_mac: auditExtra.client_mac || null,
             ap_mac: null,
             pool_id: auditExtra.pool_id || null,
@@ -4203,7 +4238,7 @@ app.post("/api/radius/authorize", async (req, res) => {
             actor_type: "radius",
             actor_id: auditExtra.actor_id || (auditExtra.nas_id || getCallerIp(req)),
             request_ref: null,
-            mvola_phone: null,
+            mvola_phone: auditExtra.mvola_phone || null,
             client_mac: auditExtra.client_mac || null,
             ap_mac: null,
             pool_id: auditExtra.pool_id || null,
@@ -4332,6 +4367,7 @@ const session = rows[0];
         client_mac,
         pool_id: session.pool_id || null,
         plan_id: session.plan_id || null,
+        mvola_phone: session.mvola_phone || null,
         metadata: { expected_client_mac: session.client_mac, got_client_mac: client_mac }
       });
     }
@@ -4376,6 +4412,7 @@ const session = rows[0];
         client_mac,
         pool_id: session.pool_id || null,
         plan_id: session.plan_id || null,
+        mvola_phone: session.mvola_phone || null,
         metadata: { status: session.status }
       });
     }
@@ -4405,6 +4442,7 @@ const session = rows[0];
             client_mac,
             pool_id: session.pool_id || null,
             plan_id: session.plan_id || null,
+        mvola_phone: session.mvola_phone || null,
             metadata: { plan_id: session.plan_id }
           });
         }
@@ -4450,6 +4488,7 @@ const session = rows[0];
         client_mac,
         pool_id: session.pool_id || null,
         plan_id: session.plan_id || null,
+        mvola_phone: session.mvola_phone || null,
         metadata: { expires_at: session.expires_at }
       });
     }
@@ -4505,6 +4544,7 @@ const session = rows[0];
         client_mac,
         pool_id: session.pool_id || null,
         plan_id: session.plan_id || null,
+        mvola_phone: session.mvola_phone || null,
         metadata: { used_bytes: usedBytes.toString(), total_bytes: totalBytes }
       });
     }
@@ -4521,6 +4561,7 @@ const session = rows[0];
       client_mac,
       pool_id: session.pool_id || null,
       plan_id: session.plan_id || null,
+        mvola_phone: session.mvola_phone || null,
       metadata: { remaining_seconds: remainingSeconds, expires_at: session.expires_at, total_bytes: totalBytes }
     }, replyExtra);
 

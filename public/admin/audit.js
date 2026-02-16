@@ -10,6 +10,58 @@
 
   const $ = (id) => document.getElementById(id);
 
+  // Cached lookups (used for dropdowns and as fallback display names)
+  const planNameById = new Map();
+  const poolNameById = new Map();
+
+  function planDisplay(ev) {
+    const planId = ev?.plan_id || "";
+    const name = ev?.plan_name || ev?.plan?.name || (planId ? planNameById.get(planId) : "");
+    return name || planId || "—";
+  }
+
+  function poolDisplay(ev) {
+    const poolId = ev?.pool_id || "";
+    const name = ev?.pool_name || ev?.pool?.name || (poolId ? poolNameById.get(poolId) : "");
+    return name || poolId || "—";
+  }
+
+  async function loadPlanAndPoolDropdowns() {
+    // Plans
+    try {
+      const sel = $("plan_id");
+      if (sel) sel.innerHTML = `<option value="">Plan (all)</option>`;
+
+      const data = await fetchJSON(`/api/admin/plans?active=all&visible=all&limit=200&offset=0`);
+      const plans = (data && data.plans) ? data.plans : [];
+      for (const p of plans) {
+        if (!p?.id) continue;
+        const name = p?.name || p.id;
+        planNameById.set(p.id, name);
+        if (sel) sel.insertAdjacentHTML("beforeend", `<option value="${esc(p.id)}">${esc(name)}</option>`);
+      }
+    } catch {
+      // ignore
+    }
+
+    // Pools
+    try {
+      const sel = $("pool_id");
+      if (sel) sel.innerHTML = `<option value="">Pool (all)</option>`;
+
+      const data = await fetchJSON(`/api/admin/pools?limit=200&offset=0`);
+      const pools = (data && data.pools) ? data.pools : [];
+      for (const p of pools) {
+        if (!p?.id) continue;
+        const name = p?.name || p.id;
+        poolNameById.set(p.id, name);
+        if (sel) sel.insertAdjacentHTML("beforeend", `<option value="${esc(p.id)}">${esc(name)}</option>`);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   function esc(s) {
     return String(s ?? "").replace(/[&<>"']/g, (c) => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
@@ -103,6 +155,8 @@
     const apMac = ev.ap_mac || "—";
     const planId = ev.plan_id || "—";
     const poolId = ev.pool_id || "—";
+    const planText = planDisplay(ev);
+    const poolText = poolDisplay(ev);
     const message = ev.message || "—";
 
     const setText = (id, value) => {
@@ -117,8 +171,8 @@
     setText("m_mvola_phone", mvola);
     setText("m_client_mac", clientMac);
     setText("m_ap_mac", apMac);
-    setText("m_plan_id", planId);
-    setText("m_pool_id", poolId);
+    setText("m_plan_id", planText);
+    setText("m_pool_id", poolText);
     setText("m_message", message);
 
     // Status badge class
@@ -232,8 +286,8 @@
             <td style="padding:10px; white-space:nowrap;">${esc(mvola || "—")}</td>
             <td style="padding:10px; white-space:nowrap;">${esc(requestRef || "—")}</td>
             <td style="padding:10px; white-space:nowrap;">${esc(clientMac || "—")}</td>
-            <td style="padding:10px; white-space:nowrap;">${esc(planId || "—")}</td>
-            <td style="padding:10px; white-space:nowrap;">${esc(poolId || "—")}</td>
+            <td style="padding:10px; white-space:nowrap;" title="${esc(planId || "")}">${esc(planDisplay(it))}</td>
+            <td style="padding:10px; white-space:nowrap;" title="${esc(poolId || "")}">${esc(poolDisplay(it))}</td>
           </tr>
         `;
       }).join("");
@@ -317,5 +371,6 @@
   setDefaultDates();
   await checkSession();
   await loadEventTypes();
+  await loadPlanAndPoolDropdowns();
   await loadPage(false);
 })();
