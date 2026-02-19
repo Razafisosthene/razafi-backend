@@ -8,6 +8,9 @@
   // -------- Madagascar Timezone helpers --------
   const MG_TZ = "Indian/Antananarivo";
 
+  // Current truth status from /api/portal/status (used to drive small UX copy)
+  let portalTruthStatus = "none";
+
 
   // -------- Backend base URL (Option A: page served from MikroTik) --------
   // When the captive page is served from the MikroTik router (e.g. http://192.168.88.1),
@@ -260,10 +263,24 @@
     const dur = (last.durationMinutes != null) ? escapeHtml(formatDuration(Number(last.durationMinutes))) : "—";
     const dev = (last.maxDevices != null) ? escapeHtml(String(last.maxDevices)) : "—";
 
+    // Only suggest "Utiliser ce code" when voucher is still usable (pending/active).
+    // For used/expired, show a premium, accurate message instead.
+    let ctaLine = "";
+    if (portalTruthStatus === "pending") {
+      ctaLine = '<div class="small" style="margin-top:6px;">👉 Cliquez <strong>« Utiliser ce code »</strong> pour activer Internet.</div>';
+    } else if (portalTruthStatus === "active") {
+      ctaLine = '<div class="small" style="margin-top:6px;">👉 Si la connexion s’interrompt, cliquez <strong>« Utiliser ce code »</strong> pour vous reconnecter.</div>';
+    } else if (portalTruthStatus === "expired") {
+      ctaLine = '<div class="small" style="margin-top:6px;">⏰ Code expiré. Choisissez un nouveau plan ci-dessous pour continuer.</div>';
+    } else if (portalTruthStatus === "used") {
+      ctaLine = '<div class="small" style="margin-top:6px;">⛔ Code utilisé. Choisissez un nouveau plan ci-dessous pour continuer.</div>';
+    }
+
+
     banner.innerHTML = `
       <div><strong>Dernier code généré :</strong> <span style="letter-spacing:1px;">${escapeHtml(last.code)}</span> ${when ? `<span class="small">(${escapeHtml(when)})</span>` : ""}</div>
       <div class="small" style="margin-top:4px;">Plan: ${plan} · Durée: ${dur} · Appareils: ${dev}</div>
-      <div class="small" style="margin-top:6px;">👉 Cliquez <strong>« Utiliser ce code »</strong> pour activer Internet.</div>
+      ${ctaLine}
     `;
   
   // --- RAZAFI PATCH: always enable "Utiliser ce code" when we have a code ---
@@ -731,6 +748,7 @@
 
   function applyPortalStatus(j) {
     const status = String(j?.status || "none").toLowerCase();
+    portalTruthStatus = status;
     const code = String(j?.voucher_code || "").trim();
     const plan = j?.plan || {};
     const sess = j?.session || {};
