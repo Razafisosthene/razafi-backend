@@ -1671,11 +1671,14 @@ app.get("/api/portal/status", async (req, res) => {
       return tb - ta;
     };
 
+    // NOTE (System 3): vouchers are NAS-unrestricted (network-wide) by design.
+    // Some deployments' vw_voucher_sessions_truth may not expose nas_id.
+    // Therefore, portal status MUST NOT filter on nas_id. We still accept nas_id
+    // in the request for context/forward compatibility.
     const baseSelect = `
       voucher_code,
       truth_status,
       client_mac,
-      nas_id,
       pool_id,
       plan_id,
       plan_name,
@@ -1696,77 +1699,30 @@ app.get("/api/portal/status", async (req, res) => {
     // 1) Query by client_mac (preferred)
     let rows = [];
     if (client_mac) {
-      let q = supabase
+      const { data: d, error: e } = await supabase
         .from("vw_voucher_sessions_truth")
         .select(baseSelect)
         .eq("client_mac", client_mac)
         .limit(20);
-
-      // Best-effort: if nas_id is provided, narrow first, then retry without
-      if (nas_id) {
-        const { data: d1, error: e1 } = await q.eq("nas_id", nas_id);
-        if (e1) {
-          console.error("PORTAL STATUS query error (client_mac + nas_id)", e1);
-          return res.status(500).json({ ok: false, error: "db_error" });
-        }
-        rows = Array.isArray(d1) ? d1 : [];
-        if (!rows.length) {
-          const { data: d2, error: e2 } = await supabase
-            .from("vw_voucher_sessions_truth")
-            .select(baseSelect)
-            .eq("client_mac", client_mac)
-            .limit(20);
-          if (e2) {
-            console.error("PORTAL STATUS query error (client_mac retry)", e2);
-            return res.status(500).json({ ok: false, error: "db_error" });
-          }
-          rows = Array.isArray(d2) ? d2 : [];
-        }
-      } else {
-        const { data: d, error: e } = await q;
-        if (e) {
-          console.error("PORTAL STATUS query error (client_mac)", e);
-          return res.status(500).json({ ok: false, error: "db_error" });
-        }
-        rows = Array.isArray(d) ? d : [];
+      if (e) {
+        console.error("PORTAL STATUS query error (client_mac)", e);
+        return res.status(500).json({ ok: false, error: "db_error" });
       }
+      rows = Array.isArray(d) ? d : [];
     }
 
     // 2) Fallback by voucher_code (when client_mac not passed by captive browser)
     if ((!rows || !rows.length) && voucher_code) {
-      let q2 = supabase
+      const { data: d, error: e } = await supabase
         .from("vw_voucher_sessions_truth")
         .select(baseSelect)
         .eq("voucher_code", voucher_code)
         .limit(20);
-
-      if (nas_id) {
-        const { data: d1, error: e1 } = await q2.eq("nas_id", nas_id);
-        if (e1) {
-          console.error("PORTAL STATUS query error (voucher_code + nas_id)", e1);
-          return res.status(500).json({ ok: false, error: "db_error" });
-        }
-        rows = Array.isArray(d1) ? d1 : [];
-        if (!rows.length) {
-          const { data: d2, error: e2 } = await supabase
-            .from("vw_voucher_sessions_truth")
-            .select(baseSelect)
-            .eq("voucher_code", voucher_code)
-            .limit(20);
-          if (e2) {
-            console.error("PORTAL STATUS query error (voucher_code retry)", e2);
-            return res.status(500).json({ ok: false, error: "db_error" });
-          }
-          rows = Array.isArray(d2) ? d2 : [];
-        }
-      } else {
-        const { data: d, error: e } = await q2;
-        if (e) {
-          console.error("PORTAL STATUS query error (voucher_code)", e);
-          return res.status(500).json({ ok: false, error: "db_error" });
-        }
-        rows = Array.isArray(d) ? d : [];
+      if (e) {
+        console.error("PORTAL STATUS query error (voucher_code)", e);
+        return res.status(500).json({ ok: false, error: "db_error" });
       }
+      rows = Array.isArray(d) ? d : [];
     }
 
     if (!rows || !rows.length) {
