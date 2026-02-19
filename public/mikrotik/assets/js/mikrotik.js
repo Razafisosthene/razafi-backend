@@ -717,8 +717,6 @@
     if (has && focus) {
       try { focusVoucherBlock({ highlightMs: 1400 }); } catch (_) {}
     }
-
-    if (focus && has) focusVoucherBlock();
   }
 
 
@@ -1308,17 +1306,6 @@ function submitToLoginUrl(code, ev) {
     }
   }
 
-  async function fetchPortalStatus() {
-    try {
-      const qp = new URLSearchParams();
-      if (clientMac) qp.set("client_mac", clientMac);
-      if (nasId) qp.set("nas_id", nasId);
-
-      const last = readLastCode();
-      if ((!clientMac || !String(clientMac).trim()) && last?.code) {
-        qp.set("voucher_code", String(last.code));
-      }
-
 
   // After a new voucher code is delivered (free or paid), refresh the full portal status
   // so ALL UI (status badge, UX copy, plan, limits, buttons) updates without page refresh.
@@ -1356,6 +1343,18 @@ function submitToLoginUrl(code, ev) {
 
     return ok;
   }
+
+
+  async function fetchPortalStatus() {
+    try {
+      const qp = new URLSearchParams();
+      if (clientMac) qp.set("client_mac", clientMac);
+      if (nasId) qp.set("nas_id", nasId);
+
+      const last = readLastCode();
+      if ((!clientMac || !String(clientMac).trim()) && last?.code) {
+        qp.set("voucher_code", String(last.code));
+      }
 
       const url = apiUrl("/api/portal/status?" + qp.toString());
       const r = await fetch(url, { method: "GET" });
