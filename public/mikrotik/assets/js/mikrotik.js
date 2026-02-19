@@ -436,14 +436,25 @@
   const timeLeftEl = $("time-left");
   const dataLeftEl = $("data-left");
   const devicesEl = $("devices-used");
+  const badgeMainEl = $("statusBadgeMain");
+  const badgeMiniEl = $("statusBadgeMini");
+  const planNameEl = $("plan-name");
+  const planDurationEl = $("plan-duration");
+  const planDataTotalEl = $("plan-data-total");
+  const planMaxDevicesEl = $("plan-max-devices");
+  const expiresAtEl = $("expires-at");
+  const dataUsedEl = $("data-used");
+  const rowExpiresAt = document.getElementById("row-expires-at");
+  const rowDataUsed = document.getElementById("row-data-used");
+
   const useBtn = $("useVoucherBtn");
   const copyBtn = $("copyVoucherBtn");
 
   const themeToggle = $("themeToggle");
 
   // -------- Voucher status (PROD) --------
-  function renderStatus({ hasActiveVoucher = false, voucherCode = "" } = {}) {
-    const has = !!hasActiveVoucher;
+  function renderStatus({ hasVoucher = false, voucherCode = "" } = {}) {
+    const has = !!hasVoucher;
 
     const noneEl = document.getElementById("voucherNone");
     const hasEl = document.getElementById("voucherHas");
@@ -459,13 +470,6 @@
 
     const codeEl = $("voucher-code");
     if (codeEl) codeEl.textContent = has ? (voucherCode || "—") : "—";
-
-    const timeLeftEl = $("time-left");
-    const dataLeftEl = $("data-left");
-    const devicesEl = $("devices-used");
-    if (timeLeftEl) timeLeftEl.textContent = "—";
-    if (dataLeftEl) dataLeftEl.textContent = "—";
-    if (devicesEl) devicesEl.textContent = "—";
   }
 
   // -------- Internet connectivity check (PROD) --------
@@ -637,6 +641,7 @@
   let currentVoucherCode = "";
   let purchaseLockedByVoucher = false;
   let blockingVoucherMeta = null;
+  let toastOnPlanClick = "";
 
   function setVoucherUI({ phone = "", code = "", meta = null, focus = false } = {}) {
     currentPhone = phone || currentPhone || "";
@@ -645,7 +650,7 @@
     const has = !!currentVoucherCode;
 
     renderStatus({
-      hasActiveVoucher: has,
+      hasVoucher: has,
       voucherCode: currentVoucherCode || "—",
     });
 
@@ -673,9 +678,170 @@
     if (focus && has) focusVoucherBlock();
   }
 
+
+  function setStatusBadges(status) {
+    const s = String(status || "").toLowerCase();
+    const map = {
+      pending: { cls: "badge-pending", icon: "⏳", label: "EN ATTENTE", pulse: true },
+      active: { cls: "badge-active", icon: "🔓", label: "ACTIF", pulse: false },
+      used: { cls: "badge-used", icon: "⛔", label: "UTILISÉ", pulse: false },
+      expired: { cls: "badge-expired", icon: "⏰", label: "EXPIRÉ", pulse: false },
+    };
+    const cfg = map[s];
+
+    const setOne = (el, isMini) => {
+      if (!el) return;
+      if (!cfg) {
+        el.className = isMini ? "status-badge mini hidden" : "status-badge hidden";
+        el.textContent = "";
+        el.classList.add("hidden");
+        return;
+      }
+      el.className =
+        (isMini ? "status-badge mini " : "status-badge ") +
+        cfg.cls +
+        (cfg.pulse && !isMini ? " pulse" : "");
+      el.textContent = (cfg.icon ? cfg.icon + " " : "") + cfg.label;
+      el.classList.remove("hidden");
+    };
+
+    setOne(badgeMainEl, false);
+    setOne(badgeMiniEl, true);
+  }
+
+  function setText(el, v, fallback = "—") {
+    if (!el) return;
+    const s = v === null || v === undefined ? "" : String(v);
+    el.textContent = s.trim() ? s : fallback;
+  }
+
+  function formatRemainingFromExpires(expiresIso) {
+    try {
+      const d = new Date(expiresIso);
+      const ms = d.getTime();
+      if (!Number.isFinite(ms)) return "";
+      const diff = ms - Date.now();
+      const sec = Math.max(0, Math.floor(diff / 1000));
+      const min = Math.floor(sec / 60);
+      return formatDuration(min);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function applyPortalStatus(j) {
+    const status = String(j?.status || "none").toLowerCase();
+    const code = String(j?.voucher_code || "").trim();
+    const plan = j?.plan || {};
+    const sess = j?.session || {};
+    const ui = j?.ui || {};
+
+    const hasVoucher = status !== "none" && !!code;
+
+    setStatusBadges(status);
+    renderStatus({ hasVoucher, voucherCode: code });
+
+    // Messages
+    const accessMsg = document.getElementById("accessMsg");
+    const hasMsg = document.getElementById("hasVoucherMsg");
+
+    if (hasMsg) {
+      if (status === "pending") hasMsg.textContent = "⏳ Code en attente d’activation";
+      else if (status === "active") hasMsg.textContent = "✅ Session active";
+      else if (status === "used") hasMsg.textContent = "⛔ Code utilisé";
+      else if (status === "expired") hasMsg.textContent = "⏰ Code expiré";
+      else hasMsg.textContent = "✅ Vérification…";
+    }
+
+    if (accessMsg) {
+      if (status === "pending") accessMsg.textContent = "Votre code est prêt. Cliquez « Utiliser ce code » pour activer Internet.";
+      else if (status === "active") accessMsg.textContent = "Accès Internet en cours. Si la connexion s’interrompt, cliquez « Utiliser ce code ».";
+      else if (status === "used") accessMsg.textContent = "Votre session WiFi est terminée. Achetez un nouveau code pour continuer.";
+      else if (status === "expired") accessMsg.textContent = "Votre code a expiré. Achetez un nouveau code pour continuer.";
+      else accessMsg.textContent = "Vérification de votre accès en cours…";
+    }
+
+    // Plan details
+    setText(planNameEl, plan.name || plan.plan_name || "");
+    const durMin = plan.duration_minutes ?? plan.durationMinutes ?? null;
+    setText(planDurationEl, durMin != null ? formatDuration(Number(durMin)) : (plan.duration_human || ""));
+    const unlimited = !!plan.unlimited || (String(plan.data_total_human || "").toLowerCase().includes("illimit"));
+    setText(planDataTotalEl, unlimited ? "Illimité" : (plan.data_total_human || ""));
+    setText(planMaxDevicesEl, plan.max_devices ?? plan.maxDevices ?? "—");
+
+    // Session: expires_at
+    const showExpires = status === "active" || status === "used" || status === "expired";
+    if (rowExpiresAt) rowExpiresAt.classList.toggle("hidden", !showExpires);
+    if (showExpires) setText(expiresAtEl, sess.expires_at_human || (sess.expires_at ? fmtDateTimeMG(sess.expires_at) : ""), "—");
+    else setText(expiresAtEl, "—");
+
+    // Time left
+    if (status === "active") {
+      setText(timeLeftEl, formatRemainingFromExpires(sess.expires_at) || "—");
+    } else if (status === "pending") {
+      setText(timeLeftEl, durMin != null ? formatDuration(Number(durMin)) : "—");
+    } else {
+      setText(timeLeftEl, "—");
+    }
+
+    // Data remaining
+    if (status === "active") {
+      setText(dataLeftEl, unlimited ? "Illimité" : (sess.data_remaining_human || "—"));
+    } else if (status === "pending") {
+      setText(dataLeftEl, unlimited ? "Illimité" : (plan.data_total_human || "—"));
+    } else {
+      setText(dataLeftEl, "—");
+    }
+
+    // Data used over total
+    const showUsed = status === "active" || status === "used" || status === "expired";
+    if (rowDataUsed) rowDataUsed.classList.toggle("hidden", !showUsed);
+    if (showUsed) {
+      const used = sess.data_used_human || "";
+      const total = unlimited ? "Illimité" : (plan.data_total_human || "—");
+      setText(dataUsedEl, used ? `${used} / ${total}` : `— / ${total}`);
+    } else {
+      setText(dataUsedEl, "—");
+    }
+
+    // Devices used (best-effort)
+    const maxDev = Number(plan.max_devices ?? plan.maxDevices ?? 1) || 1;
+    const usedDev = sess.devices_used != null ? Number(sess.devices_used) : (status === "active" ? 1 : 0);
+    setText(devicesEl, `${Math.max(0, usedDev)} / ${maxDev}`);
+
+    // Buttons + purchase lock
+    currentVoucherCode = code || "";
+    purchaseLockedByVoucher = !!j?.purchase_lock;
+    toastOnPlanClick = ui.toast_on_plan_click || "";
+
+    const canUse = !!j?.can_use && !!code;
+    if (useBtn) {
+      useBtn.disabled = !canUse;
+      useBtn.style.display = canUse ? "" : "none";
+    }
+    if (copyBtn) {
+      copyBtn.disabled = !code;
+      copyBtn.style.display = code ? "" : "none";
+    }
+
+    // Persist last code (fallback for captive quirks)
+    if (code) {
+      writeLastCode({
+        code,
+        planName: plan.name || plan.plan_name || null,
+        durationMinutes: durMin != null ? Number(durMin) : null,
+        maxDevices: plan.max_devices ?? plan.maxDevices ?? null,
+      });
+      try { renderLastCodeBanner(); } catch (_) {}
+    }
+  }
+
   // 1) Try resume from server (reliable after closing the browser/phone) when Tanaza params are present
   (async () => {
     try {
+      // Prefer single-source-of-truth portal status
+      const okPortal = await fetchPortalStatus();
+      if (okPortal) return;
       if (!clientMac) return;
       const qs = new URLSearchParams({ client_mac: clientMac });
       if (nasId) qs.set("nas_id", nasId);
@@ -1098,6 +1264,30 @@ function submitToLoginUrl(code, ev) {
     }
   }
 
+  async function fetchPortalStatus() {
+    try {
+      const qp = new URLSearchParams();
+      if (clientMac) qp.set("client_mac", clientMac);
+      if (nasId) qp.set("nas_id", nasId);
+
+      const last = readLastCode();
+      if ((!clientMac || !String(clientMac).trim()) && last?.code) {
+        qp.set("voucher_code", String(last.code));
+      }
+
+      const url = apiUrl("/api/portal/status?" + qp.toString());
+      const r = await fetch(url, { method: "GET" });
+      const j = await r.json().catch(() => ({}));
+
+      if (!r.ok || !j?.ok) throw new Error(j?.error || "portal_status_failed");
+      applyPortalStatus(j);
+      return true;
+    } catch (e) {
+      console.warn("[RAZAFI] portal status fetch failed", e?.message || e);
+      return false;
+    }
+  }
+
   function planCardHTML(plan) {
     const name = plan.name || "Plan";
     const price = formatAr(plan.price_ar);
@@ -1339,7 +1529,7 @@ function submitToLoginUrl(code, ev) {
             return;
           }
           if (purchaseLockedByVoucher && currentVoucherCode) {
-            showToast("⚠️ Achat désactivé : vous avez déjà un code en attente/actif. Utilisez d’abord le code ci-dessous.", "info", 7500);
+            showToast(toastOnPlanClick || "⚠️ Achat désactivé : vous avez déjà un code en attente/actif. Utilisez d’abord le code ci-dessous.", "info", 7500);
             try { focusVoucherBlock(); } catch (_) {}
             return;
           }
@@ -1612,7 +1802,7 @@ function submitToLoginUrl(code, ev) {
   }
 
   // -------- Init --------
-  renderStatus({ hasActiveVoucher: false, voucherCode: "" });
+  renderStatus({ hasVoucher: false, voucherCode: "" });
   loadPlans();
 
   try {
@@ -1628,6 +1818,7 @@ function submitToLoginUrl(code, ev) {
   }
 
   fetchPortalContext();
+  fetchPortalStatus();
 
   console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac, nasId });
 })();

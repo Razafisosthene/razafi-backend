@@ -12,6 +12,35 @@
   <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png" />
 
   <link rel="stylesheet" href="assets/css/style.css" />
+  <style>
+    /* RAZAFI Portal – Status badges (premium) */
+    .status-badge{
+      display:inline-flex;align-items:center;gap:6px;
+      padding:6px 14px;border-radius:999px;
+      font-weight:600;font-size:13px;letter-spacing:.4px;
+      border:1px solid transparent;
+      user-select:none; -webkit-user-select:none;
+      white-space:nowrap;
+    }
+    .status-badge.hidden{display:none!important;}
+    .status-badge.mini{padding:4px 10px;font-size:12px;margin-left:10px;vertical-align:middle;}
+    .badge-pending{background:#FFF4CC;border-color:#FFD76A;color:#9A6B00;}
+    .badge-active{background:#DFF7E8;border-color:#53C48A;color:#0F6A3E;}
+    .badge-used{background:#FDE2E2;border-color:#E45A5A;color:#8A1F1F;}
+    .badge-expired{background:#EAEAF0;border-color:#A5A7B5;color:#4A4D5A;}
+
+    body.theme-dark .badge-pending{background:rgba(255,199,0,.15);border-color:rgba(255,199,0,.35);color:#FFD76A;}
+    body.theme-dark .badge-active{background:rgba(83,196,138,.15);border-color:rgba(83,196,138,.35);color:#53C48A;}
+    body.theme-dark .badge-used{background:rgba(228,90,90,.18);border-color:rgba(228,90,90,.35);color:#FF7A7A;}
+    body.theme-dark .badge-expired{background:rgba(165,167,181,.15);border-color:rgba(165,167,181,.35);color:#C5C7D4;}
+
+    @keyframes pendingPulse {
+      0%   { box-shadow: 0 0 0 rgba(255,199,0,0.00); filter: brightness(1); }
+      50%  { box-shadow: 0 0 6px rgba(255,199,0,0.45); filter: brightness(1.03); }
+      100% { box-shadow: 0 0 0 rgba(255,199,0,0.00); filter: brightness(1); }
+    }
+    .badge-pending.pulse{animation: pendingPulse 2.8s ease-in-out infinite;}
+  </style>
 </head>
 
 <body class="theme-light">
@@ -38,7 +67,9 @@
       <!-- 🔹 Option C: pool/site name (filled by mikrotik.js using nas_id) -->
       <p id="poolName" class="muted small"></p>
 
-      <p class="muted">Vérification de votre accès en cours…</p>
+      <div id="statusBadgeMain" class="status-badge hidden"></div>
+
+      <p id="accessMsg" class="muted">Vérification de votre accès en cours…</p>
 
       <!-- 🔹 Pool full banner (optional, controlled by backend) -->
       <div
@@ -53,7 +84,7 @@
 
       <!-- NO ACTIVE VOUCHER -->
       <div id="voucherNone">
-        <p class="muted">Vous n’avez pas de code actif.</p>
+        <p id="noVoucherMsg" class="muted">Vous n’avez pas de code actif.</p>
         <p class="muted small">
           Choisissez un plan ci-dessous pour acheter un code.
         </p>
@@ -61,12 +92,22 @@
 
       <!-- ACTIVE VOUCHER -->
       <div id="voucherHas" class="hidden">
-        <p class="success">✅ Vous avez un code actif</p>
+        <p id="hasVoucherMsg" class="success">✅ Vérification…</p>
 
-        <ul class="voucher-info">
-          <li>🔑 <strong id="voucher-code">—</strong></li>
-          <li>⏳ Temps restant : <strong id="time-left">—</strong></li>
-          <li>📊 Données restantes : <strong id="data-left">—</strong></li>
+                <ul class="voucher-info">
+          <li>🔑 <strong id="voucher-code">—</strong> <span id="statusBadgeMini" class="status-badge mini hidden"></span></li>
+
+          <li>📦 Plan : <strong id="plan-name">—</strong></li>
+          <li>⏳ Durée : <strong id="plan-duration">—</strong></li>
+          <li>📊 Data totale : <strong id="plan-data-total">—</strong></li>
+          <li>🔌 Appareils autorisés : <strong id="plan-max-devices">—</strong></li>
+
+          <li id="row-time-left">⏳ Temps restant : <strong id="time-left">—</strong></li>
+          <li id="row-expires-at" class="hidden">📆 Expire le : <strong id="expires-at">—</strong></li>
+
+          <li id="row-data-left">📊 Données restantes : <strong id="data-left">—</strong></li>
+          <li id="row-data-used" class="hidden">📉 Données utilisées : <strong id="data-used">—</strong></li>
+
           <li>🔌 Appareils utilisés : <strong id="devices-used">—</strong></li>
         </ul>
 

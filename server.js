@@ -1620,6 +1620,266 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// PORTAL (User) — Voucher Truth Status (SYSTEM 3)
+// Single source of truth: public.vw_voucher_sessions_truth
+//
+// Purpose:
+// - Provide the portal (mikrotik.js) with the same "truth" as admin panel
+// - Support the 4 states: pending | active | used | expired (+ none)
+// - Keep purchases visible but lock purchase action when pending/active
+// - Keep "Utiliser ce code" available for pending + active (fallback reconnect)
+//
+// Inputs (query params):
+//   - client_mac (preferred)
+//   - nas_id (optional, used for best-effort narrowing; we retry without it)
+//   - voucher_code (fallback when client_mac is missing)
+//
+// Output (compact + safe): only fields needed for portal UI.
+// ---------------------------------------------------------------------------
+app.get("/api/portal/status", async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+
+    const client_mac_raw = (req.query.client_mac || req.query.clientMac || "").toString().trim();
+    const client_mac = normalizeMacColon(client_mac_raw) || (client_mac_raw || null);
+
+    const voucher_code_raw = (req.query.voucher_code || req.query.voucherCode || req.query.code || "").toString().trim();
+    const voucher_code = voucher_code_raw ? voucher_code_raw : null;
+
+    const nas_id_raw =
+      req.query.nas_id ||
+      req.query.nasId ||
+      req.query.nasID ||
+      req.query.nasid ||
+      req.headers["x-nas-id"] ||
+      req.headers["x-nas_id"] ||
+      "";
+    const nas_id = String(nas_id_raw || "").trim() || null;
+
+    if (!client_mac && !voucher_code) {
+      return res.status(400).json({ ok: false, error: "client_mac_or_voucher_code_required" });
+    }
+
+    const STATUS_PRIORITY = { active: 1, pending: 2, used: 3, expired: 4 };
+    const sortByStatusPriority = (a, b) => {
+      const pa = STATUS_PRIORITY[String(a?.truth_status || a?.status || "").toLowerCase()] || 99;
+      const pb = STATUS_PRIORITY[String(b?.truth_status || b?.status || "").toLowerCase()] || 99;
+      if (pa !== pb) return pa - pb;
+      const ta = new Date(a?.created_at || 0).getTime();
+      const tb = new Date(b?.created_at || 0).getTime();
+      return tb - ta;
+    };
+
+    const baseSelect = `
+      voucher_code,
+      truth_status,
+      client_mac,
+      nas_id,
+      pool_id,
+      plan_id,
+      plan_name,
+      duration_minutes,
+      max_devices,
+      data_total_bytes,
+      data_total_human,
+      data_used_bytes,
+      data_used_human,
+      data_remaining_bytes,
+      data_remaining_human,
+      activated_at,
+      expires_at,
+      created_at,
+      pool:internet_pools ( id, name )
+    `;
+
+    // 1) Query by client_mac (preferred)
+    let rows = [];
+    if (client_mac) {
+      let q = supabase
+        .from("vw_voucher_sessions_truth")
+        .select(baseSelect)
+        .eq("client_mac", client_mac)
+        .limit(20);
+
+      // Best-effort: if nas_id is provided, narrow first, then retry without
+      if (nas_id) {
+        const { data: d1, error: e1 } = await q.eq("nas_id", nas_id);
+        if (e1) {
+          console.error("PORTAL STATUS query error (client_mac + nas_id)", e1);
+          return res.status(500).json({ ok: false, error: "db_error" });
+        }
+        rows = Array.isArray(d1) ? d1 : [];
+        if (!rows.length) {
+          const { data: d2, error: e2 } = await supabase
+            .from("vw_voucher_sessions_truth")
+            .select(baseSelect)
+            .eq("client_mac", client_mac)
+            .limit(20);
+          if (e2) {
+            console.error("PORTAL STATUS query error (client_mac retry)", e2);
+            return res.status(500).json({ ok: false, error: "db_error" });
+          }
+          rows = Array.isArray(d2) ? d2 : [];
+        }
+      } else {
+        const { data: d, error: e } = await q;
+        if (e) {
+          console.error("PORTAL STATUS query error (client_mac)", e);
+          return res.status(500).json({ ok: false, error: "db_error" });
+        }
+        rows = Array.isArray(d) ? d : [];
+      }
+    }
+
+    // 2) Fallback by voucher_code (when client_mac not passed by captive browser)
+    if ((!rows || !rows.length) && voucher_code) {
+      let q2 = supabase
+        .from("vw_voucher_sessions_truth")
+        .select(baseSelect)
+        .eq("voucher_code", voucher_code)
+        .limit(20);
+
+      if (nas_id) {
+        const { data: d1, error: e1 } = await q2.eq("nas_id", nas_id);
+        if (e1) {
+          console.error("PORTAL STATUS query error (voucher_code + nas_id)", e1);
+          return res.status(500).json({ ok: false, error: "db_error" });
+        }
+        rows = Array.isArray(d1) ? d1 : [];
+        if (!rows.length) {
+          const { data: d2, error: e2 } = await supabase
+            .from("vw_voucher_sessions_truth")
+            .select(baseSelect)
+            .eq("voucher_code", voucher_code)
+            .limit(20);
+          if (e2) {
+            console.error("PORTAL STATUS query error (voucher_code retry)", e2);
+            return res.status(500).json({ ok: false, error: "db_error" });
+          }
+          rows = Array.isArray(d2) ? d2 : [];
+        }
+      } else {
+        const { data: d, error: e } = await q2;
+        if (e) {
+          console.error("PORTAL STATUS query error (voucher_code)", e);
+          return res.status(500).json({ ok: false, error: "db_error" });
+        }
+        rows = Array.isArray(d) ? d : [];
+      }
+    }
+
+    if (!rows || !rows.length) {
+      return res.json({
+        ok: true,
+        state: "none",
+        status: "none",
+        can_use: false,
+        purchase_lock: false,
+        can_buy: true,
+        voucher_code: null,
+        plan: null,
+        session: null,
+        pool: nas_id ? { name: null } : null,
+        ui: {
+          badge: { tone: "none", label: "", icon: "" },
+          toast_on_plan_click: null,
+          message: "",
+        }
+      });
+    }
+
+    // Robust: even if you enforce 1 voucher per client, keep deterministic picking.
+    const chosen = [...rows].sort(sortByStatusPriority)[0];
+    const status = String(chosen?.truth_status || "").toLowerCase() || "none";
+
+    const unlimited = (chosen?.data_total_bytes === null || chosen?.data_total_bytes === undefined);
+    const totalHuman = unlimited ? "Illimité" : (chosen?.data_total_human ?? null);
+    const usedHuman = chosen?.data_used_human ?? null;
+    const remainingHuman = unlimited ? "Illimité" : (chosen?.data_remaining_human ?? null);
+
+    const can_use = (status === "pending" || status === "active");
+    const purchase_lock = (status === "pending" || status === "active");
+    const can_buy = !purchase_lock;
+
+    const badgeByStatus = {
+      pending: { tone: "pending", label: "EN ATTENTE", icon: "⏳" },
+      active: { tone: "active", label: "ACTIF", icon: "🔓" },
+      used: { tone: "used", label: "UTILISÉ", icon: "⛔" },
+      expired: { tone: "expired", label: "EXPIRÉ", icon: "⏰" },
+      none: { tone: "none", label: "", icon: "" },
+    };
+
+    const toast_on_plan_click = purchase_lock
+      ? (status === "pending"
+        ? "⚠️ Achat désactivé : vous avez déjà un code en attente. Activez-le d’abord avec « Utiliser ce code »."
+        : "⚠️ Achat désactivé : vous avez déjà une session active. Utilisez « Utiliser ce code » si la connexion s’est interrompue."
+      )
+      : null;
+
+    const messageByStatus = {
+      pending: "Code prêt à être activé.",
+      active: "Accès Internet en cours.",
+      used: "Code entièrement utilisé.",
+      expired: "Code expiré.",
+      none: "",
+    };
+
+    const dataUsedOverTotal = (usedHuman && totalHuman)
+      ? `${usedHuman} / ${totalHuman}`
+      : (usedHuman ? `${usedHuman} / ${totalHuman || (unlimited ? "Illimité" : "—")}` : null);
+
+    return res.json({
+      ok: true,
+      state: "has_voucher",
+      status,
+      voucher_code: chosen?.voucher_code || null,
+      client_mac: chosen?.client_mac || client_mac || null,
+      nas_id: chosen?.nas_id || nas_id || null,
+
+      pool: {
+        id: chosen?.pool_id || null,
+        name: chosen?.pool?.name || null,
+      },
+
+      plan: {
+        id: chosen?.plan_id || null,
+        name: chosen?.plan_name || null,
+        duration_minutes: (chosen?.duration_minutes === 0 || chosen?.duration_minutes)
+          ? Number(chosen.duration_minutes)
+          : null,
+        max_devices: (chosen?.max_devices === 0 || chosen?.max_devices)
+          ? Number(chosen.max_devices)
+          : 1,
+        unlimited,
+        data_total_human: totalHuman,
+      },
+
+      session: {
+        activated_at: chosen?.activated_at || null,
+        expires_at: chosen?.expires_at || null,
+        data_used_human: usedHuman,
+        data_remaining_human: remainingHuman,
+        data_used_over_total_human: dataUsedOverTotal,
+        devices_used: null,
+      },
+
+      can_use,
+      purchase_lock,
+      can_buy,
+
+      ui: {
+        badge: badgeByStatus[status] || badgeByStatus.none,
+        toast_on_plan_click,
+        message: messageByStatus[status] || "",
+      },
+    });
+  } catch (e) {
+    console.error("PORTAL STATUS EX", e);
+    return res.status(500).json({ ok: false, error: "internal_error" });
+  }
+});
+
 app.get("/api/new/plans", async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
