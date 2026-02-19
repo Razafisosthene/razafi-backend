@@ -4683,7 +4683,8 @@ try {
   bonusOverride = { bonus_seconds: 0, bonus_bytes: 0 };
 }
 const bonusSeconds = Math.max(0, Math.floor(Number(bonusOverride?.bonus_seconds || 0) || 0));
-const bonusBytes = Math.max(0, Math.floor(Number(bonusOverride?.bonus_bytes || 0) || 0));
+const bonusBytesRaw = Number(bonusOverride?.bonus_bytes ?? 0);
+const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusBytesRaw || 0));
 
 
 // Device lock: if already bound, enforce same MAC
@@ -4873,9 +4874,11 @@ const bonusBytes = Math.max(0, Math.floor(Number(bonusOverride?.bonus_bytes || 0
         ? Math.floor(dataMb * 1024 * 1024)
         : null;
 
-    const effectiveTotalBytes = (totalBytes !== null)
-      ? (totalBytes + (bonusBytes > 0 ? bonusBytes : 0))
-      : null;
+    const effectiveTotalBytes = (bonusBytes === -1)
+      ? null
+      : ((totalBytes !== null)
+        ? (totalBytes + (bonusBytes > 0 ? bonusBytes : 0))
+        : null);
 
 
     // If data quota already exhausted (backend truth), reject.
@@ -5465,7 +5468,7 @@ app.get("/api/admin/voucher-bonus-overrides", requireAdmin, async (req, res) => 
 
 // UPSERT bonus
 // POST /api/admin/voucher-bonus-overrides
-// body: { voucher_session_id, add_minutes, add_mb, note }
+// body: { voucher_session_id, add_minutes, add_mb, unlimited_data, note }  // unlimited_data=true => bonus_bytes=-1
 // - We store totals (bonus_seconds, bonus_bytes) for this voucher_session_id
 // - If the session is already started and has expires_at, we also extend expires_at immediately.
 app.post("/api/admin/voucher-bonus-overrides", requireAdmin, async (req, res) => {
@@ -5478,22 +5481,37 @@ app.post("/api/admin/voucher-bonus-overrides", requireAdmin, async (req, res) =>
 
     const add_minutes = Number(body.add_minutes ?? 0);
     const add_mb = Number(body.add_mb ?? 0);
+    const unlimited_data = (body.unlimited_data === true);
+    const disable_unlimited = (body.unlimited_data === false);
     const note = (body.note || "").toString().trim() || null;
 
     if (!Number.isFinite(add_minutes) || add_minutes < 0 || add_minutes > 7 * 24 * 60) {
       return res.status(400).json({ error: "add_minutes must be between 0 and 10080 (7 days)" });
     }
-    if (!Number.isFinite(add_mb) || add_mb < 0 || add_mb > 102400) {
-      return res.status(400).json({ error: "add_mb must be between 0 and 102400" });
+    if (!unlimited_data) {
+      if (!Number.isFinite(add_mb) || add_mb < 0 || add_mb > 102400) {
+        return res.status(400).json({ error: "add_mb must be between 0 and 102400" });
+      }
     }
 
     const add_seconds = Math.floor(add_minutes * 60);
-    const add_bytes = Math.floor(add_mb * 1024 * 1024);
+    const add_bytes = unlimited_data ? 0 : Math.floor(add_mb * 1024 * 1024);
 
     // read existing
     const existing = await getVoucherBonusOverride({ voucher_session_id });
     const bonus_seconds = Math.max(0, Math.floor(Number(existing.bonus_seconds || 0) + add_seconds));
-    const bonus_bytes = Math.max(0, Math.floor(Number(existing.bonus_bytes || 0) + add_bytes));
+
+    let baseBytes = Number(existing.bonus_bytes ?? 0);
+    // Support sentinel -1 for unlimited data override
+    if (baseBytes === -1 && !unlimited_data) {
+      // if admin explicitly disables unlimited, reset to 0 before adding
+      if (disable_unlimited) baseBytes = 0;
+      // otherwise keep unlimited unless they add finite data (we still keep unlimited)
+    }
+
+    const bonus_bytes = unlimited_data
+      ? -1
+      : Math.max(0, Math.floor((Number.isFinite(baseBytes) ? baseBytes : 0) + add_bytes));
 
     const row = {
       voucher_session_id,
