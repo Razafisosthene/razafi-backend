@@ -630,6 +630,123 @@ async function openDetail(id) {
       }
     }
 
+
+// --------------------------------------------------
+// Voucher bonus (time/data) — by voucher_session_id
+// --------------------------------------------------
+try {
+  const sessionId = it.id;
+  const blockId = `bonusBlock_${sessionId}`;
+  const minId = `bonusMin_${sessionId}`;
+  const mbId = `bonusMb_${sessionId}`;
+  const noteId = `bonusNote_${sessionId}`;
+  const btnId = `bonusBtn_${sessionId}`;
+  const msgId = `bonusMsg_${sessionId}`;
+  const curId = `bonusCur_${sessionId}`;
+
+  // Load current bonus
+  let curBonus = { bonus_seconds: 0, bonus_bytes: 0 };
+  try {
+    const r = await fetchJSON("/api/admin/voucher-bonus-overrides?voucher_session_id=" + encodeURIComponent(sessionId));
+    curBonus = r?.item || curBonus;
+  } catch (_) {}
+
+  const curMin = Math.floor(Number(curBonus.bonus_seconds || 0) / 60);
+  const curMb = Math.floor(Number(curBonus.bonus_bytes || 0) / (1024 * 1024));
+
+  detail.insertAdjacentHTML("beforeend", `
+    <div id="${blockId}" style="grid-column: 1 / -1; border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; flex-wrap:wrap;">
+        <div>
+          <div style="font-size:12px; opacity:.7;">Bonus (time/data) for this voucher</div>
+          <div class="subtitle" style="margin-top:6px; opacity:.8;">
+            Add bonus even if expired/used. Time bonus extends <b>expires_at</b> if the session is already started.
+            Data bonus increases MikroTik total limit on next authorize.
+          </div>
+          <div id="${curId}" style="margin-top:8px; font-size:13px;">
+            Current bonus: <b>${esc(curMin)} min</b> · <b>${esc(curMb)} MB</b>
+          </div>
+        </div>
+
+        <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
+          <div>
+            <div style="font-size:12px; opacity:.7;">+ Minutes</div>
+            <input id="${minId}" type="number" min="0" step="1" value="0" style="width:120px;" />
+          </div>
+          <div>
+            <div style="font-size:12px; opacity:.7;">+ MB</div>
+            <input id="${mbId}" type="number" min="0" step="1" value="0" style="width:120px;" />
+          </div>
+          <div style="min-width:220px;">
+            <div style="font-size:12px; opacity:.7;">Note (optional)</div>
+            <input id="${noteId}" type="text" placeholder="ex: goodwill / compensation" />
+          </div>
+          <button id="${btnId}" type="button" style="width:auto;">Add bonus</button>
+        </div>
+      </div>
+      <div id="${msgId}" class="subtitle" style="display:none; margin-top:8px;"></div>
+    </div>
+  `);
+
+  const btn = document.getElementById(btnId);
+  const msg = document.getElementById(msgId);
+  const blockEl = document.getElementById(blockId);
+
+  if (btn) {
+    btn.onclick = async () => {
+      const min = Number(document.getElementById(minId)?.value ?? 0);
+      const mb = Number(document.getElementById(mbId)?.value ?? 0);
+      const note = String(document.getElementById(noteId)?.value ?? "").trim();
+
+      if (!Number.isFinite(min) || min < 0) return alert("Minutes must be >= 0");
+      if (!Number.isFinite(mb) || mb < 0) return alert("MB must be >= 0");
+      if (min === 0 && mb === 0) return alert("Please set minutes and/or MB.");
+
+      const prevText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Saving...";
+
+      try {
+        await fetchJSON("/api/admin/voucher-bonus-overrides", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            voucher_session_id: sessionId,
+            add_minutes: min,
+            add_mb: mb,
+            note: note || null
+          })
+        });
+
+        if (msg) {
+          msg.style.display = "block";
+          msg.style.color = "#198754";
+          msg.textContent = "Bonus added ✅";
+        }
+
+        flashUpdatedRowAndBlock({ sessionId, blockEl });
+
+        // Refresh modal + table so you immediately see new remaining/status
+        try {
+          await loadClients();
+        } catch (_) {}
+        try {
+          await openDetail(sessionId);
+        } catch (_) {}
+      } catch (e) {
+        if (msg) {
+          msg.style.display = "block";
+          msg.style.color = "#d9534f";
+          msg.textContent = e?.message || String(e);
+        }
+      } finally {
+        btn.disabled = false;
+        btn.textContent = prevText;
+      }
+    };
+  }
+} catch (_) {}
+
   } catch (e) {
     modalErr.style.display = "block";
     modalErr.textContent = e.message || String(e);

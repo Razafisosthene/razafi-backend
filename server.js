@@ -1282,6 +1282,23 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
     } catch (_) {
       data.free_plan = null;
     }
+// -----------------------------
+// Voucher bonus override info (by voucher_session_id)
+// -----------------------------
+try {
+  const b = await getVoucherBonusOverride({ voucher_session_id: data.id });
+  data.bonus = {
+    bonus_seconds: Number(b.bonus_seconds || 0),
+    bonus_bytes: Number(b.bonus_bytes || 0),
+    note: b.note || null,
+    updated_at: b.updated_at || null,
+    updated_by: b.updated_by || null,
+  };
+} catch (_) {
+  data.bonus = { bonus_seconds: 0, bonus_bytes: 0, note: null, updated_at: null, updated_by: null };
+}
+
+
 
     res.json({ item: data });
   } catch (e) {
@@ -4657,6 +4674,18 @@ if (error || !rows || !rows.length) {
 
 const session = rows[0];
 
+
+// Bonus override (by voucher session id) — used for time/data bonuses
+let bonusOverride = { bonus_seconds: 0, bonus_bytes: 0 };
+try {
+  bonusOverride = await getVoucherBonusOverride({ voucher_session_id: session.id });
+} catch (_) {
+  bonusOverride = { bonus_seconds: 0, bonus_bytes: 0 };
+}
+const bonusSeconds = Math.max(0, Math.floor(Number(bonusOverride?.bonus_seconds || 0) || 0));
+const bonusBytes = Math.max(0, Math.floor(Number(bonusOverride?.bonus_bytes || 0) || 0));
+
+
 // Device lock: if already bound, enforce same MAC
     if (session.client_mac && client_mac && normalizeMacColon(session.client_mac) !== client_mac) {
       return sendReject("device_mismatch", {
@@ -4747,7 +4776,7 @@ const session = rows[0];
         }
 
         const startedAtIso = now.toISOString();
-        const expiresAtIso = new Date(now.getTime() + minutes * 60 * 1000).toISOString();
+        const expiresAtIso = new Date(now.getTime() + (minutes * 60 * 1000) + (bonusSeconds * 1000)).toISOString();
 
         // Atomic: only start once
         const { error: stErr } = await supabase
@@ -4818,6 +4847,10 @@ const session = rows[0];
         ? Math.floor(dataMb * 1024 * 1024)
         : null;
 
+    const effectiveTotalBytes = (totalBytes !== null)
+      ? (totalBytes + (bonusBytes > 0 ? bonusBytes : 0))
+      : null;
+
 
     // If data quota already exhausted (backend truth), reject.
     // This protects you even if MikroTik didn't enforce the total limit for some reason.
@@ -4828,7 +4861,7 @@ const session = rows[0];
       usedBytes = 0n;
     }
 
-    if (totalBytes !== null && usedBytes >= BigInt(totalBytes)) {
+    if (effectiveTotalBytes !== null && usedBytes >= BigInt(effectiveTotalBytes)) {
       // Best-effort mark session as used (do not fail auth on DB write errors).
       try {
         await supabase
@@ -4849,8 +4882,8 @@ const session = rows[0];
     }
 
     const replyExtra = {};
-    if (totalBytes !== null) {
-      replyExtra["reply:Mikrotik-Total-Limit"] = totalBytes;
+    if (effectiveTotalBytes !== null) {
+      replyExtra["reply:Mikrotik-Total-Limit"] = effectiveTotalBytes;
     }
 
     return sendAccept(username, remainingSeconds, {
@@ -5375,6 +5408,113 @@ async function getFreePlanUsedCount({ client_mac, plan_id }) {
     return 0;
   }
 }
+// ------------------------------------------------------------
+// ADMIN: Voucher bonus override (time/data bonuses)
+// Table: voucher_bonus_overrides (voucher_session_id) -> bonus_seconds, bonus_bytes
+// ------------------------------------------------------------
+
+// GET current bonus
+// /api/admin/voucher-bonus-overrides?voucher_session_id=...
+app.get("/api/admin/voucher-bonus-overrides", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const voucher_session_id = String(req.query.voucher_session_id || "").trim();
+    if (!voucher_session_id) return res.status(400).json({ error: "voucher_session_id is required" });
+
+    const item = await getVoucherBonusOverride({ voucher_session_id });
+    return res.json({
+      item: {
+        voucher_session_id,
+        bonus_seconds: Number(item.bonus_seconds || 0),
+        bonus_bytes: Number(item.bonus_bytes || 0),
+        note: item.note || null,
+        updated_at: item.updated_at || null,
+        updated_by: item.updated_by || null,
+      }
+    });
+  } catch (e) {
+    return res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// UPSERT bonus
+// POST /api/admin/voucher-bonus-overrides
+// body: { voucher_session_id, add_minutes, add_mb, note }
+// - We store totals (bonus_seconds, bonus_bytes) for this voucher_session_id
+// - If the session is already started and has expires_at, we also extend expires_at immediately.
+app.post("/api/admin/voucher-bonus-overrides", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const body = req.body || {};
+    const voucher_session_id = String(body.voucher_session_id || "").trim();
+    if (!voucher_session_id) return res.status(400).json({ error: "voucher_session_id is required" });
+
+    const add_minutes = Number(body.add_minutes ?? 0);
+    const add_mb = Number(body.add_mb ?? 0);
+    const note = (body.note || "").toString().trim() || null;
+
+    if (!Number.isFinite(add_minutes) || add_minutes < 0 || add_minutes > 7 * 24 * 60) {
+      return res.status(400).json({ error: "add_minutes must be between 0 and 10080 (7 days)" });
+    }
+    if (!Number.isFinite(add_mb) || add_mb < 0 || add_mb > 102400) {
+      return res.status(400).json({ error: "add_mb must be between 0 and 102400" });
+    }
+
+    const add_seconds = Math.floor(add_minutes * 60);
+    const add_bytes = Math.floor(add_mb * 1024 * 1024);
+
+    // read existing
+    const existing = await getVoucherBonusOverride({ voucher_session_id });
+    const bonus_seconds = Math.max(0, Math.floor(Number(existing.bonus_seconds || 0) + add_seconds));
+    const bonus_bytes = Math.max(0, Math.floor(Number(existing.bonus_bytes || 0) + add_bytes));
+
+    const row = {
+      voucher_session_id,
+      bonus_seconds,
+      bonus_bytes,
+      note,
+      updated_at: new Date().toISOString(),
+      updated_by: req.admin?.email || null,
+    };
+
+    const { data, error } = await supabase
+      .from("voucher_bonus_overrides")
+      .upsert(row, { onConflict: "voucher_session_id" })
+      .select("voucher_session_id,bonus_seconds,bonus_bytes,note,updated_at,updated_by")
+      .single();
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    // If already started, extend expires_at now (best-effort)
+    // (Data bonus is applied at RADIUS authorize time as Mikrotik-Total-Limit; we do not assume voucher_sessions has a data_total_bytes column.)
+    try {
+      if (add_seconds > 0) {
+        const { data: vs } = await supabase
+          .from("voucher_sessions")
+          .select("id,expires_at")
+          .eq("id", voucher_session_id)
+          .maybeSingle();
+
+        if (vs?.expires_at) {
+          const oldExp = new Date(vs.expires_at);
+          if (!isNaN(oldExp.getTime())) {
+            const newExp = new Date(oldExp.getTime() + add_seconds * 1000).toISOString();
+            await supabase
+              .from("voucher_sessions")
+              .update({ expires_at: newExp, updated_at: new Date().toISOString() })
+              .eq("id", voucher_session_id);
+          }
+        }
+      }
+    } catch (_) {}
+
+    return res.json({ ok: true, item: data });
+  } catch (e) {
+    return res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
 
 // Read admin override "extra free uses" for a given (client_mac, plan_id)
 async function getFreePlanExtraUses({ client_mac, plan_id }) {
@@ -5393,6 +5533,34 @@ async function getFreePlanExtraUses({ client_mac, plan_id }) {
     return 0;
   }
 }
+// ------------------------------------------------------------
+// BONUS OVERRIDE (System 3)
+// Table: voucher_bonus_overrides (voucher_session_id) -> bonus_seconds, bonus_bytes
+// Notes:
+// - bonus_seconds extends time (Session-Timeout / expires_at when started)
+// - bonus_bytes adds extra data to MikroTik-Total-Limit (in bytes)
+// ------------------------------------------------------------
+async function getVoucherBonusOverride({ voucher_session_id }) {
+  if (!supabase || !voucher_session_id) return { bonus_seconds: 0, bonus_bytes: 0 };
+  try {
+    const { data, error } = await supabase
+      .from("voucher_bonus_overrides")
+      .select("voucher_session_id,bonus_seconds,bonus_bytes,note,updated_at,updated_by")
+      .eq("voucher_session_id", voucher_session_id)
+      .maybeSingle();
+    if (error || !data) return { bonus_seconds: 0, bonus_bytes: 0 };
+    return {
+      bonus_seconds: Number(data.bonus_seconds || 0) || 0,
+      bonus_bytes: Number(data.bonus_bytes || 0) || 0,
+      note: data.note || null,
+      updated_at: data.updated_at || null,
+      updated_by: data.updated_by || null,
+    };
+  } catch (_) {
+    return { bonus_seconds: 0, bonus_bytes: 0 };
+  }
+}
+
 
 // Portal pre-check to show message immediately (before MVola input) when free plan already used.
 // Fail-open on errors (never break production).
