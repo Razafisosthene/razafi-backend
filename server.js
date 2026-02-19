@@ -4729,20 +4729,46 @@ const bonusBytes = Math.max(0, Math.floor(Number(bonusOverride?.bonus_bytes || 0
     }
 
     // System 3 logic B:
-    // - Accept if truth status is "pending" OR "active"
+    // - Normally Accept if truth status is "pending" OR "active"
     // - Start timer on FIRST successful RADIUS accept
-    // - Reject other statuses (expired/used/cancelled/etc.)
-    if (session.status !== "active" && session.status !== "pending") {
-      return sendReject("not_usable_status", {
-        entity_type: "voucher_session",
-        entity_id: session.id,
-        nas_id,
-        client_mac,
-        pool_id: session.pool_id || null,
-        plan_id: session.plan_id || null,
-      mvola_phone: session.mvola_phone || null,
-        metadata: { status: session.status }
-      });
+    // - Bonus intelligent: if admin granted bonus (time/data), allow reactivation even if status is expired/used.
+    //   For time bonus, extend expires_at from NOW when already expired so the truth view can flip to active.
+    const isUsableStatus = (session.status === "active" || session.status === "pending");
+    const hasAnyBonus = (bonusSeconds > 0 || bonusBytes > 0);
+
+    if (!isUsableStatus) {
+      if (!hasAnyBonus) {
+        return sendReject("not_usable_status", {
+          entity_type: "voucher_session",
+          entity_id: session.id,
+          nas_id,
+          client_mac,
+          pool_id: session.pool_id || null,
+          plan_id: session.plan_id || null,
+          mvola_phone: session.mvola_phone || null,
+          metadata: { status: session.status }
+        });
+      }
+
+      // Time bonus: if already started, move expires_at forward from NOW when expired.
+      if (bonusSeconds > 0 && session.started_at) {
+        try {
+          const nowMs = now.getTime();
+          const currentExpMs = session.expires_at ? new Date(session.expires_at).getTime() : nowMs;
+          const baseMs = Math.max(nowMs, Number.isFinite(currentExpMs) ? currentExpMs : nowMs);
+          const newExpIso = new Date(baseMs + (bonusSeconds * 1000)).toISOString();
+
+          await supabase
+            .from("voucher_sessions")
+            .update({ expires_at: newExpIso, updated_at: now.toISOString() })
+            .eq("id", session.id);
+
+          session.expires_at = newExpIso;
+        } catch (_) {}
+      }
+
+      // Data bonus: enforced via effectiveTotalBytes below.
+      // Continue as if active.
     }
 
     // Start timer on FIRST successful RADIUS auth (if not started yet)
@@ -5497,16 +5523,19 @@ app.post("/api/admin/voucher-bonus-overrides", requireAdmin, async (req, res) =>
           .maybeSingle();
 
         if (vs?.expires_at) {
+          const now0 = new Date();
+          const nowMs0 = now0.getTime();
           const oldExp = new Date(vs.expires_at);
-          if (!isNaN(oldExp.getTime())) {
-            const newExp = new Date(oldExp.getTime() + add_seconds * 1000).toISOString();
+          const oldMs = oldExp.getTime();
+          if (!isNaN(oldMs)) {
+            const baseMs = Math.max(nowMs0, oldMs); // if already expired, grant from NOW
+            const newExp = new Date(baseMs + add_seconds * 1000).toISOString();
             await supabase
               .from("voucher_sessions")
-              .update({ expires_at: newExp, updated_at: new Date().toISOString() })
+              .update({ expires_at: newExp, updated_at: now0.toISOString() })
               .eq("id", voucher_session_id);
           }
-        }
-      }
+        }      }
     } catch (_) {}
 
     return res.json({ ok: true, item: data });
