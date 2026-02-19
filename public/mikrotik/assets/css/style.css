@@ -436,15 +436,11 @@ input[type="tel"] {
   }
 }
 
-}
-
 @media (min-width: 1040px) {
   /* Keep plans stacked even on large screens */
   .plans-grid {
     grid-template-columns: 1fr;
   }
-}
-
 }
 
 /* Mobile: near full width + full-width buttons */
@@ -635,4 +631,43 @@ input[type="tel"] {
   opacity: .88;
   font-size: 13px;
   line-height: 1.25;
+}
+/* ===============================
+   VOUCHER – NEW CODE HIGHLIGHT
+   Pop + Glow (Premium)
+   - Applied via JS: element.classList.add("razafi-popglow")
+   =============================== */
+
+@keyframes razafiPopGlow {
+  0% {
+    transform: scale(0.985);
+    box-shadow: 0 0 0 rgba(0,0,0,0);
+    filter: brightness(1);
+  }
+  35% {
+    transform: scale(1.015);
+    box-shadow:
+      0 0 0 2px rgba(13,110,253,0.28),
+      0 18px 46px rgba(13,110,253,0.18);
+    filter: brightness(1.04);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow:
+      0 0 0 0 rgba(13,110,253,0),
+      0 0 0 rgba(0,0,0,0);
+    filter: brightness(1);
+  }
+}
+
+.razafi-popglow {
+  animation: razafiPopGlow 1100ms ease-out;
+  will-change: transform, box-shadow, filter;
+}
+
+/* Respect accessibility settings */
+@media (prefers-reduced-motion: reduce) {
+  .razafi-popglow {
+    animation: none !important;
+  }
 }

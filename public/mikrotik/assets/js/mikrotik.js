@@ -187,20 +187,41 @@
     document.head.appendChild(st);
   }
 
-  function focusVoucherBlock({ highlightMs = 1100 } = {}) {
-    const el = document.getElementById("voucherHas");
-    if (!el) return;
-    // Make sure it's visible even if HTML shipped with class="hidden"
-    el.classList.remove("hidden");
-    el.style.display = "";
+  function focusVoucherBlock({ highlightMs = 1200 } = {}) {
+    const hasEl = document.getElementById("voucherHas");
+    if (!hasEl) return;
+
+    // Ensure voucher block is visible even if HTML shipped with class="hidden"
+    hasEl.classList.remove("hidden");
+    hasEl.style.display = "";
+
+    const card = (hasEl.closest && hasEl.closest("section.status-card")) || (hasEl.closest && hasEl.closest(".status-card")) || hasEl;
+
+    // Scroll ONLY if user is below (voucher/card is above the viewport)
     try {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      const r = card.getBoundingClientRect();
+      const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+      const isAbove = r.bottom < 0 || r.top < -8; // card is above viewport
+      if (isAbove) {
+        card.scrollIntoView({ behavior: "smooth", block: "start" });
+      } else {
+        // If it's already visible or below, do not force scroll.
+      }
     } catch (_) {
       // no-op
     }
-    ensureFlashStyle();
-    el.classList.add("razafi-flash");
-    window.setTimeout(() => el.classList.remove("razafi-flash"), highlightMs);
+
+    // Pop + glow animation (replayable)
+    const target = card || hasEl;
+    if (!target) return;
+
+    // Remove + re-add to restart animation
+    target.classList.remove("razafi-popglow");
+    // Force reflow
+    void target.offsetWidth;
+    target.classList.add("razafi-popglow");
+
+    window.setTimeout(() => target.classList.remove("razafi-popglow"), Math.max(400, Number(highlightMs) || 1200));
   }
 
   // ✅ Changed: always Madagascar time
@@ -691,6 +712,11 @@
     }
 
     renderLastCodeBanner();
+
+    // Premium UX: when a NEW code is delivered, draw attention + scroll if needed
+    if (has && focus) {
+      try { focusVoucherBlock({ highlightMs: 1400 }); } catch (_) {}
+    }
 
     if (focus && has) focusVoucherBlock();
   }
@@ -1732,7 +1758,7 @@ function submitToLoginUrl(code, ev) {
                       expiresAt: data?.expires_at || null,
                       status: data?.status || null,
                     },
-                  }, { focus: true });
+                    focus: true });
                   showToast("⚠️ Achat désactivé : vous avez déjà un code en attente/actif. Utilisez d’abord le code ci-dessous.", "warning", 8000);
                   try { focusVoucherBlock(); } catch (_) {}
                   return;
