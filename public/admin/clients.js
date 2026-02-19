@@ -723,13 +723,29 @@ try {
   const msg = document.getElementById(msgId);
   const blockEl = document.getElementById(blockId);
 
+  // UX: if "Data illimité" is checked, disable the +Go input to avoid confusion.
+  const gbEl = document.getElementById(gbId);
+  const unlEl = document.getElementById(unlId);
+  if (gbEl && unlEl) {
+    const syncUnlimitedUx = () => {
+      const on = !!unlEl.checked;
+      gbEl.disabled = on;
+      if (on) gbEl.value = "0";
+    };
+    unlEl.addEventListener("change", syncUnlimitedUx);
+    syncUnlimitedUx();
+  }
+
   if (btn) {
     btn.onclick = async () => {
-      const days = Number(document.getElementById(dayId)?.value ?? 0);
-      const hours = Number(document.getElementById(hourId)?.value ?? 0);
-      const mins = Number(document.getElementById(minId)?.value ?? 0);
-      const gb = Number(document.getElementById(gbId)?.value ?? 0);
-      const note = String(document.getElementById(noteId)?.value ?? "").trim();
+      // Guard: if a JS error happens, show it in the modal (otherwise it looks like "nothing happens").
+      try {
+        const days = Number(document.getElementById(dayId)?.value ?? 0);
+        const hours = Number(document.getElementById(hourId)?.value ?? 0);
+        const mins = Number(document.getElementById(minId)?.value ?? 0);
+        const gb = Number(document.getElementById(gbId)?.value ?? 0);
+        const unlimited_data = !!document.getElementById(unlId)?.checked;
+        const note = String(document.getElementById(noteId)?.value ?? "").trim();
 
       if (!Number.isFinite(days) || days < 0) return alert("Jours must be >= 0");
       if (!Number.isFinite(hours) || hours < 0) return alert("Heures must be >= 0");
@@ -739,52 +755,59 @@ try {
       if (hours > 23) return alert("Heures doit être entre 0 et 23");
       if (mins > 59) return alert("Minutes doit être entre 0 et 59");
 
-      const add_minutes = (days * 1440) + (hours * 60) + mins;
-      const add_mb = unlimited_data ? 0 : (gb * 1024);
+        const add_minutes = (days * 1440) + (hours * 60) + mins;
+        const add_mb = unlimited_data ? 0 : (gb * 1024);
 
-      if (add_minutes === 0 && add_mb === 0 && !unlimited_data) return alert("Please set a time and/or data bonus (or enable Data illimité). ");
-
-      const prevText = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = "Saving...";
-
-      try {
-        await fetchJSON("/api/admin/voucher-bonus-overrides", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            voucher_session_id: sessionId,
-            add_minutes,
-            add_mb,
-            unlimited_data,
-            note: note || null
-          })
-        });
-
-        if (msg) {
-          msg.style.display = "block";
-          msg.style.color = "#198754";
-          msg.textContent = "Bonus added ✅";
+        if (add_minutes === 0 && add_mb === 0 && !unlimited_data) {
+          return alert("Please set a time and/or data bonus (or enable Data illimité).");
         }
 
-        flashUpdatedRowAndBlock({ sessionId, blockEl });
+        const prevText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "Saving...";
 
-        // Refresh modal + table so you immediately see new remaining/status
         try {
-          await loadClients();
-        } catch (_) {}
-        try {
-          await openDetail(sessionId);
-        } catch (_) {}
-      } catch (e) {
+          await fetchJSON("/api/admin/voucher-bonus-overrides", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              voucher_session_id: sessionId,
+              add_minutes,
+              add_mb,
+              unlimited_data,
+              note: note || null
+            })
+          });
+
+          if (msg) {
+            msg.style.display = "block";
+            msg.style.color = "#198754";
+            msg.textContent = "Bonus added ✅";
+          }
+
+          flashUpdatedRowAndBlock({ sessionId, blockEl });
+
+          // Refresh modal + table so you immediately see new remaining/status
+          try { await loadClients(); } catch (_) {}
+          try { await openDetail(sessionId); } catch (_) {}
+        } catch (e) {
+          if (msg) {
+            msg.style.display = "block";
+            msg.style.color = "#d9534f";
+            msg.textContent = e?.message || String(e);
+          }
+        } finally {
+          btn.disabled = false;
+          btn.textContent = prevText;
+        }
+      } catch (err) {
         if (msg) {
           msg.style.display = "block";
           msg.style.color = "#d9534f";
-          msg.textContent = e?.message || String(e);
+          msg.textContent = err?.message || String(err);
+        } else {
+          alert(err?.message || String(err));
         }
-      } finally {
-        btn.disabled = false;
-        btn.textContent = prevText;
       }
     };
   }
