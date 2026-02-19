@@ -110,6 +110,52 @@ async function requireAdmin(req, res, next) {
   }
 }
 
+// ===============================
+// ADMIN: CLIENT DEVICE ALIASES (Starlink-like rename)
+// ===============================
+function normalizeAlias(alias) {
+  const a = String(alias || "").trim();
+  if (!a) return "";
+  // Keep it simple: 1..32 chars, no newlines/tabs
+  const cleaned = a
+    .replace(/[\r\n\t]/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return cleaned.slice(0, 32);
+}
+
+async function getDeviceAliasMap(macs) {
+  try {
+    if (!supabase) return {};
+    // Prefer existing normalizer used elsewhere in the codebase
+    const list = Array.from(
+      new Set(
+        (macs || [])
+          .map((m) => normalizeMacColon(String(m || "")) || null)
+          .filter(Boolean)
+          .map((m) => String(m).toUpperCase())
+      )
+    );
+    if (!list.length) return {};
+
+    const { data, error } = await supabase
+      .from("client_devices")
+      .select("client_mac, alias")
+      .in("client_mac", list);
+
+    if (error) return {};
+
+    const map = {};
+    for (const row of data || []) {
+      const k = String(row?.client_mac || "").toUpperCase();
+      if (k) map[k] = row?.alias || null;
+    }
+    return map;
+  } catch (_) {
+    return {};
+  }
+}
+
 
 
 
@@ -960,11 +1006,33 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
 
+    // Best-effort: allow search by device alias too (client_devices.alias)
+    let aliasMacs = [];
     if (search) {
       const s = search.replace(/%/g, "\\%"); // avoid wildcard injection
-      q = q.or(
-        `client_mac.ilike.%${s}%,voucher_code.ilike.%${s}%,mvola_phone.ilike.%${s}%`
-      );
+      try {
+        const { data: arows, error: aerr } = await supabase
+          .from("client_devices")
+          .select("client_mac")
+          .ilike("alias", `%${s}%`)
+          .limit(50);
+        if (!aerr) {
+          aliasMacs = (arows || [])
+            .map((r) => String(r?.client_mac || "").toUpperCase())
+            .filter(Boolean);
+        }
+      } catch (_) {}
+
+      const orParts = [
+        `client_mac.ilike.%${s}%`,
+        `voucher_code.ilike.%${s}%`,
+        `mvola_phone.ilike.%${s}%`,
+      ];
+      if (aliasMacs.length) {
+        // supabase OR syntax supports IN
+        orParts.push(`client_mac.in.(${aliasMacs.map((m) => `"${m}"`).join(",")})`);
+      }
+      q = q.or(orParts.join(","));
     }
 
     // ✅ Filter by DB truth
@@ -988,6 +1056,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       voucher_code: r.voucher_code,
 
       client_mac: r.client_mac,
+      client_name: null, // filled from client_devices (best-effort)
       ap_mac: r.ap_mac,
       ap_name: null, // will be filled from Tanaza (best-effort)
 
@@ -1022,6 +1091,16 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
 
     }));
 
+    // ✅ Add Device Alias (best-effort)
+    try {
+      const macs = Array.from(new Set(items.map(i => i.client_mac).filter(Boolean)));
+      const map = await getDeviceAliasMap(macs);
+      for (const it of items) {
+        const k = String(it.client_mac || "").toUpperCase();
+        it.client_name = map?.[k] || null;
+      }
+    } catch (_) {}
+
     // ✅ Add AP Name from Tanaza (best-effort, does not block response if Tanaza fails)
     try {
       const apMacs = Array.from(new Set(items.map(i => i.ap_mac).filter(Boolean)));
@@ -1055,6 +1134,45 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// POST /api/admin/client-devices/rename
+// Body: { client_mac, alias }  (alias empty => remove)
+app.post("/api/admin/client-devices/rename", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const client_mac_raw = req.body?.client_mac || req.body?.clientMac || null;
+    const client_mac = normalizeMacColon(String(client_mac_raw || "")) || null;
+    if (!client_mac) return res.status(400).json({ error: "client_mac_invalid" });
+
+    const alias = normalizeAlias(req.body?.alias);
+
+    if (!alias) {
+      // Remove alias
+      const { error } = await supabase
+        .from("client_devices")
+        .delete()
+        .eq("client_mac", String(client_mac).toUpperCase());
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json({ ok: true, client_mac: String(client_mac).toUpperCase(), alias: null });
+    }
+
+    const payload = {
+      client_mac: String(client_mac).toUpperCase(),
+      alias,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error } = await supabase
+      .from("client_devices")
+      .upsert(payload, { onConflict: "client_mac" });
+    if (error) return res.status(500).json({ error: error.message });
+
+    return res.json({ ok: true, client_mac: payload.client_mac, alias: payload.alias });
+  } catch (e) {
+    return res.status(500).json({ error: String(e?.message || e) });
   }
 });
 
@@ -1098,6 +1216,19 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
 
     if (error) return res.status(500).json({ error: error.message });
     if (!data) return res.status(404).json({ error: "not_found" });
+
+    // ✅ Device alias (best-effort)
+    try {
+      const cm = String(data.client_mac || "").toUpperCase();
+      if (cm) {
+        const map = await getDeviceAliasMap([cm]);
+        data.client_name = map?.[cm] || null;
+      } else {
+        data.client_name = null;
+      }
+    } catch (_) {
+      data.client_name = null;
+    }
 
     // ✅ Make UI use DB truth
     data.stored_status = data.status || null;

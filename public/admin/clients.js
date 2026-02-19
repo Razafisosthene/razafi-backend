@@ -261,8 +261,15 @@ function renderTable(items) {
     // ✅ AP: human name if available, else MAC, else —
     const apDisplay = it.ap_name || it.ap_mac || "—";
 
+    const clientCell = it.client_name
+      ? `<div style="display:flex; flex-direction:column; gap:2px;">
+           <div style="font-weight:800;">${esc(it.client_name)}</div>
+           <div style="font-size:12px; opacity:.75;">${esc(it.client_mac || "—")}</div>
+         </div>`
+      : `${esc(it.client_mac || "—")}`;
+
     tr.innerHTML = `
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.client_mac || "—")}</td>
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${clientCell}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
@@ -376,6 +383,7 @@ async function openDetail(id) {
     sub.textContent = `Voucher ${it.voucher_code || "—"} · Session ID ${it.id}`;
 
     const rows = [
+      ["Device name", it.client_name || "—"],
       ["Client MAC", it.client_mac],
       ["AP", it.ap_name || "—"],
       ["Pool", it.pool?.name || it.pool_name || it.pool_id],
@@ -405,6 +413,82 @@ async function openDetail(id) {
         <div style="font-size:15px; font-weight:700; margin-top:4px; word-break: break-word;">${esc(v ?? "—")}</div>
       </div>
     `).join("");
+
+    // --------------------------------------------------
+    // Device rename (Starlink-like) — by client_mac
+    // --------------------------------------------------
+    if (it && it.client_mac) {
+      const blockId = `renameBlock_${it.id}`;
+      const inputId = `renameInput_${it.id}`;
+      const btnId = `renameBtn_${it.id}`;
+      const msgId = `renameMsg_${it.id}`;
+
+      detail.insertAdjacentHTML("beforeend", `
+        <div id="${blockId}" style="grid-column: 1 / -1; border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; flex-wrap:wrap;">
+            <div>
+              <div style="font-size:12px; opacity:.7;">Rename device (by MAC)</div>
+              <div class="subtitle" style="margin-top:6px; opacity:.8;">This name will appear in Clients table for this device.</div>
+            </div>
+            <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+              <div>
+                <div style="font-size:12px; opacity:.7;">Device name</div>
+                <input id="${inputId}" type="text" maxlength="32" value="${esc(it.client_name || "")}" placeholder="e.g. Stella" style="width:220px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
+              </div>
+              <button id="${btnId}" type="button" style="width:auto; padding:9px 14px;">Save</button>
+            </div>
+          </div>
+          <div id="${msgId}" class="subtitle" style="margin-top:10px; display:none;"></div>
+        </div>
+      `);
+
+      const btn = document.getElementById(btnId);
+      if (btn) {
+        btn.onclick = async () => {
+          const input = document.getElementById(inputId);
+          const msg = document.getElementById(msgId);
+          const blockEl = document.getElementById(blockId);
+          const alias = input ? String(input.value || "").trim() : "";
+
+          if (msg) { msg.style.display = "none"; msg.textContent = ""; msg.style.color = ""; }
+          const prevText = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = "Saving...";
+
+          try {
+            const out = await fetchJSON("/api/admin/client-devices/rename", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ client_mac: it.client_mac, alias })
+            });
+
+            // Update local cache (so table refresh feels instant)
+            const newAlias = out?.alias || null;
+            // If modal is still for same record, reflect immediately
+            it.client_name = newAlias;
+
+            if (msg) {
+              msg.style.display = "block";
+              msg.style.color = "#198754";
+              msg.textContent = newAlias ? "Saved ✅" : "Removed ✅";
+            }
+
+            // Refresh table to show the alias in the list
+            await loadClients();
+            flashUpdatedRowAndBlock({ sessionId: it.id, blockEl });
+          } catch (e) {
+            if (msg) {
+              msg.style.display = "block";
+              msg.style.color = "#b02a37";
+              msg.textContent = (e && e.message) ? e.message : String(e);
+            }
+          } finally {
+            btn.disabled = false;
+            btn.textContent = prevText;
+          }
+        };
+      }
+    }
 
     // --------------------------------------------------
     // Free plan override editor (admin)
