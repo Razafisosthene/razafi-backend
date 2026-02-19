@@ -1319,6 +1319,44 @@ function submitToLoginUrl(code, ev) {
         qp.set("voucher_code", String(last.code));
       }
 
+
+  // After a new voucher code is delivered (free or paid), refresh the full portal status
+  // so ALL UI (status badge, UX copy, plan, limits, buttons) updates without page refresh.
+  // Then pop+glow + scroll to voucher block (only if user is below).
+  async function refreshPortalAfterNewCode({ phone, code, receiptMeta = null } = {}) {
+    const safePhone = String(phone || "").trim();
+    const safeCode = String(code || "").trim();
+
+    // Keep phone in memory for later actions (e.g., use/copy)
+    if (safePhone) currentPhone = safePhone;
+
+    // Persist latest code early so fetchPortalStatus can fallback to voucher_code when needed
+    if (safeCode) {
+      try {
+        const m = (receiptMeta && typeof receiptMeta === "object") ? receiptMeta : {};
+        writeLastCode({
+          code: safeCode,
+          planName: m.planName || m.name || null,
+          durationMinutes: (m.durationMinutes ?? m.duration_minutes ?? null),
+          maxDevices: (m.maxDevices ?? m.max_devices ?? null),
+        });
+      } catch (_) {}
+    }
+
+    // Prefer single source of truth
+    const ok = await fetchPortalStatus();
+
+    // Fallback: at least show the code even if status endpoint fails temporarily
+    if (!ok && safeCode) {
+      setVoucherUI({ phone: safePhone, code: safeCode, meta: receiptMeta, focus: false });
+    }
+
+    // Premium: scroll (only if voucher is above viewport) + replayable pop+glow
+    try { focusVoucherBlock({ highlightMs: 1400 }); } catch (_) {}
+
+    return ok;
+  }
+
       const url = apiUrl("/api/portal/status?" + qp.toString());
       const r = await fetch(url, { method: "GET" });
       const j = await r.json().catch(() => ({}));
@@ -1744,23 +1782,14 @@ function submitToLoginUrl(code, ev) {
               if (resp && resp.status === 409 && data && (data.code || data.voucher_code) && (data.status === "pending" || data.status === "active" || data.status)) {
                 const existingCode = String(data.code || data.voucher_code || "").trim();
                 if (existingCode) {
-                  setVoucherUI({
-                    phone: cleaned,
-                    code: existingCode,
-                    meta: {
-                      planName: data?.plan?.name || data?.plan?.id || "Plan",
-                      durationMinutes: data?.plan?.duration_minutes || null,
-                      durationHours: data?.plan?.duration_hours || null,
-                      dataMb: data?.plan?.data_mb || null,
-                      maxDevices: data?.plan?.max_devices || null,
-                      deliveredAt: data?.delivered_at || null,
-                      activatedAt: data?.activated_at || null,
-                      expiresAt: data?.expires_at || null,
-                      status: data?.status || null,
-                    },
-                    focus: true });
+                  
+                  // Existing pending/active code: refresh full portal status so UI is consistent
+                  await refreshPortalAfterNewCode({ phone: cleaned, code: existingCode, receiptMeta: {
+                    planName: data?.plan?.name || data?.plan?.id || "Plan",
+                    durationMinutes: data?.plan?.duration_minutes || null,
+                    maxDevices: data?.plan?.max_devices || null,
+                  }});
                   showToast("⚠️ Achat désactivé : vous avez déjà un code en attente/actif. Utilisez d’abord le code ci-dessous.", "warning", 8000);
-                  try { focusVoucherBlock(); } catch (_) {}
                   return;
                 }
               }
@@ -1780,7 +1809,12 @@ function submitToLoginUrl(code, ev) {
                       sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
                     }
                   } catch (_) {}
-                  setVoucherUI({ phone: cleaned, code: freeCode, meta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.max_devices } : null, focus: true });
+                  
+                  await refreshPortalAfterNewCode({
+                    phone: cleaned,
+                    code: freeCode,
+                    receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices } : null,
+                  });
                   showToast("🎉 Code gratuit généré ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
                   return;
                 }
@@ -1801,7 +1835,12 @@ function submitToLoginUrl(code, ev) {
                 if (receiptDraft) sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
               } catch (_) {}
 
-              setVoucherUI({ phone: cleaned, code, meta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.max_devices } : null, focus: true });
+              
+              await refreshPortalAfterNewCode({
+                phone: cleaned,
+                code,
+                receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices } : null,
+              });
               showToast("🎉 Code reçu ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
             } catch (e) {
               console.error("[RAZAFI] payment error", e);
