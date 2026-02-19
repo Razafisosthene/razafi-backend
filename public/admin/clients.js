@@ -637,8 +637,11 @@ async function openDetail(id) {
 try {
   const sessionId = it.id;
   const blockId = `bonusBlock_${sessionId}`;
+  const dayId = `bonusDay_${sessionId}`;
+  const hourId = `bonusHour_${sessionId}`;
   const minId = `bonusMin_${sessionId}`;
-  const mbId = `bonusMb_${sessionId}`;
+  const gbId = `bonusGb_${sessionId}`;
+  const unlId = `bonusUnlimited_${sessionId}`;
   const noteId = `bonusNote_${sessionId}`;
   const btnId = `bonusBtn_${sessionId}`;
   const msgId = `bonusMsg_${sessionId}`;
@@ -651,8 +654,24 @@ try {
     curBonus = r?.item || curBonus;
   } catch (_) {}
 
-  const curMin = Math.floor(Number(curBonus.bonus_seconds || 0) / 60);
-  const curMb = Math.floor(Number(curBonus.bonus_bytes || 0) / (1024 * 1024));
+  const curSec = Number(curBonus.bonus_seconds || 0);
+  const curBytes = Number(curBonus.bonus_bytes || 0);
+
+  const curDays = Math.floor(curSec / 86400);
+  const curHours = Math.floor((curSec % 86400) / 3600);
+  const curMins = Math.floor((curSec % 3600) / 60);
+
+  let curMb = 0;
+  let curGbStr = "0";
+  let curUnlimited = false;
+  if (curBytes === -1) {
+    curUnlimited = true;
+    curGbStr = "Unlimited";
+  } else {
+    curMb = Math.floor(curBytes / (1024 * 1024));
+    const curGb = curBytes / (1024 * 1024 * 1024);
+    curGbStr = curBytes ? (curGb >= 10 ? curGb.toFixed(1) : curGb.toFixed(2)) : "0";
+  }
 
   detail.insertAdjacentHTML("beforeend", `
     <div id="${blockId}" style="grid-column: 1 / -1; border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
@@ -664,18 +683,30 @@ try {
             Data bonus increases MikroTik total limit on next authorize.
           </div>
           <div id="${curId}" style="margin-top:8px; font-size:13px;">
-            Current bonus: <b>${esc(curMin)} min</b> · <b>${esc(curMb)} MB</b>
+            Current bonus: <b>${esc(curDays)}j ${esc(curHours)}h ${esc(curMins)}min</b> · <b>${esc(curGbStr)}${curUnlimited ? "" : " GB"}</b>${(!curUnlimited && curMb) ? ` <span style="opacity:.75;">(${esc(curMb)} MB)</span>` : ""}
           </div>
         </div>
 
         <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
           <div>
-            <div style="font-size:12px; opacity:.7;">+ Minutes</div>
-            <input id="${minId}" type="number" min="0" step="1" value="0" style="width:120px;" />
+            <div style="font-size:12px; opacity:.7;">+ Jours</div>
+            <input id="${dayId}" type="number" min="0" step="1" value="0" style="width:90px;" />
           </div>
           <div>
-            <div style="font-size:12px; opacity:.7;">+ MB</div>
-            <input id="${mbId}" type="number" min="0" step="1" value="0" style="width:120px;" />
+            <div style="font-size:12px; opacity:.7;">+ Heures</div>
+            <input id="${hourId}" type="number" min="0" step="1" value="0" style="width:90px;" />
+          </div>
+          <div>
+            <div style="font-size:12px; opacity:.7;">+ Minutes</div>
+            <input id="${minId}" type="number" min="0" step="1" value="0" style="width:90px;" />
+          </div>
+          <div>
+            <div style="font-size:12px; opacity:.7;">+ Go</div>
+            <input id="${gbId}" type="number" min="0" step="1" value="0" style="width:90px;" />
+            <div style="margin-top:8px; display:flex; align-items:center; gap:8px;">
+              <input type="checkbox" id="${unlId}" />
+              <label for="${unlId}" style="font-size:13px;">Data illimité</label>
+            </div>
           </div>
           <div style="min-width:220px;">
             <div style="font-size:12px; opacity:.7;">Note (optional)</div>
@@ -694,13 +725,24 @@ try {
 
   if (btn) {
     btn.onclick = async () => {
-      const min = Number(document.getElementById(minId)?.value ?? 0);
-      const mb = Number(document.getElementById(mbId)?.value ?? 0);
+      const days = Number(document.getElementById(dayId)?.value ?? 0);
+      const hours = Number(document.getElementById(hourId)?.value ?? 0);
+      const mins = Number(document.getElementById(minId)?.value ?? 0);
+      const gb = Number(document.getElementById(gbId)?.value ?? 0);
       const note = String(document.getElementById(noteId)?.value ?? "").trim();
 
-      if (!Number.isFinite(min) || min < 0) return alert("Minutes must be >= 0");
-      if (!Number.isFinite(mb) || mb < 0) return alert("MB must be >= 0");
-      if (min === 0 && mb === 0) return alert("Please set minutes and/or MB.");
+      if (!Number.isFinite(days) || days < 0) return alert("Jours must be >= 0");
+      if (!Number.isFinite(hours) || hours < 0) return alert("Heures must be >= 0");
+      if (!Number.isFinite(mins) || mins < 0) return alert("Minutes must be >= 0");
+      if (!Number.isFinite(gb) || gb < 0) return alert("Go must be >= 0");
+
+      if (hours > 23) return alert("Heures doit être entre 0 et 23");
+      if (mins > 59) return alert("Minutes doit être entre 0 et 59");
+
+      const add_minutes = (days * 1440) + (hours * 60) + mins;
+      const add_mb = unlimited_data ? 0 : (gb * 1024);
+
+      if (add_minutes === 0 && add_mb === 0 && !unlimited_data) return alert("Please set a time and/or data bonus (or enable Data illimité). ");
 
       const prevText = btn.textContent;
       btn.disabled = true;
@@ -712,8 +754,9 @@ try {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             voucher_session_id: sessionId,
-            add_minutes: min,
-            add_mb: mb,
+            add_minutes,
+            add_mb,
+            unlimited_data,
             note: note || null
           })
         });
