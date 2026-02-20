@@ -157,41 +157,6 @@ async function getDeviceAliasMap(macs) {
 }
 
 
-// Best-effort mapping for MikroTik (System 3) routers:
-// You can optionally create a Supabase table `mikrotik_routers` with columns:
-// - nas_id (text, primary key)
-// - display_name (text)
-// If the table does not exist, we gracefully fall back to showing the raw nas_id.
-async function getRouterDisplayNameMap(nasIds) {
-  try {
-    if (!supabase) return {};
-    const list = Array.from(
-      new Set((nasIds || []).map((s) => String(s || "").trim()).filter(Boolean))
-    );
-    if (!list.length) return {};
-
-    // If the table doesn't exist (or RLS blocks), this will throw — we catch and fallback.
-    const { data, error } = await supabase
-      .from("mikrotik_routers")
-      .select("nas_id, display_name")
-      .in("nas_id", list)
-      .limit(500);
-
-    if (error) throw error;
-
-    const map = {};
-    for (const r of data || []) {
-      const k = String(r?.nas_id || "").trim();
-      if (!k) continue;
-      map[k] = String(r?.display_name || "").trim() || k;
-    }
-    return map;
-  } catch (_) {
-    return {};
-  }
-}
-
-
 
 
 global.__RAZAFI_STARTED_AT__ = new Date().toISOString();
@@ -1156,43 +1121,64 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     }
 
     
-
-    // ✅ For System 3 (MikroTik), ap_mac is often null. In that case we can still display
-    // a meaningful "AP" label by using nas_id (router identity / NAS-Identifier).
-    // We fetch nas_id from voucher_sessions (best-effort) to avoid depending on view columns.
+    // ------------------------------------------------------------
+    // System 3 fallback: if ap_mac is null (MikroTik), show router identity.
+    // Strategy:
+    // - fetch voucher_sessions.nas_id for returned ids (best-effort)
+    // - optionally map nas_id -> friendly name via public.mikrotik_routers
+    // - set ap_name if still missing
+    // ------------------------------------------------------------
     try {
-      const ids = Array.from(new Set(items.map(i => i.id).filter(Boolean)));
+      const ids = Array.from(new Set(items.map((i) => i.id).filter(Boolean)));
       if (ids.length) {
-        const { data: rows, error: nerr } = await supabase
+        // 1) Fetch nas_id from base table (does not depend on vw columns)
+        const { data: vsRows, error: vsErr } = await supabase
           .from("voucher_sessions")
           .select("id, nas_id")
-          .in("id", ids)
-          .limit(500);
+          .in("id", ids);
 
-        if (!nerr && rows) {
-          const byId = {};
-          for (const r of rows) byId[r.id] = r.nas_id || null;
+        if (!vsErr && Array.isArray(vsRows) && vsRows.length) {
+          const idToNas = Object.fromEntries(
+            vsRows
+              .filter((r) => r && r.id)
+              .map((r) => [r.id, (r.nas_id ? String(r.nas_id) : null)])
+          );
 
-          // attach nas_id + fallback ap_name if Tanaza didn't fill it
-          const nasIds = [];
-          for (const it of items) {
-            it.nas_id = byId[it.id] || null;
-            if (it.nas_id) nasIds.push(it.nas_id);
+          // 2) Optional friendly name mapping table
+          const nasIds = Array.from(
+            new Set(Object.values(idToNas).filter((v) => v && String(v).trim()))
+          );
+
+          let nasToName = {};
+          if (nasIds.length) {
+            const { data: rRows, error: rErr } = await supabase
+              .from("mikrotik_routers")
+              .select("nas_id, display_name")
+              .in("nas_id", nasIds);
+
+            if (!rErr && Array.isArray(rRows)) {
+              nasToName = Object.fromEntries(
+                rRows
+                  .filter((r) => r && r.nas_id && r.display_name)
+                  .map((r) => [String(r.nas_id), String(r.display_name)])
+              );
+            }
           }
 
-          const routerNameMap = await getRouterDisplayNameMap(nasIds);
-
+          // 3) Apply fallback
           for (const it of items) {
             if (!it.ap_name) {
-              const nas = it.nas_id;
-              it.ap_name = (nas && (routerNameMap[nas] || nas)) || null;
+              const nas = idToNas[it.id];
+              if (nas) it.ap_name = nasToName[nas] || nas;
             }
           }
         }
       }
     } catch (e) {
-      // ignore: keep response intact
+      // Ignore if the column/table doesn't exist yet, or if RLS blocks it.
+      console.error("ADMIN CLIENTS: MikroTik AP fallback failed:", e?.message || e);
     }
+
 // ✅ Summary based on DB truth_status
     const total = count || 0;
     const active = items.filter(i => i.truth_status === "active").length;
@@ -1290,21 +1276,6 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
     if (error) return res.status(500).json({ error: error.message });
     if (!data) return res.status(404).json({ error: "not_found" });
 
-    // ✅ System 3 support: fetch nas_id (router identity) from voucher_sessions (best-effort)
-    // so we can display an AP label even when ap_mac is null.
-    try {
-      const { data: row, error: nerr } = await supabase
-        .from("voucher_sessions")
-        .select("nas_id")
-        .eq("id", id)
-        .maybeSingle();
-      if (!nerr && row) data.nas_id = row.nas_id || null;
-      else data.nas_id = null;
-    } catch (_) {
-      data.nas_id = null;
-    }
-
-
     // ✅ Device alias (best-effort)
     try {
       const cm = String(data.client_mac || "").toUpperCase();
@@ -1340,23 +1311,42 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
       data.ap_name = null;
     }
 
-    
+    // System 3 fallback: if no Tanaza AP name, show MikroTik router identity (nas_id)
+    try {
+      if (!data.ap_name) {
+        const { data: vsRow, error: vsErr } = await supabase
+          .from("voucher_sessions")
+          .select("nas_id")
+          .eq("id", data.id)
+          .maybeSingle();
 
-    // ✅ If Tanaza didn't provide ap_name (no ap_mac), fall back to MikroTik router display name / nas_id
-    if (!data.ap_name) {
-      try {
-        const nas = String(data.nas_id || "").trim();
+        const nas = !vsErr && vsRow?.nas_id ? String(vsRow.nas_id) : null;
+
         if (nas) {
-          const map = await getRouterDisplayNameMap([nas]);
-          data.ap_name = map?.[nas] || nas;
-        } else {
-          data.ap_name = null;
+          // Optional friendly mapping table
+          try {
+            const { data: rRow, error: rErr } = await supabase
+              .from("mikrotik_routers")
+              .select("display_name")
+              .eq("nas_id", nas)
+              .maybeSingle();
+
+            if (!rErr && rRow?.display_name) {
+              data.ap_name = String(rRow.display_name);
+            } else {
+              data.ap_name = nas;
+            }
+          } catch (_) {
+            data.ap_name = nas;
+          }
         }
-      } catch (_) {
-        data.ap_name = data.nas_id || null;
       }
+    } catch (e) {
+      // ignore
     }
-// normalize remaining_seconds to number/null
+
+
+    // normalize remaining_seconds to number/null
     data.remaining_seconds =
       (data.remaining_seconds === 0 || data.remaining_seconds)
         ? Number(data.remaining_seconds)
@@ -4031,6 +4021,7 @@ app.post("/api/new/purchase", async (req, res) => {
         voucher_code: voucherCode,
         plan_id: plan.id,
         pool_id: pool_id || null,
+        nas_id: (req.nas_id || body.nas_id || body.nasId || null),
         status: "pending",
         client_mac: (normalizeMacColon(body.client_mac || body.clientMac || body.clientMAC || null) || (body.client_mac || body.clientMac || body.clientMAC || null)),
         ap_mac: (normalizeMacColon(body.ap_mac || body.apMac || null) || (body.ap_mac || body.apMac || null)),
