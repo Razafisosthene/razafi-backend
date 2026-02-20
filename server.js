@@ -157,6 +157,41 @@ async function getDeviceAliasMap(macs) {
 }
 
 
+// Best-effort mapping for MikroTik (System 3) routers:
+// You can optionally create a Supabase table `mikrotik_routers` with columns:
+// - nas_id (text, primary key)
+// - display_name (text)
+// If the table does not exist, we gracefully fall back to showing the raw nas_id.
+async function getRouterDisplayNameMap(nasIds) {
+  try {
+    if (!supabase) return {};
+    const list = Array.from(
+      new Set((nasIds || []).map((s) => String(s || "").trim()).filter(Boolean))
+    );
+    if (!list.length) return {};
+
+    // If the table doesn't exist (or RLS blocks), this will throw — we catch and fallback.
+    const { data, error } = await supabase
+      .from("mikrotik_routers")
+      .select("nas_id, display_name")
+      .in("nas_id", list)
+      .limit(500);
+
+    if (error) throw error;
+
+    const map = {};
+    for (const r of data || []) {
+      const k = String(r?.nas_id || "").trim();
+      if (!k) continue;
+      map[k] = String(r?.display_name || "").trim() || k;
+    }
+    return map;
+  } catch (_) {
+    return {};
+  }
+}
+
+
 
 
 global.__RAZAFI_STARTED_AT__ = new Date().toISOString();
@@ -1120,7 +1155,45 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       console.error("ADMIN CLIENTS: Tanaza name lookup failed:", e?.message || e);
     }
 
-    // ✅ Summary based on DB truth_status
+    
+
+    // ✅ For System 3 (MikroTik), ap_mac is often null. In that case we can still display
+    // a meaningful "AP" label by using nas_id (router identity / NAS-Identifier).
+    // We fetch nas_id from voucher_sessions (best-effort) to avoid depending on view columns.
+    try {
+      const ids = Array.from(new Set(items.map(i => i.id).filter(Boolean)));
+      if (ids.length) {
+        const { data: rows, error: nerr } = await supabase
+          .from("voucher_sessions")
+          .select("id, nas_id")
+          .in("id", ids)
+          .limit(500);
+
+        if (!nerr && rows) {
+          const byId = {};
+          for (const r of rows) byId[r.id] = r.nas_id || null;
+
+          // attach nas_id + fallback ap_name if Tanaza didn't fill it
+          const nasIds = [];
+          for (const it of items) {
+            it.nas_id = byId[it.id] || null;
+            if (it.nas_id) nasIds.push(it.nas_id);
+          }
+
+          const routerNameMap = await getRouterDisplayNameMap(nasIds);
+
+          for (const it of items) {
+            if (!it.ap_name) {
+              const nas = it.nas_id;
+              it.ap_name = (nas && (routerNameMap[nas] || nas)) || null;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // ignore: keep response intact
+    }
+// ✅ Summary based on DB truth_status
     const total = count || 0;
     const active = items.filter(i => i.truth_status === "active").length;
     const pending = items.filter(i => i.truth_status === "pending").length;
@@ -1217,6 +1290,21 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
     if (error) return res.status(500).json({ error: error.message });
     if (!data) return res.status(404).json({ error: "not_found" });
 
+    // ✅ System 3 support: fetch nas_id (router identity) from voucher_sessions (best-effort)
+    // so we can display an AP label even when ap_mac is null.
+    try {
+      const { data: row, error: nerr } = await supabase
+        .from("voucher_sessions")
+        .select("nas_id")
+        .eq("id", id)
+        .maybeSingle();
+      if (!nerr && row) data.nas_id = row.nas_id || null;
+      else data.nas_id = null;
+    } catch (_) {
+      data.nas_id = null;
+    }
+
+
     // ✅ Device alias (best-effort)
     try {
       const cm = String(data.client_mac || "").toUpperCase();
@@ -1252,7 +1340,23 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
       data.ap_name = null;
     }
 
-    // normalize remaining_seconds to number/null
+    
+
+    // ✅ If Tanaza didn't provide ap_name (no ap_mac), fall back to MikroTik router display name / nas_id
+    if (!data.ap_name) {
+      try {
+        const nas = String(data.nas_id || "").trim();
+        if (nas) {
+          const map = await getRouterDisplayNameMap([nas]);
+          data.ap_name = map?.[nas] || nas;
+        } else {
+          data.ap_name = null;
+        }
+      } catch (_) {
+        data.ap_name = data.nas_id || null;
+      }
+    }
+// normalize remaining_seconds to number/null
     data.remaining_seconds =
       (data.remaining_seconds === 0 || data.remaining_seconds)
         ? Number(data.remaining_seconds)
