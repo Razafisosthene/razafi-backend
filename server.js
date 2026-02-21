@@ -4871,43 +4871,73 @@ const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusByt
     // - Start timer on FIRST successful RADIUS accept
     // - Bonus intelligent: if admin granted bonus (time/data), allow reactivation even if status is expired/used.
     //   For time bonus, extend expires_at from NOW when already expired so the truth view can flip to active.
-    const isUsableStatus = (session.status === "active" || session.status === "pending");
-    const hasAnyBonus = (bonusSeconds > 0 || bonusBytes > 0);
 
-    if (!isUsableStatus) {
-      if (!hasAnyBonus) {
-        return sendReject("not_usable_status", {
-          entity_type: "voucher_session",
-          entity_id: session.id,
-          nas_id,
-          client_mac,
-          pool_id: session.pool_id || null,
-          plan_id: session.plan_id || null,
-          mvola_phone: session.mvola_phone || null,
-          metadata: { status: session.status }
-        });
-      }
+    const effectiveStatus = session.truth_status || session.status;
+const isUsableStatus = (effectiveStatus === "active" || effectiveStatus === "pending");
 
-      // Time bonus: if already started, move expires_at forward from NOW when expired.
-      if (bonusSeconds > 0 && session.started_at) {
-        try {
-          const nowMs = now.getTime();
-          const currentExpMs = session.expires_at ? new Date(session.expires_at).getTime() : nowMs;
-          const baseMs = Math.max(nowMs, Number.isFinite(currentExpMs) ? currentExpMs : nowMs);
-          const newExpIso = new Date(baseMs + (bonusSeconds * 1000)).toISOString();
+// Determine whether the session is currently time-expired (only meaningful if started_at exists).
+const nowMs = now.getTime();
+let expMs = null;
+try {
+  expMs = session.expires_at ? new Date(session.expires_at).getTime() : null;
+} catch (_) {
+  expMs = null;
+}
+const isTimeExpired = !!session.started_at && Number.isFinite(expMs) && expMs <= nowMs;
 
-          await supabase
-            .from("voucher_sessions")
-            .update({ expires_at: newExpIso, updated_at: now.toISOString() })
-            .eq("id", session.id);
+const hasTimeBonus = (bonusSeconds > 0);
+const hasDataBonus = (bonusBytes === -1 || bonusBytes > 0);
 
-          session.expires_at = newExpIso;
-        } catch (_) {}
-      }
-
-      // Data bonus: enforced via effectiveTotalBytes below.
-      // Continue as if active.
+if (!isUsableStatus) {
+  // Enterprise-grade: bonus must match the failure type.
+  // - If time-expired => ONLY time bonus can reactivate.
+  // - Otherwise => ONLY data bonus (or unlimited) can reactivate.
+  if (isTimeExpired) {
+    if (!hasTimeBonus) {
+      return sendReject("not_usable_time_expired_no_time_bonus", {
+        entity_type: "voucher_session",
+        entity_id: session.id,
+        nas_id,
+        client_mac,
+        pool_id: session.pool_id || null,
+        plan_id: session.plan_id || null,
+        mvola_phone: session.mvola_phone || null,
+        metadata: { status: session.status, truth_status: session.truth_status, expires_at: session.expires_at }
+      });
     }
+  } else {
+    if (!hasDataBonus) {
+      return sendReject("not_usable_needs_data_bonus", {
+        entity_type: "voucher_session",
+        entity_id: session.id,
+        nas_id,
+        client_mac,
+        pool_id: session.pool_id || null,
+        plan_id: session.plan_id || null,
+        mvola_phone: session.mvola_phone || null,
+        metadata: { status: session.status, truth_status: session.truth_status, expires_at: session.expires_at }
+      });
+    }
+  }
+
+  // Time bonus: ONLY extend expires_at when the session is time-expired.
+  if (hasTimeBonus && isTimeExpired && session.started_at) {
+    try {
+      const baseMs = nowMs; // expired => extend from NOW
+      const newExpIso = new Date(baseMs + (bonusSeconds * 1000)).toISOString();
+
+      await supabase
+        .from("voucher_sessions")
+        .update({ expires_at: newExpIso, updated_at: now.toISOString() })
+        .eq("id", session.id);
+
+      session.expires_at = newExpIso;
+    } catch (_) {}
+  }
+
+  // Data bonus: enforced later via effectiveTotalBytes + usedBytes check.
+  // Continue as if active.
+}
 
     // Start timer on FIRST successful RADIUS auth (if not started yet)
     if (!session.started_at || !session.expires_at) {
