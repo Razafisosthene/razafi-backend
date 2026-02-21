@@ -33,6 +33,9 @@ function generateSessionToken() {
 // ===============================
 const IS_PROD = process.env.NODE_ENV === "production";
 const ADMIN_COOKIE_NAME = "admin_session";
+
+// Global default support phone (used when pool has no contact_phone)
+const DEFAULT_SUPPORT_PHONE = process.env.DEFAULT_SUPPORT_PHONE || "038 75 00 592";
 const adminCookieOptions = () => ({
   httpOnly: true,
   secure: IS_PROD, // ✅ works in prod HTTPS + local dev HTTP
@@ -1716,7 +1719,7 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
     if (nas_id) {
       const { data: poolRow, error: poolRowErr } = await supabase
         .from("internet_pools")
-        .select("id,name,capacity_max,system,mikrotik_ip,radius_nas_id")
+        .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id")
         .eq("radius_nas_id", nas_id)
         .maybeSingle();
 
@@ -2031,6 +2034,29 @@ app.get("/api/portal/status", async (req, res) => {
       return res.status(400).json({ ok: false, error: "client_mac_or_voucher_code_required" });
     }
 
+
+    // ------------------------------
+    // Support phone (by pool) — System 3
+    // - If pool has contact_phone => use it
+    // - Else fallback to DEFAULT_SUPPORT_PHONE
+    // ------------------------------
+    let supportPhone = DEFAULT_SUPPORT_PHONE;
+    try {
+      const nas_id = String(req.query.nas_id || req.query.nasId || "").trim();
+      if (nas_id) {
+        const { data: poolRow, error: poolPhoneErr } = await supabase
+          .from("internet_pools")
+          .select("contact_phone")
+          .eq("radius_nas_id", nas_id)
+          .maybeSingle();
+        if (!poolPhoneErr && poolRow && poolRow.contact_phone && String(poolRow.contact_phone).trim()) {
+          supportPhone = String(poolRow.contact_phone).trim();
+        }
+      }
+    } catch (_) {
+      // fail-safe: keep default
+    }
+
     const selectCols = [
       "voucher_code",
       "truth_status",
@@ -2073,6 +2099,7 @@ app.get("/api/portal/status", async (req, res) => {
         session: {},
         purchase_lock: false,
         can_use: false,
+        contact_phone: supportPhone,
         ui: {
           badge: { tone: "none", label: "AUCUN CODE", icon: "ℹ️" },
           toast_on_plan_click: ""
@@ -2160,6 +2187,7 @@ app.get("/api/portal/status", async (req, res) => {
       },
       purchase_lock,
       can_use,
+      contact_phone: supportPhone,
       ui: {
         badge,
         toast_on_plan_click
@@ -2804,7 +2832,7 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
 
     let query = supabase
       .from("internet_pools")
-      .select("id,name,capacity_max,system,mikrotik_ip,radius_nas_id", { count: "exact" });
+      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id", { count: "exact" });
 
     // safest filter: by id only (schema-stable)
     if (q) {
@@ -2846,6 +2874,11 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
     const radius_nas_id_raw = req.body?.radius_nas_id;
     const radius_nas_id = radius_nas_id_raw === undefined || radius_nas_id_raw === null ? null : String(radius_nas_id_raw).trim();
 
+    const contact_phone_raw = req.body?.contact_phone;
+    const contact_phone = contact_phone_raw === undefined || contact_phone_raw === null
+      ? null
+      : String(contact_phone_raw).trim();
+
     if (!name) return res.status(400).json({ error: "name_required" });
     if (system === "mikrotik" && (!mikrotik_ip || mikrotik_ip.length < 3)) {
       return res.status(400).json({ error: "mikrotik_ip_required" });
@@ -2855,6 +2888,7 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
     }
 
     const payload = { name, system };
+    if (contact_phone !== null) payload.contact_phone = contact_phone.length ? contact_phone : null;
     if (mikrotik_ip) payload.mikrotik_ip = mikrotik_ip;
     if (radius_nas_id) payload.radius_nas_id = radius_nas_id;
     if (capacity_max !== null) payload.capacity_max = Math.round(capacity_max);
@@ -2862,7 +2896,7 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
     const { data, error } = await supabase
       .from("internet_pools")
       .insert(payload)
-      .select("id,name,capacity_max")
+      .select("id,name,capacity_max,contact_phone")
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -2893,6 +2927,14 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       }
       updates.capacity_max = capacity_max === null ? null : Math.round(capacity_max);
     }
+
+    // Optional: contact phone (nullable, can be cleared)
+    const hasContactPhone = Object.prototype.hasOwnProperty.call(req.body || {}, "contact_phone");
+    if (hasContactPhone) {
+      const v = req.body.contact_phone === null || req.body.contact_phone === "" ? null : String(req.body.contact_phone).trim();
+      updates.contact_phone = v && v.length ? v : null;
+    }
+
     const hasMikrotikIp = Object.prototype.hasOwnProperty.call(req.body || {}, "mikrotik_ip");
     if (hasMikrotikIp) {
       const v = req.body.mikrotik_ip === null || req.body.mikrotik_ip === "" ? null : String(req.body.mikrotik_ip).trim();
@@ -2925,7 +2967,7 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       .from("internet_pools")
       .update(updates)
       .eq("id", id)
-      .select("id,name,capacity_max")
+      .select("id,name,capacity_max,contact_phone")
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });

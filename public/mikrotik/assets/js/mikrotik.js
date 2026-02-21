@@ -773,6 +773,21 @@
   function applyPortalStatus(j) {
     const status = String(j?.status || "none").toLowerCase();
     portalTruthStatus = status;
+
+    // ------------------------------
+// Support phone (by pool) — System 3
+// ------------------------------
+try {
+  const phone =
+    (j?.contact_phone && String(j.contact_phone).trim()) ||
+    "038 75 00 592";
+
+  const el = document.getElementById("supportPhone");
+  if (el) el.textContent = phone;
+} catch (_) {
+  // fail-safe: do nothing
+}
+
     const code = String(j?.voucher_code || "").trim();
     const plan = j?.plan || {};
     const sess = j?.session || {};

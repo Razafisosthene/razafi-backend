@@ -8,7 +8,7 @@
 </head>
 <body>
   <div class="login-container" style="align-items:flex-start;">
-    <div class="card" style="width:100%; max-width:1100px; margin:24px auto;">
+    <div class="card" style="width:100%; max-width:1250px; margin:24px auto;">
       <div class="topbar">
         <div class="title">
           <h1>Pools</h1>
@@ -47,6 +47,7 @@
             <input id="newRadiusNasId" placeholder="NAS ID (ex: razafi-pool-1)" style="max-width:240px; margin-bottom:0; display:none;" />
 
             <input id="newName" placeholder="Pool name" style="max-width:320px; margin-bottom:0;" />
+            <input id="newContactPhone" placeholder="Contact phone (optional)" style="max-width:220px; margin-bottom:0;" />
             <input id="newCap" type="number" min="0" placeholder="capacity_max" style="max-width:220px; margin-bottom:0;" />
             <button type="button" id="createPoolBtn" style="width:auto;">Create</button>
           </div>
@@ -70,6 +71,7 @@
             <tr style="text-align:left; border-bottom:1px solid rgba(0,0,0,0.08);">
               <th style="padding:10px;">Pool</th>
               <th style="padding:10px;">Capacity</th>
+              <th style="padding:10px;">Contact</th>
               <th style="padding:10px;">Live clients</th>
               <th style="padding:10px;">Pool %</th>
               <th style="padding:10px;">Actions</th>
