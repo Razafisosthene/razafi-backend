@@ -72,6 +72,15 @@ function fmtBytes(bytes) {
     val /= 1024;
     i++;
   }
+
+  const systemFilterEl = document.getElementById("systemFilter");
+  if (systemFilterEl) {
+    systemFilterEl.addEventListener("change", () => {
+      currentSystemFilter = String(systemFilterEl.value || "all").toLowerCase();
+      loadClients().catch(showTopError);
+    });
+  }
+
   const digits = val >= 100 || i === 0 ? 0 : val >= 10 ? 1 : 2;
   return `${val.toFixed(digits)} ${units[i]}`;
 }
@@ -104,6 +113,33 @@ function computeQuota(it) {
 let debounceTimer = null;
 let lastItems = [];
 let currentDetailId = null;
+
+// -------------------------
+// System filter (Portal vs MikroTik)
+// -------------------------
+let currentSystemFilter = "all";
+function detectSystem(it) {
+  const s = String(it?.system || it?.pool_system || it?.pool?.system || "").toLowerCase().trim();
+  if (s === "portal" || s === "mikrotik") return s;
+  // Fallback (older rows): Tanaza portal rows usually have ap_mac; MikroTik rows often have null ap_mac and use nas_id fallback.
+  if (it?.ap_mac) return "portal";
+  return "mikrotik";
+}
+function filterItemsBySystem(items, sys) {
+  const f = String(sys || "all").toLowerCase().trim();
+  if (!Array.isArray(items) || f === "all" || !f) return items || [];
+  return (items || []).filter(it => detectSystem(it) === f);
+}
+function applySystemColumnVisibility(sys) {
+  const f = String(sys || "all").toLowerCase().trim();
+  const showData = (f === "mikrotik" || f === "all");
+  const thData = document.getElementById("thDataRemaining");
+  if (thData) thData.style.display = showData ? "" : "none";
+  // Hide all td marked as dataRemaining cells
+  document.querySelectorAll("[data-col='dataRemaining']").forEach(td => {
+    td.style.display = showData ? "" : "none";
+  });
+}
 
 // -------------------------
 // Session gate: page must be inaccessible without login
@@ -214,10 +250,18 @@ function filterItemsByStatus(items, uiStatusFilter) {
 // -------------------------
 function renderTable(items) {
   lastItems = items || [];
+  // Apply system filter (Portal vs MikroTik)
+  const sysFiltered = filterItemsBySystem(lastItems, currentSystemFilter);
+  // Keep lastItems as the full unfiltered list (used for dropdown option init), but render only filtered.
+  items = sysFiltered;
   const tbody = document.getElementById("tbody");
   const empty = document.getElementById("empty");
 
   tbody.innerHTML = "";
+
+  // Toggle column visibility based on system filter
+  applySystemColumnVisibility(currentSystemFilter);
+
 
   if (!items || items.length === 0) {
     empty.style.display = "block";
@@ -493,7 +537,7 @@ async function openDetail(id) {
     // --------------------------------------------------
     // Free plan override editor (admin)
     // --------------------------------------------------
-    if (it && it.free_plan && it.client_mac && it.plan_id) {
+    if (detectSystem(it) === "portal" && it && it.free_plan && it.client_mac && it.plan_id) {
       const fp = it.free_plan;
       const extra = Number(fp.extra_uses ?? 0);
       const used = Number(fp.used_free_count ?? 0);
@@ -634,6 +678,7 @@ async function openDetail(id) {
 // --------------------------------------------------
 // Voucher bonus (time/data) — by voucher_session_id
 // --------------------------------------------------
+if (detectSystem(it) === "mikrotik") {
 try {
   const sessionId = it.id;
   const blockId = `bonusBlock_${sessionId}`;
@@ -812,6 +857,7 @@ try {
     };
   }
 } catch (_) {}
+}
 
   } catch (e) {
     modalErr.style.display = "block";
@@ -864,6 +910,9 @@ function wireUI() {
   document.getElementById("clearBtn").onclick = () => {
     document.getElementById("search").value = "";
     document.getElementById("status").value = "all";
+    const sf = document.getElementById("systemFilter");
+    if (sf) sf.value = "all";
+    currentSystemFilter = "all";
     const pf = document.getElementById("planFilter");
     const pof = document.getElementById("poolFilter");
     if (pf) pf.value = "all";
@@ -879,6 +928,15 @@ function wireUI() {
   if (planFilterEl) {
     planFilterEl.addEventListener("change", () => {
       loadClients().catch(showTopError);
+
+  const systemFilterEl = document.getElementById("systemFilter");
+  if (systemFilterEl) {
+    systemFilterEl.addEventListener("change", () => {
+      currentSystemFilter = String(systemFilterEl.value || "all").toLowerCase();
+      loadClients().catch(showTopError);
+    });
+  }
+
     });
   }
 

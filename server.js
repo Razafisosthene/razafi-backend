@@ -1004,7 +1004,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         data_remaining_human,
 
         plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
-        pool:internet_pools ( id, name )
+        pool:internet_pools ( id, name, system )
       `, { count: "exact" })
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
@@ -1065,6 +1065,8 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
 
       pool_id: r.pool_id,
       pool_name: r.pool?.name || null,
+      pool_system: r.pool?.system || null,
+      system: (r.pool?.system || (r.ap_mac ? "portal" : "mikrotik")),
 
       plan_id: r.plan_id,
       plan_name: r.plans?.name || null,
@@ -1271,13 +1273,19 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
         data_remaining_human,
 
         plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
-        pool:internet_pools ( id, name )
+        pool:internet_pools ( id, name, system )
       `)
       .eq("id", id)
       .maybeSingle();
 
     if (error) return res.status(500).json({ error: error.message });
     if (!data) return res.status(404).json({ error: "not_found" });
+
+    // ✅ System (portal vs mikrotik) for UI separation
+    try {
+      data.pool_system = data.pool?.system || null;
+      data.system = (data.pool?.system || (data.ap_mac ? "portal" : "mikrotik"));
+    } catch (_) {}
 
     // ✅ Device alias (best-effort)
     try {
