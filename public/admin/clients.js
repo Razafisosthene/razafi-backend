@@ -61,10 +61,17 @@ function setTableSystemMode(mode) {
   currentSystemMode = String(mode || "all").toLowerCase();
   renderTableHeader(currentSystemMode);
 
-  // Re-render existing list without refetch (fast)
-  if (typeof lastItems !== "undefined") {
-    renderTable(lastItems);
-  }
+  // Re-render existing list + counters without refetch (fast)
+  renderSummary(computeSummaryFromItems(filterItemsBySystem(lastFetchedItems)));
+  const uiStatus = document.getElementById("status")?.value || "all";
+  lastItems = filterItemsByStatus(lastFetchedItems, uiStatus);
+  renderTable(lastItems);
+}
+
+function filterItemsBySystem(items) {
+  const mode = String(currentSystemMode || "all").toLowerCase();
+  if (!Array.isArray(items) || mode === "all") return items || [];
+  return (items || []).filter(it => getItemSystem(it) === mode);
 }
 
 function renderTableHeader(mode) {
@@ -158,6 +165,7 @@ function esc(s) {
 
 let debounceTimer = null;
 let lastItems = [];
+let lastFetchedItems = [];
 let currentDetailId = null;
 
 // -------------------------
@@ -191,6 +199,30 @@ function renderSummary(summary) {
       <div style="font-size:28px; font-weight:800; color:#0d6efd; line-height:1.1; margin-top:4px;">${esc(c.value)}</div>
     </div>
   `).join("");
+}
+
+function normStatus(s) {
+  return String(s || "").toLowerCase().trim();
+}
+
+function computeSummaryFromItems(items) {
+  const out = { total: 0, active: 0, pending: 0, expired: 0, used: 0 };
+  if (!Array.isArray(items)) return out;
+  out.total = items.length;
+  for (const it of items) {
+    const st = normStatus(it?.status);
+    if (st === "active") out.active++;
+    else if (st === "pending") out.pending++;
+    else if (st === "expired") out.expired++;
+    else if (st === "used") out.used++;
+  }
+  return out;
+}
+
+function filterItemsByStatus(items, uiStatus) {
+  const f = normStatus(uiStatus);
+  if (!Array.isArray(items) || !f || f === "all") return items || [];
+  return (items || []).filter(it => normStatus(it?.status) === f);
 }
 
 // -------------------------
@@ -318,18 +350,31 @@ async function loadClients() {
   err.style.display = "none";
   err.textContent = "";
 
-  const status = document.getElementById("status").value;
+  const uiStatus = document.getElementById("status").value;
   const search = document.getElementById("search").value.trim();
+  const planId = document.getElementById("planFilter")?.value || "all";
+  const poolId = document.getElementById("poolFilter")?.value || "all";
 
+  // Always fetch status=all so counters stay correct; filter status client-side
   const qs = new URLSearchParams();
-  qs.set("status", status);
+  qs.set("status", "all");
   if (search) qs.set("search", search);
+  if (planId && planId !== "all") qs.set("plan_id", planId);
+  if (poolId && poolId !== "all") qs.set("pool_id", poolId);
   qs.set("limit", "200");
   qs.set("offset", "0");
 
   const data = await fetchJSON("/api/admin/clients?" + qs.toString());
-  renderSummary(data.summary || { total: data.total, active: 0, pending: 0, expired: 0 });
-  renderTable(data.items || []);
+
+  lastFetchedItems = data.items || [];
+  initPlanAndPoolFiltersFromItems(lastFetchedItems);
+
+  // Summary reflects current system filter
+  renderSummary(computeSummaryFromItems(filterItemsBySystem(lastFetchedItems)));
+
+  // Table reflects status + system (table applies system filtering internally)
+  lastItems = filterItemsByStatus(lastFetchedItems, uiStatus);
+  renderTable(lastItems);
 }
 
 // ✅ small helper: flash a row green + show Updated ✅ effect
@@ -608,12 +653,38 @@ function wireUI() {
     document.getElementById("status").value = "all";
     const sysEl = document.getElementById("system");
     if (sysEl) sysEl.value = "all";
+    const pf = document.getElementById("planFilter");
+    const pof = document.getElementById("poolFilter");
+    if (pf) pf.value = "all";
+    if (pof) pof.value = "all";
     loadClients().catch(showTopError);
   };
 
   document.getElementById("status").addEventListener("change", () => {
     loadClients().catch(showTopError);
   });
+
+  const sysEl = document.getElementById("system");
+  if (sysEl) {
+    sysEl.addEventListener("change", () => {
+      // Switch headers + re-render from cache immediately
+      setTableSystemMode(sysEl.value);
+    });
+  }
+
+  const planFilterEl = document.getElementById("planFilter");
+  if (planFilterEl) {
+    planFilterEl.addEventListener("change", () => {
+      loadClients().catch(showTopError);
+    });
+  }
+
+  const poolFilterEl = document.getElementById("poolFilter");
+  if (poolFilterEl) {
+    poolFilterEl.addEventListener("change", () => {
+      loadClients().catch(showTopError);
+    });
+  }
 
   document.getElementById("search").addEventListener("input", () => {
     clearTimeout(debounceTimer);
