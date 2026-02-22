@@ -559,13 +559,15 @@ app.get(/^\/admin\/.*/, requireAdminPage, (req, res) => {
 // Prevent aggressive caching of portal JS (captive portals often cache strongly)
 app.use((req, res, next) => {
   try {
-    if (req.path === "/portal/assets/js/portal.js") {
+    // Prevent aggressive caching (captive portals + admin UI)
+    if (req.path === "/portal/assets/js/portal.js"
+      || req.path === "/admin/clients.js"
+      || req.path === "/admin/clients.html") {
       res.setHeader("Cache-Control", "no-store");
     }
   } catch (_) {}
   next();
 });
-
 app.use(express.static(path.join(__dirname, "public")));
 
 // ---------------------------------------------------------------------------
@@ -1004,7 +1006,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         data_remaining_human,
 
         plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
-        pool:internet_pools ( id, name )
+        pool:internet_pools ( id, name, system )
       `, { count: "exact" })
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
@@ -1065,6 +1067,8 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
 
       pool_id: r.pool_id,
       pool_name: r.pool?.name || null,
+      pool_system: r.pool?.system || null,
+      system: (r.pool?.system === "mikrotik" ? "mikrotik" : "portal"),
 
       plan_id: r.plan_id,
       plan_name: r.plans?.name || null,
@@ -1271,7 +1275,7 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
         data_remaining_human,
 
         plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
-        pool:internet_pools ( id, name )
+        pool:internet_pools ( id, name, system )
       `)
       .eq("id", id)
       .maybeSingle();
@@ -1396,6 +1400,12 @@ try {
 }
 
 
+
+    // System label for UI (non-breaking)
+    try {
+      data.pool_system = data.pool?.system || null;
+      data.system = (data.pool_system === "mikrotik" ? "mikrotik" : "portal");
+    } catch (_) {}
 
     res.json({ item: data });
   } catch (e) {
@@ -4163,29 +4173,6 @@ app.post("/api/new/authorize", async (req, res) => {
       return res.status(400).json({ error: "Unknown AP" });
     }
 
-
-    // If this session was not yet bound to a device, bind it now (first device wins).
-    // This fixes the case where "Utiliser ce code" was clicked but truth_status stays "pending"
-    // because started_at never gets set (session couldn't be found with client_mac).
-    if (!session.client_mac) {
-      try {
-        const upd = {};
-        upd.client_mac = client_mac;
-        if (ap_mac) upd.ap_mac = ap_mac;
-        // Keep delivered_at if already set; do not overwrite.
-        const { error: bindErr } = await supabase
-          .from("voucher_sessions")
-          .update(upd)
-          .eq("id", session.id);
-        if (bindErr) console.warn("activate: bind client_mac/ap_mac failed:", bindErr.message || bindErr);
-        // reflect in local object for downstream logic
-        session.client_mac = client_mac;
-        if (ap_mac) session.ap_mac = ap_mac;
-      } catch (e) {
-        console.warn("activate: bind exception:", e?.message || e);
-      }
-    }
-
     const now = new Date();
 
     // 3) FIRST CONNECTION → start voucher
@@ -4422,9 +4409,7 @@ app.post("/api/voucher/activate", async (req, res) => {
       .from("voucher_sessions")
       .select("id,voucher_code,plan_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)")
       .eq("voucher_code", voucher_code)
-      // System 2 safety: allow activating a delivered voucher even if client_mac is not yet bound in DB.
-      // Match either the same client_mac, or an unbound session (client_mac IS NULL), then we bind it below.
-      .or(`client_mac.eq.${client_mac},client_mac.is.null`)
+      .eq("client_mac", client_mac)
       .maybeSingle();
 
     if (sErr || !session) {
@@ -4468,15 +4453,27 @@ app.post("/api/voucher/activate", async (req, res) => {
     }
 
     
+    const isPortalActivation = Boolean(ap_mac || session.ap_mac); // System 2 (Tanaza/Portal)
+    const expiresIso = isPortalActivation
+      ? new Date(now.getTime() + minutes * 60 * 1000).toISOString()
+      : null;
+
     const updatePayload = {
-      // Arm the voucher (user clicked "Utiliser ce code")
-      // Timer will start on the FIRST successful RADIUS Access-Accept
+      // User clicked "Utiliser ce code"
       status: "active",
       activated_at: nowIso,
-      started_at: null,
-      expires_at: null,
+
+      // ✅ System 2: start immediately from NOW (truth view flips to active)
+      // ✅ System 3: keep null; timer starts on FIRST RADIUS Access-Accept
+      started_at: isPortalActivation ? nowIso : null,
+      expires_at: isPortalActivation ? expiresIso : null,
+
       updated_at: nowIso,
     };
+
+    // Bind first device for System 2 (and generally if unbound)
+    if (client_mac && !session.client_mac) updatePayload.client_mac = client_mac;
+
 
     // Keep the first AP that activated it (optional)
     if (ap_mac && !session.ap_mac) updatePayload.ap_mac = ap_mac;

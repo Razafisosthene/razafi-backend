@@ -1,29 +1,14 @@
-// =========================
-// RAZAFI Admin — Clients
-// - Fully switches table headers/layout based on system filter
-// - Keeps the rest of the setup intact (same endpoints, same detail modal calls)
-// =========================
-
 // -------------------------
 // Helpers
 // -------------------------
 async function fetchJSON(url, opts = {}) {
+  // keep structure intact; ensure credentials cannot be overridden
   const res = await fetch(url, { ...opts, credentials: "include" });
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { throw new Error("Server returned non-JSON"); }
   if (!res.ok) throw new Error(data?.error || data?.message || "Request failed");
   return data;
-}
-
-function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g, c => ({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
-  }[c]));
-}
-
-function normStatus(statusRaw) {
-  return String(statusRaw || "").toLowerCase().trim();
 }
 
 function fmtDate(iso) {
@@ -45,15 +30,70 @@ function fmtDHMS(seconds, alwaysShowSeconds = true) {
   if (d > 0) parts.push(`${d}j`);
   if (h > 0 || d > 0) parts.push(`${h}h`);
   if (m > 0 || h > 0 || d > 0) parts.push(`${m}min`);
+
   if (alwaysShowSeconds || r > 0 || parts.length === 0) parts.push(`${r}s`);
   return parts.join(" ");
 }
 
 function fmtRemaining(seconds) {
+  // Remaining time shown as: ...j ...h ...min ...s
   return fmtDHMS(seconds, true);
 }
 
-// ---- bytes helpers (System 3) ----
+function fmtDurationMinutes(minutes) {
+  if (minutes == null) return "—";
+  const s = Math.max(0, Number(minutes) || 0) * 60;
+  // Duration shown as: ...j ...h ...min (seconds omitted when 0)
+  return fmtDHMS(s, false);
+}
+
+
+// -------------------------
+// System mode (Portal vs MikroTik)
+// -------------------------
+function detectSystem(it) {
+  const ps = (it?.pool_system || it?.pool?.system || it?.system || "").toLowerCase();
+  if (ps === "mikrotik") return "mikrotik";
+  if (ps === "portal") return "portal";
+  // Fallback (best-effort): if it has ap_mac and no data quota fields, assume portal
+  if (it?.ap_mac) return "portal";
+  return "mikrotik";
+}
+
+function renderTableHeader(mode) {
+  const thead = document.getElementById("thead");
+  if (!thead) return;
+
+  const th = (label) => `<th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">${label}</th>`;
+
+  let cols = [];
+  if (mode === "portal") {
+    cols = ["Client MAC", "Voucher", "MVola", "Plan", "Price", "AP", "Status", "Remaining", "Expires"];
+  } else if (mode === "mikrotik") {
+    cols = ["Client MAC", "Voucher", "MVola", "Plan", "Price", "NAS", "Pool", "Status", "Time Remaining", "Data Remaining", "Expires"];
+  } else {
+    cols = ["System", "Client MAC", "Voucher", "MVola", "Plan", "Price", "NAS / AP", "Pool", "Status", "Time Remaining", "Data Remaining", "Expires"];
+  }
+
+  thead.innerHTML = `<tr style="text-align:left;">${cols.map(th).join("")}</tr>`;
+}
+function statusToRowClass(statusRaw) {
+    const s = String(statusRaw || "").toLowerCase().trim();
+    if (!s) return "";
+
+    // good/online
+    if (s.includes("active") || s.includes("started") || s.includes("running") || s.includes("connected")) {
+      return "row-status-active";
+    }
+
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+
+// ---- helpers: unwrap Supabase/REST objects and format bytes ----
 function v(x) {
   if (x && typeof x === "object" && "value" in x) return x.value;
   return x;
@@ -68,7 +108,10 @@ function fmtBytes(bytes) {
   const units = ["B", "KB", "MB", "GB", "TB"];
   let val = b;
   let i = 0;
-  while (val >= 1024 && i < units.length - 1) { val /= 1024; i++; }
+  while (val >= 1024 && i < units.length - 1) {
+    val /= 1024;
+    i++;
+  }
   const digits = val >= 100 || i === 0 ? 0 : val >= 10 ? 1 : 2;
   return `${val.toFixed(digits)} ${units[i]}`;
 }
@@ -91,351 +134,19 @@ function computeQuota(it) {
     toNum(it?.data_remaining_bytes) ||
     (totalBytes ? Math.max(totalBytes - usedBytes, 0) : 0);
 
+  const totalHuman = it?.data_total_human || (totalBytes ? fmtBytes(totalBytes) : "—");
+  const usedHuman = it?.data_used_human || (usedBytes ? fmtBytes(usedBytes) : "—");
   const remainingHuman = it?.data_remaining_human || (remainingBytes ? fmtBytes(remainingBytes) : "—");
-  return { remainingBytes, remainingHuman };
+
+  return { totalBytes, usedBytes, remainingBytes, totalHuman, usedHuman, remainingHuman };
 }
 
-// -------------------------
-// System detection
-// -------------------------
-function detectSystem(it) {
-  const s = String(it?.system || it?.pool_system || "").toLowerCase().trim();
-  if (s === "portal" || s === "mikrotik") return s;
-  // Fallback heuristic (keeps old data working):
-  // Tanaza/Portal rows usually have ap_mac; MikroTik rows usually don't.
-  if (it?.ap_mac) return "portal";
-  return "mikrotik";
-}
-
-function systemLabel(sys) {
-  return sys === "portal" ? "Portal" : sys === "mikrotik" ? "MikroTik" : "—";
-}
-
-// -------------------------
-// UI state
-// -------------------------
 let debounceTimer = null;
-let lastAllItems = [];
+let lastItems = [];
 let currentDetailId = null;
-let __planPoolOptionsLoaded = false;
-
-function showTopError(e) {
-  const err = document.getElementById("error");
-  err.style.display = "block";
-  err.textContent = e?.message || String(e);
-}
-function clearTopError() {
-  const err = document.getElementById("error");
-  err.style.display = "none";
-  err.textContent = "";
-}
 
 // -------------------------
-// Filters init (Plan/Pool)
-// -------------------------
-function initPlanAndPoolFiltersFromItems(items) {
-  if (__planPoolOptionsLoaded) return;
-  const planSel = document.getElementById("planFilter");
-  const poolSel = document.getElementById("poolFilter");
-  if (!planSel || !poolSel) return;
-
-  const plans = new Map();
-  const pools = new Map();
-  for (const it of (items || [])) {
-    if (it?.plan_id && it?.plan_name) plans.set(String(it.plan_id), String(it.plan_name));
-    if (it?.pool_id && it?.pool_name) pools.set(String(it.pool_id), String(it.pool_name));
-  }
-
-  if (!plans.size && !pools.size) return;
-
-  const planEntries = Array.from(plans.entries()).sort((a,b) => a[1].localeCompare(b[1]));
-  for (const [id, name] of planEntries) {
-    const opt = document.createElement("option");
-    opt.value = id;
-    opt.textContent = name;
-    planSel.appendChild(opt);
-  }
-
-  const poolEntries = Array.from(pools.entries()).sort((a,b) => a[1].localeCompare(b[1]));
-  for (const [id, name] of poolEntries) {
-    const opt = document.createElement("option");
-    opt.value = id;
-    opt.textContent = name;
-    poolSel.appendChild(opt);
-  }
-
-  __planPoolOptionsLoaded = true;
-}
-
-// -------------------------
-// Summary cards
-// -------------------------
-function computeSummaryFromItems(items) {
-  const summary = { total: 0, active: 0, pending: 0, used: 0, expired: 0 };
-  if (!Array.isArray(items)) return summary;
-  summary.total = items.length;
-  for (const it of items) {
-    const s = normStatus(it?.status);
-    if (s === "active") summary.active++;
-    else if (s === "pending") summary.pending++;
-    else if (s === "used") summary.used++;
-    else if (s === "expired") summary.expired++;
-  }
-  return summary;
-}
-
-function renderSummary(summary) {
-  const el = document.getElementById("summary");
-  const cards = [
-    { label: "Active", value: summary.active ?? 0 },
-    { label: "Pending", value: summary.pending ?? 0 },
-    { label: "Used", value: summary.used ?? 0 },
-    { label: "Expired", value: summary.expired ?? 0 },
-    { label: "Total", value: summary.total ?? 0 },
-  ];
-  el.innerHTML = cards.map(c => `
-    <div class="card" style="padding:12px 14px; border-radius:14px; min-width: 160px; box-shadow:none; border:1px solid rgba(0,0,0,.08);">
-      <div style="font-size:13px; opacity:.75;">${esc(c.label)}</div>
-      <div style="font-size:28px; font-weight:800; color:#0d6efd; line-height:1.1; margin-top:4px;">${esc(c.value)}</div>
-    </div>
-  `).join("");
-}
-
-// -------------------------
-// Dynamic table headers + rows
-// -------------------------
-function getUIMode() {
-  const sys = document.getElementById("systemFilter")?.value || "all";
-  if (sys === "portal") return "portal";
-  if (sys === "mikrotik") return "mikrotik";
-  return "all";
-}
-
-function renderHeader(mode) {
-  const thead = document.getElementById("thead");
-  const th = (label) => `<th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">${esc(label)}</th>`;
-
-  let cols = [];
-  if (mode === "portal") {
-    cols = ["Client MAC","Voucher","MVola","Plan","Price","AP","Status","Remaining","Expires"];
-  } else if (mode === "mikrotik") {
-    cols = ["Client MAC","Voucher","MVola","Plan","Price","NAS","Pool","Status","Time Remaining","Data Remaining","Expires"];
-  } else {
-    cols = ["System","Client MAC","Voucher","MVola","Plan","Price","NAS / AP","Pool","Status","Time Remaining","Data Remaining","Expires"];
-  }
-
-  thead.innerHTML = `<tr style="text-align:left;">${cols.map(th).join("")}</tr>`;
-}
-
-function statusToRowClass(statusRaw) {
-  const s = String(statusRaw || "").toLowerCase().trim();
-  if (!s) return "";
-  if (s.includes("active") || s.includes("started") || s.includes("running") || s.includes("connected")) return "row-status-active";
-  if (s.includes("pending") || s.includes("delivered")) return "row-status-pending";
-  if (s.includes("expired") || s.includes("used")) return "row-status-expired";
-  if (s.includes("fail") || s.includes("reject") || s.includes("block") || s.includes("error")) return "row-status-error";
-  return "";
-}
-
-function renderTable(items, mode) {
-  const tbody = document.getElementById("tbody");
-  const empty = document.getElementById("empty");
-
-  tbody.innerHTML = "";
-  if (!items || items.length === 0) {
-    empty.style.display = "block";
-    return;
-  }
-  empty.style.display = "none";
-
-  for (const it of items) {
-    const tr = document.createElement("tr");
-    tr.style.cursor = "pointer";
-    tr.dataset.id = it.id;
-
-    const rowCls = statusToRowClass(it.status);
-    if (rowCls) tr.classList.add(rowCls);
-
-    const sys = detectSystem(it);
-    const apDisplay = it.ap_name || it.ap_mac || "—";
-    const nasDisplay = it.nas_id || it.mikrotik_identity || "—";
-    const quota = computeQuota(it);
-
-    if (mode === "portal") {
-      tr.innerHTML = `
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.client_mac || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_price ?? "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(apDisplay)}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
-      `;
-    } else if (mode === "mikrotik") {
-      tr.innerHTML = `
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.client_mac || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_price ?? "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(nasDisplay)}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(quota.remainingHuman || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
-      `;
-    } else {
-      tr.innerHTML = `
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(systemLabel(sys))}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.client_mac || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_price ?? "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(sys === "portal" ? apDisplay : nasDisplay)}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(sys === "mikrotik" ? (quota.remainingHuman || "—") : "—")}</td>
-        <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
-      `;
-    }
-
-    tr.addEventListener("click", () => openDetail(it.id));
-    tbody.appendChild(tr);
-  }
-}
-
-// -------------------------
-// Filters apply (client-side)
-// -------------------------
-function applyFilters(allItems) {
-  const status = document.getElementById("status")?.value || "all";
-  const sysSel = document.getElementById("systemFilter")?.value || "all";
-  const planId = document.getElementById("planFilter")?.value || "all";
-  const poolId = document.getElementById("poolFilter")?.value || "all";
-
-  let out = Array.isArray(allItems) ? allItems.slice() : [];
-
-  if (sysSel !== "all") {
-    out = out.filter(it => detectSystem(it) === sysSel);
-  }
-  if (status !== "all") {
-    out = out.filter(it => normStatus(it?.status) === status);
-  }
-  if (planId !== "all") {
-    out = out.filter(it => String(it?.plan_id || "") === String(planId));
-  }
-  if (poolId !== "all") {
-    out = out.filter(it => String(it?.pool_id || "") === String(poolId));
-  }
-
-  return out;
-}
-
-// -------------------------
-// Loaders
-// -------------------------
-async function loadClients() {
-  clearTopError();
-
-  const search = document.getElementById("search")?.value?.trim() || "";
-  const qs = new URLSearchParams();
-  qs.set("status", "all"); // fetch all, UI filters do the rest
-  if (search) qs.set("search", search);
-  qs.set("limit", "200");
-  qs.set("offset", "0");
-
-  const data = await fetchJSON("/api/admin/clients?" + qs.toString());
-  const allItems = data.items || [];
-  lastAllItems = allItems;
-
-  // Populate Plan/Pool dropdowns once
-  initPlanAndPoolFiltersFromItems(allItems);
-
-  const filtered = applyFilters(allItems);
-  renderSummary(computeSummaryFromItems(filtered));
-
-  const mode = getUIMode();
-  renderHeader(mode);
-  renderTable(filtered, mode);
-}
-
-// -------------------------
-// Detail modal (kept minimal; uses your existing endpoint)
-// -------------------------
-async function openDetail(id) {
-  currentDetailId = id;
-  const modal = document.getElementById("modal");
-  const modalErr = document.getElementById("modalErr");
-  const detail = document.getElementById("detail");
-  const sub = document.getElementById("modalSub");
-
-  modalErr.style.display = "none";
-  modalErr.textContent = "";
-  detail.innerHTML = "";
-  sub.textContent = "Loading...";
-
-  modal.style.display = "block";
-
-  try {
-    const data = await fetchJSON("/api/admin/voucher-sessions/" + encodeURIComponent(id));
-    const s = data.session || data;
-
-    sub.textContent = `${s.voucher_code || ""} · ${s.client_mac || "—"}`;
-    const kv = (k,v) => `<div style="border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
-      <div style="font-size:12px; opacity:.7;">${esc(k)}</div>
-      <div style="margin-top:6px; font-weight:700;">${esc(v)}</div>
-    </div>`;
-
-    detail.innerHTML =
-      kv("Status", s.status || "—") +
-      kv("Client MAC", s.client_mac || "—") +
-      kv("MVola", s.mvola_phone || "—") +
-      kv("Plan", s.plan_name || "—") +
-      kv("Pool", s.pool_name || "—") +
-      kv("AP", s.ap_name || s.ap_mac || "—") +
-      kv("NAS", s.nas_id || "—") +
-      kv("Time remaining", fmtRemaining(s.remaining_seconds)) +
-      kv("Data remaining", (computeQuota(s).remainingHuman || "—")) +
-      kv("Expires", fmtDate(s.expires_at));
-
-  } catch (e) {
-    modalErr.style.display = "block";
-    modalErr.textContent = e?.message || String(e);
-  }
-}
-
-async function deleteCurrent() {
-  if (!currentDetailId) return;
-  if (!confirm("Delete this session?")) return;
-  const modalErr = document.getElementById("modalErr");
-  modalErr.style.display = "none";
-  modalErr.textContent = "";
-  try {
-    await fetchJSON("/api/admin/voucher-sessions/" + encodeURIComponent(currentDetailId), {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" }
-    });
-    closeModal();
-    await loadClients();
-    alert("Deleted.");
-  } catch (e) {
-    modalErr.style.display = "block";
-    modalErr.textContent = e?.message || String(e);
-  }
-}
-
-function closeModal() {
-  document.getElementById("modal").style.display = "none";
-  currentDetailId = null;
-}
-
-// -------------------------
-// Session gate
+// Session gate: page must be inaccessible without login
 // -------------------------
 async function requireAdmin() {
   try {
@@ -448,43 +159,800 @@ async function requireAdmin() {
 }
 
 // -------------------------
-// Wire UI
+// UI: Summary cards
 // -------------------------
+function renderSummary(summary) {
+  const el = document.getElementById("summary");
+  const cards = [
+    { label: "Active", value: summary.active ?? 0 },
+    { label: "Pending", value: summary.pending ?? 0 },
+    { label: "Used", value: summary.used ?? 0 },
+    { label: "Expired", value: summary.expired ?? 0 },
+    { label: "Total", value: summary.total ?? 0 },
+  ];
+
+  el.innerHTML = cards.map(c => `
+    <div class="card" style="padding:12px 14px; border-radius:14px; min-width: 160px; box-shadow:none; border:1px solid rgba(0,0,0,.08);">
+      <div style="font-size:13px; opacity:.75;">${esc(c.label)}</div>
+      <div style="font-size:28px; font-weight:800; color:#0d6efd; line-height:1.1; margin-top:4px;">${esc(c.value)}</div>
+    </div>
+  `).join("");
+}
+
+
+// -------------------------
+// UI: Counters + status grouping (UI only)
+// Goal: show "used" as its own tab/counter, separate from "expired".
+// Backend stays intact (status comes from DB truth view).
+// -------------------------
+function normStatus(statusRaw) {
+  return String(statusRaw || "").toLowerCase().trim();
+}
+
+function computeSummaryFromItems(items) {
+  const summary = { total: 0, active: 0, pending: 0, used: 0, expired: 0 };
+  if (!Array.isArray(items)) return summary;
+  summary.total = items.length;
+
+  for (const it of items) {
+    const s = normStatus(it?.status);
+    if (s === "active") summary.active++;
+    else if (s === "pending") summary.pending++;
+    else if (s === "used") summary.used++;
+    else if (s === "expired") summary.expired++;
+  }
+  return summary;
+}
+
+let __planPoolOptionsLoaded = false;
+function initPlanAndPoolFiltersFromItems(items) {
+  if (__planPoolOptionsLoaded) return;
+  const planSel = document.getElementById("planFilter");
+  const poolSel = document.getElementById("poolFilter");
+  if (!planSel || !poolSel) return;
+
+  const plans = new Map(); // id -> name
+  const pools = new Map(); // id -> name
+
+  for (const it of (items || [])) {
+    if (it?.plan_id && it?.plan_name) plans.set(String(it.plan_id), String(it.plan_name));
+    if (it?.pool_id && it?.pool_name) pools.set(String(it.pool_id), String(it.pool_name));
+  }
+
+  // Only populate if we actually have data (prevents empty dropdowns)
+  if (!plans.size && !pools.size) return;
+
+  // Plans
+  const planEntries = Array.from(plans.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  for (const [id, name] of planEntries) {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = name;
+    planSel.appendChild(opt);
+  }
+
+  // Pools
+  const poolEntries = Array.from(pools.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  for (const [id, name] of poolEntries) {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = name;
+    poolSel.appendChild(opt);
+  }
+
+  __planPoolOptionsLoaded = true;
+}
+
+function filterItemsByStatus(items, uiStatusFilter) {
+  const f = normStatus(uiStatusFilter);
+  if (!Array.isArray(items) || f === "all" || !f) return items || [];
+  return (items || []).filter(it => normStatus(it?.status) === f);
+}
+
+// -------------------------
+// UI: Table
+// -------------------------
+function renderTable(items, mode) {
+  lastItems = items || [];
+  const tbody = document.getElementById("tbody");
+  const empty = document.getElementById("empty");
+
+  renderTableHeader(mode);
+
+  tbody.innerHTML = "";
+
+  if (!items || items.length === 0) {
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+
+  function td(val) {
+    return `<td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(val)}</td>`;
+  }
+
+  for (const it of items) {
+    const tr = document.createElement("tr");
+    tr.className = statusToRowClass(it.status || it.truth_status || it.stored_status);
+
+    const clientCell = `
+      <div style="display:flex; flex-direction:column;">
+        <div style="font-weight:600;">${esc(it.client_name || it.client_mac || "—")}</div>
+        <div class="muted" style="font-size:12px;">${esc(it.client_mac || "—")}</div>
+      </div>
+    `;
+
+    const apDisplay = (it.ap_name || it.ap_mac || it.nas_id || "—");
+    const sys = detectSystem(it);
+    const sysLabel = sys === "mikrotik" ? "MikroTik" : "Portal";
+
+    const cells = [];
+    if (mode === "portal") {
+      cells.push(td(clientCell));
+      cells.push(td(it.voucher_code || "—"));
+      cells.push(td(it.mvola_phone || "—"));
+      cells.push(td(it.plan_name || "—"));
+      cells.push(td(it.plan_price ?? "—"));
+      cells.push(td(it.ap_name || it.ap_mac || "—"));
+      cells.push(td(it.status || "—"));
+      cells.push(td(fmtRemaining(it.remaining_seconds)));
+      cells.push(td(fmtDate(it.expires_at)));
+    } else if (mode === "mikrotik") {
+      cells.push(td(clientCell));
+      cells.push(td(it.voucher_code || "—"));
+      cells.push(td(it.mvola_phone || "—"));
+      cells.push(td(it.plan_name || "—"));
+      cells.push(td(it.plan_price ?? "—"));
+      cells.push(td(it.nas_id || it.ap_name || "—"));
+      cells.push(td(it.pool_name || "—"));
+      cells.push(td(it.status || "—"));
+      cells.push(td(fmtRemaining(it.remaining_seconds)));
+      cells.push(td((it.data_remaining_human ?? it.data_remaining_bytes) != null ? (it.data_remaining_human || fmtBytes(it.data_remaining_bytes)) : "—"));
+      cells.push(td(fmtDate(it.expires_at)));
+    } else {
+      cells.push(td(sysLabel));
+      cells.push(td(clientCell));
+      cells.push(td(it.voucher_code || "—"));
+      cells.push(td(it.mvola_phone || "—"));
+      cells.push(td(it.plan_name || "—"));
+      cells.push(td(it.plan_price ?? "—"));
+      cells.push(td(apDisplay));
+      cells.push(td(it.pool_name || "—"));
+      cells.push(td(it.status || "—"));
+      cells.push(td(fmtRemaining(it.remaining_seconds)));
+      cells.push(td((it.data_remaining_human ?? it.data_remaining_bytes) != null ? (it.data_remaining_human || fmtBytes(it.data_remaining_bytes)) : "—"));
+      cells.push(td(fmtDate(it.expires_at)));
+    }
+
+    tr.innerHTML = cells.join("");
+    tr.addEventListener("click", () => openDetail(it.id));
+    tbody.appendChild(tr);
+  }
+}
+
+// -------------------------
+// Loaders
+// -------------------------
+async function loadClients() {
+  const err = document.getElementById("error");
+  err.style.display = "none";
+  err.textContent = "";
+
+  const uiStatus = document.getElementById("status").value;
+  const uiSystem = document.getElementById("systemFilter")?.value || "all";
+  const search = document.getElementById("search").value.trim();
+  const planId = document.getElementById("planFilter")?.value || "all";
+  const poolId = document.getElementById("poolFilter")?.value || "all";
+
+  // Always fetch "all" so counters stay correct; we filter client-side by system/status/etc.
+  const qs = new URLSearchParams();
+  qs.set("status", "all");
+  if (search) qs.set("search", search);
+  if (planId && planId !== "all") qs.set("plan_id", planId);
+  if (poolId && poolId !== "all") qs.set("pool_id", poolId);
+  qs.set("limit", "200");
+  qs.set("offset", "0");
+
+  const data = await fetchJSON("/api/admin/clients?" + qs.toString());
+
+  const allItemsRaw = data.items || [];
+
+  // Apply system filter first (for summary + dropdown options)
+  const allItems = uiSystem === "all"
+    ? allItemsRaw
+    : allItemsRaw.filter(it => detectSystem(it) === uiSystem);
+
+  initPlanAndPoolFiltersFromItems(allItems);
+  const summary = computeSummaryFromItems(allItems);
+  renderSummary(summary);
+
+  const filtered = filterItemsByStatus(allItems, uiStatus);
+  renderTable(filtered, uiSystem === "all" ? "all" : uiSystem);
+}
+
+// ✅ small helper: flash a row green + show Updated ✅ effect + show Updated ✅ effect
+function flashUpdatedRowAndBlock({ sessionId, blockEl }){
+  // Table row flash
+  const tr = document.querySelector(`tr[data-id="${CSS.escape(String(sessionId))}"]`);
+  if (tr) {
+    const prev = tr.style.backgroundColor;
+    tr.style.transition = "background-color 250ms ease";
+    tr.style.backgroundColor = "rgba(25, 135, 84, 0.14)";
+    setTimeout(() => { tr.style.backgroundColor = prev || ""; }, 700);
+    setTimeout(() => { tr.style.transition = ""; }, 900);
+  }
+
+  // Modal block flash
+  if (blockEl) {
+    const prevBg = blockEl.style.backgroundColor;
+    const prevOutline = blockEl.style.outline;
+    blockEl.style.transition = "background-color 250ms ease, outline-color 250ms ease";
+    blockEl.style.backgroundColor = "rgba(25, 135, 84, 0.10)";
+    blockEl.style.outline = "2px solid rgba(25, 135, 84, 0.55)";
+    setTimeout(() => {
+      blockEl.style.backgroundColor = prevBg || "";
+      blockEl.style.outline = prevOutline || "";
+    }, 900);
+    setTimeout(() => { blockEl.style.transition = ""; }, 1100);
+  }
+}
+
+function updateRowRemaining(sessionId, remainingSeconds) {
+  const tr = document.querySelector(`tr[data-id="${CSS.escape(String(sessionId))}"]`);
+  if (!tr) return;
+  const tds = tr.querySelectorAll("td");
+  // Time Remaining column is now the 9th column (0-based index 8)
+  if (tds && tds.length >= 11) {
+    tds[8].textContent = fmtRemaining(remainingSeconds);
+  }
+}
+
+async function openDetail(id) {
+  currentDetailId = id;
+  const modal = document.getElementById("modal");
+  const detail = document.getElementById("detail");
+  const sub = document.getElementById("modalSub");
+  const modalErr = document.getElementById("modalErr");
+
+  modalErr.style.display = "none";
+  modalErr.textContent = "";
+  detail.innerHTML = "";
+  sub.textContent = "Loading...";
+  modal.style.display = "flex";
+
+  try {
+    const data = await fetchJSON("/api/admin/voucher-sessions/" + encodeURIComponent(id));
+    const it = data.item;
+
+    sub.textContent = `Voucher ${it.voucher_code || "—"} · Session ID ${it.id}`;
+
+    let rows = [
+      ["Device name", it.client_name || "—"],
+      ["Client MAC", it.client_mac],
+      ["AP", it.ap_name || "—"],
+      ["Pool", it.pool?.name || it.pool_name || it.pool_id],
+      ["Status", it.status || "—"],
+      ["Voucher", it.voucher_code],
+      ["MVola", it.mvola_phone],
+      ["Created", fmtDate(it.created_at)],
+      ["Delivered", fmtDate(it.delivered_at)],
+      ["Activated", fmtDate(it.activated_at)],
+      ["Started", fmtDate(it.started_at)],
+      ["Expires", fmtDate(it.expires_at)],
+      ["Remaining", fmtRemaining(it.remaining_seconds)],
+      ["Plan", it.plans?.name || it.plan_name],
+      ["Price", (it.plans?.price_ar ?? it.plan_price)],
+      ["Duration", fmtDurationMinutes(it.plans?.duration_minutes)],
+
+      // ✅ Data quota (human readable) from voucher_sessions_usage_view
+      ["Data total", computeQuota(it).totalHuman],
+      ["Data used", computeQuota(it).usedHuman],
+      ["Data remaining", computeQuota(it).remainingHuman],
+      ["Max devices", it.plans?.max_devices],
+    ];
+
+    // Show only relevant blocks per system
+    const sysMode = detectSystem(it);
+    if (sysMode === "portal") {
+      rows = rows.filter(([k]) => ![
+        "NAS",
+        "Data total",
+        "Data used",
+        "Data remaining"
+      ].includes(k));
+    }
+
+
+    detail.innerHTML = rows.map(([k,v]) => `
+      <div style="border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
+        <div style="font-size:12px; opacity:.7;">${esc(k)}</div>
+        <div style="font-size:15px; font-weight:700; margin-top:4px; word-break: break-word;">${esc(v ?? "—")}</div>
+      </div>
+    `).join("");
+
+    // --------------------------------------------------
+    // Device rename (Starlink-like) — by client_mac
+    // --------------------------------------------------
+    if (it && it.client_mac) {
+      const blockId = `renameBlock_${it.id}`;
+      const inputId = `renameInput_${it.id}`;
+      const btnId = `renameBtn_${it.id}`;
+      const msgId = `renameMsg_${it.id}`;
+
+      detail.insertAdjacentHTML("beforeend", `
+        <div id="${blockId}" style="grid-column: 1 / -1; border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; flex-wrap:wrap;">
+            <div>
+              <div style="font-size:12px; opacity:.7;">Rename device (by MAC)</div>
+              <div class="subtitle" style="margin-top:6px; opacity:.8;">This name will appear in Clients table for this device.</div>
+            </div>
+            <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+              <div>
+                <div style="font-size:12px; opacity:.7;">Device name</div>
+                <input id="${inputId}" type="text" maxlength="32" value="${esc(it.client_name || "")}" placeholder="e.g. Stella" style="width:220px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
+              </div>
+              <button id="${btnId}" type="button" style="width:auto; padding:9px 14px;">Save</button>
+            </div>
+          </div>
+          <div id="${msgId}" class="subtitle" style="margin-top:10px; display:none;"></div>
+        </div>
+      `);
+
+      const btn = document.getElementById(btnId);
+      if (btn) {
+        btn.onclick = async () => {
+          const input = document.getElementById(inputId);
+          const msg = document.getElementById(msgId);
+          const blockEl = document.getElementById(blockId);
+          const alias = input ? String(input.value || "").trim() : "";
+
+          if (msg) { msg.style.display = "none"; msg.textContent = ""; msg.style.color = ""; }
+          const prevText = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = "Saving...";
+
+          try {
+            const out = await fetchJSON("/api/admin/client-devices/rename", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ client_mac: it.client_mac, alias })
+            });
+
+            // Update local cache (so table refresh feels instant)
+            const newAlias = out?.alias || null;
+            // If modal is still for same record, reflect immediately
+            it.client_name = newAlias;
+
+            if (msg) {
+              msg.style.display = "block";
+              msg.style.color = "#198754";
+              msg.textContent = newAlias ? "Saved ✅" : "Removed ✅";
+            }
+
+            // Refresh table to show the alias in the list
+            await loadClients();
+            flashUpdatedRowAndBlock({ sessionId: it.id, blockEl });
+          } catch (e) {
+            if (msg) {
+              msg.style.display = "block";
+              msg.style.color = "#b02a37";
+              msg.textContent = (e && e.message) ? e.message : String(e);
+            }
+          } finally {
+            btn.disabled = false;
+            btn.textContent = prevText;
+          }
+        };
+      }
+    }
+
+    // --------------------------------------------------
+    // Free plan override editor (admin)
+    // --------------------------------------------------
+    if (it && it.free_plan && it.client_mac && it.plan_id) {
+      const fp = it.free_plan;
+      const extra = Number(fp.extra_uses ?? 0);
+      const used = Number(fp.used_free_count ?? 0);
+      const allowed = Number(fp.allowed_total ?? (1 + extra));
+      const remaining = Number(fp.remaining_free ?? Math.max(0, allowed - used));
+
+      const blockId = `freeOverride_${it.id}`;
+      const statsId = `freeStats_${it.id}`;
+      const inputId = `extraUses_${it.id}`;
+      const noteId = `extraNote_${it.id}`;
+      const btnId = `saveExtra_${it.id}`;
+      const msgId = `saveMsg_${it.id}`;
+
+      detail.insertAdjacentHTML("beforeend", `
+        <div id="${blockId}" style="grid-column: 1 / -1; border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+            <div>
+              <div style="font-size:12px; opacity:.7;">Free plan override</div>
+              <div id="${statsId}" style="font-size:15px; font-weight:800; margin-top:4px;">Used: ${esc(used)} · Allowed: ${esc(allowed)} · Remaining: ${esc(remaining)}</div>
+              <div style="font-size:12px; opacity:.75; margin-top:6px;">Rule: <b>used_free_count &lt; 1 + extra_uses</b></div>
+            </div>
+            <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+              <div>
+                <div style="font-size:12px; opacity:.7;">extra_uses</div>
+                <input id="${inputId}" type="number" min="0" max="1000" value="${esc(extra)}" style="width:120px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
+              </div>
+              <div style="min-width:240px;">
+                <div style="font-size:12px; opacity:.7;">note (optional)</div>
+                <input id="${noteId}" type="text" placeholder="Reason / note" style="width:240px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
+              </div>
+              <button id="${btnId}" type="button" style="width:auto; padding:9px 14px;">Save</button>
+            </div>
+          </div>
+          <div id="${msgId}" class="subtitle" style="margin-top:10px; display:none;"></div>
+        </div>
+      `);
+
+      // Load current note (and canonical extra_uses) from server
+      try {
+        const ov = await fetchJSON(`/api/admin/free-plan-overrides?client_mac=${encodeURIComponent(it.client_mac)}&plan_id=${encodeURIComponent(it.plan_id)}`);
+        const item = ov?.item || null;
+        if (item) {
+          const input = document.getElementById(inputId);
+          const note = document.getElementById(noteId);
+          if (input) input.value = Number(item.extra_uses ?? extra);
+          if (note) note.value = item.note || "";
+        }
+      } catch (_) {
+        // ignore (fail-open)
+      }
+
+      // Save handler (✅ restored: immediate UI update + highlight)
+      const btn = document.getElementById(btnId);
+      if (btn) {
+        btn.onclick = async () => {
+          const msg = document.getElementById(msgId);
+          const statsEl = document.getElementById(statsId);
+          const blockEl = document.getElementById(blockId);
+
+          if (msg) { msg.style.display = "none"; msg.textContent = ""; msg.style.color = ""; }
+          const input = document.getElementById(inputId);
+          const note = document.getElementById(noteId);
+          const extraUses = input ? Number(input.value) : 0;
+          const noteVal = note ? String(note.value || "").trim() : "";
+
+          // disable button while saving
+          const prevText = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = "Saving...";
+
+          try {
+            await fetchJSON("/api/admin/free-plan-overrides", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                client_mac: it.client_mac,
+                plan_id: it.plan_id,
+                extra_uses: extraUses,
+                note: noteVal,
+              })
+            });
+
+            // ✅ Re-fetch detail so Used/Allowed/Remaining becomes correct immediately
+            let refreshed = null;
+            try {
+              refreshed = await fetchJSON("/api/admin/voucher-sessions/" + encodeURIComponent(it.id));
+            } catch (_) {}
+
+            // Update UI counts
+            if (refreshed?.item?.free_plan && statsEl) {
+              const fp2 = refreshed.item.free_plan;
+              const extra2 = Number(fp2.extra_uses ?? extraUses ?? 0);
+              const used2 = Number(fp2.used_free_count ?? 0);
+              const allowed2 = Number(fp2.allowed_total ?? (1 + extra2));
+              const remaining2 = Number(fp2.remaining_free ?? Math.max(0, allowed2 - used2));
+              statsEl.textContent = `Used: ${used2} · Allowed: ${allowed2} · Remaining: ${remaining2}`;
+            } else if (statsEl) {
+              // fallback compute (still instant)
+              const extra2 = Number(extraUses ?? 0);
+              const used2 = Number(fp.used_free_count ?? 0);
+              const allowed2 = Number(1 + extra2);
+              const remaining2 = Math.max(0, allowed2 - used2);
+              statsEl.textContent = `Used: ${used2} · Allowed: ${allowed2} · Remaining: ${remaining2}`;
+            }
+
+            // Update background row remaining (if server returns remaining_seconds)
+            if (refreshed?.item && typeof refreshed.item.remaining_seconds !== "undefined") {
+              updateRowRemaining(it.id, refreshed.item.remaining_seconds);
+            }
+
+            // ✅ Show "Updated ✅" (green) and flash highlight like before
+            if (msg) {
+              msg.style.display = "block";
+              msg.style.color = "#198754";
+              msg.textContent = "Updated ✅";
+              setTimeout(() => {
+                // fade out, but keep silent (no scary message)
+                if (msg) msg.style.display = "none";
+              }, 1200);
+            }
+            flashUpdatedRowAndBlock({ sessionId: it.id, blockEl });
+
+          } catch (e) {
+            if (msg) {
+              msg.style.display = "block";
+              msg.style.color = "#d9534f";
+              msg.textContent = e?.message || String(e);
+            }
+          } finally {
+            btn.disabled = false;
+            btn.textContent = prevText;
+          }
+        };
+      }
+    }
+
+
+// --------------------------------------------------
+// Voucher bonus (time/data) — by voucher_session_id
+// --------------------------------------------------
+try {
+  const sessionId = it.id;
+  const blockId = `bonusBlock_${sessionId}`;
+  const dayId = `bonusDay_${sessionId}`;
+  const hourId = `bonusHour_${sessionId}`;
+  const minId = `bonusMin_${sessionId}`;
+  const gbId = `bonusGb_${sessionId}`;
+  const unlId = `bonusUnlimited_${sessionId}`;
+  const noteId = `bonusNote_${sessionId}`;
+  const btnId = `bonusBtn_${sessionId}`;
+  const msgId = `bonusMsg_${sessionId}`;
+  const curId = `bonusCur_${sessionId}`;
+
+  // Load current bonus
+  let curBonus = { bonus_seconds: 0, bonus_bytes: 0 };
+  try {
+    const r = await fetchJSON("/api/admin/voucher-bonus-overrides?voucher_session_id=" + encodeURIComponent(sessionId));
+    curBonus = r?.item || curBonus;
+  } catch (_) {}
+
+  const curSec = Number(curBonus.bonus_seconds || 0);
+  const curBytes = Number(curBonus.bonus_bytes || 0);
+
+  const curDays = Math.floor(curSec / 86400);
+  const curHours = Math.floor((curSec % 86400) / 3600);
+  const curMins = Math.floor((curSec % 3600) / 60);
+
+  let curMb = 0;
+  let curGbStr = "0";
+  let curUnlimited = false;
+  if (curBytes === -1) {
+    curUnlimited = true;
+    curGbStr = "Unlimited";
+  } else {
+    curMb = Math.floor(curBytes / (1024 * 1024));
+    const curGb = curBytes / (1024 * 1024 * 1024);
+    curGbStr = curBytes ? (curGb >= 10 ? curGb.toFixed(1) : curGb.toFixed(2)) : "0";
+  }
+
+  detail.insertAdjacentHTML("beforeend", `
+    <div id="${blockId}" style="grid-column: 1 / -1; border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; flex-wrap:wrap;">
+        <div>
+          <div style="font-size:12px; opacity:.7;">Bonus (time/data) for this voucher</div>
+          <div class="subtitle" style="margin-top:6px; opacity:.8;">
+            Add bonus even if expired/used. Time bonus extends <b>expires_at</b> if the session is already started.
+            Data bonus increases MikroTik total limit on next authorize.
+          </div>
+          <div id="${curId}" style="margin-top:8px; font-size:13px;">
+            Current bonus: <b>${esc(curDays)}j ${esc(curHours)}h ${esc(curMins)}min</b> · <b>${esc(curGbStr)}${curUnlimited ? "" : " GB"}</b>${(!curUnlimited && curMb) ? ` <span style="opacity:.75;">(${esc(curMb)} MB)</span>` : ""}
+          </div>
+        </div>
+
+        <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
+          <div>
+            <div style="font-size:12px; opacity:.7;">+ Jours</div>
+            <input id="${dayId}" type="number" min="0" step="1" value="0" style="width:90px;" />
+          </div>
+          <div>
+            <div style="font-size:12px; opacity:.7;">+ Heures</div>
+            <input id="${hourId}" type="number" min="0" step="1" value="0" style="width:90px;" />
+          </div>
+          <div>
+            <div style="font-size:12px; opacity:.7;">+ Minutes</div>
+            <input id="${minId}" type="number" min="0" step="1" value="0" style="width:90px;" />
+          </div>
+          <div>
+            <div style="font-size:12px; opacity:.7;">+ Go</div>
+            <input id="${gbId}" type="number" min="0" step="1" value="0" style="width:90px;" />
+            <div style="margin-top:8px; display:flex; align-items:center; gap:8px;">
+              <input type="checkbox" id="${unlId}" />
+              <label for="${unlId}" style="font-size:13px;">Data illimité</label>
+            </div>
+          </div>
+          <div style="min-width:220px;">
+            <div style="font-size:12px; opacity:.7;">Note (optional)</div>
+            <input id="${noteId}" type="text" placeholder="ex: goodwill / compensation" />
+          </div>
+          <button id="${btnId}" type="button" style="width:auto;">Add bonus</button>
+        </div>
+      </div>
+      <div id="${msgId}" class="subtitle" style="display:none; margin-top:8px;"></div>
+    </div>
+  `);
+
+  const btn = document.getElementById(btnId);
+  const msg = document.getElementById(msgId);
+  const blockEl = document.getElementById(blockId);
+
+  // UX: if "Data illimité" is checked, disable the +Go input to avoid confusion.
+  const gbEl = document.getElementById(gbId);
+  const unlEl = document.getElementById(unlId);
+  if (gbEl && unlEl) {
+    const syncUnlimitedUx = () => {
+      const on = !!unlEl.checked;
+      gbEl.disabled = on;
+      if (on) gbEl.value = "0";
+    };
+    unlEl.addEventListener("change", syncUnlimitedUx);
+    syncUnlimitedUx();
+  }
+
+  if (btn) {
+    btn.onclick = async () => {
+      // Guard: if a JS error happens, show it in the modal (otherwise it looks like "nothing happens").
+      try {
+        const days = Number(document.getElementById(dayId)?.value ?? 0);
+        const hours = Number(document.getElementById(hourId)?.value ?? 0);
+        const mins = Number(document.getElementById(minId)?.value ?? 0);
+        const gb = Number(document.getElementById(gbId)?.value ?? 0);
+        const unlimited_data = !!document.getElementById(unlId)?.checked;
+        const note = String(document.getElementById(noteId)?.value ?? "").trim();
+
+      if (!Number.isFinite(days) || days < 0) return alert("Jours must be >= 0");
+      if (!Number.isFinite(hours) || hours < 0) return alert("Heures must be >= 0");
+      if (!Number.isFinite(mins) || mins < 0) return alert("Minutes must be >= 0");
+      if (!Number.isFinite(gb) || gb < 0) return alert("Go must be >= 0");
+
+      if (hours > 23) return alert("Heures doit être entre 0 et 23");
+      if (mins > 59) return alert("Minutes doit être entre 0 et 59");
+
+        const add_minutes = (days * 1440) + (hours * 60) + mins;
+        const add_mb = unlimited_data ? 0 : (gb * 1024);
+
+        if (add_minutes === 0 && add_mb === 0 && !unlimited_data) {
+          return alert("Please set a time and/or data bonus (or enable Data illimité).");
+        }
+
+        const prevText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "Saving...";
+
+        try {
+          await fetchJSON("/api/admin/voucher-bonus-overrides", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              voucher_session_id: sessionId,
+              add_minutes,
+              add_mb,
+              unlimited_data,
+              note: note || null
+            })
+          });
+
+          if (msg) {
+            msg.style.display = "block";
+            msg.style.color = "#198754";
+            msg.textContent = "Bonus added ✅";
+          }
+
+          flashUpdatedRowAndBlock({ sessionId, blockEl });
+
+          // Refresh modal + table so you immediately see new remaining/status
+          try { await loadClients(); } catch (_) {}
+          try { await openDetail(sessionId); } catch (_) {}
+        } catch (e) {
+          if (msg) {
+            msg.style.display = "block";
+            msg.style.color = "#d9534f";
+            msg.textContent = e?.message || String(e);
+          }
+        } finally {
+          btn.disabled = false;
+          btn.textContent = prevText;
+        }
+      } catch (err) {
+        if (msg) {
+          msg.style.display = "block";
+          msg.style.color = "#d9534f";
+          msg.textContent = err?.message || String(err);
+        } else {
+          alert(err?.message || String(err));
+        }
+      }
+    };
+  }
+} catch (_) {}
+
+  } catch (e) {
+    modalErr.style.display = "block";
+    modalErr.textContent = e.message || String(e);
+  }
+}
+
+async function deleteCurrent() {
+  const modalErr = document.getElementById("modalErr");
+  modalErr.style.display = "none";
+  modalErr.textContent = "";
+
+  if (!currentDetailId) return;
+
+  const confirmText = prompt("Type DELETE to confirm deletion:");
+  if (confirmText !== "DELETE") return;
+
+  try {
+    await fetchJSON("/api/admin/voucher-sessions/" + encodeURIComponent(currentDetailId), {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" }
+    });
+    closeModal();
+    await loadClients();
+    alert("Deleted.");
+  } catch (e) {
+    modalErr.style.display = "block";
+    modalErr.textContent = e.message || String(e);
+  }
+}
+
+// -------------------------
+// Modal controls
+// -------------------------
+function closeModal() {
+  document.getElementById("modal").style.display = "none";
+  currentDetailId = null;
+}
+
 function wireUI() {
-  document.getElementById("logoutBtn")?.addEventListener("click", async () => {
-    try { await fetch("/api/admin/logout", { method: "POST", credentials: "include" }); }
-    finally { window.location.href = "/admin/login.html"; }
-  });
-
-  document.getElementById("refreshBtn").onclick = () => loadClients().catch(showTopError);
-
-  document.getElementById("clearBtn").onclick = () => {
-    document.getElementById("search").value = "";
-    document.getElementById("status").value = "all";
-    document.getElementById("systemFilter").value = "all";
-    document.getElementById("planFilter").value = "all";
-    document.getElementById("poolFilter").value = "all";
-    renderHeader(getUIMode());
-    loadClients().catch(showTopError);
-  };
-
-  // Instant re-render without extra network call (use lastAllItems)
-  const rerender = () => {
+  document.getElementById("logoutBtn").onclick = async () => {
     try {
-      const filtered = applyFilters(lastAllItems);
-      renderSummary(computeSummaryFromItems(filtered));
-      const mode = getUIMode();
-      renderHeader(mode);
-      renderTable(filtered, mode);
-    } catch (e) {
-      showTopError(e);
+      await fetch("/api/admin/logout", { method: "POST", credentials: "include" });
+    } finally {
+      window.location.href = "/admin/login.html";
     }
   };
 
-  document.getElementById("status").addEventListener("change", rerender);
-  document.getElementById("systemFilter").addEventListener("change", rerender);
-  document.getElementById("planFilter").addEventListener("change", rerender);
-  document.getElementById("poolFilter").addEventListener("change", rerender);
+  document.getElementById("refreshBtn").onclick = () => loadClients().catch(showTopError);
+  document.getElementById("clearBtn").onclick = () => {
+    document.getElementById("search").value = "";
+    document.getElementById("status").value = "all";
+    const sf = document.getElementById("systemFilter");
+    if (sf) sf.value = "all";
+    const pf = document.getElementById("planFilter");
+    const pof = document.getElementById("poolFilter");
+    if (pf) pf.value = "all";
+    if (pof) pof.value = "all";
+    loadClients().catch(showTopError);
+  };
+
+  document.getElementById("status").addEventListener("change", () => {
+    loadClients().catch(showTopError);
+  });
+
+  const systemFilterEl = document.getElementById("systemFilter");
+  if (systemFilterEl) {
+    systemFilterEl.addEventListener("change", () => {
+      loadClients().catch(showTopError);
+    });
+  }
+
+  const planFilterEl = document.getElementById("planFilter");
+  if (planFilterEl) {
+    planFilterEl.addEventListener("change", () => {
+      loadClients().catch(showTopError);
+    });
+  }
+
+  const poolFilterEl = document.getElementById("poolFilter");
+  if (poolFilterEl) {
+    poolFilterEl.addEventListener("change", () => {
+      loadClients().catch(showTopError);
+    });
+  }
 
   document.getElementById("search").addEventListener("input", () => {
     clearTimeout(debounceTimer);
@@ -495,9 +963,16 @@ function wireUI() {
   document.getElementById("closeModalBtn2").onclick = closeModal;
   document.getElementById("deleteBtn").onclick = () => deleteCurrent();
 
+  // Close when clicking outside the card
   document.getElementById("modal").addEventListener("click", (e) => {
     if (e.target && e.target.id === "modal") closeModal();
   });
+}
+
+function showTopError(e) {
+  const err = document.getElementById("error");
+  err.style.display = "block";
+  err.textContent = e?.message || String(e);
 }
 
 // -------------------------
@@ -507,7 +982,6 @@ function wireUI() {
   try {
     await requireAdmin();
     wireUI();
-    renderHeader(getUIMode());
     await loadClients();
   } catch (e) {
     // requireAdmin redirects; do nothing.
