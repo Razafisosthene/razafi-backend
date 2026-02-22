@@ -1065,8 +1065,6 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
 
       pool_id: r.pool_id,
       pool_name: r.pool?.name || null,
-      pool_system: r.pool?.system || null,
-      system: (r.pool?.system || (r.ap_mac ? "portal" : "mikrotik")),
 
       plan_id: r.plan_id,
       plan_name: r.plans?.name || null,
@@ -1184,7 +1182,14 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       console.error("ADMIN CLIENTS: MikroTik AP fallback failed:", e?.message || e);
     }
 
-// ✅ Summary based on DB truth_status
+    // ✅ Attach pool_system/system to each row so admin UI can safely split System 2 vs System 3
+    for (const it of items) {
+      const ps = it?.pool?.system ? String(it.pool.system).toLowerCase() : null;
+      it.pool_system = ps;
+      it.system = ps || (it.ap_mac ? "portal" : "mikrotik");
+    }
+
+    // ✅ Summary based on DB truth_status
     const total = count || 0;
     const active = items.filter(i => i.truth_status === "active").length;
     const pending = items.filter(i => i.truth_status === "pending").length;
@@ -1280,12 +1285,13 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
 
     if (error) return res.status(500).json({ error: error.message });
     if (!data) return res.status(404).json({ error: "not_found" });
+    // ✅ Attach pool_system/system so frontend can switch layouts safely
+    {
+      const ps = data?.pool?.system ? String(data.pool.system).toLowerCase() : null;
+      data.pool_system = ps;
+      data.system = ps || (data.ap_mac ? "portal" : "mikrotik");
+    }
 
-    // ✅ System (portal vs mikrotik) for UI separation
-    try {
-      data.pool_system = data.pool?.system || null;
-      data.system = (data.pool?.system || (data.ap_mac ? "portal" : "mikrotik"));
-    } catch (_) {}
 
     // ✅ Device alias (best-effort)
     try {

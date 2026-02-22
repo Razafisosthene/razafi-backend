@@ -36,8 +36,8 @@
             <option value="expired">Expired</option>
             <option value="used">Used</option>
           </select>
-          <select id="systemFilter" class="filter-select" title="System">
-            <option value="all">All systems</option>
+          <select id="system" class="filter-select">
+            <option value="all">All Systems</option>
             <option value="portal">Portal (System 2)</option>
             <option value="mikrotik">MikroTik (System 3)</option>
           </select>
@@ -59,21 +59,7 @@
 
       <div class="table-wrap">
         <table id="table" style="width:100%; border-collapse: collapse; min-width: 980px;">
-          <thead>
-            <tr style="text-align:left;">
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Client</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Voucher</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">MVola</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Plan</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Price</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">AP</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Pool</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Status</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);" id="thTimeRemaining">Time Remaining</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);" id="thDataRemaining">Data Remaining</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Expires</th>
-            </tr>
-          </thead>
+          <thead id="thead"></thead>
           <tbody id="tbody"></tbody>
         </table>
       </div>

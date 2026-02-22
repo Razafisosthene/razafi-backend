@@ -18,6 +18,109 @@ function fmtDate(iso) {
   return d.toLocaleString();
 }
 
+
+// -------------------------
+// System split (Portal vs MikroTik) + dynamic table headers
+// -------------------------
+let currentSystemMode = "all"; // all | portal | mikrotik
+
+function getItemSystem(it) {
+  // Prefer explicit pool system from backend if present
+  const ps = (it && (it.pool_system || it.pool?.system)) ? String(it.pool_system || it.pool?.system) : "";
+  if (ps) return ps.toLowerCase();
+
+  // Fallback heuristic (safe with your current data model):
+  // - Portal sessions usually have ap_mac (Tanaza AP MAC)
+  // - MikroTik sessions often have ap_mac null and use NAS identity instead
+  if (it && it.ap_mac) return "portal";
+  return "mikrotik";
+}
+
+
+function fmtBytes(bytes) {
+  if (bytes == null) return "—";
+  const n = Number(bytes);
+  if (!Number.isFinite(n)) return String(bytes);
+  const abs = Math.max(0, n);
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let u = 0;
+  let v = abs;
+  while (v >= 1024 && u < units.length - 1) { v /= 1024; u++; }
+  const str = (u === 0) ? String(Math.round(v)) : (v >= 10 ? v.toFixed(1) : v.toFixed(2));
+  return `${str} ${units[u]}`;
+}
+
+function fmtDataRemaining(it) {
+  // Prefer DB human string if present
+  if (it && it.data_remaining_human) return it.data_remaining_human;
+  if (it && it.data_remaining_bytes != null) return fmtBytes(it.data_remaining_bytes);
+  return "—";
+}
+
+function setTableSystemMode(mode) {
+  currentSystemMode = String(mode || "all").toLowerCase();
+  renderTableHeader(currentSystemMode);
+
+  // Re-render existing list without refetch (fast)
+  if (typeof lastItems !== "undefined") {
+    renderTable(lastItems);
+  }
+}
+
+function renderTableHeader(mode) {
+  const thead = document.getElementById("thead");
+  if (!thead) return;
+
+  const th = (label) => `<th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">${esc(label)}</th>`;
+  let headers = [];
+
+  if (mode === "portal") {
+    headers = [
+      "Client MAC",
+      "Voucher",
+      "MVola",
+      "Plan",
+      "Price",
+      "AP",
+      "Status",
+      "Remaining",
+      "Expires",
+    ];
+  } else if (mode === "mikrotik") {
+    headers = [
+      "Client MAC",
+      "Voucher",
+      "MVola",
+      "Plan",
+      "Price",
+      "NAS / AP",
+      "Pool",
+      "Status",
+      "Time Remaining",
+      "Data Remaining",
+      "Expires",
+    ];
+  } else {
+    // all
+    headers = [
+      "System",
+      "Client MAC",
+      "Voucher",
+      "MVola",
+      "Plan",
+      "Price",
+      "NAS / AP",
+      "Pool",
+      "Status",
+      "Time Remaining",
+      "Data Remaining",
+      "Expires",
+    ];
+  }
+
+  thead.innerHTML = `<tr style="text-align:left;">${headers.map(th).join("")}</tr>`;
+}
+
 function fmtDHMS(seconds, alwaysShowSeconds = true) {
   if (seconds == null) return "—";
   const s0 = Math.max(0, Number(seconds) || 0);
@@ -53,93 +156,9 @@ function esc(s) {
   }[c]));
 }
 
-// ---- helpers: unwrap Supabase/REST objects and format bytes ----
-function v(x) {
-  if (x && typeof x === "object" && "value" in x) return x.value;
-  return x;
-}
-function toNum(x, fallback = 0) {
-  const n = Number(v(x));
-  return Number.isFinite(n) ? n : fallback;
-}
-function fmtBytes(bytes) {
-  const b = toNum(bytes, 0);
-  if (!b) return "—";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let val = b;
-  let i = 0;
-  while (val >= 1024 && i < units.length - 1) {
-    val /= 1024;
-    i++;
-  }
-
-  const systemFilterEl = document.getElementById("systemFilter");
-  if (systemFilterEl) {
-    systemFilterEl.addEventListener("change", () => {
-      currentSystemFilter = String(systemFilterEl.value || "all").toLowerCase();
-      loadClients().catch(showTopError);
-    });
-  }
-
-  const digits = val >= 100 || i === 0 ? 0 : val >= 10 ? 1 : 2;
-  return `${val.toFixed(digits)} ${units[i]}`;
-}
-function computeQuota(it) {
-  const totalBytes =
-    toNum(it?.data_total_bytes) ||
-    toNum(it?.plan_data_total_bytes) ||
-    toNum(it?.data_quota_bytes) ||
-    toNum(it?.plan_data_quota_bytes) ||
-    toNum(it?.plan?.data_quota_bytes) ||
-    toNum(it?.plans?.data_quota_bytes);
-
-  const usedBytes =
-    toNum(it?.data_used_bytes) ||
-    toNum(it?.used_bytes) ||
-    toNum(it?.total_bytes) ||
-    toNum(it?.acct_total_bytes);
-
-  const remainingBytes =
-    toNum(it?.data_remaining_bytes) ||
-    (totalBytes ? Math.max(totalBytes - usedBytes, 0) : 0);
-
-  const totalHuman = it?.data_total_human || (totalBytes ? fmtBytes(totalBytes) : "—");
-  const usedHuman = it?.data_used_human || (usedBytes ? fmtBytes(usedBytes) : "—");
-  const remainingHuman = it?.data_remaining_human || (remainingBytes ? fmtBytes(remainingBytes) : "—");
-
-  return { totalBytes, usedBytes, remainingBytes, totalHuman, usedHuman, remainingHuman };
-}
-
 let debounceTimer = null;
 let lastItems = [];
 let currentDetailId = null;
-
-// -------------------------
-// System filter (Portal vs MikroTik)
-// -------------------------
-let currentSystemFilter = "all";
-function detectSystem(it) {
-  const s = String(it?.system || it?.pool_system || it?.pool?.system || "").toLowerCase().trim();
-  if (s === "portal" || s === "mikrotik") return s;
-  // Fallback (older rows): Tanaza portal rows usually have ap_mac; MikroTik rows often have null ap_mac and use nas_id fallback.
-  if (it?.ap_mac) return "portal";
-  return "mikrotik";
-}
-function filterItemsBySystem(items, sys) {
-  const f = String(sys || "all").toLowerCase().trim();
-  if (!Array.isArray(items) || f === "all" || !f) return items || [];
-  return (items || []).filter(it => detectSystem(it) === f);
-}
-function applySystemColumnVisibility(sys) {
-  const f = String(sys || "all").toLowerCase().trim();
-  const showData = (f === "mikrotik" || f === "all");
-  const thData = document.getElementById("thDataRemaining");
-  if (thData) thData.style.display = showData ? "" : "none";
-  // Hide all td marked as dataRemaining cells
-  document.querySelectorAll("[data-col='dataRemaining']").forEach(td => {
-    td.style.display = showData ? "" : "none";
-  });
-}
 
 // -------------------------
 // Session gate: page must be inaccessible without login
@@ -162,7 +181,6 @@ function renderSummary(summary) {
   const cards = [
     { label: "Active", value: summary.active ?? 0 },
     { label: "Pending", value: summary.pending ?? 0 },
-    { label: "Used", value: summary.used ?? 0 },
     { label: "Expired", value: summary.expired ?? 0 },
     { label: "Total", value: summary.total ?? 0 },
   ];
@@ -175,95 +193,21 @@ function renderSummary(summary) {
   `).join("");
 }
 
-
-// -------------------------
-// UI: Counters + status grouping (UI only)
-// Goal: show "used" as its own tab/counter, separate from "expired".
-// Backend stays intact (status comes from DB truth view).
-// -------------------------
-function normStatus(statusRaw) {
-  return String(statusRaw || "").toLowerCase().trim();
-}
-
-function computeSummaryFromItems(items) {
-  const summary = { total: 0, active: 0, pending: 0, used: 0, expired: 0 };
-  if (!Array.isArray(items)) return summary;
-  summary.total = items.length;
-
-  for (const it of items) {
-    const s = normStatus(it?.status);
-    if (s === "active") summary.active++;
-    else if (s === "pending") summary.pending++;
-    else if (s === "used") summary.used++;
-    else if (s === "expired") summary.expired++;
-  }
-  return summary;
-}
-
-let __planPoolOptionsLoaded = false;
-function initPlanAndPoolFiltersFromItems(items) {
-  if (__planPoolOptionsLoaded) return;
-  const planSel = document.getElementById("planFilter");
-  const poolSel = document.getElementById("poolFilter");
-  if (!planSel || !poolSel) return;
-
-  const plans = new Map(); // id -> name
-  const pools = new Map(); // id -> name
-
-  for (const it of (items || [])) {
-    if (it?.plan_id && it?.plan_name) plans.set(String(it.plan_id), String(it.plan_name));
-    if (it?.pool_id && it?.pool_name) pools.set(String(it.pool_id), String(it.pool_name));
-  }
-
-  // Only populate if we actually have data (prevents empty dropdowns)
-  if (!plans.size && !pools.size) return;
-
-  // Plans
-  const planEntries = Array.from(plans.entries()).sort((a, b) => a[1].localeCompare(b[1]));
-  for (const [id, name] of planEntries) {
-    const opt = document.createElement("option");
-    opt.value = id;
-    opt.textContent = name;
-    planSel.appendChild(opt);
-  }
-
-  // Pools
-  const poolEntries = Array.from(pools.entries()).sort((a, b) => a[1].localeCompare(b[1]));
-  for (const [id, name] of poolEntries) {
-    const opt = document.createElement("option");
-    opt.value = id;
-    opt.textContent = name;
-    poolSel.appendChild(opt);
-  }
-
-  __planPoolOptionsLoaded = true;
-}
-
-function filterItemsByStatus(items, uiStatusFilter) {
-  const f = normStatus(uiStatusFilter);
-  if (!Array.isArray(items) || f === "all" || !f) return items || [];
-  return (items || []).filter(it => normStatus(it?.status) === f);
-}
-
 // -------------------------
 // UI: Table
 // -------------------------
 function renderTable(items) {
   lastItems = items || [];
-  // Apply system filter (Portal vs MikroTik)
-  const sysFiltered = filterItemsBySystem(lastItems, currentSystemFilter);
-  // Keep lastItems as the full unfiltered list (used for dropdown option init), but render only filtered.
-  items = sysFiltered;
   const tbody = document.getElementById("tbody");
   const empty = document.getElementById("empty");
 
   tbody.innerHTML = "";
 
-  // Toggle column visibility based on system filter
-  applySystemColumnVisibility(currentSystemFilter);
+  // Filter by system mode (client-side; backend stays intact)
+  const mode = String(currentSystemMode || "all").toLowerCase();
+  const filtered = (mode === "all") ? (items || []) : (items || []).filter(it => getItemSystem(it) === mode);
 
-
-  if (!items || items.length === 0) {
+  if (!filtered || filtered.length === 0) {
     empty.style.display = "block";
     return;
   }
@@ -293,7 +237,9 @@ function renderTable(items) {
     return "";
   }
 
-  for (const it of items) {
+  const td = (v) => `<td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(v)}</td>`;
+
+  for (const it of filtered) {
     const tr = document.createElement("tr");
     tr.style.cursor = "pointer";
     tr.dataset.id = it.id;
@@ -302,41 +248,68 @@ function renderTable(items) {
     const rowCls = statusToRowClass(it.status);
     if (rowCls) tr.classList.add(rowCls);
 
-    // ✅ AP: human name if available, else MAC, else —
-    const apDisplay = it.ap_name || it.ap_mac || "—";
+    const sys = getItemSystem(it);
+    const apDisplay = it.ap_name || it.ap_mac || it.nas_id || "—"; // nas_id may be returned by backend fallback
+    const poolName = it.pool_name || "—";
 
-    const clientCell = it.client_name
-      ? `<div style="display:flex; flex-direction:column; gap:2px;">
-           <div style="font-weight:800;">${esc(it.client_name)}</div>
-           <div style="font-size:12px; opacity:.75;">${esc(it.client_mac || "—")}</div>
-         </div>`
-      : `${esc(it.client_mac || "—")}`;
+    const timeRemaining = fmtRemaining(it.remaining_seconds);
+    const dataRemaining = fmtDataRemaining(it);
 
-    tr.innerHTML = `
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${clientCell}</td>
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || "—")}</td>
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_price ?? "—")}</td>
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(apDisplay)}</td>
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
+    let cells = [];
 
-      <!-- ✅ status now is DB truth (view); just display it -->
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}</td>
+    if (mode === "portal") {
+      // Portal layout (System 2): keep it simple and portal-friendly
+      cells = [
+        it.client_mac || "—",
+        it.voucher_code || "—",
+        it.mvola_phone || "—",
+        it.plan_name || "—",
+        (it.plan_price ?? "—"),
+        apDisplay,
+        it.status || "—",
+        timeRemaining,
+        fmtDate(it.expires_at),
+      ];
+    } else if (mode === "mikrotik") {
+      // MikroTik layout (System 3): include pool + data remaining
+      cells = [
+        it.client_mac || "—",
+        it.voucher_code || "—",
+        it.mvola_phone || "—",
+        it.plan_name || "—",
+        (it.plan_price ?? "—"),
+        apDisplay,
+        poolName,
+        it.status || "—",
+        timeRemaining,
+        dataRemaining,
+        fmtDate(it.expires_at),
+      ];
+    } else {
+      // All systems: show system column and the superset
+      cells = [
+        sys === "portal" ? "Portal" : "MikroTik",
+        it.client_mac || "—",
+        it.voucher_code || "—",
+        it.mvola_phone || "—",
+        it.plan_name || "—",
+        (it.plan_price ?? "—"),
+        apDisplay,
+        poolName,
+        it.status || "—",
+        timeRemaining,
+        dataRemaining,
+        fmtDate(it.expires_at),
+      ];
+    }
 
-      <!-- ✅ remaining_seconds now is DB truth (view); display time remaining -->
-<td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
-
-<!-- ✅ data remaining (human) -->
-<td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(computeQuota(it).remainingHuman || "—")}</td>
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
-    `;
-
+    tr.innerHTML = cells.map(td).join("");
     tr.addEventListener("click", () => openDetail(it.id));
     tbody.appendChild(tr);
   }
 }
 
+//
 // -------------------------
 // Loaders
 // -------------------------
@@ -345,32 +318,21 @@ async function loadClients() {
   err.style.display = "none";
   err.textContent = "";
 
-  const uiStatus = document.getElementById("status").value;
+  const status = document.getElementById("status").value;
   const search = document.getElementById("search").value.trim();
-  const planId = document.getElementById("planFilter")?.value || "all";
-  const poolId = document.getElementById("poolFilter")?.value || "all";
 
-  // Always fetch "all" so counters stay correct and "used" can be grouped under Expired.
   const qs = new URLSearchParams();
-  qs.set("status", "all");
+  qs.set("status", status);
   if (search) qs.set("search", search);
-  if (planId && planId !== "all") qs.set("plan_id", planId);
-  if (poolId && poolId !== "all") qs.set("pool_id", poolId);
   qs.set("limit", "200");
   qs.set("offset", "0");
 
   const data = await fetchJSON("/api/admin/clients?" + qs.toString());
-
-  const allItems = data.items || [];
-  initPlanAndPoolFiltersFromItems(allItems);
-  const summary = computeSummaryFromItems(allItems);
-  renderSummary(summary);
-
-  const filtered = filterItemsByStatus(allItems, uiStatus);
-  renderTable(filtered);
+  renderSummary(data.summary || { total: data.total, active: 0, pending: 0, expired: 0 });
+  renderTable(data.items || []);
 }
 
-// ✅ small helper: flash a row green + show Updated ✅ effect + show Updated ✅ effect
+// ✅ small helper: flash a row green + show Updated ✅ effect
 function flashUpdatedRowAndBlock({ sessionId, blockEl }){
   // Table row flash
   const tr = document.querySelector(`tr[data-id="${CSS.escape(String(sessionId))}"]`);
@@ -401,8 +363,8 @@ function updateRowRemaining(sessionId, remainingSeconds) {
   const tr = document.querySelector(`tr[data-id="${CSS.escape(String(sessionId))}"]`);
   if (!tr) return;
   const tds = tr.querySelectorAll("td");
-  // Time Remaining column is now the 9th column (0-based index 8)
-  if (tds && tds.length >= 11) {
+  // Remaining column is the 9th (0-based index 8) in your table
+  if (tds && tds.length >= 10) {
     tds[8].textContent = fmtRemaining(remainingSeconds);
   }
 }
@@ -427,7 +389,6 @@ async function openDetail(id) {
     sub.textContent = `Voucher ${it.voucher_code || "—"} · Session ID ${it.id}`;
 
     const rows = [
-      ["Device name", it.client_name || "—"],
       ["Client MAC", it.client_mac],
       ["AP", it.ap_name || "—"],
       ["Pool", it.pool?.name || it.pool_name || it.pool_id],
@@ -443,11 +404,7 @@ async function openDetail(id) {
       ["Plan", it.plans?.name || it.plan_name],
       ["Price", (it.plans?.price_ar ?? it.plan_price)],
       ["Duration", fmtDurationMinutes(it.plans?.duration_minutes)],
-
-      // ✅ Data quota (human readable) from voucher_sessions_usage_view
-      ["Data total", computeQuota(it).totalHuman],
-      ["Data used", computeQuota(it).usedHuman],
-      ["Data remaining", computeQuota(it).remainingHuman],
+      ["Data (MB)", it.plans?.data_mb],
       ["Max devices", it.plans?.max_devices],
     ];
 
@@ -459,85 +416,9 @@ async function openDetail(id) {
     `).join("");
 
     // --------------------------------------------------
-    // Device rename (Starlink-like) — by client_mac
-    // --------------------------------------------------
-    if (it && it.client_mac) {
-      const blockId = `renameBlock_${it.id}`;
-      const inputId = `renameInput_${it.id}`;
-      const btnId = `renameBtn_${it.id}`;
-      const msgId = `renameMsg_${it.id}`;
-
-      detail.insertAdjacentHTML("beforeend", `
-        <div id="${blockId}" style="grid-column: 1 / -1; border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
-          <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; flex-wrap:wrap;">
-            <div>
-              <div style="font-size:12px; opacity:.7;">Rename device (by MAC)</div>
-              <div class="subtitle" style="margin-top:6px; opacity:.8;">This name will appear in Clients table for this device.</div>
-            </div>
-            <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
-              <div>
-                <div style="font-size:12px; opacity:.7;">Device name</div>
-                <input id="${inputId}" type="text" maxlength="32" value="${esc(it.client_name || "")}" placeholder="e.g. Stella" style="width:220px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
-              </div>
-              <button id="${btnId}" type="button" style="width:auto; padding:9px 14px;">Save</button>
-            </div>
-          </div>
-          <div id="${msgId}" class="subtitle" style="margin-top:10px; display:none;"></div>
-        </div>
-      `);
-
-      const btn = document.getElementById(btnId);
-      if (btn) {
-        btn.onclick = async () => {
-          const input = document.getElementById(inputId);
-          const msg = document.getElementById(msgId);
-          const blockEl = document.getElementById(blockId);
-          const alias = input ? String(input.value || "").trim() : "";
-
-          if (msg) { msg.style.display = "none"; msg.textContent = ""; msg.style.color = ""; }
-          const prevText = btn.textContent;
-          btn.disabled = true;
-          btn.textContent = "Saving...";
-
-          try {
-            const out = await fetchJSON("/api/admin/client-devices/rename", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ client_mac: it.client_mac, alias })
-            });
-
-            // Update local cache (so table refresh feels instant)
-            const newAlias = out?.alias || null;
-            // If modal is still for same record, reflect immediately
-            it.client_name = newAlias;
-
-            if (msg) {
-              msg.style.display = "block";
-              msg.style.color = "#198754";
-              msg.textContent = newAlias ? "Saved ✅" : "Removed ✅";
-            }
-
-            // Refresh table to show the alias in the list
-            await loadClients();
-            flashUpdatedRowAndBlock({ sessionId: it.id, blockEl });
-          } catch (e) {
-            if (msg) {
-              msg.style.display = "block";
-              msg.style.color = "#b02a37";
-              msg.textContent = (e && e.message) ? e.message : String(e);
-            }
-          } finally {
-            btn.disabled = false;
-            btn.textContent = prevText;
-          }
-        };
-      }
-    }
-
-    // --------------------------------------------------
     // Free plan override editor (admin)
     // --------------------------------------------------
-    if (detectSystem(it) === "portal" && it && it.free_plan && it.client_mac && it.plan_id) {
+    if (it && it.free_plan && it.client_mac && it.plan_id) {
       const fp = it.free_plan;
       const extra = Number(fp.extra_uses ?? 0);
       const used = Number(fp.used_free_count ?? 0);
@@ -674,191 +555,6 @@ async function openDetail(id) {
       }
     }
 
-
-// --------------------------------------------------
-// Voucher bonus (time/data) — by voucher_session_id
-// --------------------------------------------------
-if (detectSystem(it) === "mikrotik") {
-try {
-  const sessionId = it.id;
-  const blockId = `bonusBlock_${sessionId}`;
-  const dayId = `bonusDay_${sessionId}`;
-  const hourId = `bonusHour_${sessionId}`;
-  const minId = `bonusMin_${sessionId}`;
-  const gbId = `bonusGb_${sessionId}`;
-  const unlId = `bonusUnlimited_${sessionId}`;
-  const noteId = `bonusNote_${sessionId}`;
-  const btnId = `bonusBtn_${sessionId}`;
-  const msgId = `bonusMsg_${sessionId}`;
-  const curId = `bonusCur_${sessionId}`;
-
-  // Load current bonus
-  let curBonus = { bonus_seconds: 0, bonus_bytes: 0 };
-  try {
-    const r = await fetchJSON("/api/admin/voucher-bonus-overrides?voucher_session_id=" + encodeURIComponent(sessionId));
-    curBonus = r?.item || curBonus;
-  } catch (_) {}
-
-  const curSec = Number(curBonus.bonus_seconds || 0);
-  const curBytes = Number(curBonus.bonus_bytes || 0);
-
-  const curDays = Math.floor(curSec / 86400);
-  const curHours = Math.floor((curSec % 86400) / 3600);
-  const curMins = Math.floor((curSec % 3600) / 60);
-
-  let curMb = 0;
-  let curGbStr = "0";
-  let curUnlimited = false;
-  if (curBytes === -1) {
-    curUnlimited = true;
-    curGbStr = "Unlimited";
-  } else {
-    curMb = Math.floor(curBytes / (1024 * 1024));
-    const curGb = curBytes / (1024 * 1024 * 1024);
-    curGbStr = curBytes ? (curGb >= 10 ? curGb.toFixed(1) : curGb.toFixed(2)) : "0";
-  }
-
-  detail.insertAdjacentHTML("beforeend", `
-    <div id="${blockId}" style="grid-column: 1 / -1; border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
-      <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; flex-wrap:wrap;">
-        <div>
-          <div style="font-size:12px; opacity:.7;">Bonus (time/data) for this voucher</div>
-          <div class="subtitle" style="margin-top:6px; opacity:.8;">
-            Add bonus even if expired/used. Time bonus extends <b>expires_at</b> if the session is already started.
-            Data bonus increases MikroTik total limit on next authorize.
-          </div>
-          <div id="${curId}" style="margin-top:8px; font-size:13px;">
-            Current bonus: <b>${esc(curDays)}j ${esc(curHours)}h ${esc(curMins)}min</b> · <b>${esc(curGbStr)}${curUnlimited ? "" : " GB"}</b>${(!curUnlimited && curMb) ? ` <span style="opacity:.75;">(${esc(curMb)} MB)</span>` : ""}
-          </div>
-        </div>
-
-        <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
-          <div>
-            <div style="font-size:12px; opacity:.7;">+ Jours</div>
-            <input id="${dayId}" type="number" min="0" step="1" value="0" style="width:90px;" />
-          </div>
-          <div>
-            <div style="font-size:12px; opacity:.7;">+ Heures</div>
-            <input id="${hourId}" type="number" min="0" step="1" value="0" style="width:90px;" />
-          </div>
-          <div>
-            <div style="font-size:12px; opacity:.7;">+ Minutes</div>
-            <input id="${minId}" type="number" min="0" step="1" value="0" style="width:90px;" />
-          </div>
-          <div>
-            <div style="font-size:12px; opacity:.7;">+ Go</div>
-            <input id="${gbId}" type="number" min="0" step="1" value="0" style="width:90px;" />
-            <div style="margin-top:8px; display:flex; align-items:center; gap:8px;">
-              <input type="checkbox" id="${unlId}" />
-              <label for="${unlId}" style="font-size:13px;">Data illimité</label>
-            </div>
-          </div>
-          <div style="min-width:220px;">
-            <div style="font-size:12px; opacity:.7;">Note (optional)</div>
-            <input id="${noteId}" type="text" placeholder="ex: goodwill / compensation" />
-          </div>
-          <button id="${btnId}" type="button" style="width:auto;">Add bonus</button>
-        </div>
-      </div>
-      <div id="${msgId}" class="subtitle" style="display:none; margin-top:8px;"></div>
-    </div>
-  `);
-
-  const btn = document.getElementById(btnId);
-  const msg = document.getElementById(msgId);
-  const blockEl = document.getElementById(blockId);
-
-  // UX: if "Data illimité" is checked, disable the +Go input to avoid confusion.
-  const gbEl = document.getElementById(gbId);
-  const unlEl = document.getElementById(unlId);
-  if (gbEl && unlEl) {
-    const syncUnlimitedUx = () => {
-      const on = !!unlEl.checked;
-      gbEl.disabled = on;
-      if (on) gbEl.value = "0";
-    };
-    unlEl.addEventListener("change", syncUnlimitedUx);
-    syncUnlimitedUx();
-  }
-
-  if (btn) {
-    btn.onclick = async () => {
-      // Guard: if a JS error happens, show it in the modal (otherwise it looks like "nothing happens").
-      try {
-        const days = Number(document.getElementById(dayId)?.value ?? 0);
-        const hours = Number(document.getElementById(hourId)?.value ?? 0);
-        const mins = Number(document.getElementById(minId)?.value ?? 0);
-        const gb = Number(document.getElementById(gbId)?.value ?? 0);
-        const unlimited_data = !!document.getElementById(unlId)?.checked;
-        const note = String(document.getElementById(noteId)?.value ?? "").trim();
-
-      if (!Number.isFinite(days) || days < 0) return alert("Jours must be >= 0");
-      if (!Number.isFinite(hours) || hours < 0) return alert("Heures must be >= 0");
-      if (!Number.isFinite(mins) || mins < 0) return alert("Minutes must be >= 0");
-      if (!Number.isFinite(gb) || gb < 0) return alert("Go must be >= 0");
-
-      if (hours > 23) return alert("Heures doit être entre 0 et 23");
-      if (mins > 59) return alert("Minutes doit être entre 0 et 59");
-
-        const add_minutes = (days * 1440) + (hours * 60) + mins;
-        const add_mb = unlimited_data ? 0 : (gb * 1024);
-
-        if (add_minutes === 0 && add_mb === 0 && !unlimited_data) {
-          return alert("Please set a time and/or data bonus (or enable Data illimité).");
-        }
-
-        const prevText = btn.textContent;
-        btn.disabled = true;
-        btn.textContent = "Saving...";
-
-        try {
-          await fetchJSON("/api/admin/voucher-bonus-overrides", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              voucher_session_id: sessionId,
-              add_minutes,
-              add_mb,
-              unlimited_data,
-              note: note || null
-            })
-          });
-
-          if (msg) {
-            msg.style.display = "block";
-            msg.style.color = "#198754";
-            msg.textContent = "Bonus added ✅";
-          }
-
-          flashUpdatedRowAndBlock({ sessionId, blockEl });
-
-          // Refresh modal + table so you immediately see new remaining/status
-          try { await loadClients(); } catch (_) {}
-          try { await openDetail(sessionId); } catch (_) {}
-        } catch (e) {
-          if (msg) {
-            msg.style.display = "block";
-            msg.style.color = "#d9534f";
-            msg.textContent = e?.message || String(e);
-          }
-        } finally {
-          btn.disabled = false;
-          btn.textContent = prevText;
-        }
-      } catch (err) {
-        if (msg) {
-          msg.style.display = "block";
-          msg.style.color = "#d9534f";
-          msg.textContent = err?.message || String(err);
-        } else {
-          alert(err?.message || String(err));
-        }
-      }
-    };
-  }
-} catch (_) {}
-}
-
   } catch (e) {
     modalErr.style.display = "block";
     modalErr.textContent = e.message || String(e);
@@ -910,42 +606,14 @@ function wireUI() {
   document.getElementById("clearBtn").onclick = () => {
     document.getElementById("search").value = "";
     document.getElementById("status").value = "all";
-    const sf = document.getElementById("systemFilter");
-    if (sf) sf.value = "all";
-    currentSystemFilter = "all";
-    const pf = document.getElementById("planFilter");
-    const pof = document.getElementById("poolFilter");
-    if (pf) pf.value = "all";
-    if (pof) pof.value = "all";
+    const sysEl = document.getElementById("system");
+    if (sysEl) sysEl.value = "all";
     loadClients().catch(showTopError);
   };
 
   document.getElementById("status").addEventListener("change", () => {
     loadClients().catch(showTopError);
   });
-
-  const planFilterEl = document.getElementById("planFilter");
-  if (planFilterEl) {
-    planFilterEl.addEventListener("change", () => {
-      loadClients().catch(showTopError);
-
-  const systemFilterEl = document.getElementById("systemFilter");
-  if (systemFilterEl) {
-    systemFilterEl.addEventListener("change", () => {
-      currentSystemFilter = String(systemFilterEl.value || "all").toLowerCase();
-      loadClients().catch(showTopError);
-    });
-  }
-
-    });
-  }
-
-  const poolFilterEl = document.getElementById("poolFilter");
-  if (poolFilterEl) {
-    poolFilterEl.addEventListener("change", () => {
-      loadClients().catch(showTopError);
-    });
-  }
 
   document.getElementById("search").addEventListener("input", () => {
     clearTimeout(debounceTimer);
@@ -975,6 +643,9 @@ function showTopError(e) {
   try {
     await requireAdmin();
     wireUI();
+    const sysEl = document.getElementById("system");
+    if (sysEl) setTableSystemMode(sysEl.value);
+    else renderTableHeader("all");
     await loadClients();
   } catch (e) {
     // requireAdmin redirects; do nothing.
