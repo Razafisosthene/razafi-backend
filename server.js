@@ -1004,7 +1004,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         data_remaining_human,
 
         plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
-        pool:internet_pools ( id, name, system )
+        pool:internet_pools ( id, name )
       `, { count: "exact" })
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
@@ -1182,14 +1182,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       console.error("ADMIN CLIENTS: MikroTik AP fallback failed:", e?.message || e);
     }
 
-    // ✅ Attach pool_system/system to each row so admin UI can safely split System 2 vs System 3
-    for (const it of items) {
-      const ps = it?.pool?.system ? String(it.pool.system).toLowerCase() : null;
-      it.pool_system = ps;
-      it.system = ps || (it.ap_mac ? "portal" : "mikrotik");
-    }
-
-    // ✅ Summary based on DB truth_status
+// ✅ Summary based on DB truth_status
     const total = count || 0;
     const active = items.filter(i => i.truth_status === "active").length;
     const pending = items.filter(i => i.truth_status === "pending").length;
@@ -1278,20 +1271,13 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
         data_remaining_human,
 
         plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
-        pool:internet_pools ( id, name, system )
+        pool:internet_pools ( id, name )
       `)
       .eq("id", id)
       .maybeSingle();
 
     if (error) return res.status(500).json({ error: error.message });
     if (!data) return res.status(404).json({ error: "not_found" });
-    // ✅ Attach pool_system/system so frontend can switch layouts safely
-    {
-      const ps = data?.pool?.system ? String(data.pool.system).toLowerCase() : null;
-      data.pool_system = ps;
-      data.system = ps || (data.ap_mac ? "portal" : "mikrotik");
-    }
-
 
     // ✅ Device alias (best-effort)
     try {
@@ -4177,6 +4163,29 @@ app.post("/api/new/authorize", async (req, res) => {
       return res.status(400).json({ error: "Unknown AP" });
     }
 
+
+    // If this session was not yet bound to a device, bind it now (first device wins).
+    // This fixes the case where "Utiliser ce code" was clicked but truth_status stays "pending"
+    // because started_at never gets set (session couldn't be found with client_mac).
+    if (!session.client_mac) {
+      try {
+        const upd = {};
+        upd.client_mac = client_mac;
+        if (ap_mac) upd.ap_mac = ap_mac;
+        // Keep delivered_at if already set; do not overwrite.
+        const { error: bindErr } = await supabase
+          .from("voucher_sessions")
+          .update(upd)
+          .eq("id", session.id);
+        if (bindErr) console.warn("activate: bind client_mac/ap_mac failed:", bindErr.message || bindErr);
+        // reflect in local object for downstream logic
+        session.client_mac = client_mac;
+        if (ap_mac) session.ap_mac = ap_mac;
+      } catch (e) {
+        console.warn("activate: bind exception:", e?.message || e);
+      }
+    }
+
     const now = new Date();
 
     // 3) FIRST CONNECTION → start voucher
@@ -4413,7 +4422,9 @@ app.post("/api/voucher/activate", async (req, res) => {
       .from("voucher_sessions")
       .select("id,voucher_code,plan_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)")
       .eq("voucher_code", voucher_code)
-      .eq("client_mac", client_mac)
+      // System 2 safety: allow activating a delivered voucher even if client_mac is not yet bound in DB.
+      // Match either the same client_mac, or an unbound session (client_mac IS NULL), then we bind it below.
+      .or(`client_mac.eq.${client_mac},client_mac.is.null`)
       .maybeSingle();
 
     if (sErr || !session) {

@@ -15,7 +15,7 @@
           <div id="me" class="subtitle">Checking session...</div>
         </div>
 
-        <!-- legacy nav kept hidden to avoid breaking clients.js -->
+        <!-- legacy nav kept hidden to avoid breaking other pages -->
         <div class="nav" style="display:none;">
           <a href="/admin/"><button type="button">Dashboard</button></a>
           <a href="/admin/aps.html"><button type="button">APs</button></a>
@@ -29,27 +29,33 @@
       <div class="sticky-bar">
         <div class="filters">
           <input id="search" class="filter-search" placeholder="Search: MAC / voucher code / MVola..." />
-          <select id="status" class="filter-select">
+
+          <select id="status" class="filter-select" title="Filter by status">
             <option value="all">All</option>
             <option value="active">Active</option>
             <option value="pending">Pending</option>
             <option value="expired">Expired</option>
             <option value="used">Used</option>
           </select>
-          <select id="system" class="filter-select">
-            <option value="all">All Systems</option>
+
+          <select id="systemFilter" class="filter-select" title="Filter by system">
+            <option value="all">All systems</option>
             <option value="portal">Portal (System 2)</option>
             <option value="mikrotik">MikroTik (System 3)</option>
           </select>
+
           <select id="planFilter" class="filter-select" title="Filter by plan">
             <option value="all">All plans</option>
           </select>
+
           <select id="poolFilter" class="filter-select" title="Filter by pool">
             <option value="all">All pools</option>
           </select>
+
           <button id="refreshBtn" class="filter-btn" type="button">Refresh</button>
           <button id="clearBtn" class="filter-btn" type="button">Clear</button>
         </div>
+
         <div id="hint" class="subtitle" style="margin:10px 0 0; opacity:.9;">
           Click a row to see details. Delete is inside the detail view.
         </div>
@@ -72,7 +78,7 @@
     </div>
   </div>
 
-  <!-- Detail Modal -->
+  <!-- Detail Modal (kept compatible with your existing clients.js detail endpoint) -->
   <div id="modal" class="modal" style="display:none;">
     <div class="card modal-card">
       <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
@@ -96,8 +102,7 @@
     </div>
   </div>
 
-  <!-- NEW shared drawer -->
   <script src="/admin/nav.js"></script>
-  <script src="./clients.js"></script>
+  <script src="/admin/clients.js?v=20260222a"></script>
 </body>
 </html>
