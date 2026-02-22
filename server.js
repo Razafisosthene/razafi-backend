@@ -559,15 +559,13 @@ app.get(/^\/admin\/.*/, requireAdminPage, (req, res) => {
 // Prevent aggressive caching of portal JS (captive portals often cache strongly)
 app.use((req, res, next) => {
   try {
-    // Prevent aggressive caching (captive portals + admin UI)
-    if (req.path === "/portal/assets/js/portal.js"
-      || req.path === "/admin/clients.js"
-      || req.path === "/admin/clients.html") {
+    if (req.path === "/portal/assets/js/portal.js") {
       res.setHeader("Cache-Control", "no-store");
     }
   } catch (_) {}
   next();
 });
+
 app.use(express.static(path.join(__dirname, "public")));
 
 // ---------------------------------------------------------------------------
@@ -976,6 +974,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     const search = String(req.query.search || "").trim();
     const plan_id = String(req.query.plan_id || "all").trim();
     const pool_id = String(req.query.pool_id || "all").trim();
+    const system = String(req.query.system || "all").toLowerCase();
     const limit = Math.min(500, Math.max(1, safeNumber(req.query.limit, 200)));
     const offset = Math.max(0, safeNumber(req.query.offset, 0));
 
@@ -992,6 +991,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         remaining_seconds,
         client_mac,
         ap_mac,
+        nas_id,
         delivered_at,
         activated_at,
         started_at,
@@ -1006,7 +1006,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         data_remaining_human,
 
         plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
-        pool:internet_pools ( id, name, system )
+        pool:internet_pools ( id, name )
       `, { count: "exact" })
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
@@ -1053,6 +1053,14 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       q = q.eq("pool_id", pool_id);
     }
 
+    // ✅ System filter (Portal System 2 vs MikroTik System 3)
+    // Heuristic: System 3 rows have nas_id (MikroTik identity). System 2 rows don't.
+    if (system === "portal") {
+      q = q.is("nas_id", null);
+    } else if (system === "mikrotik") {
+      q = q.not("nas_id", "is", null);
+    }
+
     const { data, error, count } = await q;
     if (error) return res.status(500).json({ error: error.message });
 
@@ -1063,12 +1071,13 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       client_mac: r.client_mac,
       client_name: null, // filled from client_devices (best-effort)
       ap_mac: r.ap_mac,
-      ap_name: null, // will be filled from Tanaza (best-effort)
+      ap_name: null,
+
+      nas_id: r.nas_id || null,
+      system: (r.nas_id ? "mikrotik" : "portal"), // will be filled from Tanaza (best-effort)
 
       pool_id: r.pool_id,
       pool_name: r.pool?.name || null,
-      pool_system: r.pool?.system || null,
-      system: (r.pool?.system === "mikrotik" ? "mikrotik" : "portal"),
 
       plan_id: r.plan_id,
       plan_name: r.plans?.name || null,
@@ -1275,7 +1284,7 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
         data_remaining_human,
 
         plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
-        pool:internet_pools ( id, name, system )
+        pool:internet_pools ( id, name )
       `)
       .eq("id", id)
       .maybeSingle();
@@ -1400,12 +1409,6 @@ try {
 }
 
 
-
-    // System label for UI (non-breaking)
-    try {
-      data.pool_system = data.pool?.system || null;
-      data.system = (data.pool_system === "mikrotik" ? "mikrotik" : "portal");
-    } catch (_) {}
 
     res.json({ item: data });
   } catch (e) {
@@ -4407,7 +4410,7 @@ app.post("/api/voucher/activate", async (req, res) => {
     // Load session + plan
     const { data: session, error: sErr } = await supabase
       .from("voucher_sessions")
-      .select("id,voucher_code,plan_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)")
+      .select("id,voucher_code,plan_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,nas_id,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)")
       .eq("voucher_code", voucher_code)
       .eq("client_mac", client_mac)
       .maybeSingle();
@@ -4453,27 +4456,28 @@ app.post("/api/voucher/activate", async (req, res) => {
     }
 
     
-    const isPortalActivation = Boolean(ap_mac || session.ap_mac); // System 2 (Tanaza/Portal)
-    const expiresIso = isPortalActivation
-      ? new Date(now.getTime() + minutes * 60 * 1000).toISOString()
-      : null;
+    // Decide which system is activating:
+// - System 2 (Portal / non-RADIUS): user clicks "Utiliser ce code" => start immediately (started_at + expires_at)
+// - System 3 (MikroTik / RADIUS): user clicks => arm voucher, but start timer only on FIRST successful RADIUS accept
+const bodyNas = String(body.nas_id || body.nasId || "").trim() || null;
+const isSystem3 = Boolean(bodyNas || session.nas_id); // MikroTik identity present
+const isSystem2 = !isSystem3; // default to portal when no NAS is involved
 
-    const updatePayload = {
-      // User clicked "Utiliser ce code"
-      status: "active",
-      activated_at: nowIso,
+const updatePayload = {
+  status: "active",
+  activated_at: nowIso,
+  updated_at: nowIso,
+};
 
-      // ✅ System 2: start immediately from NOW (truth view flips to active)
-      // ✅ System 3: keep null; timer starts on FIRST RADIUS Access-Accept
-      started_at: isPortalActivation ? nowIso : null,
-      expires_at: isPortalActivation ? expiresIso : null,
-
-      updated_at: nowIso,
-    };
-
-    // Bind first device for System 2 (and generally if unbound)
-    if (client_mac && !session.client_mac) updatePayload.client_mac = client_mac;
-
+if (isSystem2) {
+  // Start right now (Portal)
+  updatePayload.started_at = nowIso;
+  updatePayload.expires_at = new Date(now.getTime() + (minutes * 60 * 1000)).toISOString();
+} else {
+  // Arm only (MikroTik / RADIUS)
+  updatePayload.started_at = null;
+  updatePayload.expires_at = null;
+}
 
     // Keep the first AP that activated it (optional)
     if (ap_mac && !session.ap_mac) updatePayload.ap_mac = ap_mac;

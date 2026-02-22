@@ -47,46 +47,6 @@ function fmtDurationMinutes(minutes) {
   return fmtDHMS(s, false);
 }
 
-
-// -------------------------
-// System mode (Portal vs MikroTik)
-// -------------------------
-function detectSystem(it) {
-  const ps = (it?.pool_system || it?.pool?.system || it?.system || "").toLowerCase();
-  if (ps === "mikrotik") return "mikrotik";
-  if (ps === "portal") return "portal";
-  // Fallback (best-effort): if it has ap_mac and no data quota fields, assume portal
-  if (it?.ap_mac) return "portal";
-  return "mikrotik";
-}
-
-function renderTableHeader(mode) {
-  const thead = document.getElementById("thead");
-  if (!thead) return;
-
-  const th = (label) => `<th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">${label}</th>`;
-
-  let cols = [];
-  if (mode === "portal") {
-    cols = ["Client MAC", "Voucher", "MVola", "Plan", "Price", "AP", "Status", "Remaining", "Expires"];
-  } else if (mode === "mikrotik") {
-    cols = ["Client MAC", "Voucher", "MVola", "Plan", "Price", "NAS", "Pool", "Status", "Time Remaining", "Data Remaining", "Expires"];
-  } else {
-    cols = ["System", "Client MAC", "Voucher", "MVola", "Plan", "Price", "NAS / AP", "Pool", "Status", "Time Remaining", "Data Remaining", "Expires"];
-  }
-
-  thead.innerHTML = `<tr style="text-align:left;">${cols.map(th).join("")}</tr>`;
-}
-function statusToRowClass(statusRaw) {
-    const s = String(statusRaw || "").toLowerCase().trim();
-    if (!s) return "";
-
-    // good/online
-    if (s.includes("active") || s.includes("started") || s.includes("running") || s.includes("connected")) {
-      return "row-status-active";
-    }
-
-
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({
     "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
@@ -144,6 +104,25 @@ function computeQuota(it) {
 let debounceTimer = null;
 let lastItems = [];
 let currentDetailId = null;
+
+
+function getSystemFilter() {
+  const el = document.getElementById("systemFilter");
+  const v = el ? String(el.value || "all").toLowerCase() : "all";
+  return (v === "portal" || v === "mikrotik") ? v : "all";
+}
+
+function applySystemLayout() {
+  const sys = getSystemFilter();
+  const thAll = document.getElementById("theadAll");
+  const thPortal = document.getElementById("theadPortal");
+  const thMik = document.getElementById("theadMikrotik");
+  if (!thAll || !thPortal || !thMik) return;
+
+  thAll.style.display = (sys === "all") ? "" : "none";
+  thPortal.style.display = (sys === "portal") ? "" : "none";
+  thMik.style.display = (sys === "mikrotik") ? "" : "none";
+}
 
 // -------------------------
 // Session gate: page must be inaccessible without login
@@ -252,12 +231,10 @@ function filterItemsByStatus(items, uiStatusFilter) {
 // -------------------------
 // UI: Table
 // -------------------------
-function renderTable(items, mode) {
+function renderTable(items) {
   lastItems = items || [];
   const tbody = document.getElementById("tbody");
   const empty = document.getElementById("empty");
-
-  renderTableHeader(mode);
 
   tbody.innerHTML = "";
 
@@ -267,64 +244,99 @@ function renderTable(items, mode) {
   }
   empty.style.display = "none";
 
-  function td(val) {
-    return `<td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(val)}</td>`;
+  // status -> row class (visual meaning)
+  function statusToRowClass(statusRaw) {
+    const s = String(statusRaw || "").toLowerCase().trim();
+    if (!s) return "";
+
+    // good/online
+    if (s.includes("active") || s.includes("started") || s.includes("running") || s.includes("connected")) {
+      return "row-status-active";
+    }
+    // waiting
+    if (s.includes("pending") || s.includes("delivered")) {
+      return "row-status-pending";
+    }
+    // finished
+    if (s.includes("expired") || s.includes("used")) {
+      return "row-status-expired";
+    }
+    // problem
+    if (s.includes("fail") || s.includes("reject") || s.includes("block") || s.includes("error")) {
+      return "row-status-error";
+    }
+    return "";
   }
 
   for (const it of items) {
     const tr = document.createElement("tr");
-    tr.className = statusToRowClass(it.status || it.truth_status || it.stored_status);
+    tr.style.cursor = "pointer";
+    tr.dataset.id = it.id;
 
-    const clientCell = `
-      <div style="display:flex; flex-direction:column;">
-        <div style="font-weight:600;">${esc(it.client_name || it.client_mac || "—")}</div>
-        <div class="muted" style="font-size:12px;">${esc(it.client_mac || "—")}</div>
-      </div>
-    `;
+    // ✅ Add row color class based on status (minimal)
+    const rowCls = statusToRowClass(it.status);
+    if (rowCls) tr.classList.add(rowCls);
 
-    const apDisplay = (it.ap_name || it.ap_mac || it.nas_id || "—");
-    const sys = detectSystem(it);
-    const sysLabel = sys === "mikrotik" ? "MikroTik" : "Portal";
+    // ✅ AP: human name if available, else MAC, else —
+    const apDisplay = it.ap_name || it.ap_mac || "—";
 
-    const cells = [];
-    if (mode === "portal") {
-      cells.push(td(clientCell));
-      cells.push(td(it.voucher_code || "—"));
-      cells.push(td(it.mvola_phone || "—"));
-      cells.push(td(it.plan_name || "—"));
-      cells.push(td(it.plan_price ?? "—"));
-      cells.push(td(it.ap_name || it.ap_mac || "—"));
-      cells.push(td(it.status || "—"));
-      cells.push(td(fmtRemaining(it.remaining_seconds)));
-      cells.push(td(fmtDate(it.expires_at)));
-    } else if (mode === "mikrotik") {
-      cells.push(td(clientCell));
-      cells.push(td(it.voucher_code || "—"));
-      cells.push(td(it.mvola_phone || "—"));
-      cells.push(td(it.plan_name || "—"));
-      cells.push(td(it.plan_price ?? "—"));
-      cells.push(td(it.nas_id || it.ap_name || "—"));
-      cells.push(td(it.pool_name || "—"));
-      cells.push(td(it.status || "—"));
-      cells.push(td(fmtRemaining(it.remaining_seconds)));
-      cells.push(td((it.data_remaining_human ?? it.data_remaining_bytes) != null ? (it.data_remaining_human || fmtBytes(it.data_remaining_bytes)) : "—"));
-      cells.push(td(fmtDate(it.expires_at)));
-    } else {
-      cells.push(td(sysLabel));
-      cells.push(td(clientCell));
-      cells.push(td(it.voucher_code || "—"));
-      cells.push(td(it.mvola_phone || "—"));
-      cells.push(td(it.plan_name || "—"));
-      cells.push(td(it.plan_price ?? "—"));
-      cells.push(td(apDisplay));
-      cells.push(td(it.pool_name || "—"));
-      cells.push(td(it.status || "—"));
-      cells.push(td(fmtRemaining(it.remaining_seconds)));
-      cells.push(td((it.data_remaining_human ?? it.data_remaining_bytes) != null ? (it.data_remaining_human || fmtBytes(it.data_remaining_bytes)) : "—"));
-      cells.push(td(fmtDate(it.expires_at)));
-    }
+    const clientCell = it.client_name
+      ? `<div style="display:flex; flex-direction:column; gap:2px;">
+           <div style="font-weight:800;">${esc(it.client_name)}</div>
+           <div style="font-size:12px; opacity:.75;">${esc(it.client_mac || "—")}</div>
+         </div>`
+      : `${esc(it.client_mac || "—")}`;
 
-    tr.innerHTML = cells.join("");
+    
+const sys = getSystemFilter();
+const systemLabel = it.system === "mikrotik" ? "MikroTik" : "Portal";
+const nasOrAp = it.nas_id ? it.nas_id : (it.ap_name || it.ap_mac || "—");
+const apDisplay = it.ap_name || it.ap_mac || "—";
+const nasDisplay = it.nas_id || it.nas || "—";
+
+if (sys === "portal") {
+  tr.innerHTML = `
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${clientCell}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_price ?? "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(apDisplay)}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
+  `;
+} else if (sys === "mikrotik") {
+  tr.innerHTML = `
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${clientCell}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_price ?? "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(nasDisplay)}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(computeQuota(it).remainingHuman || "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
+  `;
+} else {
+  tr.innerHTML = `
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(systemLabel)}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${clientCell}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_price ?? "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(nasOrAp)}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(computeQuota(it).remainingHuman || "—")}</td>
+    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
+  `;
+}
+
     tr.addEventListener("click", () => openDetail(it.id));
     tbody.appendChild(tr);
   }
@@ -339,15 +351,16 @@ async function loadClients() {
   err.textContent = "";
 
   const uiStatus = document.getElementById("status").value;
-  const uiSystem = document.getElementById("systemFilter")?.value || "all";
   const search = document.getElementById("search").value.trim();
+  const system = getSystemFilter();
   const planId = document.getElementById("planFilter")?.value || "all";
   const poolId = document.getElementById("poolFilter")?.value || "all";
 
-  // Always fetch "all" so counters stay correct; we filter client-side by system/status/etc.
+  // Always fetch "all" so counters stay correct and "used" can be grouped under Expired.
   const qs = new URLSearchParams();
   qs.set("status", "all");
   if (search) qs.set("search", search);
+  if (system !== "all") qs.set("system", system);
   if (planId && planId !== "all") qs.set("plan_id", planId);
   if (poolId && poolId !== "all") qs.set("pool_id", poolId);
   qs.set("limit", "200");
@@ -355,19 +368,14 @@ async function loadClients() {
 
   const data = await fetchJSON("/api/admin/clients?" + qs.toString());
 
-  const allItemsRaw = data.items || [];
-
-  // Apply system filter first (for summary + dropdown options)
-  const allItems = uiSystem === "all"
-    ? allItemsRaw
-    : allItemsRaw.filter(it => detectSystem(it) === uiSystem);
-
+  const allItems = data.items || [];
+  applySystemLayout();
   initPlanAndPoolFiltersFromItems(allItems);
   const summary = computeSummaryFromItems(allItems);
   renderSummary(summary);
 
   const filtered = filterItemsByStatus(allItems, uiStatus);
-  renderTable(filtered, uiSystem === "all" ? "all" : uiSystem);
+  renderTable(filtered);
 }
 
 // ✅ small helper: flash a row green + show Updated ✅ effect + show Updated ✅ effect
@@ -401,11 +409,19 @@ function updateRowRemaining(sessionId, remainingSeconds) {
   const tr = document.querySelector(`tr[data-id="${CSS.escape(String(sessionId))}"]`);
   if (!tr) return;
   const tds = tr.querySelectorAll("td");
-  // Time Remaining column is now the 9th column (0-based index 8)
-  if (tds && tds.length >= 11) {
-    tds[8].textContent = fmtRemaining(remainingSeconds);
+  const sys = getSystemFilter();
+
+  // Column positions depend on the current table layout
+  let idx = null;
+  if (sys === "portal") idx = 7;        // Remaining
+  else if (sys === "mikrotik") idx = 8; // Time Remaining
+  else idx = 9;                         // Time Remaining in "All systems"
+
+  if (tds && idx != null && tds.length > idx) {
+    tds[idx].textContent = fmtRemaining(remainingSeconds);
   }
 }
+
 
 async function openDetail(id) {
   currentDetailId = id;
@@ -426,7 +442,7 @@ async function openDetail(id) {
 
     sub.textContent = `Voucher ${it.voucher_code || "—"} · Session ID ${it.id}`;
 
-    let rows = [
+    const rows = [
       ["Device name", it.client_name || "—"],
       ["Client MAC", it.client_mac],
       ["AP", it.ap_name || "—"],
@@ -450,18 +466,6 @@ async function openDetail(id) {
       ["Data remaining", computeQuota(it).remainingHuman],
       ["Max devices", it.plans?.max_devices],
     ];
-
-    // Show only relevant blocks per system
-    const sysMode = detectSystem(it);
-    if (sysMode === "portal") {
-      rows = rows.filter(([k]) => ![
-        "NAS",
-        "Data total",
-        "Data used",
-        "Data remaining"
-      ].includes(k));
-    }
-
 
     detail.innerHTML = rows.map(([k,v]) => `
       <div style="border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
@@ -916,7 +920,8 @@ function wireUI() {
     }
   };
 
-  document.getElementById("refreshBtn").onclick = () => loadClients().catch(showTopError);
+  document.getElementById("refreshBtn").onclick = () => applySystemLayout();
+    loadClients().catch(showTopError);
   document.getElementById("clearBtn").onclick = () => {
     document.getElementById("search").value = "";
     document.getElementById("status").value = "all";
@@ -933,9 +938,10 @@ function wireUI() {
     loadClients().catch(showTopError);
   });
 
-  const systemFilterEl = document.getElementById("systemFilter");
-  if (systemFilterEl) {
-    systemFilterEl.addEventListener("change", () => {
+  const sysEl = document.getElementById("systemFilter");
+  if (sysEl) {
+    sysEl.addEventListener("change", () => {
+      applySystemLayout();
       loadClients().catch(showTopError);
     });
   }
