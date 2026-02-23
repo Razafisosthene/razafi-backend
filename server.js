@@ -1,4 +1,4 @@
-// RAZAFI Backend - February 2026 Edition
+// RAZAFI Backend - 21th February 2026 Edition
 // ---------------------------------------------------------------------------
 
 import express from "express";
@@ -974,7 +974,6 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     const search = String(req.query.search || "").trim();
     const plan_id = String(req.query.plan_id || "all").trim();
     const pool_id = String(req.query.pool_id || "all").trim();
-    const system = String(req.query.system || "all").toLowerCase();
     const limit = Math.min(500, Math.max(1, safeNumber(req.query.limit, 200)));
     const offset = Math.max(0, safeNumber(req.query.offset, 0));
 
@@ -991,7 +990,6 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         remaining_seconds,
         client_mac,
         ap_mac,
-        nas_id,
         delivered_at,
         activated_at,
         started_at,
@@ -1053,14 +1051,6 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       q = q.eq("pool_id", pool_id);
     }
 
-    // ✅ System filter (Portal System 2 vs MikroTik System 3)
-    // Heuristic: System 3 rows have nas_id (MikroTik identity). System 2 rows don't.
-    if (system === "portal") {
-      q = q.is("nas_id", null);
-    } else if (system === "mikrotik") {
-      q = q.not("nas_id", "is", null);
-    }
-
     const { data, error, count } = await q;
     if (error) return res.status(500).json({ error: error.message });
 
@@ -1071,10 +1061,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       client_mac: r.client_mac,
       client_name: null, // filled from client_devices (best-effort)
       ap_mac: r.ap_mac,
-      ap_name: null,
-
-      nas_id: r.nas_id || null,
-      system: (r.nas_id ? "mikrotik" : "portal"), // will be filled from Tanaza (best-effort)
+      ap_name: null, // will be filled from Tanaza (best-effort)
 
       pool_id: r.pool_id,
       pool_name: r.pool?.name || null,
@@ -4410,7 +4397,7 @@ app.post("/api/voucher/activate", async (req, res) => {
     // Load session + plan
     const { data: session, error: sErr } = await supabase
       .from("voucher_sessions")
-      .select("id,voucher_code,plan_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,nas_id,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)")
+      .select("id,voucher_code,plan_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)")
       .eq("voucher_code", voucher_code)
       .eq("client_mac", client_mac)
       .maybeSingle();
@@ -4456,28 +4443,15 @@ app.post("/api/voucher/activate", async (req, res) => {
     }
 
     
-    // Decide which system is activating:
-// - System 2 (Portal / non-RADIUS): user clicks "Utiliser ce code" => start immediately (started_at + expires_at)
-// - System 3 (MikroTik / RADIUS): user clicks => arm voucher, but start timer only on FIRST successful RADIUS accept
-const bodyNas = String(body.nas_id || body.nasId || "").trim() || null;
-const isSystem3 = Boolean(bodyNas || session.nas_id); // MikroTik identity present
-const isSystem2 = !isSystem3; // default to portal when no NAS is involved
-
-const updatePayload = {
-  status: "active",
-  activated_at: nowIso,
-  updated_at: nowIso,
-};
-
-if (isSystem2) {
-  // Start right now (Portal)
-  updatePayload.started_at = nowIso;
-  updatePayload.expires_at = new Date(now.getTime() + (minutes * 60 * 1000)).toISOString();
-} else {
-  // Arm only (MikroTik / RADIUS)
-  updatePayload.started_at = null;
-  updatePayload.expires_at = null;
-}
+    const updatePayload = {
+      // Arm the voucher (user clicked "Utiliser ce code")
+      // Timer will start on the FIRST successful RADIUS Access-Accept
+      status: "active",
+      activated_at: nowIso,
+      started_at: null,
+      expires_at: null,
+      updated_at: nowIso,
+    };
 
     // Keep the first AP that activated it (optional)
     if (ap_mac && !session.ap_mac) updatePayload.ap_mac = ap_mac;

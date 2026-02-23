@@ -105,25 +105,6 @@ let debounceTimer = null;
 let lastItems = [];
 let currentDetailId = null;
 
-
-function getSystemFilter() {
-  const el = document.getElementById("systemFilter");
-  const v = el ? String(el.value || "all").toLowerCase() : "all";
-  return (v === "portal" || v === "mikrotik") ? v : "all";
-}
-
-function applySystemLayout() {
-  const sys = getSystemFilter();
-  const thAll = document.getElementById("theadAll");
-  const thPortal = document.getElementById("theadPortal");
-  const thMik = document.getElementById("theadMikrotik");
-  if (!thAll || !thPortal || !thMik) return;
-
-  thAll.style.display = (sys === "all") ? "" : "none";
-  thPortal.style.display = (sys === "portal") ? "" : "none";
-  thMik.style.display = (sys === "mikrotik") ? "" : "none";
-}
-
 // -------------------------
 // Session gate: page must be inaccessible without login
 // -------------------------
@@ -287,55 +268,25 @@ function renderTable(items) {
          </div>`
       : `${esc(it.client_mac || "—")}`;
 
-    
-const sys = getSystemFilter();
-const systemLabel = it.system === "mikrotik" ? "MikroTik" : "Portal";
-const nasOrAp = it.nas_id ? it.nas_id : (it.ap_name || it.ap_mac || "—");
-const apDisplay = it.ap_name || it.ap_mac || "—";
-const nasDisplay = it.nas_id || it.nas || "—";
+    tr.innerHTML = `
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${clientCell}</td>
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || "—")}</td>
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_price ?? "—")}</td>
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(apDisplay)}</td>
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
 
-if (sys === "portal") {
-  tr.innerHTML = `
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${clientCell}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_price ?? "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(apDisplay)}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
-  `;
-} else if (sys === "mikrotik") {
-  tr.innerHTML = `
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${clientCell}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_price ?? "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(nasDisplay)}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(computeQuota(it).remainingHuman || "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
-  `;
-} else {
-  tr.innerHTML = `
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(systemLabel)}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${clientCell}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_price ?? "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(nasOrAp)}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(computeQuota(it).remainingHuman || "—")}</td>
-    <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
-  `;
-}
+      <!-- ✅ status now is DB truth (view); just display it -->
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}</td>
+
+      <!-- ✅ remaining_seconds now is DB truth (view); display time remaining -->
+<td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
+
+<!-- ✅ data remaining (human) -->
+<td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(computeQuota(it).remainingHuman || "—")}</td>
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
+    `;
 
     tr.addEventListener("click", () => openDetail(it.id));
     tbody.appendChild(tr);
@@ -352,7 +303,6 @@ async function loadClients() {
 
   const uiStatus = document.getElementById("status").value;
   const search = document.getElementById("search").value.trim();
-  const system = getSystemFilter();
   const planId = document.getElementById("planFilter")?.value || "all";
   const poolId = document.getElementById("poolFilter")?.value || "all";
 
@@ -360,7 +310,6 @@ async function loadClients() {
   const qs = new URLSearchParams();
   qs.set("status", "all");
   if (search) qs.set("search", search);
-  if (system !== "all") qs.set("system", system);
   if (planId && planId !== "all") qs.set("plan_id", planId);
   if (poolId && poolId !== "all") qs.set("pool_id", poolId);
   qs.set("limit", "200");
@@ -369,7 +318,6 @@ async function loadClients() {
   const data = await fetchJSON("/api/admin/clients?" + qs.toString());
 
   const allItems = data.items || [];
-  applySystemLayout();
   initPlanAndPoolFiltersFromItems(allItems);
   const summary = computeSummaryFromItems(allItems);
   renderSummary(summary);
@@ -409,19 +357,11 @@ function updateRowRemaining(sessionId, remainingSeconds) {
   const tr = document.querySelector(`tr[data-id="${CSS.escape(String(sessionId))}"]`);
   if (!tr) return;
   const tds = tr.querySelectorAll("td");
-  const sys = getSystemFilter();
-
-  // Column positions depend on the current table layout
-  let idx = null;
-  if (sys === "portal") idx = 7;        // Remaining
-  else if (sys === "mikrotik") idx = 8; // Time Remaining
-  else idx = 9;                         // Time Remaining in "All systems"
-
-  if (tds && idx != null && tds.length > idx) {
-    tds[idx].textContent = fmtRemaining(remainingSeconds);
+  // Time Remaining column is now the 9th column (0-based index 8)
+  if (tds && tds.length >= 11) {
+    tds[8].textContent = fmtRemaining(remainingSeconds);
   }
 }
-
 
 async function openDetail(id) {
   currentDetailId = id;
@@ -920,13 +860,10 @@ function wireUI() {
     }
   };
 
-  document.getElementById("refreshBtn").onclick = () => applySystemLayout();
-    loadClients().catch(showTopError);
+  document.getElementById("refreshBtn").onclick = () => loadClients().catch(showTopError);
   document.getElementById("clearBtn").onclick = () => {
     document.getElementById("search").value = "";
     document.getElementById("status").value = "all";
-    const sf = document.getElementById("systemFilter");
-    if (sf) sf.value = "all";
     const pf = document.getElementById("planFilter");
     const pof = document.getElementById("poolFilter");
     if (pf) pf.value = "all";
@@ -937,14 +874,6 @@ function wireUI() {
   document.getElementById("status").addEventListener("change", () => {
     loadClients().catch(showTopError);
   });
-
-  const sysEl = document.getElementById("systemFilter");
-  if (sysEl) {
-    sysEl.addEventListener("change", () => {
-      applySystemLayout();
-      loadClients().catch(showTopError);
-    });
-  }
 
   const planFilterEl = document.getElementById("planFilter");
   if (planFilterEl) {
