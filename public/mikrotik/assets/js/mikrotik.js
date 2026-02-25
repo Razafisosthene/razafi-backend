@@ -1198,7 +1198,6 @@ function submitToLoginUrl(code, ev) {
     percent: document.getElementById("netPercent"),
     statusText: document.getElementById("netStatusText"),
     speed: document.getElementById("netSpeed"),
-    snapshotBadge: document.getElementById("netSnapshotBadge"),
   };
 
   // Fixed for all users (per your requirement)
@@ -1248,7 +1247,6 @@ function submitToLoginUrl(code, ev) {
     if (_netEls.poolName) _netEls.poolName.textContent = name;
     if (_netEls.statusText) _netEls.statusText.textContent = label.text;
     if (_netEls.speed) _netEls.speed.textContent = `${MAX_SPEED_MBPS} Mbps`;
-    if (_netEls.snapshotBadge) _netEls.snapshotBadge.textContent = "SNAPSHOT";
 
     // Unknown percent: keep placeholder and bar at 0 (fail-open)
     if (!Number.isFinite(pct)) {
