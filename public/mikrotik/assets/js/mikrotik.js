@@ -1173,164 +1173,6 @@ function submitToLoginUrl(code, ev) {
 
   // -------- Pool context (AP -> Pool) --------
   let poolContext = { pool_name: null, pool_percent: null, is_full: false };
-
-// -------- Network info card (Pool saturation + fixed speed) --------
-// 100% UI feature (no backend change): uses /api/portal/context already fetched below.
-// We inject the card between Plans and Assistance to keep index.html minimal.
-const MAX_SPEED_MBPS = 10; // fixed for all users (per requirement)
-let _netHasAnimated = false;
-let _netCardInView = false;
-
-const _netEls = {
-  card: null,
-  poolName: null,
-  barFill: null,
-  percent: null,
-  statusText: null,
-  speed: null,
-  badge: null,
-};
-
-function _ensureNetworkStyles() {
-  if (document.getElementById("razafi-networkinfo-style")) return;
-  const style = document.createElement("style");
-  style.id = "razafi-networkinfo-style";
-  style.textContent = `
-    .network-info-card{ padding:18px 16px; }
-    .network-head{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
-    .network-title{ font-weight:800; font-size:16px; line-height:1.15; display:flex; align-items:center; gap:8px; }
-    .network-badge{ font-size:12px; font-weight:800; letter-spacing:.08em; padding:8px 12px; border-radius:999px;
-      border:1px solid rgba(13,110,253,0.25); background: rgba(13,110,253,0.10); text-transform:uppercase; }
-    .network-bar{ width:100%; height:12px; border-radius:999px; background: rgba(0,0,0,0.08); overflow:hidden; }
-    .network-bar-fill{ height:100%; width:0%; border-radius:999px; transition: none; background:#22c55e; }
-    body.theme-dark .network-bar{ background: rgba(255,255,255,0.12); }
-    body.theme-dark .network-badge{ border-color: rgba(255,255,255,0.14); background: rgba(255,255,255,0.06); }
-    .network-row{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:10px; }
-    .network-percent{ font-weight:900; font-size:18px; }
-    .network-status{ font-weight:800; font-size:18px; opacity:.78; }
-    .network-divider{ height:1px; background: rgba(0,0,0,0.08); margin:14px 0; }
-    body.theme-dark .network-divider{ background: rgba(255,255,255,0.10); }
-    .network-speed-title{ font-weight:900; font-size:18px; display:flex; align-items:center; gap:8px; }
-    .network-speed{ font-weight:900; font-size:40px; line-height:1; margin-top:6px; }
-    .network-speed-sub{ margin-top:6px; opacity:.65; }
-  `;
-  document.head.appendChild(style);
-}
-
-function _insertNetworkCardIfMissing() {
-  if (document.getElementById("networkInfoCard")) {
-    _netEls.card = document.getElementById("networkInfoCard");
-  } else {
-    _ensureNetworkStyles();
-
-    const plansSection = document.querySelector('section:has(#plansGrid)') || document.querySelector("#plansGrid")?.closest("section");
-    const assistance = document.querySelector("section.card.faq");
-
-    const card = document.createElement("section");
-    card.className = "card network-info-card";
-    card.id = "networkInfoCard";
-    card.innerHTML = `
-      <div class="network-head">
-        <div class="network-title">🌐 <span>État du réseau – <span id="netPoolName">—</span></span></div>
-        <span class="network-badge" id="netSnapshotBadge">SNAPSHOT</span>
-      </div>
-
-      <div class="network-bar" aria-hidden="true">
-        <div id="netBarFill" class="network-bar-fill" style="width:0%"></div>
-      </div>
-
-      <div class="network-row">
-        <div class="network-percent" id="netPercent">0%</div>
-        <div class="network-status" id="netStatusText">Réseau fluide</div>
-      </div>
-
-      <div class="network-divider"></div>
-
-      <div class="network-speed-title">🚀 <span>Votre débit maximum</span></div>
-      <div class="network-speed" id="netSpeed">${MAX_SPEED_MBPS} Mbps</div>
-      <div class="network-speed-sub">Optimisé pour navigation & streaming HD</div>
-    `;
-
-    if (assistance && assistance.parentNode) {
-      assistance.parentNode.insertBefore(card, assistance);
-    } else if (plansSection && plansSection.parentNode) {
-      plansSection.parentNode.insertBefore(card, plansSection.nextSibling);
-    } else {
-      // last resort
-      document.querySelector("main")?.appendChild(card);
-    }
-
-    _netEls.card = card;
-  }
-
-  // Cache element refs
-  _netEls.poolName = document.getElementById("netPoolName");
-  _netEls.barFill = document.getElementById("netBarFill");
-  _netEls.percent = document.getElementById("netPercent");
-  _netEls.statusText = document.getElementById("netStatusText");
-  _netEls.speed = document.getElementById("netSpeed");
-  _netEls.badge = document.getElementById("netSnapshotBadge");
-  if (_netEls.speed) _netEls.speed.textContent = `${MAX_SPEED_MBPS} Mbps`;
-  if (_netEls.badge) _netEls.badge.textContent = "SNAPSHOT";
-}
-
-function _saturationLabel(pct) {
-  if (!Number.isFinite(pct)) return { text: "—", color: "#22c55e" };
-  if (pct >= 90) return { text: "Réseau très occupé", color: "#ef4444" };
-  if (pct >= 70) return { text: "Réseau modérément occupé", color: "#f59e0b" };
-  return { text: "Réseau fluide", color: "#22c55e" };
-}
-
-function _animateNumber(el, from, to, ms = 900) {
-  if (!el) return;
-  const start = performance.now();
-  const f = Math.max(0, Math.min(100, Number(from || 0)));
-  const t = Math.max(0, Math.min(100, Number(to || 0)));
-  function step(now) {
-    const p = Math.min(1, (now - start) / ms);
-    const v = Math.round(f + (t - f) * (1 - Math.pow(1 - p, 3)));
-    el.textContent = `${v}%`;
-    if (p < 1) requestAnimationFrame(step);
-  }
-  requestAnimationFrame(step);
-}
-
-function updateNetworkInfoUI() {
-  _insertNetworkCardIfMissing();
-  if (!_netEls.card) return;
-
-  const name = poolContext.pool_name ? String(poolContext.pool_name) : "—";
-  const pct = (poolContext.pool_percent === null || poolContext.pool_percent === undefined) ? NaN : Number(poolContext.pool_percent);
-
-  if (_netEls.poolName) _netEls.poolName.textContent = name;
-
-  const label = _saturationLabel(pct);
-  if (_netEls.statusText) _netEls.statusText.textContent = label.text;
-
-  if (!Number.isFinite(pct)) {
-    if (_netEls.percent) _netEls.percent.textContent = "—%";
-    if (_netEls.barFill) {
-      _netEls.barFill.style.width = "0%";
-      _netEls.barFill.style.background = "#22c55e";
-    }
-    return;
-  }
-
-  const safePct = Math.max(0, Math.min(100, Math.round(pct)));
-
-  if (_netEls.percent) _netEls.percent.textContent = `${safePct}%`;
-  if (_netEls.barFill) {
-    _netEls.barFill.style.background = label.color;
-    _netEls.barFill.style.width = `${safePct}%`; // ✅ no animation
-  }
-}
-
-function initNetworkViewportAnimation() {
-  // No viewport-based animation: render immediately
-  updateNetworkInfoUI();
-}
-
-
   let poolIsFull = false;
 
   const _uiEls = {
@@ -1346,6 +1188,114 @@ function initNetworkViewportAnimation() {
     noVoucherMsg: _uiEls.noVoucherMsg ? _uiEls.noVoucherMsg.textContent : null,
     choosePlanHint: _uiEls.choosePlanHint ? _uiEls.choosePlanHint.textContent : null,
   };
+
+
+  // -------- Network info card (pool saturation + fixed speed) --------
+  const _netEls = {
+    card: document.getElementById("networkInfoCard"),
+    poolName: document.getElementById("netPoolName"),
+    barFill: document.getElementById("netBarFill"),
+    percent: document.getElementById("netPercent"),
+    statusText: document.getElementById("netStatusText"),
+    speed: document.getElementById("netSpeed"),
+  };
+
+  // Fixed for all users (per your requirement)
+  const MAX_SPEED_MBPS = 10;
+  const _netCanAnimate = false; // animation disabled by request
+function saturationLabel(pct) {
+    if (!Number.isFinite(pct)) return { text: "—", level: "low" };
+    if (pct >= 90) return { text: "Réseau très occupé", level: "high" };
+    if (pct >= 70) return { text: "Réseau modérément occupé", level: "mid" };
+    return { text: "Réseau fluide", level: "low" };
+  }
+
+  function setBarLevelClass(level) {
+    if (!_netEls.barFill) return;
+    _netEls.barFill.classList.remove("level-low", "level-mid", "level-high");
+    _netEls.barFill.classList.add(level === "high" ? "level-high" : (level === "mid" ? "level-mid" : "level-low"));
+  }
+
+  function animateNumber(el, from, to, ms = 900) {
+    if (!el) return;
+    const start = performance.now();
+    const f = Math.max(0, Math.min(100, Number(from || 0)));
+    const t = Math.max(0, Math.min(100, Number(to || 0)));
+    function step(now) {
+      const p = Math.min(1, (now - start) / ms);
+      const v = Math.round(f + (t - f) * (1 - Math.pow(1 - p, 3)));
+      el.textContent = `${v}%`;
+      if (p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  // Snapshot at load: we fetch once (poolContext) and display it;
+  // animation will play when the card enters the viewport (IntersectionObserver).
+  let _netHasAnimated = false;
+  function renderNetworkInfo({ animate = false } = {}) {
+    // animation disabled: always render snapshot instantly
+    animate = false;
+    if (!_netEls.card) return;
+
+    const name = poolContext.pool_name ? String(poolContext.pool_name) : "—";
+    const pct = (poolContext.pool_percent === null || poolContext.pool_percent === undefined)
+      ? null
+      : Number(poolContext.pool_percent);
+
+    const label = saturationLabel(Number.isFinite(pct) ? pct : NaN);
+
+    if (_netEls.poolName) _netEls.poolName.textContent = name;
+    if (_netEls.statusText) _netEls.statusText.textContent = label.text;
+    if (_netEls.speed) _netEls.speed.textContent = `${MAX_SPEED_MBPS} Mbps`;
+
+    // Unknown percent: keep placeholder and bar at 0 (fail-open)
+    if (!Number.isFinite(pct)) {
+      if (_netEls.percent) _netEls.percent.textContent = "—%";
+      if (_netEls.barFill) _netEls.barFill.style.width = "0%";
+      setBarLevelClass("low");
+      return;
+    }
+
+    const safePct = Math.max(0, Math.min(100, Math.round(pct)));
+    setBarLevelClass(label.level);
+
+    if (!animate) {
+      if (_netEls.percent) _netEls.percent.textContent = `${safePct}%`;
+      // Snapshot: set bar immediately (no animation)
+      if (_netEls.barFill) _netEls.barFill.style.width = `${safePct}%`;
+      return;
+    }
+
+    // (animation disabled)
+    if (_netEls.percent) _netEls.percent.textContent = `${safePct}%`;
+    if (_netEls.barFill) _netEls.barFill.style.width = `${safePct}%`;
+  }
+
+  function initNetworkViewportAnimation() {
+    if (!_netEls.card || typeof IntersectionObserver !== "function") {
+      // No IO support → just render immediately, no animation
+      renderNetworkInfo({ animate: false });
+      return;
+    }
+
+    try {
+      const io = new IntersectionObserver((entries) => {
+        for (const ent of entries) {
+          if (ent.isIntersecting) {
+            try { _netEls.card.classList.add("is-visible"); } catch (_) {}
+            renderNetworkInfo({ animate: true });
+            io.disconnect();
+            break;
+          }
+        }
+      }, { root: null, threshold: 0.25 });
+
+      io.observe(_netEls.card);
+    } catch (_) {
+      renderNetworkInfo({ animate: false });
+    }
+  }
 
   function ensurePoolNameLine() {
     const existing = document.getElementById("poolNameLine");
@@ -1424,14 +1374,8 @@ function initNetworkViewportAnimation() {
       }
     } catch (_) {}
 
-    // Network info card: update snapshot as soon as poolContext is known.
-    try { updateNetworkInfoUI({ animate: false }); } catch (_) {}
-
-    // If the card is already in view when context arrives, animate now (only once).
-    try {
-      const pct = (poolContext.pool_percent === null || poolContext.pool_percent === undefined) ? NaN : Number(poolContext.pool_percent);
-      if (_netCardInView && Number.isFinite(pct)) updateNetworkInfoUI({ animate: true });
-    } catch (_) {}
+    // Network info card: update snapshot values as soon as poolContext is known
+    try { renderNetworkInfo({ animate: false }); } catch (_) {}
   }
 
   function applyPoolFullLockToPlans() {
