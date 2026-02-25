@@ -1788,23 +1788,59 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
 
     let active_clients = 0;
 
-    // 3) Active clients calculation
-    if (String(pool?.system || "").trim() === "mikrotik") {
-      // For MikroTik pools, we rely on active_device_sessions (populated by RADIUS/accounting pipeline).
-      // If not present yet, this will return 0 but still provides pool_name for UI.
-      const { count, error: cErr } = await supabase
-        .from("active_device_sessions")
-        .select("*", { count: "exact", head: true })
-        .eq("pool_id", pool_id)
-        .eq("is_active", true);
+// 3) Active clients calculation
+if (String(pool?.system || "").trim() === "mikrotik") {
+  // Primary for MikroTik: active_device_sessions
+  const { count, error: cErr } = await supabase
+    .from("active_device_sessions")
+    .select("*", { count: "exact", head: true })
+    .eq("pool_id", pool_id)
+    .eq("is_active", true);
 
-      if (cErr) {
-        console.error("PORTAL CONTEXT MIKROTIK ACTIVE COUNT ERROR", cErr);
+  if (cErr) {
+    console.error("PORTAL CONTEXT MIKROTIK ACTIVE COUNT ERROR", cErr);
+    return res.status(500).json({ ok: false, error: "db_error" });
+  }
+
+  active_clients = Number(count || 0);
+
+  // ✅ Fallback: if not populated yet, use Tanaza/AP live stats (same as admin truth)
+  if (active_clients === 0) {
+    const { data: aps, error: apsErr } = await supabase
+      .from("ap_registry")
+      .select("ap_mac,is_active")
+      .eq("pool_id", pool_id);
+
+    if (apsErr) {
+      console.error("PORTAL CONTEXT POOL APS ERROR", apsErr);
+      return res.status(500).json({ ok: false, error: "db_error" });
+    }
+
+    const apMacs = (aps || [])
+      .filter((a) => a && a.ap_mac && a.is_active !== false)
+      .map((a) => String(a.ap_mac).trim());
+
+    if (apMacs.length) {
+      const { data: stats, error: statsErr } = await supabase
+        .from("ap_live_stats")
+        .select("ap_mac,active_clients")
+        .in("ap_mac", apMacs);
+
+      if (statsErr) {
+        console.error("PORTAL CONTEXT POOL STATS ERROR", statsErr);
         return res.status(500).json({ ok: false, error: "db_error" });
       }
 
-      active_clients = Number(count || 0);
-    } else {
+      active_clients = (stats || []).reduce((sum, s) => {
+        const n = (s?.active_clients === null || s?.active_clients === undefined)
+          ? 0
+          : Number(s.active_clients) || 0;
+        return sum + n;
+      }, 0);
+    }
+  }
+} else {
+
       // For Tanaza pools, sum ap_live_stats.active_clients across active APs in that pool
       const { data: aps, error: apsErr } = await supabase
         .from("ap_registry")
