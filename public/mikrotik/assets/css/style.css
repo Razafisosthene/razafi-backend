@@ -698,26 +698,6 @@ input[type="tel"] {
   letter-spacing: .2px;
 }
 
-
-.network-badge{
-  font-size: 0.72rem;
-  font-weight: 800;
-  letter-spacing: .08em;
-  padding: 6px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(13,110,253,0.25);
-  background: rgba(13,110,253,0.10);
-  color: var(--text-main);
-  text-transform: uppercase;
-  user-select:none;
-}
-
-body.theme-dark .network-badge{
-  border-color: rgba(255,255,255,0.14);
-  background: rgba(255,255,255,0.06);
-  color: var(--text-main);
-}
-
 .network-bar-wrap{
   margin-top: 6px;
 }
