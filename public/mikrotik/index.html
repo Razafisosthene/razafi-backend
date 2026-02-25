@@ -130,6 +130,33 @@
       </div>
     </section>
 
+
+    <!-- ========= ÉTAT DU RÉSEAU (Pool saturation + débit) ========= -->
+    <section id="networkInfoCard" class="card network-card io-reveal" aria-live="polite">
+      <div class="network-head">
+        <div class="network-title">🌐 État du réseau – <span id="netPoolName">—</span></div>
+      </div>
+
+      <div class="network-bar-wrap" role="img" aria-label="Saturation du réseau">
+        <div class="network-bar">
+          <div id="netBarFill" class="network-bar-fill level-low" style="width:0%"></div>
+        </div>
+        <div class="network-bar-meta">
+          <span id="netPercent" class="network-percent">—%</span>
+          <span id="netStatusText" class="network-status muted">—</span>
+        </div>
+      </div>
+
+      <div class="network-divider"></div>
+
+      <div class="network-speed">
+        <div class="network-title">🚀 Votre débit maximum</div>
+        <div id="netSpeed" class="network-speed-value">10 Mbps</div>
+        <div class="muted small">Optimisé pour navigation &amp; streaming HD</div>
+      </div>
+    </section>
+
+
     <!-- ========= ASSISTANCE ========= -->
     <section class="card faq">
       <h3>🛟 Assistance</h3>

@@ -1189,6 +1189,127 @@ function submitToLoginUrl(code, ev) {
     choosePlanHint: _uiEls.choosePlanHint ? _uiEls.choosePlanHint.textContent : null,
   };
 
+
+  // -------- Network info card (pool saturation + fixed speed) --------
+  const _netEls = {
+    card: document.getElementById("networkInfoCard"),
+    poolName: document.getElementById("netPoolName"),
+    barFill: document.getElementById("netBarFill"),
+    percent: document.getElementById("netPercent"),
+    statusText: document.getElementById("netStatusText"),
+    speed: document.getElementById("netSpeed"),
+  };
+
+  // Fixed for all users (per your requirement)
+  const MAX_SPEED_MBPS = 10;
+  const _netCanAnimate = (_netEls.card && typeof IntersectionObserver === "function");
+
+  function saturationLabel(pct) {
+    if (!Number.isFinite(pct)) return { text: "—", level: "low" };
+    if (pct >= 90) return { text: "Réseau très occupé", level: "high" };
+    if (pct >= 70) return { text: "Réseau modérément occupé", level: "mid" };
+    return { text: "Réseau fluide", level: "low" };
+  }
+
+  function setBarLevelClass(level) {
+    if (!_netEls.barFill) return;
+    _netEls.barFill.classList.remove("level-low", "level-mid", "level-high");
+    _netEls.barFill.classList.add(level === "high" ? "level-high" : (level === "mid" ? "level-mid" : "level-low"));
+  }
+
+  function animateNumber(el, from, to, ms = 900) {
+    if (!el) return;
+    const start = performance.now();
+    const f = Math.max(0, Math.min(100, Number(from || 0)));
+    const t = Math.max(0, Math.min(100, Number(to || 0)));
+    function step(now) {
+      const p = Math.min(1, (now - start) / ms);
+      const v = Math.round(f + (t - f) * (1 - Math.pow(1 - p, 3)));
+      el.textContent = `${v}%`;
+      if (p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  // Snapshot at load: we fetch once (poolContext) and display it;
+  // animation will play when the card enters the viewport (IntersectionObserver).
+  let _netHasAnimated = false;
+  function renderNetworkInfo({ animate = false } = {}) {
+    if (!_netEls.card) return;
+
+    const name = poolContext.pool_name ? String(poolContext.pool_name) : "—";
+    const pct = (poolContext.pool_percent === null || poolContext.pool_percent === undefined)
+      ? null
+      : Number(poolContext.pool_percent);
+
+    const label = saturationLabel(Number.isFinite(pct) ? pct : NaN);
+
+    if (_netEls.poolName) _netEls.poolName.textContent = name;
+    if (_netEls.statusText) _netEls.statusText.textContent = label.text;
+    if (_netEls.speed) _netEls.speed.textContent = `${MAX_SPEED_MBPS} Mbps`;
+
+    // Unknown percent: keep placeholder and bar at 0 (fail-open)
+    if (!Number.isFinite(pct)) {
+      if (_netEls.percent) _netEls.percent.textContent = "—%";
+      if (_netEls.barFill) _netEls.barFill.style.width = "0%";
+      setBarLevelClass("low");
+      return;
+    }
+
+    const safePct = Math.max(0, Math.min(100, Math.round(pct)));
+    setBarLevelClass(label.level);
+
+    if (!animate) {
+      if (_netEls.percent) _netEls.percent.textContent = `${safePct}%`;
+      // Snapshot mode: if we can animate on view, keep bar at 0 until visible.
+      // If we cannot animate (no IntersectionObserver), set the bar immediately.
+      if (_netEls.barFill) _netEls.barFill.style.width = _netCanAnimate ? "0%" : `${safePct}%`;
+      return;
+    }
+
+    // Animate only once per page load (nice + cheap)
+    if (_netHasAnimated) {
+      if (_netEls.percent) _netEls.percent.textContent = `${safePct}%`;
+      if (_netEls.barFill) _netEls.barFill.style.width = `${safePct}%`;
+      return;
+    }
+
+    _netHasAnimated = true;
+    if (_netEls.barFill) _netEls.barFill.style.width = "0%";
+    if (_netEls.percent) _netEls.percent.textContent = "0%";
+
+    // Trigger layout then animate
+    requestAnimationFrame(() => {
+      if (_netEls.barFill) _netEls.barFill.style.width = `${safePct}%`;
+      animateNumber(_netEls.percent, 0, safePct, 900);
+    });
+  }
+
+  function initNetworkViewportAnimation() {
+    if (!_netEls.card || typeof IntersectionObserver !== "function") {
+      // No IO support → just render immediately, no animation
+      renderNetworkInfo({ animate: false });
+      return;
+    }
+
+    try {
+      const io = new IntersectionObserver((entries) => {
+        for (const ent of entries) {
+          if (ent.isIntersecting) {
+            try { _netEls.card.classList.add("is-visible"); } catch (_) {}
+            renderNetworkInfo({ animate: true });
+            io.disconnect();
+            break;
+          }
+        }
+      }, { root: null, threshold: 0.25 });
+
+      io.observe(_netEls.card);
+    } catch (_) {
+      renderNetworkInfo({ animate: false });
+    }
+  }
+
   function ensurePoolNameLine() {
     const existing = document.getElementById("poolNameLine");
     if (existing) return existing;
@@ -1265,6 +1386,9 @@ function submitToLoginUrl(code, ev) {
         if (_uiEls.choosePlanHint && _uiDefaults.choosePlanHint) _uiEls.choosePlanHint.textContent = _uiDefaults.choosePlanHint;
       }
     } catch (_) {}
+
+    // Network info card: update snapshot values as soon as poolContext is known
+    try { renderNetworkInfo({ animate: false }); } catch (_) {}
   }
 
   function applyPoolFullLockToPlans() {
@@ -1913,6 +2037,9 @@ function submitToLoginUrl(code, ev) {
   } catch (_) {
     updateConnectedUI({ force: false });
   }
+
+  // Network info card (IntersectionObserver reveal + bar animation)
+  initNetworkViewportAnimation();
 
   fetchPortalContext();
   fetchPortalStatus();

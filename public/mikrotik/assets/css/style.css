@@ -671,3 +671,98 @@ input[type="tel"] {
     animation: none !important;
   }
 }
+
+
+/* ===============================
+   RAZAFI PORTAL – Network Info Card (Pool saturation + Speed)
+   Inserted between Plans and Assistance
+   =============================== */
+
+.network-card{
+  max-width: 680px;
+  margin: 14px auto;
+  padding: 14px 14px;
+}
+
+.network-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom: 10px;
+}
+
+.network-title{
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: .2px;
+}
+
+.network-bar-wrap{
+  margin-top: 6px;
+}
+
+.network-bar{
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(0,0,0,.06);
+  border: 1px solid rgba(0,0,0,.06);
+  overflow: hidden;
+}
+
+.network-bar-fill{
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  transition: width 900ms cubic-bezier(.2,.9,.2,1);
+}
+
+.network-bar-fill.level-low{ background: rgba(25, 135, 84, .85); }
+.network-bar-fill.level-mid{ background: rgba(255, 193, 7, .90); }
+.network-bar-fill.level-high{ background: rgba(220, 53, 69, .90); }
+
+.network-bar-meta{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-top: 8px;
+}
+
+.network-percent{
+  font-weight: 800;
+  font-size: 13px;
+}
+
+.network-status{
+  font-weight: 600;
+}
+
+.network-divider{
+  height: 1px;
+  background: rgba(0,0,0,.06);
+  margin: 12px 0;
+}
+
+.network-speed{
+  display:flex;
+  flex-direction:column;
+  gap: 4px;
+}
+
+.network-speed-value{
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: .2px;
+}
+
+/* Viewport reveal (IntersectionObserver) */
+.io-reveal{
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 450ms ease, transform 450ms ease;
+}
+.io-reveal.is-visible{
+  opacity: 1;
+  transform: translateY(0);
+}
