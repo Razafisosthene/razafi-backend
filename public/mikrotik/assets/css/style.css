@@ -714,7 +714,7 @@ input[type="tel"] {
   height: 100%;
   width: 0%;
   border-radius: 999px;
-  transition: width 900ms cubic-bezier(.2,.9,.2,1);
+  transition: none;
 }
 
 .network-bar-fill.level-low{ background: rgba(25, 135, 84, .85); }

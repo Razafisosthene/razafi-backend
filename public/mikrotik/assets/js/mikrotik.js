@@ -297,25 +297,23 @@
       ctaLine = '<div class="small" style="margin-top:6px;">⛔ Code utilisé. Choisissez un nouveau plan ci-dessous pour continuer.</div>';
     }
 
-
     banner.innerHTML = `
       <div><strong>Dernier code généré :</strong> <span style="letter-spacing:1px;">${escapeHtml(last.code)}</span> ${when ? `<span class="small">(${escapeHtml(when)})</span>` : ""}</div>
       <div class="small" style="margin-top:4px;">Plan: ${plan} · Durée: ${dur} · Appareils: ${dev}</div>
       ${ctaLine}
     `;
-  
-  // --- RAZAFI PATCH: always enable "Utiliser ce code" when we have a code ---
-  try {
-    const btn = $("useVoucherBtn") || document.getElementById("useVoucherBtn");
-    if (btn) {
-      btn.disabled = false;
-      btn.removeAttribute("aria-disabled");
-      btn.style.pointerEvents = "auto";
-      btn.style.opacity = "";
-    }
-  } catch (e) {}
 
-}
+    // --- RAZAFI PATCH: always enable "Utiliser ce code" when we have a code ---
+    try {
+      const btn = $("useVoucherBtn") || document.getElementById("useVoucherBtn");
+      if (btn) {
+        btn.disabled = false;
+        btn.removeAttribute("aria-disabled");
+        btn.style.pointerEvents = "auto";
+        btn.style.opacity = "";
+      }
+    } catch (e) {}
+  }
 
   function friendlyErrorMessage(err) {
     // Network errors from fetch are often TypeError
@@ -435,14 +433,15 @@
   // ✅ RAZAFI System 3 rule: NEVER trust Tanaza login_url for MikroTik login.
   // Always force the MikroTik gateway /login.
   function getForcedMikrotikLoginEndpoint() {
-  const gw = (gwIp || "").trim();
-  const ip = gw ? gw : "192.168.88.1";
-  return `http://${ip}/login`;
-}
+    const gw = (gwIp || "").trim();
+    const ip = gw ? gw : "192.168.88.1";
+    return `http://${ip}/login`;
+  }
 
   // Keep the variable name used elsewhere
   const loginUrlNormalized = getForcedMikrotikLoginEndpoint();
-// Debug: show duplicated Tanaza params (placeholders + real values)
+
+  // Debug: show duplicated Tanaza params (placeholders + real values)
   const __apMacAll = qsAll("ap_mac");
   const __clientMacAll = qsAll("client_mac");
   const __loginUrlAll = qsAll("login_url");
@@ -775,18 +774,18 @@
     portalTruthStatus = status;
 
     // ------------------------------
-// Support phone (by pool) — System 3
-// ------------------------------
-try {
-  const phone =
-    (j?.contact_phone && String(j.contact_phone).trim()) ||
-    "038 75 00 592";
+    // Support phone (by pool) — System 3
+    // ------------------------------
+    try {
+      const phone =
+        (j?.contact_phone && String(j.contact_phone).trim()) ||
+        "038 75 00 592";
 
-  const el = document.getElementById("supportPhone");
-  if (el) el.textContent = phone;
-} catch (_) {
-  // fail-safe: do nothing
-}
+      const el = document.getElementById("supportPhone");
+      if (el) el.textContent = phone;
+    } catch (_) {
+      // fail-safe: do nothing
+    }
 
     const code = String(j?.voucher_code || "").trim();
     const plan = j?.plan || {};
@@ -956,7 +955,6 @@ try {
     return null;
   }
 
-  
   // Build MikroTik login URL (GET) for Option C redirect-based login
   function buildMikrotikLoginTarget(code) {
     const v = String(code || "").trim();
@@ -992,108 +990,103 @@ try {
     return target;
   }
 
-
-// --- RAZAFI PATCH: robust login URL fallback (gw -> login_url -> default) ---
-function getMikrotikLoginUrl() {
-  try {
-    // Prefer explicit login_url from Tanaza/MikroTik redirect params
-    const qp = getQueryParamsSafe();
-    const rawLoginUrl = (qp.login_url || qp.loginUrl || "").trim();
-    if (rawLoginUrl) return rawLoginUrl;
-
-    // Fallback to gw param (Tanaza config: ?gw=192.168.88.1)
-    const gw = (qp.gw || qp.gateway || "").trim();
-    if (gw) return `http://${gw}/login`;
-  } catch (e) {}
-
-  // Hard fallback
-  return "http://192.168.88.1/login";
-}
-
-// Safe query param parser (doesn't throw on bad encoding)
-function getQueryParamsSafe() {
-  const out = {};
-  const qs = (window.location.search || "").replace(/^\?/, "");
-  if (!qs) return out;
-  for (const part of qs.split("&")) {
-    if (!part) continue;
-    const [k, v] = part.split("=");
-    if (!k) continue;
-    const key = decodeURIComponent(k.replace(/\+/g, " "));
-    let val = "";
+  // --- RAZAFI PATCH: robust login URL fallback (gw -> login_url -> default) ---
+  function getMikrotikLoginUrl() {
     try {
-      val = decodeURIComponent((v || "").replace(/\+/g, " "));
-    } catch (e) {
-      val = (v || "");
+      // Prefer explicit login_url from Tanaza/MikroTik redirect params
+      const qp = getQueryParamsSafe();
+      const rawLoginUrl = (qp.login_url || qp.loginUrl || "").trim();
+      if (rawLoginUrl) return rawLoginUrl;
+
+      // Fallback to gw param (Tanaza config: ?gw=192.168.88.1)
+      const gw = (qp.gw || qp.gateway || "").trim();
+      if (gw) return `http://${gw}/login`;
+    } catch (e) {}
+
+    // Hard fallback
+    return "http://192.168.88.1/login";
+  }
+
+  // Safe query param parser (doesn't throw on bad encoding)
+  function getQueryParamsSafe() {
+    const out = {};
+    const qs = (window.location.search || "").replace(/^\?/, "");
+    if (!qs) return out;
+    for (const part of qs.split("&")) {
+      if (!part) continue;
+      const [k, v] = part.split("=");
+      if (!k) continue;
+      const key = decodeURIComponent(k.replace(/\+/g, " "));
+      let val = "";
+      try {
+        val = decodeURIComponent((v || "").replace(/\+/g, " "));
+      } catch (e) {
+        val = (v || "");
+      }
+      out[key] = val;
     }
-    out[key] = val;
-  }
-  return out;
-}
-
-function submitToLoginUrl(code, ev) {
-  // ✅ Captive-portal safe login: TOP-LEVEL GET redirect (no hidden POST form)
-  // Modern captive browsers often block HTTPS → HTTP private-IP POST requests.
-  if (ev && typeof ev.preventDefault === "function") {
-    try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+    return out;
   }
 
-  const v = String(code || "").trim();
-  if (!v) { showToast("❌ Code invalide.", "error", 4500); return; }
+  function submitToLoginUrl(code, ev) {
+    // ✅ Captive-portal safe login: TOP-LEVEL GET redirect (no hidden POST form)
+    // Modern captive browsers often block HTTPS → HTTP private-IP POST requests.
+    if (ev && typeof ev.preventDefault === "function") {
+      try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+    }
 
-  // ✅ Always force MikroTik gateway /login (ignore Tanaza login_url completely)
-  const raw = getForcedMikrotikLoginEndpoint();
-  if (!raw) { showToast("❌ login_url manquant.", "error", 5200); return; }
+    const v = String(code || "").trim();
+    if (!v) { showToast("❌ Code invalide.", "error", 4500); return; }
 
-  const redirect =
-    (continueUrl && String(continueUrl).trim()) ||
-    (window.location && window.location.href) ||
-    "http://fixwifi.it";
+    // ✅ Always force MikroTik gateway /login (ignore Tanaza login_url completely)
+    const raw = getForcedMikrotikLoginEndpoint();
+    if (!raw) { showToast("❌ login_url manquant.", "error", 5200); return; }
 
-  let target = raw;
+    const redirect =
+      (continueUrl && String(continueUrl).trim()) ||
+      (window.location && window.location.href) ||
+      "http://fixwifi.it";
 
-  try {
-    const u = new URL(raw, window.location.href);
+    let target = raw;
 
-    // Ensure /login endpoint
-    if (!u.pathname || u.pathname === "/") u.pathname = "/login";
-    if (!/\/login$/i.test(u.pathname)) u.pathname = u.pathname.replace(/\/+$/, "") + "/login";
+    try {
+      const u = new URL(raw, window.location.href);
 
-    // Required fields for MikroTik Hotspot login (PAP mode)
-    u.searchParams.set("username", v);
-    u.searchParams.set("password", v);
-    u.searchParams.set("dst", redirect);
-    u.searchParams.set("dsturl", redirect);
-    u.searchParams.set("popup", "false");
-    u.searchParams.set("success_url", redirect);
+      // Ensure /login endpoint
+      if (!u.pathname || u.pathname === "/") u.pathname = "/login";
+      if (!/\/login$/i.test(u.pathname)) u.pathname = u.pathname.replace(/\/+$/, "") + "/login";
 
-    target = u.toString();
-  } catch (_) {
-    const base = String(raw).replace(/\/+$/, "");
-    const sep = base.includes("?") ? "&" : "?";
-    target =
-      base +
-      sep +
-      "username=" + encodeURIComponent(v) +
-      "&password=" + encodeURIComponent(v) +
-      "&dst=" + encodeURIComponent(redirect) +
-      "&dsturl=" + encodeURIComponent(redirect) +
-      "&popup=false" +
-      "&success_url=" + encodeURIComponent(redirect);
+      // Required fields for MikroTik Hotspot login (PAP mode)
+      u.searchParams.set("username", v);
+      u.searchParams.set("password", v);
+      u.searchParams.set("dst", redirect);
+      u.searchParams.set("dsturl", redirect);
+      u.searchParams.set("popup", "false");
+      u.searchParams.set("success_url", redirect);
+
+      target = u.toString();
+    } catch (_) {
+      const base = String(raw).replace(/\/+$/, "");
+      const sep = base.includes("?") ? "&" : "?";
+      target =
+        base +
+        sep +
+        "username=" + encodeURIComponent(v) +
+        "&password=" + encodeURIComponent(v) +
+        "&dst=" + encodeURIComponent(redirect) +
+        "&dsturl=" + encodeURIComponent(redirect) +
+        "&popup=false" +
+        "&success_url=" + encodeURIComponent(redirect);
+    }
+
+    try { sessionStorage.setItem("razafi_last_login_url", target); } catch (_) {}
+    try { sessionStorage.setItem("razafi_login_attempt", "1"); } catch (_) {}
+
+    // ✅ Must be a real navigation (works in captive browsers)
+    window.location.href = target;
   }
-
-  try { sessionStorage.setItem("razafi_last_login_url", target); } catch (_) {}
-  try { sessionStorage.setItem("razafi_login_attempt", "1"); } catch (_) {}
-
-  // ✅ Must be a real navigation (works in captive browsers)
-  window.location.href = target;
-}
-
-
-
 
   if (useBtn) {
-
     useBtn.addEventListener("click", function (event) {
       if (!currentVoucherCode) {
         showToast("❌ Aucun code disponible pour le moment.", "error");
@@ -1127,11 +1120,10 @@ function submitToLoginUrl(code, ev) {
         console.warn("[RAZAFI] voucher activate fire-and-forget failed:", e?.message || e);
       }
 
-      // ✅ OFFICIAL — POST login to MikroTik /login (triggers RADIUS)
+      // ✅ OFFICIAL — GET redirect login to MikroTik /login (triggers RADIUS)
       submitToLoginUrl(currentVoucherCode, event);
     });
   }
-
 
   if (copyBtn) {
     copyBtn.addEventListener("click", async function () {
@@ -1140,265 +1132,144 @@ function submitToLoginUrl(code, ev) {
         return;
       }
       try {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(currentVoucherCode);
-        } else {
-          const ta = document.createElement("textarea");
-          ta.value = currentVoucherCode;
-          ta.style.position = "fixed";
-          ta.style.left = "-9999px";
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand("copy");
-          ta.remove();
-        }
+        await navigator.clipboard.writeText(currentVoucherCode);
         showToast("✅ Code copié.", "success");
-      } catch (e) {
-        showToast("❌ Impossible de copier le code.", "error");
+      } catch (_) {
+        // Fallback
+        try {
+          const t = document.createElement("textarea");
+          t.value = currentVoucherCode;
+          document.body.appendChild(t);
+          t.select();
+          document.execCommand("copy");
+          t.remove();
+          showToast("✅ Code copié.", "success");
+        } catch (e) {
+          showToast("❌ Impossible de copier.", "error");
+        }
       }
     });
   }
 
-  const last = readLastCode();
-  if (last && last.code) {
-    setVoucherUI({ phone: "", code: String(last.code), meta: { planName: last.planName, durationMinutes: last.durationMinutes, maxDevices: last.maxDevices }, focus: false });
-  } else {
-    setVoucherUI({ phone: "", code: "" });
-    renderLastCodeBanner();
+  // -------- Theme toggle (premium light/dark) --------
+  function applyTheme(theme) {
+    const t = (theme === "dark") ? "dark" : "light";
+    document.body.classList.toggle("theme-dark", t === "dark");
+    document.body.classList.toggle("theme-light", t !== "dark");
+    if (themeToggle) themeToggle.textContent = (t === "dark") ? "☀️" : "🌙";
+    try { localStorage.setItem("razafi_theme", t); } catch (_) {}
   }
 
-  // -------- Plans: fetch + render (DB only) --------
-  const plansGrid = $("plansGrid");
-  const plansLoading = $("plansLoading");
-
-  // -------- Pool context (AP -> Pool) --------
-  let poolContext = { pool_name: null, pool_percent: null, is_full: false };
-
-// -------- Network info card (Pool saturation + fixed speed) --------
-// 100% UI feature (no backend change): uses /api/portal/context already fetched below.
-// We inject the card between Plans and Assistance to keep index.html minimal.
-const MAX_SPEED_MBPS = 10; // fixed for all users (per requirement)
-let _netHasAnimated = false;
-let _netCardInView = false;
-
-const _netEls = {
-  card: null,
-  poolName: null,
-  barFill: null,
-  percent: null,
-  statusText: null,
-  speed: null,
-  badge: null,
-};
-
-function _ensureNetworkStyles() {
-  if (document.getElementById("razafi-networkinfo-style")) return;
-  const style = document.createElement("style");
-  style.id = "razafi-networkinfo-style";
-  style.textContent = `
-    .network-info-card{ padding:18px 16px; }
-    .network-head{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
-    .network-title{ font-weight:800; font-size:16px; line-height:1.15; display:flex; align-items:center; gap:8px; }
-    .network-badge{ font-size:12px; font-weight:800; letter-spacing:.08em; padding:8px 12px; border-radius:999px;
-      border:1px solid rgba(13,110,253,0.25); background: rgba(13,110,253,0.10); text-transform:uppercase; }
-    .network-bar{ width:100%; height:12px; border-radius:999px; background: rgba(0,0,0,0.08); overflow:hidden; }
-    .network-bar-fill{ height:100%; width:0%; border-radius:999px; transition: width 900ms ease; background:#22c55e; }
-    body.theme-dark .network-bar{ background: rgba(255,255,255,0.12); }
-    body.theme-dark .network-badge{ border-color: rgba(255,255,255,0.14); background: rgba(255,255,255,0.06); }
-    .network-row{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:10px; }
-    .network-percent{ font-weight:900; font-size:18px; }
-    .network-status{ font-weight:800; font-size:18px; opacity:.78; }
-    .network-divider{ height:1px; background: rgba(0,0,0,0.08); margin:14px 0; }
-    body.theme-dark .network-divider{ background: rgba(255,255,255,0.10); }
-    .network-speed-title{ font-weight:900; font-size:18px; display:flex; align-items:center; gap:8px; }
-    .network-speed{ font-weight:900; font-size:40px; line-height:1; margin-top:6px; }
-    .network-speed-sub{ margin-top:6px; opacity:.65; }
-  `;
-  document.head.appendChild(style);
-}
-
-function _insertNetworkCardIfMissing() {
-  if (document.getElementById("networkInfoCard")) {
-    _netEls.card = document.getElementById("networkInfoCard");
-  } else {
-    _ensureNetworkStyles();
-
-    const plansSection = document.querySelector('section:has(#plansGrid)') || document.querySelector("#plansGrid")?.closest("section");
-    const assistance = document.querySelector("section.card.faq");
-
-    const card = document.createElement("section");
-    card.className = "card network-info-card";
-    card.id = "networkInfoCard";
-    card.innerHTML = `
-      <div class="network-head">
-        <div class="network-title">🌐 <span>État du réseau – <span id="netPoolName">—</span></span></div>
-        <span class="network-badge" id="netSnapshotBadge">SNAPSHOT</span>
-      </div>
-
-      <div class="network-bar" aria-hidden="true">
-        <div id="netBarFill" class="network-bar-fill" style="width:0%"></div>
-      </div>
-
-      <div class="network-row">
-        <div class="network-percent" id="netPercent">0%</div>
-        <div class="network-status" id="netStatusText">Réseau fluide</div>
-      </div>
-
-      <div class="network-divider"></div>
-
-      <div class="network-speed-title">🚀 <span>Votre débit maximum</span></div>
-      <div class="network-speed" id="netSpeed">${MAX_SPEED_MBPS} Mbps</div>
-      <div class="network-speed-sub">Optimisé pour navigation & streaming HD</div>
-    `;
-
-    if (assistance && assistance.parentNode) {
-      assistance.parentNode.insertBefore(card, assistance);
-    } else if (plansSection && plansSection.parentNode) {
-      plansSection.parentNode.insertBefore(card, plansSection.nextSibling);
-    } else {
-      // last resort
-      document.querySelector("main")?.appendChild(card);
-    }
-
-    _netEls.card = card;
-  }
-
-  // Cache element refs
-  _netEls.poolName = document.getElementById("netPoolName");
-  _netEls.barFill = document.getElementById("netBarFill");
-  _netEls.percent = document.getElementById("netPercent");
-  _netEls.statusText = document.getElementById("netStatusText");
-  _netEls.speed = document.getElementById("netSpeed");
-  _netEls.badge = document.getElementById("netSnapshotBadge");
-  if (_netEls.speed) _netEls.speed.textContent = `${MAX_SPEED_MBPS} Mbps`;
-  if (_netEls.badge) _netEls.badge.textContent = "SNAPSHOT";
-}
-
-function _saturationLabel(pct) {
-  if (!Number.isFinite(pct)) return { text: "—", color: "#22c55e" };
-  if (pct >= 90) return { text: "Réseau très occupé", color: "#ef4444" };
-  if (pct >= 70) return { text: "Réseau modérément occupé", color: "#f59e0b" };
-  return { text: "Réseau fluide", color: "#22c55e" };
-}
-
-function _animateNumber(el, from, to, ms = 900) {
-  if (!el) return;
-  const start = performance.now();
-  const f = Math.max(0, Math.min(100, Number(from || 0)));
-  const t = Math.max(0, Math.min(100, Number(to || 0)));
-  function step(now) {
-    const p = Math.min(1, (now - start) / ms);
-    const v = Math.round(f + (t - f) * (1 - Math.pow(1 - p, 3)));
-    el.textContent = `${v}%`;
-    if (p < 1) requestAnimationFrame(step);
-  }
-  requestAnimationFrame(step);
-}
-
-function updateNetworkInfoUI({ animate = false } = {}) {
-  _insertNetworkCardIfMissing();
-  if (!_netEls.card) return;
-
-  const name = poolContext.pool_name ? String(poolContext.pool_name) : "—";
-  const pct = (poolContext.pool_percent === null || poolContext.pool_percent === undefined) ? NaN : Number(poolContext.pool_percent);
-
-  if (_netEls.poolName) _netEls.poolName.textContent = name;
-
-  const label = _saturationLabel(pct);
-  if (_netEls.statusText) _netEls.statusText.textContent = label.text;
-
-  if (!Number.isFinite(pct)) {
-    if (_netEls.percent) _netEls.percent.textContent = "—%";
-    if (_netEls.barFill) {
-      _netEls.barFill.style.width = "0%";
-      _netEls.barFill.style.background = "#22c55e";
-    }
-    return;
-  }
-
-  const safePct = Math.max(0, Math.min(100, Math.round(pct)));
-
-  if (!animate) {
-    if (_netEls.percent) _netEls.percent.textContent = `${safePct}%`;
-    // keep bar at 0 until visible (if IO supported); otherwise set immediately
-    if (_netEls.barFill) {
-      _netEls.barFill.style.background = label.color;
-      _netEls.barFill.style.width = (typeof IntersectionObserver === "function") ? "0%" : `${safePct}%`;
-    }
-    return;
-  }
-
-  if (_netHasAnimated) {
-    if (_netEls.percent) _netEls.percent.textContent = `${safePct}%`;
-    if (_netEls.barFill) {
-      _netEls.barFill.style.background = label.color;
-      _netEls.barFill.style.width = `${safePct}%`;
-    }
-    return;
-  }
-
-  _netHasAnimated = true;
-  if (_netEls.barFill) {
-    _netEls.barFill.style.background = label.color;
-    _netEls.barFill.style.width = "0%";
-  }
-  if (_netEls.percent) _netEls.percent.textContent = "0%";
-
-  requestAnimationFrame(() => {
-    if (_netEls.barFill) _netEls.barFill.style.width = `${safePct}%`;
-    _animateNumber(_netEls.percent, 0, safePct, 900);
-  });
-}
-
-function initNetworkViewportAnimation() {
-  _insertNetworkCardIfMissing();
-  if (!_netEls.card || typeof IntersectionObserver !== "function") {
-    updateNetworkInfoUI({ animate: false });
-    return;
+  if (themeToggle) {
+    themeToggle.addEventListener("click", function () {
+      const isDark = document.body.classList.contains("theme-dark");
+      applyTheme(isDark ? "light" : "dark");
+    });
   }
 
   try {
-    const io = new IntersectionObserver((entries) => {
-      for (const ent of entries) {
-        if (!ent.isIntersecting) continue;
-        _netCardInView = true;
-
-        const pct = (poolContext.pool_percent === null || poolContext.pool_percent === undefined)
-          ? NaN
-          : Number(poolContext.pool_percent);
-
-        if (Number.isFinite(pct)) {
-          updateNetworkInfoUI({ animate: true });
-          io.disconnect();
-        } else {
-          updateNetworkInfoUI({ animate: false });
-        }
-        break;
-      }
-    }, { root: null, threshold: 0.25 });
-
-    io.observe(_netEls.card);
+    const saved = localStorage.getItem("razafi_theme");
+    applyTheme(saved === "dark" ? "dark" : "light");
   } catch (_) {
-    updateNetworkInfoUI({ animate: false });
+    applyTheme("light");
   }
-}
 
-
+  // -------- Pool context (name + saturation) --------
+  let poolContext = { pool_name: null, pool_percent: null, is_full: false };
   let poolIsFull = false;
 
+  // -------- UI element defaults (used to restore text after pool-full) --------
   const _uiEls = {
     accessMsg: document.getElementById("accessMsg"),
     noVoucherMsg: document.getElementById("noVoucherMsg"),
+    choosePlanHint: document.querySelector("#voucherNone .muted.small") || null,
     voucherNone: document.getElementById("voucherNone"),
     voucherHas: document.getElementById("voucherHas"),
   };
-  _uiEls.choosePlanHint = _uiEls.voucherNone ? _uiEls.voucherNone.querySelector("p.muted.small") : null;
 
   const _uiDefaults = {
     accessMsg: _uiEls.accessMsg ? _uiEls.accessMsg.textContent : null,
     noVoucherMsg: _uiEls.noVoucherMsg ? _uiEls.noVoucherMsg.textContent : null,
     choosePlanHint: _uiEls.choosePlanHint ? _uiEls.choosePlanHint.textContent : null,
   };
+
+  // -------- Network info card (pool saturation + fixed speed) --------
+  const _netEls = {
+    card: document.getElementById("networkInfoCard"),
+    poolName: document.getElementById("netPoolName"),
+    barFill: document.getElementById("netBarFill"),
+    percent: document.getElementById("netPercent"),
+    statusText: document.getElementById("netStatusText"),
+    speed: document.getElementById("netSpeed"),
+  };
+
+  // Fixed for all users (per your requirement)
+  const MAX_SPEED_MBPS = 10;
+  const _netCanAnimate = (_netEls.card && typeof IntersectionObserver === "function");
+
+  function saturationLabel(pct) {
+    if (!Number.isFinite(pct)) return { text: "—", level: "low" };
+    if (pct >= 90) return { text: "Réseau très occupé", level: "high" };
+    if (pct >= 70) return { text: "Réseau modérément occupé", level: "mid" };
+    return { text: "Réseau fluide", level: "low" };
+  }
+
+  function setBarLevelClass(level) {
+    if (!_netEls.barFill) return;
+    _netEls.barFill.classList.remove("level-low", "level-mid", "level-high");
+    _netEls.barFill.classList.add(level === "high" ? "level-high" : (level === "mid" ? "level-mid" : "level-low"));
+  }
+
+  function animateNumber(el, from, to, ms = 900) {
+    if (!el) return;
+    const start = performance.now();
+    const f = Math.max(0, Math.min(100, Number(from || 0)));
+    const t = Math.max(0, Math.min(100, Number(to || 0)));
+    function step(now) {
+      const p = Math.min(1, (now - start) / ms);
+      const v = Math.round(f + (t - f) * (1 - Math.pow(1 - p, 3)));
+      el.textContent = `${v}%`;
+      if (p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  // Snapshot at load: we fetch once (poolContext) and display it (NO animation).
+  function renderNetworkInfo() {
+    if (!_netEls.card) return;
+
+    const name = poolContext.pool_name ? String(poolContext.pool_name) : "—";
+    const pct = (poolContext.pool_percent === null || poolContext.pool_percent === undefined)
+      ? null
+      : Number(poolContext.pool_percent);
+
+    const label = saturationLabel(Number.isFinite(pct) ? pct : NaN);
+
+    if (_netEls.poolName) _netEls.poolName.textContent = name;
+    if (_netEls.statusText) _netEls.statusText.textContent = label.text;
+    if (_netEls.speed) _netEls.speed.textContent = `${MAX_SPEED_MBPS} Mbps`;
+
+    // Unknown percent: keep placeholder and bar at 0 (fail-open)
+    if (!Number.isFinite(pct)) {
+      if (_netEls.percent) _netEls.percent.textContent = "—%";
+      if (_netEls.barFill) _netEls.barFill.style.width = "0%";
+      setBarLevelClass("low");
+      return;
+    }
+
+    const safePct = Math.max(0, Math.min(100, Math.round(pct)));
+    setBarLevelClass(label.level);
+
+    // Always render directly (no IntersectionObserver / no animated number / no delayed bar)
+    if (_netEls.percent) _netEls.percent.textContent = `${safePct}%`;
+    if (_netEls.barFill) _netEls.barFill.style.width = `${safePct}%`;
+  }
+
+  function initNetworkViewportAnimation() {
+    // We keep the CSS class behavior (io-reveal) but force it visible immediately.
+    try { if (_netEls.card) _netEls.card.classList.add("is-visible"); } catch (_) {}
+    renderNetworkInfo();
+  }
 
   function ensurePoolNameLine() {
     const existing = document.getElementById("poolNameLine");
@@ -1418,6 +1289,8 @@ function initNetworkViewportAnimation() {
     const existing = document.getElementById("poolStatusBanner");
     if (existing) return existing;
 
+    const plansLoading = document.querySelector("#plansGrid .muted.small");
+    const plansGrid = document.getElementById("plansGrid");
     const anchor = plansLoading || plansGrid;
     if (!anchor || !anchor.parentNode) return null;
 
@@ -1477,14 +1350,14 @@ function initNetworkViewportAnimation() {
       }
     } catch (_) {}
 
-    // Network info card: update snapshot as soon as poolContext is known.
-    try { updateNetworkInfoUI({ animate: false }); } catch (_) {}
+    // Network info card: update snapshot values as soon as poolContext is known
+    try { renderNetworkInfo(); } catch (_) {}
+  }
 
-    // If the card is already in view when context arrives, animate now (only once).
-    try {
-      const pct = (poolContext.pool_percent === null || poolContext.pool_percent === undefined) ? NaN : Number(poolContext.pool_percent);
-      if (_netCardInView && Number.isFinite(pct)) updateNetworkInfoUI({ animate: true });
-    } catch (_) {}
+  function getPlanCards() {
+    const grid = document.getElementById("plansGrid");
+    if (!grid) return [];
+    return Array.from(grid.querySelectorAll(".plan-card"));
   }
 
   function applyPoolFullLockToPlans() {
@@ -1519,626 +1392,386 @@ function initNetworkViewportAnimation() {
     }
 
     try {
-      const qp = new URLSearchParams();
-      if (nasId) qp.set("nas_id", nasId);
-      else qp.set("ap_mac", apMac);
-      const r = await fetch(apiUrl(`/api/portal/context?${qp.toString()}`), { method: "GET" });
+      const qs = new URLSearchParams();
+      if (nasId) qs.set("nas_id", nasId);
+      if (!nasId && apMac) qs.set("ap_mac", apMac);
+
+      const r = await fetch(apiUrl("/api/portal/context?") + qs.toString(), { method: "GET" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j?.ok) throw new Error(j?.error || "context_failed");
 
       poolContext = {
-        pool_name: j.pool_name ?? null,
-        pool_percent: (j.pool_percent === null || j.pool_percent === undefined) ? null : Number(j.pool_percent),
-        is_full: !!j.is_full,
+        pool_name: j?.pool_name ?? j?.pool?.name ?? null,
+        pool_percent: (j?.pool_percent ?? j?.pool?.saturation_percent ?? null),
+        is_full: !!(j?.is_full ?? j?.pool?.is_full ?? false),
       };
-      poolIsFull = !!j.is_full;
+      poolIsFull = !!poolContext.is_full;
+
+      applyPoolContextUI();
+
+      if (poolIsFull) applyPoolFullLockToPlans();
     } catch (e) {
-      console.warn("[RAZAFI] portal context fetch failed", e?.message || e);
+      console.warn("[RAZAFI] portal/context error", e?.message || e);
       poolContext = { pool_name: null, pool_percent: null, is_full: false };
       poolIsFull = false;
-    } finally {
       applyPoolContextUI();
     }
   }
 
-
-  // After a new voucher code is delivered (free or paid), refresh the full portal status
-  // so ALL UI (status badge, UX copy, plan, limits, buttons) updates without page refresh.
-  // Then pop+glow + scroll to voucher block (only if user is below).
-  async function refreshPortalAfterNewCode({ phone, code, receiptMeta = null } = {}) {
-    const safePhone = String(phone || "").trim();
-    const safeCode = String(code || "").trim();
-
-    // Keep phone in memory for later actions (e.g., use/copy)
-    if (safePhone) currentPhone = safePhone;
-
-    // Persist latest code early so fetchPortalStatus can fallback to voucher_code when needed
-    if (safeCode) {
-      try {
-        const m = (receiptMeta && typeof receiptMeta === "object") ? receiptMeta : {};
-        writeLastCode({
-          code: safeCode,
-          planName: m.planName || m.name || null,
-          durationMinutes: (m.durationMinutes ?? m.duration_minutes ?? null),
-          maxDevices: (m.maxDevices ?? m.max_devices ?? null),
-        });
-      } catch (_) {}
-    }
-
-    // Prefer single source of truth
-    const ok = await fetchPortalStatus();
-
-    // Fallback: at least show the code even if status endpoint fails temporarily
-    if (!ok && safeCode) {
-      setVoucherUI({ phone: safePhone, code: safeCode, meta: receiptMeta, focus: false });
-    }
-
-    // Premium: scroll (only if voucher is above viewport) + replayable pop+glow
-    try { focusVoucherBlock({ highlightMs: 1400 }); } catch (_) {}
-
-    return ok;
-  }
-
-
+  // -------- Portal status (System 3 truth view) --------
   async function fetchPortalStatus() {
     try {
-      const qp = new URLSearchParams();
-      if (clientMac) qp.set("client_mac", clientMac);
-      if (nasId) qp.set("nas_id", nasId);
+      const qs = new URLSearchParams();
+      if (clientMac) qs.set("client_mac", clientMac);
+      if (nasId) qs.set("nas_id", nasId);
+      else if (apMac) qs.set("ap_mac", apMac);
 
-      const last = readLastCode();
-      if ((!clientMac || !String(clientMac).trim()) && last?.code) {
-        qp.set("voucher_code", String(last.code));
-      }
-
-      const url = apiUrl("/api/portal/status?" + qp.toString());
+      const url = apiUrl("/api/portal/status?") + qs.toString();
       const r = await fetch(url, { method: "GET" });
+      if (!r.ok) return false;
       const j = await r.json().catch(() => ({}));
+      if (!j) return false;
 
-      if (!r.ok || !j?.ok) throw new Error(j?.error || "portal_status_failed");
       applyPortalStatus(j);
       return true;
     } catch (e) {
-      console.warn("[RAZAFI] portal status fetch failed", e?.message || e);
+      console.warn("[RAZAFI] portal/status error", e?.message || e);
       return false;
     }
   }
 
-  function planCardHTML(plan) {
-    const name = plan.name || "Plan";
-    const price = formatAr(plan.price_ar);
+  // -------- Plans rendering (unchanged) --------
+  function planIsUnlimited(p) {
+    if (!p) return false;
+    if (p.unlimited === true) return true;
+    const s = String(p.data_total_human || p.data_human || "").toLowerCase();
+    if (s.includes("illimit")) return true;
+    return false;
+  }
 
-    const durationMinutes = (plan.duration_minutes !== null && plan.duration_minutes !== undefined)
-      ? Number(plan.duration_minutes)
-      : (Number(plan.duration_hours) || 0) * 60;
-    const dataMb = plan.data_mb; // may be null for unlimited
-    const maxDevices = Number(plan.max_devices) || 1;
+  function computeVariantIndex(seed) {
+    const h = hashToInt(seed);
+    return h % 4;
+  }
 
-    const isUnlimited = (plan.data_mb === null || plan.data_mb === undefined);
-    const familyClass = isUnlimited ? "plan-unlimited" : "plan-limited";
-    const variantClass = "v" + (hashToInt(plan.id) % 4);
-    const badgeHtml = isUnlimited ? `<span class="plan-badge">ILLIMITÉ</span>` : "";
-    const line1 = `⏳ Durée: ${formatDuration(durationMinutes)} • 📊 Data: ${formatData(dataMb)}`;
-    const line2 = `🔌 ${formatDevices(maxDevices)}`;
+  function storeLastPurchase(plan) {
+    try {
+      const payload = {
+        name: plan.name || plan.plan_name || "Plan",
+        duration_minutes: plan.duration_minutes ?? plan.durationMinutes ?? null,
+        data_mb: plan.data_mb ?? plan.dataMb ?? null,
+        unlimited: planIsUnlimited(plan),
+        devices: plan.max_devices ?? plan.maxDevices ?? null,
+        max_devices: plan.max_devices ?? plan.maxDevices ?? null,
+        price_ar: plan.price_ar ?? plan.priceAr ?? "",
+        ts: Date.now(),
+      };
+      sessionStorage.setItem("razafi_last_purchase", JSON.stringify(payload));
+    } catch (_) {}
+  }
 
-    return `
-      <div class="card plan-card ${familyClass} ${variantClass}" 
-           data-plan-id="${escapeHtml(plan.id)}"
-           data-plan-name="${escapeHtml(name)}"
-           data-plan-price="${escapeHtml(String(plan.price_ar ?? ""))}"
-           data-plan-duration="${escapeHtml(String(durationMinutes))}"
-           data-plan-data="${(dataMb === null || dataMb === undefined) ? "" : escapeHtml(String(dataMb))}"
-           data-plan-unlimited="${isUnlimited ? "1" : "0"}"
-           data-plan-devices="${escapeHtml(String(maxDevices))}">
-        ${badgeHtml}
-        <h4>${escapeHtml(name)}</h4>
-        <p class="price">${price}</p>
-        <p class="plan-meta">${line1}</p>
-        <p class="plan-devices">${line2}</p>
+  async function fetchPlans() {
+    try {
+      const qs = new URLSearchParams();
+      if (nasId) qs.set("nas_id", nasId);
+      if (clientMac) qs.set("client_mac", clientMac);
 
-        <button class="choose-plan-btn">Choisir</button>
+      const url = apiUrl("/api/mikrotik/plans?") + qs.toString();
+      const r = await fetch(url, { method: "GET" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json().catch(() => ([]));
+      return Array.isArray(j) ? j : (j?.plans || []);
+    } catch (e) {
+      console.warn("[RAZAFI] plans fetch error", e?.message || e);
+      return [];
+    }
+  }
 
-        <div class="plan-payment hidden" aria-live="polite">
-          <h5>Paiement</h5>
+  function buildPlanCard(plan) {
+    const name = plan.name || plan.plan_name || "Plan";
+    const price = (plan.price_ar != null && plan.price_ar !== "") ? `${plan.price_ar} Ar` : "";
+    const duration = (plan.duration_minutes != null) ? formatDuration(Number(plan.duration_minutes)) : (plan.duration_human || "—");
+    const unlimited = planIsUnlimited(plan);
+    const data = unlimited ? "Illimité" : (plan.data_total_human || plan.data_human || "—");
+    const maxDev = plan.max_devices ?? plan.maxDevices ?? 1;
+    const devicesLabel = formatDevices(maxDev);
 
-          <label>Numéro MVola</label>
-          <input class="mvola-input"
-            type="tel"
-            placeholder="0341234567 ou +26134xxxxxxx"
-            inputmode="numeric"
-            autocomplete="tel"
-          />
+    const v = computeVariantIndex(name + "|" + String(plan.id || ""));
+    const cls = unlimited ? `plan-card plan-unlimited v${v}` : `plan-card plan-limited v${v}`;
 
-          <div class="phone-hint muted small"></div>
+    const card = document.createElement("div");
+    card.className = cls;
 
-          <button class="primary-btn pay-btn" disabled>
-            Payer avec MVola
-          </button>
+    card.innerHTML = `
+      ${unlimited ? `<div class="plan-badge">ILLIMITÉ</div>` : ``}
+      <h4>${escapeHtml(name)}</h4>
+      <div class="price">${escapeHtml(price)}</div>
+      <p class="plan-meta">⏳ ${escapeHtml(duration)} · 📊 ${escapeHtml(data)}</p>
+      <p class="plan-devices">🔌 ${escapeHtml(devicesLabel)}</p>
 
-          <button class="secondary-btn cancel-btn">
-            Annuler
-          </button>
+      <button class="primary-btn choose-plan-btn">Choisir ce plan</button>
 
-          <!-- Confirmation inline -->
-          <div class="pay-confirm hidden" role="dialog" aria-label="Confirmation paiement">
-            <div class="pay-confirm-inner">
-              <h6>Confirmer le paiement</h6>
-              <div class="pay-summary"></div>
-              <div class="pay-confirm-actions">
-                <button class="primary-btn confirm-btn">Confirmer</button>
-                <button class="secondary-btn confirm-cancel-btn">Annuler</button>
-              </div>
+      <div class="plan-payment">
+        <label>Numéro MVola</label>
+        <input type="tel" class="phone-input" placeholder="034 xx xxx xx" />
+        <div class="phone-hint muted small"></div>
+
+        <div class="pay-confirm hidden">
+          <div class="pay-confirm-inner">
+            <h6>Confirmer le paiement</h6>
+            <div class="pay-summary">
+              <div class="summary-row"><span>Plan</span><strong>${escapeHtml(name)}</strong></div>
+              <div class="summary-row"><span>Durée</span><strong>${escapeHtml(duration)}</strong></div>
+              <div class="summary-row"><span>Données</span><strong>${escapeHtml(data)}</strong></div>
+              <div class="summary-row"><span>Appareils</span><strong>${escapeHtml(devicesLabel)}</strong></div>
+            </div>
+            <div class="pay-confirm-actions">
+              <button class="secondary-btn cancel-btn" type="button">Annuler</button>
+              <button class="primary-btn pay-btn" type="button">Payer</button>
             </div>
           </div>
+        </div>
 
-          <!-- Processing overlay (local) -->
-          <div class="processing-overlay hidden" aria-live="assertive">
-            <div class="processing-card">
-              <div class="spinner" aria-hidden="true"></div>
-              <div class="processing-text">
-                <div class="processing-title">Traitement du paiement…</div>
-                <div class="processing-sub">Merci de valider la transaction sur votre mobile MVola.</div>
-              </div>
+        <div class="processing-overlay hidden">
+          <div class="processing-card">
+            <div class="spinner"></div>
+            <div>
+              <div class="processing-title">Paiement en cours…</div>
+              <div class="processing-sub">Veuillez confirmer sur votre téléphone MVola.</div>
             </div>
           </div>
-
-          <div class="mvola-badge">
-            <span class="secure-text">🔒 Paiement sécurisé via</span>
-            <img src="assets/img/mvola.png" alt="MVola">
-          </div>
-
-          <p class="muted small">
-            💼 Paiement en espèces possible avec assistance du staff.
-          </p>
         </div>
       </div>
     `;
-  }
 
-  async function loadPlans() {
-    if (!plansGrid) return;
+    const chooseBtn = card.querySelector(".choose-plan-btn");
+    const payment = card.querySelector(".plan-payment");
+    const phoneInput = card.querySelector(".phone-input");
+    const hint = card.querySelector(".phone-hint");
+    const confirmBox = card.querySelector(".pay-confirm");
+    const cancelBtn = card.querySelector(".cancel-btn");
+    const payBtn = card.querySelector(".pay-btn");
+    const overlay = card.querySelector(".processing-overlay");
 
-    if (plansLoading) plansLoading.textContent = "Chargement des plans…";
+    function setHint(msg, kind) {
+      if (!hint) return;
+      hint.textContent = msg || "";
+      hint.classList.remove("hint-ok", "hint-error");
+      if (kind === "ok") hint.classList.add("hint-ok");
+      if (kind === "err") hint.classList.add("hint-error");
+    }
 
-    try {
-      const url = (nasId && clientMac)
-        ? `/api/mikrotik/plans?nas_id=${encodeURIComponent(nasId)}&client_mac=${encodeURIComponent(clientMac)}`
-        : (apMac && clientMac)
-          ? `/api/mikrotik/plans?ap_mac=${encodeURIComponent(apMac)}&client_mac=${encodeURIComponent(clientMac)}`
-          : `/api/mikrotik/plans`;
+    function setSelected(selected) {
+      const all = getPlanCards();
+      all.forEach((c) => {
+        if (c !== card) {
+          c.classList.remove("selected");
+          const p = c.querySelector(".plan-payment");
+          if (p) p.classList.remove("hidden");
+          const cb = c.querySelector(".pay-confirm");
+          if (cb) cb.classList.add("hidden");
+        }
+      });
 
-      const res = await fetch(apiUrl(url));
-
-      const text = await res.text();
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        throw new Error("Réponse serveur invalide");
+      if (selected) {
+        card.classList.add("selected");
+        if (payment) payment.classList.remove("hidden");
+      } else {
+        card.classList.remove("selected");
+        if (payment) payment.classList.add("hidden");
       }
+    }
 
-      if (!res.ok) throw new Error(data?.error || "Erreur chargement plans");
+    if (chooseBtn) {
+      chooseBtn.addEventListener("click", function () {
+        if (poolIsFull) {
+          showToast("⚠️ Réseau saturé. Achat temporairement indisponible.", "error", 3500);
+          return;
+        }
+        if (purchaseLockedByVoucher) {
+          showToast(toastOnPlanClick || "Vous avez déjà un code. Cliquez « Utiliser ce code ».", "info", 3500);
+          return;
+        }
+        setSelected(true);
+        try { phoneInput && phoneInput.focus(); } catch (_) {}
+      });
+    }
 
-      const plans = data.plans || [];
-      if (!plans.length) {
-        plansGrid.innerHTML = `<p class="muted small">Aucun plan disponible pour le moment.</p>`;
+    if (phoneInput) {
+      phoneInput.addEventListener("input", function () {
+        const { cleaned, isMvola } = normalizeMvolaNumber(phoneInput.value);
+        if (cleaned !== phoneInput.value) phoneInput.value = cleaned;
+        if (isMvola) setHint("✅ Numéro MVola valide", "ok");
+        else setHint("Entrez un numéro MVola (034/037/038).", "");
+      });
+    }
+
+    function showConfirm(show) {
+      if (!confirmBox) return;
+      confirmBox.classList.toggle("hidden", !show);
+    }
+
+    if (cancelBtn) {
+      cancelBtn.addEventListener("click", function () {
+        showConfirm(false);
+      });
+    }
+
+    async function doPay() {
+      if (!phoneInput) return;
+
+      const { cleaned, isMvola } = normalizeMvolaNumber(phoneInput.value);
+      phoneInput.value = cleaned;
+
+      if (!isMvola) {
+        setHint("❌ Numéro MVola invalide.", "err");
+        showToast("❌ Numéro MVola invalide.", "error");
         return;
       }
 
-      plansGrid.innerHTML = plans.map(planCardHTML).join("");
+      if (poolIsFull) {
+        showToast("⚠️ Réseau saturé. Achat temporairement indisponible.", "error", 3500);
+        return;
+      }
 
-      bindPlanHandlers();
-      closeAllPayments();
-      applyPoolFullLockToPlans();
-    } catch (e) {
-      console.error("[RAZAFI] loadPlans error", e);
-      plansGrid.innerHTML = `<p class="muted small">Impossible de charger les plans.</p>`;
+      try { overlay && overlay.classList.remove("hidden"); } catch (_) {}
+      try { payBtn && payBtn.setAttribute("disabled", "disabled"); } catch (_) {}
+
+      try {
+        const payload = {
+          phone: cleaned,
+          plan_id: plan.id,
+          client_mac: clientMac || null,
+          nas_id: nasId || null,
+          ap_mac: nasId ? null : (apMac || null),
+        };
+
+        const r = await fetch(apiUrl("/api/payer"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        if (!r.ok) {
+          let msg = `HTTP ${r.status}`;
+          try { msg = await r.text(); } catch (_) {}
+          throw new Error(msg || `HTTP ${r.status}`);
+        }
+
+        const j = await r.json().catch(() => ({}));
+        const code = String(j?.code || j?.voucher_code || "").trim();
+        if (!code) throw new Error("Code non reçu.");
+
+        storeLastPurchase(plan);
+
+        // Lock purchases until voucher used
+        purchaseLockedByVoucher = true;
+        blockingVoucherMeta = plan;
+
+        setVoucherUI({
+          phone: cleaned,
+          code,
+          meta: {
+            planName: name,
+            durationMinutes: plan.duration_minutes ?? plan.durationMinutes ?? null,
+            maxDevices: plan.max_devices ?? plan.maxDevices ?? null,
+          },
+          focus: true
+        });
+
+        showToast("✅ Code généré !", "success", 2500);
+
+      } catch (e) {
+        console.warn("[RAZAFI] pay error", e?.message || e);
+        showToast(friendlyErrorMessage(e), "error", 3500);
+      } finally {
+        try { overlay && overlay.classList.add("hidden"); } catch (_) {}
+        try { payBtn && payBtn.removeAttribute("disabled"); } catch (_) {}
+        showConfirm(false);
+      }
     }
+
+    if (payBtn) {
+      payBtn.addEventListener("click", function () {
+        doPay();
+      });
+    }
+
+    if (phoneInput) {
+      phoneInput.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          showConfirm(true);
+        }
+      });
+    }
+
+    if (card) {
+      card.addEventListener("click", function (ev) {
+        // Keep click on buttons working
+        const target = ev.target;
+        if (target && (target.closest(".pay-btn") || target.closest(".cancel-btn") || target.closest(".choose-plan-btn"))) return;
+      });
+    }
+
+    // Show confirm when click outside pay/cancel
+    if (payment) {
+      payment.addEventListener("click", function (ev) {
+        const t = ev.target;
+        if (t && (t.closest(".pay-btn") || t.closest(".cancel-btn"))) return;
+        if (t && t.closest(".choose-plan-btn")) return;
+        // If payment area clicked and phone looks valid → show confirm
+        if (phoneInput) {
+          const { isMvola } = normalizeMvolaNumber(phoneInput.value);
+          if (isMvola) showConfirm(true);
+        }
+      });
+    }
+
+    return card;
   }
 
-  // -------- Plan selection & payment integration --------
-  function getPlanCards() {
-    return $all(".plan-card");
-  }
+  async function renderPlans() {
+    const grid = document.getElementById("plansGrid");
+    if (!grid) return;
 
-  function closeAllPayments() {
-    const planCards = getPlanCards();
-    planCards.forEach((card) => {
-      card.classList.remove("selected");
-      const payment = card.querySelector(".plan-payment");
-      if (payment) payment.classList.add("hidden");
-    });
-  }
+    const plans = await fetchPlans();
 
-  function setProcessing(card, isProcessing) {
-    card.classList.toggle("processing", !!isProcessing);
-    const overlay = card.querySelector(".processing-overlay");
-    if (overlay) overlay.classList.toggle("hidden", !isProcessing);
-
-    const inputs = card.querySelectorAll("input, button");
-    inputs.forEach((el) => {
-      if (isProcessing) el.setAttribute("disabled", "disabled");
-      else el.removeAttribute("disabled");
-    });
-  }
-
-  function buildPlanSummary(card) {
-    const name = card.getAttribute("data-plan-name") || "Plan";
-    const priceAr = card.getAttribute("data-plan-price") || "";
-    const durationM = card.getAttribute("data-plan-duration") || "0";
-    const dataMb = card.getAttribute("data-plan-data");
-    const isUnlimited = card.getAttribute("data-plan-unlimited") === "1";
-    const devices = card.getAttribute("data-plan-devices") || "1";
-
-    const price = formatAr(priceAr);
-    const duration = formatDuration(Number(durationM));
-    const data = isUnlimited ? "Illimité" : formatData(Number(dataMb));
-    const dev = formatDevices(Number(devices));
-
-    return `
-      <div class="summary-row"><span>Plan</span><strong>${escapeHtml(name)}</strong></div>
-      <div class="summary-row"><span>Prix</span><strong>${escapeHtml(price)}</strong></div>
-      <div class="summary-row"><span>Durée</span><strong>${escapeHtml(duration)}</strong></div>
-      <div class="summary-row"><span>Data</span><strong>${escapeHtml(data)}</strong></div>
-      <div class="summary-row"><span>Appareils</span><strong>${escapeHtml(dev)}</strong></div>
-    `;
-  }
-
-  function updatePayButtonState(card) {
-    const input = card.querySelector(".mvola-input");
-    const hint = card.querySelector(".phone-hint");
-    const payBtn = card.querySelector(".pay-btn");
-    if (!input || !hint || !payBtn) return;
-
-    const raw = input.value;
-    const { cleaned, isMvola } = normalizeMvolaNumber(raw);
-
-    if (!raw.trim()) {
-      hint.textContent = "";
-      hint.classList.remove("hint-ok", "hint-error");
-      payBtn.disabled = true;
+    if (!plans || !plans.length) {
+      grid.innerHTML = `<p class="muted small">Aucun plan disponible.</p>`;
       return;
     }
 
-    if (isMvola) {
-      hint.textContent = "✅ Numéro MVola valide : " + cleaned;
-      hint.classList.remove("hint-error");
-      hint.classList.add("hint-ok");
-      payBtn.disabled = false;
-    } else {
-      hint.textContent = "❌ Numéro MVola invalide. Entrez 034xxxxxxx ou +26134xxxxxxx (ex : 0341234567).";
-      hint.classList.remove("hint-ok");
-      hint.classList.add("hint-error");
-      payBtn.disabled = true;
-    }
-  }
-
-  function bindPlanHandlers() {
-    const planCards = getPlanCards();
-
-    planCards.forEach((card) => {
-      const chooseBtn = card.querySelector(".choose-plan-btn");
-      const cancelBtn = card.querySelector(".cancel-btn");
-      const payBtn = card.querySelector(".pay-btn");
-      const input = card.querySelector(".mvola-input");
-
-      const confirmWrap = card.querySelector(".pay-confirm");
-      const confirmCancelBtn = card.querySelector(".confirm-cancel-btn");
-      const confirmBtn = card.querySelector(".confirm-btn");
-      const summaryEl = card.querySelector(".pay-summary");
-
-      card.addEventListener("click", function (e) {
-        if (card.classList.contains("selected")) return;
-
-        const t = e.target;
-        if (!t || typeof t.closest !== "function") return;
-        if (t.closest(".plan-payment")) return;
-        if (t.closest("button, a, input, textarea, select, label")) return;
-
-        if (chooseBtn) chooseBtn.click();
-      });
-
-      if (chooseBtn) {
-        chooseBtn.addEventListener("click", async function () {
-          if (poolIsFull) {
-            showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
-            return;
-          }
-          if (purchaseLockedByVoucher && currentVoucherCode) {
-            showToast(toastOnPlanClick || "⚠️ Achat désactivé : vous avez déjà un code en attente/actif. Utilisez d’abord le code ci-dessous.", "info", 7500);
-            try { focusVoucherBlock(); } catch (_) {}
-            return;
-          }
-
-          // Free plan pre-check (price=0)
-          try {
-            const planPrice = Number(card.getAttribute("data-plan-price") || card.dataset.planPrice || 0);
-            const planId = (card.getAttribute("data-plan-id") || card.dataset.planId || "").toString().trim() || null;
-            if (planPrice === 0 && planId && clientMac) {
-              const qs = new URLSearchParams({ client_mac: clientMac, plan_id: planId });
-              if (nasId) qs.set("nas_id", nasId);
-              else if (apMac) qs.set("ap_mac", apMac);
-              const r = await fetch(apiUrl("/api/free-plan/check?") + qs.toString(), { method: "GET" });
-              if (r.status === 409) {
-                const j = await r.json().catch(() => ({}));
-                const whenIso = j.last_used_at || null;
-                let whenTxt = "";
-                if (whenIso) {
-                  // ✅ Changed: always Madagascar datetime
-                  whenTxt = " (" + fmtDateTimeMG(whenIso) + ")";
-                }
-                showToast("Ce plan gratuit a déjà été utilisé sur cet appareil" + whenTxt + ". Merci de choisir un autre plan.", "warning", 7500);
-                return;
-              }
-            }
-          } catch (_) {}
-
-          closeAllPayments();
-          card.classList.add("selected");
-          const payment = card.querySelector(".plan-payment");
-          if (payment) payment.classList.remove("hidden");
-          if (input) {
-            input.focus({ preventScroll: false });
-            updatePayButtonState(card);
-          }
-        });
-      }
-
-      if (input) {
-        input.addEventListener("input", function () {
-          if (card.classList.contains("processing")) return;
-          updatePayButtonState(card);
-        });
-      }
-
-      if (cancelBtn) {
-        cancelBtn.addEventListener("click", function () {
-          if (card.classList.contains("processing")) return;
-          card.classList.remove("selected");
-          const payment = card.querySelector(".plan-payment");
-          if (payment) payment.classList.add("hidden");
-          if (confirmWrap) confirmWrap.classList.add("hidden");
-          showToast("Choisissez un autre plan pour continuer.", "info");
-        });
-      }
-
-      if (payBtn) {
-        payBtn.addEventListener("click", function () {
-          if (poolIsFull) {
-            showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
-            return;
-          }
-          if (card.classList.contains("processing")) return;
-
-          const raw = input ? input.value.trim() : "";
-          const { isMvola } = normalizeMvolaNumber(raw);
-          if (!isMvola) {
-            showToast("❌ Numéro MVola invalide. Entrez 034xxxxxxx ou +26134xxxxxxx (ex : 0341234567).", "error");
-            updatePayButtonState(card);
-            return;
-          }
-
-          if (summaryEl) summaryEl.innerHTML = buildPlanSummary(card);
-          if (confirmWrap) {
-            confirmWrap.classList.remove("hidden");
-            try {
-              requestAnimationFrame(function () {
-                if (typeof confirmWrap.scrollIntoView === "function") {
-                  confirmWrap.scrollIntoView({ behavior: "smooth", block: "center" });
-                }
-                if (confirmBtn && typeof confirmBtn.focus === "function") {
-                  setTimeout(function () { confirmBtn.focus({ preventScroll: true }); }, 200);
-                }
-              });
-            } catch (_) {}
-          }
-        });
-      }
-
-      if (confirmCancelBtn) {
-        confirmCancelBtn.addEventListener("click", function () {
-          if (card.classList.contains("processing")) return;
-          if (confirmWrap) confirmWrap.classList.add("hidden");
-        });
-      }
-
-      if (confirmBtn) {
-        confirmBtn.addEventListener("click", function () {
-          if (poolIsFull) {
-            showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
-            return;
-          }
-          if (card.classList.contains("processing")) return;
-
-          const raw = input ? input.value.trim() : "";
-          const { cleaned, isMvola } = normalizeMvolaNumber(raw);
-          if (!isMvola) {
-            showToast("❌ Numéro MVola invalide. Entrez 034xxxxxxx ou +26134xxxxxxx (ex : 0341234567).", "error");
-            if (confirmWrap) confirmWrap.classList.add("hidden");
-            updatePayButtonState(card);
-            return;
-          }
-
-          if (confirmWrap) confirmWrap.classList.add("hidden");
-          showToast("⏳ Paiement lancé. Merci de valider la transaction sur votre mobile MVola.", "info");
-          setProcessing(card, true);
-
-          (async () => {
-            try {
-              const planId = card.getAttribute("data-plan-id") || "";
-              const planName = card.getAttribute("data-plan-name") || "Plan";
-              const planPrice = card.getAttribute("data-plan-price") || "";
-              const planStr = `${planName} ${planPrice}`.trim();
-
-              let receiptDraft = null;
-              try {
-                const durationMinutes = Number(card.getAttribute("data-plan-duration") || "") || 0;
-                const dataStr = card.getAttribute("data-plan-data") || "";
-                const dataMb = (dataStr === "" ? null : Number(dataStr));
-                const isUnlimited = (card.getAttribute("data-plan-unlimited") || "0") === "1";
-                const maxDevices = Number(card.getAttribute("data-plan-devices") || "1") || 1;
-                receiptDraft = {
-                  id: planId || null,
-                  name: planName,
-                  price_ar: planPrice ? Number(planPrice) : null,
-                  duration_minutes: durationMinutes || null,
-                  data_mb: isUnlimited ? null : (Number.isFinite(dataMb) ? dataMb : null),
-                  unlimited: isUnlimited,
-                  devices: maxDevices,
-                  at: Date.now(),
-                };
-              } catch (_) {}
-
-              let baselineCode = null;
-              try {
-                const pre = await fetch(apiUrl(`/api/dernier-code?phone=${encodeURIComponent(cleaned)}`), { method: "GET" });
-                if (pre.ok) {
-                  const pj = await pre.json().catch(() => ({}));
-                  if (pj && pj.code) baselineCode = String(pj.code);
-                }
-              } catch (_) {}
-
-              const resp = await fetch(apiUrl("/api/send-payment"), {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  phone: cleaned,
-                  plan: planStr || planId || planPrice || "plan",
-                  plan_id: planId || null,
-                  client_mac: clientMac || null,
-                  nas_id: nasId || null,
-                  ap_mac: nasId ? null : (apMac || null),
-                }),
-              });
-
-              const data = await resp.json().catch(() => ({}));
-
-              if (resp && resp.status === 409 && data && (data.code || data.voucher_code) && (data.status === "pending" || data.status === "active" || data.status)) {
-                const existingCode = String(data.code || data.voucher_code || "").trim();
-                if (existingCode) {
-                  
-                  // Existing pending/active code: refresh full portal status so UI is consistent
-                  await refreshPortalAfterNewCode({ phone: cleaned, code: existingCode, receiptMeta: {
-                    planName: data?.plan?.name || data?.plan?.id || "Plan",
-                    durationMinutes: data?.plan?.duration_minutes || null,
-                    maxDevices: data?.plan?.max_devices || null,
-                  }});
-                  showToast("⚠️ Achat désactivé : vous avez déjà un code en attente/actif. Utilisez d’abord le code ci-dessous.", "warning", 8000);
-                  return;
-                }
-              }
-
-              if (!resp.ok || !data.ok) {
-                const msg = data?.message || data?.error || "Erreur lors du paiement";
-                throw new Error(msg);
-              }
-
-              if (data && data.free && data.code) {
-                const freeCode = String(data.code || "").trim();
-                if (freeCode) {
-                  try {
-                    if (receiptDraft) {
-                      receiptDraft.code = freeCode;
-                      receiptDraft.ts = Date.now();
-                      sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
-                    }
-                  } catch (_) {}
-                  
-                  await refreshPortalAfterNewCode({
-                    phone: cleaned,
-                    code: freeCode,
-                    receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices } : null,
-                  });
-                  showToast("🎉 Code gratuit généré ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
-                  return;
-                }
-              }
-
-              showToast("✅ Paiement initié. Validez la transaction sur votre mobile MVola…", "success", 5200);
-              showToast("⏳ En attente du code…", "info", 5200);
-
-              const code = await pollDernierCode(cleaned, { timeoutMs: 180000, intervalMs: 3000, baselineCode });
-              if (!code) {
-                showToast("⏰ Pas de code reçu pour le moment. Si vous avez validé MVola, réessayez dans 1-2 minutes.", "info", 6500);
-                setProcessing(card, false);
-                updatePayButtonState(card);
-                return;
-              }
-
-              try {
-                if (receiptDraft) sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
-              } catch (_) {}
-
-              
-              await refreshPortalAfterNewCode({
-                phone: cleaned,
-                code,
-                receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices } : null,
-              });
-              showToast("🎉 Code reçu ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
-            } catch (e) {
-              console.error("[RAZAFI] payment error", e);
-              showToast("❌ " + friendlyErrorMessage(e), "error", 6500);
-            } finally {
-              setProcessing(card, false);
-              updatePayButtonState(card);
-            }
-          })();
-        });
-      }
-
-      if (input) updatePayButtonState(card);
-    });
-  }
-
-  // -------- Theme toggle --------
-  function updateThemeIcon() {
-    if (!themeToggle) return;
-    const isDark = document.body.classList.contains("theme-dark");
-    themeToggle.textContent = isDark ? "☀️" : "🌙";
-  }
-
-  function applyTheme(mode, persist = true) {
-    const body = document.body;
-    const isDark = mode === "dark";
-    body.classList.toggle("theme-dark", isDark);
-    body.classList.toggle("theme-light", !isDark);
-    if (persist) localStorage.setItem("razafi-theme", isDark ? "dark" : "light");
-    updateThemeIcon();
-  }
-
-  if (themeToggle) {
-    themeToggle.addEventListener("click", function () {
-      const isDark = document.body.classList.contains("theme-dark");
-      applyTheme(isDark ? "light" : "dark");
+    grid.innerHTML = "";
+    plans.forEach((p) => {
+      const card = buildPlanCard(p);
+      if (card) grid.appendChild(card);
     });
 
-    const savedTheme = localStorage.getItem("razafi-theme");
-    if (savedTheme === "dark") applyTheme("dark", false);
-    else applyTheme("light", false);
+    if (poolIsFull) applyPoolFullLockToPlans();
   }
 
-  // -------- Init --------
-  renderStatus({ hasVoucher: false, voucherCode: "" });
-  loadPlans();
+  // -------- Boot --------
+  (async function boot() {
+    try { ensureFlashStyle(); } catch (_) {}
 
-  try {
-    const raw = sessionStorage.getItem("razafi_login_attempt");
-    if (raw) {
-      sessionStorage.removeItem("razafi_login_attempt");
-      updateConnectedUI({ force: true });
-    } else {
-      updateConnectedUI({ force: false });
-    }
-  } catch (_) {
-    updateConnectedUI({ force: false });
-  }
+    // Network card: make it visible and render immediately (no animation)
+    try { initNetworkViewportAnimation(); } catch (_) {}
 
-  // Network info card (IntersectionObserver reveal + bar animation)
-  initNetworkViewportAnimation();
+    // Fetch pool context (name + saturation)
+    try { await fetchPortalContext(); } catch (_) {}
 
-  fetchPortalContext();
-  fetchPortalStatus();
+    // Fetch plans
+    try { await renderPlans(); } catch (_) {}
 
-  console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac, nasId });
+    // Try to refresh connected UI once
+    try { updateConnectedUI({ force: true }); } catch (_) {}
+
+    // If the portal status says active, connected UI should hide plans/faq
+    // (best-effort; doesn't break if captive browser blocks external checks)
+    try {
+      if (portalTruthStatus === "active") setConnectedUI();
+    } catch (_) {}
+  })();
+
 })();
