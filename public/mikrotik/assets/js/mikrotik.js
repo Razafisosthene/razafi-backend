@@ -467,6 +467,39 @@
   window.apMac = apMac;
   window.clientMac = clientMac;
   window.loginUrl = loginUrl;
+  // --------------------------------------------------
+  // URL CLEANUP (Premium UX)
+  // MikroTik/OS captive redirects append long query params (login_url, continue_url, client_mac, etc.).
+  // We read them once above, then we clean the address bar to:
+  //   https://portal.razafistore.com/mikrotik/
+  //
+  // NOTE: We keep ONLY backend override params for debugging if present.
+  // --------------------------------------------------
+  (function cleanAddressBarUrl() {
+    try {
+      if (!window.history || typeof window.history.replaceState !== "function") return;
+
+      const u = new URL(window.location.href);
+
+      const keepKeys = new Set(["backend", "backend_url", "api_base", "api"]);
+      const kept = new URLSearchParams();
+      for (const k of keepKeys) {
+        const v = u.searchParams.get(k);
+        if (v && String(v).trim()) kept.set(k, v);
+      }
+
+      const qs = kept.toString();
+      const clean = u.origin + u.pathname + (qs ? ("?" + qs) : "") + (u.hash || "");
+
+      // Only replace if it actually changes something
+      if (clean !== window.location.href) {
+        window.history.replaceState({}, document.title, clean);
+      }
+    } catch (_) {
+      // fail-open: never break captive portal flow
+    }
+  })();
+
   window.continueUrl = continueUrl;
 
   // -------- Status elements --------
