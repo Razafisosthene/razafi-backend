@@ -23,15 +23,15 @@
 
       <div id="err" class="error" style="display:none; margin-top:10px;"></div>
 
-      <div style="margin-top:12px; overflow:auto;">
+      <div class="table-wrap">
         <table style="width:100%; border-collapse: collapse;">
           <thead>
             <tr>
-              <th style="text-align:left; padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Email</th>
-              <th style="text-align:left; padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Role</th>
-              <th style="text-align:left; padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Status</th>
-              <th style="text-align:left; padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Pools</th>
-              <th style="text-align:right; padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Actions</th>
+              <th>Email</th>
+              <th>Role</th>
+              <th>Status</th>
+              <th>Pools</th>
+              <th style="text-align:right;">Actions</th>
             </tr>
           </thead>
           <tbody id="tbody">
@@ -44,11 +44,12 @@
 
   <!-- Modal -->
   <div id="modal" class="modal" style="display:none;">
-    <div class="modal-content" style="max-width: 720px;">
-      <div class="modal-header">
+    <div class="modal-card">
+
+      <div class="topbar">
         <div>
-          <div id="modalTitle" style="font-size:18px; font-weight:800;">New User</div>
-          <div id="modalSub" class="subtitle" style="margin-top:4px;">Pool read-only user</div>
+          <h1 id="modalTitle" style="margin:0;">New User</h1>
+          <div id="modalSub" class="subtitle">Pool read-only user</div>
         </div>
         <button id="closeModalBtn" type="button" style="width:auto;">Close</button>
       </div>
@@ -57,19 +58,21 @@
 
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:12px;">
         <div>
-          <label style="display:block; font-weight:700; margin-bottom:6px;">Email</label>
+          <label style="font-weight:700;">Email</label>
           <input id="emailInput" type="email" placeholder="user@example.com" />
         </div>
 
         <div>
-          <label style="display:block; font-weight:700; margin-bottom:6px;">Password</label>
+          <label style="font-weight:700;">Password</label>
           <input id="passwordInput" type="password" placeholder="min 6 chars (leave empty to keep)" />
         </div>
 
         <div style="grid-column: 1 / span 2;">
-          <label style="display:block; font-weight:700; margin-bottom:6px;">Assigned Pools (multi)</label>
+          <label style="font-weight:700;">Assigned Pools (multi)</label>
           <select id="poolsSelect" multiple size="8" style="width:100%; padding:10px;"></select>
-          <div class="subtitle" style="margin-top:6px;">User can ONLY see Dashboard + Clients + Revenue + Plans for these pools.</div>
+          <div class="subtitle" style="margin-top:6px;">
+            User can ONLY see Dashboard + Clients + Revenue + Plans for these pools.
+          </div>
         </div>
 
         <div>
@@ -80,13 +83,11 @@
         </div>
       </div>
 
-      <div class="modal-actions" style="margin-top:14px; justify-content: space-between;">
+      <div class="modal-actions">
         <button id="deleteBtn" class="danger" type="button">Delete</button>
-        <div style="display:flex; gap:10px;">
-          <button id="saveBtn" type="button">Save</button>
-          <button id="closeModalBtn2" type="button">Close</button>
-        </div>
+        <button id="saveBtn" type="button">Save</button>
       </div>
+
     </div>
   </div>
 
