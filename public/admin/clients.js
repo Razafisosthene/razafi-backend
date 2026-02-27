@@ -111,6 +111,13 @@ let currentDetailId = null;
 async function requireAdmin() {
   try {
     const admin = await fetchJSON("/api/admin/me");
+    window.__ADMIN = admin;
+        const role = String(admin?.role || "").toLowerCase();
+        window.__IS_READONLY = (role === "pool_readonly");
+        if (window.__IS_READONLY) {
+          const del = document.getElementById("deleteBtn");
+          if (del) del.style.display = "none";
+        }
     document.getElementById("me").textContent = "Connected as " + admin.email;
   } catch {
     window.location.href = "/admin/login.html";
@@ -455,6 +462,8 @@ async function openDetail(id) {
           btn.disabled = true;
           btn.textContent = "Saving...";
 
+          if (window.__IS_READONLY) return;
+
           try {
             const out = await fetchJSON("/api/admin/client-devices/rename", {
               method: "POST",
@@ -649,10 +658,12 @@ try {
 
   // Load current bonus
   let curBonus = { bonus_seconds: 0, bonus_bytes: 0 };
+  if (!window.__IS_READONLY) {
   try {
-    const r = await fetchJSON("/api/admin/voucher-bonus-overrides?voucher_session_id=" + encodeURIComponent(sessionId));
-    curBonus = r?.item || curBonus;
-  } catch (_) {}
+      const r = await fetchJSON("/api/admin/voucher-bonus-overrides?voucher_session_id=" + encodeURIComponent(sessionId));
+      curBonus = r?.item || curBonus;
+    } catch (_) {}
+}
 
   const curSec = Number(curBonus.bonus_seconds || 0);
   const curBytes = Number(curBonus.bonus_bytes || 0);
@@ -766,6 +777,8 @@ try {
         btn.disabled = true;
         btn.textContent = "Saving...";
 
+        if (window.__IS_READONLY) return;
+
         try {
           await fetchJSON("/api/admin/voucher-bonus-overrides", {
             method: "POST",
@@ -828,6 +841,8 @@ async function deleteCurrent() {
 
   const confirmText = prompt("Type DELETE to confirm deletion:");
   if (confirmText !== "DELETE") return;
+
+  if (window.__IS_READONLY) return;
 
   try {
     await fetchJSON("/api/admin/voucher-sessions/" + encodeURIComponent(currentDetailId), {

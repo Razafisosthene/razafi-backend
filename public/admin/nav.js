@@ -54,19 +54,22 @@
           <a class="rz-item" data-href="/admin/clients.html" href="/admin/clients.html">
             <span class="rz-item-label">Clients</span>
           </a>
-          <a class="rz-item" data-href="/admin/aps.html" href="/admin/aps.html">
+          <a class="rz-item" data-href="/admin/aps.html" href="/admin/aps.html" id="rzNavAPs">
             <span class="rz-item-label">APs</span>
           </a>
           <a class="rz-item" data-href="/admin/plans.html" href="/admin/plans.html">
             <span class="rz-item-label">Plans</span>
           </a>
-          <a class="rz-item" data-href="/admin/pools.html" href="/admin/pools.html">
+          <a class="rz-item" data-href="/admin/pools.html" href="/admin/pools.html" id="rzNavPools">
             <span class="rz-item-label">Pools</span>
           </a>
           <a class="rz-item" data-href="/admin/revenue.html" href="/admin/revenue.html">
             <span class="rz-item-label">Revenue</span>
           </a>
-          <a class="rz-item" data-href="/admin/audit.html" href="/admin/audit.html">
+          <a class="rz-item" data-href="/admin/users.html" href="/admin/users.html" id="rzNavUsers">
+            <span class="rz-item-label">Users</span>
+          </a>
+<a class="rz-item" data-href="/admin/audit.html" href="/admin/audit.html" id="rzNavAudit">
             <span class="rz-item-label">AUDIT</span>
           </a>
         </nav>
@@ -139,7 +142,25 @@
       const admin = await fetchJSON("/api/admin/me");
       const email = admin?.email || admin?.username || "admin";
 
-      // drawer label
+      const isSuper = !!admin?.is_superadmin || String(admin?.role || "").toLowerCase() === "superadmin";
+
+      // Hide forbidden nav items for pool_readonly
+      if (!isSuper) {
+        const elAPs = $("#rzNavAPs");
+        const elPools = $("#rzNavPools");
+        const elAudit = $("#rzNavAudit");
+        const elUsers = $("#rzNavUsers");
+        if (elAPs) elAPs.style.display = "none";
+        if (elPools) elPools.style.display = "none";
+        if (elAudit) elAudit.style.display = "none";
+        if (elUsers) elUsers.style.display = "none";
+      } else {
+        // Superadmin only: show Users (if present)
+        const elUsers = $("#rzNavUsers");
+        if (elUsers) elUsers.style.display = "";
+      }
+
+// drawer label
       const meDrawer = $("#rzDrawerMe");
       if (meDrawer) meDrawer.textContent = `Connected as ${email}`;
 

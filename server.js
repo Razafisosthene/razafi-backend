@@ -57,6 +57,7 @@ function ensureSupabase(res) {
 async function requireAdmin(req, res, next) {
   try {
     if (!ensureSupabase(res)) return;
+
     const token = req.cookies?.[ADMIN_COOKIE_NAME];
     if (!token) {
       return res.status(401).json({ error: "Not authenticated" });
@@ -66,13 +67,15 @@ async function requireAdmin(req, res, next) {
 
     const { data: session, error } = await supabase
       .from("admin_sessions")
-      .select(`
+      .select(
+        `
         id,
         expires_at,
         revoked_at,
         admin_user_id,
-        admin_users ( id, email, is_active )
-      `)
+        admin_users ( id, email, is_active, role )
+      `
+      )
       .eq("session_token_hash", tokenHash)
       .single();
 
@@ -99,18 +102,84 @@ async function requireAdmin(req, res, next) {
       return res.status(403).json({ error: "Admin disabled" });
     }
 
+    // Role: be fail-open (superadmin) if DB column not deployed yet
+    const role = String(session.admin_users?.role || "superadmin").trim() || "superadmin";
+    const is_superadmin = role === "superadmin";
+
+    // Load pool assignments for pool_readonly
+    let pool_ids = [];
+    if (!is_superadmin) {
+      const { data: rows, error: perr } = await supabase
+        .from("admin_user_pools")
+        .select("pool_id")
+        .eq("admin_user_id", session.admin_users.id);
+
+      if (perr) {
+        console.error("ADMIN POOLS LOAD ERROR", perr);
+        return res.status(500).json({ error: "Auth error" });
+      }
+
+      pool_ids = (rows || [])
+        .map((r) => (r?.pool_id === undefined || r?.pool_id === null ? "" : String(r.pool_id).trim()))
+        .filter(Boolean);
+
+      if (!pool_ids.length) {
+        return res.status(403).json({ error: "no_pools_assigned" });
+      }
+    }
+
     // attach admin to request
     req.admin = {
       id: session.admin_users.id,
       email: session.admin_users.email,
-      session_id: session.id
+      session_id: session.id,
+      role,
+      is_superadmin,
+      pool_ids,
     };
+
+    // ---------------------------
+    // Server-side permission policy (NO frontend trust)
+    // ---------------------------
+    if (!is_superadmin) {
+      const fullPath = String(req.originalUrl || req.url || "").split("?")[0] || "";
+      const method = String(req.method || "GET").toUpperCase();
+
+      // allow logout for everyone
+      if (method === "POST" && fullPath === "/api/admin/logout") {
+        return next();
+      }
+
+      // read-only is GET-only
+      if (method !== "GET" && method !== "HEAD") {
+        return res.status(403).json({ error: "readonly_forbidden" });
+      }
+
+      // allowlist GET endpoints for pool_readonly
+      const allow =
+        fullPath === "/api/admin/me" ||
+        fullPath === "/api/admin/clients" ||
+        fullPath.startsWith("/api/admin/voucher-sessions/") ||
+        fullPath === "/api/admin/plans" ||
+        fullPath === "/api/admin/pools" ||
+        fullPath === "/api/admin/aps" ||
+        fullPath.startsWith("/api/admin/revenue/");
+
+      if (!allow) {
+        return res.status(403).json({ error: "readonly_forbidden" });
+      }
+    }
 
     next();
   } catch (err) {
     console.error("[ADMIN AUTH ERROR]", err);
     return res.status(500).json({ error: "Auth error" });
   }
+}
+
+function requireSuperadmin(req, res, next) {
+  if (!req.admin?.is_superadmin) return res.status(403).json({ error: "superadmin_only" });
+  return next();
 }
 
 // ===============================
@@ -501,7 +570,7 @@ async function requireAdminPage(req, res, next) {
         expires_at,
         revoked_at,
         admin_user_id,
-        admin_users ( id, email, is_active )
+        admin_users ( id, email, is_active, role )
       `
       )
       .eq("session_token_hash", tokenHash)
@@ -530,10 +599,29 @@ async function requireAdminPage(req, res, next) {
       return res.redirect(`/admin/login.html?reason=disabled`);
     }
 
+    const role = String(session.admin_users?.role || "superadmin").trim() || "superadmin";
+    const is_superadmin = role === "superadmin";
+
+    // Block forbidden admin pages for pool_readonly (server-side)
+    if (!is_superadmin) {
+      const forbidden = [
+        "/aps.html",
+        "/pools.html",
+        "/audit.html",
+        "/users.html",
+        "/settings.html",
+      ];
+      if (forbidden.includes(p)) {
+        return res.redirect("/admin/");
+      }
+    }
+
     req.admin = {
       id: session.admin_users.id,
       email: session.admin_users.email,
       session_id: session.id,
+      role,
+      is_superadmin,
     };
 
     return next();
@@ -544,6 +632,7 @@ async function requireAdminPage(req, res, next) {
 }
 
 // 1) Gate ALL /admin requests first
+
 app.use("/admin", requireAdminPage);
 
 // 2) Then serve admin static files (only reachable if authed, except login/assets)
@@ -952,8 +1041,237 @@ app.get("/api/admin/me", requireAdmin, async (req, res) => {
   return res.json({
     id: req.admin.id,
     email: req.admin.email,
+    role: req.admin.role || "superadmin",
+    is_superadmin: !!req.admin.is_superadmin,
+    pool_ids: Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [],
   });
 });
+// ------------------------------------------------------------
+// ADMIN: Users (Superadmin only) + Pool assignments
+// ------------------------------------------------------------
+function normalizeEmail(e) {
+  return String(e || "").trim().toLowerCase();
+}
+function isValidEmail(e) {
+  // minimal email check (not strict RFC)
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(e || "").trim());
+}
+function uniqStrings(arr) {
+  const out = [];
+  const seen = new Set();
+  for (const x of arr || []) {
+    const s = String(x ?? "").trim();
+    if (!s) continue;
+    if (seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
+
+// GET /api/admin/users
+app.get("/api/admin/users", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const { data: users, error: uerr } = await supabase
+      .from("admin_users")
+      .select("id,email,is_active,role,created_at,last_login_at")
+      .order("created_at", { ascending: false });
+
+    if (uerr) return res.status(500).json({ error: uerr.message });
+
+    const ids = (users || []).map((u) => u.id).filter(Boolean);
+    let poolsByUser = {};
+    if (ids.length) {
+      const { data: rows, error: perr } = await supabase
+        .from("admin_user_pools")
+        .select("admin_user_id,pool_id, internet_pools ( id, name )")
+        .in("admin_user_id", ids);
+
+      if (perr) return res.status(500).json({ error: perr.message });
+
+      for (const r of rows || []) {
+        const uid = r.admin_user_id;
+        if (!poolsByUser[uid]) poolsByUser[uid] = [];
+        poolsByUser[uid].push({
+          pool_id: r.pool_id,
+          pool_name: r.internet_pools?.name ?? null,
+        });
+      }
+    }
+
+    const items = (users || []).map((u) => ({
+      ...u,
+      pools: poolsByUser[u.id] || [],
+    }));
+
+    return res.json({ items });
+  } catch (e) {
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// POST /api/admin/users
+app.post("/api/admin/users", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const email = normalizeEmail(req.body?.email);
+    const password = String(req.body?.password || "");
+    const pool_ids = uniqStrings(req.body?.pool_ids || []);
+
+    if (!isValidEmail(email)) return res.status(400).json({ error: "email_invalid" });
+    if (!password || password.length < 6) return res.status(400).json({ error: "password_too_short" });
+    if (!pool_ids.length) return res.status(400).json({ error: "pool_required" });
+
+    // ensure email unique
+    const { data: exists } = await supabase
+      .from("admin_users")
+      .select("id")
+      .eq("email", email)
+      .maybeSingle();
+
+    if (exists?.id) return res.status(409).json({ error: "email_exists" });
+
+    const password_hash = await bcrypt.hash(password, 10);
+
+    const { data: created, error: cerr } = await supabase
+      .from("admin_users")
+      .insert({
+        email,
+        password_hash,
+        is_active: true,
+        role: "pool_readonly",
+      })
+      .select("id,email,is_active,role,created_at")
+      .single();
+
+    if (cerr) return res.status(500).json({ error: cerr.message });
+
+    const rows = pool_ids.map((pid) => ({ admin_user_id: created.id, pool_id: pid }));
+    const { error: perr } = await supabase.from("admin_user_pools").insert(rows);
+    if (perr) return res.status(500).json({ error: perr.message });
+
+    return res.json({ ok: true, user: created });
+  } catch (e) {
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// PATCH /api/admin/users/:id  (edit email / reset password / disable)
+app.patch("/api/admin/users/:id", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    if (id === req.admin.id && req.body?.is_active === false) {
+      return res.status(400).json({ error: "cannot_disable_self" });
+    }
+
+    const patch = {};
+    if (req.body?.email !== undefined) {
+      const email = normalizeEmail(req.body.email);
+      if (!isValidEmail(email)) return res.status(400).json({ error: "email_invalid" });
+
+      // ensure email unique (excluding self)
+      const { data: exists } = await supabase
+        .from("admin_users")
+        .select("id")
+        .eq("email", email)
+        .maybeSingle();
+
+      if (exists?.id && exists.id !== id) return res.status(409).json({ error: "email_exists" });
+      patch.email = email;
+    }
+
+    if (req.body?.password !== undefined) {
+      const password = String(req.body.password || "");
+      if (password && password.length < 6) return res.status(400).json({ error: "password_too_short" });
+      if (password) patch.password_hash = await bcrypt.hash(password, 10);
+    }
+
+    if (req.body?.is_active !== undefined) {
+      patch.is_active = !!req.body.is_active;
+    }
+
+    // never allow creating another superadmin from API
+    if (req.body?.role !== undefined) {
+      const role = String(req.body.role || "").trim();
+      if (role && role !== "pool_readonly") return res.status(400).json({ error: "role_forbidden" });
+      if (role) patch.role = "pool_readonly";
+    }
+
+    if (!Object.keys(patch).length) return res.json({ ok: true });
+
+    const { data, error } = await supabase
+      .from("admin_users")
+      .update(patch)
+      .eq("id", id)
+      .select("id,email,is_active,role,created_at,last_login_at")
+      .maybeSingle();
+
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data) return res.status(404).json({ error: "not_found" });
+
+    return res.json({ ok: true, user: data });
+  } catch (e) {
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// PUT /api/admin/users/:id/pools  (replace assignments)
+app.put("/api/admin/users/:id/pools", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    const pool_ids = uniqStrings(req.body?.pool_ids || []);
+    if (!pool_ids.length) return res.status(400).json({ error: "pool_required" });
+
+    // Replace: delete then insert
+    const { error: derr } = await supabase.from("admin_user_pools").delete().eq("admin_user_id", id);
+    if (derr) return res.status(500).json({ error: derr.message });
+
+    const rows = pool_ids.map((pid) => ({ admin_user_id: id, pool_id: pid }));
+    const { error: ierr } = await supabase.from("admin_user_pools").insert(rows);
+    if (ierr) return res.status(500).json({ error: ierr.message });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// DELETE /api/admin/users/:id (hard delete - optional)
+app.delete("/api/admin/users/:id", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    if (id === req.admin.id) return res.status(400).json({ error: "cannot_delete_self" });
+
+    // revoke sessions
+    await supabase.from("admin_sessions").update({ revoked_at: new Date().toISOString() }).eq("admin_user_id", id);
+    // delete assignments
+    await supabase.from("admin_user_pools").delete().eq("admin_user_id", id);
+    // delete user
+    const { error } = await supabase.from("admin_users").delete().eq("id", id);
+    if (error) return res.status(500).json({ error: error.message });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+
 // ------------------------------------------------------------
 // ADMIN: Clients (NEW system only)
 // Uses cookie session auth (credentials: include)
@@ -1008,6 +1326,18 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       `, { count: "exact" })
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
+    // 🔐 Pool scoping (server-side)
+    if (!req.admin?.is_superadmin) {
+      const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
+      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+
+      if (pool_id && pool_id !== "all" && !allowed.includes(pool_id)) {
+        return res.status(403).json({ error: "forbidden_pool" });
+      }
+
+      q = q.in("pool_id", allowed);
+    }
+
 
     // Best-effort: allow search by device alias too (client_devices.alias)
     let aliasMacs = [];
@@ -1245,7 +1575,7 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
     const id = String(req.params.id || "").trim();
     if (!id) return res.status(400).json({ error: "id required" });
 
-    const { data, error } = await supabase
+    let q = supabase
       .from("vw_voucher_sessions_truth")
       .select(`
         id,
@@ -1272,9 +1602,16 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
 
         plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
         pool:internet_pools ( id, name )
-      `)
-      .eq("id", id)
-      .maybeSingle();
+      `);
+
+    // 🔐 Pool scoping (server-side)
+    if (!req.admin?.is_superadmin) {
+      const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
+      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+      q = q.in("pool_id", allowed);
+    }
+
+    const { data, error } = await q.eq("id", id).maybeSingle();
 
     if (error) return res.status(500).json({ error: error.message });
     if (!data) return res.status(404).json({ error: "not_found" });
@@ -1583,6 +1920,13 @@ app.get("/api/admin/revenue/transactions", requireAdmin, async (req, res) => {
       )
       .order("transaction_created_at", { ascending: false })
       .range(offset, offset + limit - 1);
+    // 🔐 Pool scoping (server-side)
+    if (!req.admin?.is_superadmin) {
+      const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
+      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+      q = q.in("pool_id", allowed);
+    }
+
 
     if (from) q = q.gte("transaction_created_at", from);
     if (to) q = q.lte("transaction_created_at", to);
@@ -1618,13 +1962,35 @@ app.get("/api/admin/revenue/by-plan", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
+    // Superadmin: keep existing view
+    if (req.admin?.is_superadmin) {
+      const { data, error } = await supabase
+        .from("v_revenue_paid_by_plan")
+        .select("*")
+        .order("total_amount_ar", { ascending: false });
+
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json({ items: data || [] });
+    }
+
+    // pool_readonly: use scoped RPC (server-side)
+    const from = normalizeDateInput(req.query.from);
+    const to = normalizeDateInput(req.query.to);
+    const search = String(req.query.search || "").trim() || null;
+
+    const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
+    if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+
     const { data, error } = await supabase
-      .from("v_revenue_paid_by_plan")
-      .select("*")
-      .order("total_amount_ar", { ascending: false });
+      .rpc("fn_revenue_paid_by_plan_scoped", {
+        p_from: from || null,
+        p_to: to || null,
+        p_search: search,
+        p_pool_ids: allowed,
+      });
 
     if (error) return res.status(500).json({ error: error.message });
-    res.json({ items: data || [] });
+    return res.json({ items: data || [] });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
@@ -1647,8 +2013,17 @@ app.get("/api/admin/revenue/by-pool", requireAdmin, async (req, res) => {
         p_search: search,
       });
 
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ items: data || [] });
+        if (error) return res.status(500).json({ error: error.message });
+
+    let items = data || [];
+    // 🔐 Pool scoping (server-side)
+    if (!req.admin?.is_superadmin) {
+      const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
+      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+      items = items.filter((r) => allowed.includes(String(r?.pool_id || "").trim()));
+    }
+
+    res.json({ items });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
@@ -1664,18 +2039,47 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
     const to = normalizeDateInput(req.query.to);
     const search = String(req.query.search || "").trim() || null;
 
-    const { data, error } = await supabase
-      .rpc("fn_revenue_paid_totals_filtered", {
+    // Superadmin: keep existing fast RPC
+    if (req.admin?.is_superadmin) {
+      const { data, error } = await supabase
+        .rpc("fn_revenue_paid_totals_filtered", {
+          p_from: from || null,
+          p_to: to || null,
+          p_search: search,
+        });
+
+      if (error) return res.status(500).json({ error: error.message });
+
+      const item = (data && data[0]) ? data[0] : { paid_transactions: 0, total_amount_ar: 0 };
+      return res.json({ item });
+    }
+
+    // pool_readonly: compute totals from by-pool (server-side scoped)
+    const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
+    if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+
+    const { data: rows, error: berr } = await supabase
+      .rpc("fn_revenue_paid_by_pool_filtered", {
         p_from: from || null,
         p_to: to || null,
         p_search: search,
       });
 
-    if (error) return res.status(500).json({ error: error.message });
+    if (berr) return res.status(500).json({ error: berr.message });
 
-    // rpc returns an array of rows
-    const item = (data && data[0]) ? data[0] : { paid_transactions: 0, total_amount_ar: 0 };
-    res.json({ item });
+    const items = (rows || []).filter((r) => allowed.includes(String(r?.pool_id || "").trim()));
+    const item = items.reduce(
+      (acc, r) => {
+        const t = Number(r?.paid_transactions ?? 0) || 0;
+        const a = Number(r?.total_amount_ar ?? 0) || 0;
+        acc.paid_transactions += t;
+        acc.total_amount_ar += a;
+        return acc;
+      },
+      { paid_transactions: 0, total_amount_ar: 0 }
+    );
+
+    return res.json({ item });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
@@ -2437,6 +2841,19 @@ app.get("/api/admin/plans", requireAdmin, async (req, res) => {
     if (system) query = query.eq("system", system);
 
     const pool_id = req.query.pool_id === undefined || req.query.pool_id === null ? "" : String(req.query.pool_id).trim();
+
+    // 🔐 Pool scoping (server-side)
+    if (!req.admin?.is_superadmin) {
+      const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
+      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+
+      if (pool_id && !allowed.includes(pool_id)) {
+        return res.status(403).json({ error: "forbidden_pool" });
+      }
+
+      query = query.in("pool_id", allowed);
+    }
+
     if (pool_id) query = query.eq("pool_id", pool_id);
 
     query = query
@@ -2499,6 +2916,17 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
 
     const q = String(req.query.q || "").trim(); // search ap_mac
     const pool_id = String(req.query.pool_id || "").trim(); // exact pool id
+
+    // 🔐 Pool scoping (server-side)
+    let allowedPools = null;
+    if (!req.admin?.is_superadmin) {
+      allowedPools = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
+      if (!allowedPools.length) return res.status(403).json({ error: "no_pools_assigned" });
+
+      if (pool_id && !allowedPools.includes(pool_id)) {
+        return res.status(403).json({ error: "forbidden_pool" });
+      }
+    }
     const active = String(req.query.active || "all"); // 1|0|all
     const stale = String(req.query.stale || "all"); // 1|0|all (based on ap_live_stats.is_stale or missing stats)
     const limit = Math.min(Math.max(toInt(req.query.limit) ?? 50, 1), 200);
@@ -2508,6 +2936,8 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
     let query = supabase
       .from("ap_registry")
       .select("ap_mac,pool_id,is_active,capacity_max", { count: "exact" });
+
+    if (allowedPools) query = query.in("pool_id", allowedPools);
 
     if (q) query = query.ilike("ap_mac", `%${q}%`);
     if (pool_id) query = query.eq("pool_id", pool_id);
@@ -2841,6 +3271,13 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
     let query = supabase
       .from("internet_pools")
       .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id", { count: "exact" });
+
+    // 🔐 Pool scoping (server-side)
+    if (!req.admin?.is_superadmin) {
+      const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
+      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+      query = query.in("id", allowed);
+    }
 
     // safest filter: by id only (schema-stable)
     if (q) {

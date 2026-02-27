@@ -119,6 +119,7 @@ const f_unlimited_data = document.getElementById("f_unlimited_data");
   const f_is_active = document.getElementById("f_is_active");
 
   function openModal(mode, plan) {
+    if (window.__IS_READONLY) return;
     formError.textContent = "";
     modal.style.display = "block";
     editingSystem = (mode === "new") ? currentSystem : ((plan && plan.system) ? plan.system : currentSystem);
@@ -337,7 +338,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
 
   refreshBtn.addEventListener("click", () => loadPlans().catch(e => errEl.textContent = e.message));
 
-  newBtn.addEventListener("click", () => openModal("new"));
+  newBtn.addEventListener("click", () => { if (window.__IS_READONLY) return; openModal("new"); });
 
   // System toggle
   const setSystem = async (sys) => {
