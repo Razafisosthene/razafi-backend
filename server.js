@@ -5497,7 +5497,7 @@ if (!isUsableStatus) {
     // This protects you even if MikroTik didn't enforce the total limit for some reason.
     let usedBytes = 0n;
     try {
-      usedBytes = BigInt(Number(session?.data_used_bytes ?? 0) || 0);
+      usedBytes = BigInt(String(session?.data_used_bytes ?? 0));
     } catch (_) {
       usedBytes = 0n;
     }
@@ -5659,7 +5659,7 @@ app.post("/api/radius/accounting", async (req, res) => {
     const existing = existingRows && existingRows.length ? existingRows[0] : null;
 
     const prevLastTotal = BigInt(
-      Number((existing && (existing.last_total_bytes ?? existing.total_bytes)) || 0) || 0
+      String((existing && (existing.last_total_bytes ?? existing.total_bytes)) || 0)
     );
 
     let delta = newTotalBytes - prevLastTotal;
@@ -5727,7 +5727,7 @@ app.post("/api/radius/accounting", async (req, res) => {
     let aggregatedUsed = 0n;
     for (const row of sessionTotals || []) {
       const val = row.total_bytes ?? row.last_total_bytes ?? 0;
-      const n = BigInt(Number(val || 0) || 0);
+      const n = BigInt(String(val ?? 0));
       aggregatedUsed += n;
     }
 
@@ -5751,11 +5751,13 @@ app.post("/api/radius/accounting", async (req, res) => {
 
     const vsId = vsRows[0].id;
 
-    // Determine whether data quota is exhausted (if plan has data_mb)
+    // Determine whether data quota is exhausted (plan cap + bonus override)
     let quotaReached = false;
-    let totalLimitBytes = null;
+    let totalLimitBytes = null; // number | null (null = no cap / unlimited / unknown)
     try {
       const planId = vsRows[0].plan_id || null;
+
+      // 1) base cap from plan (data_mb)
       if (planId) {
         const { data: planRow } = await supabase
           .from("plans")
@@ -5769,7 +5771,30 @@ app.post("/api/radius/accounting", async (req, res) => {
           (dataMb !== null && Number.isFinite(dataMb) && dataMb > 0)
             ? Math.floor(dataMb * 1024 * 1024)
             : null;
+      }
 
+      // 2) bonus cap from voucher_bonus_overrides (bonus_bytes)
+      //    -1 = unlimited data
+      const { data: bonusRow } = await supabase
+        .from("voucher_bonus_overrides")
+        .select("bonus_bytes")
+        .eq("voucher_session_id", vsId)
+        .maybeSingle();
+
+      const bonusBytesRaw = bonusRow?.bonus_bytes;
+      const bonusBytes = (bonusBytesRaw === null || bonusBytesRaw === undefined) ? 0 : Number(bonusBytesRaw);
+
+      if (bonusBytes === -1) {
+        // Unlimited data overrides any plan cap
+        totalLimitBytes = null;
+        quotaReached = false;
+      } else if (Number.isFinite(bonusBytes) && bonusBytes > 0) {
+        // If plan has a cap, extend it; otherwise bonus itself defines a cap.
+        if (totalLimitBytes === null) totalLimitBytes = 0;
+        totalLimitBytes = totalLimitBytes + Math.floor(bonusBytes);
+        quotaReached = aggregatedUsed >= BigInt(totalLimitBytes);
+      } else {
+        // No bonus bytes, use plan cap if any
         if (totalLimitBytes !== null) {
           quotaReached = aggregatedUsed >= BigInt(totalLimitBytes);
         }
@@ -5778,8 +5803,7 @@ app.post("/api/radius/accounting", async (req, res) => {
       // ignore
     }
 
-
-    // Determine whether time quota is expired (voucher_sessions.expires_at)
+// Determine whether time quota is expired (voucher_sessions.expires_at)
     const now = new Date();
     const expiresAtIso = vsRows[0].expires_at || null;
     const timeExpired = !!(
@@ -5831,7 +5855,17 @@ app.post("/api/radius/accounting", async (req, res) => {
       }
     }
 
-    // Build patch (only columns that really exist will be kept by the safe-updater below)
+    // Determine desired DB status update (keeps portal/admin consistent)
+// - If quotaReached => used
+// - Else if timeExpired => expired
+// - Else if previously used/expired but now within limits => active (reactivation after bonus)
+const currentStatus = String(vsRows[0].status || "");
+let statusPatch = {};
+if (quotaReached) statusPatch = { status: "used" };
+else if (timeExpired) statusPatch = { status: "expired" };
+else if (currentStatus === "used" || currentStatus === "expired") statusPatch = { status: "active" };
+
+// Build patch (only columns that really exist will be kept by the safe-updater below)
     const vsPatchBase = {
       data_used_bytes: aggregatedUsed.toString(),
       last_acct_session_id: acctSessionId,
@@ -5842,7 +5876,7 @@ app.post("/api/radius/accounting", async (req, res) => {
 
 
       // status is updated when quota is reached so admin panel reflects reality
-      ...(quotaReached ? { status: "used" } : (timeExpired ? { status: "expired" } : {})),
+      ...statusPatch,
       updated_at: new Date().toISOString(),
     };
 
