@@ -1633,6 +1633,36 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
     data.stored_status = data.status || null;
     data.status = data.truth_status || data.status || null;
 
+    // ------------------------------
+    // BONUS-AWARE effective status (Admin detail)
+    // If expired/used but a bonus exists, allow "Utiliser ce code" by showing status as pending.
+    // ------------------------------
+    data.raw_status = data.status;
+    try {
+      const bonus = await getVoucherBonusOverride({ voucher_session_id: data.id });
+      data.bonus_seconds = Number(bonus?.bonus_seconds || 0) || 0;
+      data.bonus_bytes = Number(bonus?.bonus_bytes || 0) || 0;
+      const bonusSeconds = Math.max(0, Math.floor(data.bonus_seconds));
+      const bonusBytesRaw = Number(data.bonus_bytes);
+      const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusBytesRaw || 0));
+
+      const nowMs = Date.now();
+      let expMs = null;
+      try { expMs = data.expires_at ? new Date(data.expires_at).getTime() : null; } catch (_) { expMs = null; }
+      const isTimeExpired = !!data.started_at && Number.isFinite(expMs) && expMs <= nowMs;
+
+      const hasTimeBonus = bonusSeconds > 0;
+      const hasDataBonus = (bonusBytes === -1 || bonusBytes > 0);
+
+      const st = String(data.status || "").toLowerCase();
+      if (st !== "pending" && st !== "active") {
+        if (isTimeExpired && hasTimeBonus) data.status = "pending";
+        else if (!isTimeExpired && hasDataBonus) data.status = "pending";
+      }
+    } catch (_) {
+      // fail-open
+    }
+
     // Best-effort Tanaza name for detail view too
     try {
       if (data.ap_mac && typeof tanazaBatchDevicesByMac === "function") {
@@ -2446,6 +2476,7 @@ app.get("/api/portal/status", async (req, res) => {
       return res.status(400).json({ ok: false, error: "client_mac_or_voucher_code_required" });
     }
 
+    const now = new Date();
 
     // ------------------------------
     // Support phone (by pool) — System 3
@@ -2470,6 +2501,7 @@ app.get("/api/portal/status", async (req, res) => {
     }
 
     const selectCols = [
+      "id",
       "voucher_code",
       "truth_status",
       "plan_id",
@@ -2520,6 +2552,58 @@ app.get("/api/portal/status", async (req, res) => {
     }
 
     const status = String(row.truth_status || "none").toLowerCase();
+
+    // ------------------------------
+    // BONUS-AWARE effective status (System 3)
+    // If a voucher is expired/used BUT admin granted a bonus, the portal should allow "Utiliser ce code".
+    // We do NOT change the stored truth_status here; we only adjust the portal response.
+    // Actual time extension / data increase is enforced during /api/radius/authorize.
+    // ------------------------------
+    let bonus = { bonus_seconds: 0, bonus_bytes: 0, note: null, updated_at: null, updated_by: null };
+    let effective_status = status;
+    try {
+      // Try to resolve voucher_session_id from the truth view row; fallback to voucher_sessions lookup.
+      let voucherSessionId = row.id || null;
+      if (!voucherSessionId && row.voucher_code) {
+        const { data: sRow } = await supabase
+          .from("voucher_sessions")
+          .select("id")
+          .eq("voucher_code", String(row.voucher_code).trim())
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        voucherSessionId = sRow?.id || null;
+      }
+
+      if (voucherSessionId) {
+        bonus = await getVoucherBonusOverride({ voucher_session_id: voucherSessionId });
+      }
+
+      const bonusSeconds = Math.max(0, Math.floor(Number(bonus?.bonus_seconds || 0) || 0));
+      const bonusBytesRaw = Number(bonus?.bonus_bytes ?? 0);
+      const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusBytesRaw || 0));
+
+      const nowMs2 = now.getTime();
+      let expMs2 = null;
+      try { expMs2 = row.expires_at ? new Date(row.expires_at).getTime() : null; } catch (_) { expMs2 = null; }
+      const isTimeExpired2 = Number.isFinite(expMs2) && expMs2 <= nowMs2;
+
+      const hasTimeBonus = bonusSeconds > 0;
+      const hasDataBonus = (bonusBytes === -1 || bonusBytes > 0);
+
+      // Only override when the voucher is not normally usable
+      if (status !== "pending" && status !== "active") {
+        if (isTimeExpired2 && hasTimeBonus) {
+          effective_status = "pending";
+        } else if (!isTimeExpired2 && hasDataBonus) {
+          effective_status = "pending";
+        }
+      }
+    } catch (_) {
+      // fail-open: keep original status
+      effective_status = status;
+    }
+
     const plan_id = row.plan_id || null;
 
     // Enrich plan (name, duration, max devices, data limit)
@@ -2558,27 +2642,31 @@ app.get("/api/portal/status", async (req, res) => {
     );
 
     // UI rules
-    const purchase_lock = status === "pending" || status === "active";
+    const purchase_lock = effective_status === "pending" || effective_status === "active";
     const can_use = purchase_lock; // your rule: show for pending + active
 
     let toast_on_plan_click = "";
-    if (status === "pending") {
+    if (effective_status === "pending" && status !== "pending" && status !== "active") {
+      toast_on_plan_click = "✅ Vous avez un BONUS disponible. Cliquez « Utiliser ce code » pour vous reconnecter.";
+    } else if (effective_status === "pending") {
       toast_on_plan_click = "⚠️ Achat désactivé : vous avez déjà un code en attente. Activez-le d’abord avec « Utiliser ce code ».";
-    } else if (status === "active") {
+    } else if (effective_status === "active") {
       toast_on_plan_click = "⚠️ Achat désactivé : vous avez déjà une session active. Utilisez « Utiliser ce code » si la connexion s’est interrompue.";
     }
 
     // Badge spec
-    let badge = { tone: status, label: "", icon: "" };
-    if (status === "pending") badge = { tone: "pending", label: "EN ATTENTE", icon: "⏳" };
-    else if (status === "active") badge = { tone: "active", label: "ACTIF", icon: "🔓" };
-    else if (status === "used") badge = { tone: "used", label: "UTILISÉ", icon: "⛔" };
-    else if (status === "expired") badge = { tone: "expired", label: "EXPIRÉ", icon: "⏰" };
-    else badge = { tone: "none", label: "AUCUN CODE", icon: "ℹ️" };
+let badge = { tone: effective_status, label: "", icon: "" };
+
+if (effective_status === "pending") badge = { tone: "pending", label: "EN ATTENTE", icon: "⏳" };
+else if (effective_status === "active") badge = { tone: "active", label: "ACTIF", icon: "🔓" };
+else if (effective_status === "used") badge = { tone: "used", label: "UTILISÉ", icon: "⛔" };
+else if (effective_status === "expired") badge = { tone: "expired", label: "EXPIRÉ", icon: "⏰" };
+else badge = { tone: "none", label: "AUCUN CODE", icon: "ℹ️" };
 
     return res.json({
       ok: true,
-      status,
+      status: effective_status,
+      raw_status: status,
       voucher_code: String(row.voucher_code || "").trim(),
       plan: {
         id: plan_id,
@@ -2595,7 +2683,9 @@ app.get("/api/portal/status", async (req, res) => {
         data_used_human: row.data_used_human || null,
         data_remaining_human: row.data_remaining_human || null,
         // best-effort (front will default to 1 when active)
-        devices_used: null
+        devices_used: null,
+        bonus_seconds: Number(bonus?.bonus_seconds || 0) || 0,
+        bonus_bytes: Number(bonus?.bonus_bytes || 0) || 0
       },
       purchase_lock,
       can_use,
