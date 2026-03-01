@@ -1,191 +1,329 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>WiFi RAZAFI</title>
-
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#ffffff" />
-
-  <link rel="icon" href="assets/img/favicon.ico" />
-  <link rel="icon" type="image/svg+xml" href="assets/img/favicon.svg" />
-  <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png" />
-
-  <link rel="stylesheet" href="assets/css/style.css" />
-  <style>
-    /* RAZAFI Portal – Status badges (premium) */
-    .status-badge{
-      display:inline-flex;align-items:center;gap:6px;
-      padding:6px 14px;border-radius:999px;
-      font-weight:600;font-size:13px;letter-spacing:.4px;
-      border:1px solid transparent;
-      user-select:none; -webkit-user-select:none;
-      white-space:nowrap;
-    }
-    .status-badge.hidden{display:none!important;}
-    .status-badge.mini{padding:4px 10px;font-size:12px;margin-left:10px;vertical-align:middle;}
-    .badge-pending{background:#FFF4CC;border-color:#FFD76A;color:#9A6B00;}
-    .badge-active{background:#DFF7E8;border-color:#53C48A;color:#0F6A3E;}
-    .badge-used{background:#FDE2E2;border-color:#E45A5A;color:#8A1F1F;}
-    .badge-expired{background:#EAEAF0;border-color:#A5A7B5;color:#4A4D5A;}
-
-    body.theme-dark .badge-pending{background:rgba(255,199,0,.15);border-color:rgba(255,199,0,.35);color:#FFD76A;}
-    body.theme-dark .badge-active{background:rgba(83,196,138,.15);border-color:rgba(83,196,138,.35);color:#53C48A;}
-    body.theme-dark .badge-used{background:rgba(228,90,90,.18);border-color:rgba(228,90,90,.35);color:#FF7A7A;}
-    body.theme-dark .badge-expired{background:rgba(165,167,181,.15);border-color:rgba(165,167,181,.35);color:#C5C7D4;}
-
-    @keyframes pendingPulse {
-      0%   { box-shadow: 0 0 0 rgba(255,199,0,0.00); filter: brightness(1); }
-      50%  { box-shadow: 0 0 6px rgba(255,199,0,0.45); filter: brightness(1.03); }
-      100% { box-shadow: 0 0 0 rgba(255,199,0,0.00); filter: brightness(1); }
-    }
-    .badge-pending.pulse{animation: pendingPulse 2.8s ease-in-out infinite;}
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>RAZAFI Admin — Dashboard</title>
+  <link rel="stylesheet" href="/admin/admin.css" />
 </head>
+<body>
+  <div class="login-container">
+    <div class="card" style="max-width: 1100px; width: 96%;">
 
-<body class="theme-light">
+      <!-- TOP BAR -->
+      <div class="topbar">
+        <div class="title">
+          <h1 style="margin:0;">Admin Dashboard</h1>
+          <div id="me" class="subtitle">Checking session...</div>
+        </div>
 
-  <!-- ================= HEADER ================= -->
-  <header class="portal-header">
-    <div class="brand">
-      <img src="assets/img/RAZAFI.png" alt="RAZAFI" style="height:40px;">
+        <!-- legacy nav kept hidden to avoid breaking old JS assumptions -->
+        <div class="nav" style="display:none;">
+          <a href="/admin/"><button type="button">Dashboard</button></a>
+          <a href="/admin/clients.html"><button type="button">Clients</button></a>
+          <a href="/admin/aps.html"><button type="button">APs</button></a>
+          <a href="/admin/plans.html"><button type="button">Plans</button></a>
+          <a href="/admin/pools.html"><button type="button">Pools</button></a>
+          <a href="/admin/revenue.html"><button type="button">Revenue</button></a>
+                 <button id="logoutBtn" type="button">Logout</button>
+        </div>
+      </div>
+
+      <hr style="opacity:.2; margin:18px 0;" />
+
+      <!-- READ-ONLY POOLS OVERVIEW (Tanaza truth) -->
+      <div class="sticky-bar" style="margin-top:14px;">
+        <div class="filters">
+          <input id="q" class="filter-search" placeholder="Search pool / AP..." />
+          <select id="poolFilter" class="filter-search" style="max-width:240px;">
+            <option value="">All pools</option>
+          </select>
+          <button type="button" id="refresh" class="filter-btn primary" style="width:auto;">Refresh</button>
+        </div>
+      </div>
+
+      <div id="poolsContainer" style="margin-top:12px;"></div>
+      <div id="status" style="margin-top:14px; opacity:.85;"></div>
     </div>
+  </div>
 
-    <button id="themeToggle" class="theme-toggle" aria-label="Changer de thème">
-      🌙
-    </button>
-  </header>
+  <!-- NEW shared drawer -->
+  <script src="/admin/nav.js"></script>
 
-  <!-- ================= MAIN ================= -->
-  <main class="portal-container">
+  <script>
+    async function fetchJSON(url, opts = {}) {
+      const res = await fetch(url, { credentials: "include", ...opts });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); }
+      catch { throw new Error("Server returned non-JSON"); }
+      if (!res.ok) throw new Error(data?.error || data?.message || "Request failed");
+      return data;
+    }
 
-    <!-- ========= STATUS ========= -->
-    <section class="card status-card">
+    // ---------------------------------------------------------------------------
+    // READ-ONLY POOLS DASHBOARD (Tanaza truth)
+    // ---------------------------------------------------------------------------
 
-      <h2>Bienvenue sur WiFi RAZAFI</h2>
+    const $ = (id) => document.getElementById(id);
 
-      <!-- 🔹 Option C: pool/site name (filled by mikrotik.js using nas_id) -->
-      <p id="poolName" class="muted small"></p>
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+      }[c]));
+    }
 
-      <div id="statusBadgeMain" class="status-badge hidden"></div>
-      <div id="bonusBadgeMain" class="status-badge hidden" style="margin-top:8px; border-color: rgba(13,110,253,.35); background: rgba(13,110,253,.10);">🎁 BONUS DISPONIBLE</div>
+    function pct(n, d) {
+      const num = Number(n), den = Number(d);
+      if (!Number.isFinite(num) || !Number.isFinite(den) || den <= 0) return null;
+      return Math.min(999, Math.round((num / den) * 100));
+    }
 
-      <p id="accessMsg" class="muted">Vérification de votre accès en cours…</p>
-
-      <!-- 🔹 Pool full banner (optional, controlled by backend) -->
-      <div
-        id="poolFullBanner"
-        style="display:none; margin:10px 0; padding:10px 12px;
-               border-radius:10px;
-               border:1px solid rgba(200,120,0,0.35);
-               background:rgba(255,200,0,0.10);">
-        <strong>⚠️ Réseau momentanément saturé.</strong><br>
-        Les achats sont temporairement indisponibles.
-      </div>
-
-      <!-- NO ACTIVE VOUCHER -->
-      <div id="voucherNone">
-        <p id="noVoucherMsg" class="muted">Vous n’avez pas de code actif.</p>
-        <p class="muted small">
-          Choisissez un plan ci-dessous pour acheter un code.
-        </p>
-      </div>
-
-      <!-- ACTIVE VOUCHER -->
-      <div id="voucherHas" class="hidden">
-        <p id="hasVoucherMsg" class="success">✅ Vérification…</p>
-
-                <ul class="voucher-info">
-          <li>🔑 <strong id="voucher-code">—</strong> <span id="statusBadgeMini" class="status-badge mini hidden"></span>
-          <span id="bonusBadgeMini" class="status-badge mini hidden" style="margin-left:6px; border-color: rgba(13,110,253,.35); background: rgba(13,110,253,.10);">🎁 BONUS</span></li>
-
-          <li>📦 Plan : <strong id="plan-name">—</strong></li>
-          <li>⏳ Durée : <strong id="plan-duration">—</strong></li>
-          <li>📊 Data totale : <strong id="plan-data-total">—</strong></li>
-          <li>🔌 Appareils autorisés : <strong id="plan-max-devices">—</strong></li>
-
-          <li id="row-time-left">⏳ Temps restant : <strong id="time-left">—</strong></li>
-          <li id="row-expires-at" class="hidden">📆 Expire le : <strong id="expires-at">—</strong></li>
-
-          <li id="row-data-left">📊 Données restantes : <strong id="data-left">—</strong></li>
-          <li id="row-data-used" class="hidden">📉 Données utilisées : <strong id="data-used">—</strong></li>
-
-          <li>🔌 Appareils utilisés : <strong id="devices-used">—</strong></li>
-        </ul>
-
-        <button id="useVoucherBtn" class="primary-btn" disabled>
-          Utiliser ce code
-        </button>
-
-        <button id="copyVoucherBtn" class="secondary-btn" disabled>
-          Copier le code
-        </button>
-      </div>
-
-    </section>
-
-    <!-- ========= PLANS ========= -->
-    <section>
-      <h3>Plans</h3>
-      <div id="plansGrid" class="plans-grid">
-        <p class="muted small">Chargement des plans…</p>
-      </div>
-    </section>
-
-
-    <!-- ========= ÉTAT DU RÉSEAU (Pool saturation + débit) ========= -->
-    <section id="networkInfoCard" class="card network-card io-reveal" aria-live="polite">
-      <div class="network-head">
-        <div class="network-title">🌐 État du réseau – <span id="netPoolName">—</span></div>
-      </div>
-
-      <div class="network-bar-wrap" role="img" aria-label="Saturation du réseau">
-        <div class="network-bar">
-          <div id="netBarFill" class="network-bar-fill level-low" style="width:0%"></div>
+    function pctBar(pctVal) {
+      if (pctVal === null || pctVal === undefined || Number.isNaN(Number(pctVal))) return "—";
+      const p = Math.max(0, Math.min(100, Number(pctVal)));
+      const color = (p >= 90) ? "rgba(255, 80, 80, .90)"
+        : (p >= 70) ? "rgba(255, 196, 0, .90)"
+        : "rgba(80, 200, 120, .90)";
+      return `
+        <div style="min-width:170px;">
+          <div style="opacity:.85; font-size:12px; margin-bottom:6px;">${esc(Math.round(p))}%</div>
+          <div style="height:10px; border-radius:999px; background:rgba(0,0,0,.08); overflow:hidden;">
+            <div style="height:10px; width:${esc(p)}%; background:${color};"></div>
+          </div>
         </div>
-        <div class="network-bar-meta">
-          <span id="netPercent" class="network-percent">—%</span>
-          <span id="netStatusText" class="network-status muted">—</span>
-        </div>
-      </div>
+      `;
+    }
 
-      <div class="network-divider"></div>
+    function isOnline(a) {
+      return (a.tanaza_online === true) || (String(a.tanaza_online).toLowerCase() === "true");
+    }
 
-      <div class="network-speed">
-        <div class="network-title">🚀 Votre débit maximum</div>
-        <div id="netSpeed" class="network-speed-value">10 Mbps</div>
-        <div class="muted small">Optimisé pour navigation &amp; streaming HD</div>
-      </div>
-    </section>
+    function apStatusClass(a) {
+      const v = a.tanaza_online;
+      if (v === true || String(v).toLowerCase() === "true") return "online";
+      if (v === false || String(v).toLowerCase() === "false") return "offline";
+      return "unknown";
+    }
 
 
-    <!-- ========= ASSISTANCE ========= -->
-    <section class="card faq">
-      <h3>🛟 Assistance</h3>
+    function apConnected(a) {
+      const raw = (a.tanaza_connected ?? a.tanaza_connected_clients ?? a.tanaza_connectedClients ?? a.connectedClients ?? 0);
+      const n = Number.isFinite(Number(raw)) ? Number(raw) : 0;
+      return n;
+    }
 
-      <p>
-        <strong>🔌 Comment se connecter ?</strong><br>
-        Sélectionnez un plan et effectuez le paiement via MVola.
-      </p>
+    async function loadDashboardPools() {
+      const statusEl = $("status");
+      const container = $("poolsContainer");
+      const qEl = $("q");
+      const poolFilterEl = $("poolFilter");
+      const refreshBtn = $("refresh");
 
-      <p>
-        <strong>📞 Besoin d’aide ?</strong><br>
-        Service client : <strong id="supportPhone">038 75 005 92</strong>
-      </p>
-    </section>
+      if (!container) return;
 
-  </main>
+      async function fetchAllAps() {
+        try {
+          const data = await fetchJSON("/api/admin/aps?limit=200&offset=0&active=all&stale=all");
+          return data.aps || [];
+        } catch {
+          return [];
+        }
+      }
 
-  <!-- ================= FOOTER ================= -->
-  <footer class="portal-footer">
-    <p class="muted small">
-      © RAZAFI — Portail sécurisé
-    </p>
-  </footer>
+      async function fetchPools(query) {
+        const params = new URLSearchParams();
+        params.set("limit", "200");
+        params.set("offset", "0");
+        if (query) params.set("q", query);
+        const data = await fetchJSON(`/api/admin/pools?${params.toString()}`);
+        return data.pools || data.data || data || [];
+      }
 
-  <!-- ================= JS ================= -->
-  <!-- 🔑 Identity (nas_id / ap_mac) is handled ONLY in mikrotik.js -->
-  <script src="assets/js/mikrotik.js" defer></script>
+      function poolLiveMap(allAps) {
+        const map = {};
+        for (const a of allAps || []) {
+          const pid = a.pool_id || "";
+          if (!pid) continue;
+          if (!isOnline(a)) continue;
+          map[pid] = (map[pid] || 0) + apConnected(a);
+        }
+        return map;
+      }
 
+      function render(pools, allAps) {
+        const q = String(qEl?.value || "").trim().toLowerCase();
+        const selectedPool = String(poolFilterEl?.value || "").trim().toLowerCase();
+        const liveByPool = poolLiveMap(allAps);
+
+        const apsByPool = {};
+        for (const a of allAps || []) {
+          const pid = a.pool_id || "";
+          if (!pid) continue;
+          (apsByPool[pid] ||= []).push(a);
+        }
+
+        const filteredPools = (pools || []).filter(p => {
+          if (selectedPool) {
+            const pnameExact = String(p.name || "").toLowerCase();
+            if (pnameExact !== selectedPool) return false;
+          }
+          if (!q) return true;
+          const pname = String(p.name || p.id || "").toLowerCase();
+          if (pname.includes(q)) return true;
+          const pid = String(p.id || "");
+          const aps = apsByPool[pid] || [];
+          return aps.some(a => {
+            const label = String(a.tanaza_label || a.ap_mac || "").toLowerCase();
+            const mac = String(a.ap_mac || "").toLowerCase();
+            return label.includes(q) || mac.includes(q);
+          });
+        });
+
+        if (!filteredPools.length) {
+          container.innerHTML = `
+            <div class="table-wrap">
+              <div style="padding:12px; opacity:.75;">No pools found.</div>
+            </div>
+          `;
+          return;
+        }
+
+        container.innerHTML = filteredPools.map(p => {
+          const pid = String(p.id || "");
+          const name = p.name || pid;
+          const cap = p.capacity_max;
+          const live = liveByPool[pid] || 0;
+          const percent = pct(live, cap);
+
+          const aps = (apsByPool[pid] || []).slice().sort((a,b) => {
+            const ao = isOnline(a) ? 1 : 0;
+            const bo = isOnline(b) ? 1 : 0;
+            if (ao !== bo) return bo - ao;
+            return (apConnected(b) - apConnected(a));
+          });
+
+          const apListHtml = aps.length
+            ? `
+              <div style="margin-top:10px;">
+                <div style="opacity:.75; font-size:12px; margin-bottom:8px;">APs</div>
+                <div class="table-wrap" style="margin-top:0;">
+                  <table style="width:100%; border-collapse:collapse;">
+                    <thead>
+                      <tr style="text-align:left; border-bottom:1px solid rgba(0,0,0,0.08);">
+                        <th style="padding:10px;">AP</th>
+                        <th style="padding:10px; width:90px;">Status</th>
+                        <th style="padding:10px;">Clients</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${aps.map(a => {
+                        const mac = String(a.ap_mac || "");
+                        const label = a.tanaza_label || mac || "—";
+                        const online = isOnline(a);
+                        const connected = apConnected(a);
+                        return `
+                          <tr style="border-top:1px solid rgba(0,0,0,.06); ${online ? "" : "opacity:.6;"}">
+                            <td style="padding:10px;">
+                              <div style="font-weight:700;">${esc(label)}</div>
+                              <div style="opacity:.7; font-size:12px; margin-top:6px;">${esc(mac)}</div>
+                            </td>
+                            <td style="padding:10px; text-align:center;">
+                              <span class="ap-dot ${apStatusClass(a)}"></span>
+                            </td>
+                            <td style="padding:10px; font-weight:800;">${esc(connected)}</td>
+                          </tr>
+                        `;
+                      }).join("")}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            `
+            : `<div style="margin-top:10px; opacity:.7; font-size:13px;">No APs assigned to this pool.</div>`;
+
+          return `
+            <div class="table-wrap" style="margin-bottom:14px;">
+              <div style="padding:12px;">
+                <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:flex-start;">
+                  <div>
+                    <div style="font-weight:900; font-size:18px;">${esc(name)}</div>
+                    <div style="opacity:.75; font-size:12px; margin-top:6px;">ID: ${esc(pid)}</div>
+                  </div>
+
+                  <div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
+                    <div style="text-align:right;">
+                      <div style="opacity:.75; font-size:12px;">Live clients</div>
+                      <div style="font-weight:900; font-size:18px;">${esc(live)}</div>
+                    </div>
+                    <div style="text-align:right;">
+                      <div style="opacity:.75; font-size:12px;">Capacity</div>
+                      <div style="font-weight:900; font-size:18px;">${esc(cap ?? "—")}</div>
+                    </div>
+                    <div>${percent === null ? "—" : pctBar(percent)}</div>
+                  </div>
+                </div>
+
+                ${apListHtml}
+              </div>
+            </div>
+          `;
+        }).join("");
+      }
+
+      async function load() {
+        try {
+          if (statusEl) statusEl.textContent = "Loading pools…";
+          container.innerHTML = `<div class="table-wrap"><div style="padding:12px;">Loading…</div></div>`;
+
+          const [allAps, pools] = await Promise.all([fetchAllAps(), fetchPools("")]);
+
+          if (poolFilterEl) {
+            const current = poolFilterEl.value || "";
+            const names = (pools || [])
+              .map(p => String(p.name || ""))
+              .filter(Boolean)
+              .sort((a, b) => a.localeCompare(b));
+
+            poolFilterEl.innerHTML =
+              `<option value="">All pools</option>` +
+              names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+
+            poolFilterEl.value = names.includes(current) ? current : "";
+          }
+
+          render(pools, allAps);
+
+          if (statusEl) statusEl.textContent = `Loaded ${pools?.length || 0} pool(s).`;
+        } catch (e) {
+          if (statusEl) statusEl.textContent = "";
+          container.innerHTML = `<div class="table-wrap"><div style="padding:12px; color:#d9534f;">Failed to load: ${esc(e.message || e)}</div></div>`;
+        }
+      }
+
+      refreshBtn?.addEventListener("click", load);
+      poolFilterEl?.addEventListener("change", load);
+      qEl?.addEventListener("input", async () => { await load(); });
+
+      await load();
+    }
+
+    async function checkSession() {
+      const meEl = document.getElementById("me");
+      const statusEl = document.getElementById("status");
+
+      try {
+        const admin = await fetchJSON("/api/admin/me");
+        if (meEl) meEl.textContent = "Connected as " + (admin.email || admin.username || "admin");
+        if (statusEl) statusEl.textContent = "Loading dashboard…";
+        await loadDashboardPools();
+      } catch (e) {
+        window.location.href = "/admin/login.html";
+      }
+    }
+
+    // NOTE: logout button moved to drawer (nav.js). legacy logout remains hidden.
+    checkSession();
+  </script>
 </body>
 </html>
