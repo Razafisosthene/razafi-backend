@@ -1,4 +1,4 @@
-// RAZAFI Backend - 21th February 2026 Edition
+// RAZAFI Backend - March 2026 Edition
 // ---------------------------------------------------------------------------
 
 import express from "express";
@@ -6109,66 +6109,23 @@ app.post("/api/admin/voucher-bonus-overrides", requireAdmin, async (req, res) =>
     const add_seconds = Math.floor(add_minutes * 60);
     const add_bytes = unlimited_data ? 0 : Math.floor(add_mb * 1024 * 1024);
 
-    // read existing
-    const existing = await getVoucherBonusOverride({ voucher_session_id });
-    const bonus_seconds = Math.max(0, Math.floor(Number(existing.bonus_seconds || 0) + add_seconds));
+    // ✅ Atomic: DB transaction (RPC) does increment + expires_at update + audit event
+    const { data: rpcData, error: rpcErr } = await supabase.rpc("fn_add_voucher_bonus", {
+      p_voucher_session_id: voucher_session_id,
+      p_add_seconds: add_seconds,
+      p_add_bytes: add_bytes,
+      p_set_unlimited: unlimited_data === true,
+      p_clear_unlimited: disable_unlimited === true,
+      p_note: note,
+      p_updated_by: req.admin?.email || null,
+    });
 
-    let baseBytes = Number(existing.bonus_bytes ?? 0);
-    // Support sentinel -1 for unlimited data override
-    if (baseBytes === -1 && !unlimited_data) {
-      // if admin explicitly disables unlimited, reset to 0 before adding
-      if (disable_unlimited) baseBytes = 0;
-      // otherwise keep unlimited unless they add finite data (we still keep unlimited)
-    }
+    if (rpcErr) return res.status(500).json({ error: rpcErr.message });
 
-    const bonus_bytes = unlimited_data
-      ? -1
-      : Math.max(0, Math.floor((Number.isFinite(baseBytes) ? baseBytes : 0) + add_bytes));
+    // supabase.rpc may return an array for SETOF
+    const item = Array.isArray(rpcData) ? rpcData[0] : rpcData;
 
-    const row = {
-      voucher_session_id,
-      bonus_seconds,
-      bonus_bytes,
-      note,
-      updated_at: new Date().toISOString(),
-      updated_by: req.admin?.email || null,
-    };
-
-    const { data, error } = await supabase
-      .from("voucher_bonus_overrides")
-      .upsert(row, { onConflict: "voucher_session_id" })
-      .select("voucher_session_id,bonus_seconds,bonus_bytes,note,updated_at,updated_by")
-      .single();
-
-    if (error) return res.status(500).json({ error: error.message });
-
-    // If already started, extend expires_at now (best-effort)
-    // (Data bonus is applied at RADIUS authorize time as Mikrotik-Total-Limit; we do not assume voucher_sessions has a data_total_bytes column.)
-    try {
-      if (add_seconds > 0) {
-        const { data: vs } = await supabase
-          .from("voucher_sessions")
-          .select("id,expires_at")
-          .eq("id", voucher_session_id)
-          .maybeSingle();
-
-        if (vs?.expires_at) {
-          const now0 = new Date();
-          const nowMs0 = now0.getTime();
-          const oldExp = new Date(vs.expires_at);
-          const oldMs = oldExp.getTime();
-          if (!isNaN(oldMs)) {
-            const baseMs = Math.max(nowMs0, oldMs); // if already expired, grant from NOW
-            const newExp = new Date(baseMs + add_seconds * 1000).toISOString();
-            await supabase
-              .from("voucher_sessions")
-              .update({ expires_at: newExp, updated_at: now0.toISOString() })
-              .eq("id", voucher_session_id);
-          }
-        }      }
-    } catch (_) {}
-
-    return res.json({ ok: true, item: data });
+    return res.json({ ok: true, item });
   } catch (e) {
     return res.status(500).json({ error: String(e.message || e) });
   }

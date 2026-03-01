@@ -656,14 +656,12 @@ try {
   const msgId = `bonusMsg_${sessionId}`;
   const curId = `bonusCur_${sessionId}`;
 
-  // Load current bonus
+  // Load current bonus (read-only users can VIEW it; only saving is blocked)
   let curBonus = { bonus_seconds: 0, bonus_bytes: 0 };
-  if (!window.__IS_READONLY) {
   try {
-      const r = await fetchJSON("/api/admin/voucher-bonus-overrides?voucher_session_id=" + encodeURIComponent(sessionId));
-      curBonus = r?.item || curBonus;
-    } catch (_) {}
-}
+    const r = await fetchJSON("/api/admin/voucher-bonus-overrides?voucher_session_id=" + encodeURIComponent(sessionId));
+    curBonus = r?.item || curBonus;
+  } catch (_) {}
 
   const curSec = Number(curBonus.bonus_seconds || 0);
   const curBytes = Number(curBonus.bonus_bytes || 0);
@@ -733,6 +731,22 @@ try {
   const btn = document.getElementById(btnId);
   const msg = document.getElementById(msgId);
   const blockEl = document.getElementById(blockId);
+
+  // Read-only UX: allow viewing current bonus, but disable edits
+  if (window.__IS_READONLY) {
+    const dayEl = document.getElementById(dayId);
+    const hourEl = document.getElementById(hourId);
+    const minEl = document.getElementById(minId);
+    const gbEl0 = document.getElementById(gbId);
+    const unlEl0 = document.getElementById(unlId);
+    const noteEl = document.getElementById(noteId);
+
+    if (btn) { btn.disabled = true; btn.textContent = "Read-only"; }
+    for (const el of [dayEl, hourEl, minEl, gbEl0, unlEl0, noteEl]) {
+      if (el) el.disabled = true;
+    }
+  }
+
 
   // UX: if "Data illimité" is checked, disable the +Go input to avoid confusion.
   const gbEl = document.getElementById(gbId);
