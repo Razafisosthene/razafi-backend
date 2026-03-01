@@ -285,7 +285,7 @@ function renderTable(items) {
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
 
       <!-- ✅ status now is DB truth (view); just display it -->
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}</td>
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}${((it.has_bonus) || (toNum(it.bonus_seconds) > 0) || (toNum(it.bonus_bytes) !== 0)) ? ' <span title="Bonus disponible" style="font-size:12px; padding:2px 6px; border-radius:999px; border:1px solid rgba(13,110,253,.35); background:rgba(13,110,253,.08);">🎁 Bonus</span>' : ""}</td>
 
       <!-- ✅ remaining_seconds now is DB truth (view); display time remaining -->
 <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>

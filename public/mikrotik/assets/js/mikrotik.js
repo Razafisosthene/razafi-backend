@@ -825,6 +825,22 @@ try {
     const plan = j?.plan || {};
     const sess = j?.session || {};
     const ui = j?.ui || {};
+// Bonus (overlay only; status remains DB truth)
+const hasBonus =
+  (sess && (sess.has_bonus === true)) ||
+  (Number(sess?.bonus_seconds || 0) > 0) ||
+  (Number(sess?.bonus_bytes || 0) !== 0);
+
+// Bonus badges (optional elements in index.html)
+try {
+  const bMain = document.getElementById("bonusBadgeMain");
+  const bMini = document.getElementById("bonusBadgeMini");
+  const show = !!hasBonus && (status === "expired" || status === "used");
+  if (bMain) bMain.classList.toggle("hidden", !show);
+  if (bMini) bMini.classList.toggle("hidden", !show);
+} catch (_) {}
+
+
 
     const hasVoucher = status !== "none" && !!code;
 
@@ -838,16 +854,16 @@ try {
     if (hasMsg) {
       if (status === "pending") hasMsg.textContent = "⏳ Code en attente d’activation";
       else if (status === "active") hasMsg.textContent = "✅ Session active";
-      else if (status === "used") hasMsg.textContent = "⛔ Code utilisé";
-      else if (status === "expired") hasMsg.textContent = "⏰ Code expiré";
+      else if (status === "used") hasMsg.textContent = hasBonus ? "🎁 Bonus disponible (code utilisé)" : "⛔ Code utilisé";
+      else if (status === "expired") hasMsg.textContent = hasBonus ? "🎁 Bonus disponible (code expiré)" : "⏰ Code expiré";
       else hasMsg.textContent = "✅ Vérification…";
     }
 
     if (accessMsg) {
       if (status === "pending") accessMsg.textContent = "Votre code est prêt. Cliquez « Utiliser ce code » pour activer Internet.";
       else if (status === "active") accessMsg.textContent = "Accès Internet en cours. Si la connexion s’interrompt, cliquez « Utiliser ce code ».";
-      else if (status === "used") accessMsg.textContent = "Votre session WiFi est terminée. Achetez un nouveau code pour continuer.";
-      else if (status === "expired") accessMsg.textContent = "Votre code a expiré. Achetez un nouveau code pour continuer.";
+      else if (status === "used") accessMsg.textContent = hasBonus ? "✅ Vous avez un BONUS disponible. Cliquez « Utiliser ce code » pour réactiver Internet." : "Votre session WiFi est terminée. Achetez un nouveau code pour continuer.";
+      else if (status === "expired") accessMsg.textContent = hasBonus ? "✅ Vous avez un BONUS disponible. Cliquez « Utiliser ce code » pour réactiver Internet." : "Votre code a expiré. Achetez un nouveau code pour continuer.";
       else accessMsg.textContent = "Vérification de votre accès en cours…";
     }
 
@@ -1127,7 +1143,7 @@ function submitToLoginUrl(code, ev) {
 
   if (useBtn) {
 
-    useBtn.addEventListener("click", function (event) {
+    useBtn.addEventListener("click", async function (event) {
       if (!currentVoucherCode) {
         showToast("❌ Aucun code disponible pour le moment.", "error");
         return;
@@ -1136,29 +1152,34 @@ function submitToLoginUrl(code, ev) {
       try { useBtn.setAttribute("disabled", "disabled"); } catch (_) {}
       showToast("Connexion en cours…", "info");
 
-      // Fire-and-forget activation (don't await; keep user gesture for form submit)
-      try {
-        const payload = JSON.stringify({
-          voucher_code: currentVoucherCode,
-          client_mac: clientMac || null,
-          nas_id: nasId || null,
-          ap_mac: nasId ? null : (apMac || null),
-        });
+      // ✅ Activation/Reactivate on backend BEFORE submitting login (best-effort)
+// We try to await a fast response so RADIUS sees the updated state.
+try {
+  const payload = {
+    voucher_code: currentVoucherCode,
+    client_mac: clientMac || null,
+    nas_id: nasId || null,
+    ap_mac: nasId ? null : (apMac || null),
+  };
 
-        if (navigator && typeof navigator.sendBeacon === "function") {
-          const blob = new Blob([payload], { type: "application/json" });
-          navigator.sendBeacon(apiUrl("/api/voucher/activate"), blob);
-        } else {
-          fetch(apiUrl("/api/voucher/activate"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: payload,
-            keepalive: true,
-          }).catch(() => {});
-        }
-      } catch (e) {
-        console.warn("[RAZAFI] voucher activate fire-and-forget failed:", e?.message || e);
-      }
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), 1200);
+
+  try {
+    await fetch(apiUrl("/api/voucher/activate"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      credentials: "omit",
+      signal: controller.signal,
+      cache: "no-store",
+    }).catch(() => {});
+  } finally {
+    clearTimeout(t);
+  }
+} catch (e) {
+  console.warn("[RAZAFI] voucher activate failed (best-effort):", e?.message || e);
+}
 
       // ✅ OFFICIAL — POST login to MikroTik /login (triggers RADIUS)
       submitToLoginUrl(currentVoucherCode, event);

@@ -1512,6 +1512,43 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       console.error("ADMIN CLIENTS: MikroTik AP fallback failed:", e?.message || e);
     }
 
+// ------------------------------
+// Bonus overlay (does NOT change status)
+// ------------------------------
+try {
+  const ids = Array.from(new Set((items || []).map(x => x?.id).filter(Boolean)));
+  if (ids.length) {
+    const { data: bRows, error: bErr } = await supabase
+      .from("voucher_bonus_overrides")
+      .select("voucher_session_id,bonus_seconds,bonus_bytes")
+      .in("voucher_session_id", ids);
+
+    if (!bErr && Array.isArray(bRows)) {
+      const bMap = {};
+      for (const b of bRows) {
+        const k = String(b.voucher_session_id || "").trim();
+        if (!k) continue;
+        bMap[k] = {
+          bonus_seconds: Number(b.bonus_seconds || 0) || 0,
+          bonus_bytes: Number(b.bonus_bytes || 0) || 0,
+        };
+      }
+      for (const it of items) {
+        const b = bMap[String(it.id)];
+        const bs = Number(b?.bonus_seconds || 0) || 0;
+        const bb = Number(b?.bonus_bytes || 0) || 0;
+        it.bonus_seconds = bs;
+        it.bonus_bytes = bb;
+        it.has_bonus = (bs > 0) || (bb !== 0);
+      }
+    } else {
+      for (const it of items) { it.bonus_seconds = 0; it.bonus_bytes = 0; it.has_bonus = false; }
+    }
+  }
+} catch (e) {
+  for (const it of items || []) { it.bonus_seconds = 0; it.bonus_bytes = 0; it.has_bonus = false; }
+}
+
 // ✅ Summary based on DB truth_status
     const total = count || 0;
     const active = items.filter(i => i.truth_status === "active").length;
@@ -2469,78 +2506,52 @@ app.get("/api/portal/status", async (req, res) => {
       req.query.client_mac || req.query.clientMac || req.query.clientMAC || ""
     );
 
-    const voucher_code_raw = req.query.voucher_code || req.query.voucherCode || req.query.code || "";
+    const voucher_code_raw = req.query.voucher_code || req.query.voucherCode || "";
     const voucher_code = String(voucher_code_raw || "").trim() || null;
 
-    if (!client_mac && !voucher_code) {
-      return res.status(400).json({ ok: false, error: "client_mac_or_voucher_code_required" });
+    // System 3 identity: NAS only (vouchers are network-wide). We accept nas_id for logging only.
+    const nas_id = String(req.query.nas_id || req.query.nasId || req.query.nas || "").trim() || null;
+
+    if (!client_mac) {
+      return res.status(400).json({ ok: false, error: "client_mac_required" });
     }
 
-    const now = new Date();
-
-    // ------------------------------
-    // Support phone (by pool) — System 3
-    // - If pool has contact_phone => use it
-    // - Else fallback to DEFAULT_SUPPORT_PHONE
-    // ------------------------------
-    let supportPhone = DEFAULT_SUPPORT_PHONE;
-    try {
-      const nas_id = String(req.query.nas_id || req.query.nasId || "").trim();
-      if (nas_id) {
-        const { data: poolRow, error: poolPhoneErr } = await supabase
-          .from("internet_pools")
-          .select("contact_phone")
-          .eq("radius_nas_id", nas_id)
-          .maybeSingle();
-        if (!poolPhoneErr && poolRow && poolRow.contact_phone && String(poolRow.contact_phone).trim()) {
-          supportPhone = String(poolRow.contact_phone).trim();
-        }
-      }
-    } catch (_) {
-      // fail-safe: keep default
-    }
-
-    const selectCols = [
-      "id",
-      "voucher_code",
-      "truth_status",
-      "plan_id",
-      "client_mac",
-      "created_at",
-      "activated_at",
-      "expires_at",
-      "data_total_bytes",
-      "data_total_human",
-      "data_used_bytes",
-      "data_used_human",
-      "data_remaining_bytes",
-      "data_remaining_human"
-    ].join(",");
-
+    // 1) Load the latest session for this client (optionally filtered by voucher_code if provided)
+    // Truth is computed in DB view (single source of truth).
     let q = supabase
       .from("vw_voucher_sessions_truth")
-      .select(selectCols);
+      .select("*")
+      .eq("client_mac", client_mac)
+      .order("created_at", { ascending: false })
+      .limit(1);
 
-    if (client_mac) q = q.eq("client_mac", client_mac);
-    else q = q.eq("voucher_code", voucher_code);
+    if (voucher_code) q = q.eq("voucher_code", voucher_code);
 
-    // Business rule: 1 voucher per client. Still order for safety.
-    const { data: rows, error: vErr } = await q.order("created_at", { ascending: false }).limit(1);
-
-    if (vErr) {
-      console.error("PORTAL STATUS query error (truth view)", vErr);
-      return res.status(500).json({ ok: false, error: "db_error" });
-    }
+    const { data: rows, error: err } = await q;
+    if (err) throw err;
 
     const row = (rows && rows[0]) ? rows[0] : null;
 
+    // If no session found, return none
     if (!row) {
+      // support phone: pool contact -> fallback
+      let supportPhone = DEFAULT_SUPPORT_PHONE;
+      try {
+        const { data: poolRow } = await supabase
+          .from("internet_pools")
+          .select("contact_phone")
+          .eq("id", req.query.pool_id || "")
+          .maybeSingle();
+        if (poolRow?.contact_phone) supportPhone = String(poolRow.contact_phone);
+      } catch (_) {}
+
       return res.json({
         ok: true,
         status: "none",
+        raw_status: "none",
         voucher_code: "",
-        plan: {},
-        session: {},
+        plan: null,
+        session: null,
         purchase_lock: false,
         can_use: false,
         contact_phone: supportPhone,
@@ -2551,83 +2562,55 @@ app.get("/api/portal/status", async (req, res) => {
       });
     }
 
-    const status = String(row.truth_status || "none").toLowerCase();
+    // Truth status from DB (do NOT override in server)
+    const status = String(row.status || row.truth_status || "none").toLowerCase();
 
-    // ------------------------------
-    // BONUS-AWARE effective status (System 3)
-    // If a voucher is expired/used BUT admin granted a bonus, the portal should allow "Utiliser ce code".
-    // We do NOT change the stored truth_status here; we only adjust the portal response.
-    // Actual time extension / data increase is enforced during /api/radius/authorize.
-    // ------------------------------
-    let bonus = { bonus_seconds: 0, bonus_bytes: 0, note: null, updated_at: null, updated_by: null };
-    let effective_status = status;
-    try {
-      // Try to resolve voucher_session_id from the truth view row; fallback to voucher_sessions lookup.
-      let voucherSessionId = row.id || null;
-      if (!voucherSessionId && row.voucher_code) {
-        const { data: sRow } = await supabase
-          .from("voucher_sessions")
-          .select("id")
-          .eq("voucher_code", String(row.voucher_code).trim())
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        voucherSessionId = sRow?.id || null;
-      }
-
-      if (voucherSessionId) {
-        bonus = await getVoucherBonusOverride({ voucher_session_id: voucherSessionId });
-      }
-
-      const bonusSeconds = Math.max(0, Math.floor(Number(bonus?.bonus_seconds || 0) || 0));
-      const bonusBytesRaw = Number(bonus?.bonus_bytes ?? 0);
-      const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusBytesRaw || 0));
-
-      const nowMs2 = now.getTime();
-      let expMs2 = null;
-      try { expMs2 = row.expires_at ? new Date(row.expires_at).getTime() : null; } catch (_) { expMs2 = null; }
-      const isTimeExpired2 = Number.isFinite(expMs2) && expMs2 <= nowMs2;
-
-      const hasTimeBonus = bonusSeconds > 0;
-      const hasDataBonus = (bonusBytes === -1 || bonusBytes > 0);
-
-      // Only override when the voucher is not normally usable
-      if (status !== "pending" && status !== "active") {
-        if (isTimeExpired2 && hasTimeBonus) {
-          effective_status = "pending";
-        } else if (!isTimeExpired2 && hasDataBonus) {
-          effective_status = "pending";
-        }
-      }
-    } catch (_) {
-      // fail-open: keep original status
-      effective_status = status;
-    }
-
+    // 2) Load plan info
     const plan_id = row.plan_id || null;
-
-    // Enrich plan (name, duration, max devices, data limit)
     let planRow = null;
     if (plan_id) {
-      const { data: p, error: pErr } = await supabase
+      const { data: p, error: perr } = await supabase
         .from("plans")
-        .select("id,name,duration_minutes,duration_hours,data_mb,max_devices,price_ar,pool_id")
+        .select("id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices")
         .eq("id", plan_id)
         .maybeSingle();
-
-      if (pErr) {
-        console.error("PORTAL STATUS plan lookup error", pErr);
-        return res.status(500).json({ ok: false, error: "db_error" });
-      }
-      planRow = p || null;
+      if (!perr) planRow = p || null;
     }
 
-    // Unlimited heuristic (System 3): data_mb NULL (or <=0) means unlimited
-    const planDataMb = (planRow && planRow.data_mb !== undefined) ? planRow.data_mb : undefined;
+    // 3) Load pool support phone (best-effort)
+    let supportPhone = DEFAULT_SUPPORT_PHONE;
+    try {
+      const pid = row.pool_id || null;
+      if (pid) {
+        const { data: poolRow } = await supabase
+          .from("internet_pools")
+          .select("contact_phone")
+          .eq("id", pid)
+          .maybeSingle();
+        if (poolRow?.contact_phone) supportPhone = String(poolRow.contact_phone);
+      }
+    } catch (_) {}
 
-    const unlimited = planRow
-      ? (planDataMb === null || planDataMb === undefined || Number(planDataMb) <= 0)
-      : (row.data_total_bytes === null || row.data_total_bytes === undefined || Number(row.data_total_bytes) <= 0);
+    // 4) Bonus overlay (does NOT change truth status)
+    let bonus = { bonus_seconds: 0, bonus_bytes: 0, note: null, updated_at: null, updated_by: null };
+    try {
+      const { data: bRow } = await supabase
+        .from("voucher_bonus_overrides")
+        .select("bonus_seconds,bonus_bytes,note,updated_at,updated_by")
+        .eq("voucher_session_id", row.id)
+        .maybeSingle();
+      if (bRow) {
+        bonus = {
+          bonus_seconds: Number(bRow.bonus_seconds || 0) || 0,
+          bonus_bytes: Number(bRow.bonus_bytes || 0) || 0,
+          note: bRow.note || null,
+          updated_at: bRow.updated_at || null,
+          updated_by: bRow.updated_by || null,
+        };
+      }
+    } catch (_) {}
+
+    const has_bonus = (Number(bonus.bonus_seconds || 0) > 0) || (Number(bonus.bonus_bytes || 0) !== 0);
 
     // Duration minutes (support duration_hours fallback)
     const durMin =
@@ -2635,37 +2618,40 @@ app.get("/api/portal/status", async (req, res) => {
         ? Number(planRow.duration_minutes)
         : (planRow && planRow.duration_hours != null ? Number(planRow.duration_hours) * 60 : null);
 
+    const unlimited = (planRow && planRow.data_mb == null);
+
     const planDataTotalHuman = row.data_total_human || (
       (planRow && planRow.data_mb != null && Number(planRow.data_mb) > 0)
         ? `${Number(planRow.data_mb)} MB`
         : null
     );
 
-    // UI rules
-    const purchase_lock = effective_status === "pending" || effective_status === "active";
-    const can_use = purchase_lock; // your rule: show for pending + active
+    // UI rules (truth-based)
+    const purchase_lock = status === "pending" || status === "active";
+    const can_use = (status === "pending" || status === "active") || (has_bonus && (status === "expired" || status === "used"));
 
+    // Toast copy for "plan click" (UX only; still blocks purchases when needed)
     let toast_on_plan_click = "";
-    if (effective_status === "pending" && status !== "pending" && status !== "active") {
+    if (purchase_lock) {
+      if (status === "pending") {
+        toast_on_plan_click = "⚠️ Achat désactivé : vous avez déjà un code en attente. Activez-le d’abord avec « Utiliser ce code ».";
+      } else if (status === "active") {
+        toast_on_plan_click = "⚠️ Achat désactivé : vous avez déjà une session active. Utilisez « Utiliser ce code » si la connexion s’est interrompue.";
+      }
+    } else if (has_bonus && (status === "expired" || status === "used")) {
       toast_on_plan_click = "✅ Vous avez un BONUS disponible. Cliquez « Utiliser ce code » pour vous reconnecter.";
-    } else if (effective_status === "pending") {
-      toast_on_plan_click = "⚠️ Achat désactivé : vous avez déjà un code en attente. Activez-le d’abord avec « Utiliser ce code ».";
-    } else if (effective_status === "active") {
-      toast_on_plan_click = "⚠️ Achat désactivé : vous avez déjà une session active. Utilisez « Utiliser ce code » si la connexion s’est interrompue.";
     }
 
-    // Badge spec
-let badge = { tone: effective_status, label: "", icon: "" };
-
-if (effective_status === "pending") badge = { tone: "pending", label: "EN ATTENTE", icon: "⏳" };
-else if (effective_status === "active") badge = { tone: "active", label: "ACTIF", icon: "🔓" };
-else if (effective_status === "used") badge = { tone: "used", label: "UTILISÉ", icon: "⛔" };
-else if (effective_status === "expired") badge = { tone: "expired", label: "EXPIRÉ", icon: "⏰" };
-else badge = { tone: "none", label: "AUCUN CODE", icon: "ℹ️" };
+    // Badge spec (truth-based)
+    let badge = { tone: "none", label: "AUCUN CODE", icon: "ℹ️" };
+    if (status === "pending") badge = { tone: "pending", label: "EN ATTENTE", icon: "⏳" };
+    else if (status === "active") badge = { tone: "active", label: "ACTIF", icon: "🔓" };
+    else if (status === "used") badge = { tone: "used", label: "UTILISÉ", icon: "⛔" };
+    else if (status === "expired") badge = { tone: "expired", label: "EXPIRÉ", icon: "⏰" };
 
     return res.json({
       ok: true,
-      status: effective_status,
+      status,
       raw_status: status,
       voucher_code: String(row.voucher_code || "").trim(),
       plan: {
@@ -2679,13 +2665,15 @@ else badge = { tone: "none", label: "AUCUN CODE", icon: "ℹ️" };
       session: {
         created_at: row.created_at || null,
         activated_at: row.activated_at || null,
+        started_at: row.started_at || null,
         expires_at: row.expires_at || null,
+        remaining_seconds: row.remaining_seconds ?? null,
         data_used_human: row.data_used_human || null,
         data_remaining_human: row.data_remaining_human || null,
-        // best-effort (front will default to 1 when active)
         devices_used: null,
-        bonus_seconds: Number(bonus?.bonus_seconds || 0) || 0,
-        bonus_bytes: Number(bonus?.bonus_bytes || 0) || 0
+        has_bonus,
+        bonus_seconds: Number(bonus.bonus_seconds || 0) || 0,
+        bonus_bytes: Number(bonus.bonus_bytes || 0) || 0
       },
       purchase_lock,
       can_use,
@@ -4922,6 +4910,8 @@ app.post("/api/voucher/activate", async (req, res) => {
     const voucher_code = String(body.voucher_code || body.voucherCode || "").trim();
     const client_mac_raw = body.client_mac || body.clientMac || body.clientMAC || "";
     const ap_mac_raw = body.ap_mac || body.apMac || "";
+    const nas_id = String(body.nas_id || body.nasId || body.nas || "").trim() || null;
+
     const client_mac = normalizeMacColon(client_mac_raw) || String(client_mac_raw || "").trim() || null;
     const ap_mac = normalizeMacColon(ap_mac_raw) || String(ap_mac_raw || "").trim() || null;
 
@@ -4929,7 +4919,7 @@ app.post("/api/voucher/activate", async (req, res) => {
       return res.status(400).json({ error: "voucher_code and client_mac are required" });
     }
 
-    // Load session + plan
+    // Load session (base row) + plan
     const { data: session, error: sErr } = await supabase
       .from("voucher_sessions")
       .select("id,voucher_code,plan_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)")
@@ -4945,11 +4935,26 @@ app.post("/api/voucher/activate", async (req, res) => {
       return res.status(403).json({ error: "voucher_blocked", message: "Ce code a été bloqué." });
     }
 
+    // Truth status from DB view (single source of truth)
+    let truth_status = null;
+    try {
+      const { data: tRow } = await supabase
+        .from("vw_voucher_sessions_truth")
+        .select("status,truth_status,expires_at")
+        .eq("id", session.id)
+        .maybeSingle();
+      truth_status = String(tRow?.status || tRow?.truth_status || session.status || "").toLowerCase() || null;
+      // prefer view expires_at if present
+      if (tRow?.expires_at) session.expires_at = tRow.expires_at;
+    } catch (_) {
+      truth_status = String(session.status || "").toLowerCase() || null;
+    }
+
     const now = new Date();
     const nowIso = now.toISOString();
 
-    // If already active: check expiry
-    if (session.status === "active") {
+    // If already active: ok (best-effort expiry check)
+    if (truth_status === "active" || session.status === "active") {
       if (session.expires_at && String(session.expires_at) <= nowIso) {
         // Best-effort mark as expired (fail-open)
         try {
@@ -4967,62 +4972,141 @@ app.post("/api/voucher/activate", async (req, res) => {
       });
     }
 
-    // Pending -> activate now
+    // Helper: compute plan duration minutes
     const durationMinutes = Number(session?.plans?.duration_minutes ?? NaN);
-    const minutes = Number.isFinite(durationMinutes) && durationMinutes > 0
+    const planMinutes = Number.isFinite(durationMinutes) && durationMinutes > 0
       ? durationMinutes
       : (Number(session?.plans?.duration_hours ?? 0) > 0 ? Number(session.plans.duration_hours) * 60 : 0);
 
-    if (!minutes || minutes <= 0) {
-      return res.status(500).json({ error: "invalid_plan_duration", message: "Durée du plan invalide." });
+    // Pending -> arm voucher (Model B: timer starts on first successful RADIUS accept)
+    if (truth_status === "pending" || session.status === "pending") {
+      if (!planMinutes || planMinutes <= 0) {
+        return res.status(500).json({ error: "invalid_plan_duration", message: "Durée du plan invalide." });
+      }
+
+      const updatePayload = {
+        status: "active",
+        activated_at: nowIso,
+        started_at: null,
+        expires_at: null,
+        updated_at: nowIso,
+      };
+
+      if (ap_mac && !session.ap_mac) updatePayload.ap_mac = ap_mac;
+
+      const { data: updated, error: upErr } = await supabase
+        .from("voucher_sessions")
+        .update(updatePayload)
+        .eq("id", session.id)
+        .eq("status", "pending")
+        .select("activated_at,expires_at,status,ap_mac")
+        .maybeSingle();
+
+      if (upErr) {
+        const { data: reread } = await supabase
+          .from("voucher_sessions")
+          .select("status,activated_at,expires_at")
+          .eq("id", session.id)
+          .maybeSingle();
+        if (reread?.status === "active") {
+          return res.json({
+            ok: true,
+            already_active: true,
+            activated_at: reread.activated_at || null,
+            expires_at: reread.expires_at || null,
+          });
+        }
+        return res.status(409).json({ error: "voucher_already_activated" });
+      }
+
+      return res.json({
+        ok: true,
+        activated: true,
+        reactivated_with_bonus: false,
+        activated_at: updated?.activated_at || updatePayload.activated_at,
+        expires_at: updated?.expires_at || updatePayload.expires_at,
+      });
     }
 
-    
-    const updatePayload = {
-      // Arm the voucher (user clicked "Utiliser ce code")
-      // Timer will start on the FIRST successful RADIUS Access-Accept
-      status: "active",
-      activated_at: nowIso,
-      started_at: null,
-      expires_at: null,
-      updated_at: nowIso,
-    };
-
-    // Keep the first AP that activated it (optional)
-    if (ap_mac && !session.ap_mac) updatePayload.ap_mac = ap_mac;
-
-    const { data: updated, error: upErr } = await supabase
-      .from("voucher_sessions")
-      .update(updatePayload)
-      .eq("id", session.id)
-      .eq("status", "pending")
-      .select("activated_at,expires_at,status,ap_mac")
-      .maybeSingle();
-
-    if (upErr) {
-      // race: someone activated in parallel -> re-read and return ok if active
-      const { data: reread } = await supabase
-        .from("voucher_sessions")
-        .select("status,activated_at,expires_at")
-        .eq("id", session.id)
+    // Expired/Used -> allow REACTIVATION only if a bonus exists.
+    if (truth_status === "expired" || truth_status === "used" || session.status === "expired" || session.status === "used") {
+      // Load bonus totals (seconds/bytes). Bonus is a one-shot "reactivation credit".
+      const { data: bRow, error: bErr } = await supabase
+        .from("voucher_bonus_overrides")
+        .select("bonus_seconds,bonus_bytes")
+        .eq("voucher_session_id", session.id)
         .maybeSingle();
-      if (reread?.status === "active") {
-        return res.json({
-          ok: true,
-          already_active: true,
-          activated_at: reread.activated_at || null,
-          expires_at: reread.expires_at || null,
+
+      if (bErr) {
+        console.error("BONUS LOAD ERROR", bErr);
+      }
+
+      const bonusSeconds = Number(bRow?.bonus_seconds || 0) || 0;
+      const bonusBytes = Number(bRow?.bonus_bytes || 0) || 0;
+      const hasBonus = (bonusSeconds > 0) || (bonusBytes !== 0);
+
+      if (!hasBonus) {
+        return res.status(403).json({ error: "voucher_not_usable", message: "Ce code est terminé. Aucun bonus disponible." });
+      }
+
+      // Time logic:
+      // - If time is already valid (expires_at in the future), data-only bonus can reactivate.
+      // - If time is expired (or missing) and we have time bonus => extend from NOW.
+      // - If time is expired and there is no time bonus => cannot reactivate with data-only.
+      const expIso = session.expires_at ? String(session.expires_at) : "";
+      const expOk = expIso && expIso > nowIso;
+
+      let newExpiresAt = null;
+      if (bonusSeconds > 0) {
+        newExpiresAt = new Date(now.getTime() + (bonusSeconds * 1000)).toISOString();
+      } else if (!expOk) {
+        return res.status(400).json({
+          error: "need_time_bonus",
+          message: "Bonus data seul insuffisant: ce code est expiré. Ajoutez un bonus temps pour réactiver."
         });
       }
-      return res.status(409).json({ error: "voucher_already_activated" });
+
+      // Apply reactivation:
+      // - start immediately (so truth becomes 'active' before RADIUS authorize)
+      // - set expires_at only if we computed one (time bonus)
+      const upd = {
+        status: "active",
+        activated_at: session.activated_at || nowIso,
+        started_at: nowIso,
+        updated_at: nowIso,
+      };
+      if (newExpiresAt) upd.expires_at = newExpiresAt;
+
+      if (ap_mac && !session.ap_mac) upd.ap_mac = ap_mac;
+
+      const { error: uErr } = await supabase
+        .from("voucher_sessions")
+        .update(upd)
+        .eq("id", session.id);
+
+      if (uErr) {
+        console.error("REACTIVATE UPDATE ERROR", uErr);
+        // Fail-open: still allow login attempt
+      } else {
+        // Consume the bonus totals so it doesn't reapply indefinitely (best-effort).
+        try {
+          await supabase
+            .from("voucher_bonus_overrides")
+            .update({ bonus_seconds: 0, bonus_bytes: 0, updated_at: nowIso, updated_by: "portal_reactivate" })
+            .eq("voucher_session_id", session.id);
+        } catch (_) {}
+      }
+
+      return res.json({
+        ok: true,
+        reactivated_with_bonus: true,
+        activated_at: upd.started_at,
+        expires_at: upd.expires_at || session.expires_at || null,
+      });
     }
 
-    return res.json({
-      ok: true,
-      activated: true,
-      activated_at: updated?.activated_at || updatePayload.activated_at,
-      expires_at: updated?.expires_at || updatePayload.expires_at,
-    });
+    // Other statuses: forbidden
+    return res.status(403).json({ error: "voucher_not_usable", message: "Ce code n’est pas utilisable." });
 
   } catch (e) {
     console.error("/api/voucher/activate error:", e?.message || e);
@@ -6185,6 +6269,29 @@ app.post("/api/admin/voucher-bonus-overrides", requireAdmin, async (req, res) =>
     const body = req.body || {};
     const voucher_session_id = String(body.voucher_session_id || "").trim();
     if (!voucher_session_id) return res.status(400).json({ error: "voucher_session_id is required" });
+// Bonus policy (System 3): allow bonus ONLY when voucher is expired or used (never pending/active)
+try {
+  const { data: tRow, error: tErr } = await supabase
+    .from("vw_voucher_sessions_truth")
+    .select("status,truth_status")
+    .eq("id", voucher_session_id)
+    .maybeSingle();
+
+  if (tErr) throw tErr;
+
+  const st = String(tRow?.status || tRow?.truth_status || "").toLowerCase();
+  if (st === "pending" || st === "active") {
+    return res.status(400).json({ error: "bonus_only_for_expired_or_used" });
+  }
+  if (st !== "expired" && st !== "used") {
+    // Unknown / none -> block to be safe
+    return res.status(400).json({ error: "invalid_voucher_status_for_bonus" });
+  }
+} catch (e) {
+  console.error("BONUS STATUS CHECK ERROR", e?.message || e);
+  return res.status(500).json({ error: "status_check_failed" });
+}
+
 
     const add_minutes = Number(body.add_minutes ?? 0);
     const add_mb = Number(body.add_mb ?? 0);
