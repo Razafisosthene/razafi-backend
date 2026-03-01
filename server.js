@@ -5365,20 +5365,25 @@ if (!isUsableStatus) {
     }
   }
 
-  // Time bonus: ONLY extend expires_at when the session is time-expired.
-  if (hasTimeBonus && isTimeExpired && session.started_at) {
-    try {
-      const baseMs = nowMs; // expired => extend from NOW
-      const newExpIso = new Date(baseMs + (bonusSeconds * 1000)).toISOString();
+// Time bonus (Option B): apply bonus only at authorize time, then consume it
+if (hasTimeBonus && isTimeExpired && session.started_at) {
+  try {
+    const { data: d, error: e } = await supabase.rpc(
+      "fn_apply_time_bonus_on_authorize",
+      {
+        p_voucher_session_id: session.id,
+        p_updated_by: "system_authorize",
+      }
+    );
 
-      await supabase
-        .from("voucher_sessions")
-        .update({ expires_at: newExpIso, updated_at: now.toISOString() })
-        .eq("id", session.id);
-
-      session.expires_at = newExpIso;
-    } catch (_) {}
-  }
+    if (!e) {
+      const row = Array.isArray(d) ? d[0] : d;
+      if (row?.new_expires_at) {
+        session.expires_at = row.new_expires_at;
+      }
+    }
+  } catch (_) {}
+}
 
   // Data bonus: enforced later via effectiveTotalBytes + usedBytes check.
   // Continue as if active.
