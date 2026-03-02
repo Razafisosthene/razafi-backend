@@ -28,6 +28,56 @@ function generateSessionToken() {
   return crypto.randomBytes(32).toString("hex");
 }
 
+
+
+// helper: format bonus line for USER UX (compact)
+// returns string like "Bonus: +1h · +2GB" or "" if no bonus
+function formatBonusCompactLine(bonus_seconds, bonus_bytes) {
+  try {
+    const sec = Number(bonus_seconds || 0) || 0;
+    const b = Number(bonus_bytes || 0) || 0;
+
+    const parts = [];
+
+    if (sec > 0) {
+      const m = Math.floor(sec / 60);
+      const days = Math.floor(m / (24 * 60));
+      const remDay = m % (24 * 60);
+      const hours = Math.floor(remDay / 60);
+      const mins = remDay % 60;
+
+      let t = "";
+      if (days > 0) t += days + "j";
+      if (hours > 0) t += (t ? " " : "") + hours + "h";
+      if (mins > 0 || (!days && !hours)) t += (t ? " " : "") + mins + "min";
+      parts.push("+" + t);
+    }
+
+    if (b !== 0) {
+      if (b === -1) {
+        parts.push("+∞");
+      } else if (b > 0) {
+        const gb = b / (1024 ** 3);
+        if (gb >= 1) {
+          const v = Math.round(gb * 10) / 10;
+          parts.push("+" + (v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)) + "GB");
+        } else {
+          const mb = b / (1024 ** 2);
+          const v = Math.round(mb);
+          parts.push("+" + v + "MB");
+        }
+      } else {
+        // negative but not -1: treat as unknown
+        parts.push("+bonus");
+      }
+    }
+
+    if (!parts.length) return "";
+    return "Bonus: " + parts.join(" · ");
+  } catch (_) {
+    return "";
+  }
+}
 // ===============================
 // ADMIN AUTH — SETTINGS (A1 hardening)
 // ===============================
@@ -2673,7 +2723,8 @@ app.get("/api/portal/status", async (req, res) => {
         devices_used: null,
         has_bonus,
         bonus_seconds: Number(bonus.bonus_seconds || 0) || 0,
-        bonus_bytes: Number(bonus.bonus_bytes || 0) || 0
+        bonus_bytes: Number(bonus.bonus_bytes || 0) || 0,
+        bonus_compact: formatBonusCompactLine(Number(bonus.bonus_seconds || 0) || 0, Number(bonus.bonus_bytes || 0) || 0)
       },
       purchase_lock,
       can_use,

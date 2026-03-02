@@ -849,6 +849,86 @@ try {
     const bonusBytes = Number(sess?.bonus_bytes || 0);
     const hasTimeBonus = bonusSeconds > 0;
     const hasDataBonus = bonusBytes !== 0;
+
+
+    // Compact bonus line for USER (e.g., "Bonus: +1h · +2GB")
+    function buildBonusCompactLine(sec, bytes) {
+      try {
+        const s = Number(sec || 0) || 0;
+        const b = Number(bytes || 0) || 0;
+        const parts = [];
+
+        if (s > 0) {
+          const m = Math.floor(s / 60);
+          const days = Math.floor(m / (24 * 60));
+          const remDay = m % (24 * 60);
+          const hours = Math.floor(remDay / 60);
+          const mins = remDay % 60;
+
+          let t = "";
+          if (days > 0) t += days + "j";
+          if (hours > 0) t += (t ? " " : "") + hours + "h";
+          if (mins > 0 || (!days && !hours)) t += (t ? " " : "") + mins + "min";
+          parts.push("+" + t);
+        }
+
+        if (b !== 0) {
+          if (b === -1) {
+            parts.push("+∞");
+          } else if (b > 0) {
+            const gb = b / (1024 ** 3);
+            if (gb >= 1) {
+              const v = Math.round(gb * 10) / 10;
+              parts.push("+" + (v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)) + "GB");
+            } else {
+              const mb = b / (1024 ** 2);
+              const v = Math.round(mb);
+              parts.push("+" + v + "MB");
+            }
+          } else {
+            parts.push("+bonus");
+          }
+        }
+
+        if (!parts.length) return "";
+        return "Bonus: " + parts.join(" · ");
+      } catch (_) {
+        return "";
+      }
+    }
+
+    const bonusCompact =
+      (sess && typeof sess.bonus_compact === "string" && sess.bonus_compact.trim())
+        ? String(sess.bonus_compact).trim()
+        : buildBonusCompactLine(bonusSeconds, bonusBytes);
+
+    // Ensure a dedicated bonus line exists under the main message (premium UX)
+    function setBonusLine(text) {
+      try {
+        const wrap = document.getElementById("voucherHas") || document.querySelector(".status-card") || document.body;
+        let el = document.getElementById("bonusLine");
+        if (!el) {
+          el = document.createElement("div");
+          el.id = "bonusLine";
+          el.className = "small";
+          el.style.marginTop = "6px";
+          // Prefer inserting right after the access message when possible
+          if (accessMsg && accessMsg.parentElement) {
+            accessMsg.insertAdjacentElement("afterend", el);
+          } else if (wrap) {
+            wrap.appendChild(el);
+          }
+        }
+        if (text) {
+          el.style.display = "";
+          el.textContent = text;
+        } else {
+          el.style.display = "none";
+          el.textContent = "";
+        }
+      } catch (_) {}
+    }
+
     const showBonusChip = !!hasBonus && (status === "expired" || status === "used");
 
     if (hasMsg) {
@@ -888,6 +968,9 @@ try {
         accessMsg.textContent = "Vérification de votre accès en cours…";
       }
     }
+
+    // Bonus line (compact)
+    setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
 
     // Plan details
     setText(planNameEl, plan.name || plan.plan_name || "");
