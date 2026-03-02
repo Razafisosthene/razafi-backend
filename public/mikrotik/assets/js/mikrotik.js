@@ -303,17 +303,6 @@
       <div class="small" style="margin-top:4px;">Plan: ${plan} · Durée: ${dur} · Appareils: ${dev}</div>
       ${ctaLine}
     `;
-  
-  // --- RAZAFI PATCH: always enable "Utiliser ce code" when we have a code ---
-  try {
-    const btn = $("useVoucherBtn") || document.getElementById("useVoucherBtn");
-    if (btn) {
-      btn.disabled = false;
-      btn.removeAttribute("aria-disabled");
-      btn.style.pointerEvents = "auto";
-      btn.style.opacity = "";
-    }
-  } catch (e) {}
 
 }
 
@@ -851,20 +840,53 @@ try {
     const accessMsg = document.getElementById("accessMsg");
     const hasMsg = document.getElementById("hasVoucherMsg");
 
+    
+    // Determine if voucher is actually usable (server is the source of truth)
+    const canUse = !!j?.can_use && !!code;
+
+    // Bonus hints (do not override truth status; used only for UX messaging)
+    const bonusSeconds = Number(sess?.bonus_seconds || 0);
+    const bonusBytes = Number(sess?.bonus_bytes || 0);
+    const hasTimeBonus = bonusSeconds > 0;
+    const hasDataBonus = bonusBytes !== 0;
+    const showBonusChip = !!hasBonus && (status === "expired" || status === "used");
+
     if (hasMsg) {
       if (status === "pending") hasMsg.textContent = "⏳ Code en attente d’activation";
       else if (status === "active") hasMsg.textContent = "✅ Session active";
-      else if (status === "used") hasMsg.textContent = hasBonus ? "🎁 Bonus disponible (code utilisé)" : "⛔ Code utilisé";
-      else if (status === "expired") hasMsg.textContent = hasBonus ? "🎁 Bonus disponible (code expiré)" : "⏰ Code expiré";
+      else if ((status === "used" || status === "expired") && showBonusChip && canUse) hasMsg.textContent = "🎁 Bonus disponible";
+      else if ((status === "used" || status === "expired") && showBonusChip && !canUse) hasMsg.textContent = "⚠️ Bonus détecté";
+      else if (status === "used") hasMsg.textContent = "⛔ Code utilisé";
+      else if (status === "expired") hasMsg.textContent = "⏰ Code expiré";
       else hasMsg.textContent = "✅ Vérification…";
     }
 
     if (accessMsg) {
-      if (status === "pending") accessMsg.textContent = "Votre code est prêt. Cliquez « Utiliser ce code » pour activer Internet.";
-      else if (status === "active") accessMsg.textContent = "Accès Internet en cours. Si la connexion s’interrompt, cliquez « Utiliser ce code ».";
-      else if (status === "used") accessMsg.textContent = hasBonus ? "✅ Vous avez un BONUS disponible. Cliquez « Utiliser ce code » pour réactiver Internet." : "Votre session WiFi est terminée. Achetez un nouveau code pour continuer.";
-      else if (status === "expired") accessMsg.textContent = hasBonus ? "✅ Vous avez un BONUS disponible. Cliquez « Utiliser ce code » pour réactiver Internet." : "Votre code a expiré. Achetez un nouveau code pour continuer.";
-      else accessMsg.textContent = "Vérification de votre accès en cours…";
+      if (status === "pending") {
+        accessMsg.textContent = "Votre code est prêt. Cliquez « Utiliser ce code » pour démarrer votre forfait RAZAFI.";
+      } else if (status === "active") {
+        accessMsg.textContent = "Connexion active. Si la page revient ici, cliquez « Continuer » pour rester connecté.";
+      } else if (status === "used" || status === "expired") {
+        if (showBonusChip && canUse) {
+          accessMsg.textContent = "🎁 Un bonus a été ajouté à votre code. Cliquez « Réactiver ce code » pour vous reconnecter.";
+        } else if (showBonusChip && !canUse) {
+          // Bonus exists but does not match the blocking reason (ex: bonus data only while time expired)
+          if (status === "expired" && hasDataBonus && !hasTimeBonus) {
+            accessMsg.textContent = "Bonus détecté, mais ce code est terminé en temps. Ajoutez un bonus de temps pour le réactiver.";
+          } else if (status === "used" && hasTimeBonus && !hasDataBonus) {
+            accessMsg.textContent = "Bonus détecté, mais ce code a atteint sa limite de données. Ajoutez un bonus de données pour le réactiver.";
+          } else {
+            accessMsg.textContent = "Bonus détecté, mais insuffisant pour réactiver ce code. Contactez le point de vente ou achetez un nouveau code.";
+          }
+        } else {
+          accessMsg.textContent =
+            (status === "used")
+              ? "Ce code a déjà été entièrement consommé. Achetez un nouveau code pour continuer."
+              : "La durée de ce code est terminée. Achetez un nouveau code pour continuer.";
+        }
+      } else {
+        accessMsg.textContent = "Vérification de votre accès en cours…";
+      }
     }
 
     // Plan details
@@ -920,8 +942,15 @@ try {
     purchaseLockedByVoucher = !!j?.purchase_lock;
     toastOnPlanClick = ui.toast_on_plan_click || "";
 
-    const canUse = !!j?.can_use && !!code;
     if (useBtn) {
+      // Label depends on status (user-friendly)
+      let label = "Utiliser ce code";
+      if (status === "active") label = "Continuer";
+      else if ((status === "used" || status === "expired") && canUse) label = "Réactiver ce code";
+      else if (status === "pending") label = "Utiliser ce code";
+
+      useBtn.textContent = label;
+
       useBtn.disabled = !canUse;
       useBtn.style.display = canUse ? "" : "none";
     }
@@ -1154,6 +1183,7 @@ function submitToLoginUrl(code, ev) {
 
       // ✅ Activation/Reactivate on backend BEFORE submitting login (best-effort)
 // We try to await a fast response so RADIUS sees the updated state.
+
 try {
   const payload = {
     voucher_code: currentVoucherCode,
@@ -1165,23 +1195,62 @@ try {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), 1200);
 
+  let activationDenied = false;
+  let activationErrorCode = "";
+  let activationErrorMsg = "";
+
   try {
-    await fetch(apiUrl("/api/voucher/activate"), {
+    const resp = await fetch(apiUrl("/api/voucher/activate"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
       credentials: "omit",
       signal: controller.signal,
       cache: "no-store",
-    }).catch(() => {});
+    });
+
+    // Only block the login redirect when the server clearly denies usage
+    if (resp) {
+      let jj = null;
+      try { jj = await resp.json(); } catch (_) { jj = null; }
+
+      if (!resp.ok) {
+        activationDenied = true;
+        activationErrorCode = String(jj?.error || ("http_" + resp.status));
+        activationErrorMsg = String(jj?.message || "");
+      } else if (jj && jj.ok === false) {
+        activationDenied = true;
+        activationErrorCode = String(jj.error || "");
+        activationErrorMsg = String(jj.message || "");
+      }
+    }
   } finally {
     clearTimeout(t);
   }
+
+  if (activationDenied) {
+    // Re-enable button and show a USER-friendly message (no technical jargon)
+    try { useBtn.removeAttribute("disabled"); } catch (_) {}
+
+    const code = (activationErrorCode || "").toLowerCase();
+    if (code === "client_mac_required") showToast("Connexion impossible. Ouvrez cette page depuis le Wi‑Fi RAZAFI.", "error", 5200);
+    else if (code === "need_time_bonus") showToast("Ce code est terminé en temps. Ajoutez un bonus de temps pour le réactiver.", "error", 5200);
+    else if (code === "need_data_bonus") showToast("Ce code a atteint sa limite de données. Ajoutez un bonus de données pour le réactiver.", "error", 5200);
+    else if (code === "voucher_not_usable") showToast("Ce code ne peut pas être utilisé pour le moment.", "error", 5200);
+    else if (code === "invalid_voucher") showToast("Code invalide. Vérifiez le code et réessayez.", "error", 5200);
+    else if (code === "radius_reject") showToast("Connexion refusée. Réessayez ou contactez le support.", "error", 5200);
+    else showToast(activationErrorMsg || "Connexion impossible. Veuillez réessayer.", "error", 5200);
+
+    return; // ✅ do NOT redirect to MikroTik login if activation was denied
+  }
+
 } catch (e) {
+  // Best-effort: if activation call fails (network/captive quirks), we still try login.
   console.warn("[RAZAFI] voucher activate failed (best-effort):", e?.message || e);
 }
 
       // ✅ OFFICIAL — POST login to MikroTik /login (triggers RADIUS)
+// ✅ OFFICIAL — POST login to MikroTik /login (triggers RADIUS)
       submitToLoginUrl(currentVoucherCode, event);
     });
   }
