@@ -5825,7 +5825,7 @@ app.post("/api/radius/accounting", async (req, res) => {
     // --------------------------
     const { data: existingRows, error: existingErr } = await supabase
       .from("radius_acct_sessions")
-      .select("id,last_total_bytes,total_bytes,coa_sent_at,coa_attempts")
+      .select("id,last_total_bytes,total_bytes,last_in_bytes,last_out_bytes,coa_sent_at,coa_attempts")
       .eq("nas_id", nasId)
       .eq("acct_session_id", acctSessionId)
       .limit(1);
@@ -5837,18 +5837,39 @@ app.post("/api/radius/accounting", async (req, res) => {
 
     const existing = existingRows && existingRows.length ? existingRows[0] : null;
 
-    const prevLastTotal = BigInt(
-      Number((existing && (existing.last_total_bytes ?? existing.total_bytes)) || 0) || 0
-    );
+    // BigInt-safe parse (Supabase may return bigint as number or string)
+    const bi = (x) => {
+      try {
+        if (x === null || x === undefined || x === "") return 0n;
+        return BigInt(String(x));
+      } catch (_) {
+        return 0n;
+      }
+    };
 
-    let delta = newTotalBytes - prevLastTotal;
-    if (delta < 0n) {
-      // Counter reset or out-of-order packet: do NOT subtract usage.
-      delta = 0n;
+    // IMPORTANT:
+    // MikroTik/FreeRADIUS counters can reset or arrive out-of-order.
+    // We therefore compute usage as a monotone cumulative sum of positive deltas.
+    const prevTotalBytesRaw = bi(existing?.total_bytes);
+    const prevLastTotalRaw = bi(existing?.last_total_bytes);
+
+    // Transition safety: older deployments stored RAW counters in total_bytes.
+    // If total_bytes equals last_total_bytes, treat it as raw (not cumulative) and start cumulative from 0.
+    let prevTotalBytes = prevTotalBytesRaw;
+    if (existing && prevTotalBytesRaw === prevLastTotalRaw) {
+      prevTotalBytes = 0n;
     }
+    const prevLastIn = bi(existing?.last_in_bytes);
+    const prevLastOut = bi(existing?.last_out_bytes);
+
+    const deltaIn = inputBytes > prevLastIn ? (inputBytes - prevLastIn) : 0n;
+    const deltaOut = outputBytes > prevLastOut ? (outputBytes - prevLastOut) : 0n;
+    const delta = deltaIn + deltaOut;
+
+    const cumulativeTotalBytes = prevTotalBytes + delta;
 
     // --------------------------
-    // 2) Upsert session row using your composite unique index: (nas_id, acct_session_id)
+    // 2) Upsert session row using your composite unique index: (nas_id, acct_session_id) using your composite unique index: (nas_id, acct_session_id)
     // --------------------------
     const upsertRow = {
       voucher_code: voucherCode,
@@ -5859,10 +5880,10 @@ app.post("/api/radius/accounting", async (req, res) => {
       // last seen counters (use bigint columns)
       last_in_bytes: inputBytes.toString(),
       last_out_bytes: outputBytes.toString(),
-      last_total_bytes: newTotalBytes.toString(),
+      last_total_bytes: cumulativeTotalBytes.toString(),
 
       // optional extra columns you created later (safe if they exist)
-      total_bytes: newTotalBytes.toString(),
+      total_bytes: cumulativeTotalBytes.toString(),
       acct_status_type: statusType || null,
       acct_session_time: sessionTime || null,
       acct_terminate_cause: terminateCause || null,
@@ -5905,8 +5926,16 @@ app.post("/api/radius/accounting", async (req, res) => {
 
     let aggregatedUsed = 0n;
     for (const row of sessionTotals || []) {
-      const val = row.total_bytes ?? row.last_total_bytes ?? 0;
-      const n = BigInt(Number(val || 0) || 0);
+      // total_bytes is our monotone cumulative counter (BigInt-safe)
+      const n = (() => {
+        try {
+          const v = row?.total_bytes;
+          if (v === null || v === undefined || v === "") return 0n;
+          return BigInt(String(v));
+        } catch (_) {
+          return 0n;
+        }
+      })();
       aggregatedUsed += n;
     }
 
