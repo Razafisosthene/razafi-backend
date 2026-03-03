@@ -64,7 +64,12 @@ function toNum(x, fallback = 0) {
 }
 function fmtBytes(bytes) {
   const b = toNum(bytes, 0);
-  if (!b) return "—";
+
+  // ✅ 0 is a real value (don't show dash)
+  if (b === 0) return "0 B";
+
+  if (!Number.isFinite(b) || b < 0) return "—";
+
   const units = ["B", "KB", "MB", "GB", "TB"];
   let val = b;
   let i = 0;
@@ -76,29 +81,39 @@ function fmtBytes(bytes) {
   return `${val.toFixed(digits)} ${units[i]}`;
 }
 function computeQuota(it) {
+  // Total: prefer truth-view / plan-derived quota. Keep NULL for unlimited.
   const totalBytes =
-    toNum(it?.data_total_bytes) ||
-    toNum(it?.plan_data_total_bytes) ||
-    toNum(it?.data_quota_bytes) ||
-    toNum(it?.plan_data_quota_bytes) ||
-    toNum(it?.plan?.data_quota_bytes) ||
-    toNum(it?.plans?.data_quota_bytes);
+    (it?.data_total_bytes ??
+      it?.plan_data_total_bytes ??
+      it?.data_quota_bytes ??
+      it?.plan_data_quota_bytes ??
+      it?.plan?.data_quota_bytes ??
+      it?.plans?.data_quota_bytes);
 
-  const usedBytes =
-    toNum(it?.data_used_bytes) ||
-    toNum(it?.used_bytes) ||
-    toNum(it?.total_bytes) ||
-    toNum(it?.acct_total_bytes);
+  // Used: prefer truth-view (stable). IMPORTANT: do NOT fall back to raw total_bytes/acct_total_bytes
+  // because those can be "current" interim values and may fluctuate.
+  const usedBytes = (it?.data_used_bytes ?? it?.used_bytes ?? null);
 
-  const remainingBytes =
-    toNum(it?.data_remaining_bytes) ||
-    (totalBytes ? Math.max(totalBytes - usedBytes, 0) : 0);
+  const totalN = (totalBytes == null ? null : toNum(totalBytes, 0));
+  const usedN = (usedBytes == null ? 0 : toNum(usedBytes, 0));
 
-  const totalHuman = it?.data_total_human || (totalBytes ? fmtBytes(totalBytes) : "—");
-  const usedHuman = it?.data_used_human || (usedBytes ? fmtBytes(usedBytes) : "—");
-  const remainingHuman = it?.data_remaining_human || (remainingBytes ? fmtBytes(remainingBytes) : "—");
+  const remainingN =
+    (it?.data_remaining_bytes != null)
+      ? toNum(it.data_remaining_bytes, 0)
+      : (totalN == null ? null : Math.max(totalN - usedN, 0));
 
-  return { totalBytes, usedBytes, remainingBytes, totalHuman, usedHuman, remainingHuman };
+  const totalHuman = it?.data_total_human ?? (totalN == null ? "—" : fmtBytes(totalN));
+  const usedHuman = it?.data_used_human ?? fmtBytes(usedN);
+  const remainingHuman = it?.data_remaining_human ?? (remainingN == null ? "—" : fmtBytes(remainingN));
+
+  return {
+    totalBytes: totalN,
+    usedBytes: usedN,
+    remainingBytes: remainingN,
+    totalHuman,
+    usedHuman,
+    remainingHuman
+  };
 }
 
 let debounceTimer = null;
