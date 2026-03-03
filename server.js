@@ -5901,15 +5901,8 @@ app.post("/api/radius/accounting", async (req, res) => {
     // IMPORTANT:
     // MikroTik/FreeRADIUS counters can reset or arrive out-of-order.
     // We therefore compute usage as a monotone cumulative sum of positive deltas.
-    const prevTotalBytesRaw = bi(existing?.total_bytes);
-    const prevLastTotalRaw = bi(existing?.last_total_bytes);
-
-    // Transition safety: older deployments stored RAW counters in total_bytes.
-    // If total_bytes equals last_total_bytes, treat it as raw (not cumulative) and start cumulative from 0.
-    let prevTotalBytes = prevTotalBytesRaw;
-    if (existing && prevTotalBytesRaw === prevLastTotalRaw) {
-      prevTotalBytes = 0n;
-    }
+    const prevTotalBytes = bi(existing?.total_bytes); // monotone cumulative
+    const prevLastTotalRaw = bi(existing?.last_total_bytes); // last RAW total from NAS (may be legacy)
     const prevLastIn = bi(existing?.last_in_bytes);
     const prevLastOut = bi(existing?.last_out_bytes);
 
@@ -5931,7 +5924,7 @@ app.post("/api/radius/accounting", async (req, res) => {
       // last seen counters (use bigint columns)
       last_in_bytes: inputBytes.toString(),
       last_out_bytes: outputBytes.toString(),
-      last_total_bytes: cumulativeTotalBytes.toString(),
+      last_total_bytes: newTotalBytes.toString(),
 
       // optional extra columns you created later (safe if they exist)
       total_bytes: cumulativeTotalBytes.toString(),
@@ -5993,7 +5986,7 @@ app.post("/api/radius/accounting", async (req, res) => {
     // Update the latest voucher_session row for this voucher
     const { data: vsRows, error: vsErr } = await supabase
       .from("voucher_sessions")
-      .select("id,plan_id,status,expires_at")
+      .select("id,plan_id,status,expires_at,data_used_bytes")
       .eq("voucher_code", voucherCode)
       .order("created_at", { ascending: false })
       .limit(1);
@@ -6009,6 +6002,18 @@ app.post("/api/radius/accounting", async (req, res) => {
     }
 
     const vsId = vsRows[0].id;
+
+    // Monotone safety: never let data_used_bytes go backwards due to out-of-order or counter resets
+    const currentUsedBytes = (() => {
+      try {
+        const v = vsRows[0].data_used_bytes;
+        if (v === null || v === undefined || v === "") return 0n;
+        return BigInt(String(v));
+      } catch (_) {
+        return 0n;
+      }
+    })();
+    const safeUsedBytes = aggregatedUsed > currentUsedBytes ? aggregatedUsed : currentUsedBytes;
 
     // Determine whether data quota is exhausted (if plan has data_mb)
     let quotaReached = false;
@@ -6092,7 +6097,7 @@ app.post("/api/radius/accounting", async (req, res) => {
 
     // Build patch (only columns that really exist will be kept by the safe-updater below)
     const vsPatchBase = {
-      data_used_bytes: aggregatedUsed.toString(),
+      data_used_bytes: safeUsedBytes.toString(),
       last_acct_session_id: acctSessionId,
       last_seen_at: new Date().toISOString(),
 
