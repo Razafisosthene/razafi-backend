@@ -84,6 +84,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const deletedEl = document.getElementById("deletedFilter");
   const systemPortalBtn = document.getElementById("systemPortalBtn");
   const systemMikrotikBtn = document.getElementById("systemMikrotikBtn");
+  const poolFilterWrap = document.getElementById("poolFilterWrap");
+  const poolFilter = document.getElementById("poolFilter");
   const refreshBtn = document.getElementById("refreshBtn");
   const newBtn = document.getElementById("newBtn");
   const logoutBtn = document.getElementById("logoutBtn");
@@ -222,11 +224,31 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
     };
     setBtn(systemPortalBtn, currentSystem === SYSTEMS.portal);
     setBtn(systemMikrotikBtn, currentSystem === SYSTEMS.mikrotik);
+
+    // Pool filter only applies to MikroTik plans
+    const showPoolFilter = (currentSystem === SYSTEMS.mikrotik);
+    if (poolFilterWrap) poolFilterWrap.style.display = showPoolFilter ? "block" : "none";
+    if (!showPoolFilter && poolFilter) poolFilter.value = "";
   }
 
   async function loadMikrotikPools(force = false) {
-    if (!f_pool_id) return [];
-    if (!force && Array.isArray(mikrotikPoolsCache)) return mikrotikPoolsCache;
+    const targets = [f_pool_id, poolFilter].filter(Boolean);
+    if (targets.length === 0) return [];
+    const populateTargets = (pools) => {
+      for (const sel of targets) {
+        const current = sel.value;
+        const firstOpt = (sel.id === "poolFilter")
+          ? '<option value="">Pool: all</option>'
+          : '<option value="">Select MikroTik pool…</option>';
+        sel.innerHTML = firstOpt + (pools || []).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
+        if (current) sel.value = current;
+      }
+    };
+
+    if (!force && Array.isArray(mikrotikPoolsCache)) {
+      populateTargets(mikrotikPoolsCache);
+      return mikrotikPoolsCache;
+    }
 
     const data = await fetchJSON("/api/admin/pools?system=mikrotik&limit=500&offset=0");
     const items = data.items || data.pools || [];
@@ -235,12 +257,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
       .map(p => ({ id: p.id, name: p.name || p.id }))
       .sort((a,b) => String(a.name).localeCompare(String(b.name)));
 
-    // populate select
-    const current = f_pool_id.value;
-    f_pool_id.innerHTML = '<option value="">Select MikroTik pool…</option>' +
-      mikrotikPoolsCache.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
-
-    if (current) f_pool_id.value = current;
+    populateTargets(mikrotikPoolsCache);
     return mikrotikPoolsCache;
   }
   async function loadPlans() {
@@ -260,6 +277,12 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
       params.set("visible", visibleEl.value);
     }
     params.set("system", currentSystem);
+
+    // Optional pool filter (MikroTik only)
+    if (currentSystem === SYSTEMS.mikrotik && poolFilter && poolFilter.value) {
+      params.set("pool_id", poolFilter.value);
+    }
+
     params.set("limit", "200");
     params.set("offset", "0");
 
@@ -337,6 +360,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
   await loadPlans();
 
   refreshBtn.addEventListener("click", () => loadPlans().catch(e => errEl.textContent = e.message));
+  if (poolFilter) poolFilter.addEventListener("change", () => loadPlans().catch(e => errEl.textContent = e.message));
 
   newBtn.addEventListener("click", () => { if (window.__IS_READONLY) return; openModal("new"); });
 
