@@ -112,6 +112,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   } catch (_) {}
   const poolRow = document.getElementById("poolRow");
   const poolHint = document.getElementById("poolHint");
+  const poolHintDefault = poolHint ? poolHint.textContent : "";
   const f_pool_id = document.getElementById("f_pool_id");
 const f_unlimited_data = document.getElementById("f_unlimited_data");
   const f_data_gb = document.getElementById("f_data_gb");
@@ -186,6 +187,8 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
       f_pool_id.required = isMikrotik;
       if (!isMikrotik) {
         f_pool_id.value = "";
+        f_pool_id.disabled = false;
+        if (poolHint) poolHint.textContent = poolHintDefault;
       }
     }
     if (isMikrotik) {
@@ -195,6 +198,23 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
       if (mode !== "new" && plan && plan.pool_id && f_pool_id) {
         f_pool_id.value = String(plan.pool_id);
       }
+
+      // Auto-lock new plan to selected pool filter (minimal UX safety)
+      if (mode === "new" && f_pool_id) {
+        const selectedPool = (poolFilter && poolFilter.value) ? String(poolFilter.value) : "";
+        if (selectedPool) {
+          f_pool_id.value = selectedPool;
+          f_pool_id.disabled = true;
+          if (poolHint) poolHint.textContent = (poolHintDefault || "Select a pool") + " (locked to selected pool filter)";
+        } else {
+          f_pool_id.disabled = false;
+          if (poolHint) poolHint.textContent = poolHintDefault;
+        }
+      } else if (f_pool_id) {
+        // In edit mode, never lock
+        f_pool_id.disabled = false;
+        if (poolHint) poolHint.textContent = poolHintDefault;
+      }
     }
 
   }
@@ -202,6 +222,8 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
   function closeModal() {
     modal.style.display = "none";
     editingId = null;
+    if (f_pool_id) f_pool_id.disabled = false;
+    if (poolHint) poolHint.textContent = poolHintDefault;
   }
 
   async function guardSession() {
@@ -360,7 +382,30 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
   await loadPlans();
 
   refreshBtn.addEventListener("click", () => loadPlans().catch(e => errEl.textContent = e.message));
-  if (poolFilter) poolFilter.addEventListener("change", () => loadPlans().catch(e => errEl.textContent = e.message));
+  // Tiny UX improvement: auto-refresh when filters change
+  if (activeEl) activeEl.addEventListener("change", () => loadPlans().catch(e => errEl.textContent = e.message));
+  if (visibleEl) visibleEl.addEventListener("change", () => loadPlans().catch(e => errEl.textContent = e.message));
+  if (deletedEl) deletedEl.addEventListener("change", () => loadPlans().catch(e => errEl.textContent = e.message));
+  if (poolFilter) poolFilter.addEventListener("change", () => {
+    // If modal is open in "new" mode, lock the pool select to the chosen filter
+    try {
+      const isModalOpen = modal && modal.style.display === "block";
+      const isNew = (editingId === null); // new plan => editingId is null
+      const isMikrotik = (currentSystem === SYSTEMS.mikrotik);
+      if (isModalOpen && isNew && isMikrotik && f_pool_id) {
+        const selectedPool = poolFilter.value ? String(poolFilter.value) : "";
+        if (selectedPool) {
+          f_pool_id.value = selectedPool;
+          f_pool_id.disabled = true;
+          if (poolHint) poolHint.textContent = (poolHintDefault || "Select a pool") + " (locked to selected pool filter)";
+        } else {
+          f_pool_id.disabled = false;
+          if (poolHint) poolHint.textContent = poolHintDefault;
+        }
+      }
+    } catch {}
+    loadPlans().catch(e => errEl.textContent = e.message);
+  });
 
   newBtn.addEventListener("click", () => { if (window.__IS_READONLY) return; openModal("new"); });
 
