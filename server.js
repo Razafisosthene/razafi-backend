@@ -5609,22 +5609,30 @@ const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusByt
       const needsTimeBonus = isTimeExpired;
       const needsDataBonus = isDataExhausted;
 
-      if (!needsTimeBonus && !needsDataBonus) {
-        // Status is not usable, but it's not because of time/data.
-        // Be strict: do not "resurrect" unexpected states.
-        return sendReject("not_usable_status", {
-          entity_type: "voucher_session",
-          entity_id: session.id,
-          nas_id,
-          client_mac,
-          pool_id: session.pool_id || null,
-          plan_id: session.plan_id || null,
-          mvola_phone: session.mvola_phone || null,
-          metadata: { status: session.status, truth_status: session.truth_status, expires_at: session.expires_at }
-        });
+if (!needsTimeBonus && !needsDataBonus) {
+  // Safety net for unexpected states
+  // BUT: if admin added any bonus, treat it as intentional reactivation.
+  if (!(hasTimeBonus || hasDataBonus)) {
+    return sendReject("not_usable_status", {
+      entity_type: "voucher_session",
+      entity_id: session.id,
+      nas_id,
+      client_mac,
+      pool_id: session.pool_id || null,
+      plan_id: session.plan_id || null,
+      mvola_phone: session.mvola_phone || null,
+      metadata: {
+        status: session.status,
+        truth_status: session.truth_status,
+        expires_at: session.expires_at
       }
+    });
+  }
 
-      if (needsTimeBonus && !hasTimeBonus) {
+  // bonus exists -> allow continue (do nothing)
+}
+
+if (needsTimeBonus && !hasTimeBonus) {
         return sendReject("not_usable_time_expired_no_time_bonus", {
           entity_type: "voucher_session",
           entity_id: session.id,
