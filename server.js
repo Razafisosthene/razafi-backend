@@ -5448,7 +5448,9 @@ const ap_raw =
   body["Called-Station-Id"] ??
   radiusGet("Called-Station-Id") ??
   "";
-const ap_mac = normalizeMacColon(String(ap_raw || "")) || null;
+
+const ap_match = String(ap_raw || "").match(/([0-9A-Fa-f]{2}([:-])){5}[0-9A-Fa-f]{2}/);
+const ap_mac = ap_match ? normalizeMacColon(ap_match[0]) : null;
 
 const nas_id = String(body.nas_id ?? body.nasId ?? radiusGet("NAS-Identifier") ?? "").trim() || null;
 
