@@ -5448,21 +5448,9 @@ const ap_raw =
   body["Called-Station-Id"] ??
   radiusGet("Called-Station-Id") ??
   "";
-
-const ap_match = String(ap_raw || "").match(/([0-9A-Fa-f]{2}([:-])){5}[0-9A-Fa-f]{2}/);
-const ap_mac = ap_match ? normalizeMacColon(ap_match[0]) : null;
+const ap_mac = normalizeMacColon(String(ap_raw || "")) || null;
 
 const nas_id = String(body.nas_id ?? body.nasId ?? radiusGet("NAS-Identifier") ?? "").trim() || null;
-
-// AP port / interface hint (present even when Called-Station-Id is missing)
-const ap_port =
-  String(
-    body["NAS-Port-Id"] ??
-      body.nas_port_id ??
-      body.nasPortId ??
-      radiusGet("NAS-Port-Id") ??
-      ""
-  ).trim() || null;
 
 if (!username || !password) {
   return sendReject("missing_credentials", { nas_id, client_mac, ap_mac });
@@ -5470,7 +5458,7 @@ if (!username || !password) {
 
 // Must match (voucher code style: same for user/pass)
 if (username !== password) {
-  return sendReject("bad_credentials", { nas_id, client_mac, ap_mac, ap_port });
+  return sendReject("bad_credentials", { nas_id, client_mac, ap_mac });
 }
 
 const now = new Date();
@@ -5761,7 +5749,6 @@ if (!needsTimeBonus && !needsDataBonus) {
             ...(client_mac ? { client_mac } : {}),
             ...(nas_id ? { nas_id: String(nas_id).trim() } : {}),
             ...(ap_mac ? { ap_mac } : {}),
-            ...(ap_port ? { ap_port } : {}),
           })
           .eq("id", session.id)
           .is("started_at", null)
