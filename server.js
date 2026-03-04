@@ -5441,21 +5441,30 @@ app.post("/api/radius/authorize", async (req, res) => {
       "";
     const client_mac = normalizeMacColon(String(client_mac_raw || "")) || null;
 
-    const nas_id = String(body.nas_id ?? body.nasId ?? radiusGet("NAS-Identifier") ?? "").trim() || null;
+// AP MAC (Called-Station-Id) — MikroTik hotspot puts AP MAC here
+const ap_raw =
+  body.called_station_id ??
+  body.calledStationId ??
+  body["Called-Station-Id"] ??
+  radiusGet("Called-Station-Id") ??
+  "";
+const ap_mac = normalizeMacColon(String(ap_raw || "")) || null;
 
-    if (!username || !password) {
-      return sendReject("missing_credentials", { nas_id, client_mac });
-    }
+const nas_id = String(body.nas_id ?? body.nasId ?? radiusGet("NAS-Identifier") ?? "").trim() || null;
 
-    // Must match (voucher code style: same for user/pass)
-    if (username !== password) {
-      return sendReject("bad_credentials", { nas_id, client_mac });
-    }
+if (!username || !password) {
+  return sendReject("missing_credentials", { nas_id, client_mac, ap_mac });
+}
 
-    const now = new Date();
+// Must match (voucher code style: same for user/pass)
+if (username !== password) {
+  return sendReject("bad_credentials", { nas_id, client_mac, ap_mac });
+}
 
-    // Plan metadata (duration + data quota). Loaded lazily.
-    let planMeta = null;
+const now = new Date();
+
+// Plan metadata (duration + data quota). Loaded lazily.
+let planMeta = null;
 
     // Fetch latest session for this voucher_code (case-insensitive)
 // NOTE: use TRUTH VIEW first (it exists in your DB and is already used by admin endpoints)
@@ -5739,6 +5748,7 @@ if (!needsTimeBonus && !needsDataBonus) {
             activated_at: startedAtIso,
             ...(client_mac ? { client_mac } : {}),
             ...(nas_id ? { nas_id: String(nas_id).trim() } : {}),
+            ...(ap_mac ? { ap_mac } : {}),
           })
           .eq("id", session.id)
           .is("started_at", null)
