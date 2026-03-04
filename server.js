@@ -5738,6 +5738,7 @@ if (!needsTimeBonus && !needsDataBonus) {
             status: "active",
             activated_at: startedAtIso,
             ...(client_mac ? { client_mac } : {}),
+            ...(nas_id ? { nas_id: String(nas_id).trim() } : {}),
           })
           .eq("id", session.id)
           .is("started_at", null)
