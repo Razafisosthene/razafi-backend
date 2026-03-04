@@ -5542,79 +5542,140 @@ const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusByt
     // - Bonus intelligent: if admin granted bonus (time/data), allow reactivation even if status is expired/used.
     //   For time bonus, extend expires_at from NOW when already expired so the truth view can flip to active.
 
+    
+    // System 3 logic B:
+    // - Normally Accept if truth status is "pending" OR "active"
+    // - Start timer on FIRST successful RADIUS accept
+    // - Bonus intelligent: if admin granted bonus (time/data), allow reactivation even if status is expired/used.
+    //   ✅ NEW RULE (March 2026): bonus must match the REAL blocker(s)
+    //      - time exhausted  -> needs time bonus
+    //      - data exhausted  -> needs data bonus (or unlimited)
+    //      - if BOTH exhausted -> needs BOTH bonuses
+
     const effectiveStatus = session.truth_status || session.status;
-const isUsableStatus = (effectiveStatus === "active" || effectiveStatus === "pending");
+    const isUsableStatus = (effectiveStatus === "active" || effectiveStatus === "pending");
 
-// Determine whether the session is currently time-expired (only meaningful if started_at exists).
-const nowMs = now.getTime();
-let expMs = null;
-try {
-  expMs = session.expires_at ? new Date(session.expires_at).getTime() : null;
-} catch (_) {
-  expMs = null;
-}
-const isTimeExpired = !!session.started_at && Number.isFinite(expMs) && expMs <= nowMs;
-
-const hasTimeBonus = (bonusSeconds > 0);
-const hasDataBonus = (bonusBytes === -1 || bonusBytes > 0);
-
-if (!isUsableStatus) {
-  // Enterprise-grade: bonus must match the failure type.
-  // - If time-expired => ONLY time bonus can reactivate.
-  // - Otherwise => ONLY data bonus (or unlimited) can reactivate.
-  if (isTimeExpired) {
-    if (!hasTimeBonus) {
-      return sendReject("not_usable_time_expired_no_time_bonus", {
-        entity_type: "voucher_session",
-        entity_id: session.id,
-        nas_id,
-        client_mac,
-        pool_id: session.pool_id || null,
-        plan_id: session.plan_id || null,
-        mvola_phone: session.mvola_phone || null,
-        metadata: { status: session.status, truth_status: session.truth_status, expires_at: session.expires_at }
-      });
+    // Determine whether the session is currently time-expired (only meaningful if started_at exists).
+    const nowMs = now.getTime();
+    let expMs = null;
+    try {
+      expMs = session.expires_at ? new Date(session.expires_at).getTime() : null;
+    } catch (_) {
+      expMs = null;
     }
-  } else {
-    if (!hasDataBonus) {
-      return sendReject("not_usable_needs_data_bonus", {
-        entity_type: "voucher_session",
-        entity_id: session.id,
-        nas_id,
-        client_mac,
-        pool_id: session.pool_id || null,
-        plan_id: session.plan_id || null,
-        mvola_phone: session.mvola_phone || null,
-        metadata: { status: session.status, truth_status: session.truth_status, expires_at: session.expires_at }
-      });
-    }
-  }
+    const isTimeExpired = !!session.started_at && Number.isFinite(expMs) && expMs <= nowMs;
 
-// Time bonus (Option B): apply bonus only at authorize time, then consume it
-if (hasTimeBonus && isTimeExpired && session.started_at) {
-  try {
-    const { data: d, error: e } = await supabase.rpc(
-      "fn_apply_time_bonus_on_authorize",
-      {
-        p_voucher_session_id: session.id,
-        p_updated_by: "system_authorize",
+    const hasTimeBonus = (bonusSeconds > 0);
+    const hasDataBonus = (bonusBytes === -1 || bonusBytes > 0);
+
+    if (!isUsableStatus) {
+      // Compute "real blockers" (time + data). We only allow reactivation if the corresponding bonus exists.
+      let usedBytesForCheck = 0n;
+      try {
+        usedBytesForCheck = BigInt(String(session?.data_used_bytes ?? 0));
+      } catch (_) {
+        usedBytesForCheck = 0n;
       }
-    );
 
-    if (!e) {
-      const row = Array.isArray(d) ? d[0] : d;
-      if (row?.new_expires_at) {
-        session.expires_at = row.new_expires_at;
+      // Load plan data_mb for quota check (only if needed here).
+      // NOTE: we only need data_mb, not duration, so it's safe/light.
+      if (!planMeta && session.plan_id) {
+        try {
+          const { data: pTmp } = await supabase
+            .from("plans")
+            .select("data_mb")
+            .eq("id", session.plan_id)
+            .maybeSingle();
+          planMeta = pTmp || null;
+        } catch (_) {}
       }
-    }
-  } catch (_) {}
-}
 
-  // Data bonus: enforced later via effectiveTotalBytes + usedBytes check.
-  // Continue as if active.
-}
+      const dataMbRaw = planMeta?.data_mb;
+      const dataMb = (dataMbRaw === null || dataMbRaw === undefined) ? null : Number(dataMbRaw);
+      const baseTotalBytes =
+        (dataMb !== null && Number.isFinite(dataMb) && dataMb > 0)
+          ? Math.floor(dataMb * 1024 * 1024)
+          : null;
+
+      // If bonusBytes == -1 => unlimited (no data blocker)
+      const effTotalBytesForCheck = (bonusBytes === -1)
+        ? null
+        : ((baseTotalBytes !== null)
+          ? (baseTotalBytes + (bonusBytes > 0 ? bonusBytes : 0))
+          : null);
+
+      const isDataExhausted = (effTotalBytesForCheck !== null) && (usedBytesForCheck >= BigInt(effTotalBytesForCheck));
+
+      const needsTimeBonus = isTimeExpired;
+      const needsDataBonus = isDataExhausted;
+
+      if (!needsTimeBonus && !needsDataBonus) {
+        // Status is not usable, but it's not because of time/data.
+        // Be strict: do not "resurrect" unexpected states.
+        return sendReject("not_usable_status", {
+          entity_type: "voucher_session",
+          entity_id: session.id,
+          nas_id,
+          client_mac,
+          pool_id: session.pool_id || null,
+          plan_id: session.plan_id || null,
+          mvola_phone: session.mvola_phone || null,
+          metadata: { status: session.status, truth_status: session.truth_status, expires_at: session.expires_at }
+        });
+      }
+
+      if (needsTimeBonus && !hasTimeBonus) {
+        return sendReject("not_usable_time_expired_no_time_bonus", {
+          entity_type: "voucher_session",
+          entity_id: session.id,
+          nas_id,
+          client_mac,
+          pool_id: session.pool_id || null,
+          plan_id: session.plan_id || null,
+          mvola_phone: session.mvola_phone || null,
+          metadata: { status: session.status, truth_status: session.truth_status, expires_at: session.expires_at }
+        });
+      }
+
+      if (needsDataBonus && !hasDataBonus) {
+        return sendReject("not_usable_needs_data_bonus", {
+          entity_type: "voucher_session",
+          entity_id: session.id,
+          nas_id,
+          client_mac,
+          pool_id: session.pool_id || null,
+          plan_id: session.plan_id || null,
+          mvola_phone: session.mvola_phone || null,
+          metadata: { status: session.status, truth_status: session.truth_status, expires_at: session.expires_at }
+        });
+      }
+
+      // Time bonus (Option B): apply bonus only at authorize time, then consume it
+      if (needsTimeBonus && hasTimeBonus && session.started_at) {
+        try {
+          const { data: d, error: e } = await supabase.rpc(
+            "fn_apply_time_bonus_on_authorize",
+            {
+              p_voucher_session_id: session.id,
+              p_updated_by: "system_authorize",
+            }
+          );
+
+          if (!e) {
+            const row = Array.isArray(d) ? d[0] : d;
+            if (row?.new_expires_at) {
+              session.expires_at = row.new_expires_at;
+            }
+          }
+        } catch (_) {}
+      }
+
+      // Data bonus: enforced later via effectiveTotalBytes + usedBytes check.
+      // Continue as if active.
+    }
 
     // Start timer on FIRST successful RADIUS auth (if not started yet)
+
     if (!session.started_at || !session.expires_at) {
       try {
         // Load plan duration
