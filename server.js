@@ -476,6 +476,14 @@ app.use((req, res, next) => {
             }
           });
         }
+        const hasShortCookie =
+          (req.cookies && (req.cookies.nas_allowed === "1" || req.cookies.ap_allowed === "1")) || false;
+
+        // Outside-hotspot access: if we have no identity AND no short-lived cookie, redirect to block page.
+        if (!req.nas_id && !req.ap_mac && !hasShortCookie) {
+          return res.redirect("/bloque.html");
+        }
+
         return next();
       });
     }
@@ -5141,12 +5149,17 @@ app.post("/api/voucher/activate", async (req, res) => {
       } else {
         // Consume the bonus totals so it doesn't reapply indefinitely (best-effort).
         try {
+          const bonusUpdate = { updated_at: nowIso, updated_by: "portal_reactivate" };
+          // Time bonus is consumed because we already applied it to expires_at (newExpiresAt).
+          // Data bonus must NOT be zeroed here, otherwise the extra quota vanishes right after activation.
+          if (bonusSeconds > 0) bonusUpdate.bonus_seconds = 0;
+
           await supabase
             .from("voucher_bonus_overrides")
-            .update({ bonus_seconds: 0, bonus_bytes: 0, updated_at: nowIso, updated_by: "portal_reactivate" })
+            .update(bonusUpdate)
             .eq("voucher_session_id", session.id);
         } catch (_) {}
-      }
+}
 
       return res.json({
         ok: true,
@@ -5712,24 +5725,48 @@ if (!needsTimeBonus && !needsDataBonus) {
         }
 
         const startedAtIso = now.toISOString();
-        const expiresAtIso = new Date(now.getTime() + (minutes * 60 * 1000) + (bonusSeconds * 1000)).toISOString();
+        const baseStartMs = session.started_at ? new Date(session.started_at).getTime() : now.getTime();
+        const expiresAtIso = new Date(baseStartMs + (minutes * 60 * 1000) + (bonusSeconds * 1000)).toISOString();
 
-        // Atomic: only start once
-        const { error: stErr } = await supabase
+        // Atomic: only start once (and detect whether we actually updated a row)
+        const { data: stData, error: stErr } = await supabase
           .from("voucher_sessions")
-          .update({ started_at: startedAtIso, expires_at: expiresAtIso, updated_at: startedAtIso, status: "active", activated_at: startedAtIso, ...(client_mac ? { client_mac } : {}) })
+          .update({
+            started_at: startedAtIso,
+            expires_at: expiresAtIso,
+            updated_at: startedAtIso,
+            status: "active",
+            activated_at: startedAtIso,
+            ...(client_mac ? { client_mac } : {}),
+          })
           .eq("id", session.id)
-          .is("started_at", null);
+          .is("started_at", null)
+          .select("id");
 
-        // If already started by another concurrent auth, ignore
+        const didStart = Array.isArray(stData) && stData.length > 0;
+
         if (stErr) {
           // Best-effort continue: we'll use current session fields below
-        } else {
+        } else if (didStart) {
           session.started_at = startedAtIso;
           session.expires_at = expiresAtIso;
           session.status = "active";
           if (!session.client_mac && client_mac) session.client_mac = client_mac;
+        } else if (session.started_at && !session.expires_at) {
+          // Repair path: started_at exists but expires_at missing -> set expires_at only
+          try {
+            const { data: fixData, error: fixErr } = await supabase
+              .from("voucher_sessions")
+              .update({ expires_at: expiresAtIso, updated_at: now.toISOString(), status: "active" })
+              .eq("id", session.id)
+              .is("expires_at", null)
+              .select("id");
+
+            const didFix = !fixErr && Array.isArray(fixData) && fixData.length > 0;
+            if (didFix) session.expires_at = expiresAtIso;
+          } catch (_) {}
         }
+
       } catch (_) {
         // If anything fails, reject to be safe
         return sendReject("start_failed", {
