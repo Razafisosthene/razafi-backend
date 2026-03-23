@@ -6545,38 +6545,39 @@ app.get("/api/admin/voucher-bonus-overrides", requireAdmin, async (req, res) => 
 // UPSERT bonus
 // POST /api/admin/voucher-bonus-overrides
 // body: { voucher_session_id, add_minutes, add_mb, unlimited_data, note }  // unlimited_data=true => bonus_bytes=-1
-// - We store totals (bonus_seconds, bonus_bytes) for this voucher_session_id
-// - If the session is already started and has expires_at, we also extend expires_at immediately.
+// - We store CURRENT totals (bonus_seconds, bonus_bytes) for this voucher_session_id
+// - New bonus REPLACES previous bonus (no accumulation, no history)
 app.post("/api/admin/voucher-bonus-overrides", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
     const body = req.body || {};
     const voucher_session_id = String(body.voucher_session_id || "").trim();
-    if (!voucher_session_id) return res.status(400).json({ error: "voucher_session_id is required" });
-// Bonus policy (System 3): allow bonus ONLY when voucher is expired or used (never pending/active)
-try {
-  const { data: tRow, error: tErr } = await supabase
-    .from("vw_voucher_sessions_truth")
-    .select("status,truth_status")
-    .eq("id", voucher_session_id)
-    .maybeSingle();
+    if (!voucher_session_id) {
+      return res.status(400).json({ error: "voucher_session_id is required" });
+    }
 
-  if (tErr) throw tErr;
+    // Bonus policy (System 3): allow bonus ONLY when voucher is expired or used (never pending/active)
+    try {
+      const { data: tRow, error: tErr } = await supabase
+        .from("vw_voucher_sessions_truth")
+        .select("status,truth_status")
+        .eq("id", voucher_session_id)
+        .maybeSingle();
 
-  const st = String(tRow?.status || tRow?.truth_status || "").toLowerCase();
-  if (st === "pending" || st === "active") {
-    return res.status(400).json({ error: "bonus_only_for_expired_or_used" });
-  }
-  if (st !== "expired" && st !== "used") {
-    // Unknown / none -> block to be safe
-    return res.status(400).json({ error: "invalid_voucher_status_for_bonus" });
-  }
-} catch (e) {
-  console.error("BONUS STATUS CHECK ERROR", e?.message || e);
-  return res.status(500).json({ error: "status_check_failed" });
-}
+      if (tErr) throw tErr;
 
+      const st = String(tRow?.status || tRow?.truth_status || "").toLowerCase();
+      if (st === "pending" || st === "active") {
+        return res.status(400).json({ error: "bonus_only_for_expired_or_used" });
+      }
+      if (st !== "expired" && st !== "used") {
+        return res.status(400).json({ error: "invalid_voucher_status_for_bonus" });
+      }
+    } catch (e) {
+      console.error("BONUS STATUS CHECK ERROR", e?.message || e);
+      return res.status(500).json({ error: "status_check_failed" });
+    }
 
     const add_minutes = Number(body.add_minutes ?? 0);
     const add_mb = Number(body.add_mb ?? 0);
@@ -6587,6 +6588,7 @@ try {
     if (!Number.isFinite(add_minutes) || add_minutes < 0 || add_minutes > 7 * 24 * 60) {
       return res.status(400).json({ error: "add_minutes must be between 0 and 10080 (7 days)" });
     }
+
     if (!unlimited_data) {
       if (!Number.isFinite(add_mb) || add_mb < 0 || add_mb > 102400) {
         return res.status(400).json({ error: "add_mb must be between 0 and 102400" });
@@ -6596,7 +6598,25 @@ try {
     const add_seconds = Math.floor(add_minutes * 60);
     const add_bytes = unlimited_data ? 0 : Math.floor(add_mb * 1024 * 1024);
 
-    // ✅ Atomic: DB transaction (RPC) does increment + expires_at update + audit event
+    // BONUS SESSION RULE:
+    // A new admin bonus REPLACES the previous current bonus.
+    // Keep the row, but reset current values first so the RPC effectively sets the new bonus on top of 0.
+    const { error: resetErr } = await supabase
+      .from("voucher_bonus_overrides")
+      .update({
+        bonus_seconds: 0,
+        bonus_bytes: 0,
+        note: null,
+        updated_at: new Date().toISOString(),
+        updated_by: req.admin?.email || null,
+      })
+      .eq("voucher_session_id", voucher_session_id);
+
+    if (resetErr) {
+      return res.status(500).json({ error: resetErr.message });
+    }
+
+    // Atomic DB transaction (RPC): write current bonus + any DB-side side effects already implemented there
     const { data: rpcData, error: rpcErr } = await supabase.rpc("fn_add_voucher_bonus", {
       p_voucher_session_id: voucher_session_id,
       p_add_seconds: add_seconds,
@@ -6609,61 +6629,12 @@ try {
 
     if (rpcErr) return res.status(500).json({ error: rpcErr.message });
 
-    // supabase.rpc may return an array for SETOF
     const item = Array.isArray(rpcData) ? rpcData[0] : rpcData;
-
     return res.json({ ok: true, item });
   } catch (e) {
     return res.status(500).json({ error: String(e.message || e) });
   }
 });
-
-
-// Read admin override "extra free uses" for a given (client_mac, plan_id)
-async function getFreePlanExtraUses({ client_mac, plan_id }) {
-  if (!supabase || !client_mac || !plan_id) return 0;
-  try {
-    const { data, error } = await supabase
-      .from("free_plan_overrides")
-      .select("extra_uses")
-      .eq("client_mac", client_mac)
-      .eq("plan_id", plan_id)
-      .maybeSingle();
-    if (error || !data) return 0;
-    const n = Number(data.extra_uses || 0);
-    return Number.isFinite(n) && n > 0 ? n : 0;
-  } catch (_) {
-    return 0;
-  }
-}
-// ------------------------------------------------------------
-// BONUS OVERRIDE (System 3)
-// Table: voucher_bonus_overrides (voucher_session_id) -> bonus_seconds, bonus_bytes
-// Notes:
-// - bonus_seconds extends time (Session-Timeout / expires_at when started)
-// - bonus_bytes adds extra data to MikroTik-Total-Limit (in bytes)
-// ------------------------------------------------------------
-async function getVoucherBonusOverride({ voucher_session_id }) {
-  if (!supabase || !voucher_session_id) return { bonus_seconds: 0, bonus_bytes: 0 };
-  try {
-    const { data, error } = await supabase
-      .from("voucher_bonus_overrides")
-      .select("voucher_session_id,bonus_seconds,bonus_bytes,note,updated_at,updated_by")
-      .eq("voucher_session_id", voucher_session_id)
-      .maybeSingle();
-    if (error || !data) return { bonus_seconds: 0, bonus_bytes: 0 };
-    return {
-      bonus_seconds: Number(data.bonus_seconds || 0) || 0,
-      bonus_bytes: Number(data.bonus_bytes || 0) || 0,
-      note: data.note || null,
-      updated_at: data.updated_at || null,
-      updated_by: data.updated_by || null,
-    };
-  } catch (_) {
-    return { bonus_seconds: 0, bonus_bytes: 0 };
-  }
-}
-
 
 // Portal pre-check to show message immediately (before MVola input) when free plan already used.
 // Fail-open on errors (never break production).
