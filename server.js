@@ -4950,7 +4950,6 @@ app.get("/api/dernier-code", async (req, res) => {
     return res.status(500).json({ error: "internal_error" });
   }
 });
-
 // ---------------------------------------------------------------------------
 // ENDPOINT: /api/voucher/activate
 // Dual behavior:
@@ -5007,7 +5006,7 @@ app.post("/api/voucher/activate", async (req, res) => {
     const { data: session, error: sErr } = await supabase
       .from("voucher_sessions")
       .select(
-        "id,voucher_code,plan_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)"
+        "id,voucher_code,plan_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,is_bonus_session,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)"
       )
       .eq("voucher_code", voucher_code)
       .eq("client_mac", client_mac)
@@ -5111,6 +5110,7 @@ app.post("/api/voucher/activate", async (req, res) => {
           activated_at: nowIso,
           started_at: null,
           expires_at: null,
+          is_bonus_session: false,
           updated_at: nowIso
         };
 
@@ -5128,6 +5128,7 @@ app.post("/api/voucher/activate", async (req, res) => {
           activated_at: nowIso,
           started_at: nowIso,
           expires_at: expiresAtIso,
+          is_bonus_session: false,
           updated_at: nowIso
         };
 
@@ -5139,13 +5140,13 @@ app.post("/api/voucher/activate", async (req, res) => {
         .update(updatePayload)
         .eq("id", session.id)
         .eq("status", "pending")
-        .select("activated_at,started_at,expires_at,status,ap_mac")
+        .select("activated_at,started_at,expires_at,status,ap_mac,is_bonus_session")
         .maybeSingle();
 
       if (upErr) {
         const { data: reread } = await supabase
           .from("voucher_sessions")
-          .select("status,activated_at,started_at,expires_at")
+          .select("status,activated_at,started_at,expires_at,is_bonus_session")
           .eq("id", session.id)
           .maybeSingle();
 
@@ -5174,7 +5175,14 @@ app.post("/api/voucher/activate", async (req, res) => {
     }
 
     // -----------------------------------------------------------------------
-    // 7) Expired / Used -> keep bonus logic unchanged for now
+    // 7) Expired / Used -> BONUS SESSION
+    // Rule:
+    // - bonus session is an autonomous mini-plan
+    // - requires BOTH:
+    //     bonus_seconds > 0
+    //     AND (bonus_bytes > 0 OR bonus_bytes === -1)
+    // - click activates bonus session immediately
+    // - do NOT consume/zero bonus here; authorize/accounting will use it
     // -----------------------------------------------------------------------
     if (
       truth_status === "expired" ||
@@ -5194,36 +5202,43 @@ app.post("/api/voucher/activate", async (req, res) => {
 
       const bonusSeconds = Number(bRow?.bonus_seconds || 0) || 0;
       const bonusBytes = Number(bRow?.bonus_bytes || 0) || 0;
-      const hasBonus = bonusSeconds > 0 || bonusBytes !== 0;
 
-      if (!hasBonus) {
-        return res.status(403).json({
-          error: "voucher_not_usable",
-          message: "Ce code est terminé. Aucun bonus disponible."
-        });
-      }
+      const hasTimeBonus = bonusSeconds > 0;
+      const hasDataBonus = (bonusBytes > 0 || bonusBytes === -1);
+      const hasUsableBonus = hasTimeBonus && hasDataBonus;
 
-      const expIso = session.expires_at ? String(session.expires_at) : "";
-      const expOk = expIso && expIso > nowIso;
+      if (!hasUsableBonus) {
+        if (!hasTimeBonus && !hasDataBonus) {
+          return res.status(403).json({
+            error: "voucher_not_usable",
+            message: "Ce code est terminé. Aucun bonus disponible."
+          });
+        }
 
-      let newExpiresAt = null;
-      if (bonusSeconds > 0) {
-        newExpiresAt = new Date(now.getTime() + bonusSeconds * 1000).toISOString();
-      } else if (!expOk) {
+        if (!hasTimeBonus) {
+          return res.status(400).json({
+            error: "need_time_bonus",
+            message: "Bonus temps requis pour réactiver ce code."
+          });
+        }
+
         return res.status(400).json({
-          error: "need_time_bonus",
-          message:
-            "Bonus data seul insuffisant: ce code est expiré. Ajoutez un bonus temps pour réactiver."
+          error: "need_data_bonus",
+          message: "Bonus data requis pour réactiver ce code."
         });
       }
+
+      const newExpiresAt = new Date(now.getTime() + bonusSeconds * 1000).toISOString();
 
       const upd = {
         status: "active",
-        activated_at: session.activated_at || nowIso,
+        activated_at: nowIso,
         started_at: nowIso,
+        expires_at: newExpiresAt,
+        is_bonus_session: true,
         updated_at: nowIso
       };
-      if (newExpiresAt) upd.expires_at = newExpiresAt;
+
       if (ap_mac && !session.ap_mac) upd.ap_mac = ap_mac;
       if (nas_id) upd.nas_id = nas_id;
 
@@ -5234,23 +5249,19 @@ app.post("/api/voucher/activate", async (req, res) => {
 
       if (uErr) {
         console.error("REACTIVATE UPDATE ERROR", uErr);
-      } else {
-        try {
-          const bonusUpdate = { updated_at: nowIso, updated_by: "portal_reactivate" };
-          if (bonusSeconds > 0) bonusUpdate.bonus_seconds = 0;
-
-          await supabase
-            .from("voucher_bonus_overrides")
-            .update(bonusUpdate)
-            .eq("voucher_session_id", session.id);
-        } catch (_) {}
+        return res.status(500).json({
+          error: "reactivate_failed",
+          message: "Impossible de réactiver ce code."
+        });
       }
 
       return res.json({
         ok: true,
         reactivated_with_bonus: true,
-        activated_at: upd.started_at,
-        expires_at: upd.expires_at || session.expires_at || null,
+        activated_at: upd.activated_at,
+        started_at: upd.started_at,
+        expires_at: upd.expires_at,
+        is_bonus_session: true,
         system_branch: isSystem3 ? "system3" : "system2"
       });
     }
