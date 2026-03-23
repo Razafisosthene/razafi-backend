@@ -289,8 +289,24 @@ function renderTable(items) {
            <div style="font-size:12px; opacity:.75;">${esc(it.client_mac || "—")}</div>
          </div>`
       : `${esc(it.client_mac || "—")}`;
+const rowStatus = normStatus(it.status);
+    const rowBonusSeconds = toNum(it.bonus_seconds, 0);
+    const rowBonusBytes = Number(v(it.bonus_bytes ?? 0));
 
-    tr.innerHTML = `
+    const rowHasUsableBonus =
+      !!it.has_usable_bonus ||
+      (rowBonusSeconds > 0 && (rowBonusBytes === -1 || rowBonusBytes > 0));
+
+    const rowBonusModeActive =
+      !!it.bonus_mode_active ||
+      (rowStatus === "active" && rowHasUsableBonus);
+
+    const bonusChip = rowBonusModeActive
+      ? ' <span title="Bonus en cours" style="font-size:12px; padding:2px 6px; border-radius:999px; border:1px solid rgba(13,110,253,.35); background:rgba(13,110,253,.08);">🎁 Bonus en cours</span>'
+      : ((rowHasUsableBonus && (rowStatus === "expired" || rowStatus === "used"))
+          ? ' <span title="Bonus disponible" style="font-size:12px; padding:2px 6px; border-radius:999px; border:1px solid rgba(13,110,253,.35); background:rgba(13,110,253,.08);">🎁 Bonus dispo</span>'
+          : "");
+tr.innerHTML = `
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${clientCell}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
@@ -299,14 +315,14 @@ function renderTable(items) {
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(apDisplay)}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
 
-      <!-- ✅ status now is DB truth (view); just display it -->
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}${((it.has_bonus) || (toNum(it.bonus_seconds) > 0) || (toNum(it.bonus_bytes) !== 0)) ? ' <span title="Bonus disponible" style="font-size:12px; padding:2px 6px; border-radius:999px; border:1px solid rgba(13,110,253,.35); background:rgba(13,110,253,.08);">🎁 Bonus</span>' : ""}</td>
+      <!-- ✅ status now follows backend truth + usable bonus state -->
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}${bonusChip}</td>
 
       <!-- ✅ remaining_seconds now is DB truth (view); display time remaining -->
-<td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
 
-<!-- ✅ data remaining (human) -->
-<td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(computeQuota(it).remainingHuman || "—")}</td>
+      <!-- ✅ data remaining (human) -->
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(computeQuota(it).remainingHuman || "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
     `;
 

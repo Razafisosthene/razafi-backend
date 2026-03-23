@@ -2668,7 +2668,20 @@ app.get("/api/portal/status", async (req, res) => {
       }
     } catch (_) {}
 
-    const has_bonus = (Number(bonus.bonus_seconds || 0) > 0) || (Number(bonus.bonus_bytes || 0) !== 0);
+const bonusSecondsN = Number(bonus.bonus_seconds || 0) || 0;
+    const bonusBytesN = Number(bonus.bonus_bytes || 0) || 0;
+
+    const hasTimeBonus = bonusSecondsN > 0;
+    const hasDataBonus = (bonusBytesN === -1 || bonusBytesN > 0);
+
+    // Historical/current presence
+    const has_bonus = hasTimeBonus || hasDataBonus;
+
+    // Final UX truth: a bonus is usable only if it has BOTH time + data (or unlimited data)
+    const has_usable_bonus = hasTimeBonus && hasDataBonus;
+
+    // During bonus session, voucher is active and bonus is currently being consumed
+    const bonus_mode_active = (status === "active") && has_usable_bonus;
 
     // Duration minutes (support duration_hours fallback)
     const durMin =
@@ -2686,7 +2699,9 @@ app.get("/api/portal/status", async (req, res) => {
 
     // UI rules (truth-based)
     const purchase_lock = status === "pending" || status === "active";
-    const can_use = (status === "pending" || status === "active") || (has_bonus && (status === "expired" || status === "used"));
+    const can_use =
+      (status === "pending" || status === "active") ||
+      (has_usable_bonus && (status === "expired" || status === "used"));
 
     // Toast copy for "plan click" (UX only; still blocks purchases when needed)
     let toast_on_plan_click = "";
@@ -2694,10 +2709,12 @@ app.get("/api/portal/status", async (req, res) => {
       if (status === "pending") {
         toast_on_plan_click = "⚠️ Achat désactivé : vous avez déjà un code en attente. Activez-le d’abord avec « Utiliser ce code ».";
       } else if (status === "active") {
-        toast_on_plan_click = "⚠️ Achat désactivé : vous avez déjà une session active. Utilisez « Utiliser ce code » si la connexion s’est interrompue.";
+        toast_on_plan_click = bonus_mode_active
+          ? "🎁 Une session bonus est en cours. Terminez-la avant d’acheter un nouveau code."
+          : "⚠️ Achat désactivé : vous avez déjà une session active. Utilisez « Utiliser ce code » si la connexion s’est interrompue.";
       }
-    } else if (has_bonus && (status === "expired" || status === "used")) {
-      toast_on_plan_click = "✅ Vous avez un BONUS disponible. Cliquez « Utiliser ce code » pour vous reconnecter.";
+    } else if (has_usable_bonus && (status === "expired" || status === "used")) {
+      toast_on_plan_click = "🎁 Vous avez un bonus disponible. Cliquez « Utiliser ce code » pour vous reconnecter.";
     }
 
     // Badge spec (truth-based)
@@ -2730,9 +2747,11 @@ app.get("/api/portal/status", async (req, res) => {
         data_remaining_human: row.data_remaining_human || null,
         devices_used: null,
         has_bonus,
-        bonus_seconds: Number(bonus.bonus_seconds || 0) || 0,
-        bonus_bytes: Number(bonus.bonus_bytes || 0) || 0,
-        bonus_compact: formatBonusCompactLine(Number(bonus.bonus_seconds || 0) || 0, Number(bonus.bonus_bytes || 0) || 0)
+        has_usable_bonus,
+        bonus_mode_active,
+        bonus_seconds: bonusSecondsN,
+        bonus_bytes: bonusBytesN,
+        bonus_compact: formatBonusCompactLine(bonusSecondsN, bonusBytesN)
       },
       purchase_lock,
       can_use,
@@ -2747,7 +2766,6 @@ app.get("/api/portal/status", async (req, res) => {
     return res.status(500).json({ ok: false, error: "internal_error" });
   }
 });
-
 
 
 // ===============================

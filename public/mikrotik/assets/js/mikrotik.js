@@ -814,163 +814,167 @@ try {
     const plan = j?.plan || {};
     const sess = j?.session || {};
     const ui = j?.ui || {};
-// Bonus (overlay only; status remains DB truth)
+
+// Bonus (UX follows backend truth)
+const bonusSeconds = Number(sess?.bonus_seconds || 0);
+const bonusBytes = Number(sess?.bonus_bytes || 0);
+
+const hasTimeBonus = bonusSeconds > 0;
+const hasDataBonus = (bonusBytes === -1 || bonusBytes > 0);
+
 const hasBonus =
   (sess && (sess.has_bonus === true)) ||
-  (Number(sess?.bonus_seconds || 0) > 0) ||
-  (Number(sess?.bonus_bytes || 0) !== 0);
+  hasTimeBonus ||
+  hasDataBonus;
+
+const hasUsableBonus =
+  (sess && (sess.has_usable_bonus === true)) ||
+  (hasTimeBonus && hasDataBonus);
+
+const bonusModeActive =
+  (sess && (sess.bonus_mode_active === true)) ||
+  (status === "active" && hasUsableBonus);
 
 // Bonus badges (optional elements in index.html)
 try {
   const bMain = document.getElementById("bonusBadgeMain");
   const bMini = document.getElementById("bonusBadgeMini");
-  const show = !!hasBonus && (status === "expired" || status === "used");
-  if (bMain) bMain.classList.toggle("hidden", !show);
-  if (bMini) bMini.classList.toggle("hidden", !show);
+
+  const show = bonusModeActive || (hasUsableBonus && (status === "expired" || status === "used"));
+
+  if (bMain) {
+    bMain.textContent = bonusModeActive ? "🎁 BONUS EN COURS" : "🎁 BONUS DISPONIBLE";
+    bMain.classList.toggle("hidden", !show);
+  }
+
+  if (bMini) {
+    bMini.textContent = bonusModeActive ? "🎁 EN COURS" : "🎁 BONUS";
+    bMini.classList.toggle("hidden", !show);
+  }
 } catch (_) {}
 
+const hasVoucher = status !== "none" && !!code;
 
+setStatusBadges(status);
+renderStatus({ hasVoucher, voucherCode: code });
 
-    const hasVoucher = status !== "none" && !!code;
+// Messages
+const accessMsg = document.getElementById("accessMsg");
+const hasMsg = document.getElementById("hasVoucherMsg");
 
-    setStatusBadges(status);
-    renderStatus({ hasVoucher, voucherCode: code });
+// Determine if voucher is actually usable (server is the source of truth)
+const canUse = !!j?.can_use && !!code;
 
-    // Messages
-    const accessMsg = document.getElementById("accessMsg");
-    const hasMsg = document.getElementById("hasVoucherMsg");
+// Compact bonus line for USER (e.g., "Bonus: +1h · +2GB")
+function buildBonusCompactLine(sec, bytes) {
+  try {
+    const s = Number(sec || 0) || 0;
+    const b = Number(bytes || 0) || 0;
+    const parts = [];
 
-    
-    // Determine if voucher is actually usable (server is the source of truth)
-    const canUse = !!j?.can_use && !!code;
+    if (s > 0) {
+      const m = Math.floor(s / 60);
+      const days = Math.floor(m / (24 * 60));
+      const remDay = m % (24 * 60);
+      const hours = Math.floor(remDay / 60);
+      const mins = remDay % 60;
 
-    // Bonus hints (do not override truth status; used only for UX messaging)
-    const bonusSeconds = Number(sess?.bonus_seconds || 0);
-    const bonusBytes = Number(sess?.bonus_bytes || 0);
-    const hasTimeBonus = bonusSeconds > 0;
-    const hasDataBonus = bonusBytes !== 0;
+      let t = "";
+      if (days > 0) t += days + "j";
+      if (hours > 0) t += (t ? " " : "") + hours + "h";
+      if (mins > 0 || (!days && !hours)) t += (t ? " " : "") + mins + "min";
+      parts.push("+" + t);
+    }
 
-
-    // Compact bonus line for USER (e.g., "Bonus: +1h · +2GB")
-    function buildBonusCompactLine(sec, bytes) {
-      try {
-        const s = Number(sec || 0) || 0;
-        const b = Number(bytes || 0) || 0;
-        const parts = [];
-
-        if (s > 0) {
-          const m = Math.floor(s / 60);
-          const days = Math.floor(m / (24 * 60));
-          const remDay = m % (24 * 60);
-          const hours = Math.floor(remDay / 60);
-          const mins = remDay % 60;
-
-          let t = "";
-          if (days > 0) t += days + "j";
-          if (hours > 0) t += (t ? " " : "") + hours + "h";
-          if (mins > 0 || (!days && !hours)) t += (t ? " " : "") + mins + "min";
-          parts.push("+" + t);
+    if (b !== 0) {
+      if (b === -1) {
+        parts.push("+∞");
+      } else if (b > 0) {
+        const gb = b / (1024 ** 3);
+        if (gb >= 1) {
+          const v = Math.round(gb * 10) / 10;
+          parts.push("+" + (v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)) + "GB");
+        } else {
+          const mb = b / (1024 ** 2);
+          const v = Math.round(mb);
+          parts.push("+" + v + "MB");
         }
-
-        if (b !== 0) {
-          if (b === -1) {
-            parts.push("+∞");
-          } else if (b > 0) {
-            const gb = b / (1024 ** 3);
-            if (gb >= 1) {
-              const v = Math.round(gb * 10) / 10;
-              parts.push("+" + (v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)) + "GB");
-            } else {
-              const mb = b / (1024 ** 2);
-              const v = Math.round(mb);
-              parts.push("+" + v + "MB");
-            }
-          } else {
-            parts.push("+bonus");
-          }
-        }
-
-        if (!parts.length) return "";
-        return "Bonus: " + parts.join(" · ");
-      } catch (_) {
-        return "";
       }
     }
 
-    const bonusCompact =
-      (sess && typeof sess.bonus_compact === "string" && sess.bonus_compact.trim())
-        ? String(sess.bonus_compact).trim()
-        : buildBonusCompactLine(bonusSeconds, bonusBytes);
+    if (!parts.length) return "";
+    return "Bonus: " + parts.join(" · ");
+  } catch (_) {
+    return "";
+  }
+}
 
-    // Ensure a dedicated bonus line exists under the main message (premium UX)
-    function setBonusLine(text) {
-      try {
-        const wrap = document.getElementById("voucherHas") || document.querySelector(".status-card") || document.body;
-        let el = document.getElementById("bonusLine");
-        if (!el) {
-          el = document.createElement("div");
-          el.id = "bonusLine";
-          el.className = "small";
-          el.style.marginTop = "6px";
-          // Prefer inserting right after the access message when possible
-          if (accessMsg && accessMsg.parentElement) {
-            accessMsg.insertAdjacentElement("afterend", el);
-          } else if (wrap) {
-            wrap.appendChild(el);
-          }
-        }
-        if (text) {
-          el.style.display = "";
-          el.textContent = text;
-        } else {
-          el.style.display = "none";
-          el.textContent = "";
-        }
-      } catch (_) {}
-    }
+const bonusCompact =
+  (sess && typeof sess.bonus_compact === "string" && sess.bonus_compact.trim())
+    ? String(sess.bonus_compact).trim()
+    : buildBonusCompactLine(bonusSeconds, bonusBytes);
 
-    const showBonusChip = !!hasBonus && (status === "expired" || status === "used");
-
-    if (hasMsg) {
-      if (status === "pending") hasMsg.textContent = "⏳ Code en attente d’activation";
-      else if (status === "active") hasMsg.textContent = "✅ Session active";
-      else if ((status === "used" || status === "expired") && showBonusChip && canUse) hasMsg.textContent = "🎁 Bonus disponible";
-      else if ((status === "used" || status === "expired") && showBonusChip && !canUse) hasMsg.textContent = "⚠️ Bonus détecté";
-      else if (status === "used") hasMsg.textContent = "⛔ Code utilisé";
-      else if (status === "expired") hasMsg.textContent = "⏰ Code expiré";
-      else hasMsg.textContent = "✅ Vérification…";
-    }
-
-    if (accessMsg) {
-      if (status === "pending") {
-        accessMsg.textContent = "Votre code est prêt. Cliquez « Utiliser ce code » pour démarrer votre forfait RAZAFI.";
-      } else if (status === "active") {
-        accessMsg.textContent = "Connexion active. Si la page revient ici, cliquez « Continuer » pour rester connecté.";
-      } else if (status === "used" || status === "expired") {
-        if (showBonusChip && canUse) {
-          accessMsg.textContent = "🎁 Un bonus a été ajouté à votre code. Cliquez « Réactiver ce code » pour vous reconnecter.";
-        } else if (showBonusChip && !canUse) {
-          // Bonus exists but does not match the blocking reason (ex: bonus data only while time expired)
-          if (status === "expired" && hasDataBonus && !hasTimeBonus) {
-            accessMsg.textContent = "Bonus détecté, mais ce code est terminé en temps. Ajoutez un bonus de temps pour le réactiver.";
-          } else if (status === "used" && hasTimeBonus && !hasDataBonus) {
-            accessMsg.textContent = "Bonus détecté, mais ce code a atteint sa limite de données. Ajoutez un bonus de données pour le réactiver.";
-          } else {
-            accessMsg.textContent = "Bonus détecté, mais insuffisant pour réactiver ce code. Contactez le point de vente ou achetez un nouveau code.";
-          }
-        } else {
-          accessMsg.textContent =
-            (status === "used")
-              ? "Ce code a déjà été entièrement consommé. Achetez un nouveau code pour continuer."
-              : "La durée de ce code est terminée. Achetez un nouveau code pour continuer.";
-        }
-      } else {
-        accessMsg.textContent = "Vérification de votre accès en cours…";
+// Ensure a dedicated bonus line exists under the main message (premium UX)
+function setBonusLine(text) {
+  try {
+    const wrap = document.getElementById("voucherHas") || document.querySelector(".status-card") || document.body;
+    let el = document.getElementById("bonusLine");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "bonusLine";
+      el.className = "small";
+      el.style.marginTop = "6px";
+      if (accessMsg && accessMsg.parentElement) {
+        accessMsg.insertAdjacentElement("afterend", el);
+      } else if (wrap) {
+        wrap.appendChild(el);
       }
     }
+    if (text) {
+      el.style.display = "";
+      el.textContent = text;
+    } else {
+      el.style.display = "none";
+      el.textContent = "";
+    }
+  } catch (_) {}
+}
 
-    // Bonus line (compact)
-    setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
+const showBonusChip = bonusModeActive || (hasUsableBonus && (status === "expired" || status === "used"));
+
+if (hasMsg) {
+  if (status === "pending") hasMsg.textContent = "⏳ Code en attente d’activation";
+  else if (status === "active" && bonusModeActive) hasMsg.textContent = "🎁 Bonus en cours";
+  else if (status === "active") hasMsg.textContent = "✅ Session active";
+  else if ((status === "used" || status === "expired") && hasUsableBonus && canUse) hasMsg.textContent = "🎁 Bonus disponible";
+  else if (status === "used") hasMsg.textContent = "⛔ Code utilisé";
+  else if (status === "expired") hasMsg.textContent = "⏰ Code expiré";
+  else hasMsg.textContent = "✅ Vérification…";
+}
+
+if (accessMsg) {
+  if (status === "pending") {
+    accessMsg.textContent = "Votre code est prêt. Cliquez « Utiliser ce code » pour démarrer votre forfait RAZAFI.";
+  } else if (status === "active" && bonusModeActive) {
+    accessMsg.textContent = "🎁 Votre bonus est en cours d’utilisation.";
+  } else if (status === "active") {
+    accessMsg.textContent = "Connexion active. Si la page revient ici, cliquez « Continuer » pour rester connecté.";
+  } else if (status === "used" || status === "expired") {
+    if (hasUsableBonus && canUse) {
+      accessMsg.textContent = "🎁 Un bonus a été ajouté à votre code. Cliquez « Réactiver ce code » pour vous reconnecter.";
+    } else {
+      accessMsg.textContent =
+        (status === "used")
+          ? "Ce code a déjà été entièrement consommé. Achetez un nouveau code pour continuer."
+          : "La durée de ce code est terminée. Achetez un nouveau code pour continuer.";
+    }
+  } else {
+    accessMsg.textContent = "Vérification de votre accès en cours…";
+  }
+}
+
+// Bonus line (compact)
+setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
 
     // Plan details
     setText(planNameEl, plan.name || plan.plan_name || "");
