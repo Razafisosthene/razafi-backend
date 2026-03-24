@@ -1353,7 +1353,6 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     const limit = Math.min(500, Math.max(1, safeNumber(req.query.limit, 200)));
     const offset = Math.max(0, safeNumber(req.query.offset, 0));
 
-    // ✅ Read from TRUTH VIEW (DB computed truth_status + remaining_seconds)
     let q = supabase
       .from("vw_voucher_sessions_truth")
       .select(`
@@ -1378,13 +1377,14 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         data_total_human,
         data_used_human,
         data_remaining_human,
+        is_bonus_session,
 
         plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
         pool:internet_pools ( id, name )
       `, { count: "exact" })
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
-    // 🔐 Pool scoping (server-side)
+
     if (!req.admin?.is_superadmin) {
       const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
       if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
@@ -1396,11 +1396,9 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       q = q.in("pool_id", allowed);
     }
 
-
-    // Best-effort: allow search by device alias too (client_devices.alias)
     let aliasMacs = [];
     if (search) {
-      const s = search.replace(/%/g, "\\%"); // avoid wildcard injection
+      const s = search.replace(/%/g, "\\%");
       try {
         const { data: arows, error: aerr } = await supabase
           .from("client_devices")
@@ -1420,18 +1418,15 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         `mvola_phone.ilike.%${s}%`,
       ];
       if (aliasMacs.length) {
-        // supabase OR syntax supports IN
         orParts.push(`client_mac.in.(${aliasMacs.map((m) => `"${m}"`).join(",")})`);
       }
       q = q.or(orParts.join(","));
     }
 
-    // ✅ Filter by DB truth
     if (status !== "all") {
       q = q.eq("truth_status", status);
     }
 
-    // ✅ Optional filters (UI dropdowns)
     if (plan_id && plan_id !== "all") {
       q = q.eq("plan_id", plan_id);
     }
@@ -1447,9 +1442,9 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       voucher_code: r.voucher_code,
 
       client_mac: r.client_mac,
-      client_name: null, // filled from client_devices (best-effort)
+      client_name: null,
       ap_mac: r.ap_mac,
-      ap_name: null, // will be filled from Tanaza (best-effort)
+      ap_name: null,
 
       pool_id: r.pool_id,
       pool_name: r.pool?.name || null,
@@ -1458,31 +1453,28 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       plan_name: r.plans?.name || null,
       plan_price: r.plans?.price_ar ?? null,
 
-      // ✅ truth status for UI
       stored_status: r.status || null,
       truth_status: r.truth_status || null,
-      status: r.truth_status || r.status || null, // keep clients.js compatible
+      status: r.truth_status || r.status || null,
 
       mvola_phone: r.mvola_phone || null,
       started_at: r.started_at || null,
       expires_at: r.expires_at || null,
+      is_bonus_session: !!r.is_bonus_session,
 
-      // ✅ from DB view
       remaining_seconds:
         (r.remaining_seconds === 0 || r.remaining_seconds)
           ? Number(r.remaining_seconds)
           : null,
-        // ✅ ADD THIS BLOCK RIGHT HERE
-  data_total_bytes: r.data_total_bytes ?? null,
-  data_used_bytes: r.data_used_bytes ?? null,
-  data_remaining_bytes: r.data_remaining_bytes ?? null,
-  data_total_human: r.data_total_human ?? null,
-  data_used_human: r.data_used_human ?? null,
-  data_remaining_human: r.data_remaining_human ?? null,
 
+      data_total_bytes: r.data_total_bytes ?? null,
+      data_used_bytes: r.data_used_bytes ?? null,
+      data_remaining_bytes: r.data_remaining_bytes ?? null,
+      data_total_human: r.data_total_human ?? null,
+      data_used_human: r.data_used_human ?? null,
+      data_remaining_human: r.data_remaining_human ?? null,
     }));
 
-    // ✅ Add Device Alias (best-effort)
     try {
       const macs = Array.from(new Set(items.map(i => i.client_mac).filter(Boolean)));
       const map = await getDeviceAliasMap(macs);
@@ -1492,7 +1484,6 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       }
     } catch (_) {}
 
-    // ✅ Add AP Name from Tanaza (best-effort, does not block response if Tanaza fails)
     try {
       const apMacs = Array.from(new Set(items.map(i => i.ap_mac).filter(Boolean)));
       if (apMacs.length && typeof tanazaBatchDevicesByMac === "function") {
@@ -1511,18 +1502,9 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       console.error("ADMIN CLIENTS: Tanaza name lookup failed:", e?.message || e);
     }
 
-    
-    // ------------------------------------------------------------
-    // System 3 fallback: if ap_mac is null (MikroTik), show router identity.
-    // Strategy:
-    // - fetch voucher_sessions.nas_id for returned ids (best-effort)
-    // - optionally map nas_id -> friendly name via public.mikrotik_routers
-    // - set ap_name if still missing
-    // ------------------------------------------------------------
     try {
       const ids = Array.from(new Set(items.map((i) => i.id).filter(Boolean)));
       if (ids.length) {
-        // 1) Fetch nas_id from base table (does not depend on vw columns)
         const { data: vsRows, error: vsErr } = await supabase
           .from("voucher_sessions")
           .select("id, nas_id")
@@ -1535,7 +1517,6 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
               .map((r) => [r.id, (r.nas_id ? String(r.nas_id) : null)])
           );
 
-          // 2) Optional friendly name mapping table
           const nasIds = Array.from(
             new Set(Object.values(idToNas).filter((v) => v && String(v).trim()))
           );
@@ -1556,7 +1537,6 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
             }
           }
 
-          // 3) Apply fallback
           for (const it of items) {
             if (!it.ap_name) {
               const nas = idToNas[it.id];
@@ -1566,48 +1546,76 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         }
       }
     } catch (e) {
-      // Ignore if the column/table doesn't exist yet, or if RLS blocks it.
       console.error("ADMIN CLIENTS: MikroTik AP fallback failed:", e?.message || e);
     }
 
-// ------------------------------
-// Bonus overlay (does NOT change status)
-// ------------------------------
-try {
-  const ids = Array.from(new Set((items || []).map(x => x?.id).filter(Boolean)));
-  if (ids.length) {
-    const { data: bRows, error: bErr } = await supabase
-      .from("voucher_bonus_overrides")
-      .select("voucher_session_id,bonus_seconds,bonus_bytes")
-      .in("voucher_session_id", ids);
+    // ------------------------------
+    // Bonus overlay + cleanup-aware flags
+    // ------------------------------
+    try {
+      const ids = Array.from(new Set((items || []).map(x => x?.id).filter(Boolean)));
+      if (ids.length) {
+        const { data: bRows, error: bErr } = await supabase
+          .from("voucher_bonus_overrides")
+          .select("voucher_session_id,bonus_seconds,bonus_bytes")
+          .in("voucher_session_id", ids);
 
-    if (!bErr && Array.isArray(bRows)) {
-      const bMap = {};
-      for (const b of bRows) {
-        const k = String(b.voucher_session_id || "").trim();
-        if (!k) continue;
-        bMap[k] = {
-          bonus_seconds: Number(b.bonus_seconds || 0) || 0,
-          bonus_bytes: Number(b.bonus_bytes || 0) || 0,
-        };
+        if (!bErr && Array.isArray(bRows)) {
+          const bMap = {};
+          for (const b of bRows) {
+            const k = String(b.voucher_session_id || "").trim();
+            if (!k) continue;
+            bMap[k] = {
+              bonus_seconds: Number(b.bonus_seconds || 0) || 0,
+              bonus_bytes: Number(b.bonus_bytes || 0) || 0,
+            };
+          }
+
+          for (const it of items) {
+            const b = bMap[String(it.id)];
+            const bs = Number(b?.bonus_seconds || 0) || 0;
+            const bb = Number(b?.bonus_bytes || 0) || 0;
+
+            const hasTimeBonus = bs > 0;
+            const hasDataBonus = (bb === -1 || bb > 0);
+
+            it.bonus_seconds = bs;
+            it.bonus_bytes = bb;
+            it.has_bonus = hasTimeBonus || hasDataBonus;
+
+            // Backend truth for admin UI
+            it.has_usable_bonus =
+              !it.is_bonus_session &&
+              (String(it.status || "").toLowerCase() === "used" || String(it.status || "").toLowerCase() === "expired") &&
+              hasTimeBonus &&
+              hasDataBonus;
+
+            it.bonus_mode_active =
+              !!it.is_bonus_session &&
+              String(it.status || "").toLowerCase() === "active" &&
+              hasTimeBonus &&
+              hasDataBonus;
+          }
+        } else {
+          for (const it of items) {
+            it.bonus_seconds = 0;
+            it.bonus_bytes = 0;
+            it.has_bonus = false;
+            it.has_usable_bonus = false;
+            it.bonus_mode_active = false;
+          }
+        }
       }
-      for (const it of items) {
-        const b = bMap[String(it.id)];
-        const bs = Number(b?.bonus_seconds || 0) || 0;
-        const bb = Number(b?.bonus_bytes || 0) || 0;
-        it.bonus_seconds = bs;
-        it.bonus_bytes = bb;
-        it.has_bonus = (bs > 0) || (bb !== 0);
+    } catch (e) {
+      for (const it of items || []) {
+        it.bonus_seconds = 0;
+        it.bonus_bytes = 0;
+        it.has_bonus = false;
+        it.has_usable_bonus = false;
+        it.bonus_mode_active = false;
       }
-    } else {
-      for (const it of items) { it.bonus_seconds = 0; it.bonus_bytes = 0; it.has_bonus = false; }
     }
-  }
-} catch (e) {
-  for (const it of items || []) { it.bonus_seconds = 0; it.bonus_bytes = 0; it.has_bonus = false; }
-}
 
-// ✅ Summary based on DB truth_status
     const total = count || 0;
     const active = items.filter(i => i.truth_status === "active").length;
     const pending = items.filter(i => i.truth_status === "pending").length;
