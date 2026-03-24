@@ -2545,7 +2545,6 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
   }
 });
 
-
 // ===============================
 // SYSTEM 3 (MikroTik Portal) — TRUTH STATUS (single-source-of-truth for user portal)
 // GET /api/portal/status?client_mac=AA:BB:...&voucher_code=RAZAFI-XXXX
@@ -2553,8 +2552,9 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
 // - Enriches plan details from plans via plan_id (name/duration/max_devices/limit)
 // - Does NOT filter by NAS (vouchers are network-wide in System 3)
 // - UI rules:
-//    * pending/active => purchase_lock=true, can_use=true
-//    * used/expired/none => purchase_lock=false, can_use=false
+// * pending/active => purchase_lock=true, can_use=true
+// * used/expired/none => purchase_lock=false
+// * bonus is usable only while still alive
 // ===============================
 app.get("/api/portal/status", async (req, res) => {
   try {
@@ -2567,32 +2567,30 @@ app.get("/api/portal/status", async (req, res) => {
     const voucher_code_raw = req.query.voucher_code || req.query.voucherCode || "";
     const voucher_code = String(voucher_code_raw || "").trim() || null;
 
-    // System 3 identity: NAS only (vouchers are network-wide). We accept nas_id for logging only.
     const nas_id = String(req.query.nas_id || req.query.nasId || req.query.nas || "").trim() || null;
 
     if (!client_mac) {
       return res.status(400).json({ ok: false, error: "client_mac_required" });
     }
 
-    // 1) Load the latest session for this client (optionally filtered by voucher_code if provided)
-    // Truth is computed in DB view (single source of truth).
-    let q = supabase
-      .from("vw_voucher_sessions_truth")
-      .select("*")
-      .eq("client_mac", client_mac)
-      .order("created_at", { ascending: false })
-      .limit(1);
+    async function loadLatestTruthRow() {
+      let q = supabase
+        .from("vw_voucher_sessions_truth")
+        .select("*")
+        .eq("client_mac", client_mac)
+        .order("created_at", { ascending: false })
+        .limit(1);
 
-    if (voucher_code) q = q.eq("voucher_code", voucher_code);
+      if (voucher_code) q = q.eq("voucher_code", voucher_code);
 
-    const { data: rows, error: err } = await q;
-    if (err) throw err;
+      const { data: rows, error: err } = await q;
+      if (err) throw err;
+      return (rows && rows[0]) ? rows[0] : null;
+    }
 
-    const row = (rows && rows[0]) ? rows[0] : null;
+    let row = await loadLatestTruthRow();
 
-    // If no session found, return none
     if (!row) {
-      // support phone: pool contact -> fallback
       let supportPhone = DEFAULT_SUPPORT_PHONE;
       try {
         const { data: poolRow } = await supabase
@@ -2620,7 +2618,94 @@ app.get("/api/portal/status", async (req, res) => {
       });
     }
 
-    // Truth status from DB (do NOT override in server)
+    // --------------------------------------------------
+    // BONUS CLEANUP (single-use bonus rule)
+    // If bonus session exists and either time OR data is exhausted,
+    // destroy current bonus and fall back to normal truth status.
+    // --------------------------------------------------
+    let bonus = { bonus_seconds: 0, bonus_bytes: 0, note: null, updated_at: null, updated_by: null };
+
+    try {
+      const { data: bRow } = await supabase
+        .from("voucher_bonus_overrides")
+        .select("bonus_seconds,bonus_bytes,note,updated_at,updated_by")
+        .eq("voucher_session_id", row.id)
+        .maybeSingle();
+
+      if (bRow) {
+        bonus = {
+          bonus_seconds: Number(bRow.bonus_seconds || 0) || 0,
+          bonus_bytes: Number(bRow.bonus_bytes || 0) || 0,
+          note: bRow.note || null,
+          updated_at: bRow.updated_at || null,
+          updated_by: bRow.updated_by || null,
+        };
+      }
+    } catch (_) {}
+
+    const bonusSecondsN0 = Number(bonus.bonus_seconds || 0) || 0;
+    const bonusBytesN0 = Number(bonus.bonus_bytes || 0) || 0;
+    const isBonusSession = row.is_bonus_session === true || row.is_bonus_session === "true";
+
+    let bonusDead = false;
+
+    if (isBonusSession) {
+      const nowMs = Date.now();
+
+      // 1) Time kill
+      let timeDead = false;
+      try {
+        const expMs = row.expires_at ? new Date(row.expires_at).getTime() : null;
+        timeDead = Number.isFinite(expMs) && expMs <= nowMs;
+      } catch (_) {
+        timeDead = false;
+      }
+
+      // 2) Data kill (only if limited bonus data)
+      let dataDead = false;
+      try {
+        const usedBytes = BigInt(String(row.data_used_bytes ?? 0));
+        if (bonusBytesN0 !== -1 && bonusBytesN0 > 0) {
+          dataDead = usedBytes >= BigInt(bonusBytesN0);
+        }
+      } catch (_) {
+        dataDead = false;
+      }
+
+      bonusDead = timeDead || dataDead;
+
+      if (bonusDead) {
+        try {
+          await supabase
+            .from("voucher_sessions")
+            .update({
+              is_bonus_session: false,
+              updated_at: new Date().toISOString()
+            })
+            .eq("id", row.id);
+        } catch (_) {}
+
+        try {
+          await supabase
+            .from("voucher_bonus_overrides")
+            .update({
+              bonus_seconds: 0,
+              bonus_bytes: 0,
+              note: null,
+              updated_at: new Date().toISOString(),
+              updated_by: "portal_status_cleanup"
+            })
+            .eq("voucher_session_id", row.id);
+        } catch (_) {}
+
+        // Re-read truth after cleanup so portal returns the normal/original voucher status
+        row = await loadLatestTruthRow();
+
+        // Reload bonus after cleanup
+        bonus = { bonus_seconds: 0, bonus_bytes: 0, note: null, updated_at: null, updated_by: null };
+      }
+    }
+
     const status = String(row.status || row.truth_status || "none").toLowerCase();
 
     // 2) Load plan info
@@ -2649,41 +2734,20 @@ app.get("/api/portal/status", async (req, res) => {
       }
     } catch (_) {}
 
-    // 4) Bonus overlay (does NOT change truth status)
-    let bonus = { bonus_seconds: 0, bonus_bytes: 0, note: null, updated_at: null, updated_by: null };
-    try {
-      const { data: bRow } = await supabase
-        .from("voucher_bonus_overrides")
-        .select("bonus_seconds,bonus_bytes,note,updated_at,updated_by")
-        .eq("voucher_session_id", row.id)
-        .maybeSingle();
-      if (bRow) {
-        bonus = {
-          bonus_seconds: Number(bRow.bonus_seconds || 0) || 0,
-          bonus_bytes: Number(bRow.bonus_bytes || 0) || 0,
-          note: bRow.note || null,
-          updated_at: bRow.updated_at || null,
-          updated_by: bRow.updated_by || null,
-        };
-      }
-    } catch (_) {}
-
-const bonusSecondsN = Number(bonus.bonus_seconds || 0) || 0;
+    const bonusSecondsN = Number(bonus.bonus_seconds || 0) || 0;
     const bonusBytesN = Number(bonus.bonus_bytes || 0) || 0;
 
     const hasTimeBonus = bonusSecondsN > 0;
     const hasDataBonus = (bonusBytesN === -1 || bonusBytesN > 0);
 
-    // Historical/current presence
     const has_bonus = hasTimeBonus || hasDataBonus;
-
-    // Final UX truth: a bonus is usable only if it has BOTH time + data (or unlimited data)
     const has_usable_bonus = hasTimeBonus && hasDataBonus;
 
-    // During bonus session, voucher is active and bonus is currently being consumed
-    const bonus_mode_active = (status === "active") && has_usable_bonus;
+    const bonus_mode_active =
+      (row.is_bonus_session === true || row.is_bonus_session === "true") &&
+      status === "active" &&
+      has_usable_bonus;
 
-    // Duration minutes (support duration_hours fallback)
     const durMin =
       planRow && planRow.duration_minutes != null
         ? Number(planRow.duration_minutes)
@@ -2697,13 +2761,11 @@ const bonusSecondsN = Number(bonus.bonus_seconds || 0) || 0;
         : null
     );
 
-    // UI rules (truth-based)
     const purchase_lock = status === "pending" || status === "active";
     const can_use =
       (status === "pending" || status === "active") ||
       (has_usable_bonus && (status === "expired" || status === "used"));
 
-    // Toast copy for "plan click" (UX only; still blocks purchases when needed)
     let toast_on_plan_click = "";
     if (purchase_lock) {
       if (status === "pending") {
@@ -2717,7 +2779,6 @@ const bonusSecondsN = Number(bonus.bonus_seconds || 0) || 0;
       toast_on_plan_click = "🎁 Vous avez un bonus disponible. Cliquez « Utiliser ce code » pour vous reconnecter.";
     }
 
-    // Badge spec (truth-based)
     let badge = { tone: "none", label: "AUCUN CODE", icon: "ℹ️" };
     if (status === "pending") badge = { tone: "pending", label: "EN ATTENTE", icon: "⏳" };
     else if (status === "active") badge = { tone: "active", label: "ACTIF", icon: "🔓" };
@@ -2766,7 +2827,6 @@ const bonusSecondsN = Number(bonus.bonus_seconds || 0) || 0;
     return res.status(500).json({ ok: false, error: "internal_error" });
   }
 });
-
 
 // ===============================
 // ADMIN — PLANS CRUD (A2.3)
