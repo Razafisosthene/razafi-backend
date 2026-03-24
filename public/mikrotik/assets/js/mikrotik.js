@@ -815,25 +815,23 @@ try {
     const sess = j?.session || {};
     const ui = j?.ui || {};
 
-// Bonus (UX follows backend truth)
+// Bonus (UX follows backend truth ONLY)
 const bonusSeconds = Number(sess?.bonus_seconds || 0);
 const bonusBytes = Number(sess?.bonus_bytes || 0);
 
 const hasTimeBonus = bonusSeconds > 0;
 const hasDataBonus = (bonusBytes === -1 || bonusBytes > 0);
 
+// Informational only: a bonus record may still exist
 const hasBonus =
   (sess && (sess.has_bonus === true)) ||
   hasTimeBonus ||
   hasDataBonus;
 
-const hasUsableBonus =
-  (sess && (sess.has_usable_bonus === true)) ||
-  (hasTimeBonus && hasDataBonus);
-
-const bonusModeActive =
-  (sess && (sess.bonus_mode_active === true)) ||
-  (status === "active" && hasUsableBonus);
+// IMPORTANT: do NOT recompute usability on frontend.
+// Backend is the single source of truth.
+const hasUsableBonus = !!(sess && sess.has_usable_bonus === true);
+const bonusModeActive = !!(sess && sess.bonus_mode_active === true);
 
 // Bonus badges (optional elements in index.html)
 try {
