@@ -292,15 +292,8 @@ function renderTable(items) {
 const rowStatus = normStatus(it.status);
     const rowBonusSeconds = toNum(it.bonus_seconds, 0);
     const rowBonusBytes = Number(v(it.bonus_bytes ?? 0));
-
-    const rowHasUsableBonus =
-      !!it.has_usable_bonus ||
-      (rowBonusSeconds > 0 && (rowBonusBytes === -1 || rowBonusBytes > 0));
-
-    const rowBonusModeActive =
-      !!it.bonus_mode_active ||
-      (rowStatus === "active" && rowHasUsableBonus);
-
+const rowHasUsableBonus = !!it.has_usable_bonus;
+const rowBonusModeActive = !!it.bonus_mode_active;
     const bonusChip = rowBonusModeActive
       ? ' <span title="Bonus en cours" style="font-size:12px; padding:2px 6px; border-radius:999px; border:1px solid rgba(13,110,253,.35); background:rgba(13,110,253,.08);">🎁 Bonus en cours</span>'
       : ((rowHasUsableBonus && (rowStatus === "expired" || rowStatus === "used"))
