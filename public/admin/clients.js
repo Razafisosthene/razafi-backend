@@ -418,6 +418,8 @@ async function openDetail(id) {
     const data = await fetchJSON("/api/admin/voucher-sessions/" + encodeURIComponent(id));
     const it = data.item;
 
+    const rowItem = Array.isArray(lastItems) ? lastItems.find(x => String(x.id) === String(id)) : null;
+
     sub.textContent = `Voucher ${it.voucher_code || "—"} · Session ID ${it.id}`;
 
     const rows = [
@@ -689,8 +691,8 @@ try {
 
   // Current bonus MUST follow the same enriched admin data already used by the table.
   // Do NOT read the raw bonus endpoint here; it can drift from the effective UI truth.
-  const curSec = Number(it.bonus_seconds || 0);
-  const curBytes = Number(it.bonus_bytes || 0);
+const curSec = Number(rowItem?.bonus_seconds || 0);
+const curBytes = Number(rowItem?.bonus_bytes || 0);
 
   function formatCurrentBonusLine(sec, bytes) {
     const s = Number(sec || 0) || 0;
