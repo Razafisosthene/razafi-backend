@@ -5713,7 +5713,7 @@ let error = null;
 try {
   const r1 = await supabase
     .from("vw_voucher_sessions_truth")
-    .select("id,voucher_code,status,truth_status,client_mac,pool_id,plan_id,mvola_phone,data_used_bytes,expires_at,activated_at,started_at,created_at")
+    .select("id,voucher_code,status,truth_status,client_mac,pool_id,plan_id,mvola_phone,data_used_bytes,expires_at,activated_at,started_at,created_at,is_bonus_session")
     .ilike("voucher_code", username)
     .order("created_at", { ascending: false })
     .limit(1);
@@ -5727,7 +5727,7 @@ try {
 if (error || !rows || !rows.length) {
   const r2 = await supabase
     .from("voucher_sessions")
-    .select("id,voucher_code,status,client_mac,pool_id,plan_id,mvola_phone,data_used_bytes,expires_at,activated_at,started_at,created_at")
+   .select("id,voucher_code,status,client_mac,pool_id,plan_id,mvola_phone,data_used_bytes,expires_at,activated_at,started_at,created_at,is_bonus_session")
     .ilike("voucher_code", username)
     .order("created_at", { ascending: false })
     .limit(1);
@@ -5741,12 +5741,37 @@ if (error || !rows || !rows.length) {
 
 const session = rows[0];
 
+try {
+  const { data: rawSession } = await supabase
+    .from("voucher_sessions")
+    .select("is_bonus_session,status,started_at,expires_at")
+    .eq("id", session.id)
+    .maybeSingle();
+
+  if (rawSession) {
+    session.is_bonus_session = rawSession.is_bonus_session;
+    if (rawSession.status) session.status = rawSession.status;
+    if (rawSession.started_at) session.started_at = rawSession.started_at;
+    if (rawSession.expires_at) session.expires_at = rawSession.expires_at;
+  }
+} catch (_) {}
+
+console.log("RADIUS SESSION AFTER ENRICH", {
+  id: session.id,
+  status: session.status,
+  truth_status: session.truth_status,
+  is_bonus_session: session.is_bonus_session,
+  started_at: session.started_at,
+  expires_at: session.expires_at,
+  data_used_bytes: session.data_used_bytes
+});
 
 // Bonus override (by voucher session id) — used for time/data bonuses
 let bonusOverride = { bonus_seconds: 0, bonus_bytes: 0 };
 try {
   bonusOverride = await getVoucherBonusOverride({ voucher_session_id: session.id });
 } catch (_) {
+
   bonusOverride = { bonus_seconds: 0, bonus_bytes: 0 };
 }
 const bonusSeconds = Math.max(0, Math.floor(Number(bonusOverride?.bonus_seconds || 0) || 0));
