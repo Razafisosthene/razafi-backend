@@ -1571,63 +1571,31 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
             };
           }
 
- for (const it of items) {
-  const b = bMap[String(it.id)];
-  let bs = Number(b?.bonus_seconds || 0) || 0;
-  let bb = Number(b?.bonus_bytes || 0) || 0;
+          for (const it of items) {
+            const b = bMap[String(it.id)];
+            const bs = Number(b?.bonus_seconds || 0) || 0;
+            const bb = Number(b?.bonus_bytes || 0) || 0;
 
-  const hasTimeBonus = bs > 0;
-  const hasDataBonus = (bb === -1 || bb > 0);
+            const hasTimeBonus = bs > 0;
+            const hasDataBonus = (bb === -1 || bb > 0);
 
-  // ============================
-  // 🔥 AUTO CLEANUP (NEW VAOVAO)
-  // ============================
-  const now = new Date();
+            it.bonus_seconds = bs;
+            it.bonus_bytes = bb;
+            it.has_bonus = hasTimeBonus || hasDataBonus;
 
-  const expired =
-    it.expires_at &&
-    new Date(it.expires_at) <= now;
+            // Backend truth for admin UI
+            it.has_usable_bonus =
+              !it.is_bonus_session &&
+              (String(it.status || "").toLowerCase() === "used" || String(it.status || "").toLowerCase() === "expired") &&
+              hasTimeBonus &&
+              hasDataBonus;
 
-  const dataReached =
-    bb > 0 &&
-    it.data_used_bytes != null &&
-    Number(it.data_used_bytes) >= bb;
-
-  if (expired || dataReached) {
-    // 🔥 RESET BONUS IN DB
-    await supabase
-      .from("voucher_bonus_overrides")
-      .update({
-        bonus_seconds: 0,
-        bonus_bytes: 0,
-        note: null,
-      })
-      .eq("voucher_session_id", it.id);
-
-    // reset locally
-    bs = 0;
-    bb = 0;
-  }
-
-  it.bonus_seconds = bs;
-  it.bonus_bytes = bb;
-  it.has_bonus = (bs > 0) || (bb !== 0);
-
-  // Backend truth for admin UI
-  it.has_usable_bonus =
-    !it.is_bonus_session &&
-    (String(it.status || "").toLowerCase() === "used" ||
-     String(it.status || "").toLowerCase() === "expired") &&
-    (bs > 0) &&
-    (bb === -1 || bb > 0);
-
-  it.bonus_mode_active =
-    !!it.is_bonus_session &&
-    String(it.status || "").toLowerCase() === "active" &&
-    (bs > 0) &&
-    (bb === -1 || bb > 0);
-}
-
+            it.bonus_mode_active =
+              !!it.is_bonus_session &&
+              String(it.status || "").toLowerCase() === "active" &&
+              hasTimeBonus &&
+              hasDataBonus;
+          }
         } else {
           for (const it of items) {
             it.bonus_seconds = 0;
@@ -1704,7 +1672,7 @@ app.post("/api/admin/client-devices/rename", requireAdmin, async (req, res) => {
 });
 
 // GET one voucher_session for detail view (Truth View)
-app.get("/:id", requireAdmin, async (req, res) => {
+app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
     const id = String(req.params.id || "").trim();
