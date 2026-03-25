@@ -292,8 +292,15 @@ function renderTable(items) {
 const rowStatus = normStatus(it.status);
     const rowBonusSeconds = toNum(it.bonus_seconds, 0);
     const rowBonusBytes = Number(v(it.bonus_bytes ?? 0));
-const rowHasUsableBonus = !!it.has_usable_bonus;
-const rowBonusModeActive = !!it.bonus_mode_active;
+
+    const rowHasUsableBonus =
+      !!it.has_usable_bonus ||
+      (rowBonusSeconds > 0 && (rowBonusBytes === -1 || rowBonusBytes > 0));
+
+    const rowBonusModeActive =
+      !!it.bonus_mode_active ||
+      (rowStatus === "active" && rowHasUsableBonus);
+
     const bonusChip = rowBonusModeActive
       ? ' <span title="Bonus en cours" style="font-size:12px; padding:2px 6px; border-radius:999px; border:1px solid rgba(13,110,253,.35); background:rgba(13,110,253,.08);">🎁 Bonus en cours</span>'
       : ((rowHasUsableBonus && (rowStatus === "expired" || rowStatus === "used"))
@@ -680,30 +687,43 @@ try {
   const msgId = `bonusMsg_${sessionId}`;
   const curId = `bonusCur_${sessionId}`;
 
-  // Load current bonus (read-only users can VIEW it; only saving is blocked)
-  let curBonus = { bonus_seconds: 0, bonus_bytes: 0 };
-  try {
-    const r = await fetchJSON("/api/admin/voucher-bonus-overrides?voucher_session_id=" + encodeURIComponent(sessionId));
-    curBonus = r?.item || curBonus;
-  } catch (_) {}
+  // Current bonus MUST follow the same enriched admin data already used by the table.
+  // Do NOT read the raw bonus endpoint here; it can drift from the effective UI truth.
+  const curSec = Number(it.bonus_seconds || 0);
+  const curBytes = Number(it.bonus_bytes || 0);
 
-  const curSec = Number(curBonus.bonus_seconds || 0);
-  const curBytes = Number(curBonus.bonus_bytes || 0);
+  function formatCurrentBonusLine(sec, bytes) {
+    const s = Number(sec || 0) || 0;
+    const b = Number(bytes || 0) || 0;
+    const parts = [];
 
-  const curDays = Math.floor(curSec / 86400);
-  const curHours = Math.floor((curSec % 86400) / 3600);
-  const curMins = Math.floor((curSec % 3600) / 60);
+    if (s > 0) {
+      const totalMin = Math.floor(s / 60);
+      const days = Math.floor(totalMin / (24 * 60));
+      const remDay = totalMin % (24 * 60);
+      const hours = Math.floor(remDay / 60);
+      const mins = remDay % 60;
+      const timeParts = [];
+      if (days > 0) timeParts.push(`${days}j`);
+      if (hours > 0) timeParts.push(`${hours}h`);
+      if (mins > 0 || (!days && !hours)) timeParts.push(`${mins}min`);
+      parts.push(timeParts.join(' '));
+    }
 
-  let curMb = 0;
-  let curGbStr = "0";
-  let curUnlimited = false;
-  if (curBytes === -1) {
-    curUnlimited = true;
-    curGbStr = "Unlimited";
-  } else {
-    curMb = Math.floor(curBytes / (1024 * 1024));
-    const curGb = curBytes / (1024 * 1024 * 1024);
-    curGbStr = curBytes ? (curGb >= 10 ? curGb.toFixed(1) : curGb.toFixed(2)) : "0";
+    if (b === -1) {
+      parts.push('∞');
+    } else if (b > 0) {
+      const gb = b / (1024 ** 3);
+      if (gb >= 1) {
+        const v = Math.round(gb * 10) / 10;
+        parts.push((v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)) + ' GB');
+      } else {
+        const mb = Math.round(b / (1024 ** 2));
+        parts.push(mb + ' MB');
+      }
+    }
+
+    return parts.length ? parts.join(' · ') : 'Aucun bonus actif';
   }
 
   detail.insertAdjacentHTML("beforeend", `
@@ -712,11 +732,12 @@ try {
         <div>
           <div style="font-size:12px; opacity:.7;">Bonus (time/data) for this voucher</div>
           <div class="subtitle" style="margin-top:6px; opacity:.8;">
-            Add bonus even if expired/used. Time bonus extends <b>expires_at</b> if the session is already started.
-            Data bonus increases MikroTik total limit on next authorize.
+            Bonus = mini-plan temporaire.<br>
+            Le bonus remplace temporairement le plan principal et est consommé indépendamment.<br>
+            Une fois épuisé (temps ou data), le voucher revient automatiquement à son état normal.
           </div>
           <div id="${curId}" style="margin-top:8px; font-size:13px;">
-            Current bonus: <b>${esc(curDays)}j ${esc(curHours)}h ${esc(curMins)}min</b> · <b>${esc(curGbStr)}${curUnlimited ? "" : " GB"}</b>${(!curUnlimited && curMb) ? ` <span style="opacity:.75;">(${esc(curMb)} MB)</span>` : ""}
+            Bonus actuel : <b>${esc(formatCurrentBonusLine(curSec, curBytes))}</b>
           </div>
         </div>
 
