@@ -1550,10 +1550,11 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     }
 
     // ------------------------------
-    // Bonus overlay + cleanup-aware flags
+    // Bonus overlay + cleanup-aware flags (FINAL)
     // ------------------------------
     try {
       const ids = Array.from(new Set((items || []).map(x => x?.id).filter(Boolean)));
+
       if (ids.length) {
         const { data: bRows, error: bErr } = await supabase
           .from("voucher_bonus_overrides")
@@ -1562,9 +1563,11 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
 
         if (!bErr && Array.isArray(bRows)) {
           const bMap = {};
+
           for (const b of bRows) {
             const k = String(b.voucher_session_id || "").trim();
             if (!k) continue;
+
             bMap[k] = {
               bonus_seconds: Number(b.bonus_seconds || 0) || 0,
               bonus_bytes: Number(b.bonus_bytes || 0) || 0,
@@ -1573,8 +1576,57 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
 
           for (const it of items) {
             const b = bMap[String(it.id)];
-            const bs = Number(b?.bonus_seconds || 0) || 0;
-            const bb = Number(b?.bonus_bytes || 0) || 0;
+
+            let bs = Number(b?.bonus_seconds || 0) || 0;
+            let bb = Number(b?.bonus_bytes || 0) || 0;
+
+            // Current truth first
+            const statusNorm = String(it.status || "").toLowerCase();
+            const isBonusSession = !!it.is_bonus_session;
+
+            // ============================
+            // 🔥 AUTO CLEANUP (admin-side)
+            // If bonus session has ended by time OR data, destroy the bonus immediately
+            // so admin reflects the same truth without waiting for portal open.
+            // ============================
+            const now = new Date();
+
+            const expired =
+              isBonusSession &&
+              it.expires_at &&
+              new Date(it.expires_at) <= now;
+
+            const dataReached =
+              isBonusSession &&
+              bb > 0 &&
+              it.data_used_bytes != null &&
+              Number(it.data_used_bytes) >= bb;
+
+            if (expired || dataReached) {
+              await supabase
+                .from("voucher_bonus_overrides")
+                .update({
+                  bonus_seconds: 0,
+                  bonus_bytes: 0,
+                  note: null,
+                  updated_at: new Date().toISOString(),
+                  updated_by: req.admin?.email || null,
+                })
+                .eq("voucher_session_id", it.id);
+
+              await supabase
+                .from("voucher_sessions")
+                .update({
+                  is_bonus_session: false,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("id", it.id);
+
+              // Reset local values immediately for this response
+              bs = 0;
+              bb = 0;
+              it.is_bonus_session = false;
+            }
 
             const hasTimeBonus = bs > 0;
             const hasDataBonus = (bb === -1 || bb > 0);
@@ -1586,13 +1638,13 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
             // Backend truth for admin UI
             it.has_usable_bonus =
               !it.is_bonus_session &&
-              (String(it.status || "").toLowerCase() === "used" || String(it.status || "").toLowerCase() === "expired") &&
+              (statusNorm === "used" || statusNorm === "expired") &&
               hasTimeBonus &&
               hasDataBonus;
 
             it.bonus_mode_active =
               !!it.is_bonus_session &&
-              String(it.status || "").toLowerCase() === "active" &&
+              statusNorm === "active" &&
               hasTimeBonus &&
               hasDataBonus;
           }
@@ -1607,6 +1659,8 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         }
       }
     } catch (e) {
+      console.error("BONUS CLEANUP ERROR", e);
+
       for (const it of items || []) {
         it.bonus_seconds = 0;
         it.bonus_bytes = 0;
@@ -1616,6 +1670,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       }
     }
 
+    // ✅ Summary based on DB truth_status
     const total = count || 0;
     const active = items.filter(i => i.truth_status === "active").length;
     const pending = items.filter(i => i.truth_status === "pending").length;
@@ -1627,6 +1682,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       total,
       summary: { total, active, pending, used, expired }
     });
+
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
