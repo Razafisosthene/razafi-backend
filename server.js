@@ -5735,6 +5735,14 @@ if (error || !rows || !rows.length) {
   error = r2.error;
 }
 
+console.log("AUTHORIZE LOOKUP", {
+  username,
+  error: error ? String(error.message || error) : null,
+  rowCount: Array.isArray(rows) ? rows.length : null,
+  firstRowId: rows?.[0]?.id || null,
+  firstRowVoucher: rows?.[0]?.voucher_code || null
+});
+
 if (error || !rows || !rows.length) {
   return sendReject("unknown_code", { nas_id, client_mac, metadata: { username } });
 }
