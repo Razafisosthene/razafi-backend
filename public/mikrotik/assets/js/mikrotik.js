@@ -1278,7 +1278,7 @@ try {
   };
 
   const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), 1200);
+  const t = setTimeout(() => controller.abort(), 5000);
 
   let activationDenied = false;
   let activationErrorCode = "";
