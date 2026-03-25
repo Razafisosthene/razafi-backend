@@ -5832,6 +5832,12 @@ const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusByt
     const isUsableStatus = (effectiveStatus === "active" || effectiveStatus === "pending");
     const isBonusSession = (session.is_bonus_session === true);
 
+console.log("BONUS MODE CHECK", {
+  voucher: session.voucher_code,
+  is_bonus_session: session.is_bonus_session,
+  isBonusSession
+});
+
     // Determine whether the session is currently time-expired (only meaningful if started_at exists).
     const nowMs = now.getTime();
     let expMs = null;
