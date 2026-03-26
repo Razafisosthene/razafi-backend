@@ -1840,6 +1840,36 @@ function saturationLabel(pct) {
     return $all(".plan-card");
   }
 
+
+  function getTermsCheckbox() {
+    return document.getElementById("acceptTermsCheckbox");
+  }
+
+  function getTermsError() {
+    return document.getElementById("termsError");
+  }
+
+  function hasAcceptedTerms() {
+    const checkbox = getTermsCheckbox();
+    return !!(checkbox && checkbox.checked);
+  }
+
+  function showTermsRequiredFeedback() {
+    const error = getTermsError();
+    if (error) error.classList.remove("hidden");
+
+    const termsCard = document.querySelector(".terms-card");
+    if (termsCard && typeof termsCard.scrollIntoView === "function") {
+      try {
+        termsCard.scrollIntoView({ behavior: "smooth", block: "center" });
+      } catch (_) {
+        termsCard.scrollIntoView();
+      }
+    }
+
+    showToast("Veuillez accepter les conditions avant de continuer.", "warning", 4500);
+  }
+
   function closeAllPayments() {
     const planCards = getPlanCards();
     planCards.forEach((card) => {
@@ -1946,6 +1976,10 @@ function saturationLabel(pct) {
           if (purchaseLockedByVoucher && currentVoucherCode) {
             showToast(toastOnPlanClick || "⚠️ Achat désactivé : vous avez déjà un code en attente/actif. Utilisez d’abord le code ci-dessous.", "info", 7500);
             try { focusVoucherBlock(); } catch (_) {}
+            return;
+          }
+          if (!hasAcceptedTerms()) {
+            showTermsRequiredFeedback();
             return;
           }
 

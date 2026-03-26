@@ -40,6 +40,21 @@
       100% { box-shadow: 0 0 0 rgba(255,199,0,0.00); filter: brightness(1); }
     }
     .badge-pending.pulse{animation: pendingPulse 2.8s ease-in-out infinite;}
+
+
+    .terms-card{margin-top:18px;}
+    .terms-check{display:flex;align-items:flex-start;gap:10px;cursor:pointer;margin-top:6px;line-height:1.45;}
+    .terms-check input{margin-top:3px;flex:0 0 auto;}
+    .terms-toggle{margin-top:10px;padding:0;background:none;border:none;color:#0d6efd;font-weight:700;cursor:pointer;}
+    .terms-toggle:hover{text-decoration:underline;}
+    .terms-content{margin-top:10px;padding:12px 14px;border:1px solid rgba(13,110,253,.18);border-radius:12px;background:rgba(13,110,253,.05);}
+    .terms-list{margin:0;padding-left:18px;color:var(--muted,#5f6b7a);}
+    .terms-list li+li{margin-top:6px;}
+    .terms-error{margin-top:10px;padding:10px 12px;border-radius:10px;border:1px solid rgba(220,53,69,.22);background:rgba(220,53,69,.08);color:#b42318;font-weight:600;}
+    body.theme-dark .terms-content{border-color:rgba(83,148,255,.28);background:rgba(83,148,255,.10);}
+    body.theme-dark .terms-toggle{color:#7cb6ff;}
+    body.theme-dark .terms-error{border-color:rgba(255,122,122,.30);background:rgba(255,122,122,.10);color:#ff9d9d;}
+
   </style>
 </head>
 
@@ -124,6 +139,36 @@
 
     </section>
 
+
+
+    <!-- ========= CONDITIONS D’UTILISATION ========= -->
+    <section class="card terms-card" aria-labelledby="termsTitle">
+      <h3 id="termsTitle">Conditions d’utilisation</h3>
+
+      <label class="terms-check" for="acceptTermsCheckbox">
+        <input type="checkbox" id="acceptTermsCheckbox">
+        <span>J’accepte les conditions d’utilisation du WiFi RAZAFI</span>
+      </label>
+
+      <button type="button" id="toggleTermsBtn" class="terms-toggle" aria-expanded="false" aria-controls="termsContent">
+        Voir les conditions
+      </button>
+
+      <div id="termsContent" class="terms-content hidden">
+        <ul class="terms-list">
+          <li>Accès selon le forfait choisi</li>
+          <li>Code personnel (1 appareil, pas de partage)</li>
+          <li>Activités illégales interdites</li>
+          <li>Données utilisées uniquement pour le service</li>
+          <li>Service sans garantie (coupures possibles)</li>
+        </ul>
+      </div>
+
+      <div id="termsError" class="terms-error hidden" role="alert" aria-live="polite">
+        Veuillez accepter les conditions avant de continuer.
+      </div>
+    </section>
+
     <!-- ========= PLANS ========= -->
     <section>
       <h3>Plans</h3>
@@ -185,6 +230,29 @@
 
   <!-- ================= JS ================= -->
   <!-- 🔑 Identity (nas_id / ap_mac) is handled ONLY in mikrotik.js -->
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      const toggleBtn = document.getElementById("toggleTermsBtn");
+      const content = document.getElementById("termsContent");
+      const checkbox = document.getElementById("acceptTermsCheckbox");
+      const error = document.getElementById("termsError");
+
+      if (toggleBtn && content) {
+        toggleBtn.addEventListener("click", function () {
+          const willOpen = content.classList.contains("hidden");
+          content.classList.toggle("hidden", !willOpen);
+          toggleBtn.setAttribute("aria-expanded", willOpen ? "true" : "false");
+          toggleBtn.textContent = willOpen ? "Masquer les conditions" : "Voir les conditions";
+        });
+      }
+
+      if (checkbox && error) {
+        checkbox.addEventListener("change", function () {
+          if (checkbox.checked) error.classList.add("hidden");
+        });
+      }
+    });
+  </script>
   <script src="assets/js/mikrotik.js" defer></script>
 
 </body>
