@@ -1827,6 +1827,7 @@ function saturationLabel(pct) {
       plansGrid.innerHTML = plans.map(planCardHTML).join("");
 
       bindPlanHandlers();
+      bindTermsAcceptanceGuard();
       closeAllPayments();
       applyPoolFullLockToPlans();
     } catch (e) {
@@ -1838,36 +1839,6 @@ function saturationLabel(pct) {
   // -------- Plan selection & payment integration --------
   function getPlanCards() {
     return $all(".plan-card");
-  }
-
-
-  function getTermsCheckbox() {
-    return document.getElementById("acceptTermsCheckbox");
-  }
-
-  function getTermsError() {
-    return document.getElementById("termsError");
-  }
-
-  function hasAcceptedTerms() {
-    const checkbox = getTermsCheckbox();
-    return !!(checkbox && checkbox.checked);
-  }
-
-  function showTermsRequiredFeedback() {
-    const error = getTermsError();
-    if (error) error.classList.remove("hidden");
-
-    const termsCard = document.querySelector(".terms-card");
-    if (termsCard && typeof termsCard.scrollIntoView === "function") {
-      try {
-        termsCard.scrollIntoView({ behavior: "smooth", block: "center" });
-      } catch (_) {
-        termsCard.scrollIntoView();
-      }
-    }
-
-    showToast("Veuillez accepter les conditions avant de continuer.", "warning", 4500);
   }
 
   function closeAllPayments() {
@@ -1942,7 +1913,80 @@ function saturationLabel(pct) {
     }
   }
 
-  function bindPlanHandlers() {
+  
+  function isTermsAccepted() {
+    const cb = document.getElementById("acceptTermsCheckbox");
+    return !!(cb && cb.checked);
+  }
+
+  function showTermsError() {
+    const error = document.getElementById("termsError");
+    if (error) error.style.display = "block";
+
+    const card = document.querySelector(".terms-card");
+    if (card && typeof card.scrollIntoView === "function") {
+      try {
+        card.scrollIntoView({ behavior: "smooth", block: "center" });
+      } catch (_) {
+        try { card.scrollIntoView(); } catch (_) {}
+      }
+    }
+  }
+
+  function hideTermsError() {
+    const error = document.getElementById("termsError");
+    if (error) error.style.display = "none";
+  }
+
+  function resetCardPaymentState(card) {
+    if (!card) return;
+
+    card.classList.remove("selected");
+
+    const payment = card.querySelector(".plan-payment");
+    if (payment) payment.classList.add("hidden");
+
+    const confirmWrap = card.querySelector(".pay-confirm");
+    if (confirmWrap) confirmWrap.classList.add("hidden");
+
+    const input = card.querySelector(".mvola-input");
+    if (input) input.value = "";
+
+    const hint = card.querySelector(".phone-hint");
+    if (hint) hint.textContent = "";
+
+    try { setProcessing(card, false); } catch (_) {}
+
+    try { updatePayButtonState(card); } catch (_) {
+      const payBtn = card.querySelector(".pay-btn");
+      if (payBtn) payBtn.disabled = true;
+    }
+  }
+
+  function closeAllOpenPaymentsBecauseTermsUnchecked() {
+    getPlanCards().forEach((card) => {
+      resetCardPaymentState(card);
+    });
+  }
+
+  function bindTermsAcceptanceGuard() {
+    const cb = document.getElementById("acceptTermsCheckbox");
+    if (!cb || cb.dataset.termsGuardBound === "1") return;
+
+    cb.dataset.termsGuardBound = "1";
+
+    cb.addEventListener("change", function () {
+      if (cb.checked) {
+        hideTermsError();
+        return;
+      }
+
+      showTermsError();
+      closeAllOpenPaymentsBecauseTermsUnchecked();
+    });
+  }
+
+function bindPlanHandlers() {
     const planCards = getPlanCards();
 
     planCards.forEach((card) => {
@@ -1969,6 +2013,13 @@ function saturationLabel(pct) {
 
       if (chooseBtn) {
         chooseBtn.addEventListener("click", async function () {
+          if (!isTermsAccepted()) {
+            showTermsError();
+            closeAllOpenPaymentsBecauseTermsUnchecked();
+            return;
+          }
+          hideTermsError();
+
           if (poolIsFull) {
             showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
             return;
@@ -1976,10 +2027,6 @@ function saturationLabel(pct) {
           if (purchaseLockedByVoucher && currentVoucherCode) {
             showToast(toastOnPlanClick || "⚠️ Achat désactivé : vous avez déjà un code en attente/actif. Utilisez d’abord le code ci-dessous.", "info", 7500);
             try { focusVoucherBlock(); } catch (_) {}
-            return;
-          }
-          if (!hasAcceptedTerms()) {
-            showTermsRequiredFeedback();
             return;
           }
 
@@ -2027,16 +2074,20 @@ function saturationLabel(pct) {
       if (cancelBtn) {
         cancelBtn.addEventListener("click", function () {
           if (card.classList.contains("processing")) return;
-          card.classList.remove("selected");
-          const payment = card.querySelector(".plan-payment");
-          if (payment) payment.classList.add("hidden");
-          if (confirmWrap) confirmWrap.classList.add("hidden");
+          resetCardPaymentState(card);
           showToast("Choisissez un autre plan pour continuer.", "info");
         });
       }
 
       if (payBtn) {
         payBtn.addEventListener("click", function () {
+          if (!isTermsAccepted()) {
+            showTermsError();
+            closeAllOpenPaymentsBecauseTermsUnchecked();
+            return;
+          }
+          hideTermsError();
+
           if (poolIsFull) {
             showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
             return;
@@ -2077,6 +2128,13 @@ function saturationLabel(pct) {
 
       if (confirmBtn) {
         confirmBtn.addEventListener("click", function () {
+          if (!isTermsAccepted()) {
+            showTermsError();
+            closeAllOpenPaymentsBecauseTermsUnchecked();
+            return;
+          }
+          hideTermsError();
+
           if (poolIsFull) {
             showToast("⚠️ Réseau saturé (100%). Achat impossible pour le moment. Merci de réessayer plus tard.", "info", 6500);
             return;
@@ -2253,6 +2311,7 @@ function saturationLabel(pct) {
 
   // -------- Init --------
   renderStatus({ hasVoucher: false, voucherCode: "" });
+  bindTermsAcceptanceGuard();
   loadPlans();
 
   try {
