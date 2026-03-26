@@ -1919,24 +1919,30 @@ function saturationLabel(pct) {
     return !!(cb && cb.checked);
   }
 
-  function showTermsError() {
-    const error = document.getElementById("termsError");
-    if (error) error.style.display = "block";
+function showTermsError() {
+  const error = document.getElementById("termsError");
+  if (error) {
+    error.classList.remove("hidden");
+    error.style.display = "block";
+  }
 
-    const card = document.querySelector(".terms-card");
-    if (card && typeof card.scrollIntoView === "function") {
-      try {
-        card.scrollIntoView({ behavior: "smooth", block: "center" });
-      } catch (_) {
-        try { card.scrollIntoView(); } catch (_) {}
-      }
+  const card = document.querySelector(".terms-card");
+  if (card && typeof card.scrollIntoView === "function") {
+    try {
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+    } catch (_) {
+      try { card.scrollIntoView(); } catch (_) {}
     }
   }
+}
 
-  function hideTermsError() {
-    const error = document.getElementById("termsError");
-    if (error) error.style.display = "none";
+function hideTermsError() {
+  const error = document.getElementById("termsError");
+  if (error) {
+    error.classList.add("hidden");
+    error.style.display = "none";
   }
+}
 
   function resetCardPaymentState(card) {
     if (!card) return;
