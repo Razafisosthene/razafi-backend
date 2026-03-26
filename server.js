@@ -6778,7 +6778,42 @@ async function getBlockingVoucherForClient({ client_mac, ap_mac = null }) {
     return null;
   }
 }
+// Count successful free uses (activated) for a given (client_mac, plan_id)
+async function getFreePlanUsedCount({ client_mac, plan_id }) {
+  if (!supabase || !client_mac || !plan_id) return 0;
+  try {
+    const { count, error } = await supabase
+      .from("voucher_sessions")
+      .select("id", { count: "exact", head: true })
+      .eq("client_mac", client_mac)
+      .eq("plan_id", plan_id)
+      .not("activated_at", "is", null);
 
+    if (error) return 0;
+    return Number(count || 0);
+  } catch (_) {
+    return 0;
+  }
+}
+
+async function getFreePlanExtraUses({ client_mac, plan_id }) {
+  if (!supabase || !client_mac || !plan_id) return 0;
+  try {
+    const { data, error } = await supabase
+      .from("free_plan_overrides")
+      .select("extra_uses")
+      .eq("client_mac", client_mac)
+      .eq("plan_id", plan_id)
+      .maybeSingle();
+
+    if (error || !data) return 0;
+
+    const n = Number(data.extra_uses || 0);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch (_) {
+    return 0;
+  }
+}
 // ---------------------------------------------------------------------------
 // FREE PLAN (price_ar = 0): allow only ONE successful use per device (client_mac) per plan.
 // Rule B: count "used" only when activated_at is NOT NULL (Model B compatible).
@@ -6801,22 +6836,6 @@ async function getFreePlanLastUse({ client_mac, plan_id }) {
   }
 }
 
-// Count successful free uses (activated) for a given (client_mac, plan_id)
-async function getFreePlanUsedCount({ client_mac, plan_id }) {
-  if (!supabase || !client_mac || !plan_id) return 0;
-  try {
-    const { count, error } = await supabase
-      .from("voucher_sessions")
-      .select("id", { count: "exact", head: true })
-      .eq("client_mac", client_mac)
-      .eq("plan_id", plan_id)
-      .not("activated_at", "is", null);
-    if (error) return 0;
-    return Number(count || 0);
-  } catch (_) {
-    return 0;
-  }
-}
 // ------------------------------------------------------------
 // ADMIN: Voucher bonus override (time/data bonuses)
 // Table: voucher_bonus_overrides (voucher_session_id) -> bonus_seconds, bonus_bytes
