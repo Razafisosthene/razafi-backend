@@ -10,6 +10,7 @@
 
   // Current truth status from /api/portal/status (used to drive small UX copy)
   let portalTruthStatus = "none";
+  const TERMS_ACCEPTED_STORAGE_KEY = "razafi_terms_accepted";
 
 
   // -------- Backend base URL (Option A: page served from MikroTik) --------
@@ -1836,6 +1837,126 @@ function saturationLabel(pct) {
     }
   }
 
+
+  function getTermsCheckbox() {
+    return document.getElementById("acceptTermsCheckbox");
+  }
+
+  function getTermsError() {
+    return document.getElementById("termsError");
+  }
+
+  function hasAcceptedTerms() {
+    const checkbox = getTermsCheckbox();
+    return !!(checkbox && checkbox.checked);
+  }
+
+  function persistTermsAcceptance(accepted) {
+    try {
+      if (accepted) localStorage.setItem(TERMS_ACCEPTED_STORAGE_KEY, "1");
+      else localStorage.removeItem(TERMS_ACCEPTED_STORAGE_KEY);
+    } catch (_) {}
+  }
+
+  function restoreTermsAcceptance() {
+    const checkbox = getTermsCheckbox();
+    if (!checkbox) return false;
+
+    let accepted = false;
+    try {
+      accepted = localStorage.getItem(TERMS_ACCEPTED_STORAGE_KEY) === "1";
+    } catch (_) {
+      accepted = false;
+    }
+
+    checkbox.checked = accepted;
+    return accepted;
+  }
+
+  function showTermsRequiredFeedback() {
+    const error = getTermsError();
+    if (error) {
+      error.classList.remove("hidden");
+      error.style.display = "block";
+    }
+
+    const termsCard = document.querySelector(".terms-card");
+    if (termsCard && typeof termsCard.scrollIntoView === "function") {
+      try {
+        termsCard.scrollIntoView({ behavior: "smooth", block: "center" });
+      } catch (_) {
+        try { termsCard.scrollIntoView(); } catch (_) {}
+      }
+    }
+
+    showToast("Veuillez accepter les conditions avant de continuer.", "warning", 4500);
+  }
+
+  function hideTermsRequiredFeedback() {
+    const error = getTermsError();
+    if (error) {
+      error.classList.add("hidden");
+      error.style.display = "none";
+    }
+  }
+
+  function resetPlanPaymentState(card) {
+    if (!card) return;
+
+    card.classList.remove("selected");
+
+    const payment = card.querySelector(".plan-payment");
+    if (payment) payment.classList.add("hidden");
+
+    const confirmWrap = card.querySelector(".pay-confirm");
+    if (confirmWrap) confirmWrap.classList.add("hidden");
+
+    const input = card.querySelector(".mvola-input");
+    if (input) input.value = "";
+
+    const hint = card.querySelector(".phone-hint");
+    if (hint) {
+      hint.textContent = "";
+      hint.classList.remove("hint-ok", "hint-error");
+    }
+
+    try { setProcessing(card, false); } catch (_) {}
+
+    try { updatePayButtonState(card); } catch (_) {
+      const payBtn = card.querySelector(".pay-btn");
+      if (payBtn) payBtn.disabled = true;
+    }
+  }
+
+  function closeAllOpenPaymentsBecauseTermsUnchecked() {
+    getPlanCards().forEach((card) => {
+      resetPlanPaymentState(card);
+    });
+  }
+
+  function bindTermsAcceptanceGuard() {
+    const checkbox = getTermsCheckbox();
+    if (!checkbox || checkbox.dataset.termsGuardBound === "1") return;
+
+    checkbox.dataset.termsGuardBound = "1";
+    restoreTermsAcceptance();
+
+    if (checkbox.checked) hideTermsRequiredFeedback();
+
+    checkbox.addEventListener("change", function () {
+      const accepted = !!checkbox.checked;
+      persistTermsAcceptance(accepted);
+
+      if (accepted) {
+        hideTermsRequiredFeedback();
+        return;
+      }
+
+      showTermsRequiredFeedback();
+      closeAllOpenPaymentsBecauseTermsUnchecked();
+    });
+  }
+
   // -------- Plan selection & payment integration --------
   function getPlanCards() {
     return $all(".plan-card");
@@ -2317,6 +2438,7 @@ function bindPlanHandlers() {
 
   // -------- Init --------
   renderStatus({ hasVoucher: false, voucherCode: "" });
+  bindTermsAcceptanceGuard();
   bindTermsAcceptanceGuard();
   loadPlans();
 
