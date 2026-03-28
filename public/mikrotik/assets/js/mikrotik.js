@@ -1846,31 +1846,84 @@ function saturationLabel(pct) {
     return document.getElementById("termsError");
   }
 
+  function setTermsCookie(value) {
+    try {
+      if (value) {
+        document.cookie = "razafi_terms_accepted=1; path=/; max-age=31536000; SameSite=Lax";
+      } else {
+        document.cookie = "razafi_terms_accepted=; path=/; max-age=0; SameSite=Lax";
+      }
+    } catch (_) {}
+  }
+
+  function getTermsCookie() {
+    try {
+      const m = document.cookie.match(/(?:^|;\s*)razafi_terms_accepted=([^;]*)/);
+      return m ? decodeURIComponent(m[1]) : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
   function hasAcceptedTerms() {
     const checkbox = getTermsCheckbox();
     return !!(checkbox && checkbox.checked);
   }
 
   function persistTermsAcceptance(accepted) {
+    const value = accepted ? "1" : "";
     try {
-      if (accepted) localStorage.setItem(TERMS_ACCEPTED_STORAGE_KEY, "1");
+      if (accepted) localStorage.setItem(TERMS_ACCEPTED_STORAGE_KEY, value);
       else localStorage.removeItem(TERMS_ACCEPTED_STORAGE_KEY);
     } catch (_) {}
+
+    try {
+      if (accepted) sessionStorage.setItem(TERMS_ACCEPTED_STORAGE_KEY, value);
+      else sessionStorage.removeItem(TERMS_ACCEPTED_STORAGE_KEY);
+    } catch (_) {}
+
+    setTermsCookie(accepted);
+  }
+
+  function getPersistedTermsAcceptance() {
+    try {
+      if (localStorage.getItem(TERMS_ACCEPTED_STORAGE_KEY) === "1") return true;
+    } catch (_) {}
+
+    try {
+      if (sessionStorage.getItem(TERMS_ACCEPTED_STORAGE_KEY) === "1") return true;
+    } catch (_) {}
+
+    return getTermsCookie() === "1";
   }
 
   function restoreTermsAcceptance() {
     const checkbox = getTermsCheckbox();
     if (!checkbox) return false;
 
-    let accepted = false;
-    try {
-      accepted = localStorage.getItem(TERMS_ACCEPTED_STORAGE_KEY) === "1";
-    } catch (_) {
-      accepted = false;
-    }
-
+    const accepted = getPersistedTermsAcceptance();
     checkbox.checked = accepted;
     return accepted;
+  }
+
+  function restoreTermsAcceptanceWithRetry() {
+    const first = restoreTermsAcceptance();
+
+    const delays = [0, 150, 500, 1200];
+    delays.forEach((delay) => {
+      window.setTimeout(() => {
+        restoreTermsAcceptance();
+      }, delay);
+    });
+
+    return first;
+  }
+
+  function syncTermsAcceptanceFromUi() {
+    const checkbox = getTermsCheckbox();
+    if (!checkbox) return false;
+    persistTermsAcceptance(!!checkbox.checked);
+    return !!checkbox.checked;
   }
 
   function showTermsRequiredFeedback() {
@@ -1939,7 +1992,7 @@ function saturationLabel(pct) {
     if (!checkbox || checkbox.dataset.termsGuardBound === "1") return;
 
     checkbox.dataset.termsGuardBound = "1";
-    restoreTermsAcceptance();
+    restoreTermsAcceptanceWithRetry();
 
     if (checkbox.checked) hideTermsRequiredFeedback();
 
@@ -1954,6 +2007,20 @@ function saturationLabel(pct) {
 
       showTermsRequiredFeedback();
       closeAllOpenPaymentsBecauseTermsUnchecked();
+    });
+
+    checkbox.addEventListener("click", function () {
+      window.setTimeout(() => {
+        syncTermsAcceptanceFromUi();
+      }, 0);
+    });
+
+    window.addEventListener("pageshow", function () {
+      restoreTermsAcceptanceWithRetry();
+    });
+
+    window.addEventListener("beforeunload", function () {
+      syncTermsAcceptanceFromUi();
     });
   }
 
