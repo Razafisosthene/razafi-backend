@@ -10,7 +10,6 @@
 
   // Current truth status from /api/portal/status (used to drive small UX copy)
   let portalTruthStatus = "none";
-  const TERMS_ACCEPTED_STORAGE_KEY = "razafi_terms_accepted";
 
 
   // -------- Backend base URL (Option A: page served from MikroTik) --------
@@ -1837,193 +1836,6 @@ function saturationLabel(pct) {
     }
   }
 
-
-  function getTermsCheckbox() {
-    return document.getElementById("acceptTermsCheckbox");
-  }
-
-  function getTermsError() {
-    return document.getElementById("termsError");
-  }
-
-  function setTermsCookie(value) {
-    try {
-      if (value) {
-        document.cookie = "razafi_terms_accepted=1; path=/; max-age=31536000; SameSite=Lax";
-      } else {
-        document.cookie = "razafi_terms_accepted=; path=/; max-age=0; SameSite=Lax";
-      }
-    } catch (_) {}
-  }
-
-  function getTermsCookie() {
-    try {
-      const m = document.cookie.match(/(?:^|;\s*)razafi_terms_accepted=([^;]*)/);
-      return m ? decodeURIComponent(m[1]) : "";
-    } catch (_) {
-      return "";
-    }
-  }
-
-  function hasAcceptedTerms() {
-    const checkbox = getTermsCheckbox();
-    return !!(checkbox && checkbox.checked);
-  }
-
-  function persistTermsAcceptance(accepted) {
-    const value = accepted ? "1" : "";
-    try {
-      if (accepted) localStorage.setItem(TERMS_ACCEPTED_STORAGE_KEY, value);
-      else localStorage.removeItem(TERMS_ACCEPTED_STORAGE_KEY);
-    } catch (_) {}
-
-    try {
-      if (accepted) sessionStorage.setItem(TERMS_ACCEPTED_STORAGE_KEY, value);
-      else sessionStorage.removeItem(TERMS_ACCEPTED_STORAGE_KEY);
-    } catch (_) {}
-
-    setTermsCookie(accepted);
-  }
-
-  function getPersistedTermsAcceptance() {
-    try {
-      if (localStorage.getItem(TERMS_ACCEPTED_STORAGE_KEY) === "1") return true;
-    } catch (_) {}
-
-    try {
-      if (sessionStorage.getItem(TERMS_ACCEPTED_STORAGE_KEY) === "1") return true;
-    } catch (_) {}
-
-    return getTermsCookie() === "1";
-  }
-
-  function restoreTermsAcceptance() {
-    const checkbox = getTermsCheckbox();
-    if (!checkbox) return false;
-
-    const accepted = getPersistedTermsAcceptance();
-    checkbox.checked = accepted;
-    return accepted;
-  }
-
-  function restoreTermsAcceptanceWithRetry() {
-    const first = restoreTermsAcceptance();
-
-    const delays = [0, 150, 500, 1200];
-    delays.forEach((delay) => {
-      window.setTimeout(() => {
-        restoreTermsAcceptance();
-      }, delay);
-    });
-
-    return first;
-  }
-
-  function syncTermsAcceptanceFromUi() {
-    const checkbox = getTermsCheckbox();
-    if (!checkbox) return false;
-    persistTermsAcceptance(!!checkbox.checked);
-    return !!checkbox.checked;
-  }
-
-  function showTermsRequiredFeedback() {
-    const error = getTermsError();
-    if (error) {
-      error.classList.remove("hidden");
-      error.style.display = "block";
-    }
-
-    const termsCard = document.querySelector(".terms-card");
-    if (termsCard && typeof termsCard.scrollIntoView === "function") {
-      try {
-        termsCard.scrollIntoView({ behavior: "smooth", block: "center" });
-      } catch (_) {
-        try { termsCard.scrollIntoView(); } catch (_) {}
-      }
-    }
-
-    showToast("Veuillez accepter les conditions avant de continuer.", "warning", 4500);
-  }
-
-  function hideTermsRequiredFeedback() {
-    const error = getTermsError();
-    if (error) {
-      error.classList.add("hidden");
-      error.style.display = "none";
-    }
-  }
-
-  function resetPlanPaymentState(card) {
-    if (!card) return;
-
-    card.classList.remove("selected");
-
-    const payment = card.querySelector(".plan-payment");
-    if (payment) payment.classList.add("hidden");
-
-    const confirmWrap = card.querySelector(".pay-confirm");
-    if (confirmWrap) confirmWrap.classList.add("hidden");
-
-    const input = card.querySelector(".mvola-input");
-    if (input) input.value = "";
-
-    const hint = card.querySelector(".phone-hint");
-    if (hint) {
-      hint.textContent = "";
-      hint.classList.remove("hint-ok", "hint-error");
-    }
-
-    try { setProcessing(card, false); } catch (_) {}
-
-    try { updatePayButtonState(card); } catch (_) {
-      const payBtn = card.querySelector(".pay-btn");
-      if (payBtn) payBtn.disabled = true;
-    }
-  }
-
-  function closeAllOpenPaymentsBecauseTermsUnchecked() {
-    getPlanCards().forEach((card) => {
-      resetPlanPaymentState(card);
-    });
-  }
-
-  function bindTermsAcceptanceGuard() {
-    const checkbox = getTermsCheckbox();
-    if (!checkbox || checkbox.dataset.termsGuardBound === "1") return;
-
-    checkbox.dataset.termsGuardBound = "1";
-    restoreTermsAcceptanceWithRetry();
-
-    if (checkbox.checked) hideTermsRequiredFeedback();
-
-    checkbox.addEventListener("change", function () {
-      const accepted = !!checkbox.checked;
-      persistTermsAcceptance(accepted);
-
-      if (accepted) {
-        hideTermsRequiredFeedback();
-        return;
-      }
-
-      showTermsRequiredFeedback();
-      closeAllOpenPaymentsBecauseTermsUnchecked();
-    });
-
-    checkbox.addEventListener("click", function () {
-      window.setTimeout(() => {
-        syncTermsAcceptanceFromUi();
-      }, 0);
-    });
-
-    window.addEventListener("pageshow", function () {
-      restoreTermsAcceptanceWithRetry();
-    });
-
-    window.addEventListener("beforeunload", function () {
-      syncTermsAcceptanceFromUi();
-    });
-  }
-
   // -------- Plan selection & payment integration --------
   function getPlanCards() {
     return $all(".plan-card");
@@ -2107,30 +1919,30 @@ function saturationLabel(pct) {
     return !!(cb && cb.checked);
   }
 
-function showTermsError() {
-  const error = document.getElementById("termsError");
-  if (error) {
-    error.classList.remove("hidden");
-    error.style.display = "block";
-  }
+  function showTermsError() {
+    const error = document.getElementById("termsError");
+    if (error) {
+      error.classList.remove("hidden");
+      error.style.display = "block";
+    }
 
-  const card = document.querySelector(".terms-card");
-  if (card && typeof card.scrollIntoView === "function") {
-    try {
-      card.scrollIntoView({ behavior: "smooth", block: "center" });
-    } catch (_) {
-      try { card.scrollIntoView(); } catch (_) {}
+    const card = document.querySelector(".terms-card");
+    if (card && typeof card.scrollIntoView === "function") {
+      try {
+        card.scrollIntoView({ behavior: "smooth", block: "center" });
+      } catch (_) {
+        try { card.scrollIntoView(); } catch (_) {}
+      }
     }
   }
-}
 
-function hideTermsError() {
-  const error = document.getElementById("termsError");
-  if (error) {
-    error.classList.add("hidden");
-    error.style.display = "none";
+  function hideTermsError() {
+    const error = document.getElementById("termsError");
+    if (error) {
+      error.classList.add("hidden");
+      error.style.display = "none";
+    }
   }
-}
 
   function resetCardPaymentState(card) {
     if (!card) return;
@@ -2147,7 +1959,11 @@ function hideTermsError() {
     if (input) input.value = "";
 
     const hint = card.querySelector(".phone-hint");
-    if (hint) hint.textContent = "";
+    if (hint) {
+      hint.textContent = "";
+      hint.classList.remove("hint-ok");
+      hint.classList.remove("hint-error");
+    }
 
     try { setProcessing(card, false); } catch (_) {}
 
@@ -2168,6 +1984,10 @@ function hideTermsError() {
     if (!cb || cb.dataset.termsGuardBound === "1") return;
 
     cb.dataset.termsGuardBound = "1";
+
+    // Default state: checked from the start
+    cb.checked = true;
+    hideTermsError();
 
     cb.addEventListener("change", function () {
       if (cb.checked) {
@@ -2505,7 +2325,6 @@ function bindPlanHandlers() {
 
   // -------- Init --------
   renderStatus({ hasVoucher: false, voucherCode: "" });
-  bindTermsAcceptanceGuard();
   bindTermsAcceptanceGuard();
   loadPlans();
 
