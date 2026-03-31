@@ -5803,9 +5803,19 @@ const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusByt
     //      - Normal mode: existing plan logic
     //      - Bonus session mode: autonomous mini-plan (time + data bonus only)
 
-    const effectiveStatus = session.truth_status || session.status;
-    const isUsableStatus = (effectiveStatus === "active" || effectiveStatus === "pending");
     const isBonusSession = (session.is_bonus_session === true);
+
+    // IMPORTANT:
+    // Bonus session must win over truth_status/view timing.
+    // The SQL truth view can briefly lag right after /api/voucher/activate
+    // updated the base row to bonus mode, so do not let a stale "used/expired"
+    // truth_status block the immediate authorize that follows reactivation.
+    let effectiveStatus = session.truth_status || session.status;
+    if (isBonusSession) {
+      effectiveStatus = "active";
+    }
+
+    const isUsableStatus = (effectiveStatus === "active" || effectiveStatus === "pending");
 
     // Determine whether the session is currently time-expired (only meaningful if started_at exists).
     const nowMs = now.getTime();
