@@ -1312,76 +1312,95 @@ function submitToLoginUrl(code, ev) {
       try { useBtn.setAttribute("disabled", "disabled"); } catch (_) {}
       showToast("Connexion en cours…", "info");
 
-      // ✅ Activation/Reactivate on backend BEFORE submitting login (best-effort)
-// We try to await a fast response so RADIUS sees the updated state.
+      // ✅ Activation/Reactivate on backend BEFORE submitting login
+      // IMPORTANT:
+      // Do NOT send the user to MikroTik login unless backend activation is confirmed.
+      // This prevents the race where RADIUS authorize happens before the bonus/session
+      // update is committed and causes intermittent loops on “Utiliser ce code” / “Réactiver ce code”.
 
-try {
-  const payload = {
-    voucher_code: currentVoucherCode,
-    client_mac: clientMac || null,
-    nas_id: nasId || null,
-    ap_mac: nasId ? null : (apMac || null),
-  };
+      const payload = {
+        voucher_code: currentVoucherCode,
+        client_mac: clientMac || null,
+        nas_id: nasId || null,
+        ap_mac: nasId ? null : (apMac || null),
+      };
 
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), 1200);
+      async function tryActivateVoucher(timeoutMs) {
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const resp = await fetch(apiUrl("/api/voucher/activate"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            credentials: "omit",
+            signal: controller.signal,
+            cache: "no-store",
+          });
 
-  let activationDenied = false;
-  let activationErrorCode = "";
-  let activationErrorMsg = "";
+          let jj = null;
+          try { jj = await resp.json(); } catch (_) { jj = null; }
 
-  try {
-    const resp = await fetch(apiUrl("/api/voucher/activate"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      credentials: "omit",
-      signal: controller.signal,
-      cache: "no-store",
-    });
+          if (!resp.ok) {
+            return {
+              ok: false,
+              denied: true,
+              code: String(jj?.error || ("http_" + resp.status)),
+              message: String(jj?.message || ""),
+            };
+          }
 
-    // Only block the login redirect when the server clearly denies usage
-    if (resp) {
-      let jj = null;
-      try { jj = await resp.json(); } catch (_) { jj = null; }
+          if (jj && jj.ok === false) {
+            return {
+              ok: false,
+              denied: true,
+              code: String(jj.error || ""),
+              message: String(jj.message || ""),
+            };
+          }
 
-      if (!resp.ok) {
-        activationDenied = true;
-        activationErrorCode = String(jj?.error || ("http_" + resp.status));
-        activationErrorMsg = String(jj?.message || "");
-      } else if (jj && jj.ok === false) {
-        activationDenied = true;
-        activationErrorCode = String(jj.error || "");
-        activationErrorMsg = String(jj.message || "");
+          return { ok: true, denied: false, data: jj || null };
+        } finally {
+          clearTimeout(t);
+        }
       }
-    }
-  } finally {
-    clearTimeout(t);
-  }
 
-  if (activationDenied) {
-    // Re-enable button and show a USER-friendly message (no technical jargon)
-    try { useBtn.removeAttribute("disabled"); } catch (_) {}
+      function showActivationError(code, message) {
+        const c = String(code || "").toLowerCase();
+        if (c === "client_mac_required") showToast("Connexion impossible. Ouvrez cette page depuis le Wi‑Fi RAZAFI.", "error", 5200);
+        else if (c === "need_time_bonus") showToast("Ce code est terminé en temps. Ajoutez un bonus de temps pour le réactiver.", "error", 5200);
+        else if (c === "need_data_bonus") showToast("Ce code a atteint sa limite de données. Ajoutez un bonus de données pour le réactiver.", "error", 5200);
+        else if (c === "voucher_not_usable") showToast("Ce code ne peut pas être utilisé pour le moment.", "error", 5200);
+        else if (c === "invalid_voucher") showToast("Code invalide. Vérifiez le code et réessayez.", "error", 5200);
+        else if (c === "radius_reject") showToast("Connexion refusée. Réessayez ou contactez le support.", "error", 5200);
+        else showToast(message || "Connexion impossible. Veuillez réessayer.", "error", 5200);
+      }
 
-    const code = (activationErrorCode || "").toLowerCase();
-    if (code === "client_mac_required") showToast("Connexion impossible. Ouvrez cette page depuis le Wi‑Fi RAZAFI.", "error", 5200);
-    else if (code === "need_time_bonus") showToast("Ce code est terminé en temps. Ajoutez un bonus de temps pour le réactiver.", "error", 5200);
-    else if (code === "need_data_bonus") showToast("Ce code a atteint sa limite de données. Ajoutez un bonus de données pour le réactiver.", "error", 5200);
-    else if (code === "voucher_not_usable") showToast("Ce code ne peut pas être utilisé pour le moment.", "error", 5200);
-    else if (code === "invalid_voucher") showToast("Code invalide. Vérifiez le code et réessayez.", "error", 5200);
-    else if (code === "radius_reject") showToast("Connexion refusée. Réessayez ou contactez le support.", "error", 5200);
-    else showToast(activationErrorMsg || "Connexion impossible. Veuillez réessayer.", "error", 5200);
+      let activation = null;
+      try {
+        activation = await tryActivateVoucher(2500);
+      } catch (e1) {
+        console.warn("[RAZAFI] voucher activate attempt #1 failed:", e1?.message || e1);
+        try {
+          activation = await tryActivateVoucher(4000);
+        } catch (e2) {
+          console.warn("[RAZAFI] voucher activate attempt #2 failed:", e2?.message || e2);
+          activation = {
+            ok: false,
+            denied: false,
+            code: "network_error",
+            message: "La réactivation n’a pas pu être confirmée. Réessayez.",
+          };
+        }
+      }
 
-    return; // ✅ do NOT redirect to MikroTik login if activation was denied
-  }
+      if (!activation || activation.ok !== true) {
+        try { useBtn.removeAttribute("disabled"); } catch (_) {}
+        showActivationError(activation?.code, activation?.message);
+        return;
+      }
 
-} catch (e) {
-  // Best-effort: if activation call fails (network/captive quirks), we still try login.
-  console.warn("[RAZAFI] voucher activate failed (best-effort):", e?.message || e);
-}
-
-      // ✅ OFFICIAL — POST login to MikroTik /login (triggers RADIUS)
-// ✅ OFFICIAL — POST login to MikroTik /login (triggers RADIUS)
+      // ✅ OFFICIAL — Redirect to MikroTik /login only AFTER confirmed backend activation
       submitToLoginUrl(currentVoucherCode, event);
     });
   }
