@@ -4112,6 +4112,14 @@ async function sendEmailNotification(subject, message) {
   }
 }
 
+
+function buildOpsEmailLines(linesObj) {
+  return Object.entries(linesObj)
+    .filter(([, v]) => v !== undefined && v !== null && String(v).trim() !== "")
+    .map(([k, v]) => `${k}: ${v}`)
+    .join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // HELPERS
 // ---------------------------------------------------------------------------
@@ -4439,6 +4447,24 @@ async function pollTransactionStatus({
               payload: { voucherCode, plan_id: metaPlanId, pool_id: metaPoolId, client_mac: metaClientMac, ap_mac: metaApMac },
             });
 
+            await sendEmailNotification(
+              `[RAZAFI WIFI] 💰 Payment Success – RequestRef ${requestRef}`,
+              buildOpsEmailLines({
+                RequestRef: requestRef,
+                ServerCorrelationId: serverCorrelationId,
+                Phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
+                Amount: `${tx?.amount ?? amount ?? ""} Ar`,
+                PlanId: metaPlanId || "—",
+                PoolId: metaPoolId || "—",
+                VoucherCode: voucherCode,
+                ClientMac: metaClientMac || "—",
+                ApMac: metaApMac || "—",
+                Status: "completed",
+                Mode: "new_system",
+                TimestampMadagascar: toISOStringMG(new Date()),
+              })
+            );
+
             return;
           }
 
@@ -4456,6 +4482,21 @@ async function pollTransactionStatus({
               status: "error",
               payload: rpcError,
             });
+
+            await sendEmailNotification(
+              `[RAZAFI WIFI] 🚨 CRITICAL – Voucher Generation Failed – RequestRef ${requestRef}`,
+              buildOpsEmailLines({
+                RequestRef: requestRef,
+                ServerCorrelationId: serverCorrelationId,
+                Phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
+                Amount: `${tx?.amount ?? amount ?? ""} Ar`,
+                FailurePoint: "assign_voucher_atomic",
+                Error: truncate(rpcError, 2000),
+                Status: "voucher_generation_failed",
+                Mode: "legacy_system",
+                TimestampMadagascar: toISOStringMG(new Date()),
+              })
+            );
             return;
           }
 
@@ -4472,6 +4513,20 @@ async function pollTransactionStatus({
             } catch (e) {
               console.error("⚠️ Failed updating transaction to no_voucher_pending:", e?.message || e);
             }
+
+            await sendEmailNotification(
+              `[RAZAFI WIFI] 🚨 CRITICAL – Voucher Generation Failed – RequestRef ${requestRef}`,
+              buildOpsEmailLines({
+                RequestRef: requestRef,
+                ServerCorrelationId: serverCorrelationId,
+                Phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
+                Amount: `${tx?.amount ?? amount ?? ""} Ar`,
+                FailurePoint: "no_voucher_available",
+                Status: "no_voucher_pending",
+                Mode: "legacy_system",
+                TimestampMadagascar: toISOStringMG(new Date()),
+              })
+            );
             return;
           }
 
@@ -4495,6 +4550,20 @@ async function pollTransactionStatus({
             payload: { voucherCode },
           });
 
+          await sendEmailNotification(
+            `[RAZAFI WIFI] 💰 Payment Success – RequestRef ${requestRef}`,
+            buildOpsEmailLines({
+              RequestRef: requestRef,
+              ServerCorrelationId: serverCorrelationId,
+              Phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
+              Amount: `${tx?.amount ?? amount ?? ""} Ar`,
+              VoucherCode: voucherCode,
+              Status: "completed",
+              Mode: "legacy_system",
+              TimestampMadagascar: toISOStringMG(new Date()),
+            })
+          );
+
           return;
         } catch (err) {
           console.error("❌ Error while processing completed MVola payment:", err?.message || err);
@@ -4517,6 +4586,20 @@ async function pollTransactionStatus({
               .update({ status: "failed", metadata: { error: truncate(err?.message || err, 2000), updated_at_local: toISOStringMG(new Date()) } })
               .eq("request_ref", requestRef);
           } catch (_) {}
+
+          await sendEmailNotification(
+            `[RAZAFI WIFI] 🚨 CRITICAL – Voucher Generation Failed – RequestRef ${requestRef}`,
+            buildOpsEmailLines({
+              RequestRef: requestRef,
+              ServerCorrelationId: serverCorrelationId,
+              Phone: maskPhone(phone),
+              Amount: `${amount ?? ""} Ar`,
+              FailurePoint: "completed_payment_processing",
+              Error: truncate(err?.message || err, 2000),
+              Status: "voucher_generation_failed",
+              TimestampMadagascar: toISOStringMG(new Date()),
+            })
+          );
         }
 
 	      }
