@@ -1,4 +1,4 @@
-// RAZAFI Backend - 4th March 2026 Edition
+// RAZAFI Backend - 1rst April 2026 Edition
 // ---------------------------------------------------------------------------
 
 import express from "express";
@@ -76,43 +76,6 @@ function formatBonusCompactLine(bonus_seconds, bonus_bytes) {
     return "Bonus: " + parts.join(" · ");
   } catch (_) {
     return "";
-  }
-}
-
-// ===============================
-// DEBUG HELPERS (targeted authorize / continue / reactivate tracing)
-// ===============================
-const RAZAFI_DEBUG_AUTHORIZE = String(process.env.RAZAFI_DEBUG_AUTHORIZE || "1") === "1";
-
-function safeDebugValue(value, depth = 0) {
-  if (value === null || value === undefined) return value;
-  if (depth > 3) return "[max-depth]";
-  if (typeof value === "bigint") return value.toString();
-  if (value instanceof Date) return value.toISOString();
-  if (Array.isArray(value)) return value.map((v) => safeDebugValue(v, depth + 1));
-  if (typeof value === "object") {
-    const out = {};
-    for (const [k, v] of Object.entries(value)) {
-      out[k] = safeDebugValue(v, depth + 1);
-    }
-    return out;
-  }
-  return value;
-}
-
-function debugAuthorize(tag, payload = null) {
-  if (!RAZAFI_DEBUG_AUTHORIZE) return;
-  try {
-    const ts = new Date().toISOString();
-    if (payload === null || payload === undefined) {
-      console.log(`[AUTH_DEBUG] ${ts} ${tag}`);
-      return;
-    }
-    console.log(`[AUTH_DEBUG] ${ts} ${tag}`, JSON.stringify(safeDebugValue(payload)));
-  } catch (e) {
-    try {
-      console.log(`[AUTH_DEBUG] ${new Date().toISOString()} ${tag} [payload_unserializable]`, String(e?.message || e));
-    } catch (_) {}
   }
 }
 // ===============================
@@ -2691,20 +2654,6 @@ app.get("/api/portal/status", async (req, res) => {
 
     let row = await loadLatestTruthRow();
 
-    debugAuthorize("portal.status_lookup", {
-      client_mac,
-      voucher_code,
-      nas_id,
-      found: !!row,
-      row_id: row?.id || null,
-      row_status: row?.status || null,
-      row_truth_status: row?.truth_status || null,
-      row_is_bonus_session: row?.is_bonus_session === true || row?.is_bonus_session === "true",
-      row_started_at: row?.started_at || null,
-      row_expires_at: row?.expires_at || null,
-      row_session_client_mac: row?.client_mac || null,
-    });
-
     if (!row) {
       let supportPhone = DEFAULT_SUPPORT_PHONE;
       try {
@@ -2790,7 +2739,6 @@ app.get("/api/portal/status", async (req, res) => {
       bonusDead = timeDead || dataDead;
 
       if (bonusDead) {
-        debugAuthorize("portal.status_bonus_cleanup", { client_mac, voucher_code, nas_id, row_id: row.id, expires_at: row.expires_at || null, data_used_bytes: row.data_used_bytes ?? null, bonus_seconds: bonusSecondsN0, bonus_bytes: bonusBytesN0 });
         try {
           await supabase
             .from("voucher_sessions")
@@ -2900,25 +2848,6 @@ app.get("/api/portal/status", async (req, res) => {
     else if (status === "active") badge = { tone: "active", label: "ACTIF", icon: "🔓" };
     else if (status === "used") badge = { tone: "used", label: "UTILISÉ", icon: "⛔" };
     else if (status === "expired") badge = { tone: "expired", label: "EXPIRÉ", icon: "⏰" };
-
-    debugAuthorize("portal.status_result", {
-      client_mac,
-      voucher_code,
-      nas_id,
-      row_id: row?.id || null,
-      status,
-      raw_status: row?.status || row?.truth_status || null,
-      is_bonus_session: row?.is_bonus_session === true || row?.is_bonus_session === "true",
-      started_at: row?.started_at || null,
-      expires_at: row?.expires_at || null,
-      purchase_lock,
-      can_use,
-      has_bonus,
-      has_usable_bonus,
-      bonus_mode_active,
-      ui_badge: badge?.label || null,
-      ui_toast: toast_on_plan_click || null,
-    });
 
     return res.json({
       ok: true,
@@ -4183,6 +4112,14 @@ async function sendEmailNotification(subject, message) {
   }
 }
 
+
+function buildOpsEmailLines(linesObj) {
+  return Object.entries(linesObj)
+    .filter(([, v]) => v !== undefined && v !== null && String(v).trim() !== "")
+    .map(([k, v]) => `${k}: ${v}`)
+    .join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // HELPERS
 // ---------------------------------------------------------------------------
@@ -4510,6 +4447,24 @@ async function pollTransactionStatus({
               payload: { voucherCode, plan_id: metaPlanId, pool_id: metaPoolId, client_mac: metaClientMac, ap_mac: metaApMac },
             });
 
+            await sendEmailNotification(
+              `[RAZAFI WIFI] 💰 Payment Success – RequestRef ${requestRef}`,
+              buildOpsEmailLines({
+                RequestRef: requestRef,
+                ServerCorrelationId: serverCorrelationId,
+                Phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
+                Amount: `${tx?.amount ?? amount ?? ""} Ar`,
+                PlanId: metaPlanId || "—",
+                PoolId: metaPoolId || "—",
+                VoucherCode: voucherCode,
+                ClientMac: metaClientMac || "—",
+                ApMac: metaApMac || "—",
+                Status: "completed",
+                Mode: "new_system",
+                TimestampMadagascar: toISOStringMG(new Date()),
+              })
+            );
+
             return;
           }
 
@@ -4527,6 +4482,21 @@ async function pollTransactionStatus({
               status: "error",
               payload: rpcError,
             });
+
+            await sendEmailNotification(
+              `[RAZAFI WIFI] 🚨 CRITICAL – Voucher Generation Failed – RequestRef ${requestRef}`,
+              buildOpsEmailLines({
+                RequestRef: requestRef,
+                ServerCorrelationId: serverCorrelationId,
+                Phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
+                Amount: `${tx?.amount ?? amount ?? ""} Ar`,
+                FailurePoint: "assign_voucher_atomic",
+                Error: truncate(rpcError, 2000),
+                Status: "voucher_generation_failed",
+                Mode: "legacy_system",
+                TimestampMadagascar: toISOStringMG(new Date()),
+              })
+            );
             return;
           }
 
@@ -4543,6 +4513,20 @@ async function pollTransactionStatus({
             } catch (e) {
               console.error("⚠️ Failed updating transaction to no_voucher_pending:", e?.message || e);
             }
+
+            await sendEmailNotification(
+              `[RAZAFI WIFI] 🚨 CRITICAL – Voucher Generation Failed – RequestRef ${requestRef}`,
+              buildOpsEmailLines({
+                RequestRef: requestRef,
+                ServerCorrelationId: serverCorrelationId,
+                Phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
+                Amount: `${tx?.amount ?? amount ?? ""} Ar`,
+                FailurePoint: "no_voucher_available",
+                Status: "no_voucher_pending",
+                Mode: "legacy_system",
+                TimestampMadagascar: toISOStringMG(new Date()),
+              })
+            );
             return;
           }
 
@@ -4566,6 +4550,20 @@ async function pollTransactionStatus({
             payload: { voucherCode },
           });
 
+          await sendEmailNotification(
+            `[RAZAFI WIFI] 💰 Payment Success – RequestRef ${requestRef}`,
+            buildOpsEmailLines({
+              RequestRef: requestRef,
+              ServerCorrelationId: serverCorrelationId,
+              Phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
+              Amount: `${tx?.amount ?? amount ?? ""} Ar`,
+              VoucherCode: voucherCode,
+              Status: "completed",
+              Mode: "legacy_system",
+              TimestampMadagascar: toISOStringMG(new Date()),
+            })
+          );
+
           return;
         } catch (err) {
           console.error("❌ Error while processing completed MVola payment:", err?.message || err);
@@ -4588,6 +4586,20 @@ async function pollTransactionStatus({
               .update({ status: "failed", metadata: { error: truncate(err?.message || err, 2000), updated_at_local: toISOStringMG(new Date()) } })
               .eq("request_ref", requestRef);
           } catch (_) {}
+
+          await sendEmailNotification(
+            `[RAZAFI WIFI] 🚨 CRITICAL – Voucher Generation Failed – RequestRef ${requestRef}`,
+            buildOpsEmailLines({
+              RequestRef: requestRef,
+              ServerCorrelationId: serverCorrelationId,
+              Phone: maskPhone(phone),
+              Amount: `${amount ?? ""} Ar`,
+              FailurePoint: "completed_payment_processing",
+              Error: truncate(err?.message || err, 2000),
+              Status: "voucher_generation_failed",
+              TimestampMadagascar: toISOStringMG(new Date()),
+            })
+          );
         }
 
 	      }
@@ -5261,21 +5273,6 @@ app.post("/api/voucher/activate", async (req, res) => {
     const now = new Date();
     const nowIso = now.toISOString();
 
-    debugAuthorize("reactivate.request", {
-      voucher_code,
-      voucher_session_id: session.id,
-      truth_status: truth_status || null,
-      session_status: session.status || null,
-      client_mac,
-      ap_mac,
-      nas_id,
-      pool_id: session.pool_id || null,
-      plan_id: session.plan_id || null,
-      started_at: session.started_at || null,
-      expires_at: session.expires_at || null,
-      is_bonus_session: session.is_bonus_session === true,
-    });
-
     // -----------------------------------------------------------------------
     // 4) If already active: keep current behavior
     // -----------------------------------------------------------------------
@@ -5294,17 +5291,6 @@ app.post("/api/voucher/activate", async (req, res) => {
         });
       }
 
-      debugAuthorize("reactivate.already_active", {
-        voucher_code,
-        voucher_session_id: session.id,
-        truth_status: truth_status || null,
-        session_status: session.status || null,
-        client_mac,
-        ap_mac,
-        nas_id,
-        started_at: session.activated_at || session.started_at || null,
-        expires_at: session.expires_at || null,
-      });
       return res.json({
         ok: true,
         already_active: true,
@@ -5402,17 +5388,6 @@ app.post("/api/voucher/activate", async (req, res) => {
         return res.status(409).json({ error: "voucher_already_activated" });
       }
 
-      debugAuthorize("reactivate.pending_armed", {
-        voucher_code,
-        voucher_session_id: session.id,
-        system_branch: isSystem3 ? "system3" : "system2",
-        client_mac,
-        ap_mac,
-        nas_id,
-        started_at: updated?.started_at || updatePayload.started_at || null,
-        expires_at: updated?.expires_at || updatePayload.expires_at || null,
-        is_bonus_session: false,
-      });
       return res.json({
         ok: true,
         activated: true,
@@ -5457,21 +5432,6 @@ app.post("/api/voucher/activate", async (req, res) => {
       const hasDataBonus = (bonusBytes > 0 || bonusBytes === -1);
       const hasUsableBonus = hasTimeBonus && hasDataBonus;
 
-      debugAuthorize("reactivate.bonus_eval", {
-        voucher_code,
-        voucher_session_id: session.id,
-        truth_status: truth_status || null,
-        session_status: session.status || null,
-        client_mac,
-        ap_mac,
-        nas_id,
-        bonus_seconds: bonusSeconds,
-        bonus_bytes: bonusBytes,
-        has_time_bonus: hasTimeBonus,
-        has_data_bonus: hasDataBonus,
-        has_usable_bonus: hasUsableBonus,
-      });
-
       if (!hasUsableBonus) {
         if (!hasTimeBonus && !hasDataBonus) {
           return res.status(403).json({
@@ -5513,7 +5473,6 @@ app.post("/api/voucher/activate", async (req, res) => {
         .eq("id", session.id);
 
       if (uErr) {
-        debugAuthorize("reactivate.bonus_update_error", { voucher_code, voucher_session_id: session.id, client_mac, ap_mac, nas_id, error: uErr?.message || String(uErr) });
         console.error("REACTIVATE UPDATE ERROR", uErr);
         return res.status(500).json({
           error: "reactivate_failed",
@@ -5521,18 +5480,6 @@ app.post("/api/voucher/activate", async (req, res) => {
         });
       }
 
-      debugAuthorize("reactivate.bonus_success", {
-        voucher_code,
-        voucher_session_id: session.id,
-        client_mac,
-        ap_mac,
-        nas_id,
-        started_at: upd.started_at,
-        expires_at: upd.expires_at,
-        is_bonus_session: true,
-        bonus_seconds: bonusSeconds,
-        bonus_bytes: bonusBytes,
-      });
       return res.json({
         ok: true,
         reactivated_with_bonus: true,
@@ -5710,20 +5657,6 @@ app.post("/api/radius/authorize", async (req, res) => {
     // so MikroTik doesn't show "RADIUS server not responding".
 
     const sendReject = async (reason, auditExtra = {}) => {
-      debugAuthorize("authorize.reject", {
-        reason,
-        actor_id: auditExtra.actor_id || null,
-        entity_type: auditExtra.entity_type || null,
-        entity_id: auditExtra.entity_id || null,
-        voucher_code: auditExtra.voucher_code || username || null,
-        nas_id: auditExtra.nas_id || nas_id || null,
-        ap_mac: auditExtra.ap_mac || ap_mac || null,
-        client_mac: auditExtra.client_mac || client_mac || null,
-        pool_id: auditExtra.pool_id || null,
-        plan_id: auditExtra.plan_id || null,
-        mvola_phone: auditExtra.mvola_phone || null,
-        metadata: auditExtra.metadata || null,
-      });
       try {
         if (typeof insertAudit === "function") {
           await insertAudit({
@@ -5752,20 +5685,6 @@ app.post("/api/radius/authorize", async (req, res) => {
 
     const sendAccept = async (voucherCode, sessionTimeoutSeconds, auditExtra = {}, replyExtra = {}) => {
       const st = Math.max(1, Math.floor(Number(sessionTimeoutSeconds) || 0));
-      debugAuthorize("authorize.accept", {
-        voucher_code: voucherCode || username || null,
-        session_timeout_seconds: st,
-        actor_id: auditExtra.actor_id || null,
-        entity_type: auditExtra.entity_type || null,
-        entity_id: auditExtra.entity_id || null,
-        nas_id: auditExtra.nas_id || nas_id || null,
-        ap_mac: auditExtra.ap_mac || ap_mac || null,
-        client_mac: auditExtra.client_mac || client_mac || null,
-        pool_id: auditExtra.pool_id || null,
-        plan_id: auditExtra.plan_id || null,
-        mvola_phone: auditExtra.mvola_phone || null,
-        metadata: auditExtra.metadata || null,
-      });
       try {
         if (typeof insertAudit === "function") {
           await insertAudit({
@@ -5865,16 +5784,6 @@ if (username !== password) {
 
 const now = new Date();
 
-debugAuthorize("authorize.request", {
-  username,
-  password_matches_username: !!username && username === password,
-  nas_id,
-  ap_mac,
-  client_mac,
-  caller_ip: getCallerIp(req),
-  has_body: !!body && typeof body === "object",
-});
-
 // Plan metadata (duration + data quota). Loaded lazily.
 let planMeta = null;
 
@@ -5927,24 +5836,6 @@ const bonusSeconds = Math.max(0, Math.floor(Number(bonusOverride?.bonus_seconds 
 const bonusBytesRaw = Number(bonusOverride?.bonus_bytes ?? 0);
 const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusBytesRaw || 0));
 
-debugAuthorize("authorize.session_loaded", {
-  voucher_code: username,
-  session_id: session.id,
-  session_status: session.status || null,
-  truth_status: session.truth_status || null,
-  session_client_mac: session.client_mac || null,
-  request_client_mac: client_mac,
-  nas_id,
-  ap_mac,
-  pool_id: session.pool_id || null,
-  plan_id: session.plan_id || null,
-  started_at: session.started_at || null,
-  expires_at: session.expires_at || null,
-  activated_at: session.activated_at || null,
-  data_used_bytes: session.data_used_bytes ?? null,
-  bonus_seconds: bonusSeconds,
-  bonus_bytes: bonusBytes,
-});
 
 // Device lock: if already bound, enforce same MAC
     if (session.client_mac && client_mac && normalizeMacColon(session.client_mac) !== client_mac) {
@@ -5995,9 +5886,19 @@ debugAuthorize("authorize.session_loaded", {
     //      - Normal mode: existing plan logic
     //      - Bonus session mode: autonomous mini-plan (time + data bonus only)
 
-    const effectiveStatus = session.truth_status || session.status;
-    const isUsableStatus = (effectiveStatus === "active" || effectiveStatus === "pending");
     const isBonusSession = (session.is_bonus_session === true);
+
+    // IMPORTANT:
+    // Bonus session must win over truth_status/view timing.
+    // The SQL truth view can briefly lag right after /api/voucher/activate
+    // updated the base row to bonus mode, so do not let a stale "used/expired"
+    // truth_status block the immediate authorize that follows reactivation.
+    let effectiveStatus = session.truth_status || session.status;
+    if (isBonusSession) {
+      effectiveStatus = "active";
+    }
+
+    const isUsableStatus = (effectiveStatus === "active" || effectiveStatus === "pending");
 
     // Determine whether the session is currently time-expired (only meaningful if started_at exists).
     const nowMs = now.getTime();
@@ -6011,24 +5912,6 @@ debugAuthorize("authorize.session_loaded", {
 
     const hasTimeBonus = (bonusSeconds > 0);
     const hasDataBonus = (bonusBytes === -1 || bonusBytes > 0);
-
-    debugAuthorize("authorize.status_eval", {
-      voucher_code: username,
-      session_id: session.id,
-      session_status: session.status || null,
-      truth_status: session.truth_status || null,
-      effective_status: effectiveStatus,
-      is_usable_status: isUsableStatus,
-      is_bonus_session: isBonusSession,
-      is_time_expired: isTimeExpired,
-      has_time_bonus: hasTimeBonus,
-      has_data_bonus: hasDataBonus,
-      bonus_seconds: bonusSeconds,
-      bonus_bytes: bonusBytes,
-      started_at: session.started_at || null,
-      expires_at: session.expires_at || null,
-      data_used_bytes: session.data_used_bytes ?? null,
-    });
 
     if (isBonusSession) {
       // --------------------------------------------------
@@ -6232,16 +6115,6 @@ debugAuthorize("authorize.session_loaded", {
 
     // Start timer on FIRST successful RADIUS auth (if not started yet)
     if (!session.started_at || !session.expires_at) {
-      debugAuthorize("authorize.start_timer_needed", {
-        voucher_code: username,
-        session_id: session.id,
-        is_bonus_session: isBonusSession,
-        has_time_bonus: hasTimeBonus,
-        has_data_bonus: hasDataBonus,
-        started_at: session.started_at || null,
-        expires_at: session.expires_at || null,
-        plan_id: session.plan_id || null,
-      });
       try {
         let startedAtIso = now.toISOString();
         let expiresAtIso = null;
@@ -6488,20 +6361,6 @@ debugAuthorize("authorize.session_loaded", {
       replyExtra["reply:Mikrotik-Total-Limit"] = effectiveTotalBytes;
     }
 
-    debugAuthorize("authorize.final_allow", {
-      voucher_code: username,
-      session_id: session.id,
-      remaining_seconds: remainingSeconds,
-      is_bonus_session: isBonusSession,
-      effective_status: effectiveStatus,
-      started_at: session.started_at || null,
-      expires_at: session.expires_at || null,
-      data_used_bytes: session.data_used_bytes ?? null,
-      total_bytes_effective: effectiveTotalBytes ?? null,
-      nas_id,
-      ap_mac,
-      client_mac,
-    });
     return sendAccept(username, remainingSeconds, {
       entity_type: "voucher_session",
       entity_id: session.id,
