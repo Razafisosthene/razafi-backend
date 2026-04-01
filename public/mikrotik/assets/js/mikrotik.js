@@ -390,22 +390,57 @@
     return d === 1 ? "1 appareil" : d + " appareils";
   }
 
-  // -------- Read Tanaza params (robust) --------
+  // -------- Read captive params (robust + refresh-safe) --------
   const isLocalhost = (location.hostname === "localhost" || location.hostname === "127.0.0.1");
-  const apMac = (pickLastValidParam(["ap_mac","apMac"], isProbablyMac) || (isLocalhost ? "DEV_AP" : ""));
-  const clientMac = (pickLastValidParam(["client_mac","clientMac"], isProbablyMac) || (isLocalhost ? "DEV_CLIENT" : ""));
+  const CAPTIVE_CTX_KEY = "razafi_captive_ctx_v1";
+
+  function readCaptiveContext() {
+    try {
+      const raw = sessionStorage.getItem(CAPTIVE_CTX_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function writeCaptiveContext(patch = {}) {
+    try {
+      const prev = readCaptiveContext();
+      const next = {
+        apMac: String(patch.apMac ?? prev.apMac ?? "").trim(),
+        clientMac: String(patch.clientMac ?? prev.clientMac ?? "").trim(),
+        nasId: String(patch.nasId ?? prev.nasId ?? "").trim(),
+        loginUrl: String(patch.loginUrl ?? prev.loginUrl ?? "").trim(),
+        continueUrl: String(patch.continueUrl ?? prev.continueUrl ?? "").trim(),
+        clientIp: String(patch.clientIp ?? prev.clientIp ?? "").trim(),
+        gwIp: String(patch.gwIp ?? prev.gwIp ?? "").trim(),
+        savedAt: Date.now(),
+      };
+      sessionStorage.setItem(CAPTIVE_CTX_KEY, JSON.stringify(next));
+      return next;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  const storedCaptive = readCaptiveContext();
+
+  const apMacFromQuery = pickLastValidParam(["ap_mac","apMac"], isProbablyMac) || "";
+  const clientMacFromQuery = pickLastValidParam(["client_mac","clientMac"], isProbablyMac) || "";
   // -------- Option C (MikroTik external portal) --------
   // In Option C, Tanaza AP MAC is not available reliably. We identify the site/pool by NAS-ID.
   // We pass this from MikroTik login.html as: nas_id=$(identity)
-  const nasId = (pickLastValidParam(["nas_id","nasId","nas"], (v) => !isPlaceholder(v)) || "");
-  const loginUrl = pickLastValidParam(["login_url","loginUrl"], (v) => {
+  const nasIdFromQuery = pickLastValidParam(["nas_id","nasId","nas"], (v) => !isPlaceholder(v)) || "";
+  const loginUrlFromQuery = pickLastValidParam(["login_url","loginUrl"], (v) => {
     if (isPlaceholder(v)) return false;
     const s = String(v || "").trim();
     return /^https?:\/\//i.test(s) || s.startsWith("/");
   }) || "";
-  const continueUrl = pickLastValidParam(["continue_url","continueUrl","dst","url"], (v) => !isPlaceholder(v)) || "";
+  const continueUrlFromQuery = pickLastValidParam(["continue_url","continueUrl","dst","url"], (v) => !isPlaceholder(v)) || "";
 
-  const clientIp = pickLastValidParam(["client_ip","clientIp","ip","ua_ip"], (v) => {
+  const clientIpFromQuery = pickLastValidParam(["client_ip","clientIp","ip","ua_ip"], (v) => {
     if (isPlaceholder(v)) return false;
     const s = String(v || "").trim();
     return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(s);
@@ -414,11 +449,22 @@
 
   // Optional: allow forcing the MikroTik gateway IP from Tanaza URL
   // Example Tanaza Splash URL: https://portal.razafistore.com/mikrotik/?gw=192.168.88.1
-  const gwIp = pickLastValidParam(["gw","gateway","router_ip","hotspot_ip","mikrotik_ip"], (v) => {
+  const gwIpFromQuery = pickLastValidParam(["gw","gateway","router_ip","hotspot_ip","mikrotik_ip"], (v) => {
     if (isPlaceholder(v)) return false;
     const s = String(v || "").trim();
     return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(s);
   }) || "";
+
+  const apMac = apMacFromQuery || String(storedCaptive.apMac || "").trim() || (isLocalhost ? "DEV_AP" : "");
+  const clientMac = clientMacFromQuery || String(storedCaptive.clientMac || "").trim() || (isLocalhost ? "DEV_CLIENT" : "");
+  const nasId = nasIdFromQuery || String(storedCaptive.nasId || "").trim() || "";
+  const loginUrl = loginUrlFromQuery || String(storedCaptive.loginUrl || "").trim() || "";
+  const continueUrl = continueUrlFromQuery || String(storedCaptive.continueUrl || "").trim() || "";
+  const clientIp = clientIpFromQuery || String(storedCaptive.clientIp || "").trim() || "";
+  const gwIp = gwIpFromQuery || String(storedCaptive.gwIp || "").trim() || "";
+
+  // Persist real captive identifiers before URL cleanup so manual refresh keeps working.
+  writeCaptiveContext({ apMac, clientMac, nasId, loginUrl, continueUrl, clientIp, gwIp });
 
   
   // ✅ RAZAFI System 3 rule: NEVER trust Tanaza login_url for MikroTik login.
