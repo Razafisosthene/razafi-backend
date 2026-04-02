@@ -1323,8 +1323,6 @@ function submitToLoginUrl(code, ev) {
         client_mac: clientMac || null,
         nas_id: nasId || null,
         ap_mac: nasId ? null : (apMac || null),
-        request_source: "mikrotik",
-        system_hint: "system3",
       };
 
       async function tryActivateVoucher(timeoutMs) {
