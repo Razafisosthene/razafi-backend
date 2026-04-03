@@ -7623,6 +7623,7 @@ const { error: vsErr } = await supabase
 
 // ---------------------------------------------------------------------------
 // ENDPOINT: fetch transaction details by requestRef
+// Used by portal polling UI to display live payment states after MVola initiation.
 // ---------------------------------------------------------------------------
 app.get("/api/tx/:requestRef", async (req, res) => {
   const requestRef = req.params.requestRef;
