@@ -5833,7 +5833,7 @@ try {
 if (error || !rows || !rows.length) {
   const r2 = await supabase
     .from("voucher_sessions")
-    .select("id,voucher_code,status,client_mac,pool_id,plan_id,mvola_phone,data_used_bytes,expires_at,activated_at,started_at,created_at")
+    .select("id,voucher_code,status,client_mac,pool_id,plan_id,mvola_phone,data_used_bytes,expires_at,activated_at,started_at,created_at,is_bonus_session,nas_id,ap_mac,updated_at")
     .ilike("voucher_code", username)
     .order("created_at", { ascending: false })
     .limit(1);
@@ -5845,7 +5845,25 @@ if (error || !rows || !rows.length) {
   return sendReject("unknown_code", { nas_id, client_mac, metadata: { username } });
 }
 
-const session = rows[0];
+const session = { ...(rows[0] || {}) };
+
+// CRITICAL: the truth view can lag or omit writable base columns such as is_bonus_session.
+// Always merge the latest raw voucher_sessions row so authorize never rejects a just-reactivated
+// bonus session because of a stale view snapshot.
+try {
+  const { data: baseRow } = await supabase
+    .from("voucher_sessions")
+    .select("id,status,client_mac,pool_id,plan_id,mvola_phone,data_used_bytes,expires_at,activated_at,started_at,created_at,is_bonus_session,nas_id,ap_mac,updated_at")
+    .eq("id", session.id)
+    .maybeSingle();
+
+  if (baseRow) {
+    Object.assign(session, baseRow, {
+      // Keep the truth view status alongside the raw base status.
+      truth_status: session.truth_status || session.status || baseRow.status || null,
+    });
+  }
+} catch (_) {}
 
 
 // Bonus override (by voucher session id) — used for time/data bonuses
@@ -5859,6 +5877,22 @@ const bonusSeconds = Math.max(0, Math.floor(Number(bonusOverride?.bonus_seconds 
 const bonusBytesRaw = Number(bonusOverride?.bonus_bytes ?? 0);
 const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusBytesRaw || 0));
 
+try {
+  console.log("[radius][authorize][state]", {
+    voucherCode: username,
+    sessionId: session.id,
+    nasId: nas_id,
+    clientMac: client_mac,
+    baseStatus: session.status || null,
+    truthStatus: session.truth_status || null,
+    isBonusSession: session.is_bonus_session === true,
+    startedAt: session.started_at || null,
+    expiresAt: session.expires_at || null,
+    dataUsedBytes: String(session.data_used_bytes ?? 0),
+    bonusSeconds,
+    bonusBytes,
+  });
+} catch (_) {}
 
 // Device lock: if already bound, enforce same MAC
     if (session.client_mac && client_mac && normalizeMacColon(session.client_mac) !== client_mac) {
@@ -6606,7 +6640,7 @@ app.post("/api/radius/accounting", async (req, res) => {
     // Update the latest voucher_session row for this voucher
     const { data: vsRows, error: vsErr } = await supabase
       .from("voucher_sessions")
-      .select("id,plan_id,status,expires_at,data_used_bytes")
+      .select("id,plan_id,status,expires_at,data_used_bytes,is_bonus_session")
       .eq("voucher_code", voucherCode)
       .order("created_at", { ascending: false })
       .limit(1);
@@ -6635,12 +6669,38 @@ app.post("/api/radius/accounting", async (req, res) => {
     })();
     const safeUsedBytes = aggregatedUsed > currentUsedBytes ? aggregatedUsed : currentUsedBytes;
 
-    // Determine whether data quota is exhausted (if plan has data_mb)
+    // Determine whether data quota is exhausted.
+    // IMPORTANT:
+    // - normal mode => plan quota + optional data bonus
+    // - bonus session mode => bonus quota only
     let quotaReached = false;
     let totalLimitBytes = null;
+    let vsIsBonusSession = false;
+    let vsBonusBytes = 0;
+    try {
+      vsIsBonusSession = vsRows[0].is_bonus_session === true || vsRows[0].is_bonus_session === "true";
+    } catch (_) {
+      vsIsBonusSession = false;
+    }
+
+    try {
+      const { data: bonusRow } = await supabase
+        .from("voucher_bonus_overrides")
+        .select("bonus_bytes")
+        .eq("voucher_session_id", vsId)
+        .maybeSingle();
+
+      const bonusBytesRaw = Number(bonusRow?.bonus_bytes ?? 0);
+      vsBonusBytes = bonusBytesRaw === -1 ? -1 : Math.max(0, Math.floor(bonusBytesRaw || 0));
+    } catch (_) {
+      vsBonusBytes = 0;
+    }
+
     try {
       const planId = vsRows[0].plan_id || null;
-      if (planId) {
+      if (vsIsBonusSession) {
+        totalLimitBytes = (vsBonusBytes === -1) ? null : (vsBonusBytes > 0 ? vsBonusBytes : 0);
+      } else if (planId) {
         const { data: planRow } = await supabase
           .from("plans")
           .select("data_mb")
@@ -6649,14 +6709,19 @@ app.post("/api/radius/accounting", async (req, res) => {
 
         const dataMbRaw = planRow?.data_mb;
         const dataMb = (dataMbRaw === null || dataMbRaw === undefined) ? null : Number(dataMbRaw);
-        totalLimitBytes =
+        const baseLimitBytes =
           (dataMb !== null && Number.isFinite(dataMb) && dataMb > 0)
             ? Math.floor(dataMb * 1024 * 1024)
             : null;
 
-        if (totalLimitBytes !== null) {
-          quotaReached = aggregatedUsed >= BigInt(totalLimitBytes);
-        }
+        totalLimitBytes =
+          (vsBonusBytes === -1)
+            ? null
+            : (baseLimitBytes !== null ? (baseLimitBytes + (vsBonusBytes > 0 ? vsBonusBytes : 0)) : null);
+      }
+
+      if (totalLimitBytes !== null) {
+        quotaReached = aggregatedUsed >= BigInt(totalLimitBytes);
       }
     } catch (_) {
       // ignore
