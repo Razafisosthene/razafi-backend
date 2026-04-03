@@ -1838,8 +1838,8 @@ function saturationLabel(pct) {
           </div>
 
           <!-- Processing overlay (local) -->
-          <div class="processing-overlay hidden" aria-live="assertive" aria-busy="true">
-            <div class="processing-card" role="status">
+          <div class="processing-overlay hidden" aria-live="assertive">
+            <div class="processing-card">
               <div class="spinner" aria-hidden="true"></div>
               <div class="processing-text">
                 <div class="processing-title">Traitement du paiement…</div>
@@ -1927,131 +1927,6 @@ function saturationLabel(pct) {
       if (isProcessing) el.setAttribute("disabled", "disabled");
       else el.removeAttribute("disabled");
     });
-
-    if (!isProcessing) {
-      try { clearProcessingTimers(card); } catch (_) {}
-      try { updateProcessingState(card, "idle"); } catch (_) {}
-    }
-  }
-
-  const PROCESSING_COPY = {
-    idle: {
-      title: "Traitement du paiement…",
-      sub: "Merci de valider la transaction sur votre mobile MVola.",
-    },
-    init: {
-      title: "Initialisation du paiement…",
-      sub: "Préparation sécurisée de votre demande.",
-    },
-    sending: {
-      title: "Envoi de la demande vers MVola…",
-      sub: "Merci de patienter pendant l’envoi.",
-    },
-    waiting: {
-      title: "En attente de validation MVola…",
-      sub: "Veuillez valider la demande sur votre téléphone MVola.",
-    },
-    waiting20: {
-      title: "En attente de validation MVola…",
-      sub: "Toujours en attente de validation…\nVeuillez vérifier votre téléphone MVola.",
-    },
-    waiting40: {
-      title: "En attente de validation MVola…",
-      sub: "La validation prend plus de temps que prévu.\nSi vous avez déjà validé, veuillez patienter…",
-    },
-    confirmed: {
-      title: "Paiement validé ✅",
-      sub: "Votre accès est en cours d’activation, cela peut prendre quelques secondes…",
-    },
-    activating: {
-      title: "Activation de votre accès…",
-      sub: "Veuillez patienter pendant la préparation de votre code.",
-    },
-    connecting: {
-      title: "Connexion en cours…",
-      sub: "Votre code est prêt. Finalisation de la connexion…",
-    },
-    timeout: {
-      title: "Toujours en attente…",
-      sub: "Aucun code reçu pour le moment. Si vous avez déjà validé MVola, veuillez patienter encore un peu.",
-    },
-  };
-
-  function getProcessingEls(card) {
-    if (!card) return {};
-    const overlay = card.querySelector(".processing-overlay");
-    return {
-      overlay,
-      title: card.querySelector(".processing-title"),
-      sub: card.querySelector(".processing-sub"),
-    };
-  }
-
-  function updateProcessingState(card, state, custom = {}) {
-    const { title, sub, overlay } = getProcessingEls(card);
-    const base = PROCESSING_COPY[state] || PROCESSING_COPY.idle;
-    if (title) title.textContent = custom.title || base.title || "Traitement du paiement…";
-    if (sub) sub.textContent = custom.sub || base.sub || "";
-    if (overlay && custom.visible === true) overlay.classList.remove("hidden");
-    if (overlay && custom.visible === false) overlay.classList.add("hidden");
-  }
-
-  function clearProcessingTimers(card) {
-    if (!card || !card.__processingTimers) return;
-    try {
-      (card.__processingTimers || []).forEach((id) => clearTimeout(id));
-    } catch (_) {}
-    card.__processingTimers = [];
-  }
-
-  function scheduleProcessingPatience(card) {
-    if (!card) return;
-    clearProcessingTimers(card);
-    card.__processingTimers = [
-      setTimeout(() => {
-        if (card.classList.contains("processing")) updateProcessingState(card, "waiting20");
-      }, 20000),
-      setTimeout(() => {
-        if (card.classList.contains("processing")) updateProcessingState(card, "waiting40");
-      }, 40000),
-    ];
-  }
-
-  async function fetchTransactionSnapshot(requestRef) {
-    const r = await fetch(apiUrl(`/api/tx/${encodeURIComponent(requestRef)}`), {
-      method: "GET",
-      cache: "no-store",
-    });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      throw new Error(j?.error || "transaction_status_error");
-    }
-    return j || {};
-  }
-
-  async function waitForTransactionCompletion(requestRef, { timeoutMs = 180000, intervalMs = 2500, onTick } = {}) {
-    const started = Date.now();
-    let lastStatus = null;
-
-    while (Date.now() - started < timeoutMs) {
-      const tx = await fetchTransactionSnapshot(requestRef);
-      const status = String(tx?.status || "").toLowerCase();
-
-      if (status !== lastStatus && typeof onTick === "function") {
-        try { onTick(status, tx); } catch (_) {}
-        lastStatus = status;
-      }
-
-      if (status === "completed") return tx;
-      if (["failed", "rejected", "declined", "timeout", "cancelled", "canceled", "expired"].includes(status)) {
-        const msg = tx?.metadata?.error || tx?.metadata?.note || tx?.status || "payment_failed";
-        throw new Error(msg);
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
-
-    return null;
   }
 
   function buildPlanSummary(card) {
@@ -2451,43 +2326,16 @@ function bindPlanHandlers() {
                 }
               }
 
-              const requestRef = String(data?.requestRef || "").trim();
-              updateProcessingState(card, "waiting");
-              scheduleProcessingPatience(card);
               showToast("✅ Paiement initié. Validez la transaction sur votre mobile MVola…", "success", 5200);
+              showToast("⏳ En attente du code…", "info", 5200);
 
-              let tx = null;
-              if (requestRef) {
-                tx = await waitForTransactionCompletion(requestRef, {
-                  timeoutMs: 180000,
-                  intervalMs: 2500,
-                  onTick: (status) => {
-                    if (status === "pending" || status === "initiated") {
-                      updateProcessingState(card, "waiting");
-                    } else if (status === "completed") {
-                      clearProcessingTimers(card);
-                      updateProcessingState(card, "confirmed");
-                    }
-                  },
-                });
-              }
-
-              clearProcessingTimers(card);
-              updateProcessingState(card, "confirmed");
-              await new Promise((resolve) => setTimeout(resolve, 900));
-              updateProcessingState(card, "activating");
-
-              const immediateCode = String(tx?.voucher || tx?.code || tx?.voucher_code || "").trim();
-              const code = immediateCode || await pollDernierCode(cleaned, { timeoutMs: 30000, intervalMs: 2000, baselineCode });
+              const code = await pollDernierCode(cleaned, { timeoutMs: 180000, intervalMs: 3000, baselineCode });
               if (!code) {
-                updateProcessingState(card, "timeout");
-                showToast("⏰ Paiement validé, mais le code n’est pas encore visible. Veuillez patienter quelques instants puis réessayer.", "info", 7000);
+                showToast("⏰ Pas de code reçu pour le moment. Si vous avez validé MVola, réessayez dans 1-2 minutes.", "info", 6500);
                 setProcessing(card, false);
                 updatePayButtonState(card);
                 return;
               }
-
-              updateProcessingState(card, "connecting");
 
               try {
                 if (receiptDraft) sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
