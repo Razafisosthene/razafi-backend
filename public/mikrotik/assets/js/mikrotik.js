@@ -1927,6 +1927,20 @@ function saturationLabel(pct) {
       if (isProcessing) el.setAttribute("disabled", "disabled");
       else el.removeAttribute("disabled");
     });
+
+    // Auto-scroll the payment processing box to the center of the screen
+    if (isProcessing) {
+      try {
+        setTimeout(() => {
+          if (typeof card.scrollIntoView === "function") {
+            card.scrollIntoView({
+              behavior: "smooth",
+              block: "center"
+            });
+          }
+        }, 80);
+      } catch (_) {}
+    }
   }
 
   function buildPlanSummary(card) {
