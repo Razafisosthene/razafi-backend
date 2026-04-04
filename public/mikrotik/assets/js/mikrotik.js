@@ -1135,36 +1135,40 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
     } catch (_) {}
   })();
 
-  async function pollDernierCode(phone, { timeoutMs = 180000, intervalMs = 3000, baselineCode = null } = {}) {
-    const started = Date.now();
+async function pollDernierCode(phone, { timeoutMs = 180000 } = {}) {
+  const started = Date.now();
 
-    while (Date.now() - started < timeoutMs) {
-      try {
-        const url = `/api/dernier-code?phone=${encodeURIComponent(phone)}`;
-        const r = await fetch(apiUrl(url), { method: "GET" });
-        if (r.status === 204) {
-          // no code yet
-        } else if (r.ok) {
-          const j = await r.json();
-          if (j && j.code) {
-            const c = String(j.code);
-            if (!baselineCode || c !== String(baselineCode)) return c;
-          }
-        } else {
-          let msg = "Erreur serveur";
-          try { const t = await r.text(); msg = t || msg; } catch(_) {}
-          throw new Error(msg);
+  while (Date.now() - started < timeoutMs) {
+    const elapsed = Date.now() - started;
+
+    // ⚡ FAST at start, slower later
+    const intervalMs = elapsed < 10000 ? 1000 : 3000;
+
+    try {
+      const url = `/api/dernier-code?phone=${encodeURIComponent(phone)}`;
+      const r = await fetch(apiUrl(url), { method: "GET" });
+
+      if (r.status === 204) {
+        // no code yet
+      } else if (r.ok) {
+        const j = await r.json();
+        if (j && j.code) {
+          return String(j.code);
         }
-      } catch (e) {
-        console.warn("[RAZAFI] pollDernierCode error", e?.message || e);
+      } else {
+        let msg = "Erreur serveur";
+        try { msg = await r.text(); } catch (_) {}
+        throw new Error(msg);
       }
-
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    } catch (e) {
+      console.warn("[RAZAFI] pollDernierCode error", e?.message || e);
     }
 
-    return null;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
 
+  return null;
+}  
   
   // Build MikroTik login URL (GET) for Option C redirect-based login
   function buildMikrotikLoginTarget(code) {
