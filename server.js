@@ -4120,6 +4120,60 @@ function buildOpsEmailLines(linesObj) {
     .join("\n");
 }
 
+function buildReadableSection(title, lines = []) {
+  const clean = (lines || [])
+    .map((x) => String(x ?? "").trim())
+    .filter(Boolean);
+  if (!clean.length) return "";
+  return [title, ...clean].join("\n");
+}
+
+function buildReadablePaymentEmail({
+  intro = "",
+  requestRef = "",
+  statusLabel = "",
+  phone = "",
+  amount = "",
+  planLabel = "",
+  voucherCode = "",
+  poolLabel = "",
+  clientMac = "",
+  apMac = "",
+  mode = "",
+  serverCorrelationId = "",
+  transactionReference = "",
+  extraLines = [],
+  timestamp = "",
+} = {}) {
+  const sections = [];
+
+  if (intro) sections.push(String(intro).trim());
+
+  const summary = buildReadableSection("Résumé", [
+    requestRef ? `• Référence: ${requestRef}` : "",
+    statusLabel ? `• Statut: ${statusLabel}` : "",
+    phone ? `• Téléphone: ${phone}` : "",
+    amount ? `• Montant: ${amount}` : "",
+    planLabel ? `• Plan: ${planLabel}` : "",
+    voucherCode ? `• Code voucher: ${voucherCode}` : "",
+    poolLabel ? `• Pool: ${poolLabel}` : "",
+    clientMac ? `• Client MAC: ${clientMac}` : "",
+    apMac ? `• AP MAC: ${apMac}` : "",
+    mode ? `• Mode: ${mode}` : "",
+    timestamp ? `• Heure Madagascar: ${timestamp}` : "",
+  ]);
+  if (summary) sections.push(summary);
+
+  const technical = buildReadableSection("Détails techniques", [
+    serverCorrelationId ? `• ServerCorrelationId: ${serverCorrelationId}` : "",
+    transactionReference ? `• TransactionReference: ${transactionReference}` : "",
+    ...(Array.isArray(extraLines) ? extraLines : []),
+  ]);
+  if (technical) sections.push(technical);
+
+  return sections.filter(Boolean).join("\n\n");
+}
+
 // ---------------------------------------------------------------------------
 // HELPERS
 // ---------------------------------------------------------------------------
@@ -4543,19 +4597,22 @@ async function pollTransactionStatus({
 
             await sendEmailNotification(
               `[RAZAFI WIFI] 💰 Payment Success – RequestRef ${requestRef}`,
-              buildOpsEmailLines({
-                RequestRef: requestRef,
-                ServerCorrelationId: serverCorrelationId,
-                Phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
-                Amount: `${tx?.amount ?? amount ?? ""} Ar`,
-                PlanId: metaPlanId || "—",
-                PoolId: metaPoolId || "—",
-                VoucherCode: voucherCode,
-                ClientMac: metaClientMac || "—",
-                ApMac: metaApMac || "—",
-                Status: "completed",
-                Mode: "new_system",
-                TimestampMadagascar: toISOStringMG(new Date()),
+              buildReadablePaymentEmail({
+                intro: "Paiement MVola réussi. Un voucher a été généré avec succès.",
+                requestRef,
+                statusLabel: "completed",
+                phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
+                amount: `${tx?.amount ?? amount ?? ""} Ar`,
+                voucherCode,
+                poolLabel: metaPoolId || "—",
+                clientMac: metaClientMac || "—",
+                apMac: metaApMac || "—",
+                mode: "new_system",
+                serverCorrelationId,
+                timestamp: toISOStringMG(new Date()),
+                extraLines: [
+                  `• PlanId: ${metaPlanId || "—"}`,
+                ],
               })
             );
 
@@ -4579,16 +4636,19 @@ async function pollTransactionStatus({
 
             await sendEmailNotification(
               `[RAZAFI WIFI] 🚨 CRITICAL – Voucher Generation Failed – RequestRef ${requestRef}`,
-              buildOpsEmailLines({
-                RequestRef: requestRef,
-                ServerCorrelationId: serverCorrelationId,
-                Phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
-                Amount: `${tx?.amount ?? amount ?? ""} Ar`,
-                FailurePoint: "assign_voucher_atomic",
-                Error: truncate(rpcError, 2000),
-                Status: "voucher_generation_failed",
-                Mode: "legacy_system",
-                TimestampMadagascar: toISOStringMG(new Date()),
+              buildReadablePaymentEmail({
+                intro: "Paiement reçu, mais la génération du voucher a échoué.",
+                requestRef,
+                statusLabel: "voucher_generation_failed",
+                phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
+                amount: `${tx?.amount ?? amount ?? ""} Ar`,
+                mode: "legacy_system",
+                serverCorrelationId,
+                timestamp: toISOStringMG(new Date()),
+                extraLines: [
+                  "• FailurePoint: assign_voucher_atomic",
+                  `• Error: ${truncate(rpcError, 2000)}`,
+                ],
               })
             );
             return;
@@ -4610,15 +4670,18 @@ async function pollTransactionStatus({
 
             await sendEmailNotification(
               `[RAZAFI WIFI] 🚨 CRITICAL – Voucher Generation Failed – RequestRef ${requestRef}`,
-              buildOpsEmailLines({
-                RequestRef: requestRef,
-                ServerCorrelationId: serverCorrelationId,
-                Phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
-                Amount: `${tx?.amount ?? amount ?? ""} Ar`,
-                FailurePoint: "no_voucher_available",
-                Status: "no_voucher_pending",
-                Mode: "legacy_system",
-                TimestampMadagascar: toISOStringMG(new Date()),
+              buildReadablePaymentEmail({
+                intro: "Paiement reçu, mais aucun voucher n'était disponible au moment de l'attribution.",
+                requestRef,
+                statusLabel: "no_voucher_pending",
+                phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
+                amount: `${tx?.amount ?? amount ?? ""} Ar`,
+                mode: "legacy_system",
+                serverCorrelationId,
+                timestamp: toISOStringMG(new Date()),
+                extraLines: [
+                  "• FailurePoint: no_voucher_available",
+                ],
               })
             );
             return;
@@ -4646,15 +4709,16 @@ async function pollTransactionStatus({
 
           await sendEmailNotification(
             `[RAZAFI WIFI] 💰 Payment Success – RequestRef ${requestRef}`,
-            buildOpsEmailLines({
-              RequestRef: requestRef,
-              ServerCorrelationId: serverCorrelationId,
-              Phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
-              Amount: `${tx?.amount ?? amount ?? ""} Ar`,
-              VoucherCode: voucherCode,
-              Status: "completed",
-              Mode: "legacy_system",
-              TimestampMadagascar: toISOStringMG(new Date()),
+            buildReadablePaymentEmail({
+              intro: "Paiement MVola réussi. Un voucher a été attribué avec succès.",
+              requestRef,
+              statusLabel: "completed",
+              phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
+              amount: `${tx?.amount ?? amount ?? ""} Ar`,
+              voucherCode,
+              mode: "legacy_system",
+              serverCorrelationId,
+              timestamp: toISOStringMG(new Date()),
             })
           );
 
@@ -4683,15 +4747,18 @@ async function pollTransactionStatus({
 
           await sendEmailNotification(
             `[RAZAFI WIFI] 🚨 CRITICAL – Voucher Generation Failed – RequestRef ${requestRef}`,
-            buildOpsEmailLines({
-              RequestRef: requestRef,
-              ServerCorrelationId: serverCorrelationId,
-              Phone: maskPhone(phone),
-              Amount: `${amount ?? ""} Ar`,
-              FailurePoint: "completed_payment_processing",
-              Error: truncate(err?.message || err, 2000),
-              Status: "voucher_generation_failed",
-              TimestampMadagascar: toISOStringMG(new Date()),
+            buildReadablePaymentEmail({
+              intro: "Paiement MVola terminé, mais une erreur est survenue pendant le traitement final du voucher.",
+              requestRef,
+              statusLabel: "voucher_generation_failed",
+              phone: maskPhone(phone),
+              amount: `${amount ?? ""} Ar`,
+              serverCorrelationId,
+              timestamp: toISOStringMG(new Date()),
+              extraLines: [
+                "• FailurePoint: completed_payment_processing",
+                `• Error: ${truncate(err?.message || err, 2000)}`,
+              ],
             })
           );
         }
@@ -4766,15 +4833,19 @@ async function pollTransactionStatus({
           payload: sdata,
         });
 
-        const emailBody = [
-          `RequestRef: ${requestRef}`,
-          `ServerCorrelationId: ${serverCorrelationId}`,
-          `Téléphone (masqué): ${maskPhone(phone)}`,
-          `Montant: ${amount} Ar`,
-          `Plan: ${plan || "—"}`,
-          `Status: failed`,
-          `Timestamp (Madagascar): ${toISOStringMG(new Date())}`,
-        ].join("\n");
+        const emailBody = buildReadablePaymentEmail({
+          intro: "Le paiement MVola a échoué.",
+          requestRef,
+          statusLabel: "failed",
+          phone: maskPhone(phone),
+          amount: `${amount} Ar`,
+          planLabel: plan || "—",
+          serverCorrelationId,
+          timestamp: toISOStringMG(new Date()),
+          extraLines: [
+            `• Réponse MVola: ${truncate(sdata, 2000)}`,
+          ],
+        });
 
         await sendEmailNotification(`[RAZAFI WIFI] ❌ Payment Failed – RequestRef ${requestRef}`, emailBody);
         return;
@@ -4869,14 +4940,21 @@ async function pollTransactionStatus({
     payload: null,
   });
 
-  await sendEmailNotification(`[RAZAFI WIFI] ⚠️ Payment Timeout – RequestRef ${requestRef}`, {
-    RequestRef: requestRef,
-    ServerCorrelationId: serverCorrelationId,
-    Phone: maskPhone(phone),
-    Amount: amount,
-    Message: "Polling timeout: MVola did not return a final status within 3 minutes.",
-    TimestampMadagascar: toISOStringMG(new Date()),
-  });
+  await sendEmailNotification(
+    `[RAZAFI WIFI] ⚠️ Payment Timeout – RequestRef ${requestRef}`,
+    buildReadablePaymentEmail({
+      intro: "Le paiement MVola n'a pas encore donné de résultat final dans le délai prévu.",
+      requestRef,
+      statusLabel: "timeout",
+      phone: maskPhone(phone),
+      amount: `${amount} Ar`,
+      serverCorrelationId,
+      timestamp: toISOStringMG(new Date()),
+      extraLines: [
+        "• Message: MVola n'a pas renvoyé de statut final dans les 3 minutes.",
+      ],
+    })
+  );
 }
 
 // ----------------- Utility: ISO string in Madagascar -----------------
@@ -7718,15 +7796,22 @@ const { error: vsErr } = await supabase
     } catch (dbErr) {
       console.error("⚠️ Failed to mark transaction failed in DB:", dbErr?.message || dbErr);
     }
-    await sendEmailNotification(`[RAZAFI WIFI] ❌ Payment Failed – RequestRef ${requestRef}`, {
-      RequestRef: requestRef,
-      Phone: maskPhone(phone),
-      Amount: amount,
-      Error: truncate(err.response?.data || err?.message, 2000),
-      MappedType: mapped.type,
-      UserMessage: mapped.userMessage,
-      TimestampMadagascar: toISOStringMG(new Date()),
-    });
+    await sendEmailNotification(
+      `[RAZAFI WIFI] ❌ Payment Failed – RequestRef ${requestRef}`,
+      buildReadablePaymentEmail({
+        intro: "Le paiement MVola n'a pas pu être lancé.",
+        requestRef,
+        statusLabel: "failed",
+        phone: maskPhone(phone),
+        amount: `${amount} Ar`,
+        timestamp: toISOStringMG(new Date()),
+        extraLines: [
+          `• Type: ${mapped.type}`,
+          `• Message utilisateur: ${mapped.userMessage}`,
+          `• Détail: ${truncate(err.response?.data || err?.message, 2000)}`,
+        ],
+      })
+    );
     return res.status(mapped.httpStatus || 400).json({
       ok: false,
       error: "Erreur lors du paiement MVola",
