@@ -1323,8 +1323,6 @@ function submitToLoginUrl(code, ev) {
         client_mac: clientMac || null,
         nas_id: nasId || null,
         ap_mac: nasId ? null : (apMac || null),
-        request_source: "mikrotik",
-        system_hint: "system3",
       };
 
       async function tryActivateVoucher(timeoutMs) {
@@ -1927,20 +1925,6 @@ function saturationLabel(pct) {
       if (isProcessing) el.setAttribute("disabled", "disabled");
       else el.removeAttribute("disabled");
     });
-
-    // Auto-scroll the payment processing box to the center of the screen
-    if (isProcessing) {
-      try {
-        setTimeout(() => {
-          if (typeof card.scrollIntoView === "function") {
-            card.scrollIntoView({
-              behavior: "smooth",
-              block: "center"
-            });
-          }
-        }, 80);
-      } catch (_) {}
-    }
   }
 
   function buildPlanSummary(card) {
