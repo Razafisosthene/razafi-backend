@@ -4337,7 +4337,7 @@ function mapMvolaInitiateError(err) {
       type: "NETWORK_ERROR",
       transient: true,
       httpStatus: 503,
-      userMessage: "Connexion au service de paiement impossible pour le moment. Réessayez dans quelques instants.",
+      userMessage: "MVola indisponible. Réessayez dans quelques instants.",
     };
   }
   return {
