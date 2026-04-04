@@ -183,72 +183,8 @@
       .razafi-flash { outline: 3px solid rgba(255,255,255,0.65); outline-offset: 4px; transition: outline-color 0.2s ease; }
       .razafi-banner { margin: 10px 0 10px; padding: 10px 12px; border-radius: 12px; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.10); }
       .razafi-banner .small { font-size: 12px; opacity: 0.85; }
-
-      /* Payment processing UX */
-      body.razafi-processing-lock {
-        overflow: hidden !important;
-        overscroll-behavior: contain;
-        touch-action: none;
-      }
-
-      .processing-overlay {
-        -webkit-overflow-scrolling: touch;
-      }
-
-      .processing-card.razafi-processing-focus {
-        animation: razafiProcessingPop 320ms ease-out;
-        transform-origin: center center;
-      }
-
-      @keyframes razafiProcessingPop {
-        0% { opacity: 0.92; transform: scale(0.94); }
-        70% { opacity: 1; transform: scale(1.02); }
-        100% { opacity: 1; transform: scale(1); }
-      }
     `;
     document.head.appendChild(st);
-  }
-
-  function lockBackgroundScroll() {
-    try {
-      document.body.classList.add("razafi-processing-lock");
-    } catch (_) {}
-  }
-
-  function unlockBackgroundScroll() {
-    try {
-      document.body.classList.remove("razafi-processing-lock");
-    } catch (_) {}
-  }
-
-  function focusProcessingOverlay(card) {
-    try {
-      if (!card) return;
-      const overlay = card.querySelector(".processing-overlay");
-      const processingCard = overlay ? overlay.querySelector(".processing-card") : null;
-      if (!overlay || !processingCard) return;
-
-      requestAnimationFrame(() => {
-        setTimeout(() => {
-          try {
-            processingCard.scrollIntoView({
-              behavior: "smooth",
-              block: "center",
-              inline: "nearest"
-            });
-          } catch (_) {}
-
-          try {
-            processingCard.classList.remove("razafi-processing-focus");
-            void processingCard.offsetWidth;
-            processingCard.classList.add("razafi-processing-focus");
-            setTimeout(() => {
-              try { processingCard.classList.remove("razafi-processing-focus"); } catch (_) {}
-            }, 420);
-          } catch (_) {}
-        }, 60);
-      });
-    } catch (_) {}
   }
 
   function focusVoucherBlock({ highlightMs = 1200 } = {}) {
@@ -1997,11 +1933,18 @@ function saturationLabel(pct) {
       else el.removeAttribute("disabled");
     });
 
-    if (isProcessing) {
-      lockBackgroundScroll();
-      focusProcessingOverlay(card);
-    } else {
-      unlockBackgroundScroll();
+    // Auto-scroll processing box into clear view, especially on mobile
+    if (isProcessing && overlay) {
+      const processingCard = overlay.querySelector(".processing-card") || overlay;
+      setTimeout(() => {
+        try {
+          processingCard.scrollIntoView({
+            behavior: "smooth",
+            block: "center",
+            inline: "nearest",
+          });
+        } catch (_) {}
+      }, 60);
     }
   }
 
@@ -2109,7 +2052,6 @@ function saturationLabel(pct) {
     }
 
     try { setProcessing(card, false); } catch (_) {}
-    try { unlockBackgroundScroll(); } catch (_) {}
 
     try { updatePayButtonState(card); } catch (_) {
       const payBtn = card.querySelector(".pay-btn");
@@ -2225,9 +2167,6 @@ function bindPlanHandlers() {
       if (input) {
         input.addEventListener("input", function () {
           if (card.classList.contains("processing")) return;
-          if (confirmBtn.dataset.busy === "1") return;
-          confirmBtn.dataset.busy = "1";
-          confirmBtn.setAttribute("disabled", "disabled");
           updatePayButtonState(card);
         });
       }
@@ -2260,7 +2199,6 @@ function bindPlanHandlers() {
           if (!isMvola) {
             showToast("❌ Numéro MVola invalide. Entrez 034xxxxxxx ou +26134xxxxxxx (ex : 0341234567).", "error");
             updatePayButtonState(card);
-            try { delete confirmBtn.dataset.busy; confirmBtn.removeAttribute("disabled"); } catch (_) {}
             return;
           }
 
@@ -2433,7 +2371,6 @@ function bindPlanHandlers() {
               console.error("[RAZAFI] payment error", e);
               showToast("❌ " + friendlyErrorMessage(e), "error", 6500);
             } finally {
-              try { delete confirmBtn.dataset.busy; } catch (_) {}
               setProcessing(card, false);
               updatePayButtonState(card);
             }
@@ -2473,7 +2410,6 @@ function bindPlanHandlers() {
   }
 
   // -------- Init --------
-  ensureFlashStyle();
   renderStatus({ hasVoucher: false, voucherCode: "" });
   bindTermsAcceptanceGuard();
   loadPlans();
