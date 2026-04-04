@@ -1135,7 +1135,7 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
     } catch (_) {}
   })();
 
-async function pollDernierCode(phone, { timeoutMs = 180000 } = {}) {
+async function pollDernierCode(phone, { timeoutMs = 180000, baselineCode = null } = {}) {
   const started = Date.now();
 
   while (Date.now() - started < timeoutMs) {
@@ -1153,7 +1153,10 @@ async function pollDernierCode(phone, { timeoutMs = 180000 } = {}) {
       } else if (r.ok) {
         const j = await r.json();
         if (j && j.code) {
-          return String(j.code);
+          const c = String(j.code);
+          if (!baselineCode || c !== String(baselineCode)) {
+            return c;
+          }
         }
       } else {
         let msg = "Erreur serveur";
