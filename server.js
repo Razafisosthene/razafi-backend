@@ -849,53 +849,6 @@ function normalizePhone(phone) {
   return p;
 }
 
-function mapMvolaInitiateError(err) {
-  const data = err?.response?.data || {};
-  const code = String(data?.code || "").trim();
-  const raw = [
-    data?.description,
-    data?.message,
-    typeof data === "string" ? data : "",
-    err?.message || "",
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  const isSuspended = raw.includes("suspended");
-  const isNetworkLike = !err?.response || code === "ECONNABORTED" || raw.includes("timeout") || raw.includes("network");
-  const isRetryable = (code === "303001" && isSuspended) || isNetworkLike;
-
-  if (code === "303001" && isSuspended) {
-    return {
-      userMessage: "Service MVola temporairement indisponible. Réessayez dans quelques instants.",
-      reason: "provider_endpoint_suspended",
-      retryable: true,
-      code,
-    };
-  }
-
-  if (isNetworkLike) {
-    return {
-      userMessage: "Connexion au service MVola impossible pour le moment. Réessayez dans quelques instants.",
-      reason: "network_or_timeout",
-      retryable: true,
-      code,
-    };
-  }
-
-  return {
-    userMessage: "Erreur lors du paiement MVola. Veuillez réessayer.",
-    reason: "generic_mvola_error",
-    retryable: false,
-    code,
-  };
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 // ---------------------------------------------------------------------------
 // SUPABASE CLIENT
 // ---------------------------------------------------------------------------
@@ -4344,6 +4297,101 @@ function parseAriaryFromString(s) {
   }
 }
 
+function waitMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+function getMvolaErrorInfo(err) {
+  const data = err?.response?.data || null;
+  const code = String(data?.code || data?.errorCode || "").trim();
+  const type = String(data?.type || "").trim();
+  const message = String(data?.message || data?.error || err?.message || "").trim();
+  const description = String(data?.description || "").trim();
+  const rawText = [code, type, message, description].join(" ").toLowerCase();
+  const isNetwork =
+    !err?.response ||
+    err?.code === "ECONNABORTED" ||
+    err?.code === "ETIMEDOUT" ||
+    err?.code === "ECONNRESET" ||
+    err?.code === "ENOTFOUND" ||
+    err?.code === "EAI_AGAIN";
+  return { data, code, type, message, description, rawText, isNetwork };
+}
+
+function mapMvolaInitiateError(err) {
+  const info = getMvolaErrorInfo(err);
+  const suspended =
+    info.code === "303001" ||
+    info.rawText.includes("suspended") ||
+    info.rawText.includes("address endpoint");
+  if (suspended) {
+    return {
+      type: "TEMPORARY_PROVIDER_ERROR",
+      transient: true,
+      httpStatus: 503,
+      userMessage: "Service MVola temporairement indisponible. Réessayez dans quelques instants.",
+    };
+  }
+  if (info.isNetwork) {
+    return {
+      type: "NETWORK_ERROR",
+      transient: true,
+      httpStatus: 503,
+      userMessage: "Connexion au service de paiement impossible pour le moment. Réessayez dans quelques instants.",
+    };
+  }
+  return {
+    type: "UNKNOWN",
+    transient: false,
+    httpStatus: 400,
+    userMessage: "Erreur lors du paiement MVola. Veuillez réessayer.",
+  };
+}
+
+function shouldRetryMvolaInitiate(err) {
+  return !!mapMvolaInitiateError(err).transient;
+}
+
+async function initiateMvolaPaymentWithRetry({ payload, requestRef, phone, amount, correlationId }) {
+  const initiateUrl = `${MVOLA_BASE}/mvola/mm/transactions/type/merchantpay/1.0.0/`;
+
+  async function doAttempt(attemptNo, attemptCorrelationId) {
+    const token = await getAccessToken();
+    console.info("📤 Initiating MVola payment", {
+      requestRef,
+      phone,
+      amount,
+      correlationId: attemptCorrelationId,
+      attempt: attemptNo,
+    });
+    const resp = await axios.post(initiateUrl, payload, {
+      headers: mvolaHeaders(token, attemptCorrelationId),
+      timeout: 20000,
+    });
+    return resp.data || {};
+  }
+
+  try {
+    const data = await doAttempt(1, correlationId);
+    return { data, usedRetry: false };
+  } catch (err1) {
+    if (!shouldRetryMvolaInitiate(err1)) throw err1;
+
+    console.warn("⚠️ MVola initiate transient failure; retrying once", {
+      requestRef,
+      correlationId,
+      mapped: mapMvolaInitiateError(err1),
+      raw: err1?.response?.data || err1?.message || err1,
+    });
+
+    await waitMs(1200);
+
+    const retryCorrelationId = crypto.randomUUID();
+    const data = await doAttempt(2, retryCorrelationId);
+    return { data, usedRetry: true };
+  }
+}
+
 // ----------------- Polling logic (waits up to 3 minutes) -----------------
 async function pollTransactionStatus({
   serverCorrelationId,
@@ -4354,8 +4402,7 @@ async function pollTransactionStatus({
 }) {
   const start = Date.now();
   const timeoutMs = 3 * 60 * 1000; // 3 minutes
-  let backoff = 1000;
-  const maxBackoff = 10000;
+  const pollScheduleMs = [400, 700, 1000, 1500, 2200, 3000, 4000, 5000, 6000];
   let attempt = 0;
 
   while (Date.now() - start < timeoutMs) {
@@ -4750,8 +4797,8 @@ async function pollTransactionStatus({
       // continue to retry
     }
 
-    await new Promise((resolve) => setTimeout(resolve, backoff));
-    backoff = Math.min(backoff * 2, maxBackoff);
+    const waitFor = pollScheduleMs[Math.min(Math.max(attempt - 1, 0), pollScheduleMs.length - 1)];
+    await waitMs(waitFor);
   }
 
   // Timeout reached
@@ -7555,52 +7602,15 @@ const { error: vsErr } = await supabase
 
 
   try {
-    const token = await getAccessToken();
-    const initiateUrl = `${MVOLA_BASE}/mvola/mm/transactions/type/merchantpay/1.0.0/`;
-    console.info("📤 Initiating MVola payment", { requestRef, phone, amount, correlationId });
-
-    let resp;
-    let initiateAttempts = 0;
-    let lastInitiateError = null;
-
-    while (initiateAttempts < 2) {
-      initiateAttempts += 1;
-      try {
-        resp = await axios.post(initiateUrl, payload, {
-          headers: mvolaHeaders(token, correlationId),
-          timeout: 20000,
-        });
-        break;
-      } catch (err) {
-        lastInitiateError = err;
-        const mapped = mapMvolaInitiateError(err);
-
-        console.error("❌ MVola a rejeté la requête", {
-          requestRef,
-          attempt: initiateAttempts,
-          mapped,
-          raw: err.response?.data || err?.message || err,
-        });
-
-        if (mapped.retryable && initiateAttempts < 2) {
-          console.warn("🔁 Retrying MVola initiate once after transient error", {
-            requestRef,
-            reason: mapped.reason,
-            attempt: initiateAttempts,
-          });
-          await sleep(1200);
-          continue;
-        }
-
-        throw err;
-      }
-    }
-
-    if (!resp) throw lastInitiateError || new Error("MVola initiate failed");
-
-    const data = resp.data || {};
+    const { data, usedRetry } = await initiateMvolaPaymentWithRetry({
+      payload,
+      requestRef,
+      phone,
+      amount,
+      correlationId,
+    });
     const serverCorrelationId = data.serverCorrelationId || data.serverCorrelationID || data.serverCorrelationid || null;
-    console.info("✅ MVola initiate response", { requestRef, serverCorrelationId });
+    console.info("✅ MVola initiate response", { requestRef, serverCorrelationId, usedRetry });
 
     try {
       if (supabase) {
@@ -7618,9 +7628,9 @@ const { error: vsErr } = await supabase
                 .eq("request_ref", requestRef)
                 .maybeSingle();
               const base = txRow?.metadata && typeof txRow.metadata === 'object' ? txRow.metadata : {};
-              return { ...base, mvolaResponse: truncate(data, 2000), updated_at_local: toISOStringMG(new Date()), initiate_attempts: initiateAttempts };
+              return { ...base, mvolaResponse: truncate(data, 2000), initiate_retry_used: !!usedRetry, updated_at_local: toISOStringMG(new Date()) };
             } catch (_) {
-              return { mvolaResponse: truncate(data, 2000), updated_at_local: toISOStringMG(new Date()), initiate_attempts: initiateAttempts };
+              return { mvolaResponse: truncate(data, 2000), initiate_retry_used: !!usedRetry, updated_at_local: toISOStringMG(new Date()) };
             }
           })()),
           })
@@ -7637,11 +7647,11 @@ const { error: vsErr } = await supabase
       status: "initiated",
       masked_phone: maskPhone(phone),
       amount,
-      attempt: initiateAttempts - 1,
-      short_message: initiateAttempts > 1
+      attempt: usedRetry ? 1 : 0,
+      short_message: usedRetry
         ? "Initiation MVola réussie après une relance automatique"
         : "Initiation de la transaction auprès de MVola",
-      payload: { ...data, initiate_attempts: initiateAttempts },
+      payload: { ...data, initiate_retry_used: !!usedRetry },
     });
 
     res.json({ ok: true, requestRef, serverCorrelationId, mvola: data });
@@ -7664,10 +7674,9 @@ const { error: vsErr } = await supabase
     return;
   } catch (err) {
     const mapped = mapMvolaInitiateError(err);
-    console.error("❌ MVola initiate final failure", {
-      requestRef,
-      mapped,
+    console.error("❌ MVola a rejeté la requête", {
       raw: err.response?.data || err?.message || err,
+      mapped,
     });
     // NEW system audit: MVola initiate error
     await insertAudit({
@@ -7687,9 +7696,8 @@ const { error: vsErr } = await supabase
       metadata: {
         error: truncate(err.response?.data || err?.message || err, 2000),
         correlationId,
-        mapped_reason: mapped.reason,
-        mapped_code: mapped.code || null,
-        user_message: mapped.userMessage,
+        mapped_type: mapped.type,
+        mapped_transient: !!mapped.transient,
       },
     });
     try {
@@ -7700,11 +7708,10 @@ const { error: vsErr } = await supabase
             status: "failed",
             metadata: {
               error: truncate(err.response?.data || err?.message, 2000),
-              mapped_reason: mapped.reason,
-              mapped_code: mapped.code || null,
-              user_message: mapped.userMessage,
-              updated_at_local: toISOStringMG(new Date())
-            }
+              mapped_type: mapped.type,
+              mapped_transient: !!mapped.transient,
+              updated_at_local: toISOStringMG(new Date()),
+            },
           })
           .eq("request_ref", requestRef);
       }
@@ -7716,11 +7723,12 @@ const { error: vsErr } = await supabase
       Phone: maskPhone(phone),
       Amount: amount,
       Error: truncate(err.response?.data || err?.message, 2000),
-      MappedReason: mapped.reason,
+      MappedType: mapped.type,
       UserMessage: mapped.userMessage,
       TimestampMadagascar: toISOStringMG(new Date()),
     });
-    return res.status(400).json({
+    return res.status(mapped.httpStatus || 400).json({
+      ok: false,
       error: "Erreur lors du paiement MVola",
       message: mapped.userMessage,
       details: err.response?.data || err.message,
