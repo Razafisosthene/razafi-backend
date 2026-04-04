@@ -5181,8 +5181,7 @@ app.get("/api/dernier-code", async (req, res) => {
 // - System 2 (Portal/Tanaza): click starts time immediately
 // - System 3 (MikroTik): click only arms voucher; RADIUS starts time later
 //
-// Branch decision (HARDENED):
-// - explicit MikroTik requests must provide a valid nas_id
+// Branch decision (SAFE):
 // - if nas_id is present AND recognized in mikrotik_routers => System 3
 // - otherwise => System 2
 // ---------------------------------------------------------------------------
@@ -5195,8 +5194,6 @@ app.post("/api/voucher/activate", async (req, res) => {
     const client_mac_raw = body.client_mac || body.clientMac || body.clientMAC || "";
     const ap_mac_raw = body.ap_mac || body.apMac || "";
     const nas_id = String(body.nas_id || body.nasId || body.nas || "").trim() || null;
-    const request_source = String(body.request_source || body.requestSource || "").trim().toLowerCase();
-    const system_hint = String(body.system_hint || body.systemHint || "").trim().toLowerCase();
 
     const client_mac =
       normalizeMacColon(client_mac_raw) || String(client_mac_raw || "").trim() || null;
@@ -5207,15 +5204,11 @@ app.post("/api/voucher/activate", async (req, res) => {
       return res.status(400).json({ error: "voucher_code and client_mac are required" });
     }
 
-    const isExplicitMikroTikRequest = (request_source === "mikrotik" || system_hint === "system3");
-
     // -----------------------------------------------------------------------
     // 1) Decide branch SAFELY
-    //    MikroTik requests must never silently fall back to System 2.
+    //    System 3 only if nas_id is actually known in mikrotik_routers
     // -----------------------------------------------------------------------
     let isSystem3 = false;
-    let hasKnownNasId = false;
-
     if (nas_id) {
       try {
         const { data: routerRow, error: routerErr } = await supabase
@@ -5225,27 +5218,11 @@ app.post("/api/voucher/activate", async (req, res) => {
           .maybeSingle();
 
         if (!routerErr && routerRow?.nas_id) {
-          hasKnownNasId = true;
           isSystem3 = true;
         }
       } catch (_) {
-        hasKnownNasId = false;
         isSystem3 = false;
       }
-    }
-
-    if (isExplicitMikroTikRequest && !nas_id) {
-      return res.status(400).json({
-        error: "missing_nas_id",
-        message: "Impossible d’activer ce code pour MikroTik: nas_id manquant."
-      });
-    }
-
-    if (isExplicitMikroTikRequest && nas_id && !hasKnownNasId) {
-      return res.status(400).json({
-        error: "unknown_nas_id",
-        message: "Impossible d’activer ce code pour MikroTik: nas_id inconnu."
-      });
     }
 
     // -----------------------------------------------------------------------
@@ -5335,7 +5312,7 @@ app.post("/api/voucher/activate", async (req, res) => {
             : 0);
 
     // -----------------------------------------------------------------------
-    // 6) Pending -> split behavior by strict branch
+    // 6) Pending -> split behavior by branch
     // -----------------------------------------------------------------------
     if (truth_status === "pending" || session.status === "pending") {
       if (!planMinutes || planMinutes <= 0) {
