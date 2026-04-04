@@ -849,6 +849,56 @@ function normalizePhone(phone) {
   return p;
 }
 
+
+function mapMvolaInitiateError(err) {
+  try {
+    const data = err?.response?.data || {};
+    const code = String(data?.code || "").trim();
+    const description = String(
+      data?.description ||
+      data?.message ||
+      data?.error ||
+      err?.message ||
+      ""
+    ).trim();
+
+    const descriptionLower = description.toLowerCase();
+
+    if (code === "303001" && descriptionLower.includes("suspended")) {
+      return {
+        type: "TEMPORARY_PROVIDER_ERROR",
+        userMessage: "Service MVola temporairement indisponible. Réessayez dans quelques instants.",
+        providerCode: code || null,
+        providerDescription: description || null,
+      };
+    }
+
+    if (!err?.response) {
+      return {
+        type: "NETWORK_ERROR",
+        userMessage: "Connexion au service de paiement impossible pour le moment. Réessayez dans quelques instants.",
+        providerCode: code || null,
+        providerDescription: description || null,
+      };
+    }
+
+    return {
+      type: "UNKNOWN_PROVIDER_ERROR",
+      userMessage: "Erreur lors du paiement MVola. Veuillez réessayer.",
+      providerCode: code || null,
+      providerDescription: description || null,
+    };
+  } catch (_) {
+    return {
+      type: "UNKNOWN_PROVIDER_ERROR",
+      userMessage: "Erreur lors du paiement MVola. Veuillez réessayer.",
+      providerCode: null,
+      providerDescription: null,
+    };
+  }
+}
+
+
 // ---------------------------------------------------------------------------
 // SUPABASE CLIENT
 // ---------------------------------------------------------------------------
@@ -7578,7 +7628,13 @@ const { error: vsErr } = await supabase
 
     return;
   } catch (err) {
-    console.error("❌ MVola a rejeté la requête", err.response?.data || err?.message || err);
+    const mappedError = mapMvolaInitiateError(err);
+    const rawProviderError = err?.response?.data || err?.message || err;
+
+    console.error("❌ MVola a rejeté la requête", {
+      raw: rawProviderError,
+      mapped: mappedError,
+    });
     // NEW system audit: MVola initiate error
     await insertAudit({
       event_type: "mvola_initiate_error",
@@ -7594,13 +7650,28 @@ const { error: vsErr } = await supabase
       pool_id: pool_id || null,
       plan_id: planIdForSession || null,
       message: "MVola initiation failed (NEW system)",
-      metadata: { error: truncate(err.response?.data || err?.message || err, 2000), correlationId },
+      metadata: {
+        error: truncate(rawProviderError, 2000),
+        correlationId,
+        mapped_type: mappedError?.type || null,
+        provider_code: mappedError?.providerCode || null,
+        provider_description: mappedError?.providerDescription || null,
+      },
     });
     try {
       if (supabase) {
         await supabase
           .from("transactions")
-          .update({ status: "failed", metadata: { error: truncate(err.response?.data || err?.message, 2000), updated_at_local: toISOStringMG(new Date()) } })
+          .update({
+            status: "failed",
+            metadata: {
+              error: truncate(rawProviderError, 2000),
+              updated_at_local: toISOStringMG(new Date()),
+              mapped_type: mappedError?.type || null,
+              provider_code: mappedError?.providerCode || null,
+              provider_description: mappedError?.providerDescription || null,
+            },
+          })
           .eq("request_ref", requestRef);
       }
     } catch (dbErr) {
@@ -7610,10 +7681,17 @@ const { error: vsErr } = await supabase
       RequestRef: requestRef,
       Phone: maskPhone(phone),
       Amount: amount,
-      Error: truncate(err.response?.data || err?.message, 2000),
+      Error: truncate(rawProviderError, 2000),
+      MappedType: mappedError?.type || null,
+      ProviderCode: mappedError?.providerCode || null,
+      ProviderDescription: mappedError?.providerDescription || null,
+      UserMessage: mappedError?.userMessage || null,
       TimestampMadagascar: toISOStringMG(new Date()),
     });
-    return res.status(400).json({ error: "Erreur lors du paiement MVola", details: err.response?.data || err.message });
+    return res.status(400).json({
+      error: "Erreur lors du paiement MVola",
+      message: mappedError?.userMessage || "Erreur lors du paiement MVola. Veuillez réessayer.",
+    });
   }
 });
 // ---------------------------------------------------------------------------
