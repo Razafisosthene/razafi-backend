@@ -6776,7 +6776,7 @@ app.post("/api/radius/accounting", async (req, res) => {
     // Update the latest voucher_session row for this voucher
     const { data: vsRows, error: vsErr } = await supabase
       .from("voucher_sessions")
-      .select("id,plan_id,status,expires_at,data_used_bytes")
+      .select("id,plan_id,status,expires_at,data_used_bytes,is_bonus_session")
       .eq("voucher_code", voucherCode)
       .order("created_at", { ascending: false })
       .limit(1);
@@ -6805,12 +6805,32 @@ app.post("/api/radius/accounting", async (req, res) => {
     })();
     const safeUsedBytes = aggregatedUsed > currentUsedBytes ? aggregatedUsed : currentUsedBytes;
 
-    // Determine whether data quota is exhausted (if plan has data_mb)
+    // Determine whether data quota is exhausted.
+    // IMPORTANT:
+    // - normal session       => use initial plan data_mb
+    // - bonus session        => use bonus_bytes ONLY (autonomous mini-plan)
     let quotaReached = false;
     let totalLimitBytes = null;
     try {
       const planId = vsRows[0].plan_id || null;
-      if (planId) {
+      const isBonusSessionAcct = (vsRows[0].is_bonus_session === true);
+
+      if (isBonusSessionAcct) {
+        const { data: bonusRow } = await supabase
+          .from("voucher_bonus_overrides")
+          .select("bonus_bytes")
+          .eq("voucher_session_id", vsId)
+          .maybeSingle();
+
+        const bonusBytesRaw = Number(bonusRow?.bonus_bytes ?? 0);
+
+        if (bonusBytesRaw === -1) {
+          totalLimitBytes = null; // unlimited bonus
+        } else {
+          const bonusBytes = Math.max(0, Math.floor(bonusBytesRaw || 0));
+          totalLimitBytes = bonusBytes > 0 ? bonusBytes : 0;
+        }
+      } else if (planId) {
         const { data: planRow } = await supabase
           .from("plans")
           .select("data_mb")
@@ -6823,10 +6843,10 @@ app.post("/api/radius/accounting", async (req, res) => {
           (dataMb !== null && Number.isFinite(dataMb) && dataMb > 0)
             ? Math.floor(dataMb * 1024 * 1024)
             : null;
+      }
 
-        if (totalLimitBytes !== null) {
-          quotaReached = aggregatedUsed >= BigInt(totalLimitBytes);
-        }
+      if (totalLimitBytes !== null) {
+        quotaReached = aggregatedUsed >= BigInt(totalLimitBytes);
       }
     } catch (_) {
       // ignore
