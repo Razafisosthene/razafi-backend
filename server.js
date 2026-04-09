@@ -1,4 +1,4 @@
-// RAZAFI Backend - 1rst April 2026 Edition
+// RAZAFI Backend - 9th April 2026 Edition
 // ---------------------------------------------------------------------------
 
 import express from "express";
@@ -4174,6 +4174,22 @@ function buildReadablePaymentEmail({
   return sections.filter(Boolean).join("\n\n");
 }
 
+async function resolvePoolEmailLabel(poolId) {
+  const pid = String(poolId || "").trim();
+  if (!pid || pid === "—") return pid || "";
+  if (!supabase) return pid;
+  try {
+    const { data, error } = await supabase
+      .from("internet_pools")
+      .select("name")
+      .eq("id", pid)
+      .maybeSingle();
+
+    if (!error && data?.name) return `${String(data.name).trim()} (${pid})`;
+  } catch (_) {}
+  return pid;
+}
+
 // ---------------------------------------------------------------------------
 // HELPERS
 // ---------------------------------------------------------------------------
@@ -4604,7 +4620,7 @@ async function pollTransactionStatus({
                 phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
                 amount: `${tx?.amount ?? amount ?? ""} Ar`,
                 voucherCode,
-                poolLabel: metaPoolId || "—",
+                poolLabel: await resolvePoolEmailLabel(metaPoolId || "—"),
                 clientMac: metaClientMac || "—",
                 apMac: metaApMac || "—",
                 mode: "new_system",
@@ -4642,6 +4658,7 @@ async function pollTransactionStatus({
                 statusLabel: "voucher_generation_failed",
                 phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
                 amount: `${tx?.amount ?? amount ?? ""} Ar`,
+                poolLabel: await resolvePoolEmailLabel(metaPoolId || "—"),
                 mode: "legacy_system",
                 serverCorrelationId,
                 timestamp: toISOStringMG(new Date()),
@@ -4676,6 +4693,7 @@ async function pollTransactionStatus({
                 statusLabel: "no_voucher_pending",
                 phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
                 amount: `${tx?.amount ?? amount ?? ""} Ar`,
+                poolLabel: await resolvePoolEmailLabel(metaPoolId || "—"),
                 mode: "legacy_system",
                 serverCorrelationId,
                 timestamp: toISOStringMG(new Date()),
@@ -4753,6 +4771,7 @@ async function pollTransactionStatus({
               statusLabel: "voucher_generation_failed",
               phone: maskPhone(phone),
               amount: `${amount ?? ""} Ar`,
+              poolLabel: await resolvePoolEmailLabel(metaPoolId || "—"),
               serverCorrelationId,
               timestamp: toISOStringMG(new Date()),
               extraLines: [
@@ -4839,6 +4858,7 @@ async function pollTransactionStatus({
           statusLabel: "failed",
           phone: maskPhone(phone),
           amount: `${amount} Ar`,
+          poolLabel: await resolvePoolEmailLabel(metaPoolId || "—"),
           planLabel: plan || "—",
           serverCorrelationId,
           timestamp: toISOStringMG(new Date()),
@@ -4948,6 +4968,7 @@ async function pollTransactionStatus({
       statusLabel: "timeout",
       phone: maskPhone(phone),
       amount: `${amount} Ar`,
+      poolLabel: await resolvePoolEmailLabel(metaPoolId || "—"),
       serverCorrelationId,
       timestamp: toISOStringMG(new Date()),
       extraLines: [
@@ -7804,6 +7825,7 @@ const { error: vsErr } = await supabase
         statusLabel: "failed",
         phone: maskPhone(phone),
         amount: `${amount} Ar`,
+        poolLabel: await resolvePoolEmailLabel(pool_id || "—"),
         timestamp: toISOStringMG(new Date()),
         extraLines: [
           `• Type: ${mapped.type}`,
