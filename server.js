@@ -27,15 +27,16 @@ function hashToken(token) {
 function generateSessionToken() {
   return crypto.randomBytes(32).toString("hex");
 }
-
-
+// helper: safe integer conversion
+function toSafeInt(v) {
+  return Number.isFinite(+v) ? parseInt(v, 10) : 0;
+}
 
 // helper: format bonus line for USER UX (compact)
-// returns string like "Bonus: +1h · +2GB" or "" if no bonus
 function formatBonusCompactLine(bonus_seconds, bonus_bytes) {
   try {
-    const sec = Number(bonus_seconds || 0) || 0;
-    const b = Number(bonus_bytes || 0) || 0;
+    const sec = toSafeInt(bonus_seconds);
+    const b = toSafeInt(bonus_bytes);
 
     const parts = [];
 
@@ -67,7 +68,6 @@ function formatBonusCompactLine(bonus_seconds, bonus_bytes) {
           parts.push("+" + v + "MB");
         }
       } else {
-        // negative but not -1: treat as unknown
         parts.push("+bonus");
       }
     }
