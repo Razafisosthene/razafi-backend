@@ -6103,8 +6103,8 @@ const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusByt
     }
     const isTimeExpired = !!session.started_at && Number.isFinite(expMs) && expMs <= nowMs;
 
-    const hasTimeBonus = (bonusSeconds > 0);
-    const hasDataBonus = (bonusBytes === -1 || bonusBytes > 0);
+const hasTimeBonus = isBonusSession || (bonusSeconds > 0);
+const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
 
     if (isBonusSession) {
       // --------------------------------------------------
