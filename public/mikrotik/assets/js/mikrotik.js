@@ -1272,48 +1272,85 @@ function submitToLoginUrl(code, ev) {
     (window.location && window.location.href) ||
     "http://fixwifi.it";
 
-  let endpoint = raw;
+  // 🔥 Important phone fix:
+  // do NOT reuse continueUrl as success_url because on phones it may be a captive-check URL
+  // that reopens the portal. Force a stable success page instead.
+  const stableSuccessUrl = "https://portal.razafistore.com/mikrotik/";
 
   try {
+    sessionStorage.setItem("razafi_last_login_url_raw", raw);
+    sessionStorage.setItem("razafi_last_login_redirect", redirect);
+    sessionStorage.setItem("razafi_last_login_success_url", stableSuccessUrl);
+  } catch (_) {}
+
+  try {
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = raw;
+    form.style.display = "none";
+
+    function add(name, value) {
+      if (value === null || value === undefined || value === "") return;
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = name;
+      input.value = String(value);
+      form.appendChild(input);
+    }
+
+    // Required fields for MikroTik Hotspot login
+    add("username", v);
+    add("password", v);
+    add("dst", redirect);
+    add("dsturl", redirect);
+    add("popup", "false");
+    add("success_url", stableSuccessUrl);
+
+    document.body.appendChild(form);
+
+    try { sessionStorage.setItem("razafi_login_attempt", "1"); } catch (_) {}
+
+    form.submit();
+    return;
+  } catch (e) {
+    console.warn("[RAZAFI] form POST login failed, fallback GET redirect:", e?.message || e);
+  }
+
+  // Last-resort fallback: top-level GET redirect
+  let target = raw;
+  try {
     const u = new URL(raw, window.location.href);
+
     if (!u.pathname || u.pathname === "/") u.pathname = "/login";
     if (!/\/login$/i.test(u.pathname)) u.pathname = u.pathname.replace(/\/+$/, "") + "/login";
-    u.search = ""; // form POST carries the fields
-    endpoint = u.toString();
+
+    u.searchParams.set("username", v);
+    u.searchParams.set("password", v);
+    u.searchParams.set("dst", redirect);
+    u.searchParams.set("dsturl", redirect);
+    u.searchParams.set("popup", "false");
+    u.searchParams.set("success_url", stableSuccessUrl);
+
+    target = u.toString();
   } catch (_) {
     const base = String(raw).replace(/\/+$/, "");
-    endpoint = /\/login$/i.test(base) ? base : (base + "/login");
+    const sep = base.includes("?") ? "&" : "?";
+    target =
+      base +
+      sep +
+      "username=" + encodeURIComponent(v) +
+      "&password=" + encodeURIComponent(v) +
+      "&dst=" + encodeURIComponent(redirect) +
+      "&dsturl=" + encodeURIComponent(redirect) +
+      "&popup=false" +
+      "&success_url=" + encodeURIComponent(stableSuccessUrl);
   }
 
-  try { sessionStorage.setItem("razafi_last_login_url", endpoint); } catch (_) {}
+  try { sessionStorage.setItem("razafi_last_login_url", target); } catch (_) {}
   try { sessionStorage.setItem("razafi_login_attempt", "1"); } catch (_) {}
 
-  const form = document.createElement("form");
-  form.method = "POST";
-  form.action = endpoint;
-  form.style.display = "none";
-
-  function add(name, value) {
-    if (value === null || value === undefined || value === "") return;
-    const input = document.createElement("input");
-    input.type = "hidden";
-    input.name = name;
-    input.value = String(value);
-    form.appendChild(input);
-  }
-
-  add("username", v);
-  add("password", v);
-  add("dst", redirect);
-  add("dsturl", redirect);
-  add("popup", "false");
-  add("success_url", redirect);
-
-  document.body.appendChild(form);
-  form.submit();
+  window.location.href = target;
 }
-
-
 
 
   if (useBtn) {
