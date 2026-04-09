@@ -467,21 +467,16 @@
   writeCaptiveContext({ apMac, clientMac, nasId, loginUrl, continueUrl, clientIp, gwIp });
 
   
-  // ✅ RAZAFI System 3 rule:
-  // Prefer the real login_url provided by MikroTik ($(link-login-only)).
-  // Fallback to gw only if login_url is unavailable.
-  function getMikrotikLoginEndpoint() {
-    const rawLoginUrl = String(loginUrl || "").trim();
-    if (rawLoginUrl) return rawLoginUrl;
-
-    const gw = String(gwIp || "").trim();
-    if (gw) return `http://${gw}/login`;
-
-    return null;
-  }
+  // ✅ RAZAFI System 3 rule: NEVER trust Tanaza login_url for MikroTik login.
+  // Always force the MikroTik gateway /login.
+  function getForcedMikrotikLoginEndpoint() {
+  const gw = (gwIp || "").trim();
+  const ip = gw ? gw : "192.168.88.1";
+  return `http://${ip}/login`;
+}
 
   // Keep the variable name used elsewhere
-  const loginUrlNormalized = getMikrotikLoginEndpoint();
+  const loginUrlNormalized = getForcedMikrotikLoginEndpoint();
 // Debug: show duplicated Tanaza params (placeholders + real values)
   const __apMacAll = qsAll("ap_mac");
   const __clientMacAll = qsAll("client_mac");
@@ -1253,8 +1248,9 @@ function getQueryParamsSafe() {
 }
 
 function submitToLoginUrl(code, ev) {
-  // ✅ Captive-portal safe login: TOP-LEVEL GET redirect (no hidden POST form)
-  // Modern captive browsers often block HTTPS → HTTP private-IP POST requests.
+  // ✅ Mobile-safe captive portal login:
+  // Prefer MikroTik-provided login_url and submit through a real HTML form POST.
+  // This is more reliable than JS GET redirects inside phone captive browsers.
   if (ev && typeof ev.preventDefault === "function") {
     try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
   }
@@ -1262,9 +1258,13 @@ function submitToLoginUrl(code, ev) {
   const v = String(code || "").trim();
   if (!v) { showToast("❌ Code invalide.", "error", 4500); return; }
 
-  // ✅ Use the real MikroTik login_url when available.
-  // This preserves the captive session/context required by the router.
-  const raw = getMikrotikLoginEndpoint();
+  // Prefer the real login_url received from MikroTik/Tanaza flow.
+  // Fallbacks remain only as a safety net.
+  const raw =
+    (loginUrl && String(loginUrl).trim()) ||
+    getMikrotikLoginUrl() ||
+    getForcedMikrotikLoginEndpoint();
+
   if (!raw) { showToast("❌ login_url manquant.", "error", 5200); return; }
 
   const redirect =
@@ -1272,43 +1272,45 @@ function submitToLoginUrl(code, ev) {
     (window.location && window.location.href) ||
     "http://fixwifi.it";
 
-  let target = raw;
+  let endpoint = raw;
 
   try {
     const u = new URL(raw, window.location.href);
-
-    // Ensure /login endpoint
     if (!u.pathname || u.pathname === "/") u.pathname = "/login";
     if (!/\/login$/i.test(u.pathname)) u.pathname = u.pathname.replace(/\/+$/, "") + "/login";
-
-    // Required fields for MikroTik Hotspot login (PAP mode)
-    u.searchParams.set("username", v);
-    u.searchParams.set("password", v);
-    u.searchParams.set("dst", redirect);
-    u.searchParams.set("dsturl", redirect);
-    u.searchParams.set("popup", "false");
-    u.searchParams.set("success_url", redirect);
-
-    target = u.toString();
+    u.search = ""; // form POST carries the fields
+    endpoint = u.toString();
   } catch (_) {
     const base = String(raw).replace(/\/+$/, "");
-    const sep = base.includes("?") ? "&" : "?";
-    target =
-      base +
-      sep +
-      "username=" + encodeURIComponent(v) +
-      "&password=" + encodeURIComponent(v) +
-      "&dst=" + encodeURIComponent(redirect) +
-      "&dsturl=" + encodeURIComponent(redirect) +
-      "&popup=false" +
-      "&success_url=" + encodeURIComponent(redirect);
+    endpoint = /\/login$/i.test(base) ? base : (base + "/login");
   }
 
-  try { sessionStorage.setItem("razafi_last_login_url", target); } catch (_) {}
+  try { sessionStorage.setItem("razafi_last_login_url", endpoint); } catch (_) {}
   try { sessionStorage.setItem("razafi_login_attempt", "1"); } catch (_) {}
 
-  // ✅ Must be a real navigation (works in captive browsers)
-  window.location.href = target;
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = endpoint;
+  form.style.display = "none";
+
+  function add(name, value) {
+    if (value === null || value === undefined || value === "") return;
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = name;
+    input.value = String(value);
+    form.appendChild(input);
+  }
+
+  add("username", v);
+  add("password", v);
+  add("dst", redirect);
+  add("dsturl", redirect);
+  add("popup", "false");
+  add("success_url", redirect);
+
+  document.body.appendChild(form);
+  form.submit();
 }
 
 
