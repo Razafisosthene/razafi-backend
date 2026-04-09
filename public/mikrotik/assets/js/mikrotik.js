@@ -467,16 +467,21 @@
   writeCaptiveContext({ apMac, clientMac, nasId, loginUrl, continueUrl, clientIp, gwIp });
 
   
-  // ✅ RAZAFI System 3 rule: NEVER trust Tanaza login_url for MikroTik login.
-  // Always force the MikroTik gateway /login.
-  function getForcedMikrotikLoginEndpoint() {
-  const gw = (gwIp || "").trim();
-  const ip = gw ? gw : "192.168.88.1";
-  return `http://${ip}/login`;
-}
+  // ✅ RAZAFI System 3 rule:
+  // Prefer the real login_url provided by MikroTik ($(link-login-only)).
+  // Fallback to gw only if login_url is unavailable.
+  function getMikrotikLoginEndpoint() {
+    const rawLoginUrl = String(loginUrl || "").trim();
+    if (rawLoginUrl) return rawLoginUrl;
+
+    const gw = String(gwIp || "").trim();
+    if (gw) return `http://${gw}/login`;
+
+    return null;
+  }
 
   // Keep the variable name used elsewhere
-  const loginUrlNormalized = getForcedMikrotikLoginEndpoint();
+  const loginUrlNormalized = getMikrotikLoginEndpoint();
 // Debug: show duplicated Tanaza params (placeholders + real values)
   const __apMacAll = qsAll("ap_mac");
   const __clientMacAll = qsAll("client_mac");
@@ -1257,8 +1262,9 @@ function submitToLoginUrl(code, ev) {
   const v = String(code || "").trim();
   if (!v) { showToast("❌ Code invalide.", "error", 4500); return; }
 
-  // ✅ Always force MikroTik gateway /login (ignore Tanaza login_url completely)
-  const raw = getForcedMikrotikLoginEndpoint();
+  // ✅ Use the real MikroTik login_url when available.
+  // This preserves the captive session/context required by the router.
+  const raw = getMikrotikLoginEndpoint();
   if (!raw) { showToast("❌ login_url manquant.", "error", 5200); return; }
 
   const redirect =
