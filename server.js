@@ -1,4 +1,4 @@
-// RAZAFI Backend - 9th April 2026 Edition
+// RAZAFI Backend - 10th April 2026 Edition
 // ---------------------------------------------------------------------------
 
 import express from "express";
@@ -2739,10 +2739,13 @@ app.get("/api/portal/status", async (req, res) => {
       bonusDead = timeDead || dataDead;
 
       if (bonusDead) {
+        const inactiveStatus = dataDead ? "used" : "expired";
+
         try {
           await supabase
             .from("voucher_sessions")
             .update({
+              status: inactiveStatus,
               is_bonus_session: false,
               updated_at: new Date().toISOString()
             })
@@ -2757,12 +2760,13 @@ app.get("/api/portal/status", async (req, res) => {
               bonus_bytes: 0,
               note: null,
               updated_at: new Date().toISOString(),
-              updated_by: "portal_status_cleanup"
+              updated_by: dataDead ? "portal_status_cleanup_data_finished" : "portal_status_cleanup_time_finished"
             })
             .eq("voucher_session_id", row.id);
         } catch (_) {}
 
-        // Re-read truth after cleanup so portal returns the normal/original voucher status
+        // Re-read truth after cleanup so portal returns the inactive/original voucher status.
+        // A future newly-added bonus can reactivate later, but the initial voucher must not revive here.
         row = await loadLatestTruthRow();
 
         // Reload bonus after cleanup
@@ -6110,13 +6114,28 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
       // --------------------------------------------------
       // BONUS SESSION = autonomous mini-plan
       // Ignore normal plan blockers. Only bonus validity matters.
+      // IMPORTANT:
+      // - when bonus ends, the original voucher MUST stay inactive
+      // - only a future newly-added bonus may reactivate it again
       // --------------------------------------------------
-      if (!hasTimeBonus || !hasDataBonus) {
+      let bonusUsedBytes = 0n;
+      try {
+        bonusUsedBytes = BigInt(String(session?.data_used_bytes ?? 0));
+      } catch (_) {
+        bonusUsedBytes = 0n;
+      }
+
+      const bonusDataDead =
+        (bonusBytes !== -1) &&
+        (bonusBytes > 0) &&
+        (bonusUsedBytes >= BigInt(bonusBytes));
+
+      const cleanupBonusSession = async ({ status, updated_by }) => {
         try {
           await supabase
             .from("voucher_sessions")
             .update({
-              status: "used",
+              status,
               is_bonus_session: false,
               updated_at: now.toISOString()
             })
@@ -6130,10 +6149,17 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
               bonus_seconds: 0,
               bonus_bytes: 0,
               updated_at: now.toISOString(),
-              updated_by: "system_authorize_bonus_invalid"
+              updated_by
             })
             .eq("voucher_session_id", session.id);
         } catch (_) {}
+      };
+
+      if (!hasTimeBonus || !hasDataBonus) {
+        await cleanupBonusSession({
+          status: "used",
+          updated_by: "system_authorize_bonus_invalid"
+        });
 
         return sendReject("bonus_session_invalid", {
           entity_type: "voucher_session",
@@ -6151,29 +6177,33 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
         });
       }
 
-      if (isTimeExpired) {
-        try {
-          await supabase
-            .from("voucher_sessions")
-            .update({
-              status: "used",
-              is_bonus_session: false,
-              updated_at: now.toISOString()
-            })
-            .eq("id", session.id);
-        } catch (_) {}
+      if (bonusDataDead) {
+        await cleanupBonusSession({
+          status: "used",
+          updated_by: "system_authorize_bonus_data_finished"
+        });
 
-        try {
-          await supabase
-            .from("voucher_bonus_overrides")
-            .update({
-              bonus_seconds: 0,
-              bonus_bytes: 0,
-              updated_at: now.toISOString(),
-              updated_by: "system_authorize_bonus_finished"
-            })
-            .eq("voucher_session_id", session.id);
-        } catch (_) {}
+        return sendReject("bonus_session_data_finished", {
+          entity_type: "voucher_session",
+          entity_id: session.id,
+          nas_id,
+          client_mac,
+          pool_id: session.pool_id || null,
+          plan_id: session.plan_id || null,
+          mvola_phone: session.mvola_phone || null,
+          metadata: {
+            data_used_bytes: session?.data_used_bytes ?? null,
+            bonus_bytes: bonusBytes,
+            is_bonus_session: true
+          }
+        });
+      }
+
+      if (isTimeExpired) {
+        await cleanupBonusSession({
+          status: "expired",
+          updated_by: "system_authorize_bonus_finished"
+        });
 
         return sendReject("bonus_session_finished", {
           entity_type: "voucher_session",
