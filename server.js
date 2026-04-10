@@ -1,4 +1,4 @@
-// RAZAFI Backend - 9th April 2026 Edition
+// RAZAFI Backend - 10th April 2026 Edition
 // ---------------------------------------------------------------------------
 
 import express from "express";
@@ -135,6 +135,16 @@ function getBonusConsumedBytes(currentUsedBytes, rawNote) {
   } catch (_) {
     return 0;
   }
+}
+
+function getPreBonusStatus(rawNote, fallback = "used") {
+  try {
+    const parsed = parseBonusMeta(rawNote);
+    const st = String(parsed?.meta?.pre_bonus_status || "").trim().toLowerCase();
+    if (st === "expired" || st === "used") return st;
+  } catch (_) {}
+  const fb = String(fallback || "").trim().toLowerCase();
+  return fb === "expired" ? "expired" : "used";
 }
 // ===============================
 // ADMIN AUTH — SETTINGS (A1 hardening)
@@ -1616,7 +1626,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       if (ids.length) {
         const { data: bRows, error: bErr } = await supabase
           .from("voucher_bonus_overrides")
-          .select("voucher_session_id,bonus_seconds,bonus_bytes")
+          .select("voucher_session_id,bonus_seconds,bonus_bytes,note")
           .in("voucher_session_id", ids);
 
         if (!bErr && Array.isArray(bRows)) {
@@ -1629,6 +1639,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
             bMap[k] = {
               bonus_seconds: Number(b.bonus_seconds || 0) || 0,
               bonus_bytes: Number(b.bonus_bytes || 0) || 0,
+              note: b.note || null,
             };
           }
 
@@ -1661,6 +1672,8 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
               bonusConsumedBytes >= bb;
 
             if (expired || dataReached) {
+              const preBonusStatus = getPreBonusStatus(b?.note, statusNorm);
+
               await supabase
                 .from("voucher_bonus_overrides")
                 .update({
@@ -1675,6 +1688,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
               await supabase
                 .from("voucher_sessions")
                 .update({
+                  status: preBonusStatus,
                   is_bonus_session: false,
                   updated_at: new Date().toISOString(),
                 })
@@ -1684,6 +1698,8 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
               bs = 0;
               bb = 0;
               it.is_bonus_session = false;
+              it.status = preBonusStatus;
+              it.truth_status = preBonusStatus;
             }
 
             const hasTimeBonus = bs > 0;
@@ -2798,10 +2814,12 @@ app.get("/api/portal/status", async (req, res) => {
       bonusDead = timeDead || dataDead;
 
       if (bonusDead) {
+        const preBonusStatus = getPreBonusStatus(bonus.note, row.status || row.truth_status || "used");
         try {
           await supabase
             .from("voucher_sessions")
             .update({
+              status: preBonusStatus,
               is_bonus_session: false,
               updated_at: new Date().toISOString()
             })
@@ -5708,13 +5726,24 @@ app.post("/api/voucher/activate", async (req, res) => {
       const newExpiresAt = new Date(now.getTime() + bonusSeconds * 1000).toISOString();
 
       const currentUsedBytesAtBonusStart = Math.max(0, Math.floor(Number(session?.data_used_bytes ?? 0) || 0));
-      const bonusUserNote = parseBonusMeta(bRow?.note).userNote || null;
+      const parsedBonusNote = parseBonusMeta(bRow?.note);
+      const bonusUserNote = parsedBonusNote.userNote || null;
+      const preBonusStatus =
+        (String(truth_status || "").toLowerCase() === "expired" || String(truth_status || "").toLowerCase() === "used")
+          ? String(truth_status || "").toLowerCase()
+          : ((String(session.status || "").toLowerCase() === "expired" || String(session.status || "").toLowerCase() === "used")
+            ? String(session.status || "").toLowerCase()
+            : "used");
 
       try {
         await supabase
           .from("voucher_bonus_overrides")
           .update({
-            note: buildBonusNote(bonusUserNote, { bonus_start_used_bytes: currentUsedBytesAtBonusStart }),
+            note: buildBonusNote(bonusUserNote, {
+              ...(parsedBonusNote.meta || {}),
+              bonus_start_used_bytes: currentUsedBytesAtBonusStart,
+              pre_bonus_status: preBonusStatus
+            }),
             updated_at: nowIso,
             updated_by: "system_bonus_activate"
           })
@@ -6191,7 +6220,7 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
           await supabase
             .from("voucher_sessions")
             .update({
-              status: "used",
+              status: getPreBonusStatus(bonusOverride?.note, session.status || session.truth_status || "used"),
               is_bonus_session: false,
               updated_at: now.toISOString()
             })
@@ -6231,7 +6260,7 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
           await supabase
             .from("voucher_sessions")
             .update({
-              status: "used",
+              status: getPreBonusStatus(bonusOverride?.note, session.status || session.truth_status || "used"),
               is_bonus_session: false,
               updated_at: now.toISOString()
             })
@@ -6495,7 +6524,7 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
           await supabase
             .from("voucher_sessions")
             .update({
-              status: "used",
+              status: getPreBonusStatus(bonusOverride?.note, session.status || session.truth_status || "used"),
               is_bonus_session: false,
               updated_at: now.toISOString()
             })
@@ -6591,7 +6620,9 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
         await supabase
           .from("voucher_sessions")
           .update({
-            status: "used",
+            status: isBonusSession
+              ? getPreBonusStatus(bonusOverride?.note, session.status || session.truth_status || "used")
+              : "used",
             is_bonus_session: false,
             updated_at: now.toISOString()
           })
