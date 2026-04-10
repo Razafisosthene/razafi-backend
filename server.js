@@ -28,14 +28,18 @@ function generateSessionToken() {
   return crypto.randomBytes(32).toString("hex");
 }
 
+// helper: safe integer conversion
+function toSafeInt(v) {
+  return Number.isFinite(+v) ? parseInt(v, 10) : 0;
+}
 
 
 // helper: format bonus line for USER UX (compact)
 // returns string like "Bonus: +1h · +2GB" or "" if no bonus
 function formatBonusCompactLine(bonus_seconds, bonus_bytes) {
   try {
-    const sec = Number(bonus_seconds || 0) || 0;
-    const b = Number(bonus_bytes || 0) || 0;
+    const sec = toSafeInt(bonus_seconds);
+    const b = toSafeInt(bonus_bytes);
 
     const parts = [];
 
@@ -119,7 +123,7 @@ function buildBonusNote(userNote, meta) {
 function getBonusStartUsedBytes(rawNote) {
   try {
     const parsed = parseBonusMeta(rawNote);
-    const n = Number(parsed?.meta?.bonus_start_used_bytes ?? 0);
+    const n = toSafeInt(parsed?.meta?.bonus_start_used_bytes);
     return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
   } catch (_) {
     return 0;
@@ -1637,8 +1641,8 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
             if (!k) continue;
 
             bMap[k] = {
-              bonus_seconds: Number(b.bonus_seconds || 0) || 0,
-              bonus_bytes: Number(b.bonus_bytes || 0) || 0,
+              bonus_seconds: toSafeInt(b.bonus_seconds),
+              bonus_bytes: toSafeInt(b.bonus_bytes),
               note: b.note || null,
             };
           }
@@ -1646,8 +1650,8 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
           for (const it of items) {
             const b = bMap[String(it.id)];
 
-            let bs = Number(b?.bonus_seconds || 0) || 0;
-            let bb = Number(b?.bonus_bytes || 0) || 0;
+            let bs = toSafeInt(b?.bonus_seconds);
+            let bb = toSafeInt(b?.bonus_bytes);
 
             // Current truth first
             const statusNorm = String(it.status || "").toLowerCase();
@@ -1873,10 +1877,10 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
     data.raw_status = data.status;
     try {
       const bonus = await getVoucherBonusOverride({ voucher_session_id: data.id });
-      data.bonus_seconds = Number(bonus?.bonus_seconds || 0) || 0;
-      data.bonus_bytes = Number(bonus?.bonus_bytes || 0) || 0;
+      data.bonus_seconds = toSafeInt(bonus?.bonus_seconds);
+      data.bonus_bytes = toSafeInt(bonus?.bonus_bytes);
       const bonusSeconds = Math.max(0, Math.floor(data.bonus_seconds));
-      const bonusBytesRaw = Number(data.bonus_bytes);
+      const bonusBytesRaw = toSafeInt(data.bonus_bytes);
       const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusBytesRaw || 0));
 
       const nowMs = Date.now();
@@ -1985,8 +1989,8 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
 try {
   const b = await getVoucherBonusOverride({ voucher_session_id: data.id });
   data.bonus = {
-    bonus_seconds: Number(b.bonus_seconds || 0),
-    bonus_bytes: Number(b.bonus_bytes || 0),
+    bonus_seconds: toSafeInt(b.bonus_seconds),
+    bonus_bytes: toSafeInt(b.bonus_bytes),
     note: parseBonusMeta(b.note).userNote || null,
     updated_at: b.updated_at || null,
     updated_by: b.updated_by || null,
@@ -2772,8 +2776,8 @@ app.get("/api/portal/status", async (req, res) => {
 
       if (bRow) {
         bonus = {
-          bonus_seconds: Number(bRow.bonus_seconds || 0) || 0,
-          bonus_bytes: Number(bRow.bonus_bytes || 0) || 0,
+          bonus_seconds: toSafeInt(bRow.bonus_seconds),
+          bonus_bytes: toSafeInt(bRow.bonus_bytes),
           note: bRow.note || null,
           updated_at: bRow.updated_at || null,
           updated_by: bRow.updated_by || null,
@@ -2781,8 +2785,8 @@ app.get("/api/portal/status", async (req, res) => {
       }
     } catch (_) {}
 
-    const bonusSecondsN0 = Number(bonus.bonus_seconds || 0) || 0;
-    const bonusBytesN0 = Number(bonus.bonus_bytes || 0) || 0;
+    const bonusSecondsN0 = toSafeInt(bonus.bonus_seconds);
+    const bonusBytesN0 = toSafeInt(bonus.bonus_bytes);
     const bonusConsumedBytes0 = getBonusConsumedBytes(row.data_used_bytes, bonus.note);
     const isBonusSession = row.is_bonus_session === true || row.is_bonus_session === "true";
 
@@ -2875,8 +2879,8 @@ app.get("/api/portal/status", async (req, res) => {
       }
     } catch (_) {}
 
-    const bonusSecondsN = Number(bonus.bonus_seconds || 0) || 0;
-    const bonusBytesN = Number(bonus.bonus_bytes || 0) || 0;
+    const bonusSecondsN = toSafeInt(bonus.bonus_seconds);
+    const bonusBytesN = toSafeInt(bonus.bonus_bytes);
 
     const hasTimeBonus = bonusSecondsN > 0;
     const hasDataBonus = (bonusBytesN === -1 || bonusBytesN > 0);
@@ -5695,8 +5699,8 @@ app.post("/api/voucher/activate", async (req, res) => {
         console.error("BONUS LOAD ERROR", bErr);
       }
 
-      const bonusSeconds = Number(bRow?.bonus_seconds || 0) || 0;
-      const bonusBytes = Number(bRow?.bonus_bytes || 0) || 0;
+      const bonusSeconds = toSafeInt(bRow?.bonus_seconds);
+      const bonusBytes = toSafeInt(bRow?.bonus_bytes);
 
       const hasTimeBonus = bonusSeconds > 0;
       const hasDataBonus = (bonusBytes > 0 || bonusBytes === -1);
@@ -5725,7 +5729,7 @@ app.post("/api/voucher/activate", async (req, res) => {
 
       const newExpiresAt = new Date(now.getTime() + bonusSeconds * 1000).toISOString();
 
-      const currentUsedBytesAtBonusStart = Math.max(0, Math.floor(Number(session?.data_used_bytes ?? 0) || 0));
+      const currentUsedBytesAtBonusStart = Math.max(0, toSafeInt(session?.data_used_bytes));
       const parsedBonusNote = parseBonusMeta(bRow?.note);
       const bonusUserNote = parsedBonusNote.userNote || null;
       const preBonusStatus =
@@ -6129,8 +6133,8 @@ try {
 } catch (_) {
   bonusOverride = { bonus_seconds: 0, bonus_bytes: 0 };
 }
-const bonusSeconds = Math.max(0, Math.floor(Number(bonusOverride?.bonus_seconds || 0) || 0));
-const bonusBytesRaw = Number(bonusOverride?.bonus_bytes ?? 0);
+const bonusSeconds = Math.max(0, toSafeInt(bonusOverride?.bonus_seconds));
+const bonusBytesRaw = toSafeInt(bonusOverride?.bonus_bytes);
 const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusBytesRaw || 0));
 
 
@@ -6933,7 +6937,7 @@ app.post("/api/radius/accounting", async (req, res) => {
           .maybeSingle();
 
         bonusBaseUsedBytes = getBonusStartUsedBytes(bonusRow?.note);
-        const bonusBytesRaw = Number(bonusRow?.bonus_bytes ?? 0);
+        const bonusBytesRaw = toSafeInt(bonusRow?.bonus_bytes);
 
         if (bonusBytesRaw === -1) {
           totalLimitBytes = null; // unlimited bonus
@@ -7270,8 +7274,8 @@ app.get("/api/admin/voucher-bonus-overrides", requireAdmin, async (req, res) => 
     return res.json({
       item: {
         voucher_session_id,
-        bonus_seconds: Number(item.bonus_seconds || 0),
-        bonus_bytes: Number(item.bonus_bytes || 0),
+        bonus_seconds: toSafeInt(item.bonus_seconds),
+        bonus_bytes: toSafeInt(item.bonus_bytes),
         note: parseBonusMeta(item.note).userNote || null,
         updated_at: item.updated_at || null,
         updated_by: item.updated_by || null,
