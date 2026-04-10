@@ -1347,10 +1347,11 @@ function submitToLoginUrl(code, ev) {
 
   const mobileLike = isMobileLikeBrowser();
 
-  // ✅ MOBILE => POST
+  // ✅ MOBILE => POST first, then GET fallback if the browser stays on the portal
   if (mobileLike) {
     try {
       const endpoint = buildEndpoint(raw);
+      const getFallbackTarget = buildGetTarget(getForcedMikrotikLoginEndpoint() || raw);
 
       const form = document.createElement("form");
       form.method = "POST";
@@ -1378,8 +1379,24 @@ function submitToLoginUrl(code, ev) {
       try {
         sessionStorage.setItem("razafi_login_mode", "post_mobile");
         sessionStorage.setItem("razafi_last_login_url", endpoint);
+        sessionStorage.setItem("razafi_last_login_get_fallback", getFallbackTarget);
         sessionStorage.setItem("razafi_login_attempt", "1");
       } catch (_) {}
+
+      // Some phone captive browsers ignore or swallow the POST navigation.
+      // If we are still on the portal a moment later, force a top-level GET login fallback.
+      window.setTimeout(() => {
+        try {
+          const stillHere = /\/mikrotik\/?$/i.test(String(window.location.pathname || ""));
+          if (stillHere) {
+            try {
+              sessionStorage.setItem("razafi_login_mode", "get_fallback_after_post_mobile");
+              sessionStorage.setItem("razafi_last_login_url", getFallbackTarget);
+            } catch (_) {}
+            window.location.href = getFallbackTarget;
+          }
+        } catch (_) {}
+      }, 1200);
 
       form.submit();
       return;
