@@ -78,6 +78,54 @@ function formatBonusCompactLine(bonus_seconds, bonus_bytes) {
     return "";
   }
 }
+
+function parseBonusNoteMeta(note) {
+  try {
+    const raw = String(note || "").trim();
+    if (!raw) return { start_used_bytes: 0, note_text: null, raw_note: note || null };
+
+    if (raw.startsWith("__RAZAFI_BONUS__")) {
+      const parsed = JSON.parse(raw.slice("__RAZAFI_BONUS__".length));
+      return {
+        start_used_bytes: Math.max(0, Math.floor(Number(parsed?.start_used_bytes || 0) || 0)),
+        note_text: parsed?.note_text ? String(parsed.note_text) : null,
+        raw_note: raw,
+      };
+    }
+
+    if ((raw.startsWith("{") && raw.endsWith("}")) || (raw.startsWith("[") && raw.endsWith("]"))) {
+      const parsed = JSON.parse(raw);
+      return {
+        start_used_bytes: Math.max(0, Math.floor(Number(parsed?.start_used_bytes || 0) || 0)),
+        note_text: parsed?.note_text ? String(parsed.note_text) : null,
+        raw_note: raw,
+      };
+    }
+  } catch (_) {}
+
+  return {
+    start_used_bytes: 0,
+    note_text: note ? String(note) : null,
+    raw_note: note || null,
+  };
+}
+
+function buildBonusNoteMeta({ start_used_bytes = 0, note_text = null } = {}) {
+  return "__RAZAFI_BONUS__" + JSON.stringify({
+    start_used_bytes: Math.max(0, Math.floor(Number(start_used_bytes || 0) || 0)),
+    note_text: note_text ? String(note_text) : null,
+  });
+}
+
+function getBonusConsumedBytes({ total_used_bytes, bonus_start_used_bytes }) {
+  try {
+    const total = BigInt(String(total_used_bytes ?? 0));
+    const start = BigInt(String(Math.max(0, Math.floor(Number(bonus_start_used_bytes || 0) || 0))));
+    return total > start ? (total - start) : 0n;
+  } catch (_) {
+    return 0n;
+  }
+}
 // ===============================
 // ADMIN AUTH — SETTINGS (A1 hardening)
 // ===============================
@@ -1568,9 +1616,11 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
             const k = String(b.voucher_session_id || "").trim();
             if (!k) continue;
 
+            const bonusMeta = parseBonusNoteMeta(b.note || null);
             bMap[k] = {
               bonus_seconds: Number(b.bonus_seconds || 0) || 0,
               bonus_bytes: Number(b.bonus_bytes || 0) || 0,
+              bonus_start_used_bytes: bonusMeta.start_used_bytes,
             };
           }
 
@@ -1596,11 +1646,16 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
               it.expires_at &&
               new Date(it.expires_at) <= now;
 
+            const bonusStartUsedBytes = Number(b?.bonus_start_used_bytes || 0) || 0;
+            const bonusConsumedBytes = getBonusConsumedBytes({
+              total_used_bytes: it.data_used_bytes,
+              bonus_start_used_bytes: bonusStartUsedBytes,
+            });
+
             const dataReached =
               isBonusSession &&
               bb > 0 &&
-              it.data_used_bytes != null &&
-              Number(it.data_used_bytes) >= bb;
+              bonusConsumedBytes >= BigInt(bb);
 
             if (expired || dataReached) {
               await supabase
@@ -2709,6 +2764,8 @@ app.get("/api/portal/status", async (req, res) => {
 
     const bonusSecondsN0 = Number(bonus.bonus_seconds || 0) || 0;
     const bonusBytesN0 = Number(bonus.bonus_bytes || 0) || 0;
+    const bonusMeta0 = parseBonusNoteMeta(bonus.note || null);
+    const bonusStartUsedBytes0 = Number(bonusMeta0.start_used_bytes || 0) || 0;
     const isBonusSession = row.is_bonus_session === true || row.is_bonus_session === "true";
 
     let bonusDead = false;
@@ -2728,9 +2785,12 @@ app.get("/api/portal/status", async (req, res) => {
       // 2) Data kill (only if limited bonus data)
       let dataDead = false;
       try {
-        const usedBytes = BigInt(String(row.data_used_bytes ?? 0));
+        const bonusUsedBytes = getBonusConsumedBytes({
+          total_used_bytes: row.data_used_bytes,
+          bonus_start_used_bytes: bonusStartUsedBytes0,
+        });
         if (bonusBytesN0 !== -1 && bonusBytesN0 > 0) {
-          dataDead = usedBytes >= BigInt(bonusBytesN0);
+          dataDead = bonusUsedBytes >= BigInt(bonusBytesN0);
         }
       } catch (_) {
         dataDead = false;
@@ -2739,13 +2799,10 @@ app.get("/api/portal/status", async (req, res) => {
       bonusDead = timeDead || dataDead;
 
       if (bonusDead) {
-        const inactiveStatus = dataDead ? "used" : "expired";
-
         try {
           await supabase
             .from("voucher_sessions")
             .update({
-              status: inactiveStatus,
               is_bonus_session: false,
               updated_at: new Date().toISOString()
             })
@@ -2760,13 +2817,12 @@ app.get("/api/portal/status", async (req, res) => {
               bonus_bytes: 0,
               note: null,
               updated_at: new Date().toISOString(),
-              updated_by: dataDead ? "portal_status_cleanup_data_finished" : "portal_status_cleanup_time_finished"
+              updated_by: "portal_status_cleanup"
             })
             .eq("voucher_session_id", row.id);
         } catch (_) {}
 
-        // Re-read truth after cleanup so portal returns the inactive/original voucher status.
-        // A future newly-added bonus can reactivate later, but the initial voucher must not revive here.
+        // Re-read truth after cleanup so portal returns the normal/original voucher status
         row = await loadLatestTruthRow();
 
         // Reload bonus after cleanup
@@ -5614,7 +5670,7 @@ app.post("/api/voucher/activate", async (req, res) => {
     ) {
       const { data: bRow, error: bErr } = await supabase
         .from("voucher_bonus_overrides")
-        .select("bonus_seconds,bonus_bytes")
+        .select("bonus_seconds,bonus_bytes,note")
         .eq("voucher_session_id", session.id)
         .maybeSingle();
 
@@ -5651,6 +5707,11 @@ app.post("/api/voucher/activate", async (req, res) => {
       }
 
       const newExpiresAt = new Date(now.getTime() + bonusSeconds * 1000).toISOString();
+      const existingBonusMeta = parseBonusNoteMeta(bRow?.note || null);
+      const bonusNoteMeta = buildBonusNoteMeta({
+        start_used_bytes: Number(session?.data_used_bytes || 0) || 0,
+        note_text: existingBonusMeta.note_text,
+      });
 
       const upd = {
         status: "active",
@@ -5668,6 +5729,19 @@ app.post("/api/voucher/activate", async (req, res) => {
         .from("voucher_sessions")
         .update(upd)
         .eq("id", session.id);
+
+      if (!uErr) {
+        try {
+          await supabase
+            .from("voucher_bonus_overrides")
+            .update({
+              note: bonusNoteMeta,
+              updated_at: nowIso,
+              updated_by: "system_bonus_reactivate"
+            })
+            .eq("voucher_session_id", session.id);
+        } catch (_) {}
+      }
 
       if (uErr) {
         console.error("REACTIVATE UPDATE ERROR", uErr);
@@ -6114,28 +6188,13 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
       // --------------------------------------------------
       // BONUS SESSION = autonomous mini-plan
       // Ignore normal plan blockers. Only bonus validity matters.
-      // IMPORTANT:
-      // - when bonus ends, the original voucher MUST stay inactive
-      // - only a future newly-added bonus may reactivate it again
       // --------------------------------------------------
-      let bonusUsedBytes = 0n;
-      try {
-        bonusUsedBytes = BigInt(String(session?.data_used_bytes ?? 0));
-      } catch (_) {
-        bonusUsedBytes = 0n;
-      }
-
-      const bonusDataDead =
-        (bonusBytes !== -1) &&
-        (bonusBytes > 0) &&
-        (bonusUsedBytes >= BigInt(bonusBytes));
-
-      const cleanupBonusSession = async ({ status, updated_by }) => {
+      if (!hasTimeBonus || !hasDataBonus) {
         try {
           await supabase
             .from("voucher_sessions")
             .update({
-              status,
+              status: "used",
               is_bonus_session: false,
               updated_at: now.toISOString()
             })
@@ -6149,17 +6208,10 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
               bonus_seconds: 0,
               bonus_bytes: 0,
               updated_at: now.toISOString(),
-              updated_by
+              updated_by: "system_authorize_bonus_invalid"
             })
             .eq("voucher_session_id", session.id);
         } catch (_) {}
-      };
-
-      if (!hasTimeBonus || !hasDataBonus) {
-        await cleanupBonusSession({
-          status: "used",
-          updated_by: "system_authorize_bonus_invalid"
-        });
 
         return sendReject("bonus_session_invalid", {
           entity_type: "voucher_session",
@@ -6177,33 +6229,29 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
         });
       }
 
-      if (bonusDataDead) {
-        await cleanupBonusSession({
-          status: "used",
-          updated_by: "system_authorize_bonus_data_finished"
-        });
-
-        return sendReject("bonus_session_data_finished", {
-          entity_type: "voucher_session",
-          entity_id: session.id,
-          nas_id,
-          client_mac,
-          pool_id: session.pool_id || null,
-          plan_id: session.plan_id || null,
-          mvola_phone: session.mvola_phone || null,
-          metadata: {
-            data_used_bytes: session?.data_used_bytes ?? null,
-            bonus_bytes: bonusBytes,
-            is_bonus_session: true
-          }
-        });
-      }
-
       if (isTimeExpired) {
-        await cleanupBonusSession({
-          status: "expired",
-          updated_by: "system_authorize_bonus_finished"
-        });
+        try {
+          await supabase
+            .from("voucher_sessions")
+            .update({
+              status: "used",
+              is_bonus_session: false,
+              updated_at: now.toISOString()
+            })
+            .eq("id", session.id);
+        } catch (_) {}
+
+        try {
+          await supabase
+            .from("voucher_bonus_overrides")
+            .update({
+              bonus_seconds: 0,
+              bonus_bytes: 0,
+              updated_at: now.toISOString(),
+              updated_by: "system_authorize_bonus_finished"
+            })
+            .eq("voucher_session_id", session.id);
+        } catch (_) {}
 
         return sendReject("bonus_session_finished", {
           entity_type: "voucher_session",
@@ -6506,6 +6554,9 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
 
     let effectiveTotalBytes = null;
 
+    const bonusMetaAuth = parseBonusNoteMeta(bonusOverride?.note || null);
+    const bonusStartUsedBytesAuth = Number(bonusMetaAuth.start_used_bytes || 0) || 0;
+
     if (isBonusSession) {
       if (bonusBytes === -1) {
         effectiveTotalBytes = null; // unlimited
@@ -6532,12 +6583,19 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
     // If data quota already exhausted (backend truth), reject.
     let usedBytes = 0n;
     try {
-      usedBytes = BigInt(Number(session?.data_used_bytes ?? 0) || 0);
+      usedBytes = BigInt(String(session?.data_used_bytes ?? 0));
     } catch (_) {
       usedBytes = 0n;
     }
 
-    if (effectiveTotalBytes !== null && usedBytes >= BigInt(effectiveTotalBytes)) {
+    const effectiveUsedBytes = isBonusSession
+      ? getBonusConsumedBytes({
+          total_used_bytes: session?.data_used_bytes,
+          bonus_start_used_bytes: bonusStartUsedBytesAuth,
+        })
+      : usedBytes;
+
+    if (effectiveTotalBytes !== null && effectiveUsedBytes >= BigInt(effectiveTotalBytes)) {
       try {
         await supabase
           .from("voucher_sessions")
@@ -6572,9 +6630,10 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
         plan_id: session.plan_id || null,
         mvola_phone: session.mvola_phone || null,
         metadata: {
-          used_bytes: usedBytes.toString(),
+          used_bytes: effectiveUsedBytes.toString(),
           total_bytes: effectiveTotalBytes,
-          is_bonus_session: isBonusSession
+          is_bonus_session: isBonusSession,
+          bonus_start_used_bytes: isBonusSession ? bonusStartUsedBytesAuth : null
         }
       });
     }
@@ -6596,7 +6655,9 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
         remaining_seconds: remainingSeconds,
         expires_at: session.expires_at,
         total_bytes: effectiveTotalBytes,
-        is_bonus_session: isBonusSession
+        used_bytes: effectiveUsedBytes.toString(),
+        is_bonus_session: isBonusSession,
+        bonus_start_used_bytes: isBonusSession ? bonusStartUsedBytesAuth : null
       }
     }, replyExtra);
 
@@ -6848,10 +6909,12 @@ app.post("/api/radius/accounting", async (req, res) => {
       if (isBonusSessionAcct) {
         const { data: bonusRow } = await supabase
           .from("voucher_bonus_overrides")
-          .select("bonus_bytes")
+          .select("bonus_bytes,note")
           .eq("voucher_session_id", vsId)
           .maybeSingle();
 
+        const bonusMetaAcct = parseBonusNoteMeta(bonusRow?.note || null);
+        const bonusStartUsedBytesAcct = Number(bonusMetaAcct.start_used_bytes || 0) || 0;
         const bonusBytesRaw = Number(bonusRow?.bonus_bytes ?? 0);
 
         if (bonusBytesRaw === -1) {
@@ -6876,7 +6939,13 @@ app.post("/api/radius/accounting", async (req, res) => {
       }
 
       if (totalLimitBytes !== null) {
-        quotaReached = aggregatedUsed >= BigInt(totalLimitBytes);
+        const comparableUsed = isBonusSessionAcct
+          ? getBonusConsumedBytes({
+              total_used_bytes: aggregatedUsed,
+              bonus_start_used_bytes: bonusStartUsedBytesAcct,
+            })
+          : aggregatedUsed;
+        quotaReached = comparableUsed >= BigInt(totalLimitBytes);
       }
     } catch (_) {
       // ignore
