@@ -1,4 +1,4 @@
-// RAZAFI Backend - 10th April 2026 Edition
+// RAZAFI Backend - 9th April 2026 Edition
 // ---------------------------------------------------------------------------
 
 import express from "express";
@@ -79,51 +79,61 @@ function formatBonusCompactLine(bonus_seconds, bonus_bytes) {
   }
 }
 
-function parseBonusNoteMeta(note) {
+const BONUS_META_PREFIX = "__RAZAFI_BONUS_META__:";
+
+function parseBonusMeta(rawNote) {
   try {
-    const raw = String(note || "").trim();
-    if (!raw) return { start_used_bytes: 0, note_text: null, raw_note: note || null };
-
-    if (raw.startsWith("__RAZAFI_BONUS__")) {
-      const parsed = JSON.parse(raw.slice("__RAZAFI_BONUS__".length));
-      return {
-        start_used_bytes: Math.max(0, Math.floor(Number(parsed?.start_used_bytes || 0) || 0)),
-        note_text: parsed?.note_text ? String(parsed.note_text) : null,
-        raw_note: raw,
-      };
+    const raw = String(rawNote || "");
+    if (!raw.startsWith(BONUS_META_PREFIX)) {
+      return { userNote: raw || null, meta: {} };
     }
-
-    if ((raw.startsWith("{") && raw.endsWith("}")) || (raw.startsWith("[") && raw.endsWith("]"))) {
-      const parsed = JSON.parse(raw);
-      return {
-        start_used_bytes: Math.max(0, Math.floor(Number(parsed?.start_used_bytes || 0) || 0)),
-        note_text: parsed?.note_text ? String(parsed.note_text) : null,
-        raw_note: raw,
-      };
+    const nl = raw.indexOf("\n");
+    const metaJson = nl === -1 ? raw.slice(BONUS_META_PREFIX.length) : raw.slice(BONUS_META_PREFIX.length, nl);
+    const userNote = nl === -1 ? "" : raw.slice(nl + 1);
+    let meta = {};
+    try {
+      meta = JSON.parse(metaJson || "{}") || {};
+    } catch (_) {
+      meta = {};
     }
-  } catch (_) {}
-
-  return {
-    start_used_bytes: 0,
-    note_text: note ? String(note) : null,
-    raw_note: note || null,
-  };
-}
-
-function buildBonusNoteMeta({ start_used_bytes = 0, note_text = null } = {}) {
-  return "__RAZAFI_BONUS__" + JSON.stringify({
-    start_used_bytes: Math.max(0, Math.floor(Number(start_used_bytes || 0) || 0)),
-    note_text: note_text ? String(note_text) : null,
-  });
-}
-
-function getBonusConsumedBytes({ total_used_bytes, bonus_start_used_bytes }) {
-  try {
-    const total = BigInt(String(total_used_bytes ?? 0));
-    const start = BigInt(String(Math.max(0, Math.floor(Number(bonus_start_used_bytes || 0) || 0))));
-    return total > start ? (total - start) : 0n;
+    return {
+      userNote: String(userNote || "").trim() || null,
+      meta,
+    };
   } catch (_) {
-    return 0n;
+    return { userNote: rawNote || null, meta: {} };
+  }
+}
+
+function buildBonusNote(userNote, meta) {
+  try {
+    const safeMeta = meta && typeof meta === "object" ? meta : {};
+    const prefix = BONUS_META_PREFIX + JSON.stringify(safeMeta || {});
+    const cleanUserNote = String(userNote || "").trim();
+    return cleanUserNote ? `${prefix}\n${cleanUserNote}` : prefix;
+  } catch (_) {
+    return String(userNote || "").trim() || null;
+  }
+}
+
+function getBonusStartUsedBytes(rawNote) {
+  try {
+    const parsed = parseBonusMeta(rawNote);
+    const n = Number(parsed?.meta?.bonus_start_used_bytes ?? 0);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
+function getBonusConsumedBytes(currentUsedBytes, rawNote) {
+  try {
+    const current = Number(currentUsedBytes ?? 0);
+    if (!Number.isFinite(current) || current <= 0) return 0;
+    const base = getBonusStartUsedBytes(rawNote);
+    return Math.max(0, Math.floor(current) - Math.floor(base));
+  } catch (_) {
+    return 0;
   }
 }
 // ===============================
@@ -1616,11 +1626,9 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
             const k = String(b.voucher_session_id || "").trim();
             if (!k) continue;
 
-            const bonusMeta = parseBonusNoteMeta(b.note || null);
             bMap[k] = {
               bonus_seconds: Number(b.bonus_seconds || 0) || 0,
               bonus_bytes: Number(b.bonus_bytes || 0) || 0,
-              bonus_start_used_bytes: bonusMeta.start_used_bytes,
             };
           }
 
@@ -1646,16 +1654,11 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
               it.expires_at &&
               new Date(it.expires_at) <= now;
 
-            const bonusStartUsedBytes = Number(b?.bonus_start_used_bytes || 0) || 0;
-            const bonusConsumedBytes = getBonusConsumedBytes({
-              total_used_bytes: it.data_used_bytes,
-              bonus_start_used_bytes: bonusStartUsedBytes,
-            });
-
+            const bonusConsumedBytes = getBonusConsumedBytes(it.data_used_bytes, b?.note);
             const dataReached =
               isBonusSession &&
               bb > 0 &&
-              bonusConsumedBytes >= BigInt(bb);
+              bonusConsumedBytes >= bb;
 
             if (expired || dataReached) {
               await supabase
@@ -1968,7 +1971,7 @@ try {
   data.bonus = {
     bonus_seconds: Number(b.bonus_seconds || 0),
     bonus_bytes: Number(b.bonus_bytes || 0),
-    note: b.note || null,
+    note: parseBonusMeta(b.note).userNote || null,
     updated_at: b.updated_at || null,
     updated_by: b.updated_by || null,
   };
@@ -2764,8 +2767,7 @@ app.get("/api/portal/status", async (req, res) => {
 
     const bonusSecondsN0 = Number(bonus.bonus_seconds || 0) || 0;
     const bonusBytesN0 = Number(bonus.bonus_bytes || 0) || 0;
-    const bonusMeta0 = parseBonusNoteMeta(bonus.note || null);
-    const bonusStartUsedBytes0 = Number(bonusMeta0.start_used_bytes || 0) || 0;
+    const bonusConsumedBytes0 = getBonusConsumedBytes(row.data_used_bytes, bonus.note);
     const isBonusSession = row.is_bonus_session === true || row.is_bonus_session === "true";
 
     let bonusDead = false;
@@ -2785,10 +2787,7 @@ app.get("/api/portal/status", async (req, res) => {
       // 2) Data kill (only if limited bonus data)
       let dataDead = false;
       try {
-        const bonusUsedBytes = getBonusConsumedBytes({
-          total_used_bytes: row.data_used_bytes,
-          bonus_start_used_bytes: bonusStartUsedBytes0,
-        });
+        const bonusUsedBytes = BigInt(String(bonusConsumedBytes0 ?? 0));
         if (bonusBytesN0 !== -1 && bonusBytesN0 > 0) {
           dataDead = bonusUsedBytes >= BigInt(bonusBytesN0);
         }
@@ -5707,11 +5706,22 @@ app.post("/api/voucher/activate", async (req, res) => {
       }
 
       const newExpiresAt = new Date(now.getTime() + bonusSeconds * 1000).toISOString();
-      const existingBonusMeta = parseBonusNoteMeta(bRow?.note || null);
-      const bonusNoteMeta = buildBonusNoteMeta({
-        start_used_bytes: Number(session?.data_used_bytes || 0) || 0,
-        note_text: existingBonusMeta.note_text,
-      });
+
+      const currentUsedBytesAtBonusStart = Math.max(0, Math.floor(Number(session?.data_used_bytes ?? 0) || 0));
+      const bonusUserNote = parseBonusMeta(bRow?.note).userNote || null;
+
+      try {
+        await supabase
+          .from("voucher_bonus_overrides")
+          .update({
+            note: buildBonusNote(bonusUserNote, { bonus_start_used_bytes: currentUsedBytesAtBonusStart }),
+            updated_at: nowIso,
+            updated_by: "system_bonus_activate"
+          })
+          .eq("voucher_session_id", session.id);
+      } catch (metaErr) {
+        console.error("BONUS META UPDATE ERROR", metaErr);
+      }
 
       const upd = {
         status: "active",
@@ -5729,19 +5739,6 @@ app.post("/api/voucher/activate", async (req, res) => {
         .from("voucher_sessions")
         .update(upd)
         .eq("id", session.id);
-
-      if (!uErr) {
-        try {
-          await supabase
-            .from("voucher_bonus_overrides")
-            .update({
-              note: bonusNoteMeta,
-              updated_at: nowIso,
-              updated_by: "system_bonus_reactivate"
-            })
-            .eq("voucher_session_id", session.id);
-        } catch (_) {}
-      }
 
       if (uErr) {
         console.error("REACTIVATE UPDATE ERROR", uErr);
@@ -6554,9 +6551,6 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
 
     let effectiveTotalBytes = null;
 
-    const bonusMetaAuth = parseBonusNoteMeta(bonusOverride?.note || null);
-    const bonusStartUsedBytesAuth = Number(bonusMetaAuth.start_used_bytes || 0) || 0;
-
     if (isBonusSession) {
       if (bonusBytes === -1) {
         effectiveTotalBytes = null; // unlimited
@@ -6583,19 +6577,16 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
     // If data quota already exhausted (backend truth), reject.
     let usedBytes = 0n;
     try {
-      usedBytes = BigInt(String(session?.data_used_bytes ?? 0));
+      if (isBonusSession) {
+        usedBytes = BigInt(getBonusConsumedBytes(session?.data_used_bytes, bonusOverride?.note));
+      } else {
+        usedBytes = BigInt(Number(session?.data_used_bytes ?? 0) || 0);
+      }
     } catch (_) {
       usedBytes = 0n;
     }
 
-    const effectiveUsedBytes = isBonusSession
-      ? getBonusConsumedBytes({
-          total_used_bytes: session?.data_used_bytes,
-          bonus_start_used_bytes: bonusStartUsedBytesAuth,
-        })
-      : usedBytes;
-
-    if (effectiveTotalBytes !== null && effectiveUsedBytes >= BigInt(effectiveTotalBytes)) {
+    if (effectiveTotalBytes !== null && usedBytes >= BigInt(effectiveTotalBytes)) {
       try {
         await supabase
           .from("voucher_sessions")
@@ -6630,10 +6621,9 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
         plan_id: session.plan_id || null,
         mvola_phone: session.mvola_phone || null,
         metadata: {
-          used_bytes: effectiveUsedBytes.toString(),
+          used_bytes: usedBytes.toString(),
           total_bytes: effectiveTotalBytes,
-          is_bonus_session: isBonusSession,
-          bonus_start_used_bytes: isBonusSession ? bonusStartUsedBytesAuth : null
+          is_bonus_session: isBonusSession
         }
       });
     }
@@ -6655,9 +6645,7 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
         remaining_seconds: remainingSeconds,
         expires_at: session.expires_at,
         total_bytes: effectiveTotalBytes,
-        used_bytes: effectiveUsedBytes.toString(),
-        is_bonus_session: isBonusSession,
-        bonus_start_used_bytes: isBonusSession ? bonusStartUsedBytesAuth : null
+        is_bonus_session: isBonusSession
       }
     }, replyExtra);
 
@@ -6913,8 +6901,7 @@ app.post("/api/radius/accounting", async (req, res) => {
           .eq("voucher_session_id", vsId)
           .maybeSingle();
 
-        const bonusMetaAcct = parseBonusNoteMeta(bonusRow?.note || null);
-        const bonusStartUsedBytesAcct = Number(bonusMetaAcct.start_used_bytes || 0) || 0;
+        bonusBaseUsedBytes = getBonusStartUsedBytes(bonusRow?.note);
         const bonusBytesRaw = Number(bonusRow?.bonus_bytes ?? 0);
 
         if (bonusBytesRaw === -1) {
@@ -6939,13 +6926,7 @@ app.post("/api/radius/accounting", async (req, res) => {
       }
 
       if (totalLimitBytes !== null) {
-        const comparableUsed = isBonusSessionAcct
-          ? getBonusConsumedBytes({
-              total_used_bytes: aggregatedUsed,
-              bonus_start_used_bytes: bonusStartUsedBytesAcct,
-            })
-          : aggregatedUsed;
-        quotaReached = comparableUsed >= BigInt(totalLimitBytes);
+        quotaReached = aggregatedUsed >= BigInt(totalLimitBytes);
       }
     } catch (_) {
       // ignore
@@ -7260,7 +7241,7 @@ app.get("/api/admin/voucher-bonus-overrides", requireAdmin, async (req, res) => 
         voucher_session_id,
         bonus_seconds: Number(item.bonus_seconds || 0),
         bonus_bytes: Number(item.bonus_bytes || 0),
-        note: item.note || null,
+        note: parseBonusMeta(item.note).userNote || null,
         updated_at: item.updated_at || null,
         updated_by: item.updated_by || null,
       }
