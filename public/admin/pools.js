@@ -90,7 +90,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   const sysMikrotikBtn = $id("sysMikrotikBtn");
 
   let pools = [];
-  let allAps = [];
 
   // Active system view for this page (portal vs mikrotik)
   let activeSystem = "portal";
@@ -126,39 +125,27 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Init UI state
   setActiveSystem("portal");
 
-  async function loadAllAps() {
+  async function fetchPoolLiveStats() {
     try {
-      const data = await fetchJSON("/api/admin/aps?limit=200&offset=0&active=all&stale=all");
-      allAps = data.aps || [];
-    } catch {
-      allAps = [];
+      const data = await fetchJSON("/api/admin/pool-live-stats");
+      const map = {};
+      for (const row of (data.rows || [])) {
+        const pid = String(row?.pool_id || "").trim();
+        if (!pid) continue;
+        map[pid] = Number.isFinite(Number(row?.active_clients)) ? Number(row.active_clients) : 0;
+      }
+      return map;
+    } catch (e) {
+      console.error("pool-live-stats error", e);
+      return {};
     }
-  }
-
-  // Sum live Tanaza connected clients per pool (online only).
-  function poolLiveMap() {
-    const map = {};
-    for (const a of allAps || []) {
-      const pid = a.pool_id || "";
-      if (!pid) continue;
-
-      const online = (a.tanaza_online === true) || (String(a.tanaza_online).toLowerCase() === "true");
-      if (!online) continue;
-
-      const raw = (a.tanaza_connected ?? a.tanaza_connected_clients ?? a.tanaza_connectedClients ?? a.connectedClients ?? 0);
-      const n = Number.isFinite(Number(raw)) ? Number(raw) : 0;
-
-      map[pid] = (map[pid] || 0) + n;
-    }
-    return map;
   }
 
   async function loadPools() {
     showMsg(msgEl, "");
     rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="6">Loading...</td></tr>`;
 
-    await loadAllAps();
-    const liveByPool = poolLiveMap();
+    const liveByPool = await fetchPoolLiveStats();
 
     const params = new URLSearchParams();
     const q = (qEl?.value || "").trim();
