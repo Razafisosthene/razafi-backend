@@ -922,16 +922,21 @@ function normalizePhone(phone) {
   return p;
 }
 
+// Explicit UTC cutoff helper for RADIUS live-session comparisons.
+// Using toISOString() guarantees a UTC timestamp string that matches timestamptz comparisons.
+function getUtcCutoffIso(windowMinutes = RADIUS_ACTIVE_WINDOW_MINUTES) {
+  const mins = Number.isFinite(Number(windowMinutes)) && Number(windowMinutes) > 0
+    ? Number(windowMinutes)
+    : RADIUS_ACTIVE_WINDOW_MINUTES;
+  return new Date(Date.now() - mins * 60 * 1000).toISOString();
+}
+
 async function countRecentActiveClientsByNasId(nasId, windowMinutes = RADIUS_ACTIVE_WINDOW_MINUTES) {
   try {
     const cleanNasId = String(nasId || "").trim();
     if (!cleanNasId || !supabase) return 0;
 
-    const mins = Number.isFinite(Number(windowMinutes)) && Number(windowMinutes) > 0
-      ? Number(windowMinutes)
-      : 5;
-
-    const cutoffIso = new Date(Date.now() - mins * 60 * 1000).toISOString();
+    const cutoffIso = getUtcCutoffIso(windowMinutes);
 
     const { data, error } = await supabase
       .from("radius_acct_sessions")
