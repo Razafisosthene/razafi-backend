@@ -280,7 +280,6 @@ async function requireAdmin(req, res, next) {
       // allowlist GET endpoints for pool_readonly
       const allow =
         fullPath === "/api/admin/me" ||
-        fullPath === "/api/admin/pool-live-stats" ||
         fullPath === "/api/admin/clients" ||
         fullPath.startsWith("/api/admin/voucher-sessions/") ||
         fullPath === "/api/admin/plans" ||
@@ -391,7 +390,7 @@ app.use((req, res, next) => {
 });
 
 const PORT = process.env.PORT || 10000;
-const RADIUS_ACTIVE_WINDOW_MINUTES = parseInt(process.env.RADIUS_ACTIVE_WINDOW_MINUTES || "10", 10);
+const RADIUS_ACTIVE_WINDOW_MINUTES = parseInt(process.env.RADIUS_ACTIVE_WINDOW_MINUTES || "5", 10);
 
 const extraAllowed = (process.env.EXTRA_ALLOWED || "127.0.0.1,::1").split(",").map(s => s.trim()).filter(Boolean);
 
@@ -923,21 +922,16 @@ function normalizePhone(phone) {
   return p;
 }
 
-// Explicit UTC cutoff helper for RADIUS live-session comparisons.
-// Using toISOString() guarantees a UTC timestamp string that matches timestamptz comparisons.
-function getUtcCutoffIso(windowMinutes = RADIUS_ACTIVE_WINDOW_MINUTES) {
-  const mins = Number.isFinite(Number(windowMinutes)) && Number(windowMinutes) > 0
-    ? Number(windowMinutes)
-    : RADIUS_ACTIVE_WINDOW_MINUTES;
-  return new Date(Date.now() - mins * 60 * 1000).toISOString();
-}
-
 async function countRecentActiveClientsByNasId(nasId, windowMinutes = RADIUS_ACTIVE_WINDOW_MINUTES) {
   try {
     const cleanNasId = String(nasId || "").trim();
     if (!cleanNasId || !supabase) return 0;
 
-    const cutoffIso = getUtcCutoffIso(windowMinutes);
+    const mins = Number.isFinite(Number(windowMinutes)) && Number(windowMinutes) > 0
+      ? Number(windowMinutes)
+      : 5;
+
+    const cutoffIso = new Date(Date.now() - mins * 60 * 1000).toISOString();
 
     const { data, error } = await supabase
       .from("radius_acct_sessions")
@@ -1215,39 +1209,6 @@ app.get("/api/admin/me", requireAdmin, async (req, res) => {
     pool_ids: Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [],
   });
 });
-
-app.get("/api/admin/pool-live-stats", requireAdmin, async (req, res) => {
-  try {
-    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
-
-    let q = supabase
-      .from("pool_live_stats")
-      .select("pool_id, active_clients, capacity_max, is_saturated, last_computed_at, is_stale")
-      .order("last_computed_at", { ascending: false });
-
-    if (!req.admin?.is_superadmin) {
-      const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
-      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
-      q = q.in("pool_id", allowed);
-    }
-
-    const { data, error } = await q;
-    if (error) {
-      console.error("ADMIN POOL LIVE STATS QUERY ERROR", error);
-      return res.status(500).json({ error: error.message });
-    }
-
-    return res.json({
-      ok: true,
-      window_minutes: RADIUS_ACTIVE_WINDOW_MINUTES,
-      rows: data || [],
-    });
-  } catch (e) {
-    console.error("ADMIN POOL LIVE STATS ERROR", e?.message || e);
-    return res.status(500).json({ error: "internal" });
-  }
-});
-
 // ------------------------------------------------------------
 // ADMIN: Users (Superadmin only) + Pool assignments
 // ------------------------------------------------------------
@@ -8201,93 +8162,258 @@ app.get("/api/history", async (req, res) => {
 
 const MONITOR_INTERVAL_MS = 30_000;   // 30 secondes
 const DEVICE_TIMEOUT_MS  = 2 * 60_000; // 2 minutes
-setInterval(async () => {
+
+async function recomputePoolLiveStatsJob(debug = false) {
+  const startedAt = new Date();
+  const debugRows = [];
+
   try {
-    if (!supabase) return;
+    if (!supabase) {
+      if (debug) console.error("[DEBUG][POOL-STATS] supabase missing");
+      return { ok: false, reason: "supabase_missing", started_at: startedAt.toISOString(), rows: debugRows };
+    }
+
     const now = new Date();
     const cutoff = new Date(now.getTime() - DEVICE_TIMEOUT_MS).toISOString();
 
+    if (debug) {
+      console.log("[DEBUG][POOL-STATS] tick", {
+        nowIso: now.toISOString(),
+        deviceCutoffIso: cutoff,
+        radiusWindowMinutes: RADIUS_ACTIVE_WINDOW_MINUTES
+      });
+    }
+
     // --------------------------------------------------
     // 1) Mark inactive device sessions
-    await supabase
+    const { error: inactiveErr } = await supabase
       .from("active_device_sessions")
       .update({ is_active: false })
       .lt("last_seen_at", cutoff)
       .eq("is_active", true);
 
+    if (inactiveErr && debug) {
+      console.error("[DEBUG][POOL-STATS] inactive mark error", inactiveErr);
+    }
+
     // --------------------------------------------------
     // 2) AP live stats (FIXED – no group())
-const { data: activeSessions, error: apErr } = await supabase
-  .from("active_device_sessions")
-  .select("ap_mac")
-  .eq("is_active", true);
+    const { data: activeSessions, error: apErr } = await supabase
+      .from("active_device_sessions")
+      .select("ap_mac")
+      .eq("is_active", true);
 
-if (apErr) {
-  console.error("AP live stats error:", apErr.message);
-} else if (activeSessions) {
-  const apCounts = {};
+    if (apErr) {
+      console.error("AP live stats error:", apErr.message);
+      if (debug) console.error("[DEBUG][POOL-STATS] ap live query error", apErr);
+    } else if (activeSessions) {
+      const apCounts = {};
 
-  // Count active clients per AP
-  for (const row of activeSessions) {
-    if (!row.ap_mac) continue;
-    apCounts[row.ap_mac] = (apCounts[row.ap_mac] || 0) + 1;
-  }
+      for (const row of activeSessions) {
+        if (!row.ap_mac) continue;
+        apCounts[row.ap_mac] = (apCounts[row.ap_mac] || 0) + 1;
+      }
 
-  // Upsert results
-  for (const [ap_mac, count] of Object.entries(apCounts)) {
-    await supabase
-      .from("ap_live_stats")
-      .upsert(
-        {
-          ap_mac,
-          active_clients: count,
-          last_computed_at: now.toISOString(),
-          is_stale: false
-        },
-        { onConflict: "ap_mac" }
-      );
-  }
-}
+      if (debug) {
+        console.log("[DEBUG][POOL-STATS] active_device_sessions", {
+          rows: activeSessions.length,
+          distinctAps: Object.keys(apCounts).length
+        });
+      }
 
+      for (const [ap_mac, count] of Object.entries(apCounts)) {
+        const { error: apUpsertErr } = await supabase
+          .from("ap_live_stats")
+          .upsert(
+            {
+              ap_mac,
+              active_clients: count,
+              last_computed_at: now.toISOString(),
+              is_stale: false
+            },
+            { onConflict: "ap_mac" }
+          );
+
+        if (apUpsertErr && debug) {
+          console.error("[DEBUG][POOL-STATS] ap_live_stats upsert error", { ap_mac, count, error: apUpsertErr });
+        }
+      }
+    }
 
     // --------------------------------------------------
     // 3) Pool live stats
-    // For pools with radius_nas_id, source of truth = radius_acct_sessions.
-    // Legacy pools keep original active_device_sessions behavior.
-    const { data: pools } = await supabase
+    const { data: pools, error: poolsErr } = await supabase
       .from("internet_pools")
-      .select("id, capacity_max, radius_nas_id");
+      .select("id, name, capacity_max, radius_nas_id");
+
+    if (poolsErr) {
+      console.error("[DEBUG][POOL-STATS] pools load error", poolsErr);
+      return { ok: false, reason: "pools_load_error", started_at: startedAt.toISOString(), rows: debugRows, error: poolsErr };
+    }
+
+    if (debug) {
+      console.log("[DEBUG][POOL-STATS] pools loaded", {
+        count: (pools || []).length,
+        pools: (pools || []).map(p => ({
+          pool_id: p.id,
+          pool_name: p.name || null,
+          capacity_max: p.capacity_max,
+          radius_nas_id: p.radius_nas_id || null
+        }))
+      });
+    }
 
     for (const pool of pools || []) {
       let activeClients = 0;
+      let source = "active_device_sessions";
+      let radiusRows = [];
+      let radiusErr = null;
+      let cutoffIso = null;
+      let sessionIds = [];
 
       if (pool?.radius_nas_id) {
-        activeClients = await countRecentActiveClientsByNasId(pool.radius_nas_id);
+        source = "radius_acct_sessions";
+        cutoffIso = getUtcCutoffIso(RADIUS_ACTIVE_WINDOW_MINUTES);
+
+        const r = await supabase
+          .from("radius_acct_sessions")
+          .select("acct_session_id, updated_at")
+          .eq("nas_id", String(pool.radius_nas_id))
+          .gt("updated_at", cutoffIso)
+          .order("updated_at", { ascending: false });
+
+        radiusRows = r.data || [];
+        radiusErr = r.error || null;
+        sessionIds = Array.from(new Set(
+          (radiusRows || [])
+            .map((row) => String(row?.acct_session_id || "").trim())
+            .filter(Boolean)
+        ));
+        activeClients = sessionIds.length;
+
+        if (debug) {
+          console.log("[DEBUG][POOL-STATS] radius rows", {
+            pool_id: pool.id,
+            pool_name: pool.name || null,
+            nas_id: pool.radius_nas_id,
+            cutoffIso,
+            rows: radiusRows.length,
+            distinct_sessions: activeClients,
+            session_ids: sessionIds,
+            updated_at_values: radiusRows.map(row => row.updated_at)
+          });
+          if (radiusErr) {
+            console.error("[DEBUG][POOL-STATS] radius query error", {
+              pool_id: pool.id,
+              pool_name: pool.name || null,
+              nas_id: pool.radius_nas_id,
+              error: radiusErr
+            });
+          }
+        }
       } else {
-        const { count: poolCount } = await supabase
+        const { count: poolCount, error: poolCountErr } = await supabase
           .from("active_device_sessions")
           .select("id", { count: "exact", head: true })
           .eq("pool_id", pool.id)
           .eq("is_active", true);
 
         activeClients = Number(poolCount || 0);
+
+        if (debug) {
+          console.log("[DEBUG][POOL-STATS] active_device_sessions count", {
+            pool_id: pool.id,
+            pool_name: pool.name || null,
+            active_clients: activeClients,
+            error: poolCountErr || null
+          });
+        }
       }
 
       const capacityMax = Number(pool?.capacity_max || 0);
       const saturated = capacityMax > 0 ? activeClients >= capacityMax : false;
 
-      await supabase.from("pool_live_stats").upsert({
+      const payload = {
         pool_id: pool.id,
         active_clients: activeClients,
+        capacity_max: capacityMax,
         is_saturated: saturated,
         last_computed_at: now.toISOString()
-      }, { onConflict: "pool_id" });
+      };
+
+      const { error: upsertErr } = await supabase
+        .from("pool_live_stats")
+        .upsert(payload, { onConflict: "pool_id" });
+
+      debugRows.push({
+        pool_id: pool.id,
+        pool_name: pool.name || null,
+        source,
+        radius_nas_id: pool.radius_nas_id || null,
+        cutoff_iso: cutoffIso,
+        active_clients: activeClients,
+        capacity_max: capacityMax,
+        is_saturated: saturated,
+        raw_rows: radiusRows.length,
+        session_ids: sessionIds,
+        updated_at_values: radiusRows.map(row => row.updated_at),
+        radius_error: radiusErr?.message || null,
+        upsert_error: upsertErr?.message || null
+      });
+
+      if (debug) {
+        if (upsertErr) {
+          console.error("[DEBUG][POOL-STATS] upsert error", {
+            pool_id: pool.id,
+            pool_name: pool.name || null,
+            source,
+            payload,
+            error: upsertErr
+          });
+        } else {
+          console.log("[DEBUG][POOL-STATS] upsert ok", {
+            pool_id: pool.id,
+            pool_name: pool.name || null,
+            source,
+            payload
+          });
+        }
+      }
     }
 
+    return {
+      ok: true,
+      started_at: startedAt.toISOString(),
+      finished_at: new Date().toISOString(),
+      rows: debugRows
+    };
   } catch (err) {
     console.error("B4 monitoring error:", err);
+    if (debug) console.error("[DEBUG][POOL-STATS] fatal", err);
+    return {
+      ok: false,
+      started_at: startedAt.toISOString(),
+      finished_at: new Date().toISOString(),
+      rows: debugRows,
+      error: String(err?.message || err)
+    };
   }
+}
+
+setInterval(async () => {
+  await recomputePoolLiveStatsJob(false);
 }, MONITOR_INTERVAL_MS);
+
+setTimeout(() => {
+  recomputePoolLiveStatsJob(true).catch(err => {
+    console.error("[DEBUG][POOL-STATS] startup run failed", err);
+  });
+}, 5_000);
+
+app.get("/api/_debug/pool-live-stats-job", requireAdmin, async (req, res) => {
+  const result = await recomputePoolLiveStatsJob(true);
+  return res.json(result);
+});
 
 // ---------------------------------------------------------------------------
 // POOL STATUS (capacity check)
