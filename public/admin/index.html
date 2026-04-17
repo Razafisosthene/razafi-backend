@@ -62,7 +62,10 @@
     }
 
     // ---------------------------------------------------------------------------
-    // READ-ONLY POOLS DASHBOARD (Tanaza truth)
+    // READ-ONLY POOLS DASHBOARD
+    // Source of truth for pool totals:
+    //   /api/admin/pool-live-stats  (MikroTik / RADIUS)
+    // AP detail list stays on /api/admin/aps for now.
     // ---------------------------------------------------------------------------
 
     const $ = (id) => document.getElementById(id);
@@ -106,11 +109,35 @@
       return "unknown";
     }
 
-
     function apConnected(a) {
       const raw = (a.tanaza_connected ?? a.tanaza_connected_clients ?? a.tanaza_connectedClients ?? a.connectedClients ?? 0);
       const n = Number.isFinite(Number(raw)) ? Number(raw) : 0;
       return n;
+    }
+
+    function asArray(value) {
+      return Array.isArray(value) ? value : [];
+    }
+
+    function toNum(value, fallback = 0) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    }
+
+    function normalizePoolLiveStatsPayload(data) {
+      const candidates = [
+        ...(Array.isArray(data) ? [data] : []),
+        ...(Array.isArray(data?.rows) ? [data.rows] : []),
+        ...(Array.isArray(data?.data) ? [data.data] : []),
+        ...(Array.isArray(data?.items) ? [data.items] : []),
+        ...(Array.isArray(data?.stats) ? [data.stats] : []),
+        ...(Array.isArray(data?.pool_live_stats) ? [data.pool_live_stats] : []),
+        ...(Array.isArray(data?.pools) ? [data.pools] : []),
+      ];
+      for (const arr of candidates) {
+        if (arr.length) return arr;
+      }
+      return [];
     }
 
     async function loadDashboardPools() {
@@ -131,30 +158,51 @@
         }
       }
 
-      async function fetchPools(query) {
+      async function fetchPools() {
         const params = new URLSearchParams();
         params.set("limit", "200");
         params.set("offset", "0");
-        if (query) params.set("q", query);
         const data = await fetchJSON(`/api/admin/pools?${params.toString()}`);
         return data.pools || data.data || data || [];
       }
 
-      function poolLiveMap(allAps) {
+      async function fetchPoolLiveStatsMap() {
+        const data = await fetchJSON("/api/admin/pool-live-stats");
+        const rows = normalizePoolLiveStatsPayload(data);
         const map = {};
-        for (const a of allAps || []) {
-          const pid = a.pool_id || "";
+
+        for (const row of rows) {
+          const pid = String(row?.pool_id || row?.id || "").trim();
           if (!pid) continue;
-          if (!isOnline(a)) continue;
-          map[pid] = (map[pid] || 0) + apConnected(a);
+
+          const activeClients = toNum(row?.active_clients, 0);
+          const capacityMax =
+            row?.capacity_max === null || row?.capacity_max === undefined
+              ? null
+              : toNum(row?.capacity_max, null);
+
+          const percent =
+            row?.is_saturated === true && capacityMax && capacityMax > 0
+              ? 100
+              : pct(activeClients, capacityMax);
+
+          map[pid] = {
+            active_clients: activeClients,
+            capacity_max: capacityMax,
+            is_saturated:
+              row?.is_saturated === true ||
+              String(row?.is_saturated).toLowerCase() === "true",
+            percent,
+            raw: row,
+          };
         }
+
         return map;
       }
 
-      function render(pools, allAps) {
+      function render(pools, allAps, liveStatsByPool) {
         const q = String(qEl?.value || "").trim().toLowerCase();
         const selectedPool = String(poolFilterEl?.value || "").trim().toLowerCase();
-        const liveByPool = poolLiveMap(allAps);
 
         const apsByPool = {};
         for (const a of allAps || []) {
@@ -192,9 +240,14 @@
         container.innerHTML = filteredPools.map(p => {
           const pid = String(p.id || "");
           const name = p.name || pid;
-          const cap = p.capacity_max;
-          const live = liveByPool[pid] || 0;
-          const percent = pct(live, cap);
+
+          const stats = liveStatsByPool[pid] || null;
+          const live = stats ? toNum(stats.active_clients, 0) : 0;
+          const cap =
+            stats && stats.capacity_max !== null && stats.capacity_max !== undefined
+              ? stats.capacity_max
+              : (p.capacity_max === null || p.capacity_max === undefined ? null : Number(p.capacity_max));
+          const percent = stats ? stats.percent : pct(live, cap);
 
           const aps = (apsByPool[pid] || []).slice().sort((a,b) => {
             const ao = isOnline(a) ? 1 : 0;
@@ -213,7 +266,7 @@
                       <tr style="text-align:left; border-bottom:1px solid rgba(0,0,0,0.08);">
                         <th style="padding:10px;">AP</th>
                         <th style="padding:10px; width:90px;">Status</th>
-                        <th style="padding:10px;">Clients</th>
+                        <th style="padding:10px;">Clients (Tanaza)</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -276,7 +329,11 @@
           if (statusEl) statusEl.textContent = "Loading pools…";
           container.innerHTML = `<div class="table-wrap"><div style="padding:12px;">Loading…</div></div>`;
 
-          const [allAps, pools] = await Promise.all([fetchAllAps(), fetchPools("")]);
+          const [allAps, pools, liveStatsByPool] = await Promise.all([
+            fetchAllAps(),
+            fetchPools(),
+            fetchPoolLiveStatsMap(),
+          ]);
 
           if (poolFilterEl) {
             const current = poolFilterEl.value || "";
@@ -292,7 +349,7 @@
             poolFilterEl.value = names.includes(current) ? current : "";
           }
 
-          render(pools, allAps);
+          render(pools, allAps, liveStatsByPool);
 
           if (statusEl) statusEl.textContent = `Loaded ${pools?.length || 0} pool(s).`;
         } catch (e) {
