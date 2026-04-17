@@ -280,11 +280,11 @@ async function requireAdmin(req, res, next) {
       // allowlist GET endpoints for pool_readonly
       const allow =
         fullPath === "/api/admin/me" ||
+        fullPath === "/api/admin/pool-live-stats" ||
         fullPath === "/api/admin/clients" ||
         fullPath.startsWith("/api/admin/voucher-sessions/") ||
         fullPath === "/api/admin/plans" ||
         fullPath === "/api/admin/pools" ||
-        fullPath === "/api/admin/pool-live-stats" ||
         fullPath === "/api/admin/aps" ||
         fullPath.startsWith("/api/admin/revenue/");
 
@@ -391,7 +391,7 @@ app.use((req, res, next) => {
 });
 
 const PORT = process.env.PORT || 10000;
-const RADIUS_ACTIVE_WINDOW_MINUTES = parseInt(process.env.RADIUS_ACTIVE_WINDOW_MINUTES || "5", 10);
+const RADIUS_ACTIVE_WINDOW_MINUTES = parseInt(process.env.RADIUS_ACTIVE_WINDOW_MINUTES || "10", 10);
 
 const extraAllowed = (process.env.EXTRA_ALLOWED || "127.0.0.1,::1").split(",").map(s => s.trim()).filter(Boolean);
 
@@ -923,16 +923,21 @@ function normalizePhone(phone) {
   return p;
 }
 
+// Explicit UTC cutoff helper for RADIUS live-session comparisons.
+// Using toISOString() guarantees a UTC timestamp string that matches timestamptz comparisons.
+function getUtcCutoffIso(windowMinutes = RADIUS_ACTIVE_WINDOW_MINUTES) {
+  const mins = Number.isFinite(Number(windowMinutes)) && Number(windowMinutes) > 0
+    ? Number(windowMinutes)
+    : RADIUS_ACTIVE_WINDOW_MINUTES;
+  return new Date(Date.now() - mins * 60 * 1000).toISOString();
+}
+
 async function countRecentActiveClientsByNasId(nasId, windowMinutes = RADIUS_ACTIVE_WINDOW_MINUTES) {
   try {
     const cleanNasId = String(nasId || "").trim();
     if (!cleanNasId || !supabase) return 0;
 
-    const mins = Number.isFinite(Number(windowMinutes)) && Number(windowMinutes) > 0
-      ? Number(windowMinutes)
-      : 5;
-
-    const cutoffIso = new Date(Date.now() - mins * 60 * 1000).toISOString();
+    const cutoffIso = getUtcCutoffIso(windowMinutes);
 
     const { data, error } = await supabase
       .from("radius_acct_sessions")
@@ -1215,29 +1220,34 @@ app.get("/api/admin/pool-live-stats", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-    let query = supabase
+    let q = supabase
       .from("pool_live_stats")
-      .select("pool_id, active_clients, capacity_max, is_saturated, last_computed_at")
+      .select("pool_id, active_clients, capacity_max, is_saturated, last_computed_at, is_stale")
       .order("last_computed_at", { ascending: false });
 
     if (!req.admin?.is_superadmin) {
       const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
       if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
-      query = query.in("pool_id", allowed);
+      q = q.in("pool_id", allowed);
     }
 
-    const { data, error } = await query;
+    const { data, error } = await q;
     if (error) {
-      console.error("ADMIN POOL LIVE STATS ERROR", error);
-      return res.status(500).json({ error: error.message || "db_error" });
+      console.error("ADMIN POOL LIVE STATS QUERY ERROR", error);
+      return res.status(500).json({ error: error.message });
     }
 
-    return res.json({ ok: true, rows: data || [] });
+    return res.json({
+      ok: true,
+      window_minutes: RADIUS_ACTIVE_WINDOW_MINUTES,
+      rows: data || [],
+    });
   } catch (e) {
-    console.error("ADMIN POOL LIVE STATS EX", e);
-    return res.status(500).json({ error: "internal error" });
+    console.error("ADMIN POOL LIVE STATS ERROR", e?.message || e);
+    return res.status(500).json({ error: "internal" });
   }
 });
+
 // ------------------------------------------------------------
 // ADMIN: Users (Superadmin only) + Pool assignments
 // ------------------------------------------------------------
