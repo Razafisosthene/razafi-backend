@@ -354,6 +354,81 @@ async function getDeviceAliasMap(macs) {
 
 
 
+
+
+// ===============================
+// AP REGISTRY AUTO-UPSERT (System 3 / MikroTik truth)
+// Rule:
+// - if RADIUS authorize sees ap_mac + nas_id,
+//   create/update AP in ap_registry
+// - AP present in DB = ON
+// ===============================
+async function upsertApRegistryFromRadius({ ap_mac, nas_id }) {
+  try {
+    if (!supabase) return;
+    if (!ap_mac || !nas_id) return;
+
+    const cleanApMac = normalizeMacColon(String(ap_mac || "")) || null;
+    const cleanNasId = String(nas_id || "").trim() || null;
+
+    if (!cleanApMac || !cleanNasId) return;
+
+    const { data: poolRow, error: poolErr } = await supabase
+      .from("internet_pools")
+      .select("id,name,radius_nas_id")
+      .eq("radius_nas_id", cleanNasId)
+      .maybeSingle();
+
+    if (poolErr) {
+      console.error("AP REGISTRY AUTO-UPSERT pool lookup error:", poolErr);
+      return;
+    }
+
+    if (!poolRow?.id) {
+      return;
+    }
+
+    const { data: existing, error: existingErr } = await supabase
+      .from("ap_registry")
+      .select("id, ap_mac, ap_name, site_name, pool_id")
+      .eq("ap_mac", cleanApMac)
+      .maybeSingle();
+
+    if (existingErr) {
+      console.error("AP REGISTRY AUTO-UPSERT existing lookup error:", existingErr);
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+
+    const preservedApName =
+      String(existing?.ap_name || "").trim() || cleanApMac;
+
+    const preservedSiteName =
+      String(existing?.site_name || "").trim() || preservedApName || cleanApMac;
+
+    const payload = {
+      ap_mac: cleanApMac,
+      ap_name: preservedApName,
+      site_name: preservedSiteName,
+      pool_id: poolRow.id,
+      is_active: true,
+      updated_at: nowIso,
+    };
+
+    const { error: upsertErr } = await supabase
+      .from("ap_registry")
+      .upsert(payload, { onConflict: "ap_mac" });
+
+    if (upsertErr) {
+      console.error("AP REGISTRY AUTO-UPSERT error:", upsertErr);
+      return;
+    }
+  } catch (e) {
+    console.error("AP REGISTRY AUTO-UPSERT exception:", e?.message || e);
+  }
+}
+
 global.__RAZAFI_STARTED_AT__ = new Date().toISOString();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -6274,6 +6349,13 @@ if (error || !rows || !rows.length) {
 }
 
 const session = rows[0];
+
+// Auto-register AP in DB from MikroTik/RADIUS truth
+try {
+  await upsertApRegistryFromRadius({ ap_mac, nas_id });
+} catch (_) {
+  // fail-open: never break authorize flow
+}
 
 
 // Bonus override (by voucher session id) — used for time/data bonuses
