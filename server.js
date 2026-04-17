@@ -1,4 +1,4 @@
-// RAZAFI Backend - 10th April 2026 Edition
+// RAZAFI Backend - All APs Edition
 // ---------------------------------------------------------------------------
 
 import express from "express";
@@ -390,6 +390,7 @@ app.use((req, res, next) => {
 });
 
 const PORT = process.env.PORT || 10000;
+const RADIUS_ACTIVE_WINDOW_MINUTES = parseInt(process.env.RADIUS_ACTIVE_WINDOW_MINUTES || "5", 10);
 
 const extraAllowed = (process.env.EXTRA_ALLOWED || "127.0.0.1,::1").split(",").map(s => s.trim()).filter(Boolean);
 
@@ -919,6 +920,38 @@ function normalizePhone(phone) {
   if (p.startsWith("+261")) p = "0" + p.slice(4);
   if (p.startsWith("261")) p = "0" + p.slice(3);
   return p;
+}
+
+async function countRecentActiveClientsByNasId(nasId, windowMinutes = RADIUS_ACTIVE_WINDOW_MINUTES) {
+  try {
+    const cleanNasId = String(nasId || "").trim();
+    if (!cleanNasId || !supabase) return 0;
+
+    const mins = Number.isFinite(Number(windowMinutes)) && Number(windowMinutes) > 0
+      ? Number(windowMinutes)
+      : 5;
+
+    const cutoffIso = new Date(Date.now() - mins * 60 * 1000).toISOString();
+
+    const { data, error } = await supabase
+      .from("radius_acct_sessions")
+      .select("acct_session_id, updated_at")
+      .eq("nas_id", cleanNasId)
+      .gt("updated_at", cutoffIso);
+
+    if (error) throw error;
+
+    const unique = new Set(
+      (data || [])
+        .map((row) => String(row?.acct_session_id || "").trim())
+        .filter(Boolean)
+    );
+
+    return unique.size;
+  } catch (err) {
+    console.error("countRecentActiveClientsByNasId error", nasId, err?.message || err);
+    return 0;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2459,22 +2492,64 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
 
     let active_clients = 0;
 
-    // 3) Pool live stats = single source of truth
+    // 3) Active clients calculation — 100% Tanaza truth (same as admin Dashboard/Pools/APs)
+    // We compute pool saturation from Tanaza live connected clients for APs in this pool.
+    // - Only counts online APs
+    // - Sums dev.connectedClients
+    // - Fail-open: if Tanaza is unavailable, fallback to ap_live_stats
     try {
-      const { data: poolStats, error: poolStatsErr } = await supabase
-        .from("pool_live_stats")
-        .select("active_clients")
-        .eq("pool_id", pool_id)
-        .maybeSingle();
+      // 3A) AP MACs for this pool
+      const { data: aps, error: apsErr } = await supabase
+        .from("ap_registry")
+        .select("ap_mac,is_active")
+        .eq("pool_id", pool_id);
 
-      if (poolStatsErr) {
-        console.error("PORTAL CONTEXT POOL_LIVE_STATS ERROR", poolStatsErr);
+      if (apsErr) {
+        console.error("PORTAL CONTEXT POOL APS ERROR", apsErr);
         return res.status(500).json({ ok: false, error: "db_error" });
       }
 
-      active_clients = Number(poolStats?.active_clients || 0);
+      const apMacs = (aps || [])
+        .filter((a) => a && a.ap_mac && a.is_active !== false)
+        .map((a) => String(a.ap_mac).trim());
+
+      if (TANAZA_API_TOKEN && apMacs.length) {
+        // 3B) Tanaza truth
+        const tanazaMap = await tanazaBatchDevicesByMac(apMacs);
+
+        for (const mac of apMacs) {
+          const dev = tanazaMap[_tanazaNormalizeMac(mac)] || null;
+          if (!dev) continue;
+
+          if (dev.online !== true) continue;
+
+          const raw = dev.connectedClients ?? 0;
+          const n = Number(raw);
+          if (Number.isFinite(n) && n > 0) active_clients += n;
+        }
+      } else if (apMacs.length) {
+        // 3C) Fallback (DB stats) when Tanaza is not configured
+        const { data: stats, error: statsErr } = await supabase
+          .from("ap_live_stats")
+          .select("ap_mac,active_clients")
+          .in("ap_mac", apMacs);
+
+        if (statsErr) {
+          console.error("PORTAL CONTEXT POOL STATS ERROR", statsErr);
+          return res.status(500).json({ ok: false, error: "db_error" });
+        }
+
+        active_clients = (stats || []).reduce((sum, s) => {
+          const n =
+            s?.active_clients === null || s?.active_clients === undefined
+              ? 0
+              : Number(s.active_clients) || 0;
+          return sum + n;
+        }, 0);
+      }
     } catch (e) {
-      console.error("PORTAL CONTEXT POOL_LIVE_STATS EX", e?.message || e);
+      // Fail-open for portal: still return pool info even if Tanaza is down.
+      console.error("PORTAL CONTEXT TANAZA CALC ERROR", e?.message || e);
       active_clients = 0;
     }
 
@@ -3784,8 +3859,9 @@ app.get("/api/admin/pools/:id/aps", requireAdmin, async (req, res) => {
 
     const apMacs = (aps || []).map((a) => a.ap_mac).filter(Boolean);
 
-    // AP live stats (server computed) kept only for per-AP display
+    // AP live stats (server computed)
     let statsByMac = {};
+    let pool_active_clients = 0;
     if (apMacs.length) {
       const { data: statsRows, error: statsErr } = await supabase
         .from("ap_live_stats")
@@ -3796,19 +3872,9 @@ app.get("/api/admin/pools/:id/aps", requireAdmin, async (req, res) => {
 
       for (const s of statsRows || []) {
         statsByMac[s.ap_mac] = s;
+        pool_active_clients += Number(s.active_clients || 0);
       }
     }
-
-    let pool_active_clients = 0;
-    const { data: poolStats, error: poolStatsErr } = await supabase
-      .from("pool_live_stats")
-      .select("active_clients")
-      .eq("pool_id", id)
-      .maybeSingle();
-
-    if (poolStatsErr) return res.status(400).json({ error: poolStatsErr.message, details: poolStatsErr });
-
-    pool_active_clients = Number(poolStats?.active_clients || 0);
 
     // Tanaza live info (fail-open for admin)
     let tanazaMap = {};
@@ -7514,35 +7580,66 @@ if (supabase) {
     }
 
     // Optional: block purchase when pool is full (capacity_max)
-    // Single source of truth = pool_live_stats.active_clients
+    // For System 3, source of truth = radius_acct_sessions (distinct acct_session_id over recent window).
+    // Legacy pools keep original behavior.
     if (pool_id) {
       const { data: pool, error: poolErr } = await supabase
         .from("internet_pools")
-        .select("id,name,capacity_max")
+        .select("id,name,capacity_max,radius_nas_id")
         .eq("id", pool_id)
         .maybeSingle();
-
-      if (poolErr) {
-        console.error("SEND-PAYMENT POOL ERROR", poolErr);
-        throw poolErr;
-      }
 
       const capacity_max = (pool?.capacity_max === null || pool?.capacity_max === undefined)
         ? null
         : Number(pool.capacity_max);
 
-      const { data: poolStats, error: poolStatsErr } = await supabase
-        .from("pool_live_stats")
-        .select("active_clients")
-        .eq("pool_id", pool_id)
-        .maybeSingle();
+      let pool_active_clients = 0;
 
-      if (poolStatsErr) {
-        console.error("SEND-PAYMENT POOL_LIVE_STATS ERROR", poolStatsErr);
-        throw poolStatsErr;
+      if (pool?.radius_nas_id) {
+        pool_active_clients = await countRecentActiveClientsByNasId(pool.radius_nas_id);
+      } else {
+        // Legacy fallback (unchanged): Tanaza/AP cached stats
+        const { data: aps, error: apsErr } = await supabase
+          .from("ap_registry")
+          .select("ap_mac,is_active")
+          .eq("pool_id", pool_id);
+
+        let apMacs = [];
+        if (!apsErr && Array.isArray(aps)) {
+          apMacs = aps
+            .filter(a => a && a.ap_mac && a.is_active !== false)
+            .map(a => a.ap_mac);
+        }
+
+        let usedTanaza = false;
+
+        try {
+          if (TANAZA_API_TOKEN && apMacs.length) {
+            const tanazaMap = await tanazaBatchDevicesByMac(apMacs);
+            for (const mac of apMacs) {
+              const dev = tanazaMap[_tanazaNormalizeMac(mac)] || null;
+              const n = Number(dev?.connectedClients);
+              if (Number.isFinite(n)) {
+                pool_active_clients += n;
+                usedTanaza = true;
+              }
+            }
+          }
+        } catch (e) {
+          console.error("SEND-PAYMENT TANAZA CHECK ERROR", e?.message || e);
+        }
+
+        if (!usedTanaza && apMacs.length) {
+          const { data: statsRows, error: statsErr } = await supabase
+            .from("ap_live_stats")
+            .select("ap_mac,active_clients")
+            .in("ap_mac", apMacs);
+
+          if (!statsErr && Array.isArray(statsRows)) {
+            for (const s of statsRows) pool_active_clients += Number(s?.active_clients || 0);
+          }
+        }
       }
-
-      const pool_active_clients = Number(poolStats?.active_clients || 0);
 
       const is_full = (Number.isFinite(capacity_max) && capacity_max > 0)
         ? (pool_active_clients >= capacity_max)
@@ -8116,19 +8213,29 @@ if (apErr) {
 
     // --------------------------------------------------
     // 3) Pool live stats
+    // For pools with radius_nas_id, source of truth = radius_acct_sessions.
+    // Legacy pools keep original active_device_sessions behavior.
     const { data: pools } = await supabase
       .from("internet_pools")
-      .select("id, capacity_max");
+      .select("id, capacity_max, radius_nas_id");
 
     for (const pool of pools || []) {
-      const { data: poolCount } = await supabase
-        .from("active_device_sessions")
-        .select("id", { count: "exact", head: true })
-        .eq("pool_id", pool.id)
-        .eq("is_active", true);
+      let activeClients = 0;
 
-      const activeClients = poolCount || 0;
-      const saturated = activeClients >= pool.capacity_max;
+      if (pool?.radius_nas_id) {
+        activeClients = await countRecentActiveClientsByNasId(pool.radius_nas_id);
+      } else {
+        const { count: poolCount } = await supabase
+          .from("active_device_sessions")
+          .select("id", { count: "exact", head: true })
+          .eq("pool_id", pool.id)
+          .eq("is_active", true);
+
+        activeClients = Number(poolCount || 0);
+      }
+
+      const capacityMax = Number(pool?.capacity_max || 0);
+      const saturated = capacityMax > 0 ? activeClients >= capacityMax : false;
 
       await supabase.from("pool_live_stats").upsert({
         pool_id: pool.id,
@@ -8168,7 +8275,7 @@ app.get("/api/new/pool-status", async (req, res) => {
     // 2. Pool capacity
     const { data: pool, error: poolErr } = await supabase
       .from("internet_pools")
-      .select("capacity_max")
+      .select("capacity_max,radius_nas_id")
       .eq("id", ap.pool_id)
       .single();
 
@@ -8177,18 +8284,25 @@ app.get("/api/new/pool-status", async (req, res) => {
     }
 
     // 3. Active sessions
-    const { count } = await supabase
-      .from("active_device_sessions")
-      .select("*", { count: "exact", head: true })
-      .eq("pool_id", ap.pool_id)
-      .eq("is_active", true);
+    let activeClients = 0;
+    if (pool?.radius_nas_id) {
+      activeClients = await countRecentActiveClientsByNasId(pool.radius_nas_id);
+    } else {
+      const { count } = await supabase
+        .from("active_device_sessions")
+        .select("*", { count: "exact", head: true })
+        .eq("pool_id", ap.pool_id)
+        .eq("is_active", true);
+      activeClients = Number(count || 0);
+    }
 
-    const is_saturated = count >= pool.capacity_max;
+    const capacityMax = Number(pool?.capacity_max || 0);
+    const is_saturated = capacityMax > 0 ? activeClients >= capacityMax : false;
 
     return res.json({
       ap_mac,
       pool_id: ap.pool_id,
-      active_clients: count,
+      active_clients: activeClients,
       capacity_max: pool.capacity_max,
       is_saturated
     });
