@@ -1561,7 +1561,7 @@ function submitToLoginUrl(code, ev) {
   const plansLoading = $("plansLoading");
 
   // -------- Pool context (AP -> Pool) --------
-  let poolContext = { pool_name: null, pool_percent: null, is_full: false };
+  let poolContext = { pool_name: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
   let poolIsFull = false;
 
   const _uiEls = {
@@ -1586,6 +1586,8 @@ function submitToLoginUrl(code, ev) {
     barFill: document.getElementById("netBarFill"),
     percent: document.getElementById("netPercent"),
     statusText: document.getElementById("netStatusText"),
+    capacityWrap: document.getElementById("netCapacityWrap"),
+    capacityText: document.getElementById("netCapacityText"),
     speed: document.getElementById("netSpeed"),
   };
 
@@ -1597,6 +1599,28 @@ function saturationLabel(pct) {
     if (pct >= 90) return { text: "Réseau très occupé", level: "high" };
     if (pct >= 70) return { text: "Réseau modérément occupé", level: "mid" };
     return { text: "Réseau fluide", level: "low" };
+  }
+
+  function renderCapacityText() {
+    if (!_netEls.capacityWrap || !_netEls.capacityText) return;
+
+    const active = Number(poolContext.active_clients);
+    const cap = Number(poolContext.capacity_max);
+
+    if (Number.isFinite(active) && Number.isFinite(cap) && cap > 0) {
+      _netEls.capacityWrap.style.display = "";
+      _netEls.capacityText.textContent = `${Math.max(0, Math.round(active))} / ${Math.max(0, Math.round(cap))} clients`;
+      return;
+    }
+
+    if (Number.isFinite(cap) && cap > 0) {
+      _netEls.capacityWrap.style.display = "";
+      _netEls.capacityText.textContent = `${Math.max(0, Math.round(cap))} clients max`;
+      return;
+    }
+
+    _netEls.capacityWrap.style.display = "";
+    _netEls.capacityText.textContent = "—";
   }
 
   function setBarLevelClass(level) {
@@ -1628,15 +1652,24 @@ function saturationLabel(pct) {
     if (!_netEls.card) return;
 
     const name = poolContext.pool_name ? String(poolContext.pool_name) : "—";
-    const pct = (poolContext.pool_percent === null || poolContext.pool_percent === undefined)
+
+    let pct = (poolContext.pool_percent === null || poolContext.pool_percent === undefined)
       ? null
       : Number(poolContext.pool_percent);
+
+    const active = Number(poolContext.active_clients);
+    const cap = Number(poolContext.capacity_max);
+
+    if (!Number.isFinite(pct) && Number.isFinite(active) && Number.isFinite(cap) && cap > 0) {
+      pct = Math.round((active / cap) * 100);
+    }
 
     const label = saturationLabel(Number.isFinite(pct) ? pct : NaN);
 
     if (_netEls.poolName) _netEls.poolName.textContent = name;
     if (_netEls.statusText) _netEls.statusText.textContent = label.text;
     if (_netEls.speed) _netEls.speed.textContent = `${MAX_SPEED_MBPS} Mbps`;
+    renderCapacityText();
 
     // Unknown percent: keep placeholder and bar at 0 (fail-open)
     if (!Number.isFinite(pct)) {
@@ -1734,9 +1767,13 @@ function saturationLabel(pct) {
         const pct = (poolContext.pool_percent !== null && poolContext.pool_percent !== undefined)
           ? ` (${poolContext.pool_percent}%)`
           : "";
+        const ratio =
+          (Number.isFinite(Number(poolContext.active_clients)) && Number.isFinite(Number(poolContext.capacity_max)) && Number(poolContext.capacity_max) > 0)
+            ? ` — ${Math.round(Number(poolContext.active_clients))}/${Math.round(Number(poolContext.capacity_max))} clients`
+            : "";
         const poolName = poolContext.pool_name ? String(poolContext.pool_name) : "Ce point WiFi";
         banner.innerHTML = `
-          <strong>⚠️ Le WiFi ${escapeHtml(poolName)} est momentanément saturé${escapeHtml(pct)}.</strong><br>
+          <strong>⚠️ Le WiFi ${escapeHtml(poolName)} est momentanément saturé${escapeHtml(pct)}${escapeHtml(ratio)}.</strong><br>
           Les achats sont temporairement indisponibles. Veuillez patienter ou contacter l’assistance sur place.
         `;
         banner.classList.remove("hidden");
@@ -1792,7 +1829,7 @@ function saturationLabel(pct) {
 
   async function fetchPortalContext() {
     if (!nasId && !apMac) {
-      poolContext = { pool_name: null, pool_percent: null, is_full: false };
+      poolContext = { pool_name: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
       poolIsFull = false;
       applyPoolContextUI();
       return;
@@ -1810,11 +1847,13 @@ function saturationLabel(pct) {
         pool_name: j.pool_name ?? null,
         pool_percent: (j.pool_percent === null || j.pool_percent === undefined) ? null : Number(j.pool_percent),
         is_full: !!j.is_full,
+        active_clients: (j.active_clients === null || j.active_clients === undefined) ? null : Number(j.active_clients),
+        capacity_max: (j.capacity_max === null || j.capacity_max === undefined) ? null : Number(j.capacity_max),
       };
       poolIsFull = !!j.is_full;
     } catch (e) {
       console.warn("[RAZAFI] portal context fetch failed", e?.message || e);
-      poolContext = { pool_name: null, pool_percent: null, is_full: false };
+      poolContext = { pool_name: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
       poolIsFull = false;
     } finally {
       applyPoolContextUI();

@@ -2455,6 +2455,9 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // PORTAL (User) — Context for AP/Pool (pool name + usage)
+// Source of truth:
+// - MikroTik / nas_id / system=mikrotik => pool_live_stats
+// - Tanaza / ap_mac / system=portal   => existing Tanaza / ap_live_stats logic
 // ---------------------------------------------------------------------------
 app.get("/api/portal/context", normalizeApMac, async (req, res) => {
   try {
@@ -2470,9 +2473,9 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
       req.headers["x-nas-id"] ||
       req.headers["x-nas_id"] ||
       "";
+
     const nas_id = String(nas_id_raw || "").trim() || null;
 
-    // Allow both Tanaza AP based context (ap_mac) and MikroTik context (nas_id).
     if (!ap_mac && !nas_id) {
       return res.status(400).json({ ok: false, error: "ap_mac_or_nas_id_required" });
     }
@@ -2508,33 +2511,32 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
         .maybeSingle();
 
       if (apErr) {
-        console.error("PORTAL CONTEXT AP ERROR", apErr);
+        console.error("PORTAL CONTEXT AP REGISTRY ERROR", apErr);
         return res.status(500).json({ ok: false, error: "db_error" });
       }
 
-      pool_id = apRow?.pool_id || null;
-    }
+      if (!apRow?.pool_id) {
+        return res.json({
+          ok: true,
+          ap_mac,
+          nas_id,
+          pool_id: null,
+          pool_name: null,
+          contact_phone: DEFAULT_SUPPORT_PHONE,
+          pool_capacity_max: null,
+          pool_active_clients: 0,
+          capacity_max: null,
+          active_clients: 0,
+          pool_percent: null,
+          is_full: false,
+        });
+      }
 
-    if (!pool_id) {
-      // Not registered or not assigned: fail-open (allow purchase)
-      return res.json({
-        ok: true,
-        ap_mac,
-        nas_id,
-        pool_id: null,
-        pool_name: null,
-        pool_capacity_max: null,
-        pool_active_clients: 0,
-        pool_percent: null,
-        is_full: false,
-      });
-    }
+      pool_id = apRow.pool_id;
 
-    // 2) Pool info (if not already loaded)
-    if (!pool) {
-      const { data: poolDb, error: poolErr } = await supabase
+      const { data: poolRow, error: poolErr } = await supabase
         .from("internet_pools")
-        .select("id,name,capacity_max,system,mikrotik_ip,radius_nas_id")
+        .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id")
         .eq("id", pool_id)
         .maybeSingle();
 
@@ -2543,45 +2545,118 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
         return res.status(500).json({ ok: false, error: "db_error" });
       }
 
-      pool = poolDb || null;
+      pool = poolRow || null;
+    }
+
+    if (!pool_id || !pool) {
+      return res.json({
+        ok: true,
+        ap_mac,
+        nas_id,
+        pool_id: null,
+        pool_name: null,
+        contact_phone: DEFAULT_SUPPORT_PHONE,
+        pool_capacity_max: null,
+        pool_active_clients: 0,
+        capacity_max: null,
+        active_clients: 0,
+        pool_percent: null,
+        is_full: false,
+      });
     }
 
     const capacity_max =
-      pool?.capacity_max === null || pool?.capacity_max === undefined
+      pool.capacity_max === null || pool.capacity_max === undefined
         ? null
         : Number(pool.capacity_max);
 
     let active_clients = 0;
 
-    // 3) Active clients calculation — 100% Tanaza truth (same as admin Dashboard/Pools/APs)
-    // We compute pool saturation from Tanaza live connected clients for APs in this pool.
-    // - Only counts online APs
-    // - Sums dev.connectedClients
-    // - Fail-open: if Tanaza is unavailable, fallback to ap_live_stats
-    try {
-      // 3A) AP MACs for this pool
-      const { data: aps, error: apsErr } = await supabase
-        .from("ap_registry")
-        .select("ap_mac,is_active")
-        .eq("pool_id", pool_id);
+    // =========================================================
+    // 2) Source of truth
+    // MikroTik => pool_live_stats
+    // Portal/Tanaza => existing AP-based logic
+    // =========================================================
+    const isMikrotikPool =
+      String(pool.system || "").toLowerCase() === "mikrotik" ||
+      !!nas_id;
 
-      if (apsErr) {
-        console.error("PORTAL CONTEXT POOL APS ERROR", apsErr);
+    if (isMikrotikPool) {
+      const { data: liveRow, error: liveErr } = await supabase
+        .from("pool_live_stats")
+        .select("pool_id,active_clients,capacity_max,is_saturated,last_computed_at")
+        .eq("pool_id", pool_id)
+        .maybeSingle();
+
+      if (liveErr) {
+        console.error("PORTAL CONTEXT POOL_LIVE_STATS ERROR", liveErr);
         return res.status(500).json({ ok: false, error: "db_error" });
       }
 
-      const apMacs = (aps || [])
-        .filter((a) => a && a.ap_mac && a.is_active !== false)
-        .map((a) => String(a.ap_mac).trim());
+      active_clients =
+        liveRow?.active_clients === null || liveRow?.active_clients === undefined
+          ? 0
+          : Number(liveRow.active_clients) || 0;
+
+      const liveCapacity =
+        liveRow?.capacity_max === null || liveRow?.capacity_max === undefined
+          ? capacity_max
+          : Number(liveRow.capacity_max);
+
+      const percent =
+        liveCapacity && liveCapacity > 0
+          ? Math.max(0, Math.min(100, Math.round((active_clients / liveCapacity) * 100)))
+          : null;
+
+      const is_full =
+        liveCapacity && liveCapacity > 0
+          ? active_clients >= liveCapacity
+          : false;
+
+      return res.json({
+        ok: true,
+        ap_mac,
+        nas_id,
+        pool_id,
+        pool_name: pool?.name ?? null,
+        contact_phone: pool?.contact_phone || DEFAULT_SUPPORT_PHONE,
+
+        // old keys
+        pool_capacity_max: liveCapacity,
+        pool_active_clients: active_clients,
+
+        // new explicit aliases for frontend
+        capacity_max: liveCapacity,
+        active_clients: active_clients,
+
+        pool_percent: percent,
+        is_full,
+      });
+    }
+
+    // =========================================================
+    // 3) Tanaza / portal fallback logic (existing behavior)
+    // =========================================================
+    try {
+      const { data: apRows, error: apsErr } = await supabase
+        .from("ap_registry")
+        .select("ap_mac")
+        .eq("pool_id", pool_id)
+        .eq("is_active", true);
+
+      if (apsErr) {
+        console.error("PORTAL CONTEXT AP LIST ERROR", apsErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+
+      const apMacs = (apRows || []).map((r) => r.ap_mac).filter(Boolean);
 
       if (TANAZA_API_TOKEN && apMacs.length) {
-        // 3B) Tanaza truth
         const tanazaMap = await tanazaBatchDevicesByMac(apMacs);
 
         for (const mac of apMacs) {
           const dev = tanazaMap[_tanazaNormalizeMac(mac)] || null;
           if (!dev) continue;
-
           if (dev.online !== true) continue;
 
           const raw = dev.connectedClients ?? 0;
@@ -2589,7 +2664,6 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
           if (Number.isFinite(n) && n > 0) active_clients += n;
         }
       } else if (apMacs.length) {
-        // 3C) Fallback (DB stats) when Tanaza is not configured
         const { data: stats, error: statsErr } = await supabase
           .from("ap_live_stats")
           .select("ap_mac,active_clients")
@@ -2609,7 +2683,6 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
         }, 0);
       }
     } catch (e) {
-      // Fail-open for portal: still return pool info even if Tanaza is down.
       console.error("PORTAL CONTEXT TANAZA CALC ERROR", e?.message || e);
       active_clients = 0;
     }
@@ -2619,7 +2692,10 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
         ? Math.max(0, Math.min(100, Math.round((active_clients / capacity_max) * 100)))
         : null;
 
-    const is_full = capacity_max && capacity_max > 0 ? active_clients >= capacity_max : false;
+    const is_full =
+      capacity_max && capacity_max > 0
+        ? active_clients >= capacity_max
+        : false;
 
     return res.json({
       ok: true,
@@ -2627,8 +2703,16 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
       nas_id,
       pool_id,
       pool_name: pool?.name ?? null,
+      contact_phone: pool?.contact_phone || DEFAULT_SUPPORT_PHONE,
+
+      // old keys
       pool_capacity_max: capacity_max,
       pool_active_clients: active_clients,
+
+      // new explicit aliases for frontend
+      capacity_max: capacity_max,
+      active_clients: active_clients,
+
       pool_percent: percent,
       is_full,
     });
@@ -2637,34 +2721,6 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
     return res.status(500).json({ ok: false, error: "internal_error" });
   }
 });
-
-app.get("/api/new/plans", async (req, res) => {
-  try {
-    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
-
-    // Portal system must only see portal plans (never Mikrotik plans)
-    const { data, error } = await supabase
-      .from("plans")
-      .select("id,name,price_ar,duration_hours,duration_minutes,data_mb,max_devices,is_active,is_visible,sort_order,updated_at")
-      .eq("is_active", true)
-      .eq("is_visible", true)
-      .eq("system", "portal")
-      .is("pool_id", null)
-      .order("sort_order", { ascending: true })
-      .order("updated_at", { ascending: false });
-
-    if (error) {
-      console.error("NEW PLANS ERROR", error);
-      return res.status(500).json({ error: "db_error" });
-    }
-
-    return res.json({ ok: true, plans: data || [] });
-  } catch (e) {
-    console.error("NEW PLANS EX", e);
-    return res.status(500).json({ error: "internal error" });
-  }
-});
-
 // ===============================
 // MIKROTIK (User) — PLANS by AP (DB ONLY)
 // Used by SSID "Radius 2" splash page (e.g. /mikrotik/?ap_mac=...)
