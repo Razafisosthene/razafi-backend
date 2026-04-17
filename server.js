@@ -284,6 +284,7 @@ async function requireAdmin(req, res, next) {
         fullPath.startsWith("/api/admin/voucher-sessions/") ||
         fullPath === "/api/admin/plans" ||
         fullPath === "/api/admin/pools" ||
+        fullPath === "/api/admin/pool-live-stats" ||
         fullPath === "/api/admin/aps" ||
         fullPath.startsWith("/api/admin/revenue/");
 
@@ -1204,7 +1205,62 @@ app.get("/api/admin/audit", requireAdmin, async (req, res) => {
     return res.status(500).json({ error: "server_error" });
   }
 });
+// ===============================
+// ADMIN: Pool live stats (Step 2 source of truth)
+// Reads from pool_live_stats only
+// ===============================
+app.get("/api/admin/pool-live-stats", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(500).json({ error: "supabase not configured" });
+    }
 
+    let query = supabase
+      .from("pool_live_stats")
+      .select(`
+        pool_id,
+        active_clients,
+        capacity_max,
+        is_saturated,
+        last_computed_at
+      `)
+      .order("last_computed_at", { ascending: false });
+
+    // Pool scoping for pool_readonly admins
+    if (!req.admin?.is_superadmin) {
+      const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
+      if (!allowed.length) {
+        return res.status(403).json({ error: "no_pools_assigned" });
+      }
+      query = query.in("pool_id", allowed);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error("ADMIN POOL LIVE STATS QUERY ERROR", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    return res.json({
+      items: (data || []).map((row) => ({
+        pool_id: row.pool_id,
+        active_clients: Number(row.active_clients || 0),
+        capacity_max:
+          row.capacity_max === null || row.capacity_max === undefined
+            ? null
+            : Number(row.capacity_max),
+        is_saturated:
+          row.is_saturated === true ||
+          String(row.is_saturated).toLowerCase() === "true",
+        last_computed_at: row.last_computed_at || null,
+      })),
+    });
+  } catch (e) {
+    console.error("ADMIN POOL LIVE STATS ERROR", e);
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
 app.get("/api/admin/me", requireAdmin, async (req, res) => {
   return res.json({
     id: req.admin.id,
