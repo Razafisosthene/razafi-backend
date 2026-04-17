@@ -1,5 +1,9 @@
 async function fetchJSON(url, opts = {}) {
-  const res = await fetch(url, { credentials: "include", ...opts });
+  const res = await fetch(url, {
+    credentials: "include",
+    cache: "no-store",
+    ...opts,
+  });
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); }
@@ -61,8 +65,8 @@ function showMsg(el, text, isError = true) {
 
 async function guardSession(meEl) {
   try {
-    const me = await fetchJSON("/api/admin/me");
-    if (meEl) meEl.textContent = `${me.username || "admin"}`;
+    const me = await fetchJSON(`/api/admin/me?_=${Date.now()}`);
+    if (meEl) meEl.textContent = `${me.email || me.username || "admin"}`;
     return true;
   } catch {
     window.location.href = "/admin/login.html";
@@ -90,19 +94,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   const sysMikrotikBtn = $id("sysMikrotikBtn");
 
   let pools = [];
-
-  // Active system view for this page (portal vs mikrotik)
   let activeSystem = "portal";
 
   function setActiveSystem(sys) {
     const next = (sys === "mikrotik") ? "mikrotik" : "portal";
     activeSystem = next;
-
-    // Toggle button styles (primary = active)
     if (sysPortalBtn) sysPortalBtn.className = "filter-btn" + (activeSystem === "portal" ? " primary" : "");
     if (sysMikrotikBtn) sysMikrotikBtn.className = "filter-btn" + (activeSystem === "mikrotik" ? " primary" : "");
-
-    // Keep create form in sync with current system
     if (newSystemEl) newSystemEl.value = activeSystem;
     updateCreateFieldsVisibility();
   }
@@ -117,22 +115,26 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   if (!(await guardSession(meEl))) return;
 
-  // System toggle
   sysPortalBtn?.addEventListener("click", () => { setActiveSystem("portal"); loadPools().catch(err => showMsg(msgEl, err.message, true)); });
   sysMikrotikBtn?.addEventListener("click", () => { setActiveSystem("mikrotik"); loadPools().catch(err => showMsg(msgEl, err.message, true)); });
   newSystemEl?.addEventListener("change", () => { updateCreateFieldsVisibility(); });
 
-  // Init UI state
   setActiveSystem("portal");
 
   async function fetchPoolLiveStats() {
     try {
-      const data = await fetchJSON("/api/admin/pool-live-stats");
+      const data = await fetchJSON(`/api/admin/pool-live-stats?_=${Date.now()}`);
       const map = {};
       for (const row of (data.rows || [])) {
         const pid = String(row?.pool_id || "").trim();
         if (!pid) continue;
-        map[pid] = Number.isFinite(Number(row?.active_clients)) ? Number(row.active_clients) : 0;
+        map[pid] = {
+          active_clients: Number.isFinite(Number(row?.active_clients)) ? Number(row.active_clients) : 0,
+          capacity_max: Number.isFinite(Number(row?.capacity_max)) ? Number(row.capacity_max) : null,
+          is_saturated: !!row?.is_saturated,
+          last_computed_at: row?.last_computed_at || null,
+          is_stale: !!row?.is_stale,
+        };
       }
       return map;
     } catch (e) {
@@ -145,16 +147,17 @@ document.addEventListener("DOMContentLoaded", async () => {
     showMsg(msgEl, "");
     rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="6">Loading...</td></tr>`;
 
-    const liveByPool = await fetchPoolLiveStats();
+    const [liveByPool, data] = await Promise.all([
+      fetchPoolLiveStats(),
+      fetchJSON(`/api/admin/pools?${new URLSearchParams({
+        ...(String(qEl?.value || "").trim() ? { q: String(qEl.value).trim() } : {}),
+        limit: "200",
+        offset: "0",
+        system: activeSystem,
+        _: String(Date.now()),
+      }).toString()}`)
+    ]);
 
-    const params = new URLSearchParams();
-    const q = (qEl?.value || "").trim();
-    if (q) params.set("q", q);
-    params.set("limit", "200");
-    params.set("offset", "0");
-    params.set("system", activeSystem);
-
-    const data = await fetchJSON(`/api/admin/pools?${params.toString()}`);
     pools = data.pools || data.data || data || [];
 
     if (!pools.length) {
@@ -165,14 +168,22 @@ document.addEventListener("DOMContentLoaded", async () => {
     rowsEl.innerHTML = pools.map(p => {
       const pid = String(p.id || "");
       const name = p.name || "";
+      const stats = liveByPool[pid] || null;
+      const liveClients = stats ? Number(stats.active_clients || 0) : 0;
+      const effectiveCapacity =
+        stats && Number.isFinite(Number(stats.capacity_max))
+          ? Number(stats.capacity_max)
+          : ((p.capacity_max === null || p.capacity_max === undefined || p.capacity_max === "") ? null : Number(p.capacity_max));
       const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "" : String(p.capacity_max);
       const contactPhone = (p.contact_phone ?? p.contactPhone ?? "");
       const system = String(p.system || "portal").toLowerCase() === "mikrotik" ? "mikrotik" : "portal";
       const isMikrotik = system === "mikrotik";
       const mikrotikIp = p.mikrotik_ip || p.mikrotikIp || "";
       const radiusNasId = p.radius_nas_id || p.radiusNasId || "";
-      const liveClients = liveByPool[pid] || 0;
-      const pp = pct(liveClients, p.capacity_max);
+      const pp = pct(liveClients, effectiveCapacity);
+      const liveTitle = stats?.last_computed_at
+        ? ` title="Last update: ${esc(stats.last_computed_at)}${stats?.is_stale ? " (stale)" : ""}"`
+        : "";
 
       return `
         <tr style="border-top:1px solid rgba(0,0,0,.06);" data-poolrow="${esc(pid)}">
@@ -200,7 +211,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             <input data-contact-phone="${esc(pid)}" value="${esc(contactPhone)}" placeholder="Contact phone (optional)" style="width:220px; max-width:100%; margin-bottom:0;" />
           </td>
 
-          <td style="padding:10px;">${esc(liveClients)}</td>
+          <td style="padding:10px;"${liveTitle}>${esc(liveClients)}</td>
           <td style="padding:10px;">${pp === null ? "—" : pctBar(pp)}</td>
 
           <td style="padding:10px; display:flex; gap:8px; flex-wrap:wrap;">
@@ -218,7 +229,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       `;
     }).join("");
 
-    // Save pool
     rowsEl.querySelectorAll("button[data-save]").forEach(btn => {
       btn.addEventListener("click", async () => {
         const pid = btn.getAttribute("data-save");
@@ -233,7 +243,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         const contact_phone_raw = (phoneInput?.value || "").trim();
         const contact_phone = contact_phone_raw === "" ? null : contact_phone_raw;
 
-        // Optional Mikrotik fields (only present for system=mikrotik rows)
         const mtikIpInput = rowsEl.querySelector(`input[data-mtik-ip="${CSS.escape(pid)}"]`);
         const nasInput = rowsEl.querySelector(`input[data-nas-id="${CSS.escape(pid)}"]`);
         const mikrotik_ip = (mtikIpInput?.value || "").trim();
@@ -241,7 +250,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
         const payload = { name, capacity_max, contact_phone };
         if (mtikIpInput || nasInput) {
-          // If these inputs exist, pool is mikrotik; allow saving IP/NAS.
           payload.mikrotik_ip = mikrotik_ip || null;
           payload.radius_nas_id = radius_nas_id || null;
         }
@@ -263,7 +271,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       });
     });
 
-    // Toggle APs
     rowsEl.querySelectorAll("button[data-toggle]").forEach(btn => {
       btn.addEventListener("click", async () => {
         const pid = btn.getAttribute("data-toggle");
@@ -275,7 +282,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       });
     });
 
-    // Delete pool
     rowsEl.querySelectorAll("button[data-delete]").forEach(btn => {
       btn.addEventListener("click", async () => {
         const pid = btn.getAttribute("data-delete");
@@ -303,7 +309,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!cell) return;
 
     try {
-      const data = await fetchJSON(`/api/admin/pools/${encodeURIComponent(poolId)}/aps`);
+      const data = await fetchJSON(`/api/admin/pools/${encodeURIComponent(poolId)}/aps?_=${Date.now()}`);
       const pool = data.pool || {};
       const aps = data.aps || [];
 
@@ -382,10 +388,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         </div>
       `;
 
-      // default selection
       cell.querySelectorAll("select[data-move]").forEach(sel => { sel.value = poolId; });
 
-      // move wiring
       cell.querySelectorAll("button[data-movebtn]").forEach(btn => {
         btn.addEventListener("click", async () => {
           const mac = btn.getAttribute("data-movebtn");
@@ -401,7 +405,6 @@ document.addEventListener("DOMContentLoaded", async () => {
               body: JSON.stringify({ pool_id: newPoolId }),
             });
             await loadPools();
-            // refresh this details view
             const detailsRow2 = rowsEl.querySelector(`tr[data-details="${CSS.escape(poolId)}"]`);
             if (detailsRow2 && detailsRow2.style.display !== "none") {
               await loadPoolAps(poolId);
@@ -415,7 +418,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         });
       });
 
-      // AP cap save wiring
       cell.querySelectorAll("button[data-saveapcap]").forEach(btn => {
         btn.addEventListener("click", async () => {
           const mac = btn.getAttribute("data-saveapcap") || "";
@@ -434,7 +436,6 @@ document.addEventListener("DOMContentLoaded", async () => {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ pool_id: poolId, capacity_max: cap }),
             });
-            // refresh the AP list to update % bars
             await loadPoolAps(poolId);
             await loadPools();
             showMsg(msgEl, "AP capacity saved ✅", false);
@@ -451,7 +452,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  // Manual refresh only
   await loadPools();
 
   refreshBtn?.addEventListener("click", () => loadPools().catch(e => showMsg(msgEl, e.message, true)));
