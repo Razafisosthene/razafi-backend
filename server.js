@@ -284,6 +284,7 @@ async function requireAdmin(req, res, next) {
         fullPath.startsWith("/api/admin/voucher-sessions/") ||
         fullPath === "/api/admin/plans" ||
         fullPath === "/api/admin/pools" ||
+        fullPath === "/api/admin/pool-live-stats" ||
         fullPath === "/api/admin/aps" ||
         fullPath.startsWith("/api/admin/revenue/");
 
@@ -1208,6 +1209,34 @@ app.get("/api/admin/me", requireAdmin, async (req, res) => {
     is_superadmin: !!req.admin.is_superadmin,
     pool_ids: Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [],
   });
+});
+
+app.get("/api/admin/pool-live-stats", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    let query = supabase
+      .from("pool_live_stats")
+      .select("pool_id, active_clients, capacity_max, is_saturated, last_computed_at")
+      .order("last_computed_at", { ascending: false });
+
+    if (!req.admin?.is_superadmin) {
+      const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
+      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+      query = query.in("pool_id", allowed);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      console.error("ADMIN POOL LIVE STATS ERROR", error);
+      return res.status(500).json({ error: error.message || "db_error" });
+    }
+
+    return res.json({ ok: true, rows: data || [] });
+  } catch (e) {
+    console.error("ADMIN POOL LIVE STATS EX", e);
+    return res.status(500).json({ error: "internal error" });
+  }
 });
 // ------------------------------------------------------------
 // ADMIN: Users (Superadmin only) + Pool assignments
@@ -8240,7 +8269,6 @@ if (apErr) {
       await supabase.from("pool_live_stats").upsert({
         pool_id: pool.id,
         active_clients: activeClients,
-        capacity_max: capacityMax,
         is_saturated: saturated,
         last_computed_at: now.toISOString()
       }, { onConflict: "pool_id" });
