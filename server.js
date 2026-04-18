@@ -6349,7 +6349,12 @@ if (error || !rows || !rows.length) {
 }
 
 const session = rows[0];
-
+console.log("DEBUG AP REGISTRY:", {
+  ap_mac,
+  nas_id,
+  body_called: body["Called-Station-Id"],
+  body_nas: body["NAS-Identifier"]
+});
 // Auto-register AP in DB from MikroTik/RADIUS truth
 try {
   await upsertApRegistryFromRadius({ ap_mac, nas_id });
