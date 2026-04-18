@@ -429,6 +429,89 @@ async function upsertApRegistryFromRadius({ ap_mac, nas_id }) {
   }
 }
 
+
+// ===============================
+// AP REGISTRY UPSERT (generic)
+// Used by MikroTik AP scan endpoint
+// Rule:
+// - valid AP MAC + NAS-ID -> create/update AP in ap_registry
+// - updated_at acts as heartbeat
+// ===============================
+async function upsertApRegistryHeartbeat({ ap_mac, nas_id }) {
+  try {
+    if (!supabase) return { ok: false, reason: "supabase_missing" };
+
+    const cleanApMac = normalizeMacColon(String(ap_mac || "")) || null;
+    const cleanNasId = String(nas_id || "").trim() || null;
+
+    if (!cleanApMac) return { ok: false, reason: "invalid_ap_mac" };
+    if (!cleanNasId) return { ok: false, reason: "invalid_nas_id" };
+
+    const { data: poolRow, error: poolErr } = await supabase
+      .from("internet_pools")
+      .select("id,name,radius_nas_id")
+      .eq("radius_nas_id", cleanNasId)
+      .maybeSingle();
+
+    if (poolErr) {
+      console.error("AP REGISTRY HEARTBEAT pool lookup error:", poolErr);
+      return { ok: false, reason: "pool_lookup_error" };
+    }
+
+    if (!poolRow?.id) {
+      return { ok: false, reason: "pool_not_found" };
+    }
+
+    const { data: existing, error: existingErr } = await supabase
+      .from("ap_registry")
+      .select("id, ap_mac, ap_name, site_name, pool_id, is_active")
+      .eq("ap_mac", cleanApMac)
+      .maybeSingle();
+
+    if (existingErr) {
+      console.error("AP REGISTRY HEARTBEAT existing lookup error:", existingErr);
+      return { ok: false, reason: "existing_lookup_error" };
+    }
+
+    const nowIso = new Date().toISOString();
+
+    const preservedApName =
+      String(existing?.ap_name || "").trim() || cleanApMac;
+
+    const preservedSiteName =
+      String(existing?.site_name || "").trim() || preservedApName || cleanApMac;
+
+    const payload = {
+      ap_mac: cleanApMac,
+      ap_name: preservedApName,
+      site_name: preservedSiteName,
+      pool_id: poolRow.id,
+      is_active: true,
+      updated_at: nowIso,
+    };
+
+    const { error: upsertErr } = await supabase
+      .from("ap_registry")
+      .upsert(payload, { onConflict: "ap_mac" });
+
+    if (upsertErr) {
+      console.error("AP REGISTRY HEARTBEAT upsert error:", upsertErr);
+      return { ok: false, reason: "upsert_error" };
+    }
+
+    return {
+      ok: true,
+      ap_mac: cleanApMac,
+      nas_id: cleanNasId,
+      pool_id: poolRow.id,
+      pool_name: poolRow.name || null,
+    };
+  } catch (e) {
+    console.error("AP REGISTRY HEARTBEAT exception:", e?.message || e);
+    return { ok: false, reason: "exception" };
+  }
+}
+
 global.__RAZAFI_STARTED_AT__ = new Date().toISOString();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -893,6 +976,7 @@ const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
 const MAIL_FROM = process.env.MAIL_FROM || SMTP_USER;
 const OPS_EMAIL = process.env.OPS_EMAIL;
+const MIKROTIK_AP_SCAN_SECRET = process.env.MIKROTIK_AP_SCAN_SECRET || process.env.RADIUS_API_SECRET || "";
 
 // ---------------------------------------------------------------------------
 // CORS
@@ -8710,6 +8794,90 @@ app.get("/api/new/pool-status", async (req, res) => {
 // ---------------------------------------------------------------------------
 // START SERVER
 // ---------------------------------------------------------------------------
+
+
+// ===============================
+// MIKROTIK AP SCAN (transition douce)
+// MikroTik pushes AP MAC list to backend.
+// This becomes the source of truth for AP online/offline in admin.
+// Online rule in UI: updated_at <= 2 minutes
+// ===============================
+app.post("/api/mikrotik/ap-scan", async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const body = req.body || {};
+    const secret = String(body.secret || req.headers["x-mikrotik-secret"] || "").trim();
+    const nas_id = String(body.nas_id || body.nasId || "").trim();
+    const aps = Array.isArray(body.aps) ? body.aps : [];
+
+    if (!MIKROTIK_AP_SCAN_SECRET) {
+      return res.status(500).json({ error: "mikrotik_ap_scan_secret_missing" });
+    }
+
+    if (!secret || secret !== MIKROTIK_AP_SCAN_SECRET) {
+      return res.status(401).json({ error: "invalid_secret" });
+    }
+
+    if (!nas_id) {
+      return res.status(400).json({ error: "nas_id_required" });
+    }
+
+    if (!aps.length) {
+      return res.status(400).json({ error: "aps_required" });
+    }
+
+    const seen = new Set();
+    const normalizedAps = [];
+
+    for (const item of aps) {
+      const rawMac =
+        item?.ap_mac ??
+        item?.apMac ??
+        item?.mac ??
+        item?.mac_address ??
+        item?.macAddress ??
+        null;
+
+      const cleanApMac = normalizeMacColon(String(rawMac || "")) || null;
+      if (!cleanApMac) continue;
+      if (seen.has(cleanApMac)) continue;
+      seen.add(cleanApMac);
+      normalizedAps.push(cleanApMac);
+    }
+
+    if (!normalizedAps.length) {
+      return res.status(400).json({ error: "no_valid_ap_mac" });
+    }
+
+    const results = [];
+    for (const ap_mac of normalizedAps) {
+      const out = await upsertApRegistryHeartbeat({ ap_mac, nas_id });
+      results.push(out);
+    }
+
+    const inserted_or_updated = results.filter((r) => r?.ok).length;
+
+    console.log("MIKROTIK AP SCAN:", {
+      nas_id,
+      received: aps.length,
+      valid: normalizedAps.length,
+      inserted_or_updated,
+    });
+
+    return res.json({
+      ok: true,
+      nas_id,
+      received: aps.length,
+      valid: normalizedAps.length,
+      inserted_or_updated,
+      items: results,
+    });
+  } catch (e) {
+    console.error("MIKROTIK AP SCAN ERROR", e);
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
 
 app.listen(PORT, () => {
   const now = new Date().toISOString();
