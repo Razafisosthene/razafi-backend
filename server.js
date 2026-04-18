@@ -6352,8 +6352,23 @@ const session = rows[0];
 console.log("DEBUG AP REGISTRY:", {
   ap_mac,
   nas_id,
+
+  // existing
   body_called: body["Called-Station-Id"],
-  body_nas: body["NAS-Identifier"]
+  body_nas: body["NAS-Identifier"],
+
+  // 🔥 ADD THIS
+  calledStationId:
+    body["Called-Station-Id"] ??
+    body.called_station_id ??
+    body.calledStationId ??
+    null,
+
+  callingStationId:
+    body["Calling-Station-Id"] ??
+    body.calling_station_id ??
+    body.callingStationId ??
+    null,
 });
 // Auto-register AP in DB from MikroTik/RADIUS truth
 try {
