@@ -6942,7 +6942,9 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
     return res.status(200).json({ "control:Auth-Type": "Reject" });
   }
 });
+
 app.post("/api/radius/accounting", async (req, res) => {
+  const body = req.body || {};
   // SYSTEM 3 ONLY (RADIUS accounting via rlm_rest)
   // Goals:
   // - Store per-(nas_id, acct_session_id) last totals (delta-safe)
