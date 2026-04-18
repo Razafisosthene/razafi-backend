@@ -6349,27 +6349,7 @@ if (error || !rows || !rows.length) {
 }
 
 const session = rows[0];
-console.log("DEBUG AP REGISTRY:", {
-  ap_mac,
-  nas_id,
 
-  // existing
-  body_called: body["Called-Station-Id"],
-  body_nas: body["NAS-Identifier"],
-
-  // 🔥 ADD THIS
-  calledStationId:
-    body["Called-Station-Id"] ??
-    body.called_station_id ??
-    body.calledStationId ??
-    null,
-
-  callingStationId:
-    body["Calling-Station-Id"] ??
-    body.calling_station_id ??
-    body.callingStationId ??
-    null,
-});
 // Auto-register AP in DB from MikroTik/RADIUS truth
 try {
   await upsertApRegistryFromRadius({ ap_mac, nas_id });
@@ -7016,7 +6996,35 @@ app.post("/api/radius/accounting", async (req, res) => {
       acctSessionId: acctSessionId || "(missing)",
       totalBytes: newTotalBytes.toString(),
     });
+// ===============================
+// DEBUG + AP AUTO REGISTER (ACCOUNTING)
+// ===============================
+const ap_mac_acc =
+  body["Called-Station-Id"] ??
+  body.called_station_id ??
+  body.calledStationId ??
+  null;
 
+const nas_id_acc =
+  body["NAS-Identifier"] ??
+  body.nas_id ??
+  body.nasId ??
+  null;
+
+console.log("DEBUG AP REGISTRY (ACCOUNTING):", {
+  ap_mac_acc,
+  nas_id_acc
+});
+
+// Auto-register AP
+try {
+  await upsertApRegistryFromRadius({
+    ap_mac: ap_mac_acc,
+    nas_id: nas_id_acc
+  });
+} catch (_) {
+  // fail-open
+}
     // We always ack to FreeRADIUS even if we can't write to DB.
     if (!supabase || !acctSessionId || !voucherCode) {
       return res.status(200).json({});
