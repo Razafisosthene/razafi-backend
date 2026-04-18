@@ -3604,7 +3604,7 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
     // 1) AP registry list
     let query = supabase
       .from("ap_registry")
-      .select("ap_mac,pool_id,is_active,capacity_max", { count: "exact" });
+      .select("ap_mac,ap_name,pool_id,is_active,capacity_max,updated_at", { count: "exact" });
 
     if (allowedPools) query = query.in("pool_id", allowedPools);
 
@@ -3673,9 +3673,11 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
       const is_stale = s ? !!s.is_stale : true; // missing stats => stale
       return {
         ap_mac: a.ap_mac,
+        ap_name: a.ap_name || a.ap_mac,   // ✅ NEW
         pool_id: a.pool_id || null,
         pool_name: pool ? (pool.name ?? null) : null,
         is_active: a.is_active !== false,
+          updated_at: a.updated_at || null, // ✅ NEW
         // server-side sessions count (existing)
         active_clients: s ? (s.active_clients ?? 0) : 0,
         last_computed_at: s ? (s.last_computed_at || null) : null,
