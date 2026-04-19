@@ -176,15 +176,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       const mac = String(a.ap_mac || "");
       const label = a.tanaza_label || a.ap_name || mac;
 
-     const mikroTikStatus =
-  (a.is_online === true) ? "🟢 Online"
-    : (a.is_online === false) ? "🔴 Offline"
-      : "⚪ Unknown";
-
-const tanazaStatus =
-  (a.tanaza_online === true) ? "🟢 Online"
-    : (a.tanaza_online === false) ? "🔴 Offline"
-      : "⚪ Unknown";
+      const online =
+        (a.tanaza_online === true) ? "🟢 Online"
+          : (a.tanaza_online === false) ? "🔴 Offline"
+            : "⚪ Unknown";
 
       const tanClients =
         (a.tanaza_connected_clients === null || a.tanaza_connected_clients === undefined)
@@ -200,10 +195,7 @@ const tanazaStatus =
             <div style="font-weight:700;">${esc(label)}</div>
             <div class="subtitle" style="opacity:.8;">${esc(mac)}</div>
           </td>
-          <td style="padding:10px;">
-  <div>MikroTik: ${mikroTikStatus}</div>
-  <div style="opacity:.7;">Tanaza: ${tanazaStatus}</div>
-</td>
+          <td style="padding:10px;">${online}</td>
           <td style="padding:10px;">${tanClients}</td>
           <td style="padding:10px;">${poolName}</td>
           <td style="padding:10px;">
