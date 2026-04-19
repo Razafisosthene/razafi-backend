@@ -175,25 +175,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     rowsEl.innerHTML = aps.map((a) => {
       const mac = String(a.ap_mac || "");
       const label = a.tanaza_label || a.ap_name || mac;
-// 🔥 MikroTik status (NEW)
-let mikroStatus = "⚪ Unknown";
 
-if (a.updated_at) {
-  const now = Date.now();
-  const updated = new Date(a.updated_at).getTime();
+     const mikroTikStatus =
+  (a.is_online === true) ? "🟢 Online"
+    : (a.is_online === false) ? "🔴 Offline"
+      : "⚪ Unknown";
 
-  if (now - updated <= 120000) {
-    mikroStatus = "🟢 Online";
-  } else {
-    mikroStatus = "🔴 Offline";
-  }
-}
-
-// 🔵 Tanaza status (existing)
-let tanazaStatus = "⚪ Unknown";
-
-if (a.tanaza_online === true) tanazaStatus = "🟢 Online";
-if (a.tanaza_online === false) tanazaStatus = "🔴 Offline";
+const tanazaStatus =
+  (a.tanaza_online === true) ? "🟢 Online"
+    : (a.tanaza_online === false) ? "🔴 Offline"
+      : "⚪ Unknown";
 
       const tanClients =
         (a.tanaza_connected_clients === null || a.tanaza_connected_clients === undefined)
@@ -210,7 +201,7 @@ if (a.tanaza_online === false) tanazaStatus = "🔴 Offline";
             <div class="subtitle" style="opacity:.8;">${esc(mac)}</div>
           </td>
           <td style="padding:10px;">
-  <div>MikroTik: ${mikroStatus}</div>
+  <div>MikroTik: ${mikroTikStatus}</div>
   <div style="opacity:.7;">Tanaza: ${tanazaStatus}</div>
 </td>
           <td style="padding:10px;">${tanClients}</td>
