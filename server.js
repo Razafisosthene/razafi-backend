@@ -3666,27 +3666,30 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
     }
 
     // 4) Merge
-    let merged = apList.map((a) => {
-      const s = statsByMac[a.ap_mac] || null;
-      const pool = a.pool_id ? (poolById[a.pool_id] || null) : null;
+let merged = apList.map((a) => {
+  const s = statsByMac[a.ap_mac] || null;
+  const pool = a.pool_id ? (poolById[a.pool_id] || null) : null;
 
-      const is_stale = s ? !!s.is_stale : true; // missing stats => stale
-      return {
-        ap_mac: a.ap_mac,
-        ap_name: a.ap_name || a.ap_mac,   // ✅ NEW
-        pool_id: a.pool_id || null,
-        pool_name: pool ? (pool.name ?? null) : null,
-        is_active: a.is_active !== false,
-          updated_at: a.updated_at || null, // ✅ NEW
-        // server-side sessions count (existing)
-        active_clients: s ? (s.active_clients ?? 0) : 0,
-        last_computed_at: s ? (s.last_computed_at || null) : null,
-        is_stale,
-        // capacities
-        pool_capacity_max: pool ? (pool.capacity_max ?? null) : null,
-        ap_capacity_max: a.capacity_max ?? null,
-      };
-    });
+  const now = Date.now();
+  const updatedAt = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+  const is_online = updatedAt > 0 && (now - updatedAt) <= (2 * 60 * 1000);
+  const is_stale = !is_online;
+
+  return {
+    ap_mac: a.ap_mac,
+    ap_name: a.ap_name || a.ap_mac,
+    pool_id: a.pool_id || null,
+    pool_name: pool ? (pool.name ?? null) : null,
+    is_active: a.is_active !== false,
+    is_online,
+    updated_at: a.updated_at || null,
+    active_clients: s ? (s.active_clients ?? 0) : 0,
+    last_computed_at: s ? (s.last_computed_at || null) : null,
+    is_stale,
+    pool_capacity_max: pool ? (pool.capacity_max ?? null) : null,
+    ap_capacity_max: a.capacity_max ?? null,
+  };
+});
 
     
 // 4) Tanaza live device data (label/online/connectedClients) by MAC — Bundle A
