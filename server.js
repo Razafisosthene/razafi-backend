@@ -3540,6 +3540,9 @@ try {
         tanaza_label: dev.label ?? null,
         tanaza_online: dev.online ?? null,
         tanaza_connected_clients: dev.connectedClients ?? null,
+        tanaza_connected: dev.connectedClients ?? null,
+        clients_tanaza: dev.connectedClients ?? null,
+        connected_clients_tanaza: dev.connectedClients ?? null,
       };
     });
   }
@@ -4016,6 +4019,9 @@ app.get("/api/admin/pools/:id/aps", requireAdmin, async (req, res) => {
         tanaza_label: dev?.label ?? null,
         tanaza_online: dev?.online ?? null,
         tanaza_connected: dev?.connectedClients ?? null,
+        tanaza_connected_clients: dev?.connectedClients ?? null,
+        clients_tanaza: dev?.connectedClients ?? null,
+        connected_clients_tanaza: dev?.connectedClients ?? null,
       };
     });
 
