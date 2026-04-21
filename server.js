@@ -1,4 +1,4 @@
-// RAZAFI Backend - All APs Edition
+// RAZAFI Backend - All APs, server fixed 10M per user Edition
 // ---------------------------------------------------------------------------
 
 import express from "express";
@@ -6005,6 +6005,7 @@ const RADIUS_ALLOWED_IPS = (process.env.RADIUS_ALLOWED_IPS || "159.89.16.34")
   .filter(Boolean);
 
 const RADIUS_API_SECRET = process.env.RADIUS_API_SECRET || ""; // set this in Render env (recommended)
+const FIXED_MIKROTIK_RATE_LIMIT = String(process.env.FIXED_MIKROTIK_RATE_LIMIT || "10M/10M").trim() || "10M/10M";
 
 /**
  * Normalize IP strings that may come as:
@@ -6822,6 +6823,9 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
     const replyExtra = {};
     if (effectiveTotalBytes !== null) {
       replyExtra["reply:Mikrotik-Total-Limit"] = effectiveTotalBytes;
+    }
+    if (FIXED_MIKROTIK_RATE_LIMIT) {
+      replyExtra["reply:Mikrotik-Rate-Limit"] = FIXED_MIKROTIK_RATE_LIMIT;
     }
 
     return sendAccept(username, remainingSeconds, {
