@@ -119,12 +119,53 @@ document.addEventListener("DOMContentLoaded", async () => {
   let pools = [];
   let allAps = [];
   let currentAdmin = null;
+  let ownerUsers = [];
 
-  // Active system view for this page (portal vs mikrotik)
   let activeSystem = "portal";
 
   function isSuperadmin() {
     return !!currentAdmin?.is_superadmin;
+  }
+
+  function ownerLabelById(ownerId) {
+    const id = String(ownerId || "").trim();
+    if (!id) return "—";
+    const u = ownerUsers.find((x) => String(x.id || "").trim() === id);
+    return u?.email || id;
+  }
+
+  async function loadOwnerUsers() {
+    if (!isSuperadmin()) {
+      ownerUsers = [];
+      return;
+    }
+
+    try {
+      const r = await fetchJSON("/api/admin/users");
+      const items = asArray(r.items).map((u) => ({
+        id: String(u?.id || "").trim(),
+        email: String(u?.email || "").trim(),
+        role: String(u?.role || "").trim(),
+        is_active: u?.is_active !== false,
+      })).filter((u) => u.id && u.email);
+
+      ownerUsers = items.filter((u) => u.is_active);
+    } catch (e) {
+      ownerUsers = [];
+      console.warn("Owner users load failed:", e?.message || e);
+    }
+  }
+
+  function buildOwnerOptions(selectedId) {
+    const current = String(selectedId || "").trim();
+    const options = [`<option value="">— Choisir propriétaire business —</option>`];
+
+    ownerUsers.forEach((u) => {
+      const sel = String(u.id) === current ? "selected" : "";
+      options.push(`<option value="${esc(u.id)}" ${sel}>${esc(u.email)}</option>`);
+    });
+
+    return options.join("");
   }
 
   function setCreateVisibilityByRole() {
@@ -165,6 +206,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   currentAdmin = await guardSession(meEl);
   if (!currentAdmin) return;
+
+  await loadOwnerUsers();
 
   sysPortalBtn?.addEventListener("click", () => { setActiveSystem("portal"); loadPools().catch(err => showMsg(msgEl, err.message, true)); });
   sysMikrotikBtn?.addEventListener("click", () => { setActiveSystem("mikrotik"); loadPools().catch(err => showMsg(msgEl, err.message, true)); });
@@ -237,6 +280,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const radiusNasId = p.radius_nas_id || p.radiusNasId || "";
       const platformSharePct = Number.isFinite(Number(p.platform_share_pct)) ? Number(p.platform_share_pct) : 100;
       const ownerSharePct = Number.isFinite(Number(p.owner_share_pct)) ? Number(p.owner_share_pct) : 0;
+      const ownerAdminUserId = String(p.owner_admin_user_id || p.ownerAdminUserId || "").trim();
       const canManage = isSuperadmin();
 
       const stats = liveStatsByPool[pid] || null;
@@ -245,6 +289,25 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? stats.capacity_max
         : p.capacity_max;
       const pp = pct(liveClients, capacityForPct);
+
+      const ownerBusinessBlock = canManage
+        ? `
+          <div style="margin-top:8px;">
+            <div style="opacity:.75; font-size:12px; margin-bottom:4px;">Propriétaire business</div>
+            <select
+              data-owner-admin="${esc(pid)}"
+              style="min-width:320px; max-width:100%; padding:10px; border-radius:10px; border:1px solid #ddd;"
+            >
+              ${buildOwnerOptions(ownerAdminUserId)}
+            </select>
+          </div>
+        `
+        : `
+          <div style="margin-top:8px; font-size:13px;">
+            <span style="opacity:.75;">Propriétaire business :</span>
+            <strong>${esc(ownerLabelById(ownerAdminUserId))}</strong>
+          </div>
+        `;
 
       const commissionBlock = canManage
         ? `
@@ -316,6 +379,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                 />
               </div>
             ` : ``}
+            ${ownerBusinessBlock}
             ${commissionBlock}
             <div style="opacity:.7; font-size:12px; margin-top:6px;">ID: ${esc(pid)}</div>
           </td>
@@ -387,6 +451,9 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
 
         if (isSuperadmin()) {
+          const ownerAdminSelect = rowsEl.querySelector(`select[data-owner-admin="${CSS.escape(pid)}"]`);
+          payload.owner_admin_user_id = (ownerAdminSelect?.value || "").trim() || null;
+
           const platformInput = rowsEl.querySelector(`input[data-platform-pct="${CSS.escape(pid)}"]`);
           const ownerInput = rowsEl.querySelector(`input[data-owner-pct="${CSS.escape(pid)}"]`);
 
