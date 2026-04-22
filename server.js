@@ -2751,7 +2751,7 @@ app.get("/api/admin/revenue/payouts", requireAdmin, async (req, res) => {
 
     let q = supabase
       .from("owner_payouts")
-      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by", { count: "exact" })
+      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by", { count: "exact" })
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
 
@@ -2819,7 +2819,7 @@ app.get("/api/admin/revenue/payouts/:id", requireAdmin, async (req, res) => {
 
     let q = supabase
       .from("owner_payouts")
-      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by")
+      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by")
       .eq("id", id);
 
     if (!req.admin?.is_superadmin) {
@@ -2944,8 +2944,9 @@ app.post("/api/admin/revenue/payouts/create", requireAdmin, requireSuperadmin, a
         note,
         paid_at,
         created_by: req.admin.id,
+        paid_by: mark_paid ? req.admin.id : null,
       })
-      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by")
+      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by")
       .single();
 
     if (payoutErr) return res.status(500).json({ error: payoutErr.message });
@@ -3000,14 +3001,14 @@ app.post("/api/admin/revenue/payouts/:id/mark-paid", requireAdmin, requireSupera
 
     const { data: payout, error: payoutErr } = await supabase
       .from("owner_payouts")
-      .select("id,status,receipt_number,paid_at,pool_id")
+      .select("id,status,receipt_number,paid_at,pool_id,admin_user_id,paid_by")
       .eq("id", id)
       .maybeSingle();
 
     if (payoutErr) return res.status(500).json({ error: payoutErr.message });
     if (!payout) return res.status(404).json({ error: "not_found" });
 
-    if (String(payout.status || "") === "paid") {
+    if (String(payout.status || "").toLowerCase() === "paid") {
       return res.json({ ok: true, payout });
     }
 
@@ -3015,6 +3016,7 @@ app.post("/api/admin/revenue/payouts/:id/mark-paid", requireAdmin, requireSupera
       status: "paid",
       paid_at: new Date().toISOString(),
       receipt_number: payout.receipt_number || makeOwnerReceiptNumber(),
+      paid_by: req.admin.id,
       updated_at: new Date().toISOString(),
     };
 
@@ -3022,10 +3024,24 @@ app.post("/api/admin/revenue/payouts/:id/mark-paid", requireAdmin, requireSupera
       .from("owner_payouts")
       .update(patch)
       .eq("id", id)
-      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by")
-      .single();
+      .neq("status", "paid")
+      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by")
+      .maybeSingle();
 
     if (error) return res.status(500).json({ error: error.message });
+
+    if (!data) {
+      const { data: fresh, error: freshErr } = await supabase
+        .from("owner_payouts")
+        .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by")
+        .eq("id", id)
+        .maybeSingle();
+
+      if (freshErr) return res.status(500).json({ error: freshErr.message });
+      if (!fresh) return res.status(404).json({ error: "not_found" });
+      return res.json({ ok: true, payout: fresh });
+    }
+
     return res.json({ ok: true, payout: data });
   } catch (e) {
     console.error("ADMIN REVENUE PAYOUT MARK PAID EX", e);
