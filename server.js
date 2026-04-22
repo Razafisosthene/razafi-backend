@@ -3783,7 +3783,7 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
 
     let query = supabase
       .from("internet_pools")
-      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id", { count: "exact" });
+      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct", { count: "exact" });
 
     // 🔐 Pool scoping (server-side)
     if (!req.admin?.is_superadmin) {
@@ -3845,7 +3845,12 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
       return res.status(400).json({ error: "capacity_max_invalid" });
     }
 
-    const payload = { name, system };
+    const payload = {
+      name,
+      system,
+      platform_share_pct: 100,
+      owner_share_pct: 0,
+    };
     if (contact_phone !== null) payload.contact_phone = contact_phone.length ? contact_phone : null;
     if (mikrotik_ip) payload.mikrotik_ip = mikrotik_ip;
     if (radius_nas_id) payload.radius_nas_id = radius_nas_id;
@@ -3854,7 +3859,7 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
     const { data, error } = await supabase
       .from("internet_pools")
       .insert(payload)
-      .select("id,name,capacity_max,contact_phone")
+      .select("id,name,capacity_max,contact_phone,platform_share_pct,owner_share_pct")
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -3905,6 +3910,33 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       updates.radius_nas_id = v && v.length ? v : null;
     }
 
+    const hasPlatformSharePct = Object.prototype.hasOwnProperty.call(req.body || {}, "platform_share_pct");
+    const hasOwnerSharePct = Object.prototype.hasOwnProperty.call(req.body || {}, "owner_share_pct");
+
+    if (hasPlatformSharePct || hasOwnerSharePct) {
+      if (!req.admin?.is_superadmin) {
+        return res.status(403).json({ error: "superadmin_only_commission" });
+      }
+
+      const platform_share_pct = Number(req.body?.platform_share_pct);
+      const owner_share_pct = Number(req.body?.owner_share_pct);
+
+      if (
+        !Number.isFinite(platform_share_pct) ||
+        !Number.isFinite(owner_share_pct) ||
+        platform_share_pct < 0 ||
+        owner_share_pct < 0 ||
+        platform_share_pct > 100 ||
+        owner_share_pct > 100 ||
+        Math.round((platform_share_pct + owner_share_pct) * 100) !== 10000
+      ) {
+        return res.status(400).json({ error: "invalid_commission_split" });
+      }
+
+      updates.platform_share_pct = Math.round(platform_share_pct);
+      updates.owner_share_pct = Math.round(owner_share_pct);
+    }
+
     // Safety: don't allow clearing mikrotik_ip on an existing mikrotik pool
     if (hasMikrotikIp && updates.mikrotik_ip === null) {
       const { data: curPool, error: curErr } = await supabase
@@ -3925,7 +3957,7 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       .from("internet_pools")
       .update(updates)
       .eq("id", id)
-      .select("id,name,capacity_max,contact_phone")
+      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct")
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
