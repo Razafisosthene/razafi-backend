@@ -102,6 +102,89 @@ let currentTab = "tx";
 const selectedTxIds = new Set();
 
 // -------------------------
+// Selection helpers / protection
+// -------------------------
+function getTxById(txId) {
+  return lastTxItems.find((it) => String(it?.transaction_id || "") === String(txId || ""));
+}
+
+function getSelectionContext() {
+  const firstId = Array.from(selectedTxIds)[0];
+  const first = firstId ? getTxById(firstId) : null;
+  if (!first) return null;
+  return {
+    pool_id: String(first.pool_id || ""),
+    pool_name: first.pool_name || "—",
+    owner_label: first.owner_email || first.owner_name || null
+  };
+}
+
+function isTxLocked(it) {
+  const payoutStatus = String(it?.payout_status || "unpaid").toLowerCase();
+  return payoutStatus !== "unpaid";
+}
+
+function isTxCompatibleWithSelection(it) {
+  const ctx = getSelectionContext();
+  if (!ctx) return true;
+  return String(it?.pool_id || "") === ctx.pool_id;
+}
+
+function syncTxHeaders() {
+  const txTable = byId("txBody")?.closest("table");
+  const theadRow = txTable?.querySelector("thead tr");
+  if (!theadRow) return;
+
+  theadRow.innerHTML = `
+    <th style="text-align:left; padding:10px;">Sel</th>
+    <th style="text-align:left; padding:10px;">Date</th>
+    <th style="text-align:left; padding:10px;">Montant brut</th>
+    <th style="text-align:left; padding:10px;">Part plateforme</th>
+    <th style="text-align:left; padding:10px;">Part propriétaire</th>
+    <th style="text-align:left; padding:10px;">Téléphone</th>
+    <th style="text-align:left; padding:10px;">Voucher</th>
+    <th style="text-align:left; padding:10px;">Plan</th>
+    <th style="text-align:left; padding:10px;">Pool</th>
+    <th style="text-align:left; padding:10px;">Statut payout</th>
+    <th style="text-align:left; padding:10px;">Reçu</th>
+    <th style="text-align:left; padding:10px;">Statut transaction</th>
+  `;
+}
+
+function updateSelectionMeta() {
+  const el = byId("txSelectionMeta");
+  if (!el) return;
+  const n = selectedTxIds.size;
+  if (!n) {
+    el.textContent = "0 sélectionnée";
+    return;
+  }
+  const ctx = getSelectionContext();
+  const poolTxt = ctx?.pool_name ? ` • Pool: ${ctx.pool_name}` : "";
+  el.textContent = `${n} sélectionnée${n > 1 ? "s" : ""}${poolTxt}`;
+}
+
+function renderSelectionChecks() {
+  const ctx = getSelectionContext();
+  Array.from(document.querySelectorAll(".tx-select")).forEach((cb) => {
+    const txId = cb.getAttribute("data-txid");
+    const it = getTxById(txId);
+    const locked = isTxLocked(it);
+    const compatible = isTxCompatibleWithSelection(it);
+    cb.checked = selectedTxIds.has(txId);
+    cb.disabled = locked || (!!ctx && !cb.checked && !compatible);
+
+    const row = cb.closest("tr");
+    if (row) {
+      row.style.opacity = cb.disabled && !cb.checked ? ".55" : "1";
+      row.title = locked
+        ? "Déjà rattachée à un payout"
+        : (!!ctx && !cb.checked && !compatible ? "Un payout doit contenir un seul pool" : "");
+    }
+  });
+}
+
+// -------------------------
 // UI wiring
 // -------------------------
 function wireNav() {
@@ -186,6 +269,7 @@ function ensurePayoutUI() {
     if (txPanel && txTable) txTable.insertAdjacentElement("beforebegin", box);
   }
 
+  syncTxHeaders();
   updateActionVisibility();
 }
 
@@ -264,6 +348,14 @@ function wirePayoutActions() {
       alert("Sélectionnez au moins une transaction.");
       return;
     }
+
+    const selectedItems = ids.map(getTxById).filter(Boolean);
+    const pools = Array.from(new Set(selectedItems.map((it) => String(it.pool_id || "")).filter(Boolean)));
+    if (pools.length !== 1) {
+      alert("Un payout doit contenir des transactions d’un seul pool.");
+      return;
+    }
+
     if (!confirm(`Créer un payout avec ${ids.length} transaction(s) ?`)) return;
 
     try {
@@ -299,20 +391,6 @@ function wireModal() {
   byId("closeModal2").onclick = close;
   modal.addEventListener("click", (e) => {
     if (e.target === modal) close();
-  });
-}
-
-function updateSelectionMeta() {
-  const el = byId("txSelectionMeta");
-  if (!el) return;
-  const n = selectedTxIds.size;
-  el.textContent = `${n} sélectionnée${n > 1 ? "s" : ""}`;
-}
-
-function renderSelectionChecks() {
-  Array.from(document.querySelectorAll(".tx-select")).forEach((cb) => {
-    const txId = cb.getAttribute("data-txid");
-    cb.checked = selectedTxIds.has(txId);
   });
 }
 
@@ -385,6 +463,7 @@ async function loadByPool() {
 async function loadTransactions() {
   const body = byId("txBody");
   body.innerHTML = `<tr><td colspan="12" style="padding:12px; opacity:.75;">Loading...</td></tr>`;
+  syncTxHeaders();
 
   const params = buildCommonParams();
   params.set("limit", String(txLimit));
@@ -410,10 +489,14 @@ async function loadTransactions() {
       const checked = selectedTxIds.has(txId) ? "checked" : "";
       const payoutStatus = String(it.payout_status || "unpaid");
       const tone = payoutStatus === "paid" ? "ok" : payoutStatus === "draft" ? "warn" : "neutral";
+      const locked = isTxLocked(it);
+      const compatible = isTxCompatibleWithSelection(it);
+      const disabled = locked || (selectedTxIds.size > 0 && !checked && !compatible);
+
       return `
-        <tr data-i="${idx}" style="cursor:pointer;">
+        <tr data-i="${idx}" style="cursor:pointer; ${disabled && !checked ? "opacity:.55;" : ""}">
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);" onclick="event.stopPropagation()">
-            ${currentAdmin?.is_superadmin ? `<input class="tx-select" data-txid="${esc(txId)}" type="checkbox" ${checked} ${it.is_paid_to_owner ? "disabled" : ""} />` : ""}
+            ${currentAdmin?.is_superadmin ? `<input class="tx-select" data-txid="${esc(txId)}" type="checkbox" ${checked} ${disabled ? "disabled" : ""} />` : ""}
           </td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtDate(it.transaction_created_at)}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08); font-weight:700;">${fmtAr(it.gross_amount_ar ?? it.amount_num)}</td>
@@ -440,14 +523,32 @@ async function loadTransactions() {
     Array.from(body.querySelectorAll(".tx-select")).forEach(cb => {
       cb.addEventListener("change", (e) => {
         const txId = cb.getAttribute("data-txid");
-        if (cb.checked) selectedTxIds.add(txId);
-        else selectedTxIds.delete(txId);
+        const it = getTxById(txId);
+        if (cb.checked) {
+          const ctx = getSelectionContext();
+          if (ctx && String(it?.pool_id || "") !== ctx.pool_id) {
+            cb.checked = false;
+            alert("Un payout doit contenir des transactions d’un seul pool.");
+            e.stopPropagation();
+            return;
+          }
+          if (isTxLocked(it)) {
+            cb.checked = false;
+            e.stopPropagation();
+            return;
+          }
+          selectedTxIds.add(txId);
+        } else {
+          selectedTxIds.delete(txId);
+        }
         updateSelectionMeta();
+        renderSelectionChecks();
         e.stopPropagation();
       });
     });
 
     updateSelectionMeta();
+    renderSelectionChecks();
 
   } catch (e) {
     body.innerHTML = `<tr><td colspan="12" style="padding:12px; color:#c0392b;">${esc(e.message)}</td></tr>`;
@@ -610,10 +711,10 @@ async function showPayoutDetail(it) {
   try {
     detail = await fetchJSON(`/api/admin/revenue/payouts/${encodeURIComponent(it.id)}`);
   } catch (_) {
-    detail = { payout: it, items: [] };
+    detail = { item: it, items: [] };
   }
 
-  const payout = detail.payout || it;
+  const payout = detail.item || detail.payout || it;
   const items = detail.items || [];
 
   const itemRows = items.length
