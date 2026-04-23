@@ -2324,6 +2324,219 @@ function roundMoney2(v) {
   return Math.round(n * 100) / 100;
 }
 
+function makeOwnerReceiptNumber() {
+  const d = new Date();
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const rand = crypto.randomBytes(3).toString("hex").toUpperCase();
+  return `REC-OWNER-${y}${m}${day}-${rand}`;
+}
+
+async function getScopedMikrotikPoolsMap(admin) {
+  let q = supabase
+    .from("internet_pools")
+    .select("id,name,system,platform_share_pct,owner_share_pct")
+    .eq("system", "mikrotik");
+
+  if (!admin?.is_superadmin) {
+    const allowed = Array.isArray(admin.pool_ids) ? admin.pool_ids : [];
+    if (!allowed.length) return {};
+    q = q.in("id", allowed);
+  }
+
+  const { data, error } = await q;
+  if (error) throw error;
+
+  return Object.fromEntries(
+    (data || []).map((p) => [
+      String(p.id || ""),
+      {
+        id: p.id,
+        name: p.name || null,
+        system: p.system || null,
+        platform_share_pct: Number.isFinite(Number(p.platform_share_pct)) ? Number(p.platform_share_pct) : 100,
+        owner_share_pct: Number.isFinite(Number(p.owner_share_pct)) ? Number(p.owner_share_pct) : 0,
+      },
+    ])
+  );
+}
+
+async function getShareTransactionsCore({ admin, from = null, to = null, search = "", limit = 200, offset = 0, transactionIds = null, unpaidOnly = false }) {
+  const poolMap = await getScopedMikrotikPoolsMap(admin);
+  const poolIds = Object.keys(poolMap).filter(Boolean);
+  if (!poolIds.length) {
+    return { items: [], total: 0, poolMap };
+  }
+
+  let q = supabase
+    .from("v_revenue_paid_truth")
+    .select(
+      `
+      transaction_id,
+      transaction_created_at,
+      transaction_status,
+      amount_num,
+      currency,
+      mvola_phone,
+      request_ref,
+      transaction_reference,
+      server_correlation_id,
+      transaction_voucher,
+
+      voucher_session_id,
+      voucher_code,
+      client_mac,
+      ap_mac,
+
+      plan_id,
+      plan_name,
+      plan_price_ar,
+
+      pool_id,
+      pool_name
+      `,
+      { count: "exact" }
+    )
+    .in("pool_id", poolIds)
+    .order("transaction_created_at", { ascending: false });
+
+  if (Array.isArray(transactionIds) && transactionIds.length) {
+    q = q.in("transaction_id", transactionIds);
+  } else {
+    q = q.range(offset, offset + limit - 1);
+  }
+
+  if (from) q = q.gte("transaction_created_at", from);
+  if (to) q = q.lte("transaction_created_at", to);
+
+  const cleanSearch = String(search || "").trim();
+  if (cleanSearch) {
+    const s = cleanSearch.replace(/%/g, "\%");
+    q = q.or(
+      [
+        `mvola_phone.ilike.%${s}%`,
+        `voucher_code.ilike.%${s}%`,
+        `client_mac.ilike.%${s}%`,
+        `ap_mac.ilike.%${s}%`,
+        `request_ref.ilike.%${s}%`,
+        `transaction_reference.ilike.%${s}%`,
+        `server_correlation_id.ilike.%${s}%`,
+        `transaction_voucher.ilike.%${s}%`,
+        `plan_name.ilike.%${s}%`,
+        `pool_name.ilike.%${s}%`,
+      ].join(",")
+    );
+  }
+
+  const { data: txRows, error: txErr, count } = await q;
+  if (txErr) throw txErr;
+
+  const itemsRaw = Array.isArray(txRows) ? txRows : [];
+  const txIds = Array.from(new Set(itemsRaw.map((r) => String(r?.transaction_id || "")).filter(Boolean)));
+
+  let payoutItems = [];
+  if (txIds.length) {
+    const { data: payoutItemRows, error: payoutItemErr } = await supabase
+      .from("owner_payout_items")
+      .select("transaction_id,payout_id")
+      .in("transaction_id", txIds);
+
+    if (payoutItemErr) throw payoutItemErr;
+    payoutItems = Array.isArray(payoutItemRows) ? payoutItemRows : [];
+  }
+
+  const payoutItemByTxId = {};
+  const payoutIds = [];
+  for (const row of payoutItems) {
+    const txId = String(row?.transaction_id || "").trim();
+    const payoutId = String(row?.payout_id || "").trim();
+    if (!txId || !payoutId) continue;
+    payoutItemByTxId[txId] = payoutId;
+    payoutIds.push(payoutId);
+  }
+
+  let payoutById = {};
+  const uniquePayoutIds = Array.from(new Set(payoutIds)).filter(Boolean);
+  if (uniquePayoutIds.length) {
+    const { data: payoutRows, error: payoutErr } = await supabase
+      .from("owner_payouts")
+      .select("id,status,receipt_number,paid_at")
+      .in("id", uniquePayoutIds);
+
+    if (payoutErr) throw payoutErr;
+
+    payoutById = Object.fromEntries(
+      (payoutRows || []).map((r) => [String(r?.id || ""), r])
+    );
+  }
+
+  let items = itemsRaw.map((r) => {
+    const poolId = String(r?.pool_id || "").trim();
+    const poolCfg = poolMap[poolId] || {
+      platform_share_pct: 100,
+      owner_share_pct: 0,
+      name: r?.pool_name || null,
+    };
+
+    const gross_amount_ar = roundMoney2(r?.amount_num);
+    const platform_share_pct = Number(poolCfg.platform_share_pct || 0);
+    const owner_share_pct = Number(poolCfg.owner_share_pct || 0);
+    const platform_amount_ar = roundMoney2((gross_amount_ar * platform_share_pct) / 100);
+    const owner_amount_ar = roundMoney2((gross_amount_ar * owner_share_pct) / 100);
+
+    const txId = String(r?.transaction_id || "").trim();
+    const payoutId = payoutItemByTxId[txId] || null;
+    const payout = payoutId ? payoutById[payoutId] || null : null;
+    const payout_status = payout?.status || "unpaid";
+
+    return {
+      ...r,
+      system: "mikrotik",
+      pool_name: poolCfg.name || r?.pool_name || null,
+      gross_amount_ar,
+      platform_share_pct,
+      owner_share_pct,
+      platform_amount_ar,
+      owner_amount_ar,
+      payout_id: payoutId,
+      payout_status,
+      is_paid_to_owner: payout_status === "paid",
+      receipt_number: payout?.receipt_number || null,
+      paid_at: payout?.paid_at || null,
+    };
+  });
+
+  if (unpaidOnly) {
+    items = items.filter((r) => String(r.payout_status || "unpaid") === "unpaid");
+  }
+
+  return {
+    items,
+    total: Array.isArray(transactionIds) && transactionIds.length ? items.length : (count || 0),
+    poolMap,
+  };
+}
+
+async function getSinglePoolOwnerIdOrThrow(poolId) {
+  const { data, error } = await supabase
+    .from("admin_user_pools")
+    .select("admin_user_id")
+    .eq("pool_id", poolId);
+
+  if (error) throw error;
+
+  const ownerIds = Array.from(new Set((data || []).map((r) => String(r?.admin_user_id || "").trim()).filter(Boolean)));
+  if (ownerIds.length !== 1) {
+    const err = new Error("pool_owner_assignment_invalid");
+    err.httpStatus = 400;
+    err.details = { pool_id: poolId, owner_count: ownerIds.length };
+    throw err;
+  }
+
+  return ownerIds[0];
+}
+
 // GET /api/admin/revenue/share-transactions?from=&to=&search=&limit=200&offset=0
 // System 3 only (internet_pools.system = 'mikrotik')
 // Extends paid revenue truth with commission split + payout status
@@ -2505,6 +2718,303 @@ app.get("/api/admin/revenue/share-transactions", requireAdmin, async (req, res) 
     return res.json({ items, total: count || 0, system: "mikrotik" });
   } catch (e) {
     console.error("ADMIN REVENUE SHARE TRANSACTIONS EX", e);
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// GET /api/admin/revenue/payouts?status=&pool_id=&from=&to=&limit=100&offset=0
+// System 3 payout batches (owner-level), scoped by assigned pools for pool_readonly.
+app.get("/api/admin/revenue/payouts", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const status = String(req.query.status || "").trim().toLowerCase();
+    const pool_id = String(req.query.pool_id || "").trim();
+    const from = normalizeDateInput(req.query.from);
+    const to = normalizeDateInput(req.query.to);
+    const limit = Math.min(200, Math.max(1, safeNumber(req.query.limit, 100)));
+    const offset = Math.max(0, safeNumber(req.query.offset, 0));
+
+    let q = supabase
+      .from("owner_payouts")
+      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by", { count: "exact" })
+      .order("created_at", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (!req.admin?.is_superadmin) {
+      const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
+      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+      q = q.in("pool_id", allowed);
+    }
+
+    if (pool_id) q = q.eq("pool_id", pool_id);
+    if (["draft", "paid", "cancelled"].includes(status)) q = q.eq("status", status);
+    if (from) q = q.gte("created_at", from);
+    if (to) q = q.lte("created_at", to);
+
+    const { data, error, count } = await q;
+    if (error) return res.status(500).json({ error: error.message });
+
+    const rows = data || [];
+    const poolIds = Array.from(new Set(rows.map((r) => String(r?.pool_id || "")).filter(Boolean)));
+    const ownerIds = Array.from(new Set(rows.map((r) => String(r?.admin_user_id || "")).filter(Boolean)));
+
+    let poolMap = {};
+    if (poolIds.length) {
+      const { data: poolRows, error: poolErr } = await supabase
+        .from("internet_pools")
+        .select("id,name,system")
+        .in("id", poolIds)
+        .eq("system", "mikrotik");
+      if (poolErr) return res.status(500).json({ error: poolErr.message });
+      poolMap = Object.fromEntries((poolRows || []).map((p) => [String(p.id || ""), p]));
+    }
+
+    let ownerMap = {};
+    if (ownerIds.length) {
+      const { data: ownerRows, error: ownerErr } = await supabase
+        .from("admin_users")
+        .select("id,email")
+        .in("id", ownerIds);
+      if (ownerErr) return res.status(500).json({ error: ownerErr.message });
+      ownerMap = Object.fromEntries((ownerRows || []).map((u) => [String(u.id || ""), u]));
+    }
+
+    const items = rows
+      .filter((r) => !!poolMap[String(r?.pool_id || "")])
+      .map((r) => ({
+        ...r,
+        pool_name: poolMap[String(r?.pool_id || "")]?.name || null,
+        owner_email: ownerMap[String(r?.admin_user_id || "")]?.email || null,
+        system: "mikrotik",
+      }));
+
+    return res.json({ items, total: count || 0, system: "mikrotik" });
+  } catch (e) {
+    console.error("ADMIN REVENUE PAYOUTS LIST EX", e);
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// GET /api/admin/revenue/payouts/:id
+app.get("/api/admin/revenue/payouts/:id", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    let q = supabase
+      .from("owner_payouts")
+      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by")
+      .eq("id", id);
+
+    if (!req.admin?.is_superadmin) {
+      const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
+      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+      q = q.in("pool_id", allowed);
+    }
+
+    const { data: payout, error } = await q.maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!payout) return res.status(404).json({ error: "not_found" });
+
+    const [{ data: items, error: itemsErr }, { data: poolRows }, { data: ownerRows }] = await Promise.all([
+      supabase
+        .from("owner_payout_items")
+        .select("id,payout_id,transaction_id,voucher_session_id,pool_id,gross_amount_ar,platform_share_pct,platform_amount_ar,owner_share_pct,owner_amount_ar,transaction_created_at,created_at")
+        .eq("payout_id", id)
+        .order("transaction_created_at", { ascending: false }),
+      supabase
+        .from("internet_pools")
+        .select("id,name,system")
+        .eq("id", payout.pool_id)
+        .limit(1),
+      supabase
+        .from("admin_users")
+        .select("id,email")
+        .eq("id", payout.admin_user_id)
+        .limit(1),
+    ]);
+
+    if (itemsErr) return res.status(500).json({ error: itemsErr.message });
+
+    const pool = Array.isArray(poolRows) ? poolRows[0] : null;
+    const owner = Array.isArray(ownerRows) ? ownerRows[0] : null;
+
+    return res.json({
+      item: {
+        ...payout,
+        pool_name: pool?.name || null,
+        owner_email: owner?.email || null,
+        system: pool?.system || "mikrotik",
+      },
+      items: items || [],
+    });
+  } catch (e) {
+    console.error("ADMIN REVENUE PAYOUT DETAIL EX", e);
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// POST /api/admin/revenue/payouts/create
+// body: { transaction_ids: [], note?, period_from?, period_to?, mark_paid? }
+app.post("/api/admin/revenue/payouts/create", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const transaction_ids = Array.from(new Set((Array.isArray(req.body?.transaction_ids) ? req.body.transaction_ids : [])
+      .map((x) => String(x || "").trim())
+      .filter(Boolean)));
+
+    if (!transaction_ids.length) {
+      return res.status(400).json({ error: "transaction_ids_required" });
+    }
+
+    const note = String(req.body?.note || "").trim() || null;
+    const mark_paid = req.body?.mark_paid === true;
+    const period_from_input = normalizeDateInput(req.body?.period_from);
+    const period_to_input = normalizeDateInput(req.body?.period_to);
+
+    const { items } = await getShareTransactionsCore({
+      admin: req.admin,
+      transactionIds: transaction_ids,
+      unpaidOnly: false,
+    });
+
+    if (items.length !== transaction_ids.length) {
+      return res.status(400).json({ error: "transactions_not_found_or_not_allowed" });
+    }
+
+    const alreadyPaid = items.filter((r) => String(r.payout_status || "unpaid") !== "unpaid");
+    if (alreadyPaid.length) {
+      return res.status(400).json({
+        error: "transactions_already_in_payout",
+        transaction_ids: alreadyPaid.map((r) => r.transaction_id),
+      });
+    }
+
+    const poolIds = Array.from(new Set(items.map((r) => String(r?.pool_id || "")).filter(Boolean)));
+    if (poolIds.length !== 1) {
+      return res.status(400).json({ error: "single_pool_required_for_batch_payout" });
+    }
+
+    const pool_id = poolIds[0];
+    const admin_user_id = await getSinglePoolOwnerIdOrThrow(pool_id);
+
+    const gross_total_ar = roundMoney2(items.reduce((sum, r) => sum + Number(r.gross_amount_ar || 0), 0));
+    const platform_total_ar = roundMoney2(items.reduce((sum, r) => sum + Number(r.platform_amount_ar || 0), 0));
+    const owner_total_ar = roundMoney2(items.reduce((sum, r) => sum + Number(r.owner_amount_ar || 0), 0));
+
+    const txDates = items
+      .map((r) => r?.transaction_created_at ? new Date(r.transaction_created_at).getTime() : NaN)
+      .filter((n) => Number.isFinite(n));
+
+    const period_from = period_from_input || (txDates.length ? new Date(Math.min(...txDates)).toISOString() : null);
+    const period_to = period_to_input || (txDates.length ? new Date(Math.max(...txDates)).toISOString() : null);
+    const status = mark_paid ? "paid" : "draft";
+    const paid_at = mark_paid ? new Date().toISOString() : null;
+    const receipt_number = mark_paid ? makeOwnerReceiptNumber() : null;
+
+    const { data: payout, error: payoutErr } = await supabase
+      .from("owner_payouts")
+      .insert({
+        pool_id,
+        admin_user_id,
+        period_from,
+        period_to,
+        gross_total_ar,
+        platform_total_ar,
+        owner_total_ar,
+        status,
+        receipt_number,
+        note,
+        paid_at,
+        created_by: req.admin.id,
+      })
+      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by")
+      .single();
+
+    if (payoutErr) return res.status(500).json({ error: payoutErr.message });
+
+    const payoutItemsRows = items.map((r) => ({
+      payout_id: payout.id,
+      transaction_id: r.transaction_id,
+      voucher_session_id: r.voucher_session_id || null,
+      pool_id: r.pool_id,
+      gross_amount_ar: r.gross_amount_ar,
+      platform_share_pct: r.platform_share_pct,
+      platform_amount_ar: r.platform_amount_ar,
+      owner_share_pct: r.owner_share_pct,
+      owner_amount_ar: r.owner_amount_ar,
+      transaction_created_at: r.transaction_created_at || null,
+    }));
+
+    const { error: itemsErr } = await supabase
+      .from("owner_payout_items")
+      .insert(payoutItemsRows);
+
+    if (itemsErr) {
+      await supabase.from("owner_payouts").delete().eq("id", payout.id);
+      return res.status(500).json({ error: itemsErr.message });
+    }
+
+    return res.json({
+      ok: true,
+      payout: {
+        ...payout,
+        transaction_count: items.length,
+        system: "mikrotik",
+      },
+      items: payoutItemsRows,
+    });
+  } catch (e) {
+    console.error("ADMIN REVENUE PAYOUT CREATE EX", e);
+    return res.status(e?.httpStatus || 500).json({
+      error: e?.message || "internal_error",
+      details: e?.details || null,
+    });
+  }
+});
+
+// POST /api/admin/revenue/payouts/:id/mark-paid
+app.post("/api/admin/revenue/payouts/:id/mark-paid", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    const { data: payout, error: payoutErr } = await supabase
+      .from("owner_payouts")
+      .select("id,status,receipt_number,paid_at,pool_id")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (payoutErr) return res.status(500).json({ error: payoutErr.message });
+    if (!payout) return res.status(404).json({ error: "not_found" });
+
+    if (String(payout.status || "") === "paid") {
+      return res.json({ ok: true, payout });
+    }
+
+    const patch = {
+      status: "paid",
+      paid_at: new Date().toISOString(),
+      receipt_number: payout.receipt_number || makeOwnerReceiptNumber(),
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from("owner_payouts")
+      .update(patch)
+      .eq("id", id)
+      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by")
+      .single();
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true, payout: data });
+  } catch (e) {
+    console.error("ADMIN REVENUE PAYOUT MARK PAID EX", e);
     return res.status(500).json({ error: String(e?.message || e) });
   }
 });
@@ -3975,7 +4485,7 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
 
     let query = supabase
       .from("internet_pools")
-      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id", { count: "exact" });
+      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct", { count: "exact" });
 
     // 🔐 Pool scoping (server-side)
     if (!req.admin?.is_superadmin) {
@@ -4037,7 +4547,12 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
       return res.status(400).json({ error: "capacity_max_invalid" });
     }
 
-    const payload = { name, system };
+    const payload = {
+      name,
+      system,
+      platform_share_pct: 100,
+      owner_share_pct: 0,
+    };
     if (contact_phone !== null) payload.contact_phone = contact_phone.length ? contact_phone : null;
     if (mikrotik_ip) payload.mikrotik_ip = mikrotik_ip;
     if (radius_nas_id) payload.radius_nas_id = radius_nas_id;
@@ -4046,7 +4561,7 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
     const { data, error } = await supabase
       .from("internet_pools")
       .insert(payload)
-      .select("id,name,capacity_max,contact_phone")
+      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct")
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -4097,6 +4612,32 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       updates.radius_nas_id = v && v.length ? v : null;
     }
 
+    const hasPlatformSharePct = Object.prototype.hasOwnProperty.call(req.body || {}, "platform_share_pct");
+    const hasOwnerSharePct = Object.prototype.hasOwnProperty.call(req.body || {}, "owner_share_pct");
+    if (hasPlatformSharePct || hasOwnerSharePct) {
+      if (!req.admin?.is_superadmin) {
+        return res.status(403).json({ error: "superadmin_only" });
+      }
+
+      const platform_share_pct = Number(req.body.platform_share_pct);
+      const owner_share_pct = Number(req.body.owner_share_pct);
+
+      if (
+        !Number.isFinite(platform_share_pct) ||
+        !Number.isFinite(owner_share_pct) ||
+        platform_share_pct < 0 ||
+        platform_share_pct > 100 ||
+        owner_share_pct < 0 ||
+        owner_share_pct > 100 ||
+        Math.round((platform_share_pct + owner_share_pct) * 100) !== 10000
+      ) {
+        return res.status(400).json({ error: "invalid_commission_split" });
+      }
+
+      updates.platform_share_pct = Math.round(platform_share_pct);
+      updates.owner_share_pct = Math.round(owner_share_pct);
+    }
+
     // Safety: don't allow clearing mikrotik_ip on an existing mikrotik pool
     if (hasMikrotikIp && updates.mikrotik_ip === null) {
       const { data: curPool, error: curErr } = await supabase
@@ -4117,7 +4658,7 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       .from("internet_pools")
       .update(updates)
       .eq("id", id)
-      .select("id,name,capacity_max,contact_phone")
+      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct")
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
