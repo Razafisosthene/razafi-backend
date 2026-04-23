@@ -89,11 +89,11 @@ function normalizePoolLiveStatsPayload(data) {
 async function guardSession(meEl) {
   try {
     const me = await fetchJSON("/api/admin/me");
-    if (meEl) meEl.textContent = `${me.username || "admin"}`;
-    return true;
+    if (meEl) meEl.textContent = `${me.email || me.username || "admin"}`;
+    return me;
   } catch {
     window.location.href = "/admin/login.html";
-    return false;
+    return null;
   }
 }
 
@@ -118,9 +118,31 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   let pools = [];
   let allAps = [];
+  let currentAdmin = null;
 
   // Active system view for this page (portal vs mikrotik)
   let activeSystem = "portal";
+
+  function isSuperadmin() {
+    return !!currentAdmin?.is_superadmin;
+  }
+
+  function setCreateVisibilityByRole() {
+    const canManage = isSuperadmin();
+    if (createPoolBtn) createPoolBtn.style.display = canManage ? "" : "none";
+
+    const createFields = [
+      newPoolName,
+      newPoolCap,
+      newSystemEl,
+      newMikrotikIpEl,
+      newRadiusNasIdEl,
+      newContactPhoneEl,
+    ];
+    createFields.forEach((el) => {
+      if (el) el.disabled = !canManage;
+    });
+  }
 
   function setActiveSystem(sys) {
     const next = (sys === "mikrotik") ? "mikrotik" : "portal";
@@ -138,16 +160,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     const isM = sys === "mikrotik";
     if (newMikrotikIpEl) newMikrotikIpEl.style.display = isM ? "" : "none";
     if (newRadiusNasIdEl) newRadiusNasIdEl.style.display = isM ? "" : "none";
-    if (newMikrotikIpEl) newMikrotikIpEl.required = isM;
+    if (newMikrotikIpEl) newMikrotikIpEl.required = isM && isSuperadmin();
   }
 
-  if (!(await guardSession(meEl))) return;
+  currentAdmin = await guardSession(meEl);
+  if (!currentAdmin) return;
 
   sysPortalBtn?.addEventListener("click", () => { setActiveSystem("portal"); loadPools().catch(err => showMsg(msgEl, err.message, true)); });
   sysMikrotikBtn?.addEventListener("click", () => { setActiveSystem("mikrotik"); loadPools().catch(err => showMsg(msgEl, err.message, true)); });
   newSystemEl?.addEventListener("change", () => { updateCreateFieldsVisibility(); });
 
   setActiveSystem("portal");
+  setCreateVisibilityByRole();
 
   async function loadAllAps() {
     try {
@@ -211,6 +235,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       const isMikrotik = system === "mikrotik";
       const mikrotikIp = p.mikrotik_ip || p.mikrotikIp || "";
       const radiusNasId = p.radius_nas_id || p.radiusNasId || "";
+      const platformSharePct = Number.isFinite(Number(p.platform_share_pct)) ? Number(p.platform_share_pct) : 100;
+      const ownerSharePct = Number.isFinite(Number(p.owner_share_pct)) ? Number(p.owner_share_pct) : 0;
+      const canManage = isSuperadmin();
 
       const stats = liveStatsByPool[pid] || null;
       const liveClients = stats ? toNum(stats.active_clients, 0) : 0;
@@ -219,39 +246,109 @@ document.addEventListener("DOMContentLoaded", async () => {
         : p.capacity_max;
       const pp = pct(liveClients, capacityForPct);
 
+      const commissionBlock = canManage
+        ? `
+          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; align-items:flex-end;">
+            <div>
+              <div style="opacity:.75; font-size:12px; margin-bottom:4px;">Part plateforme (%)</div>
+              <input
+                data-platform-pct="${esc(pid)}"
+                type="number"
+                min="0"
+                max="100"
+                step="1"
+                value="${esc(platformSharePct)}"
+                placeholder="100"
+                style="width:160px; margin-bottom:0;"
+              />
+            </div>
+            <div>
+              <div style="opacity:.75; font-size:12px; margin-bottom:4px;">Part propriétaire (%)</div>
+              <input
+                data-owner-pct="${esc(pid)}"
+                type="number"
+                min="0"
+                max="100"
+                step="1"
+                value="${esc(ownerSharePct)}"
+                placeholder="0"
+                style="width:160px; margin-bottom:0;"
+              />
+            </div>
+          </div>
+        `
+        : `
+          <div style="margin-top:8px; font-size:13px;">
+            <span style="opacity:.75;">Votre part :</span>
+            <strong>${esc(ownerSharePct)}%</strong>
+          </div>
+        `;
+
       return `
         <tr style="border-top:1px solid rgba(0,0,0,.06);" data-poolrow="${esc(pid)}">
           <td style="padding:10px;">
             <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-weight:700;">
-              <input data-name="${esc(pid)}" value="${esc(name)}" style="width:260px; max-width:100%; margin-bottom:0;" />
+              <input
+                data-name="${esc(pid)}"
+                value="${esc(name)}"
+                style="width:260px; max-width:100%; margin-bottom:0;"
+                ${canManage ? "" : "readonly disabled"}
+              />
               <span style="font-size:12px; padding:2px 10px; border-radius:999px; background:${system === "mikrotik" ? "rgba(13,110,253,.12)" : "rgba(0,0,0,.06)"}; color:${system === "mikrotik" ? "#0d6efd" : "rgba(0,0,0,.75)"};">
                 ${system}
               </span>
             </div>
             ${isMikrotik ? `
               <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
-                <input data-mtik-ip="${esc(pid)}" value="${esc(mikrotikIp)}" placeholder="MikroTik IP (ex: 192.168.88.1)" style="width:220px; margin-bottom:0;" />
-                <input data-nas-id="${esc(pid)}" value="${esc(radiusNasId)}" placeholder="NAS ID (ex: razafi-pool-1)" style="width:200px; margin-bottom:0;" />
+                <input
+                  data-mtik-ip="${esc(pid)}"
+                  value="${esc(mikrotikIp)}"
+                  placeholder="MikroTik IP (ex: 192.168.88.1)"
+                  style="width:220px; margin-bottom:0;"
+                  ${canManage ? "" : "readonly disabled"}
+                />
+                <input
+                  data-nas-id="${esc(pid)}"
+                  value="${esc(radiusNasId)}"
+                  placeholder="NAS ID (ex: razafi-pool-1)"
+                  style="width:200px; margin-bottom:0;"
+                  ${canManage ? "" : "readonly disabled"}
+                />
               </div>
             ` : ``}
+            ${commissionBlock}
             <div style="opacity:.7; font-size:12px; margin-top:6px;">ID: ${esc(pid)}</div>
           </td>
 
           <td style="padding:10px;">
-            <input data-cap="${esc(pid)}" type="number" min="0" value="${esc(cap)}" placeholder="—" style="width:160px; margin-bottom:0;" />
+            <input
+              data-cap="${esc(pid)}"
+              type="number"
+              min="0"
+              value="${esc(cap)}"
+              placeholder="—"
+              style="width:160px; margin-bottom:0;"
+              ${canManage ? "" : "readonly disabled"}
+            />
           </td>
 
           <td style="padding:10px;">
-            <input data-contact-phone="${esc(pid)}" value="${esc(contactPhone)}" placeholder="Contact phone (optional)" style="width:220px; max-width:100%; margin-bottom:0;" />
+            <input
+              data-contact-phone="${esc(pid)}"
+              value="${esc(contactPhone)}"
+              placeholder="Contact phone (optional)"
+              style="width:220px; max-width:100%; margin-bottom:0;"
+              ${canManage ? "" : "readonly disabled"}
+            />
           </td>
 
           <td style="padding:10px;">${esc(liveClients)}</td>
           <td style="padding:10px;">${pp === null ? "—" : pctBar(pp)}</td>
 
           <td style="padding:10px; display:flex; gap:8px; flex-wrap:wrap;">
-            <button type="button" data-save="${esc(pid)}" style="width:auto; padding:10px 14px;">Save</button>
+            ${canManage ? `<button type="button" data-save="${esc(pid)}" style="width:auto; padding:10px 14px;">Enregistrer</button>` : ``}
             <button type="button" data-toggle="${esc(pid)}" style="width:auto; padding:10px 14px;">APs</button>
-            <button type="button" data-delete="${esc(pid)}" class="danger" style="width:auto; padding:10px 14px;">Delete</button>
+            ${canManage ? `<button type="button" data-delete="${esc(pid)}" class="danger" style="width:auto; padding:10px 14px;">Delete</button>` : ``}
           </td>
         </tr>
 
@@ -283,9 +380,34 @@ document.addEventListener("DOMContentLoaded", async () => {
         const radius_nas_id = (nasInput?.value || "").trim();
 
         const payload = { name, capacity_max, contact_phone };
+
         if (mtikIpInput || nasInput) {
           payload.mikrotik_ip = mikrotik_ip || null;
           payload.radius_nas_id = radius_nas_id || null;
+        }
+
+        if (isSuperadmin()) {
+          const platformInput = rowsEl.querySelector(`input[data-platform-pct="${CSS.escape(pid)}"]`);
+          const ownerInput = rowsEl.querySelector(`input[data-owner-pct="${CSS.escape(pid)}"]`);
+
+          const platform_share_pct = Number(platformInput?.value);
+          const owner_share_pct = Number(ownerInput?.value);
+
+          if (
+            !Number.isFinite(platform_share_pct) ||
+            !Number.isFinite(owner_share_pct) ||
+            platform_share_pct < 0 ||
+            platform_share_pct > 100 ||
+            owner_share_pct < 0 ||
+            owner_share_pct > 100 ||
+            (platform_share_pct + owner_share_pct) !== 100
+          ) {
+            showMsg(msgEl, "La somme des parts doit être exactement égale à 100%.", true);
+            return;
+          }
+
+          payload.platform_share_pct = Math.round(platform_share_pct);
+          payload.owner_share_pct = Math.round(owner_share_pct);
         }
 
         try {
@@ -296,9 +418,9 @@ document.addEventListener("DOMContentLoaded", async () => {
             body: JSON.stringify(payload),
           });
           await loadPools();
-          showMsg(msgEl, "Saved ✅", false);
+          showMsg(msgEl, "Enregistré ✅", false);
         } catch (e) {
-          showMsg(msgEl, `Save failed: ${e.message}`, true);
+          showMsg(msgEl, `Échec de l'enregistrement : ${e.message}`, true);
         } finally {
           btn.disabled = false;
         }
@@ -391,6 +513,8 @@ document.addEventListener("DOMContentLoaded", async () => {
                   ? Math.min(999, Math.round((tanC / apCapNum) * 100))
                   : null;
 
+                const canManageAps = isSuperadmin();
+
                 return `
                   <tr style="border-top:1px solid rgba(0,0,0,.06);">
                     <td style="padding:10px;">
@@ -401,20 +525,28 @@ document.addEventListener("DOMContentLoaded", async () => {
                     <td style="padding:10px;">${tanDisp}</td>
                     <td style="padding:10px;">
                       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                        <input data-apcap="${esc(mac)}" type="number" min="0"
+                        <input
+                          data-apcap="${esc(mac)}"
+                          type="number"
+                          min="0"
                           value="${apCapNum === null || Number.isNaN(apCapNum) ? "" : esc(apCapNum)}"
-                          placeholder="—" style="width:120px; margin-bottom:0;" />
-                        <button type="button" data-saveapcap="${esc(mac)}" style="width:auto; padding:10px 14px;">Save</button>
+                          placeholder="—"
+                          style="width:120px; margin-bottom:0;"
+                          ${canManageAps ? "" : "readonly disabled"}
+                        />
+                        ${canManageAps ? `<button type="button" data-saveapcap="${esc(mac)}" style="width:auto; padding:10px 14px;">Save</button>` : ``}
                       </div>
                     </td>
                     <td style="padding:10px;">${apPct === null ? "—" : pctBar(apPct)}</td>
                     <td style="padding:10px;">
-                      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                        <select data-move="${esc(mac)}" style="min-width:220px; padding:10px; border-radius:10px; border:1px solid #ddd;">
-                          ${poolOptions}
-                        </select>
-                        <button type="button" data-movebtn="${esc(mac)}" style="width:auto; padding:10px 14px;">Move</button>
-                      </div>
+                      ${canManageAps ? `
+                        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                          <select data-move="${esc(mac)}" style="min-width:220px; padding:10px; border-radius:10px; border:1px solid #ddd;">
+                            ${poolOptions}
+                          </select>
+                          <button type="button" data-movebtn="${esc(mac)}" style="width:auto; padding:10px 14px;">Move</button>
+                        </div>
+                      ` : `<span style="opacity:.7;">Lecture seule</span>`}
                     </td>
                   </tr>
                 `;
