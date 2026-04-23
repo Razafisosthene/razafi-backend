@@ -585,7 +585,7 @@ async function loadPayouts() {
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${fmtAr(it.gross_total_ar)}</td>
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08); font-weight:800;">${fmtAr(it.owner_total_ar)}</td>
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${pillHTML(status, payoutTone(status))}</td>
-          <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.receipt_number || "—")}</td>
+          <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${it.receipt_number ? `<a href="/api/admin/revenue/payouts/${encodeURIComponent(it.id)}/receipt" target="_blank" rel="noopener" style="color:#2563eb; font-weight:800; text-decoration:none;">${esc(it.receipt_number)}</a>` : "—"}</td>
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);" onclick="event.stopPropagation()">
             ${canMarkPaid ? `<button class="mark-paid-btn" data-payoutid="${esc(it.id)}" style="padding:8px 10px; border:none; border-radius:10px; background:#16a34a; color:#fff; font-weight:800; cursor:pointer;">Marquer payé</button>` : "—"}
           </td>
@@ -754,7 +754,7 @@ async function showPayoutDetail(it) {
         <div style="text-align:right;">
           ${pillHTML(payout.status || "draft", payoutTone(payout.status || "draft"))}
           <div style="opacity:.7; font-size:12px; margin-top:10px;">Reçu</div>
-          <div style="font-weight:900; font-size:16px; margin-top:4px;">${esc(payout.receipt_number || "—")}</div>
+          <div style="font-weight:900; font-size:16px; margin-top:4px;">${payout.receipt_number ? `<a href="/api/admin/revenue/payouts/${encodeURIComponent(payout.id)}/receipt" target="_blank" rel="noopener" style="color:#2563eb; text-decoration:none;">${esc(payout.receipt_number)}</a>` : "—"}</div>
         </div>
       </div>
     </div>
