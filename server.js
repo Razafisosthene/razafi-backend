@@ -9491,12 +9491,13 @@ doc.fontSize(12);
 
 doc.text(`Numéro: ${payout.receipt_number}`, 60, 130);
 doc.text(`Date paiement: ${new Date(payout.paid_at).toLocaleString()}`, 60, 145);
-doc.text(`Pool: ${payout.internet_pools?.name || "-"}`, 60, 160);
-doc.text(`Propriétaire: ${payout.admin_users?.email || "-"}`, 60, 175);
+doc.text(`Pool: ${pool?.name || "-"}`, 60, 160);
+doc.text(`Propriétaire: ${owner?.email || "-"}`, 60, 175);
 
 // ============================
 // AMOUNT SECTION
 // ============================
+
 doc.moveDown(4);
 
 doc.fontSize(14).text("Détails financiers", { underline: true });
