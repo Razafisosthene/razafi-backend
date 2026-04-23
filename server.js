@@ -9446,41 +9446,88 @@ app.get("/api/admin/revenue/payouts/:id/receipt", requireAdmin, async (req, res)
         .maybeSingle(),
     ]);
 
-    const doc = new PDFDocument({ margin: 50 });
+const doc = new PDFDocument({ margin: 50 });
 
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      `inline; filename=receipt-${payout.receipt_number || payout.id}.pdf`
-    );
+res.setHeader("Content-Type", "application/pdf");
+res.setHeader(
+  "Content-Disposition",
+  `inline; filename=receipt-${payout.receipt_number}.pdf`
+);
 
-    doc.pipe(res);
+doc.pipe(res);
 
-    doc.fontSize(20).text("RAZAFI WiFi", { align: "center" });
-    doc.moveDown();
-    doc.fontSize(14).text("Reçu de paiement", { align: "center" });
+// ============================
+// LOGO
+// ============================
+const logoPath = path.join(__dirname, "public", "RAZAFI.png");
 
-    doc.moveDown(2);
+try {
+  doc.image(logoPath, 50, 45, { width: 120 });
+} catch (e) {
+  console.log("Logo not found, skipping...");
+}
 
-    doc.fontSize(12);
-    doc.text(`Numéro: ${payout.receipt_number || "-"}`);
-    doc.text(`Date paiement: ${payout.paid_at ? new Date(payout.paid_at).toLocaleString() : "-"}`);
-    doc.text(`Pool: ${pool?.name || "-"}`);
-    doc.text(`Propriétaire: ${owner?.email || "-"}`);
+// ============================
+// HEADER
+// ============================
+doc
+  .fontSize(20)
+  .text("RAZAFI WiFi", 200, 50, { align: "right" });
 
-    doc.moveDown();
+doc
+  .fontSize(12)
+  .text("Reçu de paiement", { align: "right" });
 
-    doc.text(`Montant brut: ${payout.gross_total_ar ?? 0} Ar`);
-    doc.text(`Part plateforme: ${payout.platform_total_ar ?? 0} Ar`);
-    doc.text(`Part propriétaire: ${payout.owner_total_ar ?? 0} Ar`);
+doc.moveDown(2);
 
-    doc.moveDown(2);
+// ============================
+// INFOS BOX
+// ============================
+doc
+  .rect(50, 120, 500, 100)
+  .stroke();
 
-    doc.text("Merci pour votre collaboration avec RAZAFI.", {
-      align: "center",
-    });
+doc.fontSize(12);
 
-    doc.end();
+doc.text(`Numéro: ${payout.receipt_number}`, 60, 130);
+doc.text(`Date paiement: ${new Date(payout.paid_at).toLocaleString()}`, 60, 145);
+doc.text(`Pool: ${payout.internet_pools?.name || "-"}`, 60, 160);
+doc.text(`Propriétaire: ${payout.admin_users?.email || "-"}`, 60, 175);
+
+// ============================
+// AMOUNT SECTION
+// ============================
+doc.moveDown(4);
+
+doc.fontSize(14).text("Détails financiers", { underline: true });
+
+doc.moveDown();
+
+doc.fontSize(12);
+
+doc.text(`Montant brut: ${payout.gross_total_ar} Ar`);
+doc.text(`Part plateforme: ${payout.platform_total_ar} Ar`);
+doc.text(`Part propriétaire: ${payout.owner_total_ar} Ar`);
+
+doc.moveDown(3);
+
+// ============================
+// FOOTER
+// ============================
+doc
+  .fontSize(10)
+  .text("Merci pour votre collaboration avec RAZAFI.", {
+    align: "center",
+  });
+
+doc
+  .fontSize(9)
+  .text("RAZAFI WiFi System — Madagascar", {
+    align: "center",
+  });
+
+doc.end();
+
   } catch (err) {
     console.error("RECEIPT ERROR", err);
     if (!res.headersSent) {
