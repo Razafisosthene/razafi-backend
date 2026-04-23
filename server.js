@@ -2519,22 +2519,36 @@ async function getShareTransactionsCore({ admin, from = null, to = null, search 
 }
 
 async function getSinglePoolOwnerIdOrThrow(poolId) {
-  const { data, error } = await supabase
-    .from("admin_user_pools")
-    .select("admin_user_id")
-    .eq("pool_id", poolId);
-
-  if (error) throw error;
-
-  const ownerIds = Array.from(new Set((data || []).map((r) => String(r?.admin_user_id || "").trim()).filter(Boolean)));
-  if (ownerIds.length !== 1) {
-    const err = new Error("pool_owner_assignment_invalid");
+  const cleanPoolId = String(poolId || "").trim();
+  if (!cleanPoolId) {
+    const err = new Error("pool_id_required");
     err.httpStatus = 400;
-    err.details = { pool_id: poolId, owner_count: ownerIds.length };
     throw err;
   }
 
-  return ownerIds[0];
+  const { data, error } = await supabase
+    .from("internet_pools")
+    .select("id, owner_admin_user_id")
+    .eq("id", cleanPoolId)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) {
+    const err = new Error("pool_not_found");
+    err.httpStatus = 404;
+    err.details = { pool_id: cleanPoolId };
+    throw err;
+  }
+
+  const ownerId = String(data?.owner_admin_user_id || "").trim();
+  if (!ownerId) {
+    const err = new Error("pool_owner_assignment_invalid");
+    err.httpStatus = 400;
+    err.details = { pool_id: cleanPoolId, owner_count: 0, source: "internet_pools.owner_admin_user_id" };
+    throw err;
+  }
+
+  return ownerId;
 }
 
 // GET /api/admin/revenue/share-transactions?from=&to=&search=&limit=200&offset=0
@@ -4485,7 +4499,7 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
 
     let query = supabase
       .from("internet_pools")
-      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct", { count: "exact" });
+      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id", { count: "exact" });
 
     // 🔐 Pool scoping (server-side)
     if (!req.admin?.is_superadmin) {
@@ -4561,7 +4575,7 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
     const { data, error } = await supabase
       .from("internet_pools")
       .insert(payload)
-      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct")
+      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id")
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -4638,6 +4652,35 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       updates.owner_share_pct = Math.round(owner_share_pct);
     }
 
+    const hasOwnerAdminUserId = Object.prototype.hasOwnProperty.call(req.body || {}, "owner_admin_user_id");
+    if (hasOwnerAdminUserId) {
+      if (!req.admin?.is_superadmin) {
+        return res.status(403).json({ error: "superadmin_only" });
+      }
+
+      const owner_admin_user_id =
+        req.body.owner_admin_user_id === null || req.body.owner_admin_user_id === ""
+          ? null
+          : String(req.body.owner_admin_user_id).trim();
+
+      if (owner_admin_user_id) {
+        const { data: ownerUser, error: ownerErr } = await supabase
+          .from("admin_users")
+          .select("id")
+          .eq("id", owner_admin_user_id)
+          .maybeSingle();
+
+        if (ownerErr) {
+          return res.status(400).json({ error: ownerErr.message, details: ownerErr });
+        }
+        if (!ownerUser) {
+          return res.status(400).json({ error: "owner_admin_user_id_invalid" });
+        }
+      }
+
+      updates.owner_admin_user_id = owner_admin_user_id || null;
+    }
+
     // Safety: don't allow clearing mikrotik_ip on an existing mikrotik pool
     if (hasMikrotikIp && updates.mikrotik_ip === null) {
       const { data: curPool, error: curErr } = await supabase
@@ -4658,7 +4701,7 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       .from("internet_pools")
       .update(updates)
       .eq("id", id)
-      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct")
+      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id")
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
