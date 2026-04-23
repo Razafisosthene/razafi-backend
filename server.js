@@ -2,6 +2,7 @@
 // ---------------------------------------------------------------------------
 
 import express from "express";
+import PDFDocument from "pdfkit";
 import axios from "axios";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -9397,6 +9398,96 @@ app.get("/api/new/pool-status", async (req, res) => {
   }
 });
 
+// ------------------------------------------
+// RECEIPT PDF ROUTE
+// ------------------------------------------
+
+app.get("/api/admin/revenue/payouts/:id/receipt", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    let q = supabase
+      .from("owner_payouts")
+      .select("id,pool_id,admin_user_id,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,paid_at,created_at")
+      .eq("id", id);
+
+    if (!req.admin?.is_superadmin) {
+      const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
+      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+      q = q.in("pool_id", allowed);
+    }
+
+    const { data: payout, error } = await q.maybeSingle();
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+    if (!payout) {
+      return res.status(404).json({ error: "payout_not_found" });
+    }
+
+    if (String(payout.status || "").toLowerCase() !== "paid") {
+      return res.status(400).json({ error: "payout_not_paid" });
+    }
+
+    const [{ data: pool }, { data: owner }] = await Promise.all([
+      supabase
+        .from("internet_pools")
+        .select("id,name")
+        .eq("id", payout.pool_id)
+        .maybeSingle(),
+      supabase
+        .from("admin_users")
+        .select("id,email")
+        .eq("id", payout.admin_user_id)
+        .maybeSingle(),
+    ]);
+
+    const doc = new PDFDocument({ margin: 50 });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename=receipt-${payout.receipt_number || payout.id}.pdf`
+    );
+
+    doc.pipe(res);
+
+    doc.fontSize(20).text("RAZAFI WiFi", { align: "center" });
+    doc.moveDown();
+    doc.fontSize(14).text("Reçu de paiement", { align: "center" });
+
+    doc.moveDown(2);
+
+    doc.fontSize(12);
+    doc.text(`Numéro: ${payout.receipt_number || "-"}`);
+    doc.text(`Date paiement: ${payout.paid_at ? new Date(payout.paid_at).toLocaleString() : "-"}`);
+    doc.text(`Pool: ${pool?.name || "-"}`);
+    doc.text(`Propriétaire: ${owner?.email || "-"}`);
+
+    doc.moveDown();
+
+    doc.text(`Montant brut: ${payout.gross_total_ar ?? 0} Ar`);
+    doc.text(`Part plateforme: ${payout.platform_total_ar ?? 0} Ar`);
+    doc.text(`Part propriétaire: ${payout.owner_total_ar ?? 0} Ar`);
+
+    doc.moveDown(2);
+
+    doc.text("Merci pour votre collaboration avec RAZAFI.", {
+      align: "center",
+    });
+
+    doc.end();
+  } catch (err) {
+    console.error("RECEIPT ERROR", err);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: "receipt_generation_failed" });
+    }
+  }
+});
 // ---------------------------------------------------------------------------
 // START SERVER
 // ---------------------------------------------------------------------------
