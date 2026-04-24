@@ -9566,6 +9566,144 @@ app.get("/api/new/pool-status", async (req, res) => {
   }
 });
 
+// ------------------------------------------
+// RECEIPT PDF ROUTE
+// ------------------------------------------
+
+app.get("/api/admin/revenue/payouts/:id/receipt", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    let q = supabase
+      .from("owner_payouts")
+      .select("id,pool_id,admin_user_id,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,paid_at,created_at")
+      .eq("id", id);
+
+    if (!req.admin?.is_superadmin) {
+      const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
+      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+      q = q.in("pool_id", allowed);
+    }
+
+    const { data: payout, error } = await q.maybeSingle();
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+    if (!payout) {
+      return res.status(404).json({ error: "payout_not_found" });
+    }
+
+    if (String(payout.status || "").toLowerCase() !== "paid") {
+      return res.status(400).json({ error: "payout_not_paid" });
+    }
+
+    const [{ data: pool }, { data: owner }] = await Promise.all([
+      supabase
+        .from("internet_pools")
+        .select("id,name")
+        .eq("id", payout.pool_id)
+        .maybeSingle(),
+      supabase
+        .from("admin_users")
+        .select("id,email")
+        .eq("id", payout.admin_user_id)
+        .maybeSingle(),
+    ]);
+
+const doc = new PDFDocument({ margin: 50 });
+
+res.setHeader("Content-Type", "application/pdf");
+res.setHeader(
+  "Content-Disposition",
+  `inline; filename=receipt-${payout.receipt_number}.pdf`
+);
+
+doc.pipe(res);
+
+// ============================
+// LOGO
+// ============================
+const logoPath = path.join(__dirname, "public", "RAZAFI.png");
+
+try {
+  doc.image(logoPath, 50, 45, { width: 120 });
+} catch (e) {
+  console.log("Logo not found, skipping...");
+}
+
+// ============================
+// HEADER
+// ============================
+doc
+  .fontSize(20)
+  .text("RAZAFI WiFi", 200, 50, { align: "right" });
+
+doc
+  .fontSize(12)
+  .text("Reçu de paiement", { align: "right" });
+
+doc.moveDown(2);
+
+// ============================
+// INFOS BOX
+// ============================
+doc
+  .rect(50, 120, 500, 100)
+  .stroke();
+
+doc.fontSize(12);
+
+doc.text(`Numéro: ${payout.receipt_number}`, 60, 130);
+doc.text(`Date paiement: ${new Date(payout.paid_at).toLocaleString()}`, 60, 145);
+doc.text(`Pool: ${pool?.name || "-"}`, 60, 160);
+doc.text(`Propriétaire: ${owner?.email || "-"}`, 60, 175);
+
+// ============================
+// AMOUNT SECTION
+// ============================
+
+doc.moveDown(4);
+
+doc.fontSize(14).text("Détails financiers", { underline: true });
+
+doc.moveDown();
+
+doc.fontSize(12);
+
+doc.text(`Montant brut: ${payout.gross_total_ar} Ar`);
+doc.text(`Part plateforme: ${payout.platform_total_ar} Ar`);
+doc.text(`Part propriétaire: ${payout.owner_total_ar} Ar`);
+
+doc.moveDown(3);
+
+// ============================
+// FOOTER
+// ============================
+doc
+  .fontSize(10)
+  .text("Merci pour votre collaboration avec RAZAFI.", {
+    align: "center",
+  });
+
+doc
+  .fontSize(9)
+  .text("RAZAFI WiFi System — Madagascar", {
+    align: "center",
+  });
+
+doc.end();
+
+  } catch (err) {
+    console.error("RECEIPT ERROR", err);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: "receipt_generation_failed" });
+    }
+  }
+});
 // ---------------------------------------------------------------------------
 // START SERVER
 // ---------------------------------------------------------------------------
