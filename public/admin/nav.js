@@ -66,6 +66,9 @@
           <a class="rz-item" data-href="/admin/revenue.html" href="/admin/revenue.html">
             <span class="rz-item-label">Revenue</span>
           </a>
+          <a class="rz-item" data-href="/admin/owner-revenue.html" href="/admin/owner-revenue.html">
+          <span class="rz-item-label">Owner Revenue</span>
+          </a>
           <a class="rz-item" data-href="/admin/users.html" href="/admin/users.html" id="rzNavUsers">
             <span class="rz-item-label">Users</span>
           </a>
