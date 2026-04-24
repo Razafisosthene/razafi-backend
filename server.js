@@ -3031,6 +3031,180 @@ app.post("/api/admin/revenue/payouts/create", requireAdmin, requireSuperadmin, a
   }
 });
 
+
+// POST /api/admin/revenue/payouts/auto-create
+// Auto-create draft owner payouts from paid transactions not yet included in any owner payout.
+// Safe rules:
+// - Superadmin only
+// - MikroTik pools only (via getShareTransactionsCore)
+// - Draft only: admin still manually clicks "Marquer payé" after real payout
+// - One draft payout per pool/owner group
+// - Existing payout items are excluded to avoid double payout
+app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const from = normalizeDateInput(req.body?.from ?? req.query?.from);
+    const to = normalizeDateInput(req.body?.to ?? req.query?.to);
+    const search = String(req.body?.search ?? req.query?.search ?? "").trim();
+    const note = String(req.body?.note ?? req.query?.note ?? "Auto payout draft").trim() || "Auto payout draft";
+
+    const requestedPoolId = String(req.body?.pool_id ?? req.query?.pool_id ?? "").trim();
+
+    // We scan paid revenue rows in pages, then keep only rows not yet attached to owner_payout_items.
+    // This avoids creating duplicate payouts and keeps the endpoint safe for repeated clicks.
+    const pageLimit = 500;
+    const maxScanRaw = Number(req.body?.max_scan ?? req.query?.max_scan ?? 5000);
+    const maxScan = Number.isFinite(maxScanRaw) ? Math.min(Math.max(Math.floor(maxScanRaw), pageLimit), 20000) : 5000;
+
+    let offset = 0;
+    const unpaidTxById = new Map();
+
+    while (offset < maxScan) {
+      const { items } = await getShareTransactionsCore({
+        admin: req.admin,
+        from,
+        to,
+        search,
+        limit: pageLimit,
+        offset,
+        unpaidOnly: true,
+      });
+
+      for (const row of items || []) {
+        const txId = String(row?.transaction_id || "").trim();
+        if (!txId) continue;
+        if (requestedPoolId && String(row?.pool_id || "").trim() !== requestedPoolId) continue;
+        unpaidTxById.set(txId, row);
+      }
+
+      // getShareTransactionsCore returns only unpaid rows after local filtering, so do not use
+      // items.length to decide if the source page ended. Instead, stop only after scanning maxScan.
+      offset += pageLimit;
+    }
+
+    const unpaidItems = Array.from(unpaidTxById.values());
+
+    if (!unpaidItems.length) {
+      return res.json({
+        ok: true,
+        created_count: 0,
+        created: [],
+        skipped: [],
+        message: "no_unpaid_transactions",
+        scanned_limit: maxScan,
+        system: "mikrotik",
+      });
+    }
+
+    const groups = new Map();
+    for (const row of unpaidItems) {
+      const poolId = String(row?.pool_id || "").trim();
+      if (!poolId) continue;
+      if (!groups.has(poolId)) groups.set(poolId, []);
+      groups.get(poolId).push(row);
+    }
+
+    const created = [];
+    const skipped = [];
+
+    for (const [pool_id, rows] of groups.entries()) {
+      try {
+        if (!rows.length) continue;
+
+        const admin_user_id = await getSinglePoolOwnerIdOrThrow(pool_id);
+
+        const gross_total_ar = roundMoney2(rows.reduce((sum, r) => sum + Number(r.gross_amount_ar || 0), 0));
+        const platform_total_ar = roundMoney2(rows.reduce((sum, r) => sum + Number(r.platform_amount_ar || 0), 0));
+        const owner_total_ar = roundMoney2(rows.reduce((sum, r) => sum + Number(r.owner_amount_ar || 0), 0));
+
+        const txDates = rows
+          .map((r) => r?.transaction_created_at ? new Date(r.transaction_created_at).getTime() : NaN)
+          .filter((n) => Number.isFinite(n));
+
+        const period_from = txDates.length ? new Date(Math.min(...txDates)).toISOString() : null;
+        const period_to = txDates.length ? new Date(Math.max(...txDates)).toISOString() : null;
+
+        const { data: payout, error: payoutErr } = await supabase
+          .from("owner_payouts")
+          .insert({
+            pool_id,
+            admin_user_id,
+            period_from,
+            period_to,
+            gross_total_ar,
+            platform_total_ar,
+            owner_total_ar,
+            status: "draft",
+            receipt_number: null,
+            note,
+            paid_at: null,
+            created_by: req.admin.id,
+            paid_by: null,
+          })
+          .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by")
+          .single();
+
+        if (payoutErr) throw payoutErr;
+
+        const payoutItemsRows = rows.map((r) => ({
+          payout_id: payout.id,
+          transaction_id: r.transaction_id,
+          voucher_session_id: r.voucher_session_id || null,
+          pool_id: r.pool_id,
+          gross_amount_ar: r.gross_amount_ar,
+          platform_share_pct: r.platform_share_pct,
+          platform_amount_ar: r.platform_amount_ar,
+          owner_share_pct: r.owner_share_pct,
+          owner_amount_ar: r.owner_amount_ar,
+          transaction_created_at: r.transaction_created_at || null,
+        }));
+
+        const { error: itemsErr } = await supabase
+          .from("owner_payout_items")
+          .insert(payoutItemsRows);
+
+        if (itemsErr) {
+          // Roll back the payout header if item insert fails.
+          await supabase.from("owner_payouts").delete().eq("id", payout.id);
+          throw itemsErr;
+        }
+
+        created.push({
+          ...payout,
+          pool_name: rows[0]?.pool_name || null,
+          owner_email: null,
+          transaction_count: rows.length,
+          system: "mikrotik",
+        });
+      } catch (groupErr) {
+        skipped.push({
+          pool_id,
+          transaction_count: rows.length,
+          error: groupErr?.message || "group_failed",
+          details: groupErr?.details || null,
+        });
+      }
+    }
+
+    return res.json({
+      ok: true,
+      created_count: created.length,
+      skipped_count: skipped.length,
+      created,
+      skipped,
+      scanned_limit: maxScan,
+      system: "mikrotik",
+    });
+  } catch (e) {
+    console.error("ADMIN REVENUE AUTO PAYOUT CREATE EX", e);
+    return res.status(e?.httpStatus || 500).json({
+      error: e?.message || "internal_error",
+      details: e?.details || null,
+    });
+  }
+});
+
 // POST /api/admin/revenue/payouts/:id/mark-paid
 app.post("/api/admin/revenue/payouts/:id/mark-paid", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
