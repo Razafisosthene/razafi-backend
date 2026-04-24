@@ -246,9 +246,10 @@ async function requireAdmin(req, res, next) {
         .map((r) => (r?.pool_id === undefined || r?.pool_id === null ? "" : String(r.pool_id).trim()))
         .filter(Boolean);
 
-      if (!pool_ids.length) {
-        return res.status(403).json({ error: "no_pools_assigned" });
-      }
+      // Do not block here when no access pools are assigned.
+      // Some users can be business owners only (internet_pools.owner_admin_user_id)
+      // and still need /api/owner/* dashboard access.
+      // Route-level pool scoping still protects admin data endpoints.
     }
 
     // attach admin to request
@@ -287,7 +288,8 @@ async function requireAdmin(req, res, next) {
         fullPath === "/api/admin/pools" ||
         fullPath === "/api/admin/pool-live-stats" ||
         fullPath === "/api/admin/aps" ||
-        fullPath.startsWith("/api/admin/revenue/");
+        fullPath.startsWith("/api/admin/revenue/") ||
+        fullPath.startsWith("/api/owner/");
 
       if (!allow) {
         return res.status(403).json({ error: "readonly_forbidden" });
@@ -9538,6 +9540,200 @@ app.get("/api/new/pool-status", async (req, res) => {
   } catch (e) {
     console.error("pool-status error", e);
     return res.status(500).json({ error: "internal" });
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// OWNER DASHBOARD — Revenue summary for the logged-in business owner
+// ---------------------------------------------------------------------------
+// GET /api/owner/revenue?status=&from=&to=&limit=100&offset=0
+// Security: non-superadmin users can ONLY see payouts where admin_user_id = req.admin.id.
+// Superadmin may optionally inspect a specific owner with ?owner_id=...
+app.get("/api/owner/revenue", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const requestedOwnerId = String(req.query.owner_id || "").trim();
+    const ownerId = req.admin?.is_superadmin && requestedOwnerId ? requestedOwnerId : String(req.admin?.id || "").trim();
+    if (!ownerId) return res.status(400).json({ error: "owner_id_required" });
+
+    const status = String(req.query.status || "").trim().toLowerCase();
+    const from = normalizeDateInput(req.query.from);
+    const to = normalizeDateInput(req.query.to);
+    const limit = Math.min(200, Math.max(1, safeNumber(req.query.limit, 100)));
+    const offset = Math.max(0, safeNumber(req.query.offset, 0));
+
+    const { data: ownerUser, error: ownerUserErr } = await supabase
+      .from("admin_users")
+      .select("id,email,is_active,role")
+      .eq("id", ownerId)
+      .maybeSingle();
+
+    if (ownerUserErr) return res.status(500).json({ error: ownerUserErr.message });
+    if (!ownerUser) return res.status(404).json({ error: "owner_not_found" });
+
+    // Business ownership is separate from admin access assignment.
+    const { data: ownedPoolRows, error: ownedPoolsErr } = await supabase
+      .from("internet_pools")
+      .select("id,name,system,platform_share_pct,owner_share_pct,contact_phone,owner_admin_user_id")
+      .eq("owner_admin_user_id", ownerId)
+      .eq("system", "mikrotik")
+      .order("name", { ascending: true });
+
+    if (ownedPoolsErr) return res.status(500).json({ error: ownedPoolsErr.message });
+
+    const ownedPools = Array.isArray(ownedPoolRows) ? ownedPoolRows : [];
+    const ownedPoolMap = Object.fromEntries(ownedPools.map((p) => [String(p.id || ""), p]));
+
+    const buildPayoutQuery = () => {
+      let q = supabase
+        .from("owner_payouts")
+        .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by", { count: "exact" })
+        .eq("admin_user_id", ownerId);
+
+      if (["draft", "paid", "cancelled"].includes(status)) q = q.eq("status", status);
+      if (from) q = q.gte("created_at", from);
+      if (to) q = q.lte("created_at", to);
+      return q;
+    };
+
+    const { data: payoutRowsForSummary, error: summaryErr } = await buildPayoutQuery()
+      .order("created_at", { ascending: false })
+      .limit(1000);
+
+    if (summaryErr) return res.status(500).json({ error: summaryErr.message });
+
+    const { data: payoutRows, error: payoutsErr, count } = await buildPayoutQuery()
+      .order("created_at", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (payoutsErr) return res.status(500).json({ error: payoutsErr.message });
+
+    const rowsForSummary = Array.isArray(payoutRowsForSummary) ? payoutRowsForSummary : [];
+    const rowsForList = Array.isArray(payoutRows) ? payoutRows : [];
+
+    const allPoolIds = Array.from(new Set([
+      ...ownedPools.map((p) => String(p?.id || "").trim()).filter(Boolean),
+      ...rowsForList.map((p) => String(p?.pool_id || "").trim()).filter(Boolean),
+      ...rowsForSummary.map((p) => String(p?.pool_id || "").trim()).filter(Boolean),
+    ]));
+
+    let poolMap = { ...ownedPoolMap };
+    const missingPoolIds = allPoolIds.filter((pid) => pid && !poolMap[pid]);
+    if (missingPoolIds.length) {
+      const { data: extraPools, error: extraPoolsErr } = await supabase
+        .from("internet_pools")
+        .select("id,name,system,platform_share_pct,owner_share_pct,contact_phone,owner_admin_user_id")
+        .in("id", missingPoolIds);
+      if (extraPoolsErr) return res.status(500).json({ error: extraPoolsErr.message });
+      for (const p of extraPools || []) poolMap[String(p.id || "")] = p;
+    }
+
+    const summary = {
+      payout_count: 0,
+      total_gross_ar: 0,
+      total_platform_ar: 0,
+      total_owner_ar: 0,
+      total_paid_ar: 0,
+      total_unpaid_ar: 0,
+      total_cancelled_ar: 0,
+      paid_count: 0,
+      unpaid_count: 0,
+      cancelled_count: 0,
+    };
+
+    const byPoolMap = {};
+    for (const p of ownedPools) {
+      const pid = String(p?.id || "");
+      if (!pid) continue;
+      byPoolMap[pid] = {
+        pool_id: pid,
+        pool_name: p?.name || null,
+        platform_share_pct: Number(p?.platform_share_pct || 0),
+        owner_share_pct: Number(p?.owner_share_pct || 0),
+        payout_count: 0,
+        total_owner_ar: 0,
+        total_paid_ar: 0,
+        total_unpaid_ar: 0,
+      };
+    }
+
+    for (const r of rowsForSummary) {
+      const st = String(r?.status || "draft").toLowerCase();
+      const gross = roundMoney2(r?.gross_total_ar);
+      const platform = roundMoney2(r?.platform_total_ar);
+      const ownerAmount = roundMoney2(r?.owner_total_ar);
+
+      summary.payout_count += 1;
+      summary.total_gross_ar = roundMoney2(summary.total_gross_ar + gross);
+      summary.total_platform_ar = roundMoney2(summary.total_platform_ar + platform);
+      if (st !== "cancelled") summary.total_owner_ar = roundMoney2(summary.total_owner_ar + ownerAmount);
+
+      if (st === "paid") {
+        summary.paid_count += 1;
+        summary.total_paid_ar = roundMoney2(summary.total_paid_ar + ownerAmount);
+      } else if (st === "cancelled") {
+        summary.cancelled_count += 1;
+        summary.total_cancelled_ar = roundMoney2(summary.total_cancelled_ar + ownerAmount);
+      } else {
+        summary.unpaid_count += 1;
+        summary.total_unpaid_ar = roundMoney2(summary.total_unpaid_ar + ownerAmount);
+      }
+
+      const pid = String(r?.pool_id || "");
+      if (pid) {
+        const pool = poolMap[pid] || {};
+        if (!byPoolMap[pid]) {
+          byPoolMap[pid] = {
+            pool_id: pid,
+            pool_name: pool?.name || null,
+            platform_share_pct: Number(pool?.platform_share_pct || 0),
+            owner_share_pct: Number(pool?.owner_share_pct || 0),
+            payout_count: 0,
+            total_owner_ar: 0,
+            total_paid_ar: 0,
+            total_unpaid_ar: 0,
+          };
+        }
+        byPoolMap[pid].payout_count += 1;
+        if (st !== "cancelled") byPoolMap[pid].total_owner_ar = roundMoney2(byPoolMap[pid].total_owner_ar + ownerAmount);
+        if (st === "paid") byPoolMap[pid].total_paid_ar = roundMoney2(byPoolMap[pid].total_paid_ar + ownerAmount);
+        if (st !== "paid" && st !== "cancelled") byPoolMap[pid].total_unpaid_ar = roundMoney2(byPoolMap[pid].total_unpaid_ar + ownerAmount);
+      }
+    }
+
+    const payouts = rowsForList.map((r) => {
+      const pool = poolMap[String(r?.pool_id || "")] || null;
+      return {
+        ...r,
+        pool_name: pool?.name || null,
+        system: pool?.system || "mikrotik",
+        owner_email: ownerUser.email || null,
+        receipt_url: r?.receipt_number ? `/api/admin/revenue/payouts/${encodeURIComponent(r.id)}/receipt` : null,
+      };
+    });
+
+    return res.json({
+      ok: true,
+      owner: {
+        id: ownerUser.id,
+        email: ownerUser.email,
+        role: ownerUser.role || null,
+        is_active: ownerUser.is_active !== false,
+      },
+      summary,
+      pools: Object.values(byPoolMap),
+      owned_pools: ownedPools,
+      payouts,
+      total: count || 0,
+      limit,
+      offset,
+      system: "mikrotik",
+    });
+  } catch (e) {
+    console.error("OWNER REVENUE EX", e);
+    return res.status(500).json({ error: String(e?.message || e) });
   }
 });
 
