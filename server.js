@@ -2,7 +2,6 @@
 // ---------------------------------------------------------------------------
 
 import express from "express";
-import PDFDocument from "pdfkit";
 import axios from "axios";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -2334,6 +2333,52 @@ function makeOwnerReceiptNumber() {
   return `REC-OWNER-${y}${m}${day}-${rand}`;
 }
 
+function normalizePayoutStatus(status) {
+  return String(status || "").trim().toLowerCase();
+}
+
+function isPayoutPaid(payout) {
+  return normalizePayoutStatus(payout?.status) === "paid";
+}
+
+function isPayoutCancelled(payout) {
+  return normalizePayoutStatus(payout?.status) === "cancelled";
+}
+
+async function getOwnerPayoutScopedForAdmin({ payoutId, admin, select = "*" }) {
+  const id = String(payoutId || "").trim();
+  if (!id) {
+    const err = new Error("id_required");
+    err.httpStatus = 400;
+    throw err;
+  }
+
+  let q = supabase
+    .from("owner_payouts")
+    .select(select)
+    .eq("id", id);
+
+  if (!admin?.is_superadmin) {
+    const allowed = Array.isArray(admin?.pool_ids) ? admin.pool_ids : [];
+    if (!allowed.length) {
+      const err = new Error("no_pools_assigned");
+      err.httpStatus = 403;
+      throw err;
+    }
+    q = q.in("pool_id", allowed);
+  }
+
+  const { data, error } = await q.maybeSingle();
+  if (error) throw error;
+  if (!data) {
+    const err = new Error("payout_not_found");
+    err.httpStatus = 404;
+    throw err;
+  }
+
+  return data;
+}
+
 async function getScopedMikrotikPoolsMap(admin) {
   let q = supabase
     .from("internet_pools")
@@ -2520,36 +2565,22 @@ async function getShareTransactionsCore({ admin, from = null, to = null, search 
 }
 
 async function getSinglePoolOwnerIdOrThrow(poolId) {
-  const cleanPoolId = String(poolId || "").trim();
-  if (!cleanPoolId) {
-    const err = new Error("pool_id_required");
-    err.httpStatus = 400;
-    throw err;
-  }
-
   const { data, error } = await supabase
-    .from("internet_pools")
-    .select("id, owner_admin_user_id")
-    .eq("id", cleanPoolId)
-    .maybeSingle();
+    .from("admin_user_pools")
+    .select("admin_user_id")
+    .eq("pool_id", poolId);
 
   if (error) throw error;
-  if (!data) {
-    const err = new Error("pool_not_found");
-    err.httpStatus = 404;
-    err.details = { pool_id: cleanPoolId };
-    throw err;
-  }
 
-  const ownerId = String(data?.owner_admin_user_id || "").trim();
-  if (!ownerId) {
+  const ownerIds = Array.from(new Set((data || []).map((r) => String(r?.admin_user_id || "").trim()).filter(Boolean)));
+  if (ownerIds.length !== 1) {
     const err = new Error("pool_owner_assignment_invalid");
     err.httpStatus = 400;
-    err.details = { pool_id: cleanPoolId, owner_count: 0, source: "internet_pools.owner_admin_user_id" };
+    err.details = { pool_id: poolId, owner_count: ownerIds.length };
     throw err;
   }
 
-  return ownerId;
+  return ownerIds[0];
 }
 
 // GET /api/admin/revenue/share-transactions?from=&to=&search=&limit=200&offset=0
@@ -2752,7 +2783,7 @@ app.get("/api/admin/revenue/payouts", requireAdmin, async (req, res) => {
 
     let q = supabase
       .from("owner_payouts")
-      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by", { count: "exact" })
+      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by", { count: "exact" })
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
 
@@ -2820,7 +2851,7 @@ app.get("/api/admin/revenue/payouts/:id", requireAdmin, async (req, res) => {
 
     let q = supabase
       .from("owner_payouts")
-      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by")
+      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by")
       .eq("id", id);
 
     if (!req.admin?.is_superadmin) {
@@ -2945,9 +2976,8 @@ app.post("/api/admin/revenue/payouts/create", requireAdmin, requireSuperadmin, a
         note,
         paid_at,
         created_by: req.admin.id,
-        paid_by: mark_paid ? req.admin.id : null,
       })
-      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by")
+      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by")
       .single();
 
     if (payoutErr) return res.status(500).json({ error: payoutErr.message });
@@ -3000,18 +3030,30 @@ app.post("/api/admin/revenue/payouts/:id/mark-paid", requireAdmin, requireSupera
     const id = String(req.params.id || "").trim();
     if (!id) return res.status(400).json({ error: "id_required" });
 
-    const { data: payout, error: payoutErr } = await supabase
-      .from("owner_payouts")
-      .select("id,status,receipt_number,paid_at,pool_id,admin_user_id,paid_by")
-      .eq("id", id)
-      .maybeSingle();
+    const payout = await getOwnerPayoutScopedForAdmin({
+      payoutId: id,
+      admin: req.admin,
+      select: "id,status,receipt_number,paid_at,pool_id,admin_user_id,paid_by,gross_total_ar,platform_total_ar,owner_total_ar",
+    });
 
-    if (payoutErr) return res.status(500).json({ error: payoutErr.message });
-    if (!payout) return res.status(404).json({ error: "not_found" });
-
-    if (String(payout.status || "").toLowerCase() === "paid") {
-      return res.json({ ok: true, payout });
+    // 🔒 LOCK: a paid payout is immutable. Do not regenerate receipt_number, paid_at, or paid_by.
+    if (isPayoutPaid(payout)) {
+      return res.json({ ok: true, already_paid: true, payout });
     }
+
+    // 🔒 Safety: cancelled payouts must not become paid later.
+    if (isPayoutCancelled(payout)) {
+      return res.status(400).json({ error: "payout_cancelled_locked" });
+    }
+
+    // 🔒 Safety: payout must contain at least one item before being marked paid.
+    const { count: itemCount, error: countErr } = await supabase
+      .from("owner_payout_items")
+      .select("id", { count: "exact", head: true })
+      .eq("payout_id", id);
+
+    if (countErr) return res.status(500).json({ error: countErr.message });
+    if (!itemCount) return res.status(400).json({ error: "payout_has_no_items" });
 
     const patch = {
       status: "paid",
@@ -3025,28 +3067,153 @@ app.post("/api/admin/revenue/payouts/:id/mark-paid", requireAdmin, requireSupera
       .from("owner_payouts")
       .update(patch)
       .eq("id", id)
-      .neq("status", "paid")
+      .eq("status", "draft")
+      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by")
+      .maybeSingle();
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    // If update returned no row, status changed between read and write. Return the current truth.
+    if (!data) {
+      const fresh = await getOwnerPayoutScopedForAdmin({
+        payoutId: id,
+        admin: req.admin,
+        select: "id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by",
+      });
+
+      if (isPayoutPaid(fresh)) return res.json({ ok: true, already_paid: true, payout: fresh });
+      return res.status(409).json({ error: "payout_status_changed", payout: fresh });
+    }
+
+    return res.json({ ok: true, payout: data });
+  } catch (e) {
+    console.error("ADMIN REVENUE PAYOUT MARK PAID EX", e);
+    return res.status(e?.httpStatus || 500).json({
+      error: e?.message || "internal_error",
+      details: e?.details || null,
+    });
+  }
+});
+
+// POST /api/admin/revenue/payouts/:id/cancel
+// Draft-only cancellation. Paid payouts are locked forever.
+app.post("/api/admin/revenue/payouts/:id/cancel", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    const payout = await getOwnerPayoutScopedForAdmin({
+      payoutId: id,
+      admin: req.admin,
+      select: "id,status,receipt_number,paid_at,pool_id,admin_user_id,paid_by",
+    });
+
+    // 🔒 Paid payout = accounting proof. Never cancel it.
+    if (isPayoutPaid(payout)) {
+      return res.status(423).json({ error: "payout_paid_locked" });
+    }
+
+    if (isPayoutCancelled(payout)) {
+      return res.json({ ok: true, already_cancelled: true, payout });
+    }
+
+    const { data, error } = await supabase
+      .from("owner_payouts")
+      .update({
+        status: "cancelled",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .eq("status", "draft")
       .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by")
       .maybeSingle();
 
     if (error) return res.status(500).json({ error: error.message });
 
     if (!data) {
-      const { data: fresh, error: freshErr } = await supabase
-        .from("owner_payouts")
-        .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by")
-        .eq("id", id)
-        .maybeSingle();
-
-      if (freshErr) return res.status(500).json({ error: freshErr.message });
-      if (!fresh) return res.status(404).json({ error: "not_found" });
-      return res.json({ ok: true, payout: fresh });
+      const fresh = await getOwnerPayoutScopedForAdmin({
+        payoutId: id,
+        admin: req.admin,
+        select: "id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by",
+      });
+      if (isPayoutPaid(fresh)) return res.status(423).json({ error: "payout_paid_locked", payout: fresh });
+      return res.status(409).json({ error: "payout_status_changed", payout: fresh });
     }
 
     return res.json({ ok: true, payout: data });
   } catch (e) {
-    console.error("ADMIN REVENUE PAYOUT MARK PAID EX", e);
-    return res.status(500).json({ error: String(e?.message || e) });
+    console.error("ADMIN REVENUE PAYOUT CANCEL EX", e);
+    return res.status(e?.httpStatus || 500).json({
+      error: e?.message || "internal_error",
+      details: e?.details || null,
+    });
+  }
+});
+
+// PATCH /api/admin/revenue/payouts/:id
+// Draft-only metadata edit. Paid payouts are immutable.
+app.patch("/api/admin/revenue/payouts/:id", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    const payout = await getOwnerPayoutScopedForAdmin({
+      payoutId: id,
+      admin: req.admin,
+      select: "id,status,receipt_number,paid_at,pool_id,admin_user_id,paid_by",
+    });
+
+    // 🔒 Paid payout = receipt already issued. No metadata edits.
+    if (isPayoutPaid(payout)) {
+      return res.status(423).json({ error: "payout_paid_locked" });
+    }
+
+    if (isPayoutCancelled(payout)) {
+      return res.status(423).json({ error: "payout_cancelled_locked" });
+    }
+
+    const updates = {};
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "note")) {
+      const note = String(req.body?.note || "").trim();
+      updates.note = note || null;
+    }
+
+    if (!Object.keys(updates).length) {
+      return res.status(400).json({ error: "no_updates" });
+    }
+
+    updates.updated_at = new Date().toISOString();
+
+    const { data, error } = await supabase
+      .from("owner_payouts")
+      .update(updates)
+      .eq("id", id)
+      .eq("status", "draft")
+      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by")
+      .maybeSingle();
+
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data) {
+      const fresh = await getOwnerPayoutScopedForAdmin({
+        payoutId: id,
+        admin: req.admin,
+        select: "id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by",
+      });
+      if (isPayoutPaid(fresh)) return res.status(423).json({ error: "payout_paid_locked", payout: fresh });
+      return res.status(409).json({ error: "payout_status_changed", payout: fresh });
+    }
+
+    return res.json({ ok: true, payout: data });
+  } catch (e) {
+    console.error("ADMIN REVENUE PAYOUT PATCH EX", e);
+    return res.status(e?.httpStatus || 500).json({
+      error: e?.message || "internal_error",
+      details: e?.details || null,
+    });
   }
 });
 
@@ -4592,7 +4759,7 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
     const { data, error } = await supabase
       .from("internet_pools")
       .insert(payload)
-      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id")
+      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct")
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -4653,6 +4820,36 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       const platform_share_pct = Number(req.body.platform_share_pct);
       const owner_share_pct = Number(req.body.owner_share_pct);
 
+const hasOwnerAdminUserId = Object.prototype.hasOwnProperty.call(req.body || {}, "owner_admin_user_id");
+if (hasOwnerAdminUserId) {
+  if (!req.admin?.is_superadmin) {
+    return res.status(403).json({ error: "superadmin_only" });
+  }
+
+  const owner_admin_user_id =
+    req.body.owner_admin_user_id === null || req.body.owner_admin_user_id === ""
+      ? null
+      : String(req.body.owner_admin_user_id).trim();
+
+  if (owner_admin_user_id) {
+    const { data: ownerUser, error: ownerErr } = await supabase
+      .from("admin_users")
+      .select("id")
+      .eq("id", owner_admin_user_id)
+      .maybeSingle();
+
+    if (ownerErr) {
+      return res.status(400).json({ error: ownerErr.message, details: ownerErr });
+    }
+    if (!ownerUser) {
+      return res.status(400).json({ error: "owner_admin_user_id_invalid" });
+    }
+  }
+
+  updates.owner_admin_user_id = owner_admin_user_id || null;
+}
+
+
       if (
         !Number.isFinite(platform_share_pct) ||
         !Number.isFinite(owner_share_pct) ||
@@ -4667,35 +4864,6 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
 
       updates.platform_share_pct = Math.round(platform_share_pct);
       updates.owner_share_pct = Math.round(owner_share_pct);
-    }
-
-    const hasOwnerAdminUserId = Object.prototype.hasOwnProperty.call(req.body || {}, "owner_admin_user_id");
-    if (hasOwnerAdminUserId) {
-      if (!req.admin?.is_superadmin) {
-        return res.status(403).json({ error: "superadmin_only" });
-      }
-
-      const owner_admin_user_id =
-        req.body.owner_admin_user_id === null || req.body.owner_admin_user_id === ""
-          ? null
-          : String(req.body.owner_admin_user_id).trim();
-
-      if (owner_admin_user_id) {
-        const { data: ownerUser, error: ownerErr } = await supabase
-          .from("admin_users")
-          .select("id")
-          .eq("id", owner_admin_user_id)
-          .maybeSingle();
-
-        if (ownerErr) {
-          return res.status(400).json({ error: ownerErr.message, details: ownerErr });
-        }
-        if (!ownerUser) {
-          return res.status(400).json({ error: "owner_admin_user_id_invalid" });
-        }
-      }
-
-      updates.owner_admin_user_id = owner_admin_user_id || null;
     }
 
     // Safety: don't allow clearing mikrotik_ip on an existing mikrotik pool
@@ -9398,144 +9566,6 @@ app.get("/api/new/pool-status", async (req, res) => {
   }
 });
 
-// ------------------------------------------
-// RECEIPT PDF ROUTE
-// ------------------------------------------
-
-app.get("/api/admin/revenue/payouts/:id/receipt", requireAdmin, async (req, res) => {
-  try {
-    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
-
-    const id = String(req.params.id || "").trim();
-    if (!id) return res.status(400).json({ error: "id_required" });
-
-    let q = supabase
-      .from("owner_payouts")
-      .select("id,pool_id,admin_user_id,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,paid_at,created_at")
-      .eq("id", id);
-
-    if (!req.admin?.is_superadmin) {
-      const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
-      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
-      q = q.in("pool_id", allowed);
-    }
-
-    const { data: payout, error } = await q.maybeSingle();
-
-    if (error) {
-      return res.status(500).json({ error: error.message });
-    }
-    if (!payout) {
-      return res.status(404).json({ error: "payout_not_found" });
-    }
-
-    if (String(payout.status || "").toLowerCase() !== "paid") {
-      return res.status(400).json({ error: "payout_not_paid" });
-    }
-
-    const [{ data: pool }, { data: owner }] = await Promise.all([
-      supabase
-        .from("internet_pools")
-        .select("id,name")
-        .eq("id", payout.pool_id)
-        .maybeSingle(),
-      supabase
-        .from("admin_users")
-        .select("id,email")
-        .eq("id", payout.admin_user_id)
-        .maybeSingle(),
-    ]);
-
-const doc = new PDFDocument({ margin: 50 });
-
-res.setHeader("Content-Type", "application/pdf");
-res.setHeader(
-  "Content-Disposition",
-  `inline; filename=receipt-${payout.receipt_number}.pdf`
-);
-
-doc.pipe(res);
-
-// ============================
-// LOGO
-// ============================
-const logoPath = path.join(__dirname, "public", "RAZAFI.png");
-
-try {
-  doc.image(logoPath, 50, 45, { width: 120 });
-} catch (e) {
-  console.log("Logo not found, skipping...");
-}
-
-// ============================
-// HEADER
-// ============================
-doc
-  .fontSize(20)
-  .text("RAZAFI WiFi", 200, 50, { align: "right" });
-
-doc
-  .fontSize(12)
-  .text("Reçu de paiement", { align: "right" });
-
-doc.moveDown(2);
-
-// ============================
-// INFOS BOX
-// ============================
-doc
-  .rect(50, 120, 500, 100)
-  .stroke();
-
-doc.fontSize(12);
-
-doc.text(`Numéro: ${payout.receipt_number}`, 60, 130);
-doc.text(`Date paiement: ${new Date(payout.paid_at).toLocaleString()}`, 60, 145);
-doc.text(`Pool: ${pool?.name || "-"}`, 60, 160);
-doc.text(`Propriétaire: ${owner?.email || "-"}`, 60, 175);
-
-// ============================
-// AMOUNT SECTION
-// ============================
-
-doc.moveDown(4);
-
-doc.fontSize(14).text("Détails financiers", { underline: true });
-
-doc.moveDown();
-
-doc.fontSize(12);
-
-doc.text(`Montant brut: ${payout.gross_total_ar} Ar`);
-doc.text(`Part plateforme: ${payout.platform_total_ar} Ar`);
-doc.text(`Part propriétaire: ${payout.owner_total_ar} Ar`);
-
-doc.moveDown(3);
-
-// ============================
-// FOOTER
-// ============================
-doc
-  .fontSize(10)
-  .text("Merci pour votre collaboration avec RAZAFI.", {
-    align: "center",
-  });
-
-doc
-  .fontSize(9)
-  .text("RAZAFI WiFi System — Madagascar", {
-    align: "center",
-  });
-
-doc.end();
-
-  } catch (err) {
-    console.error("RECEIPT ERROR", err);
-    if (!res.headersSent) {
-      return res.status(500).json({ error: "receipt_generation_failed" });
-    }
-  }
-});
 // ---------------------------------------------------------------------------
 // START SERVER
 // ---------------------------------------------------------------------------
