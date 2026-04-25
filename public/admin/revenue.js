@@ -256,6 +256,9 @@ function ensurePayoutUI() {
     box.innerHTML = `
       <div id="txSelectionMeta" style="opacity:.75;">0 sélectionnée</div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button id="autoCreatePayoutBtn" type="button" style="padding:10px 14px; border:none; border-radius:12px; background:#7c3aed; color:#fff; font-weight:800; cursor:pointer;">
+          Créer payouts auto
+        </button>
         <button id="createPayoutBtn" type="button" style="padding:10px 14px; border:none; border-radius:12px; background:#2563eb; color:#fff; font-weight:800; cursor:pointer;">
           Créer payout
         </button>
@@ -275,8 +278,10 @@ function ensurePayoutUI() {
 
 function updateActionVisibility() {
   const canWrite = !!currentAdmin?.is_superadmin;
+  const autoCreateBtn = byId("autoCreatePayoutBtn");
   const createBtn = byId("createPayoutBtn");
   const clearBtn = byId("clearSelectionBtn");
+  if (autoCreateBtn) autoCreateBtn.style.display = canWrite ? "" : "none";
   if (createBtn) createBtn.style.display = canWrite ? "" : "none";
   if (clearBtn) clearBtn.style.display = canWrite ? "" : "none";
 }
@@ -341,6 +346,70 @@ function wireFilters() {
 }
 
 function wirePayoutActions() {
+  byId("autoCreatePayoutBtn")?.addEventListener("click", async () => {
+    if (!currentAdmin?.is_superadmin) return;
+
+    const params = buildCommonParams();
+    const body = {
+      search: params.get("search") || "",
+      from: params.get("from") || null,
+      to: params.get("to") || null,
+      note: "Auto payout draft"
+    };
+
+    const filterText = [];
+    if (body.search) filterText.push(`Recherche: ${body.search}`);
+    if (body.from) filterText.push(`Depuis: ${fmtDate(body.from)}`);
+    if (body.to) filterText.push(`Jusqu'à: ${fmtDate(body.to)}`);
+
+    const msg = filterText.length
+      ? `Créer automatiquement les payouts draft pour les transactions non encore payées avec ces filtres ?\n\n${filterText.join("\n")}`
+      : "Créer automatiquement les payouts draft pour toutes les transactions non encore payées ?";
+
+    if (!confirm(msg)) return;
+
+    const btn = byId("autoCreatePayoutBtn");
+    const oldText = btn?.textContent || "Créer payouts auto";
+
+    try {
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Création auto...";
+      }
+
+      const r = await fetchJSON("/api/admin/revenue/payouts/auto-create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+
+      const created = Number(r?.created_count || 0);
+      const skipped = Number(r?.skipped_count || 0);
+      const createdRows = Array.isArray(r?.created) ? r.created : [];
+      const createdTotal = createdRows.reduce((sum, p) => sum + Number(p?.owner_total_ar || 0), 0);
+
+      let alertMsg = `Payouts auto terminés ✅\nCréés: ${created}\nIgnorés: ${skipped}`;
+      if (createdRows.length) alertMsg += `\nPart propriétaire totale: ${fmtAr(createdTotal)}`;
+      if (r?.message === "no_unpaid_transactions") alertMsg += "\nAucune transaction impayée trouvée.";
+      if (skipped && Array.isArray(r?.skipped) && r.skipped.length) {
+        alertMsg += "\n\nCertains pools ont été ignorés. Vérifiez que chaque pool a un owner business.";
+      }
+
+      alert(alertMsg);
+      selectedTxIds.clear();
+      updateSelectionMeta();
+      await loadAll();
+      setTab("payout");
+    } catch (e) {
+      alert("Erreur création payouts auto: " + e.message);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = oldText;
+      }
+    }
+  });
+
   byId("createPayoutBtn")?.addEventListener("click", async () => {
     if (!currentAdmin?.is_superadmin) return;
     const ids = Array.from(selectedTxIds);
