@@ -3061,25 +3061,33 @@ app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadm
     const unpaidTxById = new Map();
 
     while (offset < maxScan) {
-      const { items } = await getShareTransactionsCore({
+      // IMPORTANT:
+      // Fetch the real source page first (unpaidOnly=false), then filter unpaid locally.
+      // This prevents Supabase/PostgREST from returning 416 "Requested range not satisfiable"
+      // after we have already scanned past the last available source page.
+      const { items: pageItems } = await getShareTransactionsCore({
         admin: req.admin,
         from,
         to,
         search,
         limit: pageLimit,
         offset,
-        unpaidOnly: true,
+        unpaidOnly: false,
       });
 
-      for (const row of items || []) {
+      const sourceItems = Array.isArray(pageItems) ? pageItems : [];
+
+      for (const row of sourceItems) {
+        if (String(row?.payout_status || "unpaid").toLowerCase() !== "unpaid") continue;
         const txId = String(row?.transaction_id || "").trim();
         if (!txId) continue;
         if (requestedPoolId && String(row?.pool_id || "").trim() !== requestedPoolId) continue;
         unpaidTxById.set(txId, row);
       }
 
-      // getShareTransactionsCore returns only unpaid rows after local filtering, so do not use
-      // items.length to decide if the source page ended. Instead, stop only after scanning maxScan.
+      // Last page reached. Stop before asking Supabase for an out-of-range page.
+      if (sourceItems.length < pageLimit) break;
+
       offset += pageLimit;
     }
 
