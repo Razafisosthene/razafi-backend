@@ -3040,6 +3040,7 @@ app.post("/api/admin/revenue/payouts/create", requireAdmin, requireSuperadmin, a
 // - Draft only: admin still manually clicks "Marquer payé" after real payout
 // - One draft payout per pool/owner group
 // - Existing payout items are excluded to avoid double payout
+// - Final DB re-check before insert, so repeated clicks/race conditions cannot duplicate payouts
 app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
@@ -3051,20 +3052,19 @@ app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadm
 
     const requestedPoolId = String(req.body?.pool_id ?? req.query?.pool_id ?? "").trim();
 
-    // We scan paid revenue rows in pages, then keep only rows not yet attached to owner_payout_items.
-    // This avoids creating duplicate payouts and keeps the endpoint safe for repeated clicks.
     const pageLimit = 500;
     const maxScanRaw = Number(req.body?.max_scan ?? req.query?.max_scan ?? 5000);
-    const maxScan = Number.isFinite(maxScanRaw) ? Math.min(Math.max(Math.floor(maxScanRaw), pageLimit), 20000) : 5000;
+    const maxScan = Number.isFinite(maxScanRaw)
+      ? Math.min(Math.max(Math.floor(maxScanRaw), pageLimit), 20000)
+      : 5000;
 
     let offset = 0;
+    let scanned_count = 0;
     const unpaidTxById = new Map();
 
     while (offset < maxScan) {
-      // IMPORTANT:
-      // Fetch the real source page first (unpaidOnly=false), then filter unpaid locally.
-      // This prevents Supabase/PostgREST from returning 416 "Requested range not satisfiable"
-      // after we have already scanned past the last available source page.
+      // Fetch source rows first, then filter unpaid locally.
+      // This prevents PostgREST 416 "Requested range not satisfiable".
       const { items: pageItems } = await getShareTransactionsCore({
         admin: req.admin,
         from,
@@ -3076,31 +3076,76 @@ app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadm
       });
 
       const sourceItems = Array.isArray(pageItems) ? pageItems : [];
+      scanned_count += sourceItems.length;
 
       for (const row of sourceItems) {
-        if (String(row?.payout_status || "unpaid").toLowerCase() !== "unpaid") continue;
         const txId = String(row?.transaction_id || "").trim();
         if (!txId) continue;
+
         if (requestedPoolId && String(row?.pool_id || "").trim() !== requestedPoolId) continue;
+
+        // A transaction is eligible only if getShareTransactionsCore sees no payout item for it.
+        if (String(row?.payout_status || "unpaid").toLowerCase() !== "unpaid") continue;
+        if (row?.payout_id) continue;
+
         unpaidTxById.set(txId, row);
       }
 
-      // Last page reached. Stop before asking Supabase for an out-of-range page.
       if (sourceItems.length < pageLimit) break;
-
       offset += pageLimit;
     }
 
-    const unpaidItems = Array.from(unpaidTxById.values());
+    let unpaidItems = Array.from(unpaidTxById.values());
+
+    // 🔒 Final DB re-check before grouping/insert.
+    // This protects against double-clicks or another admin creating payouts between the scan and insert.
+    const candidateTxIds = unpaidItems
+      .map((r) => String(r?.transaction_id || "").trim())
+      .filter(Boolean);
+
+    let alreadyAttachedSet = new Set();
+    if (candidateTxIds.length) {
+      const { data: alreadyRows, error: alreadyErr } = await supabase
+        .from("owner_payout_items")
+        .select("transaction_id,payout_id")
+        .in("transaction_id", candidateTxIds);
+
+      if (alreadyErr) throw alreadyErr;
+
+      alreadyAttachedSet = new Set(
+        (alreadyRows || [])
+          .map((r) => String(r?.transaction_id || "").trim())
+          .filter(Boolean)
+      );
+
+      if (alreadyAttachedSet.size) {
+        unpaidItems = unpaidItems.filter((r) => {
+          const txId = String(r?.transaction_id || "").trim();
+          return txId && !alreadyAttachedSet.has(txId);
+        });
+      }
+    }
 
     if (!unpaidItems.length) {
       return res.json({
         ok: true,
         created_count: 0,
+        transaction_count_created: 0,
+        owner_total_created_ar: 0,
         created: [],
-        skipped: [],
+        skipped: alreadyAttachedSet.size
+          ? [{ reason: "transactions_already_attached", transaction_count: alreadyAttachedSet.size }]
+          : [],
+        skipped_count: alreadyAttachedSet.size ? 1 : 0,
         message: "no_unpaid_transactions",
+        scanned_count,
         scanned_limit: maxScan,
+        filters: {
+          from,
+          to,
+          search,
+          pool_id: requestedPoolId || null,
+        },
         system: "mikrotik",
       });
     }
@@ -3116,9 +3161,44 @@ app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadm
     const created = [];
     const skipped = [];
 
-    for (const [pool_id, rows] of groups.entries()) {
+    for (const [pool_id, initialRows] of groups.entries()) {
       try {
-        if (!rows.length) continue;
+        if (!initialRows.length) continue;
+
+        // 🔒 Re-check this group immediately before inserting its payout items.
+        // This narrows the race window as much as possible without a DB transaction/RPC.
+        const groupTxIds = initialRows
+          .map((r) => String(r?.transaction_id || "").trim())
+          .filter(Boolean);
+
+        const { data: groupAttachedRows, error: groupAttachedErr } = groupTxIds.length
+          ? await supabase
+              .from("owner_payout_items")
+              .select("transaction_id,payout_id")
+              .in("transaction_id", groupTxIds)
+          : { data: [], error: null };
+
+        if (groupAttachedErr) throw groupAttachedErr;
+
+        const groupAttachedSet = new Set(
+          (groupAttachedRows || [])
+            .map((r) => String(r?.transaction_id || "").trim())
+            .filter(Boolean)
+        );
+
+        const rows = initialRows.filter((r) => {
+          const txId = String(r?.transaction_id || "").trim();
+          return txId && !groupAttachedSet.has(txId);
+        });
+
+        if (!rows.length) {
+          skipped.push({
+            pool_id,
+            transaction_count: initialRows.length,
+            error: "all_transactions_already_attached",
+          });
+          continue;
+        }
 
         const admin_user_id = await getSinglePoolOwnerIdOrThrow(pool_id);
 
@@ -3183,25 +3263,46 @@ app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadm
           pool_name: rows[0]?.pool_name || null,
           owner_email: null,
           transaction_count: rows.length,
+          transaction_ids: rows.map((r) => r.transaction_id).filter(Boolean),
           system: "mikrotik",
         });
+
+        if (groupAttachedSet.size) {
+          skipped.push({
+            pool_id,
+            transaction_count: groupAttachedSet.size,
+            error: "some_transactions_already_attached",
+          });
+        }
       } catch (groupErr) {
         skipped.push({
           pool_id,
-          transaction_count: rows.length,
+          transaction_count: initialRows.length,
           error: groupErr?.message || "group_failed",
           details: groupErr?.details || null,
         });
       }
     }
 
+    const transaction_count_created = created.reduce((sum, p) => sum + Number(p?.transaction_count || 0), 0);
+    const owner_total_created_ar = roundMoney2(created.reduce((sum, p) => sum + Number(p?.owner_total_ar || 0), 0));
+
     return res.json({
       ok: true,
       created_count: created.length,
+      transaction_count_created,
+      owner_total_created_ar,
       skipped_count: skipped.length,
       created,
       skipped,
+      scanned_count,
       scanned_limit: maxScan,
+      filters: {
+        from,
+        to,
+        search,
+        pool_id: requestedPoolId || null,
+      },
       system: "mikrotik",
     });
   } catch (e) {
@@ -3212,6 +3313,7 @@ app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadm
     });
   }
 });
+
 
 // POST /api/admin/revenue/payouts/:id/mark-paid
 app.post("/api/admin/revenue/payouts/:id/mark-paid", requireAdmin, requireSuperadmin, async (req, res) => {
