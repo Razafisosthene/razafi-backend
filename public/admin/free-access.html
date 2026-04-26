@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>RAZAFI Admin — Accès gratuit</title>
+  <link rel="stylesheet" href="/admin/admin.css" />
+</head>
+<body>
+  <div class="login-container">
+    <div class="card" style="max-width: 1180px; width: 96%;">
+      <div class="topbar">
+        <div class="title">
+          <h1 style="margin:0;">Accès gratuit</h1>
+          <div id="me" class="subtitle">Loading...</div>
+          <div class="subtitle" style="margin-top:4px; opacity:.8;">Appareils autorisés — accès WiFi sans paiement via MAC address.</div>
+        </div>
+        <div class="nav" style="display:none;">
+          <a href="/admin/"><button type="button">Dashboard</button></a>
+          <a href="/admin/clients.html"><button type="button">Clients</button></a>
+          <a href="/admin/aps.html"><button type="button">APs</button></a>
+          <a href="/admin/pools.html"><button type="button">Pools</button></a>
+          <a href="/admin/revenue.html"><button type="button">Revenue</button></a>
+          <button id="logoutBtn" type="button">Logout</button>
+        </div>
+      </div>
+      <hr style="opacity:.2; margin:18px 0;" />
+      <div class="card" style="margin-top:14px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+          <div>
+            <div style="font-weight:800; font-size:18px;">Ajouter un appareil</div>
+            <div class="subtitle" style="opacity:.8; margin-top:4px;">Choisir un pool, renseigner la personne et l'adresse MAC, puis synchroniser.</div>
+          </div>
+        </div>
+        <form id="addForm" style="margin-top:12px;">
+          <div style="display:grid; grid-template-columns: repeat(6, minmax(140px, 1fr)); gap:10px; align-items:end;">
+            <div style="grid-column: span 2;">
+              <label style="display:block; margin-bottom:6px; opacity:.85;">Pool</label>
+              <select id="poolId" required><option value="">Chargement...</option></select>
+            </div>
+            <div><label style="display:block; margin-bottom:6px; opacity:.85;">Nom</label><input id="personName" placeholder="Jean" required /></div>
+            <div><label style="display:block; margin-bottom:6px; opacity:.85;">Rôle</label><select id="role"><option value="pool_owner">Pool owner</option><option value="staff">Staff</option><option value="family">Family</option><option value="vip">VIP</option></select></div>
+            <div><label style="display:block; margin-bottom:6px; opacity:.85;">Appareil</label><input id="deviceName" placeholder="Téléphone" required /></div>
+            <div><label style="display:block; margin-bottom:6px; opacity:.85;">MAC</label><input id="macAddress" placeholder="AA:BB:CC:DD:EE:FF" required /></div>
+          </div>
+          <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
+            <button id="addBtn" type="submit" style="width:auto;">+ Ajouter appareil</button>
+            <button id="syncSelectedBtn" type="button" style="width:auto;">Synchroniser ce pool</button>
+            <button id="syncAllBtn" type="button" style="width:auto;">Synchroniser tous</button>
+            <button id="refreshBtn" type="button" style="width:auto;">Refresh</button>
+          </div>
+        </form>
+        <div id="msg" class="subtitle" style="margin-top:10px;"></div>
+      </div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:14px;">
+        <input id="q" placeholder="Search: nom / MAC / appareil…" style="flex:1; min-width:240px;" />
+        <select id="poolFilter" style="width:auto; min-width:260px;"><option value="all">Tous les pools</option></select>
+        <select id="statusFilter" style="width:auto;"><option value="all">Tous les statuts</option><option value="active">Actifs seulement</option><option value="disabled">Désactivés seulement</option></select>
+      </div>
+      <div class="table-wrap">
+        <table style="width:100%; border-collapse:collapse; margin-top:12px;">
+          <thead><tr style="text-align:left; opacity:.9;"><th style="padding:10px;">Personne</th><th style="padding:10px;">Appareil</th><th style="padding:10px;">MAC</th><th style="padding:10px;">Pool</th><th style="padding:10px;">Statut</th><th style="padding:10px;">Sync</th><th style="padding:10px;">Actions</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <script src="/admin/nav.js"></script>
+  <script src="./free-access.js"></script>
+</body>
+</html>
