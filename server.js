@@ -2156,7 +2156,7 @@ async function syncFreeAccessPool(poolId) {
   router_port: router.api_port || 8728,
   api_user: router.api_user,
   api_password: router.api_password,
-  devices: activeDevices,
+  active_devices: activeDevices,
 }),
   });
 
