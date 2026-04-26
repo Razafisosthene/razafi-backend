@@ -10710,7 +10710,7 @@ doc.end();
 // START SERVER
 // ---------------------------------------------------------------------------
 
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   const now = new Date().toISOString();
   console.log(`🚀 Server started at ${now} on port ${PORT}`);
   console.log(`[INFO] Endpoint ready: POST /api/send-payment`);
