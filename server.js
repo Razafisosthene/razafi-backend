@@ -2151,20 +2151,13 @@ async function syncFreeAccessPool(poolId) {
       "Content-Type": "application/json",
       "x-secret": vpsSyncSecret,
     },
-    body: JSON.stringify({
-      router_ip: router.api_host,
-      router_port: router.api_port || 8728,
-      api_user: router.api_user,
-      api_password: router.api_password,
-      pool_id: pool.id,
-      comment,
-      active_devices: activeDevices.map((d) => ({
-        mac_address: d.mac_address,
-        person_name: d.person_name || null,
-        role: d.role || null,
-        device_name: d.device_name || null,
-      })),
-    }),
+   body: JSON.stringify({
+  router_ip: router.api_host,
+  router_port: router.api_port || 8728,
+  api_user: router.api_user,
+  api_password: router.api_password,
+  devices: activeDevices,
+}),
   });
 
   const result = await resp.json().catch(() => ({}));
