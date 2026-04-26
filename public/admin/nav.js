@@ -63,7 +63,7 @@
             <span class="rz-item-label">Pools</span>
           </a>
            <a class="rz-item" href="/admin/free-access.html" id="rzNavFree">
-            Accès gratuit
+            <span class="rz-item-label">Accès gratuit</spa
           </a>
           <a class="rz-item" data-href="/admin/revenue.html" href="/admin/revenue.html">
             <span class="rz-item-label">Revenue</span>
