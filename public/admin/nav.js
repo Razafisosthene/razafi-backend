@@ -31,7 +31,6 @@
           <span class="rz-bar rz-bar-1"></span>
           <span class="rz-bar rz-bar-2"></span>
         </span>
-
         <span class="rz-icon rz-icon-arrow" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="22" height="22">
             <path d="M14.5 5.5L8 12l6.5 6.5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -62,6 +61,9 @@
           </a>
           <a class="rz-item" data-href="/admin/pools.html" href="/admin/pools.html" id="rzNavPools">
             <span class="rz-item-label">Pools</span>
+          </a>
+           <a class="rz-item" href="/admin/free-access.html" id="rzNavFree">
+            Accès gratuit
           </a>
           <a class="rz-item" data-href="/admin/revenue.html" href="/admin/revenue.html">
             <span class="rz-item-label">Revenue</span>
