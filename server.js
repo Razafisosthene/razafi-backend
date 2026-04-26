@@ -8,6 +8,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
 import crypto from "crypto";
+import net from "net";
 import { createClient } from "@supabase/supabase-js";
 import slowDown from "express-slow-down";
 import path from "path";
@@ -1898,6 +1899,561 @@ app.post("/api/admin/client-devices/rename", requireAdmin, async (req, res) => {
 
     return res.json({ ok: true, client_mac: payload.client_mac, alias: payload.alias });
   } catch (e) {
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// ------------------------------------------------------------
+// ADMIN: Free Access Devices (MAC bypass per pool, multi-router)
+// V1: superadmin only. Backend DB is source of truth.
+// Sync applies MikroTik /ip hotspot ip-binding on the correct router.
+// ------------------------------------------------------------
+
+const FREE_ACCESS_ROLES = new Set(["pool_owner", "staff", "family", "vip"]);
+const FREE_ACCESS_COMMENT_PREFIX = "RAZAFI_FREE_ACCESS";
+
+function normalizeFreeAccessRole(role) {
+  const r = String(role || "vip").trim().toLowerCase();
+  return FREE_ACCESS_ROLES.has(r) ? r : "vip";
+}
+
+function freeAccessComment(poolId) {
+  return `${FREE_ACCESS_COMMENT_PREFIX}:${String(poolId || "").trim()}`;
+}
+
+function sanitizeFreeAccessText(v, max = 80) {
+  return String(v || "")
+    .replace(/[\r\n\t]/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .slice(0, max);
+}
+
+// ------------------------------
+// RouterOS API minimal client
+// ------------------------------
+function rosEncodeLength(len) {
+  if (len < 0x80) return Buffer.from([len]);
+  if (len < 0x4000) return Buffer.from([(len >> 8) | 0x80, len & 0xff]);
+  if (len < 0x200000) return Buffer.from([(len >> 16) | 0xc0, (len >> 8) & 0xff, len & 0xff]);
+  if (len < 0x10000000) return Buffer.from([(len >> 24) | 0xe0, (len >> 16) & 0xff, (len >> 8) & 0xff, len & 0xff]);
+  return Buffer.from([0xf0, (len >> 24) & 0xff, (len >> 16) & 0xff, (len >> 8) & 0xff, len & 0xff]);
+}
+
+function rosEncodeWord(word) {
+  const b = Buffer.from(String(word), "utf8");
+  return Buffer.concat([rosEncodeLength(b.length), b]);
+}
+
+function rosDecodeLengthFromBuffer(buf, offset) {
+  if (offset >= buf.length) return null;
+  let c = buf[offset++];
+  if ((c & 0x80) === 0x00) return { len: c, offset };
+  if ((c & 0xc0) === 0x80) {
+    if (offset >= buf.length) return null;
+    return { len: ((c & ~0xc0) << 8) + buf[offset++], offset };
+  }
+  if ((c & 0xe0) === 0xc0) {
+    if (offset + 1 >= buf.length) return null;
+    return { len: ((c & ~0xe0) << 16) + (buf[offset++] << 8) + buf[offset++], offset };
+  }
+  if ((c & 0xf0) === 0xe0) {
+    if (offset + 2 >= buf.length) return null;
+    return { len: ((c & ~0xf0) << 24) + (buf[offset++] << 16) + (buf[offset++] << 8) + buf[offset++], offset };
+  }
+  if ((c & 0xf8) === 0xf0) {
+    if (offset + 3 >= buf.length) return null;
+    return { len: (buf[offset++] << 24) + (buf[offset++] << 16) + (buf[offset++] << 8) + buf[offset++], offset };
+  }
+  return null;
+}
+
+class RouterOsApiClient {
+  constructor({ host, port, user, password, timeoutMs = 8000 }) {
+    this.host = host;
+    this.port = Number(port || 8728);
+    this.user = user;
+    this.password = password;
+    this.timeoutMs = timeoutMs;
+    this.socket = null;
+    this.buffer = Buffer.alloc(0);
+    this.pending = [];
+  }
+
+  connect() {
+    return new Promise((resolve, reject) => {
+      const socket = net.createConnection({ host: this.host, port: this.port }, resolve);
+      this.socket = socket;
+
+      const timer = setTimeout(() => {
+        try { socket.destroy(); } catch (_) {}
+        reject(new Error("routeros_connect_timeout"));
+      }, this.timeoutMs);
+
+      socket.once("connect", () => clearTimeout(timer));
+      socket.once("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+
+      socket.on("data", (chunk) => {
+        this.buffer = Buffer.concat([this.buffer, chunk]);
+        this._drain();
+      });
+    });
+  }
+
+  close() {
+    try { this.socket?.end(); } catch (_) {}
+    try { this.socket?.destroy(); } catch (_) {}
+  }
+
+  _writeSentence(words) {
+    const bufs = [];
+    for (const w of words) bufs.push(rosEncodeWord(w));
+    bufs.push(Buffer.from([0]));
+    this.socket.write(Buffer.concat(bufs));
+  }
+
+  _drain() {
+    while (true) {
+      const sentence = [];
+      let offset = 0;
+
+      while (true) {
+        const d = rosDecodeLengthFromBuffer(this.buffer, offset);
+        if (!d) return;
+
+        const len = d.len;
+        offset = d.offset;
+
+        if (this.buffer.length < offset + len) return;
+
+        if (len === 0) {
+          this.buffer = this.buffer.slice(offset);
+          const p = this.pending.shift();
+          if (p) p(sentence);
+          break;
+        }
+
+        sentence.push(this.buffer.slice(offset, offset + len).toString("utf8"));
+        offset += len;
+      }
+    }
+  }
+
+  async sentence(words) {
+    if (!this.socket) throw new Error("routeros_not_connected");
+    return new Promise((resolve, reject) => {
+      const out = [];
+      const timeout = setTimeout(() => reject(new Error("routeros_sentence_timeout")), this.timeoutMs);
+
+      const readOne = (sentence) => {
+        out.push(sentence);
+        const head = sentence[0] || "";
+        if (head === "!done") {
+          clearTimeout(timeout);
+          resolve(out);
+          return;
+        }
+        if (head === "!fatal") {
+          clearTimeout(timeout);
+          reject(new Error(sentence.join(" ")));
+          return;
+        }
+        this.pending.push(readOne);
+      };
+
+      this.pending.push(readOne);
+      this._writeSentence(words);
+    });
+  }
+
+  async login() {
+    await this.sentence(["/login", `=name=${this.user}`, `=password=${this.password}`]);
+  }
+
+  async command(words) {
+    return this.sentence(words);
+  }
+}
+
+function rosRows(sentences) {
+  const rows = [];
+  for (const s of sentences || []) {
+    if (!Array.isArray(s) || s[0] !== "!re") continue;
+    const row = {};
+    for (const w of s.slice(1)) {
+      if (!w.startsWith("=")) continue;
+      const idx = w.indexOf("=", 1);
+      if (idx === -1) continue;
+      const k = w.slice(1, idx);
+      const v = w.slice(idx + 1);
+      row[k] = v;
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+async function getRouterForPool(poolId) {
+  const { data: pool, error: pErr } = await supabase
+    .from("internet_pools")
+    .select("id,name,radius_nas_id")
+    .eq("id", poolId)
+    .maybeSingle();
+
+  if (pErr) throw pErr;
+  if (!pool) throw new Error("pool_not_found");
+  if (!pool.radius_nas_id) throw new Error("pool_has_no_radius_nas_id");
+
+  const { data: router, error: rErr } = await supabase
+    .from("mikrotik_routers")
+    .select("nas_id,display_name,api_host,api_port,api_user,api_password,api_enabled")
+    .eq("nas_id", pool.radius_nas_id)
+    .maybeSingle();
+
+  if (rErr) throw rErr;
+  if (!router) throw new Error("router_not_found_for_pool");
+  if (!router.api_enabled) throw new Error("router_api_disabled");
+  if (!router.api_host || !router.api_user || !router.api_password) {
+    throw new Error("router_api_credentials_missing");
+  }
+
+  return { pool, router };
+}
+
+async function syncFreeAccessPool(poolId) {
+  const { pool, router } = await getRouterForPool(poolId);
+  const comment = freeAccessComment(pool.id);
+
+  const { data: devices, error: dErr } = await supabase
+    .from("free_access_devices")
+    .select("id,person_name,role,device_name,mac_address,is_active")
+    .eq("pool_id", pool.id)
+    .eq("is_active", true)
+    .order("person_name", { ascending: true });
+
+  if (dErr) throw dErr;
+
+  const activeDevices = (devices || [])
+    .map((d) => ({
+      ...d,
+      mac_address: normalizeMacColon(String(d.mac_address || "")) || String(d.mac_address || "").trim().toUpperCase(),
+    }))
+    .filter((d) => d.mac_address);
+
+  const client = new RouterOsApiClient({
+    host: router.api_host,
+    port: router.api_port || 8728,
+    user: router.api_user,
+    password: router.api_password,
+  });
+
+  try {
+    await client.connect();
+    await client.login();
+
+    // Remove only RAZAFI free-access entries for this pool/router.
+    const printed = await client.command([
+      "/ip/hotspot/ip-binding/print",
+      `?comment=${comment}`,
+    ]);
+
+    const existing = rosRows(printed);
+    for (const row of existing) {
+      if (row[".id"]) {
+        await client.command([
+          "/ip/hotspot/ip-binding/remove",
+          `=.id=${row[".id"]}`,
+        ]);
+      }
+    }
+
+    // Re-add active devices as bypassed.
+    for (const d of activeDevices) {
+      await client.command([
+        "/ip/hotspot/ip-binding/add",
+        `=mac-address=${d.mac_address}`,
+        "=type=bypassed",
+        `=comment=${comment}`,
+      ]);
+    }
+
+    const nowIso = new Date().toISOString();
+
+    if ((devices || []).length) {
+      await supabase
+        .from("free_access_devices")
+        .update({ last_synced_at: nowIso, updated_at: nowIso })
+        .eq("pool_id", pool.id);
+    }
+
+    return {
+      ok: true,
+      pool_id: pool.id,
+      pool_name: pool.name || null,
+      nas_id: pool.radius_nas_id || null,
+      router_name: router.display_name || null,
+      router_host: router.api_host,
+      active_count: activeDevices.length,
+      removed_count: existing.length,
+      added_count: activeDevices.length,
+    };
+  } finally {
+    client.close();
+  }
+}
+
+// GET /api/admin/free-access-devices
+app.get("/api/admin/free-access-devices", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const pool_id = String(req.query.pool_id || "all").trim();
+
+    let q = supabase
+      .from("free_access_devices")
+      .select(`
+        id,
+        pool_id,
+        person_name,
+        role,
+        device_name,
+        mac_address,
+        is_active,
+        last_synced_at,
+        created_at,
+        updated_at,
+        pool:internet_pools ( id, name, radius_nas_id )
+      `)
+      .order("created_at", { ascending: false });
+
+    if (pool_id && pool_id !== "all") q = q.eq("pool_id", pool_id);
+
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ error: error.message });
+
+    return res.json({ items: data || [] });
+  } catch (e) {
+    console.error("FREE ACCESS LIST ERROR", e);
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// POST /api/admin/free-access-devices
+app.post("/api/admin/free-access-devices", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const pool_id = String(req.body?.pool_id || "").trim();
+    const person_name = sanitizeFreeAccessText(req.body?.person_name, 80);
+    const role = normalizeFreeAccessRole(req.body?.role);
+    const device_name = sanitizeFreeAccessText(req.body?.device_name, 80);
+    const mac_address = normalizeMacColon(String(req.body?.mac_address || "")) || null;
+    const is_active = req.body?.is_active === undefined ? true : !!req.body.is_active;
+
+    if (!pool_id) return res.status(400).json({ error: "pool_id_required" });
+    if (!person_name) return res.status(400).json({ error: "person_name_required" });
+    if (!device_name) return res.status(400).json({ error: "device_name_required" });
+    if (!mac_address) return res.status(400).json({ error: "mac_address_invalid" });
+
+    const { data: pool, error: pErr } = await supabase
+      .from("internet_pools")
+      .select("id")
+      .eq("id", pool_id)
+      .maybeSingle();
+
+    if (pErr) return res.status(500).json({ error: pErr.message });
+    if (!pool) return res.status(404).json({ error: "pool_not_found" });
+
+    const payload = {
+      pool_id,
+      person_name,
+      role,
+      device_name,
+      mac_address: String(mac_address).toUpperCase(),
+      is_active,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from("free_access_devices")
+      .insert(payload)
+      .select(`
+        id,
+        pool_id,
+        person_name,
+        role,
+        device_name,
+        mac_address,
+        is_active,
+        last_synced_at,
+        created_at,
+        updated_at,
+        pool:internet_pools ( id, name, radius_nas_id )
+      `)
+      .single();
+
+    if (error) {
+      if (String(error.message || "").toLowerCase().includes("duplicate")) {
+        return res.status(409).json({ error: "device_already_exists_for_pool" });
+      }
+      return res.status(500).json({ error: error.message });
+    }
+
+    return res.json({ ok: true, item: data });
+  } catch (e) {
+    console.error("FREE ACCESS CREATE ERROR", e);
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// PATCH /api/admin/free-access-devices/:id
+app.patch("/api/admin/free-access-devices/:id", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    const patch = { updated_at: new Date().toISOString() };
+
+    if (req.body?.person_name !== undefined) {
+      const v = sanitizeFreeAccessText(req.body.person_name, 80);
+      if (!v) return res.status(400).json({ error: "person_name_required" });
+      patch.person_name = v;
+    }
+
+    if (req.body?.role !== undefined) {
+      patch.role = normalizeFreeAccessRole(req.body.role);
+    }
+
+    if (req.body?.device_name !== undefined) {
+      const v = sanitizeFreeAccessText(req.body.device_name, 80);
+      if (!v) return res.status(400).json({ error: "device_name_required" });
+      patch.device_name = v;
+    }
+
+    if (req.body?.mac_address !== undefined) {
+      const mac = normalizeMacColon(String(req.body.mac_address || "")) || null;
+      if (!mac) return res.status(400).json({ error: "mac_address_invalid" });
+      patch.mac_address = String(mac).toUpperCase();
+    }
+
+    if (req.body?.is_active !== undefined) {
+      patch.is_active = !!req.body.is_active;
+    }
+
+    const { data, error } = await supabase
+      .from("free_access_devices")
+      .update(patch)
+      .eq("id", id)
+      .select(`
+        id,
+        pool_id,
+        person_name,
+        role,
+        device_name,
+        mac_address,
+        is_active,
+        last_synced_at,
+        created_at,
+        updated_at,
+        pool:internet_pools ( id, name, radius_nas_id )
+      `)
+      .maybeSingle();
+
+    if (error) {
+      if (String(error.message || "").toLowerCase().includes("duplicate")) {
+        return res.status(409).json({ error: "device_already_exists_for_pool" });
+      }
+      return res.status(500).json({ error: error.message });
+    }
+    if (!data) return res.status(404).json({ error: "not_found" });
+
+    return res.json({ ok: true, item: data });
+  } catch (e) {
+    console.error("FREE ACCESS PATCH ERROR", e);
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// DELETE /api/admin/free-access-devices/:id
+app.delete("/api/admin/free-access-devices/:id", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    const { data: existing, error: getErr } = await supabase
+      .from("free_access_devices")
+      .select("id,pool_id")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (getErr) return res.status(500).json({ error: getErr.message });
+    if (!existing) return res.status(404).json({ error: "not_found" });
+
+    const { error } = await supabase
+      .from("free_access_devices")
+      .delete()
+      .eq("id", id);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    return res.json({ ok: true, deleted_id: id, pool_id: existing.pool_id });
+  } catch (e) {
+    console.error("FREE ACCESS DELETE ERROR", e);
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// POST /api/admin/free-access-devices/sync
+// Body optional: { pool_id: "..." } ; if omitted, sync all pools that have free_access_devices rows.
+app.post("/api/admin/free-access-devices/sync", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const pool_id = String(req.body?.pool_id || req.query?.pool_id || "").trim();
+
+    let poolIds = [];
+
+    if (pool_id) {
+      poolIds = [pool_id];
+    } else {
+      const { data, error } = await supabase
+        .from("free_access_devices")
+        .select("pool_id");
+
+      if (error) return res.status(500).json({ error: error.message });
+
+      poolIds = Array.from(new Set((data || []).map((r) => String(r.pool_id || "").trim()).filter(Boolean)));
+    }
+
+    if (!poolIds.length) return res.json({ ok: true, results: [] });
+
+    const results = [];
+
+    for (const pid of poolIds) {
+      try {
+        const result = await syncFreeAccessPool(pid);
+        results.push(result);
+      } catch (e) {
+        console.error("FREE ACCESS SYNC POOL ERROR", pid, e?.message || e);
+        results.push({
+          ok: false,
+          pool_id: pid,
+          error: String(e?.message || e),
+        });
+      }
+    }
+
+    const ok = results.every((r) => r.ok);
+    return res.status(ok ? 200 : 207).json({ ok, results });
+  } catch (e) {
+    console.error("FREE ACCESS SYNC ERROR", e);
     return res.status(500).json({ error: String(e?.message || e) });
   }
 });
