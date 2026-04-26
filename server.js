@@ -2142,67 +2142,58 @@ async function syncFreeAccessPool(poolId) {
       mac_address: normalizeMacColon(String(d.mac_address || "")) || String(d.mac_address || "").trim().toUpperCase(),
     }))
     .filter((d) => d.mac_address);
+  const vpsSyncUrl = process.env.FREE_ACCESS_SYNC_AGENT_URL || "http://159.89.16.34:3001/sync";
+  const vpsSyncSecret = process.env.FREE_ACCESS_SYNC_AGENT_SECRET || "razafi_sync_secret";
 
-  const client = new RouterOsApiClient({
-    host: router.api_host,
-    port: router.api_port || 8728,
-    user: router.api_user,
-    password: router.api_password,
+  const resp = await fetch(vpsSyncUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-secret": vpsSyncSecret,
+    },
+    body: JSON.stringify({
+      router_ip: router.api_host,
+      router_port: router.api_port || 8728,
+      api_user: router.api_user,
+      api_password: router.api_password,
+      pool_id: pool.id,
+      comment,
+      active_devices: activeDevices.map((d) => ({
+        mac_address: d.mac_address,
+        person_name: d.person_name || null,
+        role: d.role || null,
+        device_name: d.device_name || null,
+      })),
+    }),
   });
 
-  try {
-    await client.connect();
-    await client.login();
+  const result = await resp.json().catch(() => ({}));
 
-    // Remove only RAZAFI free-access entries for this pool/router.
-    const printed = await client.command([
-      "/ip/hotspot/ip-binding/print",
-      `?comment=${comment}`,
-    ]);
-
-    const existing = rosRows(printed);
-    for (const row of existing) {
-      if (row[".id"]) {
-        await client.command([
-          "/ip/hotspot/ip-binding/remove",
-          `=.id=${row[".id"]}`,
-        ]);
-      }
-    }
-
-    // Re-add active devices as bypassed.
-    for (const d of activeDevices) {
-      await client.command([
-        "/ip/hotspot/ip-binding/add",
-        `=mac-address=${d.mac_address}`,
-        "=type=bypassed",
-        `=comment=${comment}`,
-      ]);
-    }
-
-    const nowIso = new Date().toISOString();
-
-    if ((devices || []).length) {
-      await supabase
-        .from("free_access_devices")
-        .update({ last_synced_at: nowIso, updated_at: nowIso })
-        .eq("pool_id", pool.id);
-    }
-
-    return {
-      ok: true,
-      pool_id: pool.id,
-      pool_name: pool.name || null,
-      nas_id: pool.radius_nas_id || null,
-      router_name: router.display_name || null,
-      router_host: router.api_host,
-      active_count: activeDevices.length,
-      removed_count: existing.length,
-      added_count: activeDevices.length,
-    };
-  } finally {
-    client.close();
+  if (!resp.ok || !result.ok) {
+    throw new Error(result.error || `sync_agent_failed_${resp.status}`);
   }
+
+  const nowIso = new Date().toISOString();
+
+  if ((devices || []).length) {
+    await supabase
+      .from("free_access_devices")
+      .update({ last_synced_at: nowIso, updated_at: nowIso })
+      .eq("pool_id", pool.id);
+  }
+
+  return {
+    ok: true,
+    pool_id: pool.id,
+    pool_name: pool.name || null,
+    nas_id: pool.radius_nas_id || null,
+    router_name: router.display_name || null,
+    router_host: router.api_host,
+    active_count: activeDevices.length,
+    removed_count: result.removed_count ?? null,
+    added_count: result.added_count ?? activeDevices.length,
+    via: "vps_sync_agent",
+  };
 }
 
 // GET /api/admin/free-access-devices
