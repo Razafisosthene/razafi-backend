@@ -213,7 +213,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   sysMikrotikBtn?.addEventListener("click", () => { setActiveSystem("mikrotik"); loadPools().catch(err => showMsg(msgEl, err.message, true)); });
   newSystemEl?.addEventListener("change", () => { updateCreateFieldsVisibility(); });
 
-  setActiveSystem("portal");
+  setActiveSystem("mikrotik");
   setCreateVisibilityByRole();
 
   async function loadAllAps() {
