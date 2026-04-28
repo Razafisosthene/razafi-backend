@@ -1923,25 +1923,141 @@ function saturationLabel(pct) {
     }
   }
 
-  function planCardHTML(plan) {
+  // -------- Sales UI helpers (visual only; admin sort + backend truth remain untouched) --------
+  function ensurePlanSalesStyle() {
+    if (document.getElementById("razafi-plan-sales-style")) return;
+
+    const st = document.createElement("style");
+    st.id = "razafi-plan-sales-style";
+    st.textContent = `
+      .plan-card { position: relative; overflow: visible; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
+      .plan-card:hover { transform: translateY(-2px); }
+      .plan-card.razafi-plan-entry { border: 1px solid rgba(22, 163, 74, .35); background: linear-gradient(180deg, rgba(34,197,94,.10), rgba(255,255,255,.03)); }
+      .plan-card.razafi-plan-recommended { border: 2px solid rgba(13,110,253,.75); background: linear-gradient(180deg, rgba(13,110,253,.16), rgba(255,255,255,.04)); box-shadow: 0 12px 28px rgba(13,110,253,.16); transform: scale(1.015); }
+      .plan-card.razafi-plan-premium { border: 1px solid rgba(147,51,234,.45); background: linear-gradient(180deg, rgba(147,51,234,.14), rgba(255,255,255,.03)); }
+      .plan-card.razafi-plan-free { border: 1px solid rgba(245,158,11,.42); background: linear-gradient(180deg, rgba(245,158,11,.12), rgba(255,255,255,.03)); }
+      .plan-card .plan-badge, .plan-card .plan-sales-badge { display: inline-flex; align-items: center; gap: 4px; width: fit-content; margin: 0 6px 8px 0; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 800; letter-spacing: .35px; }
+      .plan-card .plan-sales-badge { background: rgba(13,110,253,.95); color: #fff; box-shadow: 0 6px 16px rgba(13,110,253,.20); }
+      .plan-card .plan-sales-note { margin: 8px 0 10px; font-weight: 700; font-size: 13px; line-height: 1.3; opacity: .95; }
+      .plan-card.razafi-plan-entry .plan-sales-note { color: #13803d; }
+      .plan-card.razafi-plan-recommended .plan-sales-note { color: #0d6efd; }
+      .plan-card.razafi-plan-premium .plan-sales-note { color: #7e22ce; }
+      .plan-card.razafi-plan-free .plan-sales-note { color: #b45309; }
+      body.theme-dark .plan-card.razafi-plan-entry { background: linear-gradient(180deg, rgba(34,197,94,.16), rgba(255,255,255,.04)); }
+      body.theme-dark .plan-card.razafi-plan-recommended { background: linear-gradient(180deg, rgba(13,110,253,.22), rgba(255,255,255,.05)); }
+      body.theme-dark .plan-card.razafi-plan-premium { background: linear-gradient(180deg, rgba(147,51,234,.22), rgba(255,255,255,.05)); }
+      body.theme-dark .plan-card.razafi-plan-free { background: linear-gradient(180deg, rgba(245,158,11,.18), rgba(255,255,255,.05)); }
+      body.theme-dark .plan-card.razafi-plan-entry .plan-sales-note { color: #86efac; }
+      body.theme-dark .plan-card.razafi-plan-recommended .plan-sales-note { color: #93c5fd; }
+      body.theme-dark .plan-card.razafi-plan-premium .plan-sales-note { color: #d8b4fe; }
+      body.theme-dark .plan-card.razafi-plan-free .plan-sales-note { color: #fcd34d; }
+    `;
+    document.head.appendChild(st);
+  }
+
+  function getPlanDurationMinutes(plan) {
+    return (plan.duration_minutes !== null && plan.duration_minutes !== undefined)
+      ? Number(plan.duration_minutes)
+      : (Number(plan.duration_hours) || 0) * 60;
+  }
+
+  function getPlanUiGroupKey(plan) {
+    const m = Math.max(0, Math.trunc(Number(getPlanDurationMinutes(plan)) || 0));
+    if (m < 24 * 60) return "short";
+    if (m < 7 * 24 * 60) return "daily";
+    if (m < 30 * 24 * 60) return "weekly";
+    return "monthly";
+  }
+
+  function buildPlanUiMeta(plans) {
+    const meta = new Map();
+    const groups = new Map();
+
+    (plans || []).forEach((plan, idx) => {
+      const id = String(plan?.id || idx);
+      const price = Number(plan?.price_ar || 0);
+      const base = {
+        role: price === 0 ? "free" : "default",
+        badge: "",
+        note: price === 0 ? "🎁 Test gratuit" : "",
+        cta: price === 0 ? "Obtenir gratuitement" : "Acheter maintenant",
+      };
+      meta.set(id, base);
+
+      // Free/test plans should not influence paid plan recommendations.
+      if (!Number.isFinite(price) || price <= 0) return;
+
+      const key = getPlanUiGroupKey(plan);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({ id, plan, price, idx });
+    });
+
+    groups.forEach((items) => {
+      const sorted = items.slice().sort((a, b) => (a.price - b.price) || (a.idx - b.idx));
+      const n = sorted.length;
+      if (!n) return;
+
+      if (n === 1) {
+        const m = meta.get(sorted[0].id);
+        if (m) {
+          m.role = "default";
+          m.note = "✅ Offre disponible";
+        }
+        return;
+      }
+
+      const entry = sorted[0];
+      const recommended = sorted[Math.floor(n / 2)];
+      const premium = sorted[n - 1];
+
+      const entryMeta = meta.get(entry.id);
+      if (entryMeta) {
+        entryMeta.role = "entry";
+        entryMeta.note = "💸 Petit budget";
+      }
+
+      const recMeta = meta.get(recommended.id);
+      if (recMeta) {
+        recMeta.role = "recommended";
+        recMeta.badge = "⭐ RECOMMANDÉ";
+        recMeta.note = "🚀 Meilleur rapport qualité/prix";
+      }
+
+      if (n >= 3 && premium.id !== recommended.id) {
+        const premiumMeta = meta.get(premium.id);
+        if (premiumMeta) {
+          premiumMeta.role = "premium";
+          premiumMeta.note = "🔥 Pour gros utilisateurs";
+        }
+      }
+    });
+
+    return meta;
+  }
+
+  function planCardHTML(plan, uiMetaMap) {
     const name = plan.name || "Plan";
     const price = formatAr(plan.price_ar);
 
-    const durationMinutes = (plan.duration_minutes !== null && plan.duration_minutes !== undefined)
-      ? Number(plan.duration_minutes)
-      : (Number(plan.duration_hours) || 0) * 60;
+    const durationMinutes = getPlanDurationMinutes(plan);
     const dataMb = plan.data_mb; // may be null for unlimited
     const maxDevices = Number(plan.max_devices) || 1;
 
     const isUnlimited = (plan.data_mb === null || plan.data_mb === undefined);
     const familyClass = isUnlimited ? "plan-unlimited" : "plan-limited";
     const variantClass = "v" + (hashToInt(plan.id) % 4);
-    const badgeHtml = isUnlimited ? `<span class="plan-badge">ILLIMITÉ</span>` : "";
+    const uiMeta = (uiMetaMap && uiMetaMap.get(String(plan.id))) || {};
+    const role = String(uiMeta.role || "default");
+    const roleClass = role ? `razafi-plan-${role}` : "";
+    const unlimitedBadgeHtml = isUnlimited ? `<span class="plan-badge">ILLIMITÉ</span>` : "";
+    const salesBadgeHtml = uiMeta.badge ? `<span class="plan-sales-badge">${escapeHtml(uiMeta.badge)}</span>` : "";
+    const salesNoteHtml = uiMeta.note ? `<p class="plan-sales-note">${escapeHtml(uiMeta.note)}</p>` : "";
+    const ctaText = uiMeta.cta || "Acheter maintenant";
     const line1 = `⏳ Durée: ${formatDuration(durationMinutes)} • 📊 Data: ${formatData(dataMb)}`;
     const line2 = `🔌 ${formatDevices(maxDevices)}`;
 
     return `
-      <div class="card plan-card ${familyClass} ${variantClass}" 
+      <div class="card plan-card ${familyClass} ${variantClass} ${roleClass}" 
            data-plan-id="${escapeHtml(plan.id)}"
            data-plan-name="${escapeHtml(name)}"
            data-plan-price="${escapeHtml(String(plan.price_ar ?? ""))}"
@@ -1949,13 +2065,14 @@ function saturationLabel(pct) {
            data-plan-data="${(dataMb === null || dataMb === undefined) ? "" : escapeHtml(String(dataMb))}"
            data-plan-unlimited="${isUnlimited ? "1" : "0"}"
            data-plan-devices="${escapeHtml(String(maxDevices))}">
-        ${badgeHtml}
+        ${salesBadgeHtml}${unlimitedBadgeHtml}
         <h4>${escapeHtml(name)}</h4>
         <p class="price">${price}</p>
+        ${salesNoteHtml}
         <p class="plan-meta">${line1}</p>
         <p class="plan-devices">${line2}</p>
 
-        <button class="choose-plan-btn">Choisir</button>
+        <button class="choose-plan-btn">${escapeHtml(ctaText)}</button>
 
         <div class="plan-payment hidden" aria-live="polite">
           <h5>Paiement</h5>
@@ -2044,7 +2161,9 @@ function saturationLabel(pct) {
         return;
       }
 
-      plansGrid.innerHTML = plans.map(planCardHTML).join("");
+      ensurePlanSalesStyle();
+      const planUiMeta = buildPlanUiMeta(plans);
+      plansGrid.innerHTML = plans.map((plan) => planCardHTML(plan, planUiMeta)).join("");
 
       bindPlanHandlers();
       bindTermsAcceptanceGuard();
