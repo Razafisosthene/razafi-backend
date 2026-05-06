@@ -58,6 +58,21 @@ function formatDataDisplay(plan) {
   return `${s} Go`;
 }
 
+function formatRateLimitDisplay(plan) {
+  const v = String(plan?.mikrotik_rate_limit || "").trim();
+  if (!v) return "Default";
+  return v;
+}
+
+function normalizeRateLimitInput(v) {
+  const cleaned = String(v || "").trim().replace(/\s+/g, "");
+  if (!cleaned) return "";
+  const part = "[0-9]+(?:[kKmMgG])?";
+  const re = new RegExp(`^${part}/${part}$`);
+  if (!re.test(cleaned)) return null;
+  return cleaned;
+}
+
 
 
 
@@ -117,6 +132,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 const f_unlimited_data = document.getElementById("f_unlimited_data");
   const f_data_gb = document.getElementById("f_data_gb");
   const f_max_devices = document.getElementById("f_max_devices");
+  const rateLimitRow = document.getElementById("rateLimitRow");
+  const rateLimitHint = document.getElementById("rateLimitHint");
+  const f_mikrotik_rate_limit = document.getElementById("f_mikrotik_rate_limit");
   const f_sort_order = document.getElementById("f_sort_order");
   const f_is_visible = document.getElementById("f_is_visible");
   const f_is_active = document.getElementById("f_is_active");
@@ -137,6 +155,7 @@ const f_unlimited_data = document.getElementById("f_unlimited_data");
       f_data_gb.disabled = false;
       f_data_gb.value = "";
       f_max_devices.value = "";
+      if (f_mikrotik_rate_limit) f_mikrotik_rate_limit.value = "";
       f_sort_order.value = "0";
       f_is_visible.checked = true;
       f_is_active.checked = true;
@@ -174,6 +193,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
         f_data_gb.disabled = false;
       }
       f_max_devices.value = plan.max_devices ?? 1;
+      if (f_mikrotik_rate_limit) f_mikrotik_rate_limit.value = plan.mikrotik_rate_limit ?? "";
       f_sort_order.value = plan.sort_order ?? 0;
       f_is_visible.checked = !!plan.is_visible;
       f_is_active.checked = !!plan.is_active;
@@ -183,6 +203,9 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
     const isMikrotik = (currentSystem === SYSTEMS.mikrotik);
     if (poolRow) poolRow.style.display = isMikrotik ? "flex" : "none";
     if (poolHint) poolHint.style.display = isMikrotik ? "block" : "none";
+    if (rateLimitRow) rateLimitRow.style.display = isMikrotik ? "flex" : "none";
+    if (rateLimitHint) rateLimitHint.style.display = isMikrotik ? "block" : "none";
+    if (f_mikrotik_rate_limit && !isMikrotik) f_mikrotik_rate_limit.value = "";
     if (f_pool_id) {
       f_pool_id.required = isMikrotik;
       if (!isMikrotik) {
@@ -284,7 +307,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
   }
   async function loadPlans() {
     errEl.textContent = "";
-    rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="9">Loading...</td></tr>`;
+    rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="10">Loading...</td></tr>`;
 
     const params = new URLSearchParams();
     const q = qEl.value.trim();
@@ -333,7 +356,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
 
 
     if (!filtered.length) {
-      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="9">No plans</td></tr>`;
+      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="10">No plans</td></tr>`;
       return;
     }
 
@@ -364,6 +387,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
           <td style="padding:10px;">${esc(formatDurationFromPlan(p))}</td>
           <td style="padding:10px;">${esc(formatDataDisplay(p))}</td>
           <td style="padding:10px;">${esc(p.max_devices)}</td>
+          <td style="padding:10px;">${esc(formatRateLimitDisplay(p))}</td>
           <td style="padding:10px;">${visible}</td>
           <td style="padding:10px;">${active}</td>
           <td style="padding:10px;">${esc(p.sort_order)}</td>
@@ -477,6 +501,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
           duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
           data_mb: plan.data_mb ?? null,
           max_devices: plan.max_devices ?? 1,
+          mikrotik_rate_limit: plan.mikrotik_rate_limit ?? null,
           sort_order: plan.sort_order ?? 0,
           is_visible: false,
           is_active: false,
@@ -525,6 +550,7 @@ if (effectiveSystem === SYSTEMS.mikrotik) {
           duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
           data_mb: plan.data_mb ?? null,
           max_devices: plan.max_devices ?? 1,
+          mikrotik_rate_limit: plan.mikrotik_rate_limit ?? null,
           sort_order: plan.sort_order ?? 0,
           is_visible: true,
           is_active: false, // safer: restore as visible but inactive
@@ -589,6 +615,9 @@ let data_mb = null;
       duration_minutes,
       data_mb,
       max_devices: Number(f_max_devices.value),
+      mikrotik_rate_limit: (currentSystem === SYSTEMS.mikrotik && f_mikrotik_rate_limit)
+        ? normalizeRateLimitInput(f_mikrotik_rate_limit.value)
+        : null,
       sort_order: Number(f_sort_order.value || 0),
       pool_id: (currentSystem === SYSTEMS.mikrotik) ? (f_pool_id ? String(f_pool_id.value || "") : "") : null,
       is_visible: f_is_visible.checked,
@@ -616,8 +645,14 @@ let data_mb = null;
         formError.textContent = "Please select a MikroTik pool";
         return;
       }
+      if (payload.mikrotik_rate_limit === null && f_mikrotik_rate_limit && String(f_mikrotik_rate_limit.value || "").trim()) {
+        formError.textContent = "Bandwidth limit invalid. Use format like 5M/5M or 10M/10M.";
+        return;
+      }
+      if (!payload.mikrotik_rate_limit) payload.mikrotik_rate_limit = null;
     } else {
       payload.pool_id = null;
+      payload.mikrotik_rate_limit = null;
     }
     if (!f_unlimited_data.checked) {
       const gbVal = Number(f_data_gb.value);
@@ -677,6 +712,8 @@ if (editingId) {
 const isMk = (editingSystem === SYSTEMS.mikrotik);
 if (poolRow) poolRow.style.display = isMk ? "flex" : "none";
 if (poolHint) poolHint.style.display = isMk ? "block" : "none";
+if (rateLimitRow) rateLimitRow.style.display = isMk ? "flex" : "none";
+if (rateLimitHint) rateLimitHint.style.display = isMk ? "block" : "none";
 if (f_pool_id) {
   if (!isMk) {
     f_pool_id.value = "";

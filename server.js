@@ -4844,6 +4844,20 @@ function isNonEmptyString(s) {
   return typeof s === "string" && s.trim().length > 0;
 }
 
+// System 3 only: validate MikroTik rate-limit values used by RADIUS.
+// Accepted examples: 5M/5M, 10M/10M, 512k/2M, 1G/1G.
+function normalizeMikrotikRateLimit(v) {
+  const raw = String(v ?? "").trim();
+  if (!raw) return null;
+
+  const cleaned = raw.replace(/\s+/g, "");
+  const part = "[0-9]+(?:[kKmMgG])?";
+  const re = new RegExp(`^${part}/${part}$`);
+
+  if (!re.test(cleaned)) return null;
+  return cleaned;
+}
+
 
 const _tanazaDeviceCache = new Map(); // key: MAC string -> { ts:number, data:object|null, err:string|null }
 let _tanazaLastCleanup = 0;
@@ -5830,6 +5844,15 @@ if (system === "mikrotik" && !pool_id) {
     const is_visible = toBool(b.is_visible);
     const sort_order = toInt(b.sort_order);
 
+    let mikrotik_rate_limit = null;
+    if (system === "mikrotik") {
+      const rawRate = b.mikrotik_rate_limit ?? b.rate_limit ?? b.bandwidth_limit ?? null;
+      mikrotik_rate_limit = normalizeMikrotikRateLimit(rawRate);
+      if (rawRate !== null && rawRate !== undefined && String(rawRate).trim() && !mikrotik_rate_limit) {
+        return res.status(400).json({ error: "mikrotik_rate_limit_invalid" });
+      }
+    }
+
     // validations (simple, strict)
     if (!isNonEmptyString(name)) return res.status(400).json({ error: "name required" });
     if (price_ar === null || price_ar < 0) return res.status(400).json({ error: "price_ar invalid" });
@@ -5871,6 +5894,7 @@ const payload = {
       pool_id: pool_id_norm,
       data_mb,
       max_devices,
+      mikrotik_rate_limit,
       is_active: is_active ?? true,
       is_visible: is_visible ?? true,
       sort_order: sort_order ?? 0,
@@ -5903,7 +5927,7 @@ app.patch("/api/admin/plans/:id", requireAdmin, async (req, res) => {
 // Load existing plan to enforce invariants (system is immutable)
 const { data: existingPlan, error: existingErr } = await supabase
   .from("plans")
-  .select("id, system, pool_id")
+  .select("id, system, pool_id, mikrotik_rate_limit")
   .eq("id", id)
   .maybeSingle();
 
@@ -6019,6 +6043,24 @@ if (b.data_mb !== undefined) {
       const v = toInt(b.sort_order);
       if (v === null) return res.status(400).json({ error: "sort_order invalid" });
       patch.sort_order = v;
+    }
+
+    // System 3 only: per-plan MikroTik bandwidth limit.
+    // Portal/Tanaza plans keep this NULL. Empty value means fallback to FIXED_MIKROTIK_RATE_LIMIT.
+    if (b.mikrotik_rate_limit !== undefined || b.rate_limit !== undefined || b.bandwidth_limit !== undefined) {
+      const rawRate = b.mikrotik_rate_limit ?? b.rate_limit ?? b.bandwidth_limit ?? null;
+      if (existingSystem !== "mikrotik") {
+        if (rawRate !== null && String(rawRate).trim()) {
+          return res.status(400).json({ error: "mikrotik_rate_limit_only_for_mikrotik" });
+        }
+        patch.mikrotik_rate_limit = null;
+      } else {
+        const normalizedRate = normalizeMikrotikRateLimit(rawRate);
+        if (rawRate !== null && rawRate !== undefined && String(rawRate).trim() && !normalizedRate) {
+          return res.status(400).json({ error: "mikrotik_rate_limit_invalid" });
+        }
+        patch.mikrotik_rate_limit = normalizedRate;
+      }
     }
 
 
@@ -7767,7 +7809,7 @@ const RADIUS_ALLOWED_IPS = (process.env.RADIUS_ALLOWED_IPS || "159.89.16.34")
   .filter(Boolean);
 
 const RADIUS_API_SECRET = process.env.RADIUS_API_SECRET || ""; // set this in Render env (recommended)
-const FIXED_MIKROTIK_RATE_LIMIT = String(process.env.FIXED_MIKROTIK_RATE_LIMIT || "10M/10M").trim() || "10M/10M";
+const FIXED_MIKROTIK_RATE_LIMIT = String(process.env.FIXED_MIKROTIK_RATE_LIMIT || process.env.MIKROTIK_RATE_LIMIT || "10M/10M").trim() || "10M/10M";
 
 /**
  * Normalize IP strings that may come as:
@@ -8359,7 +8401,7 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
           // NORMAL MODE: use plan duration
           const { data: planRow, error: pErr } = await supabase
             .from("plans")
-            .select("duration_minutes,duration_hours,data_mb")
+            .select("duration_minutes,duration_hours,data_mb,mikrotik_rate_limit")
             .eq("id", session.plan_id)
             .maybeSingle();
 
@@ -8492,7 +8534,7 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
       try {
         const { data: p2 } = await supabase
           .from("plans")
-          .select("data_mb")
+          .select("data_mb,mikrotik_rate_limit")
           .eq("id", session.plan_id)
           .maybeSingle();
         planMeta = p2 || null;
@@ -8586,8 +8628,10 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
     if (effectiveTotalBytes !== null) {
       replyExtra["reply:Mikrotik-Total-Limit"] = effectiveTotalBytes;
     }
-    if (FIXED_MIKROTIK_RATE_LIMIT) {
-      replyExtra["reply:Mikrotik-Rate-Limit"] = FIXED_MIKROTIK_RATE_LIMIT;
+    const planRateLimit = !isBonusSession ? normalizeMikrotikRateLimit(planMeta?.mikrotik_rate_limit) : null;
+    const effectiveRateLimit = planRateLimit || FIXED_MIKROTIK_RATE_LIMIT;
+    if (effectiveRateLimit) {
+      replyExtra["reply:Mikrotik-Rate-Limit"] = effectiveRateLimit;
     }
 
     return sendAccept(username, remainingSeconds, {
