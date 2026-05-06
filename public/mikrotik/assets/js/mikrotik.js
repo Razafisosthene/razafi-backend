@@ -390,6 +390,270 @@
     return d === 1 ? "1 appareil" : d + " appareils";
   }
 
+
+  // -------- Smart plan UX (visible plans only) --------
+  // UX goal:
+  // - keep ONLY one "🎁 Test gratuit" badge for one visible 0 Ar plan
+  // - keep ONLY one "⭐ RECOMMANDÉ" badge for one smart-selected visible paid plan
+  // - apply subtle automatic card accents by plan type, without requiring manual code changes
+  function ensurePlanSalesStyle() {
+    if (document.getElementById("razafi-plan-sales-style")) return;
+
+    const st = document.createElement("style");
+    st.id = "razafi-plan-sales-style";
+    st.textContent = `
+      .plan-card {
+        position: relative;
+        overflow: hidden;
+        transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+      }
+      .plan-card::before {
+        content: "";
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 4px;
+        opacity: 0.9;
+        border-radius: inherit 0 0 inherit;
+        background: rgba(255,255,255,0.14);
+      }
+      .plan-card.plan-role-neutral::before {
+        background: rgba(255,255,255,0.14);
+      }
+      .plan-card.plan-role-free::before {
+        background: linear-gradient(180deg, rgba(34,197,94,0.95), rgba(16,185,129,0.55));
+      }
+      .plan-card.plan-role-recommended {
+        border-color: rgba(245, 158, 11, 0.62) !important;
+        box-shadow: 0 14px 34px rgba(245, 158, 11, 0.12), 0 0 0 1px rgba(245, 158, 11, 0.16) inset;
+        transform: translateY(-1px);
+      }
+      .plan-card.plan-role-recommended::before {
+        background: linear-gradient(180deg, rgba(245,158,11,0.98), rgba(251,191,36,0.58));
+      }
+      .plan-card.plan-role-unlimited::before {
+        background: linear-gradient(180deg, rgba(99,102,241,0.88), rgba(168,85,247,0.48));
+      }
+      .plan-card.plan-role-budget::before {
+        background: linear-gradient(180deg, rgba(14,165,233,0.85), rgba(6,182,212,0.42));
+      }
+      .plan-card .plan-ux-badge {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        z-index: 1;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 5px 9px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+        line-height: 1;
+        white-space: nowrap;
+        border: 1px solid rgba(255,255,255,0.20);
+        box-shadow: 0 8px 22px rgba(0,0,0,0.12);
+      }
+      .plan-card .plan-ux-badge.badge-free {
+        background: rgba(34,197,94,0.16);
+        color: inherit;
+      }
+      .plan-card .plan-ux-badge.badge-recommended {
+        background: rgba(245,158,11,0.18);
+        color: inherit;
+      }
+      .plan-card.plan-role-recommended .choose-plan-btn {
+        box-shadow: 0 10px 22px rgba(245, 158, 11, 0.12);
+      }
+      .plan-card .price {
+        font-size: 1.45rem;
+        font-weight: 900;
+        letter-spacing: -0.02em;
+      }
+      @media (hover: hover) {
+        .plan-card:hover {
+          transform: translateY(-2px);
+        }
+        .plan-card.plan-role-recommended:hover {
+          transform: translateY(-3px);
+        }
+      }
+      @media (max-width: 420px) {
+        .plan-card .plan-ux-badge {
+          top: 10px;
+          right: 10px;
+          font-size: 10px;
+          padding: 5px 8px;
+        }
+      }
+    `;
+    document.head.appendChild(st);
+  }
+
+  function getPlanPriceAr(plan) {
+    const n = Number(plan?.price_ar ?? plan?.price ?? 0);
+    return Number.isFinite(n) ? Math.max(0, n) : 0;
+  }
+
+  function getPlanDurationMinutes(plan) {
+    const direct = Number(plan?.duration_minutes ?? plan?.durationMinutes);
+    if (Number.isFinite(direct) && direct > 0) return direct;
+    const hours = Number(plan?.duration_hours ?? plan?.durationHours);
+    if (Number.isFinite(hours) && hours > 0) return hours * 60;
+    return 0;
+  }
+
+  function getPlanDataMb(plan) {
+    if (plan?.data_mb === null || plan?.data_mb === undefined) return null;
+    const n = Number(plan.data_mb);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  }
+
+  function getPlanIdentity(plan, index) {
+    return String(plan?.id ?? plan?.plan_id ?? plan?.name ?? ("idx_" + index));
+  }
+
+  function buildPlanUiMeta(plans) {
+    const list = Array.isArray(plans) ? plans : [];
+    const meta = {};
+
+    list.forEach((plan, index) => {
+      const id = getPlanIdentity(plan, index);
+      const price = getPlanPriceAr(plan);
+      const duration = getPlanDurationMinutes(plan);
+      const dataMb = getPlanDataMb(plan);
+      const unlimited = dataMb === null;
+      const maxDevices = Math.max(1, Number(plan?.max_devices ?? plan?.maxDevices ?? 1) || 1);
+
+      meta[id] = {
+        index,
+        price,
+        duration,
+        dataMb,
+        unlimited,
+        maxDevices,
+        badge: "",
+        role: "neutral",
+        cta: "Choisir",
+        isFreeTest: false,
+        isRecommended: false,
+      };
+    });
+
+    const entries = Object.entries(meta);
+    if (!entries.length) return meta;
+
+    const freeEntries = entries.filter(([, m]) => m.price === 0);
+    const paidEntries = entries.filter(([, m]) => m.price > 0);
+
+    // 🎁 Test gratuit: first visible 0 Ar plan only.
+    if (freeEntries.length) {
+      const [id, m] = freeEntries
+        .slice()
+        .sort((a, b) => {
+          const da = a[1].duration || 0;
+          const db = b[1].duration || 0;
+          if (da !== db) return da - db;
+          return a[1].index - b[1].index;
+        })[0];
+      m.badge = "🎁 Test gratuit";
+      m.role = "free";
+      m.cta = "Essayer gratuitement";
+      m.isFreeTest = true;
+      meta[id] = m;
+    }
+
+    let recommendedId = null;
+    if (paidEntries.length === 1) {
+      recommendedId = paidEntries[0][0];
+    } else if (paidEntries.length > 1) {
+      const prices = paidEntries.map(([, m]) => m.price).sort((a, b) => a - b);
+      const medianPrice = prices[Math.floor(prices.length / 2)] || prices[0] || 1;
+      const finiteDataValues = paidEntries
+        .map(([, m]) => m.dataMb)
+        .filter((v) => v !== null && Number.isFinite(Number(v)) && Number(v) > 0)
+        .map(Number)
+        .sort((a, b) => a - b);
+      const maxFiniteData = finiteDataValues.length ? finiteDataValues[finiteDataValues.length - 1] : 1024;
+
+      // Deterministic smart score:
+      // favors balanced paid offers, normally weekly/medium-value plans,
+      // while avoiding extremes that are too small, too expensive, or too long.
+      const scored = paidEntries.map(([id, m]) => {
+        const price = Math.max(1, m.price);
+        const duration = Math.max(1, m.duration || 0);
+        const dataEquivalent = m.unlimited ? Math.max(maxFiniteData * 1.35, 2048) : Math.max(1, Number(m.dataMb || 0));
+
+        const pricePerDay = price / Math.max(duration / 1440, 0.125);
+        const dataPerAr = dataEquivalent / price;
+
+        const sweetDurationPenalty = Math.abs(Math.log(duration / (7 * 24 * 60))) * 0.52;
+        const priceExtremePenalty = Math.abs(Math.log(price / Math.max(1, medianPrice))) * 0.40;
+        const tinyPlanPenalty = duration < 120 ? 1.4 : (duration < 360 ? 0.55 : 0);
+        const veryLongPenalty = duration > (31 * 24 * 60) ? 0.65 : 0;
+        const veryExpensivePenalty = price > (medianPrice * 3.2) ? 0.65 : 0;
+
+        const score =
+          Math.log1p(duration) * 0.28 +
+          Math.log1p(dataEquivalent) * 0.34 +
+          Math.log1p(dataPerAr * 1000) * 0.30 +
+          Math.log1p(m.maxDevices) * 0.08 -
+          Math.log1p(pricePerDay) * 0.03 -
+          sweetDurationPenalty -
+          priceExtremePenalty -
+          tinyPlanPenalty -
+          veryLongPenalty -
+          veryExpensivePenalty;
+
+        return { id, score, index: m.index };
+      }).sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return a.index - b.index;
+      });
+
+      recommendedId = scored[0]?.id || null;
+    }
+
+    if (recommendedId && meta[recommendedId]) {
+      meta[recommendedId].badge = "⭐ RECOMMANDÉ";
+      meta[recommendedId].role = "recommended";
+      meta[recommendedId].cta = "Choisir ce plan";
+      meta[recommendedId].isRecommended = true;
+    }
+
+    // Automatic subtle color roles, no extra badges.
+    if (paidEntries.length) {
+      const cheapest = paidEntries
+        .slice()
+        .sort((a, b) => {
+          if (a[1].price !== b[1].price) return a[1].price - b[1].price;
+          return a[1].index - b[1].index;
+        })[0];
+
+      const biggest = paidEntries
+        .slice()
+        .sort((a, b) => {
+          const au = a[1].unlimited ? 1 : 0;
+          const bu = b[1].unlimited ? 1 : 0;
+          if (au !== bu) return bu - au;
+          const ad = a[1].dataMb === null ? Number.POSITIVE_INFINITY : Number(a[1].dataMb || 0);
+          const bd = b[1].dataMb === null ? Number.POSITIVE_INFINITY : Number(b[1].dataMb || 0);
+          if (ad !== bd) return bd - ad;
+          if (a[1].duration !== b[1].duration) return b[1].duration - a[1].duration;
+          return a[1].index - b[1].index;
+        })[0];
+
+      if (cheapest && cheapest[0] !== recommendedId && meta[cheapest[0]]?.role === "neutral") {
+        meta[cheapest[0]].role = "budget";
+      }
+      if (biggest && biggest[0] !== recommendedId && meta[biggest[0]]?.role === "neutral") {
+        meta[biggest[0]].role = "unlimited";
+      }
+    }
+
+    return meta;
+  }
+
   // -------- Read captive params (robust + refresh-safe) --------
   const isLocalhost = (location.hostname === "localhost" || location.hostname === "127.0.0.1");
   const CAPTIVE_CTX_KEY = "razafi_captive_ctx_v1";
@@ -1923,7 +2187,7 @@ function saturationLabel(pct) {
     }
   }
 
-  function planCardHTML(plan) {
+  function planCardHTML(plan, uiMeta = {}) {
     const name = plan.name || "Plan";
     const price = formatAr(plan.price_ar);
 
@@ -1936,26 +2200,33 @@ function saturationLabel(pct) {
     const isUnlimited = (plan.data_mb === null || plan.data_mb === undefined);
     const familyClass = isUnlimited ? "plan-unlimited" : "plan-limited";
     const variantClass = "v" + (hashToInt(plan.id) % 4);
-    const badgeHtml = isUnlimited ? `<span class="plan-badge">ILLIMITÉ</span>` : "";
+    const roleClass = "plan-role-" + String(uiMeta.role || "neutral").replace(/[^a-z0-9_-]/gi, "").toLowerCase();
+    const badgeHtml = uiMeta.badge
+      ? `<span class="plan-ux-badge ${uiMeta.isFreeTest ? "badge-free" : "badge-recommended"}">${escapeHtml(uiMeta.badge)}</span>`
+      : "";
+    const ctaText = uiMeta.cta || "Choisir";
     const line1 = `⏳ Durée: ${formatDuration(durationMinutes)} • 📊 Data: ${formatData(dataMb)}`;
     const line2 = `🔌 ${formatDevices(maxDevices)}`;
 
     return `
-      <div class="card plan-card ${familyClass} ${variantClass}" 
+      <div class="card plan-card ${familyClass} ${variantClass} ${roleClass}" 
            data-plan-id="${escapeHtml(plan.id)}"
            data-plan-name="${escapeHtml(name)}"
            data-plan-price="${escapeHtml(String(plan.price_ar ?? ""))}"
            data-plan-duration="${escapeHtml(String(durationMinutes))}"
            data-plan-data="${(dataMb === null || dataMb === undefined) ? "" : escapeHtml(String(dataMb))}"
            data-plan-unlimited="${isUnlimited ? "1" : "0"}"
-           data-plan-devices="${escapeHtml(String(maxDevices))}">
+           data-plan-devices="${escapeHtml(String(maxDevices))}"
+           data-plan-ui-role="${escapeHtml(String(uiMeta.role || "neutral"))}"
+           data-plan-recommended="${uiMeta.isRecommended ? "1" : "0"}"
+           data-plan-free-test="${uiMeta.isFreeTest ? "1" : "0"}">
         ${badgeHtml}
         <h4>${escapeHtml(name)}</h4>
         <p class="price">${price}</p>
         <p class="plan-meta">${line1}</p>
         <p class="plan-devices">${line2}</p>
 
-        <button class="choose-plan-btn">Choisir</button>
+        <button class="choose-plan-btn">${escapeHtml(ctaText)}</button>
 
         <div class="plan-payment hidden" aria-live="polite">
           <h5>Paiement</h5>
@@ -2044,7 +2315,9 @@ function saturationLabel(pct) {
         return;
       }
 
-      plansGrid.innerHTML = plans.map(planCardHTML).join("");
+      ensurePlanSalesStyle();
+      const planUiMeta = buildPlanUiMeta(plans);
+      plansGrid.innerHTML = plans.map((plan, index) => planCardHTML(plan, planUiMeta[getPlanIdentity(plan, index)] || {})).join("");
 
       bindPlanHandlers();
       bindTermsAcceptanceGuard();
