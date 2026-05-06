@@ -74,6 +74,7 @@
               <th style="padding:10px;">Visible</th>
               <th style="padding:10px;">Active</th>
               <th style="padding:10px;">Sort</th>
+              <th style="padding:10px;">Sales limit</th>
               <th style="padding:10px;">Actions</th>
             </tr>
           </thead>
@@ -121,6 +122,15 @@
       <input id="f_data_gb" placeholder="Data (GB)" required />
       <input id="f_max_devices" placeholder="Max devices" required />
       <input id="f_sort_order" placeholder="Sort order" />
+
+      <label class="check-row">
+        <input id="f_auto_hide_when_limit_reached" type="checkbox" />
+        <span>Auto-hide when sales limit is reached</span>
+      </label>
+      <input id="f_sales_limit" placeholder="Sales limit (valid vouchers)" inputmode="numeric" />
+      <div class="subtitle" style="margin:-6px 0 8px 0; opacity:.75; font-size:12px;">
+        Optional. Counts pending + active vouchers for this plan/pool. Empty = no limit.
+      </div>
 
       <label class="check-row">
         <input id="f_is_visible" type="checkbox" checked />

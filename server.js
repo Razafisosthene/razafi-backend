@@ -4512,7 +4512,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     // 3) Return Mikrotik plans for this pool
     const { data: plans, error: plansErr } = await supabase
       .from("plans")
-      .select("id,name,price_ar,duration_hours,duration_minutes,data_mb,max_devices,is_active,is_visible,sort_order,updated_at,pool_id,system")
+      .select("id,name,price_ar,duration_hours,duration_minutes,data_mb,max_devices,is_active,is_visible,sort_order,updated_at,pool_id,system,auto_hide_when_limit_reached,sales_limit")
       .eq("is_active", true)
       .eq("is_visible", true)
       .eq("system", "mikrotik")
@@ -4525,13 +4525,57 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
       return res.status(500).json({ ok: false, error: "db_error" });
     }
 
+    // 4) Optional sales-limit filtering (System 3 safe capacity control)
+    // Manual visibility remains the master switch. This only hides plans when:
+    // auto_hide_when_limit_reached=true AND sales_limit>0 AND valid sold vouchers >= sales_limit.
+    // Valid sold vouchers are counted from vw_voucher_sessions_truth using truth_status pending/active.
+    let visiblePlans = Array.isArray(plans) ? plans.slice() : [];
+
+    try {
+      const limitedPlanIds = visiblePlans
+        .filter((p) => p && p.auto_hide_when_limit_reached === true && Number(p.sales_limit) > 0 && p.id)
+        .map((p) => p.id);
+
+      if (limitedPlanIds.length) {
+        const { data: truthRows, error: truthErr } = await supabase
+          .from("vw_voucher_sessions_truth")
+          .select("id,plan_id")
+          .eq("pool_id", pool_id)
+          .in("plan_id", limitedPlanIds)
+          .in("truth_status", ["pending", "active"]);
+
+        if (truthErr) {
+          console.error("MIKROTIK PLANS SALES LIMIT COUNT ERROR", truthErr);
+          // Fail-open: never break portal plan display because of a counting issue.
+        } else {
+          const counts = new Map();
+          for (const row of truthRows || []) {
+            const pid = row?.plan_id ? String(row.plan_id) : "";
+            if (!pid) continue;
+            counts.set(pid, (counts.get(pid) || 0) + 1);
+          }
+
+          visiblePlans = visiblePlans.filter((p) => {
+            const limit = Number(p?.sales_limit || 0);
+            if (p?.auto_hide_when_limit_reached !== true || !Number.isFinite(limit) || limit <= 0) return true;
+            const used = counts.get(String(p.id)) || 0;
+            return used < limit;
+          });
+        }
+      }
+    } catch (limitErr) {
+      console.error("MIKROTIK PLANS SALES LIMIT FILTER EX", limitErr?.message || limitErr);
+      // Fail-open: keep current behavior if the optional limiter has an unexpected problem.
+      visiblePlans = Array.isArray(plans) ? plans.slice() : [];
+    }
+
     return res.json({
       ok: true,
       ap_mac,
       nas_id,
       pool_id,
       pool_name: pool?.name ?? null,
-      plans: plans || [],
+      plans: visiblePlans || [],
     });
   } catch (e) {
     console.error("MIKROTIK PLANS EX", e);
@@ -5829,6 +5873,10 @@ if (system === "mikrotik" && !pool_id) {
     const is_active = toBool(b.is_active);
     const is_visible = toBool(b.is_visible);
     const sort_order = toInt(b.sort_order);
+    const auto_hide_when_limit_reached = toBool(b.auto_hide_when_limit_reached);
+    const sales_limit = (b.sales_limit === undefined || b.sales_limit === null || String(b.sales_limit).trim() === "")
+      ? null
+      : toInt(b.sales_limit);
 
     // validations (simple, strict)
     if (!isNonEmptyString(name)) return res.status(400).json({ error: "name required" });
@@ -5844,6 +5892,8 @@ if (duration_minutes !== null) {
 
 if (data_mb !== null && data_mb < 0) return res.status(400).json({ error: "data_mb invalid" });
     if (max_devices === null || max_devices <= 0) return res.status(400).json({ error: "max_devices invalid" });
+    if (auto_hide_when_limit_reached !== null && auto_hide_when_limit_reached !== true && auto_hide_when_limit_reached !== false) return res.status(400).json({ error: "auto_hide_when_limit_reached invalid" });
+    if (sales_limit !== null && (!Number.isFinite(Number(sales_limit)) || sales_limit <= 0)) return res.status(400).json({ error: "sales_limit invalid" });
 
     
     // Duration normalization
@@ -5874,6 +5924,8 @@ const payload = {
       is_active: is_active ?? true,
       is_visible: is_visible ?? true,
       sort_order: sort_order ?? 0,
+      auto_hide_when_limit_reached: auto_hide_when_limit_reached ?? false,
+      sales_limit,
     };
 
     const { data, error } = await supabase
@@ -6019,6 +6071,20 @@ if (b.data_mb !== undefined) {
       const v = toInt(b.sort_order);
       if (v === null) return res.status(400).json({ error: "sort_order invalid" });
       patch.sort_order = v;
+    }
+    if (b.auto_hide_when_limit_reached !== undefined) {
+      const v = toBool(b.auto_hide_when_limit_reached);
+      if (v === null) return res.status(400).json({ error: "auto_hide_when_limit_reached invalid" });
+      patch.auto_hide_when_limit_reached = v;
+    }
+    if (b.sales_limit !== undefined) {
+      if (b.sales_limit === null || String(b.sales_limit).trim() === "") {
+        patch.sales_limit = null;
+      } else {
+        const v = toInt(b.sales_limit);
+        if (v === null || v <= 0) return res.status(400).json({ error: "sales_limit invalid" });
+        patch.sales_limit = v;
+      }
     }
 
 

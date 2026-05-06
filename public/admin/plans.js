@@ -118,6 +118,8 @@ const f_unlimited_data = document.getElementById("f_unlimited_data");
   const f_data_gb = document.getElementById("f_data_gb");
   const f_max_devices = document.getElementById("f_max_devices");
   const f_sort_order = document.getElementById("f_sort_order");
+  const f_sales_limit = document.getElementById("f_sales_limit");
+  const f_auto_hide_when_limit_reached = document.getElementById("f_auto_hide_when_limit_reached");
   const f_is_visible = document.getElementById("f_is_visible");
   const f_is_active = document.getElementById("f_is_active");
 
@@ -138,6 +140,8 @@ const f_unlimited_data = document.getElementById("f_unlimited_data");
       f_data_gb.value = "";
       f_max_devices.value = "";
       f_sort_order.value = "0";
+      if (f_sales_limit) f_sales_limit.value = "";
+      if (f_auto_hide_when_limit_reached) f_auto_hide_when_limit_reached.checked = false;
       f_is_visible.checked = true;
       f_is_active.checked = true;
     } else {
@@ -175,6 +179,10 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
       }
       f_max_devices.value = plan.max_devices ?? 1;
       f_sort_order.value = plan.sort_order ?? 0;
+      if (f_sales_limit) f_sales_limit.value = plan.sales_limit ?? "";
+      if (f_auto_hide_when_limit_reached) {
+        f_auto_hide_when_limit_reached.checked = !!plan.auto_hide_when_limit_reached;
+      }
       f_is_visible.checked = !!plan.is_visible;
       f_is_active.checked = !!plan.is_active;
     }
@@ -284,7 +292,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
   }
   async function loadPlans() {
     errEl.textContent = "";
-    rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="9">Loading...</td></tr>`;
+    rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="11">Loading...</td></tr>`;
 
     const params = new URLSearchParams();
     const q = qEl.value.trim();
@@ -333,7 +341,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
 
 
     if (!filtered.length) {
-      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="9">No plans</td></tr>`;
+      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="11">No plans</td></tr>`;
       return;
     }
 
@@ -366,6 +374,8 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
           <td style="padding:10px;">${esc(p.max_devices)}</td>
           <td style="padding:10px;">${visible}</td>
           <td style="padding:10px;">${active}</td>
+          <td style="padding:10px;">${p.auto_hide_when_limit_reached ? "✅" : "—"}</td>
+          <td style="padding:10px;">${esc(p.sales_limit ?? "—")}</td>
           <td style="padding:10px;">${esc(p.sort_order)}</td>
           <td style="padding:10px; display:flex; gap:8px; flex-wrap:wrap;">
             ${actionsHtml}
@@ -590,6 +600,8 @@ let data_mb = null;
       data_mb,
       max_devices: Number(f_max_devices.value),
       sort_order: Number(f_sort_order.value || 0),
+      sales_limit: (f_sales_limit && f_sales_limit.value !== "") ? Number(f_sales_limit.value) : null,
+      auto_hide_when_limit_reached: !!(f_auto_hide_when_limit_reached && f_auto_hide_when_limit_reached.checked),
       pool_id: (currentSystem === SYSTEMS.mikrotik) ? (f_pool_id ? String(f_pool_id.value || "") : "") : null,
       is_visible: f_is_visible.checked,
       is_active: f_is_active.checked,
