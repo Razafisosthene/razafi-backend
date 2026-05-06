@@ -6474,15 +6474,6 @@ async function pollTransactionStatus({
   const pollScheduleMs = [400, 700, 1000, 1500, 2200, 3000, 4000, 5000, 6000];
   let attempt = 0;
 
-  // Shared transaction metadata for success / failure / timeout email/audit paths.
-  // Declared once here to avoid block-scope ReferenceError in MVola polling.
-  let txId = null;
-  let metaPlanId = null;
-  let metaPoolId = null;
-  let metaClientMac = null;
-  let metaApMac = null;
-  let txPhone = phone || null;
-
   while (Date.now() - start < timeoutMs) {
     attempt++;
     try {
@@ -6513,10 +6504,10 @@ async function pollTransactionStatus({
           }
 
           const baseMeta = tx?.metadata && typeof tx.metadata === "object" ? tx.metadata : {};
-          metaPlanId = (baseMeta.plan_id || null);
-          metaPoolId = (baseMeta.pool_id || null);
-          metaClientMac = (baseMeta.client_mac || null);
-          metaApMac = (baseMeta.ap_mac || null);
+          const metaPlanId = (baseMeta.plan_id || null);
+          const metaPoolId = (baseMeta.pool_id || null);
+          const metaClientMac = (baseMeta.client_mac || null);
+          const metaApMac = (baseMeta.ap_mac || null);
 
           // NEW system audit: MVola completed (will generate voucher if NEW)
           await insertAudit({
@@ -6802,12 +6793,12 @@ async function pollTransactionStatus({
               .eq("request_ref", requestRef);
 
         // NEW system audit: MVola failed/rejected/declined
-        txId = null;
-        metaPlanId = null;
-        metaPoolId = null;
-        metaClientMac = null;
-        metaApMac = null;
-        txPhone = phone || null;
+        let txId = null;
+        let metaPlanId = null;
+        let metaPoolId = null;
+        let metaClientMac = null;
+        let metaApMac = null;
+        let txPhone = phone || null;
 
         try {
           const { data: tx, error: txErr } = await supabase
@@ -6910,12 +6901,12 @@ async function pollTransactionStatus({
         .eq("request_ref", requestRef);
 
     // NEW system audit: MVola poll timeout
-    txId = null;
-    metaPlanId = null;
-    metaPoolId = null;
-    metaClientMac = null;
-    metaApMac = null;
-    txPhone = phone || null;
+    let txId = null;
+    let metaPlanId = null;
+    let metaPoolId = null;
+    let metaClientMac = null;
+    let metaApMac = null;
+    let txPhone = phone || null;
 
     try {
       const { data: tx, error: txErr } = await supabase
@@ -7776,7 +7767,7 @@ const RADIUS_ALLOWED_IPS = (process.env.RADIUS_ALLOWED_IPS || "159.89.16.34")
   .filter(Boolean);
 
 const RADIUS_API_SECRET = process.env.RADIUS_API_SECRET || ""; // set this in Render env (recommended)
-const FIXED_MIKROTIK_RATE_LIMIT = String(process.env.MIKROTIK_RATE_LIMIT || process.env.FIXED_MIKROTIK_RATE_LIMIT || "10M/10M").trim() || "10M/10M";
+const FIXED_MIKROTIK_RATE_LIMIT = String(process.env.FIXED_MIKROTIK_RATE_LIMIT || "10M/10M").trim() || "10M/10M";
 
 /**
  * Normalize IP strings that may come as:
@@ -8243,7 +8234,7 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
         try {
           const { data: pTmp } = await supabase
             .from("plans")
-            .select("data_mb,mikrotik_rate_limit")
+            .select("data_mb")
             .eq("id", session.plan_id)
             .maybeSingle();
           planMeta = pTmp || null;
@@ -8368,7 +8359,7 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
           // NORMAL MODE: use plan duration
           const { data: planRow, error: pErr } = await supabase
             .from("plans")
-            .select("duration_minutes,duration_hours,data_mb,mikrotik_rate_limit")
+            .select("duration_minutes,duration_hours,data_mb")
             .eq("id", session.plan_id)
             .maybeSingle();
 
@@ -8501,7 +8492,7 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
       try {
         const { data: p2 } = await supabase
           .from("plans")
-          .select("data_mb,mikrotik_rate_limit")
+          .select("data_mb")
           .eq("id", session.plan_id)
           .maybeSingle();
         planMeta = p2 || null;
@@ -8595,13 +8586,8 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
     if (effectiveTotalBytes !== null) {
       replyExtra["reply:Mikrotik-Total-Limit"] = effectiveTotalBytes;
     }
-    // System 3 bandwidth per plan:
-    // - plans.mikrotik_rate_limit set => use plan speed
-    // - empty / null / missing => fallback to Render env default
-    const planRateLimit = !isBonusSession ? String(planMeta?.mikrotik_rate_limit || "").trim() : "";
-    const effectiveRateLimit = planRateLimit || FIXED_MIKROTIK_RATE_LIMIT;
-    if (effectiveRateLimit) {
-      replyExtra["reply:Mikrotik-Rate-Limit"] = effectiveRateLimit;
+    if (FIXED_MIKROTIK_RATE_LIMIT) {
+      replyExtra["reply:Mikrotik-Rate-Limit"] = FIXED_MIKROTIK_RATE_LIMIT;
     }
 
     return sendAccept(username, remainingSeconds, {
@@ -8616,8 +8602,7 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
         remaining_seconds: remainingSeconds,
         expires_at: session.expires_at,
         total_bytes: effectiveTotalBytes,
-        is_bonus_session: isBonusSession,
-        mikrotik_rate_limit: effectiveRateLimit || null
+        is_bonus_session: isBonusSession
       }
     }, replyExtra);
 
@@ -8885,7 +8870,7 @@ app.post("/api/radius/accounting", async (req, res) => {
       } else if (planId) {
         const { data: planRow } = await supabase
           .from("plans")
-          .select("data_mb,mikrotik_rate_limit")
+          .select("data_mb")
           .eq("id", planId)
           .maybeSingle();
 

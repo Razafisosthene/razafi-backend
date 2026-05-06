@@ -71,7 +71,6 @@
               <th style="padding:10px;">Duration</th>
               <th style="padding:10px;">Data (GB)</th>
               <th style="padding:10px;">Devices</th>
-              <th style="padding:10px;">Speed</th>
               <th style="padding:10px;">Visible</th>
               <th style="padding:10px;">Active</th>
               <th style="padding:10px;">Sort</th>
@@ -121,14 +120,6 @@
 
       <input id="f_data_gb" placeholder="Data (GB)" required />
       <input id="f_max_devices" placeholder="Max devices" required />
-
-      <div class="form-row" id="rateLimitRow" style="display:none; margin-top:6px;">
-        <input id="f_mikrotik_rate_limit" placeholder="Bandwidth limit (example: 10M/10M)" />
-      </div>
-      <div id="rateLimitHint" class="subtitle" style="display:none; margin:4px 0 10px 0; opacity:.8;">
-        System 3 only. Empty = use Render default MIKROTIK_RATE_LIMIT.
-      </div>
-
       <input id="f_sort_order" placeholder="Sort order" />
 
       <label class="check-row">
