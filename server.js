@@ -964,6 +964,91 @@ async function countRecentActiveClientsByNasId(nasId, windowMinutes = RADIUS_ACT
   }
 }
 
+
+// System 3 plan sales-limit guard.
+// Counts valid sold/usable vouchers from vw_voucher_sessions_truth (pending + active),
+// not live MikroTik/RADIUS connections. Used as a pre-check before payment/free voucher creation.
+async function checkPlanSalesLimitAvailability({ plan_id, pool_id, planRow = null } = {}) {
+  try {
+    if (!supabase) return { ok: true, fail_open: true };
+
+    const planId = String(plan_id || "").trim();
+    const poolId = String(pool_id || "").trim();
+
+    // Without both identifiers, this limiter is not applicable.
+    if (!planId || !poolId) return { ok: true, not_applicable: true };
+
+    let p = planRow && typeof planRow === "object" ? planRow : null;
+
+    if (!p || p.auto_hide_when_limit_reached === undefined || p.sales_limit === undefined) {
+      const { data, error } = await supabase
+        .from("plans")
+        .select("id,name,pool_id,system,is_active,is_visible,auto_hide_when_limit_reached,sales_limit")
+        .eq("id", planId)
+        .maybeSingle();
+
+      if (error) {
+        console.error("PLAN SALES LIMIT PLAN LOAD ERROR", error);
+        return { ok: true, fail_open: true, error: "plan_load_error" };
+      }
+
+      p = data || null;
+    }
+
+    if (!p) return { ok: true, not_applicable: true };
+
+    const autoHide = p.auto_hide_when_limit_reached === true || String(p.auto_hide_when_limit_reached).toLowerCase() === "true";
+    const limit = Number(p.sales_limit || 0);
+
+    if (!autoHide || !Number.isFinite(limit) || limit <= 0) {
+      return { ok: true, enabled: false, plan: p };
+    }
+
+    // Safety: this is designed for the same pool-specific plan context.
+    if (p.pool_id && String(p.pool_id) !== poolId) {
+      return {
+        ok: false,
+        error: "plan_pool_mismatch",
+        plan_id: planId,
+        pool_id: poolId,
+        plan_pool_id: p.pool_id,
+      };
+    }
+
+    const { count, error: countErr } = await supabase
+      .from("vw_voucher_sessions_truth")
+      .select("id", { count: "exact", head: true })
+      .eq("pool_id", poolId)
+      .eq("plan_id", planId)
+      .in("truth_status", ["pending", "active"]);
+
+    if (countErr) {
+      console.error("PLAN SALES LIMIT COUNT ERROR", countErr);
+      // Fail-open to avoid breaking paid/free flow if the optional counter has a DB issue.
+      return { ok: true, fail_open: true, error: "count_error", plan: p };
+    }
+
+    const used = Number(count || 0);
+    const available = used < limit;
+
+    return {
+      ok: available,
+      enabled: true,
+      plan: p,
+      plan_id: planId,
+      pool_id: poolId,
+      used,
+      limit,
+      remaining: Math.max(0, limit - used),
+      error: available ? null : "plan_sales_limit_reached",
+    };
+  } catch (err) {
+    console.error("PLAN SALES LIMIT CHECK EX", err?.message || err);
+    // Fail-open: never break existing production flow because of unexpected optional limiter failure.
+    return { ok: true, fail_open: true, error: "unexpected_error" };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // SUPABASE CLIENT
 // ---------------------------------------------------------------------------
@@ -4755,7 +4840,7 @@ app.get("/api/portal/status", async (req, res) => {
     if (plan_id) {
       const { data: p, error: perr } = await supabase
         .from("plans")
-        .select("id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices")
+        .select("id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices,pool_id,system,is_active,is_visible,auto_hide_when_limit_reached,sales_limit")
         .eq("id", plan_id)
         .maybeSingle();
       if (!perr) planRow = p || null;
@@ -9633,6 +9718,44 @@ try {
   }
 } catch (_) {
   planRowFromDb = null;
+}
+
+
+// Sales-limit pre-check before MVola payment or free voucher creation.
+// This closes the stale-page/API gap after /api/mikrotik/plans already hid a full plan.
+try {
+  if (supabase && plan_id_from_client && pool_id) {
+    const availability = await checkPlanSalesLimitAvailability({
+      plan_id: plan_id_from_client,
+      pool_id,
+      planRow: planRowFromDb,
+    });
+
+    if (availability && availability.ok === false) {
+      if (availability.error === "plan_pool_mismatch") {
+        return res.status(400).json({
+          ok: false,
+          error: "plan_pool_mismatch",
+          message: "Ce plan n’est pas disponible pour ce point WiFi.",
+          plan_id: availability.plan_id,
+          pool_id: availability.pool_id,
+        });
+      }
+
+      return res.status(409).json({
+        ok: false,
+        error: "plan_sales_limit_reached",
+        message: "Ce plan est complet pour le moment. Choisissez un autre plan.",
+        plan_id: availability.plan_id || plan_id_from_client,
+        pool_id: availability.pool_id || pool_id,
+        sales_limit: availability.limit ?? null,
+        used_count: availability.used ?? null,
+      });
+    }
+  }
+} catch (e) {
+  console.error("SEND-PAYMENT PLAN SALES LIMIT CHECK EX", e?.message || e);
+  // Fail-open: this optional guard must not break existing production flow unexpectedly.
 }
 
 
