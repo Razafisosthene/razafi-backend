@@ -6625,6 +6625,14 @@ async function pollTransactionStatus({
   const pollScheduleMs = [400, 700, 1000, 1500, 2200, 3000, 4000, 5000, 6000];
   let attempt = 0;
 
+  // Keep payment metadata available across success / failed / timeout / catch blocks.
+  // This prevents ReferenceError crashes like: "metaPoolId is not defined".
+  let metaPlanId = null;
+  let metaPoolId = null;
+  let metaClientMac = null;
+  let metaApMac = null;
+  let txPhone = phone || null;
+
   while (Date.now() - start < timeoutMs) {
     attempt++;
     try {
@@ -6655,10 +6663,11 @@ async function pollTransactionStatus({
           }
 
           const baseMeta = tx?.metadata && typeof tx.metadata === "object" ? tx.metadata : {};
-          const metaPlanId = (baseMeta.plan_id || null);
-          const metaPoolId = (baseMeta.pool_id || null);
-          const metaClientMac = (baseMeta.client_mac || null);
-          const metaApMac = (baseMeta.ap_mac || null);
+          metaPlanId = (baseMeta.plan_id || null);
+          metaPoolId = (baseMeta.pool_id || null);
+          metaClientMac = (baseMeta.client_mac || null);
+          metaApMac = (baseMeta.ap_mac || null);
+          txPhone = tx?.phone || baseMeta.phone || txPhone;
 
           // NEW system audit: MVola completed (will generate voucher if NEW)
           await insertAudit({
@@ -6945,11 +6954,11 @@ async function pollTransactionStatus({
 
         // NEW system audit: MVola failed/rejected/declined
         let txId = null;
-        let metaPlanId = null;
-        let metaPoolId = null;
-        let metaClientMac = null;
-        let metaApMac = null;
-        let txPhone = phone || null;
+        metaPlanId = null;
+        metaPoolId = null;
+        metaClientMac = null;
+        metaApMac = null;
+        txPhone = phone || null;
 
         try {
           const { data: tx, error: txErr } = await supabase
@@ -7053,11 +7062,11 @@ async function pollTransactionStatus({
 
     // NEW system audit: MVola poll timeout
     let txId = null;
-    let metaPlanId = null;
-    let metaPoolId = null;
-    let metaClientMac = null;
-    let metaApMac = null;
-    let txPhone = phone || null;
+    metaPlanId = null;
+    metaPoolId = null;
+    metaClientMac = null;
+    metaApMac = null;
+    txPhone = phone || null;
 
     try {
       const { data: tx, error: txErr } = await supabase
