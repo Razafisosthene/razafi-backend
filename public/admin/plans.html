@@ -70,6 +70,7 @@
               <th style="padding:10px;">Price</th>
               <th style="padding:10px;">Duration</th>
               <th style="padding:10px;">Data (GB)</th>
+              <th style="padding:10px;">Speed</th>
               <th style="padding:10px;">Devices</th>
               <th style="padding:10px;">Visible</th>
               <th style="padding:10px;">Active</th>
@@ -121,6 +122,10 @@
       </label>
 
       <input id="f_data_gb" placeholder="Data (GB)" required />
+      <input id="f_mikrotik_rate_limit" placeholder="Speed limit (ex: 3M/3M)" />
+      <div class="subtitle" style="margin:-6px 0 8px 0; opacity:.75; font-size:12px;">
+        Optional for MikroTik plans. Example: 3M/3M. Empty = emergency fallback.
+      </div>
       <input id="f_max_devices" placeholder="Max devices" required />
       <input id="f_sort_order" placeholder="Sort order" />
 

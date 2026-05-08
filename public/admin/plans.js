@@ -59,6 +59,42 @@ function formatDataDisplay(plan) {
 }
 
 
+function normalizeMikrotikRateLimitInput(raw) {
+  const input = String(raw || "").trim();
+  if (!input) return "";
+  const cleaned = input.replace(/\s+/g, "").toUpperCase();
+  const m = cleaned.match(/^(\d+(?:\.\d+)?)([KMGT])\/(\d+(?:\.\d+)?)([KMGT])$/);
+  if (!m) return null;
+
+  const down = Number(m[1]);
+  const up = Number(m[3]);
+  if (!Number.isFinite(down) || !Number.isFinite(up) || down <= 0 || up <= 0) return null;
+
+  const fmt = (num, unit) => {
+    const rounded = Math.round(num * 100) / 100;
+    const txt = Number.isInteger(rounded) ? String(Math.trunc(rounded)) : String(rounded).replace(/\.0+$/, "");
+    return txt + unit;
+  };
+  return `${fmt(down, m[2])}/${fmt(up, m[4])}`;
+}
+
+function formatMikrotikRateLimitDisplay(raw) {
+  const normalized = normalizeMikrotikRateLimitInput(raw);
+  if (!normalized) return "—";
+  const first = normalized.split("/")[0];
+  const m = first.match(/^(\d+(?:\.\d+)?)([KMGT])$/i);
+  if (!m) return normalized;
+  let mbps = Number(m[1]);
+  const unit = String(m[2] || "").toUpperCase();
+  if (unit === "K") mbps = mbps / 1024;
+  if (unit === "G") mbps = mbps * 1024;
+  if (unit === "T") mbps = mbps * 1024 * 1024;
+  const rounded = mbps >= 10 ? Math.round(mbps) : Math.round(mbps * 10) / 10;
+  const txt = Number.isInteger(rounded) ? String(Math.trunc(rounded)) : String(rounded);
+  return `${txt} Mbps`;
+}
+
+
 
 
 // -------------------------------
@@ -116,6 +152,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const f_pool_id = document.getElementById("f_pool_id");
 const f_unlimited_data = document.getElementById("f_unlimited_data");
   const f_data_gb = document.getElementById("f_data_gb");
+  const f_mikrotik_rate_limit = document.getElementById("f_mikrotik_rate_limit");
   const f_max_devices = document.getElementById("f_max_devices");
   const f_sort_order = document.getElementById("f_sort_order");
   const f_sales_limit = document.getElementById("f_sales_limit");
@@ -138,6 +175,7 @@ const f_unlimited_data = document.getElementById("f_unlimited_data");
       f_unlimited_data.checked = false;
       f_data_gb.disabled = false;
       f_data_gb.value = "";
+      if (f_mikrotik_rate_limit) f_mikrotik_rate_limit.value = "";
       f_max_devices.value = "";
       f_sort_order.value = "0";
       if (f_sales_limit) f_sales_limit.value = "";
@@ -177,6 +215,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
         f_data_gb.value = String(rounded % 1 === 0 ? rounded.toFixed(0) : rounded.toFixed(1));
         f_data_gb.disabled = false;
       }
+      if (f_mikrotik_rate_limit) f_mikrotik_rate_limit.value = normalizeMikrotikRateLimitInput(plan.mikrotik_rate_limit) || "";
       f_max_devices.value = plan.max_devices ?? 1;
       f_sort_order.value = plan.sort_order ?? 0;
       if (f_sales_limit) f_sales_limit.value = plan.sales_limit ?? "";
@@ -191,6 +230,11 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
     const isMikrotik = (currentSystem === SYSTEMS.mikrotik);
     if (poolRow) poolRow.style.display = isMikrotik ? "flex" : "none";
     if (poolHint) poolHint.style.display = isMikrotik ? "block" : "none";
+    if (f_mikrotik_rate_limit) {
+      f_mikrotik_rate_limit.style.display = isMikrotik ? "" : "none";
+      f_mikrotik_rate_limit.disabled = !isMikrotik;
+      if (!isMikrotik) f_mikrotik_rate_limit.value = "";
+    }
     if (f_pool_id) {
       f_pool_id.required = isMikrotik;
       if (!isMikrotik) {
@@ -292,7 +336,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
   }
   async function loadPlans() {
     errEl.textContent = "";
-    rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="11">Loading...</td></tr>`;
+    rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="12">Loading...</td></tr>`;
 
     const params = new URLSearchParams();
     const q = qEl.value.trim();
@@ -341,7 +385,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
 
 
     if (!filtered.length) {
-      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="11">No plans</td></tr>`;
+      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="12">No plans</td></tr>`;
       return;
     }
 
@@ -371,6 +415,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
           <td style="padding:10px;">${esc(p.price_ar)}</td>
           <td style="padding:10px;">${esc(formatDurationFromPlan(p))}</td>
           <td style="padding:10px;">${esc(formatDataDisplay(p))}</td>
+          <td style="padding:10px;">${esc(formatMikrotikRateLimitDisplay(p.mikrotik_rate_limit))}</td>
           <td style="padding:10px;">${esc(p.max_devices)}</td>
           <td style="padding:10px;">${visible}</td>
           <td style="padding:10px;">${active}</td>
@@ -488,6 +533,7 @@ if (plan.data_mb === null || plan.data_mb === undefined) {
           data_mb: plan.data_mb ?? null,
           max_devices: plan.max_devices ?? 1,
           sort_order: plan.sort_order ?? 0,
+          mikrotik_rate_limit: plan.mikrotik_rate_limit ?? null,
           is_visible: false,
           is_active: false,
         };
@@ -536,6 +582,7 @@ if (effectiveSystem === SYSTEMS.mikrotik) {
           data_mb: plan.data_mb ?? null,
           max_devices: plan.max_devices ?? 1,
           sort_order: plan.sort_order ?? 0,
+          mikrotik_rate_limit: plan.mikrotik_rate_limit ?? null,
           is_visible: true,
           is_active: false, // safer: restore as visible but inactive
         };
@@ -603,6 +650,7 @@ let data_mb = null;
       sales_limit: (f_sales_limit && f_sales_limit.value !== "") ? Number(f_sales_limit.value) : null,
       auto_hide_when_limit_reached: !!(f_auto_hide_when_limit_reached && f_auto_hide_when_limit_reached.checked),
       pool_id: (currentSystem === SYSTEMS.mikrotik) ? (f_pool_id ? String(f_pool_id.value || "") : "") : null,
+      mikrotik_rate_limit: null,
       is_visible: f_is_visible.checked,
       is_active: f_is_active.checked,
     };
@@ -631,6 +679,18 @@ let data_mb = null;
     } else {
       payload.pool_id = null;
     }
+
+    if (payload.system === SYSTEMS.mikrotik && f_mikrotik_rate_limit) {
+      const rawSpeed = String(f_mikrotik_rate_limit.value || "").trim();
+      const normalizedSpeed = normalizeMikrotikRateLimitInput(rawSpeed);
+      if (rawSpeed && !normalizedSpeed) {
+        formError.textContent = "Speed invalid. Use format like 3M/3M or 512K/2M.";
+        return;
+      }
+      payload.mikrotik_rate_limit = normalizedSpeed || null;
+      f_mikrotik_rate_limit.value = normalizedSpeed || "";
+    }
+
     if (!f_unlimited_data.checked) {
       const gbVal = Number(f_data_gb.value);
       if (!Number.isFinite(gbVal) || gbVal <= 0) {
@@ -693,5 +753,9 @@ if (f_pool_id) {
   if (!isMk) {
     f_pool_id.value = "";
   }
+}
+if (f_mikrotik_rate_limit) {
+  f_mikrotik_rate_limit.style.display = isMk ? "" : "none";
+  f_mikrotik_rate_limit.disabled = !isMk;
 }
 });
