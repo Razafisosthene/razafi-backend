@@ -280,26 +280,8 @@
     }
     banner.style.display = "";
     const when = last.ts ? formatLocalTime(last.ts) : "";
-    const plan = last.planName ? escapeHtml(last.planName) : "Plan";
-    const dur = (last.durationMinutes != null) ? escapeHtml(formatDuration(Number(last.durationMinutes))) : "—";
-    const dev = (last.maxDevices != null) ? escapeHtml(String(last.maxDevices)) : "—";
-
-    // Only suggest "Utiliser ce code" when voucher is still usable (pending/active).
-    // For used/expired, show a premium, accurate message instead.
-    let ctaLine = "";
-    if (portalTruthStatus === "pending") {
-      ctaLine = '<div class="small" style="margin-top:6px;">👉 Cliquez <strong>« Utiliser ce code »</strong> pour activer Internet.</div>';
-    } else if (portalTruthStatus === "active") {
-      ctaLine = '<div class="small" style="margin-top:6px;">👉 Si la connexion s’interrompt, cliquez <strong>« Utiliser ce code »</strong> pour vous reconnecter.</div>';
-    } else if (portalTruthStatus === "expired" || portalTruthStatus === "used") {
-      ctaLine = '<div class="small" style="margin-top:6px;">Votre forfait est terminé. Choisissez un forfait ci-dessous pour continuer votre connexion.</div>';
-    }
-
-
     banner.innerHTML = `
       <div><strong>Dernier code généré :</strong> <span style="letter-spacing:1px;">${escapeHtml(last.code)}</span> ${when ? `<span class="small">(${escapeHtml(when)})</span>` : ""}</div>
-      <div class="small" style="margin-top:4px;">Forfait: ${plan} · Durée: ${dur} · Appareils: ${dev}</div>
-      ${ctaLine}
     `;
 
 }
