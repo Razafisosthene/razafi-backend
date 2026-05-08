@@ -291,16 +291,14 @@
       ctaLine = '<div class="small" style="margin-top:6px;">👉 Cliquez <strong>« Utiliser ce code »</strong> pour activer Internet.</div>';
     } else if (portalTruthStatus === "active") {
       ctaLine = '<div class="small" style="margin-top:6px;">👉 Si la connexion s’interrompt, cliquez <strong>« Utiliser ce code »</strong> pour vous reconnecter.</div>';
-    } else if (portalTruthStatus === "expired") {
-      ctaLine = '<div class="small" style="margin-top:6px;">⏰ Code expiré. Choisissez un nouveau plan ci-dessous pour continuer.</div>';
-    } else if (portalTruthStatus === "used") {
-      ctaLine = '<div class="small" style="margin-top:6px;">⛔ Code utilisé. Choisissez un nouveau plan ci-dessous pour continuer.</div>';
+    } else if (portalTruthStatus === "expired" || portalTruthStatus === "used") {
+      ctaLine = '<div class="small" style="margin-top:6px;">Votre forfait est terminé. Choisissez un forfait ci-dessous pour continuer votre connexion.</div>';
     }
 
 
     banner.innerHTML = `
       <div><strong>Dernier code généré :</strong> <span style="letter-spacing:1px;">${escapeHtml(last.code)}</span> ${when ? `<span class="small">(${escapeHtml(when)})</span>` : ""}</div>
-      <div class="small" style="margin-top:4px;">Plan: ${plan} · Durée: ${dur} · Appareils: ${dev}</div>
+      <div class="small" style="margin-top:4px;">Forfait: ${plan} · Durée: ${dur} · Appareils: ${dev}</div>
       ${ctaLine}
     `;
 
@@ -814,6 +812,8 @@
   const planMaxDevicesEl = $("plan-max-devices");
   const expiresAtEl = $("expires-at");
   const dataUsedEl = $("data-used");
+  const rowTimeLeft = document.getElementById("row-time-left");
+  const rowDataLeft = document.getElementById("row-data-left");
   const rowExpiresAt = document.getElementById("row-expires-at");
   const rowDataUsed = document.getElementById("row-data-used");
 
@@ -981,7 +981,7 @@
     box.style.display = "";
     box.innerHTML = `
       <div class="muted small" style="margin-bottom:6px;">🧾 Récapitulatif de votre achat</div>
-      <div><strong>Plan :</strong> ${escapeHtml(name)} ${price ? `(${escapeHtml(price)})` : ""}</div>
+      <div><strong>Forfait :</strong> ${escapeHtml(name)} ${price ? `(${escapeHtml(price)})` : ""}</div>
       <div><strong>Durée :</strong> ${escapeHtml(duration)}</div>
       <div><strong>Données :</strong> ${escapeHtml(data)}</div>
       <div><strong>Appareils :</strong> ${escapeHtml(devices)}</div>
@@ -1064,16 +1064,26 @@
 
     const setOne = (el, isMini) => {
       if (!el) return;
+
+      // Public UX: keep only one clear status badge (main badge).
+      // The mini badge near the code is intentionally hidden to avoid repetition.
+      if (isMini) {
+        el.className = "status-badge mini hidden";
+        el.textContent = "";
+        el.classList.add("hidden");
+        return;
+      }
+
       if (!cfg) {
-        el.className = isMini ? "status-badge mini hidden" : "status-badge hidden";
+        el.className = "status-badge hidden";
         el.textContent = "";
         el.classList.add("hidden");
         return;
       }
       el.className =
-        (isMini ? "status-badge mini " : "status-badge ") +
+        "status-badge " +
         cfg.cls +
-        (cfg.pulse && !isMini ? " pulse" : "");
+        (cfg.pulse ? " pulse" : "");
       el.textContent = (cfg.icon ? cfg.icon + " " : "") + cfg.label;
       el.classList.remove("hidden");
     };
@@ -1156,8 +1166,9 @@ try {
   }
 
   if (bMini) {
-    bMini.textContent = bonusModeActive ? "🎁 EN COURS" : "🎁 BONUS";
-    bMini.classList.toggle("hidden", !show);
+    // Public UX: the main bonus badge is enough. Keep the code line clean.
+    bMini.textContent = "";
+    bMini.classList.add("hidden");
   }
 } catch (_) {}
 
@@ -1251,30 +1262,26 @@ function setBonusLine(text) {
 const showBonusChip = bonusModeActive || (hasUsableBonus && (status === "expired" || status === "used"));
 
 if (hasMsg) {
-  if (status === "pending") hasMsg.textContent = "⏳ Code en attente d’activation";
-  else if (status === "active" && bonusModeActive) hasMsg.textContent = "🎁 Bonus en cours";
-  else if (status === "active") hasMsg.textContent = "✅ Session active";
-  else if ((status === "used" || status === "expired") && hasUsableBonus && canUse) hasMsg.textContent = "🎁 Bonus disponible";
-  else if (status === "used") hasMsg.textContent = "⛔ Code utilisé";
-  else if (status === "expired") hasMsg.textContent = "⏰ Code expiré";
-  else hasMsg.textContent = "✅ Vérification…";
+  if (status === "pending") hasMsg.textContent = "Votre code est prêt";
+  else if (status === "active" && bonusModeActive) hasMsg.textContent = "Bonus en cours";
+  else if (status === "active") hasMsg.textContent = "Votre connexion actuelle";
+  else if ((status === "used" || status === "expired") && hasUsableBonus && canUse) hasMsg.textContent = "Bonus offert";
+  else if (status === "used" || status === "expired") hasMsg.textContent = "Votre dernière consommation";
+  else hasMsg.textContent = "Vérification…";
 }
 
 if (accessMsg) {
   if (status === "pending") {
-    accessMsg.textContent = "Votre code est prêt. Cliquez « Utiliser ce code » pour démarrer votre forfait RAZAFI.";
+    accessMsg.textContent = "Cliquez « Utiliser ce code » pour démarrer votre forfait RAZAFI.";
   } else if (status === "active" && bonusModeActive) {
-    accessMsg.textContent = "🎁 Votre bonus est en cours d’utilisation.";
+    accessMsg.textContent = "Votre bonus est en cours d’utilisation.";
   } else if (status === "active") {
     accessMsg.textContent = "Connexion active. Si la page revient ici, cliquez « Continuer » pour rester connecté.";
   } else if (status === "used" || status === "expired") {
     if (hasUsableBonus && canUse) {
-      accessMsg.textContent = "🎁 Un bonus a été ajouté à votre code. Cliquez « Réactiver ce code » pour vous reconnecter.";
+      accessMsg.textContent = "Un bonus a été ajouté à votre code. Cliquez « Réactiver ce code » pour vous reconnecter.";
     } else {
-      accessMsg.textContent =
-        (status === "used")
-          ? "Ce code a déjà été entièrement consommé. Achetez un nouveau code pour continuer."
-          : "La durée de ce code est terminée. Achetez un nouveau code pour continuer.";
+      accessMsg.textContent = "Votre forfait est terminé. Choisissez un forfait ci-dessous pour continuer votre connexion.";
     }
   } else {
     accessMsg.textContent = "Vérification de votre accès en cours…";
@@ -1292,33 +1299,40 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
     setText(planDataTotalEl, unlimited ? "Illimité" : (plan.data_total_human || ""));
     setText(planMaxDevicesEl, plan.max_devices ?? plan.maxDevices ?? "—");
 
-    // Session: expires_at
-    const showExpires = status === "active" || status === "used" || status === "expired";
+    // Public UX: hide irrelevant rows instead of showing empty "—" values.
+    const showTimeLeft = status === "active" || status === "pending";
+    const showDataLeft = status === "active" || status === "pending";
+    const showExpires = status === "used" || status === "expired";
+    const showUsed = status === "used" || status === "expired";
+
+    if (rowTimeLeft) rowTimeLeft.classList.toggle("hidden", !showTimeLeft);
+    if (rowDataLeft) rowDataLeft.classList.toggle("hidden", !showDataLeft);
     if (rowExpiresAt) rowExpiresAt.classList.toggle("hidden", !showExpires);
+    if (rowDataUsed) rowDataUsed.classList.toggle("hidden", !showUsed);
+
+    // Session: expires_at (shown only for previous/finished consumption)
     if (showExpires) setText(expiresAtEl, sess.expires_at_human || (sess.expires_at ? fmtDateTimeMG(sess.expires_at) : ""), "—");
     else setText(expiresAtEl, "—");
 
     // Time left
-    if (status === "active") {
+    if (showTimeLeft && status === "active") {
       setText(timeLeftEl, formatRemainingFromExpires(sess.expires_at) || "—");
-    } else if (status === "pending") {
+    } else if (showTimeLeft && status === "pending") {
       setText(timeLeftEl, durMin != null ? formatDuration(Number(durMin)) : "—");
     } else {
       setText(timeLeftEl, "—");
     }
 
     // Data remaining
-    if (status === "active") {
+    if (showDataLeft && status === "active") {
       setText(dataLeftEl, unlimited ? "Illimité" : (sess.data_remaining_human || "—"));
-    } else if (status === "pending") {
+    } else if (showDataLeft && status === "pending") {
       setText(dataLeftEl, unlimited ? "Illimité" : (plan.data_total_human || "—"));
     } else {
       setText(dataLeftEl, "—");
     }
 
-    // Data used over total
-    const showUsed = status === "active" || status === "used" || status === "expired";
-    if (rowDataUsed) rowDataUsed.classList.toggle("hidden", !showUsed);
+    // Data used over total (shown only for previous/finished consumption)
     if (showUsed) {
       const used = sess.data_used_human || "";
       const total = unlimited ? "Illimité" : (plan.data_total_human || "—");
@@ -1326,11 +1340,6 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
     } else {
       setText(dataUsedEl, "—");
     }
-
-    // Devices used (best-effort)
-    const maxDev = Number(plan.max_devices ?? plan.maxDevices ?? 1) || 1;
-    const usedDev = sess.devices_used != null ? Number(sess.devices_used) : (status === "active" ? 1 : 0);
-    setText(devicesEl, `${Math.max(0, usedDev)} / ${maxDev}`);
 
     // Buttons + purchase lock
     currentVoucherCode = code || "";
@@ -1868,23 +1877,31 @@ function saturationLabel(pct) {
   function renderCapacityText() {
     if (!_netEls.capacityWrap || !_netEls.capacityText) return;
 
+    let pct = (poolContext.pool_percent === null || poolContext.pool_percent === undefined)
+      ? null
+      : Number(poolContext.pool_percent);
+
     const active = Number(poolContext.active_clients);
     const cap = Number(poolContext.capacity_max);
 
-    if (Number.isFinite(active) && Number.isFinite(cap) && cap > 0) {
-      _netEls.capacityWrap.style.display = "";
-      _netEls.capacityText.textContent = `${Math.max(0, Math.round(active))} / ${Math.max(0, Math.round(cap))} clients`;
-      return;
-    }
-
-    if (Number.isFinite(cap) && cap > 0) {
-      _netEls.capacityWrap.style.display = "";
-      _netEls.capacityText.textContent = `${Math.max(0, Math.round(cap))} clients max`;
-      return;
+    if (!Number.isFinite(pct) && Number.isFinite(active) && Number.isFinite(cap) && cap > 0) {
+      pct = Math.round((active / cap) * 100);
     }
 
     _netEls.capacityWrap.style.display = "";
-    _netEls.capacityText.textContent = "—";
+
+    if (!Number.isFinite(pct)) {
+      _netEls.capacityText.textContent = "en cours d’analyse";
+      return;
+    }
+
+    if (pct >= 90) {
+      _netEls.capacityText.textContent = "très limitée";
+    } else if (pct >= 70) {
+      _netEls.capacityText.textContent = "modérée";
+    } else {
+      _netEls.capacityText.textContent = "élevée";
+    }
   }
 
   function setBarLevelClass(level) {
@@ -2031,13 +2048,9 @@ function saturationLabel(pct) {
         const pct = (poolContext.pool_percent !== null && poolContext.pool_percent !== undefined)
           ? ` (${poolContext.pool_percent}%)`
           : "";
-        const ratio =
-          (Number.isFinite(Number(poolContext.active_clients)) && Number.isFinite(Number(poolContext.capacity_max)) && Number(poolContext.capacity_max) > 0)
-            ? ` — ${Math.round(Number(poolContext.active_clients))}/${Math.round(Number(poolContext.capacity_max))} clients`
-            : "";
         const poolName = poolContext.pool_name ? String(poolContext.pool_name) : "Ce point WiFi";
         banner.innerHTML = `
-          <strong>⚠️ Le WiFi ${escapeHtml(poolName)} est momentanément saturé${escapeHtml(pct)}${escapeHtml(ratio)}.</strong><br>
+          <strong>⚠️ Le WiFi ${escapeHtml(poolName)} est momentanément saturé${escapeHtml(pct)}.</strong><br>
           Les achats sont temporairement indisponibles. Veuillez patienter ou contacter l’assistance sur place.
         `;
         banner.classList.remove("hidden");

@@ -110,22 +110,18 @@
       <div id="voucherHas" class="hidden">
         <p id="hasVoucherMsg" class="success">✅ Vérification…</p>
 
-                <ul class="voucher-info">
-          <li>🔑 <strong id="voucher-code">—</strong> <span id="statusBadgeMini" class="status-badge mini hidden"></span>
-          <span id="bonusBadgeMini" class="status-badge mini hidden" style="margin-left:6px; border-color: rgba(13,110,253,.35); background: rgba(13,110,253,.10);">🎁 BONUS</span></li>
-
-          <li>📦 Plan : <strong id="plan-name">—</strong></li>
+        <ul class="voucher-info">
+          <li>🔑 Code : <strong id="voucher-code">—</strong></li>
+          <li>📦 Forfait : <strong id="plan-name">—</strong></li>
           <li>⏳ Durée : <strong id="plan-duration">—</strong></li>
-          <li>📊 Data totale : <strong id="plan-data-total">—</strong></li>
+          <li>📊 Données incluses : <strong id="plan-data-total">—</strong></li>
           <li>🔌 Appareils autorisés : <strong id="plan-max-devices">—</strong></li>
 
           <li id="row-time-left">⏳ Temps restant : <strong id="time-left">—</strong></li>
-          <li id="row-expires-at" class="hidden">📆 Expire le : <strong id="expires-at">—</strong></li>
+          <li id="row-expires-at" class="hidden">📆 Expiré le : <strong id="expires-at">—</strong></li>
 
           <li id="row-data-left">📊 Données restantes : <strong id="data-left">—</strong></li>
           <li id="row-data-used" class="hidden">📉 Données utilisées : <strong id="data-used">—</strong></li>
-
-          <li>🔌 Appareils utilisés : <strong id="devices-used">—</strong></li>
         </ul>
 
         <button id="useVoucherBtn" class="primary-btn" disabled>
@@ -195,7 +191,7 @@
       </div>
 
       <div id="netCapacityWrap" class="muted small" style="margin-top:8px;">
-        Capacité actuelle : <strong id="netCapacityText">—</strong>
+        Disponibilité : <strong id="netCapacityText">—</strong>
       </div>
 
       <div class="network-divider"></div>
