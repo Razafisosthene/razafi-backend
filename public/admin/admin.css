@@ -727,3 +727,47 @@ tr.audit-row.status-info {
     width: 50%;
   }
 }
+
+/* Pools admin — portal announcement editor */
+.pool-announcement-box {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid rgba(13, 110, 253, 0.14);
+  border-radius: 12px;
+  background: rgba(13, 110, 253, 0.045);
+}
+.pool-announcement-box textarea {
+  width: 100%;
+  min-height: 74px;
+  resize: vertical;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #ddd;
+  font-size: 14px;
+  margin-top: 8px;
+  margin-bottom: 0;
+}
+.pool-announcement-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.pool-announcement-row select {
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #ddd;
+  font-size: 14px;
+  background: #fff;
+}
+.pool-announcement-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.pool-announcement-check input {
+  width: auto;
+  margin: 0;
+}

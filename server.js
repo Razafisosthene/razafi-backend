@@ -160,6 +160,30 @@ const ADMIN_COOKIE_NAME = "admin_session";
 
 // Global default support phone (used when pool has no contact_phone)
 const DEFAULT_SUPPORT_PHONE = process.env.DEFAULT_SUPPORT_PHONE || "038 75 00 592";
+
+// Portal announcement fields (per pool, optional UX feature)
+const POOL_ANNOUNCEMENT_SELECT = "portal_announcement_enabled,portal_announcement_type,portal_announcement_message,portal_announcement_priority";
+
+function normalizePortalAnnouncementType(value) {
+  const v = String(value || "information").trim().toLowerCase();
+  return ["important", "promotion", "information", "maintenance"].includes(v) ? v : "information";
+}
+
+function normalizePortalAnnouncementPriority(value) {
+  const v = String(value || "normal").trim().toLowerCase();
+  return ["normal", "urgent"].includes(v) ? v : "normal";
+}
+
+function serializePortalAnnouncement(poolRow) {
+  const message = String(poolRow?.portal_announcement_message || "").trim();
+  const enabled = poolRow?.portal_announcement_enabled === true;
+  return {
+    enabled: !!(enabled && message),
+    type: normalizePortalAnnouncementType(poolRow?.portal_announcement_type),
+    priority: normalizePortalAnnouncementPriority(poolRow?.portal_announcement_priority),
+    message: enabled ? message : "",
+  };
+}
 const adminCookieOptions = () => ({
   httpOnly: true,
   secure: IS_PROD, // ✅ works in prod HTTPS + local dev HTTP
@@ -4539,7 +4563,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     if (nas_id) {
       const { data: poolRow, error: poolRowErr } = await supabase
         .from("internet_pools")
-        .select("id,name,system,radius_nas_id")
+        .select(`id,name,system,radius_nas_id,${POOL_ANNOUNCEMENT_SELECT}`)
         .eq("radius_nas_id", nas_id)
         .maybeSingle();
 
@@ -4578,7 +4602,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     if (!pool) {
       const { data: poolDb, error: poolErr } = await supabase
         .from("internet_pools")
-        .select("id,name,system,radius_nas_id")
+        .select(`id,name,system,radius_nas_id,${POOL_ANNOUNCEMENT_SELECT}`)
         .eq("id", pool_id)
         .maybeSingle();
 
@@ -4660,6 +4684,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
       nas_id,
       pool_id,
       pool_name: pool?.name ?? null,
+      portal_announcement: serializePortalAnnouncement(pool),
       plans: visiblePlans || [],
     });
   } catch (e) {
@@ -4691,6 +4716,26 @@ app.get("/api/portal/status", async (req, res) => {
     const voucher_code = String(voucher_code_raw || "").trim() || null;
 
     const nas_id = String(req.query.nas_id || req.query.nasId || req.query.nas || "").trim() || null;
+
+    async function loadPortalAnnouncement() {
+      try {
+        if (!nas_id) return serializePortalAnnouncement(null);
+        const { data: poolRow, error: poolErr } = await supabase
+          .from("internet_pools")
+          .select(POOL_ANNOUNCEMENT_SELECT)
+          .eq("radius_nas_id", nas_id)
+          .maybeSingle();
+        if (poolErr) {
+          console.error("PORTAL ANNOUNCEMENT LOAD ERROR", poolErr);
+          return serializePortalAnnouncement(null);
+        }
+        return serializePortalAnnouncement(poolRow);
+      } catch (_) {
+        return serializePortalAnnouncement(null);
+      }
+    }
+
+    const portal_announcement = await loadPortalAnnouncement();
 
     if (!client_mac) {
       return res.status(400).json({ ok: false, error: "client_mac_required" });
@@ -4734,6 +4779,7 @@ app.get("/api/portal/status", async (req, res) => {
         purchase_lock: false,
         can_use: false,
         contact_phone: supportPhone,
+        portal_announcement,
         ui: {
           badge: { tone: "none", label: "AUCUN CODE", icon: "ℹ️" },
           toast_on_plan_click: ""
@@ -4945,6 +4991,7 @@ app.get("/api/portal/status", async (req, res) => {
       purchase_lock,
       can_use,
       contact_phone: supportPhone,
+      portal_announcement,
       ui: {
         badge,
         toast_on_plan_click
@@ -5616,7 +5663,7 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
 
     let query = supabase
       .from("internet_pools")
-      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id", { count: "exact" });
+      .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`, { count: "exact" });
 
     // 🔐 Pool scoping (server-side)
     if (!req.admin?.is_superadmin) {
@@ -5692,7 +5739,7 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
     const { data, error } = await supabase
       .from("internet_pools")
       .insert(payload)
-      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id")
+      .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -5798,6 +5845,29 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       updates.owner_admin_user_id = owner_admin_user_id || null;
     }
 
+
+    // Portal announcement (per-pool message shown on captive portal)
+    const hasPortalAnnouncementEnabled = Object.prototype.hasOwnProperty.call(req.body || {}, "portal_announcement_enabled");
+    if (hasPortalAnnouncementEnabled) {
+      updates.portal_announcement_enabled = req.body.portal_announcement_enabled === true || req.body.portal_announcement_enabled === "true" || req.body.portal_announcement_enabled === 1 || req.body.portal_announcement_enabled === "1";
+    }
+
+    const hasPortalAnnouncementType = Object.prototype.hasOwnProperty.call(req.body || {}, "portal_announcement_type");
+    if (hasPortalAnnouncementType) {
+      updates.portal_announcement_type = normalizePortalAnnouncementType(req.body.portal_announcement_type);
+    }
+
+    const hasPortalAnnouncementMessage = Object.prototype.hasOwnProperty.call(req.body || {}, "portal_announcement_message");
+    if (hasPortalAnnouncementMessage) {
+      const msg = String(req.body.portal_announcement_message || "").replace(/\r\n/g, "\n").trim();
+      updates.portal_announcement_message = msg ? msg.slice(0, 500) : null;
+    }
+
+    const hasPortalAnnouncementPriority = Object.prototype.hasOwnProperty.call(req.body || {}, "portal_announcement_priority");
+    if (hasPortalAnnouncementPriority) {
+      updates.portal_announcement_priority = normalizePortalAnnouncementPriority(req.body.portal_announcement_priority);
+    }
+
     // Safety: don't allow clearing mikrotik_ip on an existing mikrotik pool
     if (hasMikrotikIp && updates.mikrotik_ip === null) {
       const { data: curPool, error: curErr } = await supabase
@@ -5818,7 +5888,7 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       .from("internet_pools")
       .update(updates)
       .eq("id", id)
-      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id")
+      .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });

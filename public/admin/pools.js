@@ -282,6 +282,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       const ownerSharePct = Number.isFinite(Number(p.owner_share_pct)) ? Number(p.owner_share_pct) : 0;
       const ownerAdminUserId = String(p.owner_admin_user_id || p.ownerAdminUserId || "").trim();
       const canManage = isSuperadmin();
+      const annEnabled = p.portal_announcement_enabled === true || String(p.portal_announcement_enabled).toLowerCase() === "true";
+      const annType = String(p.portal_announcement_type || "information").trim().toLowerCase();
+      const annPriority = String(p.portal_announcement_priority || "normal").trim().toLowerCase();
+      const annMessage = String(p.portal_announcement_message || "").trim();
 
       const stats = liveStatsByPool[pid] || null;
       const liveClients = stats ? toNum(stats.active_clients, 0) : 0;
@@ -347,6 +351,39 @@ document.addEventListener("DOMContentLoaded", async () => {
           </div>
         `;
 
+
+      const announcementBlock = canManage
+        ? `
+          <div class="pool-announcement-box">
+            <div style="font-weight:800; color:#0d6efd; margin-bottom:8px;">Annonce portail</div>
+            <div class="pool-announcement-row">
+              <label class="pool-announcement-check">
+                <input type="checkbox" data-ann-enabled="${esc(pid)}" ${annEnabled ? "checked" : ""} />
+                Activer
+              </label>
+              <select data-ann-type="${esc(pid)}" title="Type de message">
+                <option value="important" ${annType === "important" ? "selected" : ""}>⚠️ Important</option>
+                <option value="promotion" ${annType === "promotion" ? "selected" : ""}>🎁 Promotion</option>
+                <option value="information" ${annType === "information" ? "selected" : ""}>ℹ️ Information</option>
+                <option value="maintenance" ${annType === "maintenance" ? "selected" : ""}>🔧 Maintenance</option>
+              </select>
+              <select data-ann-priority="${esc(pid)}" title="Priorité">
+                <option value="normal" ${annPriority !== "urgent" ? "selected" : ""}>Priorité normale</option>
+                <option value="urgent" ${annPriority === "urgent" ? "selected" : ""}>Urgent</option>
+              </select>
+            </div>
+            <textarea
+              data-ann-message="${esc(pid)}"
+              maxlength="500"
+              placeholder="Ex: MVola est momentanément indisponible. Profitez de nos offres gratuites en attendant."
+            >${esc(annMessage)}</textarea>
+            <div style="opacity:.65; font-size:12px; margin-top:6px;">Visible sur le portail seulement si le message est activé et non vide.</div>
+          </div>
+        `
+        : (annEnabled && annMessage
+          ? `<div class="pool-announcement-box"><strong>Annonce portail :</strong><br>${esc(annMessage)}</div>`
+          : "");
+
       return `
         <tr style="border-top:1px solid rgba(0,0,0,.06);" data-poolrow="${esc(pid)}">
           <td style="padding:10px;">
@@ -381,6 +418,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             ` : ``}
             ${ownerBusinessBlock}
             ${commissionBlock}
+            ${announcementBlock}
             <div style="opacity:.7; font-size:12px; margin-top:6px;">ID: ${esc(pid)}</div>
           </td>
 
@@ -444,6 +482,16 @@ document.addEventListener("DOMContentLoaded", async () => {
         const radius_nas_id = (nasInput?.value || "").trim();
 
         const payload = { name, capacity_max, contact_phone };
+
+        const annEnabledInput = rowsEl.querySelector(`input[data-ann-enabled="${CSS.escape(pid)}"]`);
+        const annTypeInput = rowsEl.querySelector(`select[data-ann-type="${CSS.escape(pid)}"]`);
+        const annPriorityInput = rowsEl.querySelector(`select[data-ann-priority="${CSS.escape(pid)}"]`);
+        const annMessageInput = rowsEl.querySelector(`textarea[data-ann-message="${CSS.escape(pid)}"]`);
+
+        payload.portal_announcement_enabled = !!annEnabledInput?.checked;
+        payload.portal_announcement_type = (annTypeInput?.value || "information").trim();
+        payload.portal_announcement_priority = (annPriorityInput?.value || "normal").trim();
+        payload.portal_announcement_message = (annMessageInput?.value || "").trim() || null;
 
         if (mtikIpInput || nasInput) {
           payload.mikrotik_ip = mikrotik_ip || null;

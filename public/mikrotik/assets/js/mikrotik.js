@@ -1868,6 +1868,49 @@ function submitToLoginUrl(code, ev) {
   let poolContext = { pool_name: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
   let poolIsFull = false;
 
+  // -------- Portal announcement (per pool, controlled from admin) --------
+  const ANNOUNCEMENT_TYPES = {
+    important: { title: "Information importante", icon: "⚠️" },
+    promotion: { title: "Offre spéciale", icon: "🎁" },
+    information: { title: "Information", icon: "ℹ️" },
+    maintenance: { title: "Maintenance", icon: "🔧" },
+  };
+
+  function normalizeAnnouncementType(type) {
+    const t = String(type || "information").trim().toLowerCase();
+    return ANNOUNCEMENT_TYPES[t] ? t : "information";
+  }
+
+  function renderPortalAnnouncement(announcement) {
+    try {
+      const card = document.getElementById("portalAnnouncementCard");
+      if (!card) return;
+
+      const rawMessage = String(announcement?.message || "").trim();
+      const enabled = announcement?.enabled === true || announcement?.enabled === "true";
+
+      if (!enabled || !rawMessage) {
+        card.classList.add("hidden");
+        return;
+      }
+
+      const type = normalizeAnnouncementType(announcement?.type);
+      const priority = String(announcement?.priority || "normal").trim().toLowerCase() === "urgent" ? "urgent" : "normal";
+      const cfg = ANNOUNCEMENT_TYPES[type] || ANNOUNCEMENT_TYPES.information;
+
+      card.className = `portal-announcement portal-announcement-${type} ${priority === "urgent" ? "portal-announcement-urgent" : ""}`.trim();
+      const iconEl = document.getElementById("portalAnnouncementIcon");
+      const titleEl = document.getElementById("portalAnnouncementTitle");
+      const msgEl = document.getElementById("portalAnnouncementMessage");
+
+      if (iconEl) iconEl.textContent = cfg.icon;
+      if (titleEl) titleEl.textContent = cfg.title;
+      if (msgEl) msgEl.textContent = rawMessage;
+
+      card.classList.remove("hidden");
+    } catch (_) {}
+  }
+
   const _uiEls = {
     accessMsg: document.getElementById("accessMsg"),
     noVoucherMsg: document.getElementById("noVoucherMsg"),
@@ -2222,6 +2265,7 @@ function saturationLabel(pct) {
 
       if (!r.ok || !j?.ok) throw new Error(j?.error || "portal_status_failed");
       applyPortalStatus(j);
+      renderPortalAnnouncement(j.portal_announcement);
       return true;
     } catch (e) {
       console.warn("[RAZAFI] portal status fetch failed", e?.message || e);
@@ -2355,6 +2399,8 @@ function saturationLabel(pct) {
       }
 
       if (!res.ok) throw new Error(data?.error || "Erreur chargement plans");
+
+      renderPortalAnnouncement(data.portal_announcement);
 
       const plans = data.plans || [];
       if (!plans.length) {
