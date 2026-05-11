@@ -280,28 +280,8 @@
     }
     banner.style.display = "";
     const when = last.ts ? formatLocalTime(last.ts) : "";
-    const plan = last.planName ? escapeHtml(last.planName) : "Plan";
-    const dur = (last.durationMinutes != null) ? escapeHtml(formatDuration(Number(last.durationMinutes))) : "—";
-    const dev = (last.maxDevices != null) ? escapeHtml(String(last.maxDevices)) : "—";
-
-    // Only suggest "Utiliser ce code" when voucher is still usable (pending/active).
-    // For used/expired, show a premium, accurate message instead.
-    let ctaLine = "";
-    if (portalTruthStatus === "pending") {
-      ctaLine = '<div class="small" style="margin-top:6px;">👉 Cliquez <strong>« Utiliser ce code »</strong> pour activer Internet.</div>';
-    } else if (portalTruthStatus === "active") {
-      ctaLine = '<div class="small" style="margin-top:6px;">👉 Si la connexion s’interrompt, cliquez <strong>« Utiliser ce code »</strong> pour vous reconnecter.</div>';
-    } else if (portalTruthStatus === "expired") {
-      ctaLine = '<div class="small" style="margin-top:6px;">⏰ Code expiré. Choisissez un nouveau plan ci-dessous pour continuer.</div>';
-    } else if (portalTruthStatus === "used") {
-      ctaLine = '<div class="small" style="margin-top:6px;">⛔ Code utilisé. Choisissez un nouveau plan ci-dessous pour continuer.</div>';
-    }
-
-
     banner.innerHTML = `
       <div><strong>Dernier code généré :</strong> <span style="letter-spacing:1px;">${escapeHtml(last.code)}</span> ${when ? `<span class="small">(${escapeHtml(when)})</span>` : ""}</div>
-      <div class="small" style="margin-top:4px;">Plan: ${plan} · Durée: ${dur} · Appareils: ${dev}</div>
-      ${ctaLine}
     `;
 
 }
@@ -388,6 +368,312 @@
   function formatDevices(maxDevicesVal) {
     const d = Math.max(1, Math.trunc(Number(maxDevicesVal) || 1));
     return d === 1 ? "1 appareil" : d + " appareils";
+  }
+
+  function normalizeRateLimit(raw) {
+    try {
+      const input = String(raw || "").trim();
+      if (!input) return "";
+      const cleaned = input.replace(/\s+/g, "").toUpperCase();
+      const m = cleaned.match(/^(\d+(?:\.\d+)?)([KMGT])\/(\d+(?:\.\d+)?)([KMGT])$/);
+      if (!m) return "";
+      const down = Number(m[1]);
+      const up = Number(m[3]);
+      if (!Number.isFinite(down) || !Number.isFinite(up) || down <= 0 || up <= 0) return "";
+      const fmt = (num, unit) => {
+        const rounded = Math.round(num * 100) / 100;
+        const txt = Number.isInteger(rounded) ? String(Math.trunc(rounded)) : String(rounded).replace(/\.0+$/, "");
+        return txt + unit;
+      };
+      return `${fmt(down, m[2])}/${fmt(up, m[4])}`;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function formatSpeedFromRateLimit(raw) {
+    const normalized = normalizeRateLimit(raw);
+    if (!normalized) return "";
+    const first = normalized.split("/")[0] || "";
+    const m = first.match(/^(\d+(?:\.\d+)?)([KMGT])$/i);
+    if (!m) return "";
+    let mbps = Number(m[1]);
+    const unit = String(m[2] || "").toUpperCase();
+    if (unit === "K") mbps = mbps / 1024;
+    if (unit === "G") mbps = mbps * 1024;
+    if (unit === "T") mbps = mbps * 1024 * 1024;
+    if (!Number.isFinite(mbps) || mbps <= 0) return "";
+    const rounded = mbps >= 10 ? Math.round(mbps) : Math.round(mbps * 10) / 10;
+    const txt = Number.isInteger(rounded) ? String(Math.trunc(rounded)) : String(rounded);
+    return `${txt} Mbps`;
+  }
+
+  function getPlanSpeedHuman(plan) {
+    return String(plan?.speed_human || "").trim() || formatSpeedFromRateLimit(plan?.mikrotik_rate_limit);
+  }
+
+
+  // -------- Smart plan UX (visible plans only) --------
+  // UX goal:
+  // - keep ONLY one "🎁 Test gratuit" badge for one visible 0 Ar plan
+  // - keep ONLY one "⭐ RECOMMANDÉ" badge for one smart-selected visible paid plan
+  // - apply subtle automatic card accents by plan type, without requiring manual code changes
+  function ensurePlanSalesStyle() {
+    if (document.getElementById("razafi-plan-sales-style")) return;
+
+    const st = document.createElement("style");
+    st.id = "razafi-plan-sales-style";
+    st.textContent = `
+      .plan-card {
+        position: relative;
+        overflow: hidden;
+        transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+      }
+      .plan-card::before {
+        content: "";
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 4px;
+        opacity: 0.9;
+        border-radius: inherit 0 0 inherit;
+        background: rgba(255,255,255,0.14);
+      }
+      .plan-card.plan-role-neutral::before {
+        background: rgba(255,255,255,0.14);
+      }
+      .plan-card.plan-role-free::before {
+        background: linear-gradient(180deg, rgba(34,197,94,0.95), rgba(16,185,129,0.55));
+      }
+      .plan-card.plan-role-recommended {
+        border-color: rgba(245, 158, 11, 0.62) !important;
+        box-shadow: 0 14px 34px rgba(245, 158, 11, 0.12), 0 0 0 1px rgba(245, 158, 11, 0.16) inset;
+        transform: translateY(-1px);
+      }
+      .plan-card.plan-role-recommended::before {
+        background: linear-gradient(180deg, rgba(245,158,11,0.98), rgba(251,191,36,0.58));
+      }
+      .plan-card.plan-role-unlimited::before {
+        background: linear-gradient(180deg, rgba(99,102,241,0.88), rgba(168,85,247,0.48));
+      }
+      .plan-card.plan-role-budget::before {
+        background: linear-gradient(180deg, rgba(14,165,233,0.85), rgba(6,182,212,0.42));
+      }
+      .plan-card .plan-ux-badge {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        z-index: 1;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 5px 9px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+        line-height: 1;
+        white-space: nowrap;
+        border: 1px solid rgba(255,255,255,0.20);
+        box-shadow: 0 8px 22px rgba(0,0,0,0.12);
+      }
+      .plan-card .plan-ux-badge.badge-free {
+        background: rgba(34,197,94,0.16);
+        color: inherit;
+      }
+      .plan-card .plan-ux-badge.badge-recommended {
+        background: rgba(245,158,11,0.18);
+        color: inherit;
+      }
+      .plan-card.plan-role-recommended .choose-plan-btn {
+        box-shadow: 0 10px 22px rgba(245, 158, 11, 0.12);
+      }
+      .plan-card .price {
+        font-size: 1.45rem;
+        font-weight: 900;
+        letter-spacing: -0.02em;
+      }
+      @media (hover: hover) {
+        .plan-card:hover {
+          transform: translateY(-2px);
+        }
+        .plan-card.plan-role-recommended:hover {
+          transform: translateY(-3px);
+        }
+      }
+      @media (max-width: 420px) {
+        .plan-card .plan-ux-badge {
+          top: 10px;
+          right: 10px;
+          font-size: 10px;
+          padding: 5px 8px;
+        }
+      }
+    `;
+    document.head.appendChild(st);
+  }
+
+  function getPlanPriceAr(plan) {
+    const n = Number(plan?.price_ar ?? plan?.price ?? 0);
+    return Number.isFinite(n) ? Math.max(0, n) : 0;
+  }
+
+  function getPlanDurationMinutes(plan) {
+    const direct = Number(plan?.duration_minutes ?? plan?.durationMinutes);
+    if (Number.isFinite(direct) && direct > 0) return direct;
+    const hours = Number(plan?.duration_hours ?? plan?.durationHours);
+    if (Number.isFinite(hours) && hours > 0) return hours * 60;
+    return 0;
+  }
+
+  function getPlanDataMb(plan) {
+    if (plan?.data_mb === null || plan?.data_mb === undefined) return null;
+    const n = Number(plan.data_mb);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  }
+
+  function getPlanIdentity(plan, index) {
+    return String(plan?.id ?? plan?.plan_id ?? plan?.name ?? ("idx_" + index));
+  }
+
+  function buildPlanUiMeta(plans) {
+    const list = Array.isArray(plans) ? plans : [];
+    const meta = {};
+
+    list.forEach((plan, index) => {
+      const id = getPlanIdentity(plan, index);
+      const price = getPlanPriceAr(plan);
+      const duration = getPlanDurationMinutes(plan);
+      const dataMb = getPlanDataMb(plan);
+      const unlimited = dataMb === null;
+      const maxDevices = Math.max(1, Number(plan?.max_devices ?? plan?.maxDevices ?? 1) || 1);
+
+      meta[id] = {
+        index,
+        price,
+        duration,
+        dataMb,
+        unlimited,
+        maxDevices,
+        badge: "",
+        role: "neutral",
+        cta: "Choisir",
+        isFreeTest: false,
+        isRecommended: false,
+      };
+    });
+
+    const entries = Object.entries(meta);
+    if (!entries.length) return meta;
+
+    const freeEntries = entries.filter(([, m]) => m.price === 0);
+    const paidEntries = entries.filter(([, m]) => m.price > 0);
+
+    // 🎁 Test gratuit: first visible 0 Ar plan only.
+    if (freeEntries.length) {
+      const [id, m] = freeEntries
+        .slice()
+        .sort((a, b) => {
+          const da = a[1].duration || 0;
+          const db = b[1].duration || 0;
+          if (da !== db) return da - db;
+          return a[1].index - b[1].index;
+        })[0];
+      m.badge = "🎁 Test gratuit";
+      m.role = "free";
+      m.cta = "Essayer gratuitement";
+      m.isFreeTest = true;
+      meta[id] = m;
+    }
+
+    let recommendedId = null;
+    if (paidEntries.length === 1) {
+      recommendedId = paidEntries[0][0];
+    } else if (paidEntries.length > 1) {
+      const prices = paidEntries.map(([, m]) => m.price).sort((a, b) => a - b);
+      const medianPrice = prices[Math.floor(prices.length / 2)] || prices[0] || 1;
+      const finiteDataValues = paidEntries
+        .map(([, m]) => m.dataMb)
+        .filter((v) => v !== null && Number.isFinite(Number(v)) && Number(v) > 0)
+        .map(Number)
+        .sort((a, b) => a - b);
+      const maxFiniteData = finiteDataValues.length ? finiteDataValues[finiteDataValues.length - 1] : 1024;
+
+      // Deterministic smart score:
+      // favors balanced paid offers, normally weekly/medium-value plans,
+      // while avoiding extremes that are too small, too expensive, or too long.
+      const scored = paidEntries.map(([id, m]) => {
+        const price = Math.max(1, m.price);
+        const duration = Math.max(1, m.duration || 0);
+        const dataEquivalent = m.unlimited ? Math.max(maxFiniteData * 1.35, 2048) : Math.max(1, Number(m.dataMb || 0));
+
+        const pricePerDay = price / Math.max(duration / 1440, 0.125);
+        const dataPerAr = dataEquivalent / price;
+
+        const sweetDurationPenalty = Math.abs(Math.log(duration / (7 * 24 * 60))) * 0.52;
+        const priceExtremePenalty = Math.abs(Math.log(price / Math.max(1, medianPrice))) * 0.40;
+        const tinyPlanPenalty = duration < 120 ? 1.4 : (duration < 360 ? 0.55 : 0);
+        const veryLongPenalty = duration > (31 * 24 * 60) ? 0.65 : 0;
+        const veryExpensivePenalty = price > (medianPrice * 3.2) ? 0.65 : 0;
+
+        const score =
+          Math.log1p(duration) * 0.28 +
+          Math.log1p(dataEquivalent) * 0.34 +
+          Math.log1p(dataPerAr * 1000) * 0.30 +
+          Math.log1p(m.maxDevices) * 0.08 -
+          Math.log1p(pricePerDay) * 0.03 -
+          sweetDurationPenalty -
+          priceExtremePenalty -
+          tinyPlanPenalty -
+          veryLongPenalty -
+          veryExpensivePenalty;
+
+        return { id, score, index: m.index };
+      }).sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return a.index - b.index;
+      });
+
+      recommendedId = scored[0]?.id || null;
+    }
+
+    if (recommendedId && meta[recommendedId]) {
+      meta[recommendedId].badge = "⭐ RECOMMANDÉ";
+      meta[recommendedId].role = "recommended";
+      meta[recommendedId].cta = "Choisir ce plan";
+      meta[recommendedId].isRecommended = true;
+    }
+
+    // Automatic subtle color roles, no extra badges.
+    if (paidEntries.length) {
+      const cheapest = paidEntries
+        .slice()
+        .sort((a, b) => {
+          if (a[1].price !== b[1].price) return a[1].price - b[1].price;
+          return a[1].index - b[1].index;
+        })[0];
+
+      const biggest = paidEntries
+        .slice()
+        .sort((a, b) => {
+          const au = a[1].unlimited ? 1 : 0;
+          const bu = b[1].unlimited ? 1 : 0;
+          if (au !== bu) return bu - au;
+          const ad = a[1].dataMb === null ? Number.POSITIVE_INFINITY : Number(a[1].dataMb || 0);
+          const bd = b[1].dataMb === null ? Number.POSITIVE_INFINITY : Number(b[1].dataMb || 0);
+          if (ad !== bd) return bd - ad;
+          if (a[1].duration !== b[1].duration) return b[1].duration - a[1].duration;
+          return a[1].index - b[1].index;
+        })[0];
+
+      if (cheapest && cheapest[0] !== recommendedId && meta[cheapest[0]]?.role === "neutral") {
+        meta[cheapest[0]].role = "budget";
+      }
+      if (biggest && biggest[0] !== recommendedId && meta[biggest[0]]?.role === "neutral") {
+        meta[biggest[0]].role = "unlimited";
+      }
+    }
+
+    return meta;
   }
 
   // -------- Read captive params (robust + refresh-safe) --------
@@ -547,9 +833,13 @@
   const planNameEl = $("plan-name");
   const planDurationEl = $("plan-duration");
   const planDataTotalEl = $("plan-data-total");
+  const planSpeedEl = $("plan-speed");
+  const rowPlanSpeed = document.getElementById("row-plan-speed");
   const planMaxDevicesEl = $("plan-max-devices");
   const expiresAtEl = $("expires-at");
   const dataUsedEl = $("data-used");
+  const rowTimeLeft = document.getElementById("row-time-left");
+  const rowDataLeft = document.getElementById("row-data-left");
   const rowExpiresAt = document.getElementById("row-expires-at");
   const rowDataUsed = document.getElementById("row-data-used");
 
@@ -709,6 +999,7 @@
       ? "Illimité"
       : (receipt.data_mb !== null && receipt.data_mb !== undefined ? formatData(Number(receipt.data_mb)) : "—");
     const devices = receipt.devices ? formatDevices(Number(receipt.devices)) : "—";
+    const speed = receipt.speed_human || formatSpeedFromRateLimit(receipt.mikrotik_rate_limit);
     const price = (receipt.price_ar !== null && receipt.price_ar !== undefined && receipt.price_ar !== "")
       ? `${receipt.price_ar} Ar`
       : "";
@@ -717,9 +1008,10 @@
     box.style.display = "";
     box.innerHTML = `
       <div class="muted small" style="margin-bottom:6px;">🧾 Récapitulatif de votre achat</div>
-      <div><strong>Plan :</strong> ${escapeHtml(name)} ${price ? `(${escapeHtml(price)})` : ""}</div>
+      <div><strong>Forfait :</strong> ${escapeHtml(name)} ${price ? `(${escapeHtml(price)})` : ""}</div>
       <div><strong>Durée :</strong> ${escapeHtml(duration)}</div>
       <div><strong>Données :</strong> ${escapeHtml(data)}</div>
+      ${speed ? `<div><strong>Vitesse max :</strong> ${escapeHtml(speed)}</div>` : ""}
       <div><strong>Appareils :</strong> ${escapeHtml(devices)}</div>
       ${code ? `<div style="margin-top:6px;"><strong>Code :</strong> <span style="letter-spacing:1px;">${escapeHtml(code)}</span></div>` : ""}
     `;
@@ -800,16 +1092,26 @@
 
     const setOne = (el, isMini) => {
       if (!el) return;
+
+      // Public UX: keep only one clear status badge (main badge).
+      // The mini badge near the code is intentionally hidden to avoid repetition.
+      if (isMini) {
+        el.className = "status-badge mini hidden";
+        el.textContent = "";
+        el.classList.add("hidden");
+        return;
+      }
+
       if (!cfg) {
-        el.className = isMini ? "status-badge mini hidden" : "status-badge hidden";
+        el.className = "status-badge hidden";
         el.textContent = "";
         el.classList.add("hidden");
         return;
       }
       el.className =
-        (isMini ? "status-badge mini " : "status-badge ") +
+        "status-badge " +
         cfg.cls +
-        (cfg.pulse && !isMini ? " pulse" : "");
+        (cfg.pulse ? " pulse" : "");
       el.textContent = (cfg.icon ? cfg.icon + " " : "") + cfg.label;
       el.classList.remove("hidden");
     };
@@ -892,8 +1194,9 @@ try {
   }
 
   if (bMini) {
-    bMini.textContent = bonusModeActive ? "🎁 EN COURS" : "🎁 BONUS";
-    bMini.classList.toggle("hidden", !show);
+    // Public UX: the main bonus badge is enough. Keep the code line clean.
+    bMini.textContent = "";
+    bMini.classList.add("hidden");
   }
 } catch (_) {}
 
@@ -987,30 +1290,26 @@ function setBonusLine(text) {
 const showBonusChip = bonusModeActive || (hasUsableBonus && (status === "expired" || status === "used"));
 
 if (hasMsg) {
-  if (status === "pending") hasMsg.textContent = "⏳ Code en attente d’activation";
-  else if (status === "active" && bonusModeActive) hasMsg.textContent = "🎁 Bonus en cours";
-  else if (status === "active") hasMsg.textContent = "✅ Session active";
-  else if ((status === "used" || status === "expired") && hasUsableBonus && canUse) hasMsg.textContent = "🎁 Bonus disponible";
-  else if (status === "used") hasMsg.textContent = "⛔ Code utilisé";
-  else if (status === "expired") hasMsg.textContent = "⏰ Code expiré";
-  else hasMsg.textContent = "✅ Vérification…";
+  if (status === "pending") hasMsg.textContent = "Votre code est prêt";
+  else if (status === "active" && bonusModeActive) hasMsg.textContent = "Bonus en cours";
+  else if (status === "active") hasMsg.textContent = "Votre connexion actuelle";
+  else if ((status === "used" || status === "expired") && hasUsableBonus && canUse) hasMsg.textContent = "Bonus offert";
+  else if (status === "used" || status === "expired") hasMsg.textContent = "Votre dernière consommation";
+  else hasMsg.textContent = "Vérification…";
 }
 
 if (accessMsg) {
   if (status === "pending") {
-    accessMsg.textContent = "Votre code est prêt. Cliquez « Utiliser ce code » pour démarrer votre forfait RAZAFI.";
+    accessMsg.textContent = "Cliquez « Utiliser ce code » pour démarrer votre forfait RAZAFI.";
   } else if (status === "active" && bonusModeActive) {
-    accessMsg.textContent = "🎁 Votre bonus est en cours d’utilisation.";
+    accessMsg.textContent = "Votre bonus est en cours d’utilisation.";
   } else if (status === "active") {
     accessMsg.textContent = "Connexion active. Si la page revient ici, cliquez « Continuer » pour rester connecté.";
   } else if (status === "used" || status === "expired") {
     if (hasUsableBonus && canUse) {
-      accessMsg.textContent = "🎁 Un bonus a été ajouté à votre code. Cliquez « Réactiver ce code » pour vous reconnecter.";
+      accessMsg.textContent = "Un bonus a été ajouté à votre code. Cliquez « Réactiver ce code » pour vous reconnecter.";
     } else {
-      accessMsg.textContent =
-        (status === "used")
-          ? "Ce code a déjà été entièrement consommé. Achetez un nouveau code pour continuer."
-          : "La durée de ce code est terminée. Achetez un nouveau code pour continuer.";
+      accessMsg.textContent = "Votre forfait est terminé. Choisissez un forfait ci-dessous pour continuer votre connexion.";
     }
   } else {
     accessMsg.textContent = "Vérification de votre accès en cours…";
@@ -1026,35 +1325,45 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
     setText(planDurationEl, durMin != null ? formatDuration(Number(durMin)) : (plan.duration_human || ""));
     const unlimited = !!plan.unlimited || (String(plan.data_total_human || "").toLowerCase().includes("illimit"));
     setText(planDataTotalEl, unlimited ? "Illimité" : (plan.data_total_human || ""));
+    const speedHuman = String(plan.speed_human || "").trim() || formatSpeedFromRateLimit(plan.mikrotik_rate_limit);
+    if (rowPlanSpeed) rowPlanSpeed.classList.toggle("hidden", !speedHuman);
+    setText(planSpeedEl, speedHuman || "—");
     setText(planMaxDevicesEl, plan.max_devices ?? plan.maxDevices ?? "—");
 
-    // Session: expires_at
-    const showExpires = status === "active" || status === "used" || status === "expired";
+    // Public UX: hide irrelevant rows instead of showing empty "—" values.
+    const showTimeLeft = status === "active" || status === "pending";
+    const showDataLeft = status === "active" || status === "pending";
+    const showExpires = status === "used" || status === "expired";
+    const showUsed = status === "used" || status === "expired";
+
+    if (rowTimeLeft) rowTimeLeft.classList.toggle("hidden", !showTimeLeft);
+    if (rowDataLeft) rowDataLeft.classList.toggle("hidden", !showDataLeft);
     if (rowExpiresAt) rowExpiresAt.classList.toggle("hidden", !showExpires);
+    if (rowDataUsed) rowDataUsed.classList.toggle("hidden", !showUsed);
+
+    // Session: expires_at (shown only for previous/finished consumption)
     if (showExpires) setText(expiresAtEl, sess.expires_at_human || (sess.expires_at ? fmtDateTimeMG(sess.expires_at) : ""), "—");
     else setText(expiresAtEl, "—");
 
     // Time left
-    if (status === "active") {
+    if (showTimeLeft && status === "active") {
       setText(timeLeftEl, formatRemainingFromExpires(sess.expires_at) || "—");
-    } else if (status === "pending") {
+    } else if (showTimeLeft && status === "pending") {
       setText(timeLeftEl, durMin != null ? formatDuration(Number(durMin)) : "—");
     } else {
       setText(timeLeftEl, "—");
     }
 
     // Data remaining
-    if (status === "active") {
+    if (showDataLeft && status === "active") {
       setText(dataLeftEl, unlimited ? "Illimité" : (sess.data_remaining_human || "—"));
-    } else if (status === "pending") {
+    } else if (showDataLeft && status === "pending") {
       setText(dataLeftEl, unlimited ? "Illimité" : (plan.data_total_human || "—"));
     } else {
       setText(dataLeftEl, "—");
     }
 
-    // Data used over total
-    const showUsed = status === "active" || status === "used" || status === "expired";
-    if (rowDataUsed) rowDataUsed.classList.toggle("hidden", !showUsed);
+    // Data used over total (shown only for previous/finished consumption)
     if (showUsed) {
       const used = sess.data_used_human || "";
       const total = unlimited ? "Illimité" : (plan.data_total_human || "—");
@@ -1062,11 +1371,6 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
     } else {
       setText(dataUsedEl, "—");
     }
-
-    // Devices used (best-effort)
-    const maxDev = Number(plan.max_devices ?? plan.maxDevices ?? 1) || 1;
-    const usedDev = sess.devices_used != null ? Number(sess.devices_used) : (status === "active" ? 1 : 0);
-    setText(devicesEl, `${Math.max(0, usedDev)} / ${maxDev}`);
 
     // Buttons + purchase lock
     currentVoucherCode = code || "";
@@ -1564,6 +1868,49 @@ function submitToLoginUrl(code, ev) {
   let poolContext = { pool_name: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
   let poolIsFull = false;
 
+  // -------- Portal announcement (per pool, controlled from admin) --------
+  const ANNOUNCEMENT_TYPES = {
+    important: { title: "Information importante", icon: "⚠️" },
+    promotion: { title: "Offre spéciale", icon: "🎁" },
+    information: { title: "Information", icon: "ℹ️" },
+    maintenance: { title: "Maintenance", icon: "🔧" },
+  };
+
+  function normalizeAnnouncementType(type) {
+    const t = String(type || "information").trim().toLowerCase();
+    return ANNOUNCEMENT_TYPES[t] ? t : "information";
+  }
+
+  function renderPortalAnnouncement(announcement) {
+    try {
+      const card = document.getElementById("portalAnnouncementCard");
+      if (!card) return;
+
+      const rawMessage = String(announcement?.message || "").trim();
+      const enabled = announcement?.enabled === true || announcement?.enabled === "true";
+
+      if (!enabled || !rawMessage) {
+        card.classList.add("hidden");
+        return;
+      }
+
+      const type = normalizeAnnouncementType(announcement?.type);
+      const priority = String(announcement?.priority || "normal").trim().toLowerCase() === "urgent" ? "urgent" : "normal";
+      const cfg = ANNOUNCEMENT_TYPES[type] || ANNOUNCEMENT_TYPES.information;
+
+      card.className = `portal-announcement portal-announcement-${type} ${priority === "urgent" ? "portal-announcement-urgent" : ""}`.trim();
+      const iconEl = document.getElementById("portalAnnouncementIcon");
+      const titleEl = document.getElementById("portalAnnouncementTitle");
+      const msgEl = document.getElementById("portalAnnouncementMessage");
+
+      if (iconEl) iconEl.textContent = cfg.icon;
+      if (titleEl) titleEl.textContent = cfg.title;
+      if (msgEl) msgEl.textContent = rawMessage;
+
+      card.classList.remove("hidden");
+    } catch (_) {}
+  }
+
   const _uiEls = {
     accessMsg: document.getElementById("accessMsg"),
     noVoucherMsg: document.getElementById("noVoucherMsg"),
@@ -1591,8 +1938,6 @@ function submitToLoginUrl(code, ev) {
     speed: document.getElementById("netSpeed"),
   };
 
-  // Fixed for all users (per your requirement)
-  const MAX_SPEED_MBPS = 10;
   const _netCanAnimate = false; // animation disabled by request
 function saturationLabel(pct) {
     if (!Number.isFinite(pct)) return { text: "—", level: "low" };
@@ -1604,23 +1949,31 @@ function saturationLabel(pct) {
   function renderCapacityText() {
     if (!_netEls.capacityWrap || !_netEls.capacityText) return;
 
+    let pct = (poolContext.pool_percent === null || poolContext.pool_percent === undefined)
+      ? null
+      : Number(poolContext.pool_percent);
+
     const active = Number(poolContext.active_clients);
     const cap = Number(poolContext.capacity_max);
 
-    if (Number.isFinite(active) && Number.isFinite(cap) && cap > 0) {
-      _netEls.capacityWrap.style.display = "";
-      _netEls.capacityText.textContent = `${Math.max(0, Math.round(active))} / ${Math.max(0, Math.round(cap))} clients`;
-      return;
-    }
-
-    if (Number.isFinite(cap) && cap > 0) {
-      _netEls.capacityWrap.style.display = "";
-      _netEls.capacityText.textContent = `${Math.max(0, Math.round(cap))} clients max`;
-      return;
+    if (!Number.isFinite(pct) && Number.isFinite(active) && Number.isFinite(cap) && cap > 0) {
+      pct = Math.round((active / cap) * 100);
     }
 
     _netEls.capacityWrap.style.display = "";
-    _netEls.capacityText.textContent = "—";
+
+    if (!Number.isFinite(pct)) {
+      _netEls.capacityText.textContent = "en cours d’analyse";
+      return;
+    }
+
+    if (pct >= 90) {
+      _netEls.capacityText.textContent = "très limitée";
+    } else if (pct >= 70) {
+      _netEls.capacityText.textContent = "modérée";
+    } else {
+      _netEls.capacityText.textContent = "élevée";
+    }
   }
 
   function setBarLevelClass(level) {
@@ -1668,7 +2021,7 @@ function saturationLabel(pct) {
 
     if (_netEls.poolName) _netEls.poolName.textContent = name;
     if (_netEls.statusText) _netEls.statusText.textContent = label.text;
-    if (_netEls.speed) _netEls.speed.textContent = `${MAX_SPEED_MBPS} Mbps`;
+    if (_netEls.speed) _netEls.speed.textContent = "Selon le plan choisi";
     renderCapacityText();
 
     // Unknown percent: keep placeholder and bar at 0 (fail-open)
@@ -1767,13 +2120,9 @@ function saturationLabel(pct) {
         const pct = (poolContext.pool_percent !== null && poolContext.pool_percent !== undefined)
           ? ` (${poolContext.pool_percent}%)`
           : "";
-        const ratio =
-          (Number.isFinite(Number(poolContext.active_clients)) && Number.isFinite(Number(poolContext.capacity_max)) && Number(poolContext.capacity_max) > 0)
-            ? ` — ${Math.round(Number(poolContext.active_clients))}/${Math.round(Number(poolContext.capacity_max))} clients`
-            : "";
         const poolName = poolContext.pool_name ? String(poolContext.pool_name) : "Ce point WiFi";
         banner.innerHTML = `
-          <strong>⚠️ Le WiFi ${escapeHtml(poolName)} est momentanément saturé${escapeHtml(pct)}${escapeHtml(ratio)}.</strong><br>
+          <strong>⚠️ Le WiFi ${escapeHtml(poolName)} est momentanément saturé${escapeHtml(pct)}.</strong><br>
           Les achats sont temporairement indisponibles. Veuillez patienter ou contacter l’assistance sur place.
         `;
         banner.classList.remove("hidden");
@@ -1916,6 +2265,7 @@ function saturationLabel(pct) {
 
       if (!r.ok || !j?.ok) throw new Error(j?.error || "portal_status_failed");
       applyPortalStatus(j);
+      renderPortalAnnouncement(j.portal_announcement);
       return true;
     } catch (e) {
       console.warn("[RAZAFI] portal status fetch failed", e?.message || e);
@@ -1923,7 +2273,7 @@ function saturationLabel(pct) {
     }
   }
 
-  function planCardHTML(plan) {
+  function planCardHTML(plan, uiMeta = {}) {
     const name = plan.name || "Plan";
     const price = formatAr(plan.price_ar);
 
@@ -1932,30 +2282,42 @@ function saturationLabel(pct) {
       : (Number(plan.duration_hours) || 0) * 60;
     const dataMb = plan.data_mb; // may be null for unlimited
     const maxDevices = Number(plan.max_devices) || 1;
+    const speedHuman = getPlanSpeedHuman(plan);
 
     const isUnlimited = (plan.data_mb === null || plan.data_mb === undefined);
     const familyClass = isUnlimited ? "plan-unlimited" : "plan-limited";
     const variantClass = "v" + (hashToInt(plan.id) % 4);
-    const badgeHtml = isUnlimited ? `<span class="plan-badge">ILLIMITÉ</span>` : "";
+    const roleClass = "plan-role-" + String(uiMeta.role || "neutral").replace(/[^a-z0-9_-]/gi, "").toLowerCase();
+    const badgeHtml = uiMeta.badge
+      ? `<span class="plan-ux-badge ${uiMeta.isFreeTest ? "badge-free" : "badge-recommended"}">${escapeHtml(uiMeta.badge)}</span>`
+      : "";
+    const ctaText = uiMeta.cta || "Choisir";
     const line1 = `⏳ Durée: ${formatDuration(durationMinutes)} • 📊 Data: ${formatData(dataMb)}`;
-    const line2 = `🔌 ${formatDevices(maxDevices)}`;
+    const line2 = speedHuman ? `🚀 Vitesse max : ${speedHuman}` : "";
+    const line3 = `🔌 ${formatDevices(maxDevices)}`;
 
     return `
-      <div class="card plan-card ${familyClass} ${variantClass}" 
+      <div class="card plan-card ${familyClass} ${variantClass} ${roleClass}" 
            data-plan-id="${escapeHtml(plan.id)}"
            data-plan-name="${escapeHtml(name)}"
            data-plan-price="${escapeHtml(String(plan.price_ar ?? ""))}"
            data-plan-duration="${escapeHtml(String(durationMinutes))}"
            data-plan-data="${(dataMb === null || dataMb === undefined) ? "" : escapeHtml(String(dataMb))}"
            data-plan-unlimited="${isUnlimited ? "1" : "0"}"
-           data-plan-devices="${escapeHtml(String(maxDevices))}">
+           data-plan-devices="${escapeHtml(String(maxDevices))}"
+           data-plan-speed="${escapeHtml(speedHuman)}"
+           data-plan-rate-limit="${escapeHtml(normalizeRateLimit(plan.mikrotik_rate_limit))}"
+           data-plan-ui-role="${escapeHtml(String(uiMeta.role || "neutral"))}"
+           data-plan-recommended="${uiMeta.isRecommended ? "1" : "0"}"
+           data-plan-free-test="${uiMeta.isFreeTest ? "1" : "0"}">
         ${badgeHtml}
         <h4>${escapeHtml(name)}</h4>
         <p class="price">${price}</p>
         <p class="plan-meta">${line1}</p>
-        <p class="plan-devices">${line2}</p>
+        ${line2 ? `<p class="plan-speed">${escapeHtml(line2)}</p>` : ""}
+        <p class="plan-devices">${line3}</p>
 
-        <button class="choose-plan-btn">Choisir</button>
+        <button class="choose-plan-btn">${escapeHtml(ctaText)}</button>
 
         <div class="plan-payment hidden" aria-live="polite">
           <h5>Paiement</h5>
@@ -2038,13 +2400,17 @@ function saturationLabel(pct) {
 
       if (!res.ok) throw new Error(data?.error || "Erreur chargement plans");
 
+      renderPortalAnnouncement(data.portal_announcement);
+
       const plans = data.plans || [];
       if (!plans.length) {
         plansGrid.innerHTML = `<p class="muted small">Aucun plan disponible pour le moment.</p>`;
         return;
       }
 
-      plansGrid.innerHTML = plans.map(planCardHTML).join("");
+      ensurePlanSalesStyle();
+      const planUiMeta = buildPlanUiMeta(plans);
+      plansGrid.innerHTML = plans.map((plan, index) => planCardHTML(plan, planUiMeta[getPlanIdentity(plan, index)] || {})).join("");
 
       bindPlanHandlers();
       bindTermsAcceptanceGuard();
@@ -2103,6 +2469,7 @@ function saturationLabel(pct) {
     const dataMb = card.getAttribute("data-plan-data");
     const isUnlimited = card.getAttribute("data-plan-unlimited") === "1";
     const devices = card.getAttribute("data-plan-devices") || "1";
+    const speed = card.getAttribute("data-plan-speed") || "";
 
     const price = formatAr(priceAr);
     const duration = formatDuration(Number(durationM));
@@ -2114,6 +2481,7 @@ function saturationLabel(pct) {
       <div class="summary-row"><span>Prix</span><strong>${escapeHtml(price)}</strong></div>
       <div class="summary-row"><span>Durée</span><strong>${escapeHtml(duration)}</strong></div>
       <div class="summary-row"><span>Data</span><strong>${escapeHtml(data)}</strong></div>
+      ${speed ? `<div class="summary-row"><span>Vitesse max</span><strong>${escapeHtml(speed)}</strong></div>` : ""}
       <div class="summary-row"><span>Appareils</span><strong>${escapeHtml(dev)}</strong></div>
     `;
   }
@@ -2416,6 +2784,8 @@ function bindPlanHandlers() {
                 const dataMb = (dataStr === "" ? null : Number(dataStr));
                 const isUnlimited = (card.getAttribute("data-plan-unlimited") || "0") === "1";
                 const maxDevices = Number(card.getAttribute("data-plan-devices") || "1") || 1;
+                const speedHuman = card.getAttribute("data-plan-speed") || "";
+                const rateLimit = card.getAttribute("data-plan-rate-limit") || "";
                 receiptDraft = {
                   id: planId || null,
                   name: planName,
@@ -2424,6 +2794,8 @@ function bindPlanHandlers() {
                   data_mb: isUnlimited ? null : (Number.isFinite(dataMb) ? dataMb : null),
                   unlimited: isUnlimited,
                   devices: maxDevices,
+                  speed_human: speedHuman || null,
+                  mikrotik_rate_limit: rateLimit || null,
                   at: Date.now(),
                 };
               } catch (_) {}
@@ -2486,7 +2858,7 @@ function bindPlanHandlers() {
                   await refreshPortalAfterNewCode({
                     phone: cleaned,
                     code: freeCode,
-                    receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices } : null,
+                    receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices, speed_human: receiptDraft.speed_human, mikrotik_rate_limit: receiptDraft.mikrotik_rate_limit } : null,
                   });
                   showToast("🎉 Code gratuit généré ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
                   return;
@@ -2512,7 +2884,7 @@ function bindPlanHandlers() {
               await refreshPortalAfterNewCode({
                 phone: cleaned,
                 code,
-                receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices } : null,
+                receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices, speed_human: receiptDraft.speed_human, mikrotik_rate_limit: receiptDraft.mikrotik_rate_limit } : null,
               });
               showToast("🎉 Code reçu ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
             } catch (e) {

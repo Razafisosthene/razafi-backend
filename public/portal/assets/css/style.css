@@ -436,15 +436,11 @@ input[type="tel"] {
   }
 }
 
-}
-
 @media (min-width: 1040px) {
   /* Keep plans stacked even on large screens */
   .plans-grid {
     grid-template-columns: 1fr;
   }
-}
-
 }
 
 /* Mobile: near full width + full-width buttons */
@@ -635,4 +631,223 @@ input[type="tel"] {
   opacity: .88;
   font-size: 13px;
   line-height: 1.25;
+}
+/* ===============================
+   VOUCHER – NEW CODE HIGHLIGHT
+   Pop + Glow (Premium)
+   - Applied via JS: element.classList.add("razafi-popglow")
+   =============================== */
+
+@keyframes razafiPopGlow {
+  0% {
+    transform: scale(0.985);
+    box-shadow: 0 0 0 rgba(0,0,0,0);
+    filter: brightness(1);
+  }
+  35% {
+    transform: scale(1.015);
+    box-shadow:
+      0 0 0 2px rgba(13,110,253,0.28),
+      0 18px 46px rgba(13,110,253,0.18);
+    filter: brightness(1.04);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow:
+      0 0 0 0 rgba(13,110,253,0),
+      0 0 0 rgba(0,0,0,0);
+    filter: brightness(1);
+  }
+}
+
+.razafi-popglow {
+  animation: razafiPopGlow 1100ms ease-out;
+  will-change: transform, box-shadow, filter;
+}
+
+/* Respect accessibility settings */
+@media (prefers-reduced-motion: reduce) {
+  .razafi-popglow {
+    animation: none !important;
+  }
+}
+
+
+/* ===============================
+   RAZAFI PORTAL – Network Info Card (Pool saturation + Speed)
+   Inserted between Plans and Assistance
+   =============================== */
+
+.network-card{
+  max-width: 680px;
+  margin: 14px auto;
+  padding: 14px 14px;
+}
+
+.network-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom: 10px;
+}
+
+.network-title{
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: .2px;
+}
+
+.network-bar-wrap{
+  margin-top: 6px;
+}
+
+.network-bar{
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(0,0,0,.06);
+  border: 1px solid rgba(0,0,0,.06);
+  overflow: hidden;
+}
+
+.network-bar-fill{
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  transition: width 900ms cubic-bezier(.2,.9,.2,1);
+}
+
+.network-bar-fill.level-low{ background: rgba(25, 135, 84, .85); }
+.network-bar-fill.level-mid{ background: rgba(255, 193, 7, .90); }
+.network-bar-fill.level-high{ background: rgba(220, 53, 69, .90); }
+
+.network-bar-meta{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-top: 8px;
+}
+
+.network-percent{
+  font-weight: 800;
+  font-size: 13px;
+}
+
+.network-status{
+  font-weight: 600;
+}
+
+.network-divider{
+  height: 1px;
+  background: rgba(0,0,0,.06);
+  margin: 12px 0;
+}
+
+.network-speed{
+  display:flex;
+  flex-direction:column;
+  gap: 4px;
+}
+
+.network-speed-value{
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: .2px;
+}
+
+/* Viewport reveal (IntersectionObserver) */
+.io-reveal{
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 450ms ease, transform 450ms ease;
+}
+.io-reveal.is-visible{
+  opacity: 1;
+  transform: translateY(0);
+}
+
+
+/* ===============================
+   PORTAL ANNOUNCEMENT (per pool)
+   =============================== */
+.portal-announcement {
+  position: relative;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 15px;
+  margin-bottom: 18px;
+  border-radius: 16px;
+  border: 1px solid rgba(13, 110, 253, 0.18);
+  background: linear-gradient(135deg, rgba(13,110,253,0.10), rgba(13,110,253,0.035)), var(--bg-card);
+  box-shadow: var(--shadow-soft);
+  overflow: hidden;
+  animation: razafiAnnouncementIn 360ms ease both;
+}
+.portal-announcement.hidden { display: none !important; }
+.portal-announcement::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 5px;
+  background: rgba(13,110,253,0.78);
+}
+.portal-announcement-icon {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.55);
+  font-size: 18px;
+  animation: razafiAnnouncementIconPulse 2.4s ease-in-out infinite;
+}
+.portal-announcement-title {
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 5px;
+}
+.portal-announcement-message {
+  color: var(--text-main);
+  font-size: 14px;
+  line-height: 1.45;
+  white-space: pre-line;
+}
+.portal-announcement-important {
+  border-color: rgba(245, 158, 11, 0.34);
+  background: linear-gradient(135deg, rgba(245,158,11,0.18), rgba(245,158,11,0.055)), var(--bg-card);
+}
+.portal-announcement-important::before { background: rgba(245,158,11,0.95); }
+.portal-announcement-promotion {
+  border-color: rgba(34, 197, 94, 0.30);
+  background: linear-gradient(135deg, rgba(34,197,94,0.16), rgba(16,185,129,0.055)), var(--bg-card);
+}
+.portal-announcement-promotion::before { background: rgba(34,197,94,0.92); }
+.portal-announcement-information {
+  border-color: rgba(13, 110, 253, 0.22);
+  background: linear-gradient(135deg, rgba(13,110,253,0.12), rgba(13,110,253,0.040)), var(--bg-card);
+}
+.portal-announcement-information::before { background: rgba(13,110,253,0.85); }
+.portal-announcement-maintenance {
+  border-color: rgba(107, 114, 128, 0.28);
+  background: linear-gradient(135deg, rgba(107,114,128,0.16), rgba(245,158,11,0.045)), var(--bg-card);
+}
+.portal-announcement-maintenance::before { background: rgba(107,114,128,0.88); }
+.portal-announcement-urgent {
+  box-shadow: 0 12px 28px rgba(245, 158, 11, 0.14), var(--shadow-soft);
+}
+@keyframes razafiAnnouncementIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes razafiAnnouncementIconPulse {
+  0%, 100% { transform: scale(1); filter: brightness(1); }
+  50% { transform: scale(1.06); filter: brightness(1.06); }
+}
+body.theme-dark .portal-announcement-icon {
+  background: rgba(255,255,255,0.10);
 }
