@@ -6631,6 +6631,26 @@ function getMvolaErrorInfo(err) {
 
 function mapMvolaInitiateError(err) {
   const info = getMvolaErrorInfo(err);
+
+  // MVola/provider temporary throttling. Example returned by MVola:
+  // { code: "900802", message: "Message throttled out", nextAccessTime: "..." }
+  // Treat this as provider-side cooldown, not as a permanent client/payment error.
+  const throttled =
+    info.code === "900802" ||
+    info.rawText.includes("message throttled") ||
+    info.rawText.includes("throttled out") ||
+    info.rawText.includes("exceeded your quota") ||
+    info.rawText.includes("nextaccesstime");
+
+  if (throttled) {
+    return {
+      type: "MVOLA_THROTTLED",
+      transient: true,
+      httpStatus: 503,
+      userMessage: "Service MVola temporairement saturé. Réessayez dans quelques instants.",
+    };
+  }
+
   const suspended =
     info.code === "303001" ||
     info.rawText.includes("suspended") ||
