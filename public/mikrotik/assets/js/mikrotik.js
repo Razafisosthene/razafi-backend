@@ -370,6 +370,48 @@
     return d === 1 ? "1 appareil" : d + " appareils";
   }
 
+  function normalizeRateLimit(raw) {
+    try {
+      const input = String(raw || "").trim();
+      if (!input) return "";
+      const cleaned = input.replace(/\s+/g, "").toUpperCase();
+      const m = cleaned.match(/^(\d+(?:\.\d+)?)([KMGT])\/(\d+(?:\.\d+)?)([KMGT])$/);
+      if (!m) return "";
+      const down = Number(m[1]);
+      const up = Number(m[3]);
+      if (!Number.isFinite(down) || !Number.isFinite(up) || down <= 0 || up <= 0) return "";
+      const fmt = (num, unit) => {
+        const rounded = Math.round(num * 100) / 100;
+        const txt = Number.isInteger(rounded) ? String(Math.trunc(rounded)) : String(rounded).replace(/\.0+$/, "");
+        return txt + unit;
+      };
+      return `${fmt(down, m[2])}/${fmt(up, m[4])}`;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function formatSpeedFromRateLimit(raw) {
+    const normalized = normalizeRateLimit(raw);
+    if (!normalized) return "";
+    const first = normalized.split("/")[0] || "";
+    const m = first.match(/^(\d+(?:\.\d+)?)([KMGT])$/i);
+    if (!m) return "";
+    let mbps = Number(m[1]);
+    const unit = String(m[2] || "").toUpperCase();
+    if (unit === "K") mbps = mbps / 1024;
+    if (unit === "G") mbps = mbps * 1024;
+    if (unit === "T") mbps = mbps * 1024 * 1024;
+    if (!Number.isFinite(mbps) || mbps <= 0) return "";
+    const rounded = mbps >= 10 ? Math.round(mbps) : Math.round(mbps * 10) / 10;
+    const txt = Number.isInteger(rounded) ? String(Math.trunc(rounded)) : String(rounded);
+    return `${txt} Mbps`;
+  }
+
+  function getPlanSpeedHuman(plan) {
+    return String(plan?.speed_human || "").trim() || formatSpeedFromRateLimit(plan?.mikrotik_rate_limit);
+  }
+
 
   // -------- Smart plan UX (visible plans only) --------
   // UX goal:
@@ -791,6 +833,8 @@
   const planNameEl = $("plan-name");
   const planDurationEl = $("plan-duration");
   const planDataTotalEl = $("plan-data-total");
+  const planSpeedEl = $("plan-speed");
+  const rowPlanSpeed = document.getElementById("row-plan-speed");
   const planMaxDevicesEl = $("plan-max-devices");
   const expiresAtEl = $("expires-at");
   const dataUsedEl = $("data-used");
@@ -955,6 +999,7 @@
       ? "Illimité"
       : (receipt.data_mb !== null && receipt.data_mb !== undefined ? formatData(Number(receipt.data_mb)) : "—");
     const devices = receipt.devices ? formatDevices(Number(receipt.devices)) : "—";
+    const speed = receipt.speed_human || formatSpeedFromRateLimit(receipt.mikrotik_rate_limit);
     const price = (receipt.price_ar !== null && receipt.price_ar !== undefined && receipt.price_ar !== "")
       ? `${receipt.price_ar} Ar`
       : "";
@@ -966,6 +1011,7 @@
       <div><strong>Forfait :</strong> ${escapeHtml(name)} ${price ? `(${escapeHtml(price)})` : ""}</div>
       <div><strong>Durée :</strong> ${escapeHtml(duration)}</div>
       <div><strong>Données :</strong> ${escapeHtml(data)}</div>
+      ${speed ? `<div><strong>Vitesse max :</strong> ${escapeHtml(speed)}</div>` : ""}
       <div><strong>Appareils :</strong> ${escapeHtml(devices)}</div>
       ${code ? `<div style="margin-top:6px;"><strong>Code :</strong> <span style="letter-spacing:1px;">${escapeHtml(code)}</span></div>` : ""}
     `;
@@ -1279,6 +1325,9 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
     setText(planDurationEl, durMin != null ? formatDuration(Number(durMin)) : (plan.duration_human || ""));
     const unlimited = !!plan.unlimited || (String(plan.data_total_human || "").toLowerCase().includes("illimit"));
     setText(planDataTotalEl, unlimited ? "Illimité" : (plan.data_total_human || ""));
+    const speedHuman = String(plan.speed_human || "").trim() || formatSpeedFromRateLimit(plan.mikrotik_rate_limit);
+    if (rowPlanSpeed) rowPlanSpeed.classList.toggle("hidden", !speedHuman);
+    setText(planSpeedEl, speedHuman || "—");
     setText(planMaxDevicesEl, plan.max_devices ?? plan.maxDevices ?? "—");
 
     // Public UX: hide irrelevant rows instead of showing empty "—" values.
@@ -1819,6 +1868,49 @@ function submitToLoginUrl(code, ev) {
   let poolContext = { pool_name: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
   let poolIsFull = false;
 
+  // -------- Portal announcement (per pool, controlled from admin) --------
+  const ANNOUNCEMENT_TYPES = {
+    important: { title: "Information importante", icon: "⚠️" },
+    promotion: { title: "Offre spéciale", icon: "🎁" },
+    information: { title: "Information", icon: "ℹ️" },
+    maintenance: { title: "Maintenance", icon: "🔧" },
+  };
+
+  function normalizeAnnouncementType(type) {
+    const t = String(type || "information").trim().toLowerCase();
+    return ANNOUNCEMENT_TYPES[t] ? t : "information";
+  }
+
+  function renderPortalAnnouncement(announcement) {
+    try {
+      const card = document.getElementById("portalAnnouncementCard");
+      if (!card) return;
+
+      const rawMessage = String(announcement?.message || "").trim();
+      const enabled = announcement?.enabled === true || announcement?.enabled === "true";
+
+      if (!enabled || !rawMessage) {
+        card.classList.add("hidden");
+        return;
+      }
+
+      const type = normalizeAnnouncementType(announcement?.type);
+      const priority = String(announcement?.priority || "normal").trim().toLowerCase() === "urgent" ? "urgent" : "normal";
+      const cfg = ANNOUNCEMENT_TYPES[type] || ANNOUNCEMENT_TYPES.information;
+
+      card.className = `portal-announcement portal-announcement-${type} ${priority === "urgent" ? "portal-announcement-urgent" : ""}`.trim();
+      const iconEl = document.getElementById("portalAnnouncementIcon");
+      const titleEl = document.getElementById("portalAnnouncementTitle");
+      const msgEl = document.getElementById("portalAnnouncementMessage");
+
+      if (iconEl) iconEl.textContent = cfg.icon;
+      if (titleEl) titleEl.textContent = cfg.title;
+      if (msgEl) msgEl.textContent = rawMessage;
+
+      card.classList.remove("hidden");
+    } catch (_) {}
+  }
+
   const _uiEls = {
     accessMsg: document.getElementById("accessMsg"),
     noVoucherMsg: document.getElementById("noVoucherMsg"),
@@ -1846,8 +1938,6 @@ function submitToLoginUrl(code, ev) {
     speed: document.getElementById("netSpeed"),
   };
 
-  // Fixed for all users (per your requirement)
-  const MAX_SPEED_MBPS = 10;
   const _netCanAnimate = false; // animation disabled by request
 function saturationLabel(pct) {
     if (!Number.isFinite(pct)) return { text: "—", level: "low" };
@@ -1931,7 +2021,7 @@ function saturationLabel(pct) {
 
     if (_netEls.poolName) _netEls.poolName.textContent = name;
     if (_netEls.statusText) _netEls.statusText.textContent = label.text;
-    if (_netEls.speed) _netEls.speed.textContent = `${MAX_SPEED_MBPS} Mbps`;
+    if (_netEls.speed) _netEls.speed.textContent = "Selon le plan choisi";
     renderCapacityText();
 
     // Unknown percent: keep placeholder and bar at 0 (fail-open)
@@ -2175,6 +2265,7 @@ function saturationLabel(pct) {
 
       if (!r.ok || !j?.ok) throw new Error(j?.error || "portal_status_failed");
       applyPortalStatus(j);
+      renderPortalAnnouncement(j.portal_announcement);
       return true;
     } catch (e) {
       console.warn("[RAZAFI] portal status fetch failed", e?.message || e);
@@ -2191,6 +2282,7 @@ function saturationLabel(pct) {
       : (Number(plan.duration_hours) || 0) * 60;
     const dataMb = plan.data_mb; // may be null for unlimited
     const maxDevices = Number(plan.max_devices) || 1;
+    const speedHuman = getPlanSpeedHuman(plan);
 
     const isUnlimited = (plan.data_mb === null || plan.data_mb === undefined);
     const familyClass = isUnlimited ? "plan-unlimited" : "plan-limited";
@@ -2201,7 +2293,8 @@ function saturationLabel(pct) {
       : "";
     const ctaText = uiMeta.cta || "Choisir";
     const line1 = `⏳ Durée: ${formatDuration(durationMinutes)} • 📊 Data: ${formatData(dataMb)}`;
-    const line2 = `🔌 ${formatDevices(maxDevices)}`;
+    const line2 = speedHuman ? `🚀 Vitesse max : ${speedHuman}` : "";
+    const line3 = `🔌 ${formatDevices(maxDevices)}`;
 
     return `
       <div class="card plan-card ${familyClass} ${variantClass} ${roleClass}" 
@@ -2212,6 +2305,8 @@ function saturationLabel(pct) {
            data-plan-data="${(dataMb === null || dataMb === undefined) ? "" : escapeHtml(String(dataMb))}"
            data-plan-unlimited="${isUnlimited ? "1" : "0"}"
            data-plan-devices="${escapeHtml(String(maxDevices))}"
+           data-plan-speed="${escapeHtml(speedHuman)}"
+           data-plan-rate-limit="${escapeHtml(normalizeRateLimit(plan.mikrotik_rate_limit))}"
            data-plan-ui-role="${escapeHtml(String(uiMeta.role || "neutral"))}"
            data-plan-recommended="${uiMeta.isRecommended ? "1" : "0"}"
            data-plan-free-test="${uiMeta.isFreeTest ? "1" : "0"}">
@@ -2219,7 +2314,8 @@ function saturationLabel(pct) {
         <h4>${escapeHtml(name)}</h4>
         <p class="price">${price}</p>
         <p class="plan-meta">${line1}</p>
-        <p class="plan-devices">${line2}</p>
+        ${line2 ? `<p class="plan-speed">${escapeHtml(line2)}</p>` : ""}
+        <p class="plan-devices">${line3}</p>
 
         <button class="choose-plan-btn">${escapeHtml(ctaText)}</button>
 
@@ -2304,6 +2400,8 @@ function saturationLabel(pct) {
 
       if (!res.ok) throw new Error(data?.error || "Erreur chargement plans");
 
+      renderPortalAnnouncement(data.portal_announcement);
+
       const plans = data.plans || [];
       if (!plans.length) {
         plansGrid.innerHTML = `<p class="muted small">Aucun plan disponible pour le moment.</p>`;
@@ -2371,6 +2469,7 @@ function saturationLabel(pct) {
     const dataMb = card.getAttribute("data-plan-data");
     const isUnlimited = card.getAttribute("data-plan-unlimited") === "1";
     const devices = card.getAttribute("data-plan-devices") || "1";
+    const speed = card.getAttribute("data-plan-speed") || "";
 
     const price = formatAr(priceAr);
     const duration = formatDuration(Number(durationM));
@@ -2382,6 +2481,7 @@ function saturationLabel(pct) {
       <div class="summary-row"><span>Prix</span><strong>${escapeHtml(price)}</strong></div>
       <div class="summary-row"><span>Durée</span><strong>${escapeHtml(duration)}</strong></div>
       <div class="summary-row"><span>Data</span><strong>${escapeHtml(data)}</strong></div>
+      ${speed ? `<div class="summary-row"><span>Vitesse max</span><strong>${escapeHtml(speed)}</strong></div>` : ""}
       <div class="summary-row"><span>Appareils</span><strong>${escapeHtml(dev)}</strong></div>
     `;
   }
@@ -2684,6 +2784,8 @@ function bindPlanHandlers() {
                 const dataMb = (dataStr === "" ? null : Number(dataStr));
                 const isUnlimited = (card.getAttribute("data-plan-unlimited") || "0") === "1";
                 const maxDevices = Number(card.getAttribute("data-plan-devices") || "1") || 1;
+                const speedHuman = card.getAttribute("data-plan-speed") || "";
+                const rateLimit = card.getAttribute("data-plan-rate-limit") || "";
                 receiptDraft = {
                   id: planId || null,
                   name: planName,
@@ -2692,6 +2794,8 @@ function bindPlanHandlers() {
                   data_mb: isUnlimited ? null : (Number.isFinite(dataMb) ? dataMb : null),
                   unlimited: isUnlimited,
                   devices: maxDevices,
+                  speed_human: speedHuman || null,
+                  mikrotik_rate_limit: rateLimit || null,
                   at: Date.now(),
                 };
               } catch (_) {}
@@ -2754,7 +2858,7 @@ function bindPlanHandlers() {
                   await refreshPortalAfterNewCode({
                     phone: cleaned,
                     code: freeCode,
-                    receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices } : null,
+                    receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices, speed_human: receiptDraft.speed_human, mikrotik_rate_limit: receiptDraft.mikrotik_rate_limit } : null,
                   });
                   showToast("🎉 Code gratuit généré ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
                   return;
@@ -2780,7 +2884,7 @@ function bindPlanHandlers() {
               await refreshPortalAfterNewCode({
                 phone: cleaned,
                 code,
-                receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices } : null,
+                receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices, speed_human: receiptDraft.speed_human, mikrotik_rate_limit: receiptDraft.mikrotik_rate_limit } : null,
               });
               showToast("🎉 Code reçu ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
             } catch (e) {

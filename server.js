@@ -1,4 +1,4 @@
-// RAZAFI Backend - All APs, server fixed 10M per user Edition
+// RAZAFI Backend - All APs, per-plan MikroTik speed Edition
 // ---------------------------------------------------------------------------
 
 import express from "express";
@@ -160,6 +160,30 @@ const ADMIN_COOKIE_NAME = "admin_session";
 
 // Global default support phone (used when pool has no contact_phone)
 const DEFAULT_SUPPORT_PHONE = process.env.DEFAULT_SUPPORT_PHONE || "038 75 00 592";
+
+// Portal announcement fields (per pool, optional UX feature)
+const POOL_ANNOUNCEMENT_SELECT = "portal_announcement_enabled,portal_announcement_type,portal_announcement_message,portal_announcement_priority";
+
+function normalizePortalAnnouncementType(value) {
+  const v = String(value || "information").trim().toLowerCase();
+  return ["important", "promotion", "information", "maintenance"].includes(v) ? v : "information";
+}
+
+function normalizePortalAnnouncementPriority(value) {
+  const v = String(value || "normal").trim().toLowerCase();
+  return ["normal", "urgent"].includes(v) ? v : "normal";
+}
+
+function serializePortalAnnouncement(poolRow) {
+  const message = String(poolRow?.portal_announcement_message || "").trim();
+  const enabled = poolRow?.portal_announcement_enabled === true;
+  return {
+    enabled: !!(enabled && message),
+    type: normalizePortalAnnouncementType(poolRow?.portal_announcement_type),
+    priority: normalizePortalAnnouncementPriority(poolRow?.portal_announcement_priority),
+    message: enabled ? message : "",
+  };
+}
 const adminCookieOptions = () => ({
   httpOnly: true,
   secure: IS_PROD, // ✅ works in prod HTTPS + local dev HTTP
@@ -4539,7 +4563,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     if (nas_id) {
       const { data: poolRow, error: poolRowErr } = await supabase
         .from("internet_pools")
-        .select("id,name,system,radius_nas_id")
+        .select(`id,name,system,radius_nas_id,${POOL_ANNOUNCEMENT_SELECT}`)
         .eq("radius_nas_id", nas_id)
         .maybeSingle();
 
@@ -4578,7 +4602,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     if (!pool) {
       const { data: poolDb, error: poolErr } = await supabase
         .from("internet_pools")
-        .select("id,name,system,radius_nas_id")
+        .select(`id,name,system,radius_nas_id,${POOL_ANNOUNCEMENT_SELECT}`)
         .eq("id", pool_id)
         .maybeSingle();
 
@@ -4597,7 +4621,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     // 3) Return Mikrotik plans for this pool
     const { data: plans, error: plansErr } = await supabase
       .from("plans")
-      .select("id,name,price_ar,duration_hours,duration_minutes,data_mb,max_devices,is_active,is_visible,sort_order,updated_at,pool_id,system,auto_hide_when_limit_reached,sales_limit")
+      .select("id,name,price_ar,duration_hours,duration_minutes,data_mb,max_devices,is_active,is_visible,sort_order,updated_at,pool_id,system,mikrotik_rate_limit,auto_hide_when_limit_reached,sales_limit")
       .eq("is_active", true)
       .eq("is_visible", true)
       .eq("system", "mikrotik")
@@ -4660,6 +4684,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
       nas_id,
       pool_id,
       pool_name: pool?.name ?? null,
+      portal_announcement: serializePortalAnnouncement(pool),
       plans: visiblePlans || [],
     });
   } catch (e) {
@@ -4691,6 +4716,26 @@ app.get("/api/portal/status", async (req, res) => {
     const voucher_code = String(voucher_code_raw || "").trim() || null;
 
     const nas_id = String(req.query.nas_id || req.query.nasId || req.query.nas || "").trim() || null;
+
+    async function loadPortalAnnouncement() {
+      try {
+        if (!nas_id) return serializePortalAnnouncement(null);
+        const { data: poolRow, error: poolErr } = await supabase
+          .from("internet_pools")
+          .select(POOL_ANNOUNCEMENT_SELECT)
+          .eq("radius_nas_id", nas_id)
+          .maybeSingle();
+        if (poolErr) {
+          console.error("PORTAL ANNOUNCEMENT LOAD ERROR", poolErr);
+          return serializePortalAnnouncement(null);
+        }
+        return serializePortalAnnouncement(poolRow);
+      } catch (_) {
+        return serializePortalAnnouncement(null);
+      }
+    }
+
+    const portal_announcement = await loadPortalAnnouncement();
 
     if (!client_mac) {
       return res.status(400).json({ ok: false, error: "client_mac_required" });
@@ -4734,6 +4779,7 @@ app.get("/api/portal/status", async (req, res) => {
         purchase_lock: false,
         can_use: false,
         contact_phone: supportPhone,
+        portal_announcement,
         ui: {
           badge: { tone: "none", label: "AUCUN CODE", icon: "ℹ️" },
           toast_on_plan_click: ""
@@ -4840,7 +4886,7 @@ app.get("/api/portal/status", async (req, res) => {
     if (plan_id) {
       const { data: p, error: perr } = await supabase
         .from("plans")
-        .select("id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices,pool_id,system,is_active,is_visible,auto_hide_when_limit_reached,sales_limit")
+        .select("id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices,pool_id,system,mikrotik_rate_limit,is_active,is_visible,auto_hide_when_limit_reached,sales_limit")
         .eq("id", plan_id)
         .maybeSingle();
       if (!perr) planRow = p || null;
@@ -4922,7 +4968,9 @@ app.get("/api/portal/status", async (req, res) => {
         duration_minutes: durMin,
         max_devices: planRow?.max_devices ?? null,
         unlimited,
-        data_total_human: unlimited ? "Illimité" : (planDataTotalHuman || null)
+        data_total_human: unlimited ? "Illimité" : (planDataTotalHuman || null),
+        mikrotik_rate_limit: normalizeMikrotikRateLimit(planRow?.mikrotik_rate_limit) || null,
+        speed_human: mikrotikRateLimitToSpeedHuman(planRow?.mikrotik_rate_limit)
       },
       session: {
         created_at: row.created_at || null,
@@ -4943,6 +4991,7 @@ app.get("/api/portal/status", async (req, res) => {
       purchase_lock,
       can_use,
       contact_phone: supportPhone,
+      portal_announcement,
       ui: {
         badge,
         toast_on_plan_click
@@ -5614,7 +5663,7 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
 
     let query = supabase
       .from("internet_pools")
-      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id", { count: "exact" });
+      .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`, { count: "exact" });
 
     // 🔐 Pool scoping (server-side)
     if (!req.admin?.is_superadmin) {
@@ -5690,7 +5739,7 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
     const { data, error } = await supabase
       .from("internet_pools")
       .insert(payload)
-      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id")
+      .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -5796,6 +5845,29 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       updates.owner_admin_user_id = owner_admin_user_id || null;
     }
 
+
+    // Portal announcement (per-pool message shown on captive portal)
+    const hasPortalAnnouncementEnabled = Object.prototype.hasOwnProperty.call(req.body || {}, "portal_announcement_enabled");
+    if (hasPortalAnnouncementEnabled) {
+      updates.portal_announcement_enabled = req.body.portal_announcement_enabled === true || req.body.portal_announcement_enabled === "true" || req.body.portal_announcement_enabled === 1 || req.body.portal_announcement_enabled === "1";
+    }
+
+    const hasPortalAnnouncementType = Object.prototype.hasOwnProperty.call(req.body || {}, "portal_announcement_type");
+    if (hasPortalAnnouncementType) {
+      updates.portal_announcement_type = normalizePortalAnnouncementType(req.body.portal_announcement_type);
+    }
+
+    const hasPortalAnnouncementMessage = Object.prototype.hasOwnProperty.call(req.body || {}, "portal_announcement_message");
+    if (hasPortalAnnouncementMessage) {
+      const msg = String(req.body.portal_announcement_message || "").replace(/\r\n/g, "\n").trim();
+      updates.portal_announcement_message = msg ? msg.slice(0, 500) : null;
+    }
+
+    const hasPortalAnnouncementPriority = Object.prototype.hasOwnProperty.call(req.body || {}, "portal_announcement_priority");
+    if (hasPortalAnnouncementPriority) {
+      updates.portal_announcement_priority = normalizePortalAnnouncementPriority(req.body.portal_announcement_priority);
+    }
+
     // Safety: don't allow clearing mikrotik_ip on an existing mikrotik pool
     if (hasMikrotikIp && updates.mikrotik_ip === null) {
       const { data: curPool, error: curErr } = await supabase
@@ -5816,7 +5888,7 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       .from("internet_pools")
       .update(updates)
       .eq("id", id)
-      .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id")
+      .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -5962,6 +6034,7 @@ if (system === "mikrotik" && !pool_id) {
     const sales_limit = (b.sales_limit === undefined || b.sales_limit === null || String(b.sales_limit).trim() === "")
       ? null
       : toInt(b.sales_limit);
+    const mikrotik_rate_limit = normalizeMikrotikRateLimit(b.mikrotik_rate_limit);
 
     // validations (simple, strict)
     if (!isNonEmptyString(name)) return res.status(400).json({ error: "name required" });
@@ -5979,6 +6052,9 @@ if (data_mb !== null && data_mb < 0) return res.status(400).json({ error: "data_
     if (max_devices === null || max_devices <= 0) return res.status(400).json({ error: "max_devices invalid" });
     if (auto_hide_when_limit_reached !== null && auto_hide_when_limit_reached !== true && auto_hide_when_limit_reached !== false) return res.status(400).json({ error: "auto_hide_when_limit_reached invalid" });
     if (sales_limit !== null && (!Number.isFinite(Number(sales_limit)) || sales_limit <= 0)) return res.status(400).json({ error: "sales_limit invalid" });
+    if (b.mikrotik_rate_limit !== undefined && String(b.mikrotik_rate_limit || "").trim() && !mikrotik_rate_limit) {
+      return res.status(400).json({ error: "mikrotik_rate_limit invalid" });
+    }
 
     
     // Duration normalization
@@ -6011,6 +6087,7 @@ const payload = {
       sort_order: sort_order ?? 0,
       auto_hide_when_limit_reached: auto_hide_when_limit_reached ?? false,
       sales_limit,
+      mikrotik_rate_limit: system === "mikrotik" ? (mikrotik_rate_limit || null) : null,
     };
 
     const { data, error } = await supabase
@@ -6040,7 +6117,7 @@ app.patch("/api/admin/plans/:id", requireAdmin, async (req, res) => {
 // Load existing plan to enforce invariants (system is immutable)
 const { data: existingPlan, error: existingErr } = await supabase
   .from("plans")
-  .select("id, system, pool_id")
+  .select("id, system, pool_id, mikrotik_rate_limit")
   .eq("id", id)
   .maybeSingle();
 
@@ -6169,6 +6246,20 @@ if (b.data_mb !== undefined) {
         const v = toInt(b.sales_limit);
         if (v === null || v <= 0) return res.status(400).json({ error: "sales_limit invalid" });
         patch.sales_limit = v;
+      }
+    }
+
+    if (b.mikrotik_rate_limit !== undefined) {
+      const rawRate = String(b.mikrotik_rate_limit || "").trim();
+      if (!rawRate) {
+        patch.mikrotik_rate_limit = null;
+      } else {
+        const rate = normalizeMikrotikRateLimit(rawRate);
+        if (!rate) return res.status(400).json({ error: "mikrotik_rate_limit invalid" });
+        if ((existingPlan.system || "portal") !== "mikrotik") {
+          return res.status(400).json({ error: "mikrotik_rate_limit_not_allowed" });
+        }
+        patch.mikrotik_rate_limit = rate;
       }
     }
 
@@ -6540,6 +6631,26 @@ function getMvolaErrorInfo(err) {
 
 function mapMvolaInitiateError(err) {
   const info = getMvolaErrorInfo(err);
+
+  // MVola/provider temporary throttling. Example returned by MVola:
+  // { code: "900802", message: "Message throttled out", nextAccessTime: "..." }
+  // Treat this as provider-side cooldown, not as a permanent client/payment error.
+  const throttled =
+    info.code === "900802" ||
+    info.rawText.includes("message throttled") ||
+    info.rawText.includes("throttled out") ||
+    info.rawText.includes("exceeded your quota") ||
+    info.rawText.includes("nextaccesstime");
+
+  if (throttled) {
+    return {
+      type: "MVOLA_THROTTLED",
+      transient: true,
+      httpStatus: 503,
+      userMessage: "Service MVola temporairement saturé. Réessayez dans quelques instants.",
+    };
+  }
+
   const suspended =
     info.code === "303001" ||
     info.rawText.includes("suspended") ||
@@ -7927,7 +8038,61 @@ const RADIUS_ALLOWED_IPS = (process.env.RADIUS_ALLOWED_IPS || "159.89.16.34")
   .filter(Boolean);
 
 const RADIUS_API_SECRET = process.env.RADIUS_API_SECRET || ""; // set this in Render env (recommended)
-const FIXED_MIKROTIK_RATE_LIMIT = String(process.env.FIXED_MIKROTIK_RATE_LIMIT || "10M/10M").trim() || "10M/10M";
+// Emergency fallback used only when a plan has no mikrotik_rate_limit set.
+// Keep both env names supported for backward compatibility.
+const DEFAULT_MIKROTIK_RATE_LIMIT = normalizeMikrotikRateLimit(
+  process.env.MIKROTIK_RATE_LIMIT || process.env.FIXED_MIKROTIK_RATE_LIMIT || "10M/10M"
+) || "10M/10M";
+
+function normalizeMikrotikRateLimit(raw) {
+  try {
+    const s0 = String(raw || "").trim();
+    if (!s0) return "";
+
+    // Accept admin-friendly formats like "3M/ 3 M", "3 m / 3m", "512K/2M".
+    const s = s0.replace(/\s+/g, "").toUpperCase();
+    const m = s.match(/^(\d+(?:\.\d+)?)([KMGT])\/(\d+(?:\.\d+)?)([KMGT])$/);
+    if (!m) return "";
+
+    const down = Number(m[1]);
+    const up = Number(m[3]);
+    if (!Number.isFinite(down) || !Number.isFinite(up) || down <= 0 || up <= 0) return "";
+
+    const fmt = (num, unit) => {
+      const rounded = Math.round(num * 100) / 100;
+      const txt = Number.isInteger(rounded) ? String(Math.trunc(rounded)) : String(rounded).replace(/\.0+$/, "");
+      return txt + unit;
+    };
+
+    return `${fmt(down, m[2])}/${fmt(up, m[4])}`;
+  } catch (_) {
+    return "";
+  }
+}
+
+function mikrotikRateLimitToSpeedHuman(raw) {
+  try {
+    const norm = normalizeMikrotikRateLimit(raw);
+    if (!norm) return null;
+    const first = norm.split("/")[0] || "";
+    const m = first.match(/^(\d+(?:\.\d+)?)([KMGT])$/i);
+    if (!m) return null;
+    const n = Number(m[1]);
+    const unit = String(m[2] || "").toUpperCase();
+    if (!Number.isFinite(n) || n <= 0) return null;
+
+    let mbps = n;
+    if (unit === "K") mbps = n / 1024;
+    if (unit === "G") mbps = n * 1024;
+    if (unit === "T") mbps = n * 1024 * 1024;
+
+    const rounded = mbps >= 10 ? Math.round(mbps) : Math.round(mbps * 10) / 10;
+    const txt = Number.isInteger(rounded) ? String(Math.trunc(rounded)) : String(rounded);
+    return `${txt} Mbps`;
+  } catch (_) {
+    return null;
+  }
+}
 
 /**
  * Normalize IP strings that may come as:
@@ -8519,7 +8684,7 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
           // NORMAL MODE: use plan duration
           const { data: planRow, error: pErr } = await supabase
             .from("plans")
-            .select("duration_minutes,duration_hours,data_mb")
+            .select("duration_minutes,duration_hours,data_mb,mikrotik_rate_limit")
             .eq("id", session.plan_id)
             .maybeSingle();
 
@@ -8652,7 +8817,7 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
       try {
         const { data: p2 } = await supabase
           .from("plans")
-          .select("data_mb")
+          .select("data_mb,mikrotik_rate_limit")
           .eq("id", session.plan_id)
           .maybeSingle();
         planMeta = p2 || null;
@@ -8746,8 +8911,9 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
     if (effectiveTotalBytes !== null) {
       replyExtra["reply:Mikrotik-Total-Limit"] = effectiveTotalBytes;
     }
-    if (FIXED_MIKROTIK_RATE_LIMIT) {
-      replyExtra["reply:Mikrotik-Rate-Limit"] = FIXED_MIKROTIK_RATE_LIMIT;
+    const selectedRateLimit = normalizeMikrotikRateLimit(planMeta?.mikrotik_rate_limit) || DEFAULT_MIKROTIK_RATE_LIMIT;
+    if (selectedRateLimit) {
+      replyExtra["reply:Mikrotik-Rate-Limit"] = selectedRateLimit;
     }
 
     return sendAccept(username, remainingSeconds, {
@@ -8762,6 +8928,7 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
         remaining_seconds: remainingSeconds,
         expires_at: session.expires_at,
         total_bytes: effectiveTotalBytes,
+        selected_rate_limit: replyExtra["reply:Mikrotik-Rate-Limit"] || null,
         is_bonus_session: isBonusSession
       }
     }, replyExtra);
