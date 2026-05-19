@@ -8,13 +8,14 @@
 </head>
 <body>
   <div class="login-container">
-    <div class="card" style="max-width: 1100px; width: 96%;">
+    <div class="card rz-dashboard-shell" style="max-width: 1100px; width: 96%;">
 
       <!-- TOP BAR -->
       <div class="topbar">
         <div class="title">
-          <h1 style="margin:0;">Admin Dashboard</h1>
-          <div id="me" class="subtitle">Checking session...</div>
+          <h1 class="rz-hero-title">RAZAFI Dashboard</h1>
+          <div class="rz-hero-subtitle">Vue rapide des pools, clients connectés et capacité réseau.</div>
+          <div id="me" class="rz-owner-chip">Checking session...</div>
         </div>
 
         <!-- legacy nav kept hidden to avoid breaking old JS assumptions -->
@@ -29,10 +30,9 @@
         </div>
       </div>
 
-      <hr style="opacity:.2; margin:18px 0;" />
 
       <!-- READ-ONLY POOLS OVERVIEW (Tanaza truth) -->
-      <div class="sticky-bar" style="margin-top:14px;">
+      <div class="sticky-bar rz-dashboard-tools">
         <div class="filters">
           <input id="q" class="filter-search" placeholder="Search pool / AP..." />
           <select id="poolFilter" class="filter-search" style="max-width:240px;">
@@ -42,8 +42,8 @@
         </div>
       </div>
 
-      <div id="poolsContainer" style="margin-top:12px;"></div>
-      <div id="status" style="margin-top:14px; opacity:.85;"></div>
+      <div id="poolsContainer" class="rz-pools-grid"></div>
+      <div id="status" class="rz-dashboard-status"></div>
     </div>
   </div>
 
@@ -85,14 +85,16 @@
     function pctBar(pctVal) {
       if (pctVal === null || pctVal === undefined || Number.isNaN(Number(pctVal))) return "—";
       const p = Math.max(0, Math.min(100, Number(pctVal)));
-      const color = (p >= 90) ? "rgba(255, 80, 80, .90)"
-        : (p >= 70) ? "rgba(255, 196, 0, .90)"
-        : "rgba(80, 200, 120, .90)";
+      const tone = p >= 90 ? "danger" : (p >= 70 ? "warn" : "ok");
+      const toneClass = tone === "danger" ? "danger" : (tone === "warn" ? "warn" : "");
       return `
-        <div style="min-width:170px;">
-          <div style="opacity:.85; font-size:12px; margin-bottom:6px;">${esc(Math.round(p))}%</div>
-          <div style="height:10px; border-radius:999px; background:rgba(0,0,0,.08); overflow:hidden;">
-            <div style="height:10px; width:${esc(p)}%; background:${color};"></div>
+        <div class="rz-progress-block">
+          <div class="rz-progress-top">
+            <span>Utilisation</span>
+            <span>${esc(Math.round(p))}%</span>
+          </div>
+          <div class="rz-progress-track">
+            <div class="rz-progress-fill ${toneClass}" style="width:${esc(p)}%;"></div>
           </div>
         </div>
       `;
@@ -229,11 +231,7 @@
         });
 
         if (!filteredPools.length) {
-          container.innerHTML = `
-            <div class="table-wrap">
-              <div style="padding:12px; opacity:.75;">No pools found.</div>
-            </div>
-          `;
+          container.innerHTML = `<div class="rz-empty-card">No pools found.</div>`;
           return;
         }
 
@@ -258,68 +256,67 @@
 
           const apListHtml = aps.length
             ? `
-              <div style="margin-top:10px;">
-                <div style="opacity:.75; font-size:12px; margin-bottom:8px;">APs</div>
-                <div class="table-wrap" style="margin-top:0;">
-                  <table style="width:100%; border-collapse:collapse;">
-                    <thead>
-                      <tr style="text-align:left; border-bottom:1px solid rgba(0,0,0,0.08);">
-                        <th style="padding:10px;">AP</th>
-                        <th style="padding:10px; width:90px;">Status</th>
-                        <th style="padding:10px;">Clients (Tanaza)</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${aps.map(a => {
-                        const mac = String(a.ap_mac || "");
-                        const label = a.tanaza_label || mac || "—";
-                        const online = isOnline(a);
-                        const connected = apConnected(a);
-                        return `
-                          <tr style="border-top:1px solid rgba(0,0,0,.06); ${online ? "" : "opacity:.6;"}">
-                            <td style="padding:10px;">
-                              <div style="font-weight:700;">${esc(label)}</div>
-                              <div style="opacity:.7; font-size:12px; margin-top:6px;">${esc(mac)}</div>
-                            </td>
-                            <td style="padding:10px; text-align:center;">
-                              <span class="ap-dot ${apStatusClass(a)}"></span>
-                            </td>
-                            <td style="padding:10px; font-weight:800;">${esc(connected)}</td>
-                          </tr>
-                        `;
-                      }).join("")}
-                    </tbody>
-                  </table>
+              <div class="rz-ap-section">
+                <div class="rz-ap-title">
+                  <span>APs</span>
+                  <span>${esc(aps.length)} total</span>
+                </div>
+                <div class="rz-ap-list">
+                  ${aps.map(a => {
+                    const mac = String(a.ap_mac || "");
+                    const label = a.tanaza_label || mac || "—";
+                    const online = isOnline(a);
+                    const connected = apConnected(a);
+                    return `
+                      <div class="rz-ap-row ${online ? "" : "is-offline"}">
+                        <div class="rz-ap-main">
+                          <div class="rz-ap-name">${esc(label)}</div>
+                          <div class="rz-ap-mac">${esc(mac)}</div>
+                        </div>
+                        <div class="rz-ap-side">
+                          <span class="ap-dot ${apStatusClass(a)}"></span>
+                          <span>${esc(connected)}</span>
+                        </div>
+                      </div>
+                    `;
+                  }).join("")}
                 </div>
               </div>
             `
-            : `<div style="margin-top:10px; opacity:.7; font-size:13px;">No APs assigned to this pool.</div>`;
+            : `<div class="rz-ap-section"><div class="rz-empty-card">No APs assigned to this pool.</div></div>`;
 
+          const saturated = stats?.is_saturated || (percent !== null && percent >= 90);
+          const displayPercent = percent === null ? null : Math.max(0, Math.min(100, Number(percent)));
           return `
-            <div class="table-wrap" style="margin-bottom:14px;">
-              <div style="padding:12px;">
-                <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:flex-start;">
-                  <div>
-                    <div style="font-weight:900; font-size:18px;">${esc(name)}</div>
-                    <div style="opacity:.75; font-size:12px; margin-top:6px;">ID: ${esc(pid)}</div>
-                  </div>
-
-                  <div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
-                    <div style="text-align:right;">
-                      <div style="opacity:.75; font-size:12px;">Live clients</div>
-                      <div style="font-weight:900; font-size:18px;">${esc(live)}</div>
-                    </div>
-                    <div style="text-align:right;">
-                      <div style="opacity:.75; font-size:12px;">Capacity</div>
-                      <div style="font-weight:900; font-size:18px;">${esc(cap ?? "—")}</div>
-                    </div>
-                    <div>${percent === null ? "—" : pctBar(percent)}</div>
-                  </div>
+            <article class="rz-pool-card ${saturated ? "rz-saturated" : ""}">
+              <div class="rz-pool-head">
+                <div>
+                  <div class="rz-pool-name">${esc(name)}</div>
+                  <div class="rz-pool-id" title="${esc(pid)}">ID: ${esc(pid)}</div>
                 </div>
-
-                ${apListHtml}
+                <div class="rz-pool-badge">${esc(live)}</div>
               </div>
-            </div>
+
+              <div class="rz-pool-metrics">
+                <div class="rz-metric">
+                  <div class="rz-metric-label">Live clients</div>
+                  <div class="rz-metric-value">${esc(live)}</div>
+                </div>
+                <div class="rz-metric">
+                  <div class="rz-metric-label">Capacity</div>
+                  <div class="rz-metric-value">${esc(cap ?? "—")}</div>
+                </div>
+              </div>
+
+              ${displayPercent === null ? `
+                <div class="rz-progress-block">
+                  <div class="rz-progress-top"><span>Utilisation</span><span>—</span></div>
+                  <div class="rz-progress-track"><div class="rz-progress-fill" style="width:0%;"></div></div>
+                </div>
+              ` : pctBar(displayPercent)}
+
+              ${apListHtml}
+            </article>
           `;
         }).join("");
       }
@@ -327,7 +324,7 @@
       async function load() {
         try {
           if (statusEl) statusEl.textContent = "Loading pools…";
-          container.innerHTML = `<div class="table-wrap"><div style="padding:12px;">Loading…</div></div>`;
+          container.innerHTML = `<div class="rz-loading-card">Loading…</div>`;
 
           const [allAps, pools, liveStatsByPool] = await Promise.all([
             fetchAllAps(),
@@ -354,7 +351,7 @@
           if (statusEl) statusEl.textContent = `Loaded ${pools?.length || 0} pool(s).`;
         } catch (e) {
           if (statusEl) statusEl.textContent = "";
-          container.innerHTML = `<div class="table-wrap"><div style="padding:12px; color:#d9534f;">Failed to load: ${esc(e.message || e)}</div></div>`;
+          container.innerHTML = `<div class="rz-empty-card" style="color:#d9534f;">Failed to load: ${esc(e.message || e)}</div>`;
         }
       }
 

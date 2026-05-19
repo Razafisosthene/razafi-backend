@@ -63,7 +63,7 @@
             <span class="rz-item-label">Pools</span>
           </a>
            <a class="rz-item" href="/admin/free-access.html" id="rzNavFree">
-            <span class="rz-item-label">Accès gratuit</spa
+            <span class="rz-item-label">Accès gratuit</span>
           </a>
           <a class="rz-item" data-href="/admin/revenue.html" href="/admin/revenue.html">
             <span class="rz-item-label">Revenue</span>
@@ -86,9 +86,33 @@
     `;
   }
 
+
+  function buildBottomNavHTML() {
+    return `
+      <nav class="rz-bottom-nav" id="rzBottomNav" aria-label="Raccourcis admin">
+        <a class="rz-bottom-item" data-href="/admin/" href="/admin/">
+          <span class="rz-bottom-icon" aria-hidden="true">🏠</span>
+          <span>Dashboard</span>
+        </a>
+        <a class="rz-bottom-item" data-href="/admin/clients.html" href="/admin/clients.html">
+          <span class="rz-bottom-icon" aria-hidden="true">👥</span>
+          <span>Clients</span>
+        </a>
+        <a class="rz-bottom-item" data-href="/admin/revenue.html" href="/admin/revenue.html">
+          <span class="rz-bottom-icon" aria-hidden="true">💰</span>
+          <span>Revenue</span>
+        </a>
+        <a class="rz-bottom-item" data-href="/admin/plans.html" href="/admin/plans.html">
+          <span class="rz-bottom-icon" aria-hidden="true">📦</span>
+          <span>Plans</span>
+        </a>
+      </nav>
+    `;
+  }
+
   function setActiveLink() {
     const p = currentPath();
-    document.querySelectorAll(".rz-item").forEach(a => {
+    document.querySelectorAll(".rz-item, .rz-bottom-item").forEach(a => {
       const href = a.getAttribute("data-href") || a.getAttribute("href") || "";
       const active = (href === p) || (href === "/admin/" && p === "/admin/");
       a.classList.toggle("active", !!active);
@@ -190,6 +214,8 @@
     const topbar = $(".topbar");
     if (!topbar) return;
 
+    document.body.classList.add("rz-admin-shell");
+
     // Avoid double inject
     if ($("#rzNavBtn")) return;
 
@@ -202,6 +228,14 @@
 
     // Insert at the beginning of the topbar (left side)
     topbar.insertBefore(mount, topbar.firstChild);
+
+    // Add Telegram-style shortcut nav for the daily owner/superadmin pages.
+    // This is only navigation; it does not change permissions or page logic.
+    if (!$("#rzBottomNav")) {
+      const bottom = document.createElement("div");
+      bottom.innerHTML = buildBottomNavHTML();
+      document.body.appendChild(bottom.firstElementChild);
+    }
 
     bindEvents();
     ensureSessionAndFillUI();
