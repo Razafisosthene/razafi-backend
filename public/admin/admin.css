@@ -1260,3 +1260,334 @@ body.rz-admin-shell button.primary{
     font-size: 10.5px;
   }
 }
+
+
+/* ================================================================== */
+/* RAZAFI UX V2 - Premium polish only                                  */
+/* Scope: appearance/navigation only. No backend/API/permission logic.  */
+/* ================================================================== */
+
+:root{
+  --rz-blue-2:#1473ff;
+  --rz-card-shadow: 0 18px 42px rgba(15,23,42,.10);
+  --rz-card-shadow-soft: 0 10px 28px rgba(15,23,42,.08);
+}
+
+body.rz-admin-shell{
+  background:
+    radial-gradient(circle at 20% -10%, rgba(13,110,253,.16), transparent 38%),
+    radial-gradient(circle at 90% 5%, rgba(34,197,94,.10), transparent 28%),
+    linear-gradient(180deg, #f8fbff 0%, #eef5ff 48%, #f8fafc 100%);
+}
+
+body.rz-admin-shell > .login-container > .card{
+  box-shadow: none;
+  border: 0;
+  background: rgba(255,255,255,.66);
+}
+
+.rz-dashboard-shell{
+  background: transparent !important;
+}
+
+.rz-hero-title{
+  letter-spacing: -.04em;
+  color:#0f172a !important;
+}
+
+.rz-hero-subtitle{
+  max-width: 420px;
+}
+
+.rz-owner-chip{
+  display:inline-flex;
+  max-width:100%;
+  align-items:center;
+  gap:7px;
+  margin-top:10px;
+  padding:7px 10px;
+  border-radius:999px;
+  background:rgba(13,110,253,.08);
+  color:#1d4ed8;
+  font-weight:850;
+  font-size:12px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.rz-owner-chip::before{
+  content:"";
+  width:7px;
+  height:7px;
+  border-radius:999px;
+  background:#22c55e;
+  box-shadow:0 0 0 4px rgba(34,197,94,.14);
+  flex:0 0 auto;
+}
+
+/* Premium search/filter card */
+.rz-dashboard-tools{
+  border:0 !important;
+  box-shadow: var(--rz-card-shadow-soft) !important;
+  background: rgba(255,255,255,.86) !important;
+  border-radius: 30px !important;
+  padding: 16px !important;
+  margin-bottom: 10px;
+}
+.rz-dashboard-tools .filters{
+  align-items: stretch;
+}
+.rz-dashboard-tools input,
+.rz-dashboard-tools select,
+.sticky-bar input,
+.sticky-bar select{
+  height:52px;
+  border-radius:18px !important;
+  border:1px solid rgba(15,23,42,.08) !important;
+  background:rgba(248,250,252,.92) !important;
+  color:#0f172a;
+  box-shadow: inset 0 1px 2px rgba(15,23,42,.03);
+}
+.rz-dashboard-tools input:focus,
+.rz-dashboard-tools select:focus,
+.sticky-bar input:focus,
+.sticky-bar select:focus{
+  outline:none;
+  border-color:rgba(13,110,253,.35) !important;
+  box-shadow:0 0 0 4px rgba(13,110,253,.10), inset 0 1px 2px rgba(15,23,42,.03);
+}
+
+/* New clean buttons - override older browser-like border */
+.filter-btn,
+.rz-dashboard-tools button,
+button.filter-btn.primary{
+  border:0 !important;
+  outline:0 !important;
+  border-radius:18px !important;
+  box-shadow:0 10px 22px rgba(13,110,253,.18) !important;
+  font-weight:950 !important;
+  letter-spacing:-.02em;
+}
+.rz-dashboard-tools #refresh,
+button.filter-btn.primary{
+  min-height:52px;
+  padding:0 20px !important;
+  background:linear-gradient(180deg, #2382ff 0%, #0d6efd 100%) !important;
+}
+.rz-dashboard-tools #refresh::before{
+  content:"↻";
+  display:inline-block;
+  margin-right:8px;
+  font-size:18px;
+  transform: translateY(1px);
+}
+.rz-dashboard-tools #refresh:hover,
+button.filter-btn.primary:hover{
+  filter:none !important;
+  transform:translateY(-1px);
+  box-shadow:0 14px 28px rgba(13,110,253,.24) !important;
+}
+
+/* Pool cards: softer Apple-like cards */
+.rz-pools-grid{
+  gap:18px;
+}
+.rz-pool-card{
+  border:1px solid rgba(15,23,42,.06) !important;
+  border-radius:34px !important;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.97), rgba(255,255,255,.89)) !important;
+  box-shadow: var(--rz-card-shadow) !important;
+  overflow:hidden;
+}
+.rz-pool-card::before{
+  height:5px;
+  background:linear-gradient(90deg, #0d6efd 0%, #16a34a 100%);
+}
+.rz-pool-card:hover{
+  transform:translateY(-1px);
+  box-shadow:0 22px 48px rgba(15,23,42,.13) !important;
+}
+.rz-pool-head{
+  align-items:flex-start;
+}
+.rz-pool-name{
+  font-size:24px;
+  letter-spacing:-.055em;
+  color:#0b1220;
+}
+.rz-pool-id{
+  display:none !important;
+}
+.rz-pool-badge{
+  width:58px;
+  height:58px;
+  background:linear-gradient(180deg, rgba(13,110,253,.12), rgba(13,110,253,.07));
+  color:var(--rz-blue);
+  border:1px solid rgba(13,110,253,.08);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.85);
+}
+.rz-pool-badge::after{
+  content:"clients";
+  display:block;
+  font-size:9px;
+  font-weight:900;
+  color:rgba(13,110,253,.72);
+  margin-top:1px;
+  letter-spacing:-.02em;
+}
+.rz-pool-metrics{
+  gap:12px;
+  margin-top:18px;
+}
+.rz-metric{
+  border:1px solid rgba(15,23,42,.07);
+  background:rgba(248,250,252,.82);
+  border-radius:22px;
+  padding:16px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.82);
+}
+.rz-metric-label{
+  font-size:13px;
+  letter-spacing:-.02em;
+}
+.rz-metric-value{
+  font-size:32px;
+  color:#0f172a;
+}
+.rz-progress-block{
+  margin-top:20px;
+}
+.rz-progress-top{
+  font-size:13px;
+  color:#64748b;
+}
+.rz-progress-track{
+  height:12px;
+  background:rgba(15,23,42,.06);
+  box-shadow: inset 0 1px 2px rgba(15,23,42,.05);
+}
+.rz-progress-fill{
+  min-width:0;
+  background:linear-gradient(90deg, #22c55e 0%, #86efac 52%, #0d6efd 100%);
+  box-shadow:0 0 14px rgba(34,197,94,.25);
+}
+.rz-progress-fill.warn{
+  background:linear-gradient(90deg, #f59e0b, #fbbf24);
+  box-shadow:0 0 14px rgba(245,158,11,.22);
+}
+.rz-progress-fill.danger{
+  background:linear-gradient(90deg, #ef4444, #fb7185);
+  box-shadow:0 0 14px rgba(239,68,68,.22);
+}
+.rz-ap-section{
+  margin-top:20px;
+  padding-top:18px;
+}
+.rz-empty-card{
+  border-radius:24px;
+  background:rgba(248,250,252,.72);
+  border:1px dashed rgba(100,116,139,.20);
+  color:#64748b;
+  text-align:center;
+  padding:20px;
+}
+
+/* Bottom navigation V2: cleaner icons, softer Telegram/iOS feel */
+.rz-bottom-nav{
+  bottom: max(18px, calc(env(safe-area-inset-bottom) + 12px));
+  width:min(430px, calc(100vw - 26px));
+  padding:9px;
+  gap:5px;
+  border-radius:32px;
+  background:rgba(255,255,255,.86);
+  border:1px solid rgba(226,232,240,.72);
+  box-shadow:0 20px 55px rgba(15,23,42,.18), 0 6px 18px rgba(15,23,42,.08);
+  -webkit-backdrop-filter: blur(22px) saturate(1.25);
+  backdrop-filter: blur(22px) saturate(1.25);
+}
+.rz-bottom-item{
+  min-height:58px;
+  border-radius:24px;
+  color:#64748b;
+  font-size:10.5px;
+  letter-spacing:-.02em;
+}
+.rz-bottom-icon{
+  width:23px;
+  height:23px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+}
+.rz-bottom-icon svg{
+  width:22px;
+  height:22px;
+  display:block;
+}
+.rz-bottom-item.active{
+  background:linear-gradient(180deg, rgba(13,110,253,.15), rgba(13,110,253,.08));
+  color:#0d6efd;
+  box-shadow:inset 0 0 0 1px rgba(13,110,253,.12), 0 8px 18px rgba(13,110,253,.09);
+}
+.rz-bottom-item.active .rz-bottom-icon{
+  filter:drop-shadow(0 4px 7px rgba(13,110,253,.18));
+}
+
+/* Reduce content being hidden by the footer */
+#status{
+  padding-bottom: 92px;
+  color:#64748b;
+  font-weight:700;
+}
+
+@media (max-width: 700px){
+  body.rz-admin-shell > .login-container > .card{
+    padding-left:14px;
+    padding-right:14px;
+  }
+  .rz-dashboard-tools{
+    padding:14px !important;
+  }
+  .rz-dashboard-tools .filters{
+    gap:11px;
+  }
+  .rz-dashboard-tools #refresh{
+    width:100% !important;
+  }
+  .rz-pool-card{
+    padding:18px;
+    border-radius:32px !important;
+  }
+  .rz-pool-name{
+    font-size:23px;
+  }
+  .rz-pool-badge{
+    width:54px;
+    height:54px;
+  }
+  .rz-metric-value{
+    font-size:30px;
+  }
+  .rz-bottom-nav{
+    width:calc(100vw - 28px);
+  }
+}
+
+.rz-pool-status{
+  margin-top:5px;
+  color:#64748b;
+  font-size:13px;
+  font-weight:800;
+}
+.rz-pool-status::before{
+  content:"";
+  display:inline-block;
+  width:8px;
+  height:8px;
+  margin-right:7px;
+  border-radius:999px;
+  background:#22c55e;
+  box-shadow:0 0 0 4px rgba(34,197,94,.13);
+  vertical-align:middle;
+}

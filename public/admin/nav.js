@@ -91,19 +91,19 @@
     return `
       <nav class="rz-bottom-nav" id="rzBottomNav" aria-label="Raccourcis admin">
         <a class="rz-bottom-item" data-href="/admin/" href="/admin/">
-          <span class="rz-bottom-icon" aria-hidden="true">🏠</span>
+          <span class="rz-bottom-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1v-9.5Z" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
           <span>Dashboard</span>
         </a>
         <a class="rz-bottom-item" data-href="/admin/clients.html" href="/admin/clients.html">
-          <span class="rz-bottom-icon" aria-hidden="true">👥</span>
+          <span class="rz-bottom-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M16 11a4 4 0 1 0-8 0" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/><path d="M5.5 20c.7-3.2 3-5 6.5-5s5.8 1.8 6.5 5" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/><path d="M18.5 12.5c1.9.3 3.1 1.5 3.5 3.5" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/><path d="M5.5 12.5C3.6 12.8 2.4 14 2 16" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></svg></span>
           <span>Clients</span>
         </a>
         <a class="rz-bottom-item" data-href="/admin/revenue.html" href="/admin/revenue.html">
-          <span class="rz-bottom-icon" aria-hidden="true">💰</span>
+          <span class="rz-bottom-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v18" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/><path d="M17 7.5c-.9-1.2-2.4-2-4.5-2C10 5.5 8 6.8 8 8.8c0 4 9 2 9 6.6 0 2-2 3.1-4.7 3.1-2.3 0-4.1-.8-5.3-2.2" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
           <span>Revenue</span>
         </a>
         <a class="rz-bottom-item" data-href="/admin/plans.html" href="/admin/plans.html">
-          <span class="rz-bottom-icon" aria-hidden="true">📦</span>
+          <span class="rz-bottom-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 7.5h14M7 4.5h10a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-11a2 2 0 0 1 2-2Z" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 11h8M8 15h5" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></svg></span>
           <span>Plans</span>
         </a>
       </nav>
