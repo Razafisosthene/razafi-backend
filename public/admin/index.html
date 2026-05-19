@@ -38,7 +38,7 @@
           <select id="poolFilter" class="filter-search" style="max-width:240px;">
             <option value="">All pools</option>
           </select>
-          <button type="button" id="refresh" class="filter-btn primary" style="width:auto;">Refresh</button>
+          <button type="button" id="refresh" class="filter-btn primary" style="width:auto;">Actualiser</button>
         </div>
       </div>
 
@@ -69,7 +69,7 @@
     // ---------------------------------------------------------------------------
 
     const $ = (id) => document.getElementById(id);
-
+    let __initialMobilePoolScrollDone = false;
     function esc(s) {
       return String(s ?? "").replace(/[&<>"']/g, (c) => ({
         "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
@@ -148,40 +148,6 @@
       const qEl = $("q");
       const poolFilterEl = $("poolFilter");
       const refreshBtn = $("refresh");
-
-      // UX only: on mobile, center the first pool card after the first dashboard load.
-      // Runs once only, so Refresh/Search/Filter will not keep forcing the scroll position.
-      let didAutoCenterFirstPool = false;
-
-      function isMobileView() {
-        return window.matchMedia("(max-width: 700px)").matches;
-      }
-
-      function autoCenterFirstPoolOnce() {
-        if (didAutoCenterFirstPool || !isMobileView()) return;
-
-        const firstCard = container?.querySelector(".rz-pool-card");
-        if (!firstCard) return;
-
-        didAutoCenterFirstPool = true;
-
-        // Wait for browser layout/paint so the card position is accurate.
-        window.requestAnimationFrame(() => {
-          setTimeout(() => {
-            const rect = firstCard.getBoundingClientRect();
-            const absoluteTop = rect.top + window.scrollY;
-            const targetTop = Math.max(
-              0,
-              absoluteTop - ((window.innerHeight - rect.height) / 2)
-            );
-
-            window.scrollTo({
-              top: targetTop,
-              behavior: "smooth"
-            });
-          }, 180);
-        });
-      }
 
       if (!container) return;
 
@@ -353,6 +319,32 @@
             </article>
           `;
         }).join("");
+        // Auto-center first pool card on mobile (run once only)
+if (
+  !__initialMobilePoolScrollDone &&
+  window.innerWidth <= 768
+) {
+  __initialMobilePoolScrollDone = true;
+
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      const firstCard = document.querySelector(".rz-pool-card");
+
+      if (!firstCard) return;
+
+      const rect = firstCard.getBoundingClientRect();
+      const absoluteTop = window.scrollY + rect.top;
+
+      const offset = 140; // keep title visible below filters
+
+      window.scrollTo({
+        top: Math.max(0, absoluteTop - offset),
+        behavior: "smooth"
+      });
+    }, 250);
+  });
+}
+
       }
 
       async function load() {
@@ -381,8 +373,7 @@
           }
 
           render(pools, allAps, liveStatsByPool);
-          autoCenterFirstPoolOnce();
-
+          
           if (statusEl) statusEl.textContent = `Loaded ${pools?.length || 0} pool(s).`;
         } catch (e) {
           if (statusEl) statusEl.textContent = "";
