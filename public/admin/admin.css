@@ -2306,3 +2306,100 @@ body.rz-admin-shell{
     bottom: 68px;
   }
 }
+
+
+/* ================================================================== */
+/* RAZAFI Clients targeted fixes                                       */
+/* Scope: CSS-only UX fixes. No API/business logic changes.            */
+/* Fixes: status select height/label, drawer layering, modal actions.  */
+/* ================================================================== */
+
+/* 1) The Clients status <select> uses id="status".
+   Older dashboard CSS also targets #status for a text status line,
+   which made the select too tall and hid the selected label.
+   This override keeps the select compact and readable. */
+.rz-clients-tools select#status,
+.rz-clients-tools #status.filter-select{
+  height: 42px !important;
+  min-height: 42px !important;
+  max-height: 42px !important;
+  padding: 0 12px !important;
+  padding-bottom: 0 !important;
+  margin: 0 !important;
+  line-height: 42px !important;
+  display: block !important;
+  color: #0f172a !important;
+  background: rgba(248,250,252,.92) !important;
+  text-align: left !important;
+  appearance: auto !important;
+  -webkit-appearance: menulist !important;
+}
+
+/* 2) Drawer must always be above filters and bottom navigation. */
+.rz-drawer-overlay{
+  z-index: 2147482000 !important;
+}
+
+.rz-drawer{
+  z-index: 2147482500 !important;
+}
+
+body.rz-drawer-open .rz-clients-tools,
+body.rz-drawer-open .sticky-bar,
+body.rz-drawer-open .rz-bottom-nav{
+  z-index: 1 !important;
+}
+
+/* Keep the hamburger/back button clickable and visible, but never above the open drawer. */
+.rz-nav-mount,
+.rz-nav-btn{
+  z-index: 2147482600;
+}
+
+/* 3) In the Clients modal, the bottom nav is already hidden behind the modal.
+   So action buttons should return to normal modal flow, at the bottom of content. */
+#modal .modal-card{
+  padding-bottom: 18px !important;
+}
+
+#modal .modal-actions{
+  position: static !important;
+  bottom: auto !important;
+  z-index: auto !important;
+  padding: 12px 0 0 !important;
+  margin-top: 14px !important;
+  background: rgba(255,255,255,.96) !important;
+  border-top: 1px solid rgba(15,23,42,.08) !important;
+  box-shadow: none !important;
+}
+
+/* Keep modal buttons clean and full-width on phone, without covering form fields. */
+@media (max-width: 700px){
+  .rz-clients-tools select#status,
+  .rz-clients-tools #status.filter-select{
+    height: 42px !important;
+    min-height: 42px !important;
+    max-height: 42px !important;
+    line-height: 42px !important;
+    padding: 0 12px !important;
+    padding-bottom: 0 !important;
+    font-size: 14px !important;
+  }
+
+  #modal .modal-card{
+    padding-bottom: 16px !important;
+  }
+
+  #modal .modal-actions{
+    position: static !important;
+    display: flex !important;
+    gap: 10px !important;
+    padding-top: 12px !important;
+  }
+
+  #modal .modal-actions button{
+    width: 50% !important;
+    min-height: 44px !important;
+  }
+}
+
