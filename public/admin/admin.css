@@ -1990,8 +1990,8 @@ body.rz-admin-shell{
 
 
 /* ================================================================== */
-/* RAZAFI Clients page polish                                         */
-/* Scope: UX/UI only. Keeps row status colors + backend logic intact.  */
+/* RAZAFI Clients UX Premium FR - safe visual layer                    */
+/* Scope: clients page + modal appearance only. Logic unchanged.       */
 /* ================================================================== */
 .rz-clients-shell{
   background: transparent !important;
@@ -2000,183 +2000,239 @@ body.rz-admin-shell{
 .rz-clients-shell .topbar{
   justify-content: center;
   text-align: center;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
-.rz-clients-shell .topbar .title{
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+.rz-clients-shell .title{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:6px;
 }
 
 .rz-clients-tools{
   max-width: 1080px;
-  width: 100%;
-  margin-left: auto;
-  margin-right: auto;
-  padding: 12px !important;
-  border-radius: 26px !important;
+  margin-left:auto;
+  margin-right:auto;
+  padding:12px !important;
+  border-radius:26px !important;
 }
 
 .rz-clients-tools .filters{
-  display: grid;
-  grid-template-columns: minmax(220px, 1.6fr) repeat(3, minmax(125px, .7fr)) auto auto;
-  gap: 9px;
-  align-items: stretch;
+  display:grid;
+  grid-template-columns: minmax(240px, 1.6fr) minmax(110px, .7fr) minmax(150px, .8fr) minmax(150px, .8fr) auto auto;
+  gap:10px;
+  align-items:stretch;
 }
 
 .rz-clients-tools input,
 .rz-clients-tools select,
 .rz-clients-tools button{
-  min-height: 46px !important;
-  height: 46px !important;
-  margin-bottom: 0 !important;
+  height:46px !important;
+  min-height:46px !important;
+  margin-bottom:0 !important;
+  border-radius:18px !important;
 }
 
 .rz-clients-tools .filter-btn{
-  min-width: 96px;
-  padding-left: 14px !important;
-  padding-right: 14px !important;
+  padding:0 18px !important;
+  font-weight:950 !important;
 }
 
 .rz-clients-summary{
-  display: grid;
-  grid-template-columns: repeat(5, minmax(96px, 1fr));
-  gap: 10px;
-  margin-top: 12px;
+  max-width:1080px;
+  margin:12px auto 0;
+  display:grid;
+  grid-template-columns: repeat(5, minmax(110px, 1fr));
+  gap:10px;
 }
 
-.rz-client-summary-card{
-  padding: 12px 14px;
-  border-radius: 20px;
-  background: rgba(255,255,255,.86);
-  border: 1px solid rgba(15,23,42,.07);
-  box-shadow: 0 10px 26px rgba(15,23,42,.06);
+.rz-summary-card{
+  padding:11px 13px;
+  border-radius:20px;
+  background:rgba(255,255,255,.86);
+  border:1px solid rgba(15,23,42,.07);
+  box-shadow:0 10px 24px rgba(15,23,42,.06);
 }
 
-.rz-client-summary-label{
-  font-size: 12px;
-  color: #64748b;
-  font-weight: 850;
+.rz-summary-label{
+  color:#64748b;
+  font-size:12px;
+  font-weight:850;
 }
 
-.rz-client-summary-value{
-  margin-top: 3px;
-  font-size: 24px;
-  line-height: 1;
-  font-weight: 950;
-  color: #0d6efd;
+.rz-summary-value{
+  margin-top:3px;
+  color:#0d6efd;
+  font-size:24px;
+  line-height:1;
+  font-weight:950;
+  letter-spacing:-.04em;
 }
 
-.rz-clients-shell .table-wrap{
-  border-radius: 24px;
-  background: rgba(255,255,255,.78);
-  border: 1px solid rgba(15,23,42,.06);
-  box-shadow: 0 12px 30px rgba(15,23,42,.07);
+.rz-clients-table-wrap{
+  max-width:1080px;
+  margin-left:auto;
+  margin-right:auto;
+  border-radius:22px;
+  background:rgba(255,255,255,.62);
+  border:1px solid rgba(15,23,42,.06);
+  box-shadow:0 12px 28px rgba(15,23,42,.06);
 }
 
-.rz-clients-shell table th{
-  background: rgba(248,250,252,.94);
-  color: #334155;
-  font-size: 12px;
-  font-weight: 950;
-  white-space: nowrap;
+.rz-clients-table thead th{
+  position:sticky;
+  top:0;
+  z-index:2;
+  background:rgba(255,255,255,.92);
+  color:#334155;
+  font-size:12px;
+  font-weight:950;
+  white-space:nowrap;
 }
 
-.rz-clients-shell table td{
-  font-size: 13px;
-  vertical-align: middle;
+.rz-clients-table tbody td{
+  font-size:13px;
+  color:#0f172a;
 }
 
-.rz-clients-shell tr.row-status-active,
-.rz-clients-shell tr.row-status-pending,
-.rz-clients-shell tr.row-status-expired,
-.rz-clients-shell tr.row-status-error{
-  transition: background-color 180ms ease, transform 120ms ease;
+.rz-clients-table tbody tr{
+  transition: background-color .18s ease, transform .12s ease;
 }
 
-.rz-clients-shell tbody tr:hover{
-  transform: translateY(-1px);
+.rz-clients-table tbody tr:hover{
+  filter:brightness(.985);
 }
 
-/* Modal must stay above bottom nav and keep its actions visible */
+/* Keep status row colors, just make them premium/soft */
+tr.row-status-active{
+  background:rgba(34,197,94,.16) !important;
+  box-shadow:inset 4px 0 0 rgba(22,163,74,.88) !important;
+}
+tr.row-status-pending{
+  background:rgba(13,110,253,.10) !important;
+  box-shadow:inset 4px 0 0 rgba(13,110,253,.55) !important;
+}
+tr.row-status-expired{
+  background:rgba(100,116,139,.10) !important;
+  box-shadow:inset 4px 0 0 rgba(100,116,139,.42) !important;
+}
+tr.row-status-error{
+  background:rgba(239,68,68,.12) !important;
+  box-shadow:inset 4px 0 0 rgba(239,68,68,.74) !important;
+}
+
+.rz-client-detail-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px;
+  padding-bottom:110px;
+}
+
+.rz-detail-card{
+  border:1px solid rgba(15,23,42,.08);
+  border-radius:18px;
+  padding:12px;
+  background:rgba(248,250,252,.80);
+}
+
+.rz-detail-label{
+  font-size:12px;
+  color:#64748b;
+  font-weight:850;
+}
+
+.rz-detail-value{
+  margin-top:4px;
+  font-size:14px;
+  font-weight:850;
+  color:#0f172a;
+  word-break:break-word;
+}
+
 .modal{
-  z-index: 100000 !important;
-  padding-bottom: 96px !important;
+  z-index:100000 !important;
 }
 
 .modal-card{
-  max-width: 760px;
-  padding-bottom: 104px !important;
+  max-width:760px;
+  padding:16px 16px 120px !important;
+  border-radius:26px !important;
 }
 
 .modal-actions{
-  bottom: 12px !important;
-  z-index: 100001;
-  padding: 10px 0 0 !important;
-  background: linear-gradient(180deg, rgba(255,255,255,.72), #fff 38%) !important;
+  position:sticky;
+  bottom:76px;
+  z-index:100001;
+  gap:10px;
+  padding:10px 0 0;
+  background:linear-gradient(180deg, rgba(255,255,255,.75), rgba(255,255,255,.98));
+  backdrop-filter:blur(16px);
 }
 
-.modal-card #detail > div{
-  background: rgba(248,250,252,.72);
+.modal-actions button{
+  min-height:46px;
+  border-radius:18px !important;
+  font-weight:950;
 }
 
 @media (max-width: 900px){
   .rz-clients-tools .filters{
-    grid-template-columns: 1fr 1fr;
-  }
-  .rz-clients-tools #search{
-    grid-column: 1 / -1;
+    grid-template-columns:1fr 1fr;
   }
   .rz-clients-summary{
-    grid-template-columns: repeat(3, minmax(90px, 1fr));
+    grid-template-columns: repeat(5, minmax(90px, 1fr));
+    overflow-x:auto;
+    padding-bottom:2px;
   }
 }
 
 @media (max-width: 700px){
+  .rz-clients-shell .topbar{
+    margin-bottom:4px;
+  }
   .rz-clients-tools{
-    padding: 10px !important;
-    border-radius: 22px !important;
+    padding:10px !important;
+    border-radius:24px !important;
   }
   .rz-clients-tools .filters{
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
+    grid-template-columns:1fr 1fr;
+    gap:8px;
+  }
+  .rz-clients-tools #search{
+    grid-column:1 / -1;
   }
   .rz-clients-tools input,
   .rz-clients-tools select,
   .rz-clients-tools button{
-    min-height: 40px !important;
-    height: 40px !important;
-    border-radius: 14px !important;
-    font-size: 13px !important;
-  }
-  .rz-clients-tools #search{
-    grid-column: 1 / -1;
+    height:42px !important;
+    min-height:42px !important;
+    font-size:14px !important;
+    padding:0 12px !important;
   }
   .rz-clients-summary{
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
+    grid-template-columns: repeat(5, 92px);
   }
-  .rz-client-summary-card{
-    border-radius: 16px;
-    padding: 10px 12px;
+  .rz-summary-card{
+    padding:9px 10px;
+    border-radius:18px;
   }
-  .rz-client-summary-value{
-    font-size: 22px;
+  .rz-summary-value{
+    font-size:22px;
+  }
+  .rz-client-detail-grid{
+    grid-template-columns:1fr;
+    padding-bottom:130px;
   }
   .modal{
-    padding: 8px 8px 96px !important;
+    padding:8px !important;
   }
   .modal-card{
-    max-width: none;
-    max-height: calc(100vh - 110px) !important;
-    padding: 14px 14px 110px !important;
-    border-radius: 24px !important;
-  }
-  .modal-card #detail{
-    grid-template-columns: 1fr !important;
+    margin:0 !important;
+    max-height:calc(100dvh - 16px) !important;
+    padding-bottom:132px !important;
   }
   .modal-actions{
-    gap: 8px;
+    bottom:70px;
   }
 }

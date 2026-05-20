@@ -35,15 +35,15 @@ function fmtDHMS(seconds, alwaysShowSeconds = true) {
   return parts.join(" ");
 }
 
-function fmtTemps restant(seconds) {
-  // Temps restant time shown as: ...j ...h ...min ...s
+function fmtRemaining(seconds) {
+  // Remaining time shown as: ...j ...h ...min ...s
   return fmtDHMS(seconds, true);
 }
 
-function fmtDuréeMinutes(minutes) {
+function fmtDurationMinutes(minutes) {
   if (minutes == null) return "—";
   const s = Math.max(0, Number(minutes) || 0) * 60;
-  // Durée shown as: ...j ...h ...min (seconds omitted when 0)
+  // Duration shown as: ...j ...h ...min (seconds omitted when 0)
   return fmtDHMS(s, false);
 }
 
@@ -51,6 +51,15 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({
     "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
   }[c]));
+}
+
+function formatAdminIdentity(admin) {
+  const raw = String(admin?.email || admin?.username || "admin").trim();
+  const display = raw.includes("@") ? raw.split("@")[0] : raw;
+  return `
+    <span class="rz-owner-label">Connecté en tant que :</span>
+    <span class="rz-owner-name">${esc(display)}</span>
+  `;
 }
 
 // ---- helpers: unwrap Supabase/REST objects and format bytes ----
@@ -90,7 +99,7 @@ function computeQuota(it) {
       it?.plan?.data_quota_bytes ??
       it?.plans?.data_quota_bytes);
 
-  // Utilisé : prefer truth-view (stable). IMPORTANT: do NOT fall back to raw total_bytes/acct_total_bytes
+  // Used: prefer truth-view (stable). IMPORTANT: do NOT fall back to raw total_bytes/acct_total_bytes
   // because those can be "current" interim values and may fluctuate.
   const usedBytes = (it?.data_used_bytes ?? it?.used_bytes ?? null);
 
@@ -119,16 +128,6 @@ function computeQuota(it) {
 let debounceTimer = null;
 let lastItems = [];
 let currentDetailId = null;
-
-
-function formatAdminIdentity(admin) {
-  const raw = String(admin?.email || admin?.username || "admin").trim();
-  const display = raw.includes("@") ? raw.split("@")[0] : raw;
-  return `
-    <span class="rz-owner-label">Connecté en tant que :</span>
-    <span class="rz-owner-name">${esc(display)}</span>
-  `;
-}
 
 // -------------------------
 // Session gate: page must be inaccessible without login
@@ -164,9 +163,9 @@ function renderSummary(summary) {
   ];
 
   el.innerHTML = cards.map(c => `
-    <div class="rz-client-summary-card">
-      <div class="rz-client-summary-label">${esc(c.label)}</div>
-      <div class="rz-client-summary-value">${esc(c.value)}</div>
+    <div class="rz-summary-card">
+      <div class="rz-summary-label">${esc(c.label)}</div>
+      <div class="rz-summary-value">${esc(c.value)}</div>
     </div>
   `).join("");
 }
@@ -177,7 +176,7 @@ function renderSummary(summary) {
 // Goal: show "used" as its own tab/counter, separate from "expired".
 // Backend stays intact (status comes from DB truth view).
 // -------------------------
-function normStatut(statusRaw) {
+function normStatus(statusRaw) {
   return String(statusRaw || "").toLowerCase().trim();
 }
 
@@ -187,7 +186,7 @@ function computeSummaryFromItems(items) {
   summary.total = items.length;
 
   for (const it of items) {
-    const s = normStatut(it?.status);
+    const s = normStatus(it?.status);
     if (s === "active") summary.active++;
     else if (s === "pending") summary.pending++;
     else if (s === "used") summary.used++;
@@ -197,7 +196,7 @@ function computeSummaryFromItems(items) {
 }
 
 let __planPoolOptionsLoaded = false;
-function initForfaitAndPoolFiltersFromItems(items) {
+function initPlanAndPoolFiltersFromItems(items) {
   if (__planPoolOptionsLoaded) return;
   const planSel = document.getElementById("planFilter");
   const poolSel = document.getElementById("poolFilter");
@@ -214,7 +213,7 @@ function initForfaitAndPoolFiltersFromItems(items) {
   // Only populate if we actually have data (prevents empty dropdowns)
   if (!plans.size && !pools.size) return;
 
-  // Forfaits
+  // Plans
   const planEntries = Array.from(plans.entries()).sort((a, b) => a[1].localeCompare(b[1]));
   for (const [id, name] of planEntries) {
     const opt = document.createElement("option");
@@ -235,10 +234,10 @@ function initForfaitAndPoolFiltersFromItems(items) {
   __planPoolOptionsLoaded = true;
 }
 
-function filterItemsByStatut(items, uiStatutFilter) {
-  const f = normStatut(uiStatutFilter);
+function filterItemsByStatus(items, uiStatusFilter) {
+  const f = normStatus(uiStatusFilter);
   if (!Array.isArray(items) || f === "all" || !f) return items || [];
-  return (items || []).filter(it => normStatut(it?.status) === f);
+  return (items || []).filter(it => normStatus(it?.status) === f);
 }
 
 // -------------------------
@@ -299,7 +298,7 @@ function renderTable(items) {
            <div style="font-size:12px; opacity:.75;">${esc(it.client_mac || "—")}</div>
          </div>`
       : `${esc(it.client_mac || "—")}`;
-const rowStatut = normStatut(it.status);
+const rowStatus = normStatus(it.status);
     const rowBonusSeconds = toNum(it.bonus_seconds, 0);
     const rowBonusBytes = Number(v(it.bonus_bytes ?? 0));
 
@@ -309,11 +308,11 @@ const rowStatut = normStatut(it.status);
 
     const rowBonusModeActive =
       !!it.bonus_mode_active ||
-      (rowStatut === "active" && rowHasUsableBonus);
+      (rowStatus === "active" && rowHasUsableBonus);
 
     const bonusChip = rowBonusModeActive
       ? ' <span title="Bonus en cours" style="font-size:12px; padding:2px 6px; border-radius:999px; border:1px solid rgba(13,110,253,.35); background:rgba(13,110,253,.08);">🎁 Bonus en cours</span>'
-      : ((rowHasUsableBonus && (rowStatut === "expired" || rowStatut === "used"))
+      : ((rowHasUsableBonus && (rowStatus === "expired" || rowStatus === "used"))
           ? ' <span title="Bonus disponible" style="font-size:12px; padding:2px 6px; border-radius:999px; border:1px solid rgba(13,110,253,.35); background:rgba(13,110,253,.08);">🎁 Bonus dispo</span>'
           : "");
 tr.innerHTML = `
@@ -329,7 +328,7 @@ tr.innerHTML = `
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}${bonusChip}</td>
 
       <!-- ✅ remaining_seconds now is DB truth (view); display time remaining -->
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtTemps restant(it.remaining_seconds))}</td>
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
 
       <!-- ✅ data remaining (human) -->
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(computeQuota(it).remainingHuman || "—")}</td>
@@ -349,7 +348,7 @@ async function loadClients() {
   err.style.display = "none";
   err.textContent = "";
 
-  const uiStatut = document.getElementById("status").value;
+  const uiStatus = document.getElementById("status").value;
   const search = document.getElementById("search").value.trim();
   const planId = document.getElementById("planFilter")?.value || "all";
   const poolId = document.getElementById("poolFilter")?.value || "all";
@@ -366,15 +365,15 @@ async function loadClients() {
   const data = await fetchJSON("/api/admin/clients?" + qs.toString());
 
   const allItems = data.items || [];
-  initForfaitAndPoolFiltersFromItems(allItems);
+  initPlanAndPoolFiltersFromItems(allItems);
   const summary = computeSummaryFromItems(allItems);
   renderSummary(summary);
 
-  const filtered = filterItemsByStatut(allItems, uiStatut);
+  const filtered = filterItemsByStatus(allItems, uiStatus);
   renderTable(filtered);
 }
 
-// ✅ small helper: flash a row green + show Mis à jour ✅ effect + show Mis à jour ✅ effect
+// ✅ small helper: flash a row green + show Updated ✅ effect + show Updated ✅ effect
 function flashUpdatedRowAndBlock({ sessionId, blockEl }){
   // Table row flash
   const tr = document.querySelector(`tr[data-id="${CSS.escape(String(sessionId))}"]`);
@@ -401,13 +400,13 @@ function flashUpdatedRowAndBlock({ sessionId, blockEl }){
   }
 }
 
-function updateRowTemps restant(sessionId, remainingSeconds) {
+function updateRowRemaining(sessionId, remainingSeconds) {
   const tr = document.querySelector(`tr[data-id="${CSS.escape(String(sessionId))}"]`);
   if (!tr) return;
   const tds = tr.querySelectorAll("td");
-  // Time Temps restant column is now the 9th column (0-based index 8)
+  // Time Remaining column is now the 9th column (0-based index 8)
   if (tds && tds.length >= 11) {
-    tds[8].textContent = fmtTemps restant(remainingSeconds);
+    tds[8].textContent = fmtRemaining(remainingSeconds);
   }
 }
 
@@ -445,10 +444,10 @@ async function openDetail(id) {
       ["Activé", fmtDate(it.activated_at)],
       ["Démarré", fmtDate(it.started_at)],
       ["Expiration", fmtDate(it.expires_at)],
-      ["Temps restant", fmtTemps restant(it.remaining_seconds)],
-      ["Forfait", it.plans?.name || it.plan_name],
+      ["Temps restant", fmtRemaining(it.remaining_seconds)],
+      ["Plan", it.plans?.name || it.plan_name],
       ["Prix", (it.plans?.price_ar ?? it.plan_price)],
-      ["Durée", fmtDuréeMinutes(it.plans?.duration_minutes)],
+      ["Durée", fmtDurationMinutes(it.plans?.duration_minutes)],
 
       // ✅ Data quota (human readable) from voucher_sessions_usage_view
       ["Data totale", computeQuota(it).totalHuman],
@@ -458,9 +457,9 @@ async function openDetail(id) {
     ];
 
     detail.innerHTML = rows.map(([k,v]) => `
-      <div style="border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
-        <div style="font-size:12px; opacity:.7;">${esc(k)}</div>
-        <div style="font-size:15px; font-weight:700; margin-top:4px; word-break: break-word;">${esc(v ?? "—")}</div>
+      <div class="rz-detail-card">
+        <div class="rz-detail-label">${esc(k)}</div>
+        <div class="rz-detail-value">${esc(v ?? "—")}</div>
       </div>
     `).join("");
 
@@ -478,11 +477,12 @@ async function openDetail(id) {
           <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; flex-wrap:wrap;">
             <div>
               <div style="font-size:12px; opacity:.7;">Renommer l’appareil</div>
+              
             </div>
             <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
               <div>
                 <div style="font-size:12px; opacity:.7;">Nom appareil</div>
-                <input id="${inputId}" type="text" maxlength="32" value="${esc(it.client_name || "")}" placeholder="ex: Stella" style="width:220px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
+                <input id="${inputId}" type="text" maxlength="32" value="${esc(it.client_name || "")}" placeholder="ex : Stella" style="width:220px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
               </div>
               <button id="${btnId}" type="button" style="width:auto; padding:9px 14px;">Enregistrer</button>
             </div>
@@ -546,7 +546,7 @@ async function openDetail(id) {
     // --------------------------------------------------
     if (it && it.free_plan && it.client_mac && it.plan_id) {
       const fp = it.free_plan;
-      const extra = Number(fp.utilisations en plus ?? 0);
+      const extra = Number(fp.extra_uses ?? 0);
       const used = Number(fp.used_free_count ?? 0);
       const allowed = Number(fp.allowed_total ?? (1 + extra));
       const remaining = Number(fp.remaining_free ?? Math.max(0, allowed - used));
@@ -563,16 +563,17 @@ async function openDetail(id) {
           <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
             <div>
               <div style="font-size:12px; opacity:.7;">Accès gratuit</div>
-              <div id="${statsId}" style="font-size:15px; font-weight:800; margin-top:4px;">Utilisé : ${esc(used)} · Autorisé : ${esc(allowed)} · Temps restant: ${esc(remaining)}</div>
+              <div id="${statsId}" style="font-size:15px; font-weight:800; margin-top:4px;">Utilisé : ${esc(used)} · Autorisé : ${esc(allowed)} · Restant : ${esc(remaining)}</div>
+              
             </div>
             <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
               <div>
-                <div style="font-size:12px; opacity:.7;">utilisations en plus</div>
+                <div style="font-size:12px; opacity:.7;">Utilisations en plus</div>
                 <input id="${inputId}" type="number" min="0" max="1000" value="${esc(extra)}" style="width:120px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
               </div>
               <div style="min-width:240px;">
-                <div style="font-size:12px; opacity:.7;">note</div>
-                <input id="${noteId}" type="text" placeholder="Raison / note" style="width:240px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
+                <div style="font-size:12px; opacity:.7;">Note</div>
+                <input id="${noteId}" type="text" placeholder="Note" style="width:240px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
               </div>
               <button id="${btnId}" type="button" style="width:auto; padding:9px 14px;">Enregistrer</button>
             </div>
@@ -581,14 +582,14 @@ async function openDetail(id) {
         </div>
       `);
 
-      // Load current note (and canonical utilisations en plus) from server
+      // Load current note (and canonical extra_uses) from server
       try {
         const ov = await fetchJSON(`/api/admin/free-plan-overrides?client_mac=${encodeURIComponent(it.client_mac)}&plan_id=${encodeURIComponent(it.plan_id)}`);
         const item = ov?.item || null;
         if (item) {
           const input = document.getElementById(inputId);
           const note = document.getElementById(noteId);
-          if (input) input.value = Number(item.utilisations en plus ?? extra);
+          if (input) input.value = Number(item.extra_uses ?? extra);
           if (note) note.value = item.note || "";
         }
       } catch (_) {
@@ -621,12 +622,12 @@ async function openDetail(id) {
               body: JSON.stringify({
                 client_mac: it.client_mac,
                 plan_id: it.plan_id,
-                utilisations en plus: extraUses,
+                extra_uses: extraUses,
                 note: noteVal,
               })
             });
 
-            // ✅ Re-fetch detail so Used/Allowed/Temps restant becomes correct immediately
+            // ✅ Re-fetch detail so Used/Allowed/Remaining becomes correct immediately
             let refreshed = null;
             try {
               refreshed = await fetchJSON("/api/admin/voucher-sessions/" + encodeURIComponent(it.id));
@@ -635,26 +636,26 @@ async function openDetail(id) {
             // Update UI counts
             if (refreshed?.item?.free_plan && statsEl) {
               const fp2 = refreshed.item.free_plan;
-              const extra2 = Number(fp2.utilisations en plus ?? extraUses ?? 0);
+              const extra2 = Number(fp2.extra_uses ?? extraUses ?? 0);
               const used2 = Number(fp2.used_free_count ?? 0);
               const allowed2 = Number(fp2.allowed_total ?? (1 + extra2));
               const remaining2 = Number(fp2.remaining_free ?? Math.max(0, allowed2 - used2));
-              statsEl.textContent = `Utilisé : ${used2} · Autorisé : ${allowed2} · Temps restant: ${remaining2}`;
+              statsEl.textContent = `Utilisé : ${used2} · Autorisé : ${allowed2} · Restant : ${remaining2}`;
             } else if (statsEl) {
               // fallback compute (still instant)
               const extra2 = Number(extraUses ?? 0);
               const used2 = Number(fp.used_free_count ?? 0);
               const allowed2 = Number(1 + extra2);
               const remaining2 = Math.max(0, allowed2 - used2);
-              statsEl.textContent = `Utilisé : ${used2} · Autorisé : ${allowed2} · Temps restant: ${remaining2}`;
+              statsEl.textContent = `Utilisé : ${used2} · Autorisé : ${allowed2} · Restant : ${remaining2}`;
             }
 
             // Update background row remaining (if server returns remaining_seconds)
             if (refreshed?.item && typeof refreshed.item.remaining_seconds !== "undefined") {
-              updateRowTemps restant(it.id, refreshed.item.remaining_seconds);
+              updateRowRemaining(it.id, refreshed.item.remaining_seconds);
             }
 
-            // ✅ Show "Mis à jour ✅" (green) and flash highlight like before
+            // ✅ Show "Updated ✅" (green) and flash highlight like before
             if (msg) {
               msg.style.display = "block";
               msg.style.color = "#198754";
@@ -682,7 +683,7 @@ async function openDetail(id) {
 
 
 // --------------------------------------------------
-// Code bonus (time/data) — by voucher_session_id
+// Voucher bonus (time/data) — by voucher_session_id
 // --------------------------------------------------
 try {
   const sessionId = it.id;
@@ -740,7 +741,7 @@ const curBytes = Number(rowItem?.bonus_bytes || 0);
     <div id="${blockId}" style="grid-column: 1 / -1; border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
       <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; flex-wrap:wrap;">
         <div>
-          <div style="font-size:12px; opacity:.7;">Bonus de ce code</div>
+          <div style="font-size:12px; opacity:.7;">Bonus</div>
           <div id="${curId}" style="margin-top:8px; font-size:13px;">
             Bonus actuel : <b>${esc(formatCurrentBonusLine(curSec, curBytes))}</b>
           </div>
@@ -764,12 +765,12 @@ const curBytes = Number(rowItem?.bonus_bytes || 0);
             <input id="${gbId}" type="number" min="0" step="1" value="0" style="width:90px;" />
             <div style="margin-top:8px; display:flex; align-items:center; gap:8px;">
               <input type="checkbox" id="${unlId}" />
-              <label for="${unlId}" style="font-size:13px;">Data illimitée</label>
+              <label for="${unlId}" style="font-size:13px;">Data illimité</label>
             </div>
           </div>
           <div style="min-width:220px;">
             <div style="font-size:12px; opacity:.7;">Note</div>
-            <input id="${noteId}" type="text" placeholder="ex: goodwill / compensation" />
+            <input id="${noteId}" type="text" placeholder="Note" />
           </div>
           <button id="${btnId}" type="button" style="width:auto;">Ajouter</button>
         </div>
@@ -782,7 +783,7 @@ const curBytes = Number(rowItem?.bonus_bytes || 0);
   const msg = document.getElementById(msgId);
   const blockEl = document.getElementById(blockId);
 
-  // Lecture seule UX: allow viewing current bonus, but disable edits
+  // Read-only UX: allow viewing current bonus, but disable edits
   if (window.__IS_READONLY) {
     const dayEl = document.getElementById(dayId);
     const hourEl = document.getElementById(hourId);
@@ -798,7 +799,7 @@ const curBytes = Number(rowItem?.bonus_bytes || 0);
   }
 
 
-  // UX: if "Data illimitée" is checked, disable the +Go input to avoid confusion.
+  // UX: if "Data illimité" is checked, disable the +Go input to avoid confusion.
   const gbEl = document.getElementById(gbId);
   const unlEl = document.getElementById(unlId);
   if (gbEl && unlEl) {
@@ -822,7 +823,7 @@ const curBytes = Number(rowItem?.bonus_bytes || 0);
         const unlimited_data = !!document.getElementById(unlId)?.checked;
         const note = String(document.getElementById(noteId)?.value ?? "").trim();
 
-      if (!Number.isFinite(days) || days < 0) return alert("Jours doit être >= 0");
+      if (!Number.isFinite(days) || days < 0) return alert("Jours must be >= 0");
       if (!Number.isFinite(hours) || hours < 0) return alert("Heures must be >= 0");
       if (!Number.isFinite(mins) || mins < 0) return alert("Minutes must be >= 0");
       if (!Number.isFinite(gb) || gb < 0) return alert("Go must be >= 0");
@@ -834,7 +835,7 @@ const curBytes = Number(rowItem?.bonus_bytes || 0);
         const add_mb = unlimited_data ? 0 : (gb * 1024);
 
         if (add_minutes === 0 && add_mb === 0 && !unlimited_data) {
-          return alert("Please set a time and/or data bonus (or enable Data illimitée).");
+          return alert("Veuillez définir un bonus temps et/ou data.");
         }
 
         const prevText = btn.textContent;
@@ -903,7 +904,7 @@ async function deleteCurrent() {
 
   if (!currentDetailId) return;
 
-  const confirmText = prompt("Tapez DELETE pour confirmer la suppression:");
+  const confirmText = prompt("Tapez DELETE pour confirmer la suppression :");
   if (confirmText !== "DELETE") return;
 
   if (window.__IS_READONLY) return;
