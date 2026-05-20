@@ -806,7 +806,7 @@ body{
 }
 
 body.rz-admin-shell{
-  padding-bottom: 96px;
+  padding-bottom: 140px;
 }
 
 body.rz-admin-shell .login-container{
@@ -1493,16 +1493,28 @@ button.filter-btn.primary:hover{
   padding:20px;
 }
 
-/* Bottom navigation V2: cleaner icons, softer Telegram/iOS feel */
+/* Bottom navigation V2: stable Telegram/iOS mobile behavior */
 .rz-bottom-nav{
-  bottom: max(18px, calc(env(safe-area-inset-bottom) + 12px));
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 12px;
+
   width:min(430px, calc(100vw - 26px));
+  z-index: 99999;
+
   padding:9px;
   gap:5px;
+
   border-radius:32px;
+
   background:rgba(255,255,255,.86);
   border:1px solid rgba(226,232,240,.72);
-  box-shadow:0 20px 55px rgba(15,23,42,.18), 0 6px 18px rgba(15,23,42,.08);
+
+  box-shadow:
+    0 20px 55px rgba(15,23,42,.18),
+    0 6px 18px rgba(15,23,42,.08);
+
   -webkit-backdrop-filter: blur(22px) saturate(1.25);
   backdrop-filter: blur(22px) saturate(1.25);
 }
