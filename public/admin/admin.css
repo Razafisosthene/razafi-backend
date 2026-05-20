@@ -1988,251 +1988,321 @@ body.rz-admin-shell{
   }
 }
 
+/* ================================================================== */
+/* RAZAFI Clients page mobile correction                               */
+/* Scope: UX/layout only. Keeps table status colors and logic intact.   */
+/* ================================================================== */
+html,
+body.rz-admin-shell{
+  max-width: 100%;
+  overflow-x: hidden;
+}
 
-/* ================================================================== */
-/* RAZAFI Clients UX Premium FR - safe visual layer                    */
-/* Scope: clients page + modal appearance only. Logic unchanged.       */
-/* ================================================================== */
 .rz-clients-shell{
   background: transparent !important;
 }
 
-.rz-clients-shell .topbar{
-  justify-content: center;
-  text-align: center;
-  margin-bottom: 8px;
+.rz-clients-shell,
+.rz-clients-shell *{
+  min-width: 0;
 }
 
-.rz-clients-shell .title{
-  display:flex;
-  flex-direction:column;
-  align-items:center;
-  gap:6px;
+.rz-clients-topbar{
+  position: relative;
+  justify-content: center !important;
+  text-align: center;
+  margin-bottom: 12px !important;
+}
+
+.rz-clients-topbar .rz-nav-mount,
+.rz-clients-shell .rz-nav-mount{
+  position: absolute;
+  left: 0;
+  top: 4px;
+  z-index: 5;
+}
+
+.rz-clients-topbar .title{
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.rz-clients-shell .rz-owner-chip{
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  max-width: min(300px, calc(100vw - 110px)) !important;
+  padding: 6px 10px !important;
+  border-radius: 18px !important;
+  text-align: left;
+}
+
+.rz-clients-shell .rz-owner-text{
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  min-width: 0;
+  line-height: 1.12;
+}
+
+.rz-clients-shell .rz-owner-name{
+  max-width: 230px;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
 }
 
 .rz-clients-tools{
-  max-width: 1080px;
-  margin-left:auto;
-  margin-right:auto;
-  padding:12px !important;
-  border-radius:26px !important;
+  width: min(100%, 960px);
+  margin-left: auto;
+  margin-right: auto;
+  padding: 12px !important;
+  border-radius: 28px !important;
 }
 
 .rz-clients-tools .filters{
-  display:grid;
-  grid-template-columns: minmax(240px, 1.6fr) minmax(110px, .7fr) minmax(150px, .8fr) minmax(150px, .8fr) auto auto;
-  gap:10px;
-  align-items:stretch;
+  display: grid !important;
+  grid-template-columns: minmax(220px, 1.6fr) minmax(120px, .75fr) minmax(140px, .9fr) minmax(140px, .9fr) auto auto;
+  gap: 10px !important;
+  align-items: center !important;
 }
 
 .rz-clients-tools input,
 .rz-clients-tools select,
 .rz-clients-tools button{
-  height:46px !important;
-  min-height:46px !important;
-  margin-bottom:0 !important;
-  border-radius:18px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  height: 46px !important;
+  min-height: 46px !important;
+  padding: 0 12px !important;
+  border-radius: 18px !important;
+  font-size: 14px !important;
+  line-height: 1.1 !important;
 }
 
-.rz-clients-tools .filter-btn{
-  padding:0 18px !important;
-  font-weight:950 !important;
+.rz-clients-tools select{
+  color: #0f172a !important;
+  appearance: auto !important;
+  -webkit-appearance: menulist !important;
+}
+
+.rz-clients-tools button{
+  white-space: nowrap;
+  font-weight: 950 !important;
 }
 
 .rz-clients-summary{
-  max-width:1080px;
-  margin:12px auto 0;
-  display:grid;
-  grid-template-columns: repeat(5, minmax(110px, 1fr));
-  gap:10px;
+  width: min(100%, 960px);
+  margin: 12px auto 0;
+  display: grid !important;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px !important;
 }
 
-.rz-summary-card{
-  padding:11px 13px;
-  border-radius:20px;
-  background:rgba(255,255,255,.86);
-  border:1px solid rgba(15,23,42,.07);
-  box-shadow:0 10px 24px rgba(15,23,42,.06);
+.rz-client-summary-card{
+  padding: 11px 13px;
+  border-radius: 20px;
+  background: rgba(255,255,255,.84);
+  border: 1px solid rgba(226,232,240,.82);
+  box-shadow: 0 10px 24px rgba(15,23,42,.07);
 }
 
-.rz-summary-label{
-  color:#64748b;
-  font-size:12px;
-  font-weight:850;
+.rz-client-summary-label{
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 900;
 }
 
-.rz-summary-value{
-  margin-top:3px;
-  color:#0d6efd;
-  font-size:24px;
-  line-height:1;
-  font-weight:950;
-  letter-spacing:-.04em;
+.rz-client-summary-value{
+  margin-top: 2px;
+  color: #0d6efd;
+  font-size: 26px;
+  font-weight: 950;
+  line-height: 1;
 }
 
-.rz-clients-table-wrap{
-  max-width:1080px;
-  margin-left:auto;
-  margin-right:auto;
-  border-radius:22px;
-  background:rgba(255,255,255,.62);
-  border:1px solid rgba(15,23,42,.06);
-  box-shadow:0 12px 28px rgba(15,23,42,.06);
+.rz-clients-shell .table-wrap{
+  width: min(100%, 1080px);
+  max-width: 100%;
+  margin: 14px auto 0;
+  overflow-x: auto;
+  overflow-y: visible;
+  border-radius: 22px;
+  -webkit-overflow-scrolling: touch;
+  background: rgba(255,255,255,.54);
+  box-shadow: 0 10px 26px rgba(15,23,42,.06);
 }
 
-.rz-clients-table thead th{
-  position:sticky;
-  top:0;
-  z-index:2;
-  background:rgba(255,255,255,.92);
-  color:#334155;
-  font-size:12px;
-  font-weight:950;
-  white-space:nowrap;
+.rz-clients-shell table{
+  width: 100%;
+  min-width: 980px;
+  background: rgba(255,255,255,.82);
 }
 
-.rz-clients-table tbody td{
-  font-size:13px;
-  color:#0f172a;
+.rz-clients-shell thead th{
+  background: rgba(255,255,255,.88);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 950;
+  white-space: nowrap;
 }
 
-.rz-clients-table tbody tr{
-  transition: background-color .18s ease, transform .12s ease;
+.rz-clients-shell tbody td{
+  font-size: 13px;
+  vertical-align: middle;
 }
 
-.rz-clients-table tbody tr:hover{
-  filter:brightness(.985);
+/* Keep bottom nav inside viewport even when table scrolls horizontally */
+.rz-bottom-nav{
+  max-width: calc(100vw - 30px) !important;
+  left: 50vw !important;
+  right: auto !important;
 }
 
-/* Keep status row colors, just make them premium/soft */
-tr.row-status-active{
-  background:rgba(34,197,94,.16) !important;
-  box-shadow:inset 4px 0 0 rgba(22,163,74,.88) !important;
+/* Modal polish for Clients: buttons stay above bottom nav */
+.rz-clients-shell + .modal,
+#modal.modal{
+  z-index: 100000;
 }
-tr.row-status-pending{
-  background:rgba(13,110,253,.10) !important;
-  box-shadow:inset 4px 0 0 rgba(13,110,253,.55) !important;
+
+#modal .modal-card{
+  max-width: min(900px, calc(100vw - 24px));
+  width: min(900px, calc(100vw - 24px));
+  max-height: calc(100dvh - 34px);
+  margin: 14px auto;
+  padding: 16px 16px 128px !important;
+  border-radius: 24px;
 }
-tr.row-status-expired{
-  background:rgba(100,116,139,.10) !important;
-  box-shadow:inset 4px 0 0 rgba(100,116,139,.42) !important;
+
+#modal .modal-actions{
+  position: sticky;
+  bottom: 70px;
+  z-index: 4;
+  padding: 10px 0 0;
+  margin-top: 14px;
+  background: linear-gradient(180deg, rgba(255,255,255,.78), #fff 35%);
 }
-tr.row-status-error{
-  background:rgba(239,68,68,.12) !important;
-  box-shadow:inset 4px 0 0 rgba(239,68,68,.74) !important;
+
+#modal .modal-actions button{
+  min-height: 44px;
+  border-radius: 16px;
 }
 
 .rz-client-detail-grid{
-  display:grid;
-  grid-template-columns:1fr 1fr;
-  gap:10px;
-  padding-bottom:110px;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
 }
 
 .rz-detail-card{
   border:1px solid rgba(15,23,42,.08);
-  border-radius:18px;
-  padding:12px;
-  background:rgba(248,250,252,.80);
+  border-radius:16px;
+  padding:11px 12px;
+  background: rgba(248,250,252,.76);
 }
 
 .rz-detail-label{
-  font-size:12px;
-  color:#64748b;
-  font-weight:850;
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 850;
 }
 
 .rz-detail-value{
-  margin-top:4px;
-  font-size:14px;
-  font-weight:850;
-  color:#0f172a;
-  word-break:break-word;
-}
-
-.modal{
-  z-index:100000 !important;
-}
-
-.modal-card{
-  max-width:760px;
-  padding:16px 16px 120px !important;
-  border-radius:26px !important;
-}
-
-.modal-actions{
-  position:sticky;
-  bottom:76px;
-  z-index:100001;
-  gap:10px;
-  padding:10px 0 0;
-  background:linear-gradient(180deg, rgba(255,255,255,.75), rgba(255,255,255,.98));
-  backdrop-filter:blur(16px);
-}
-
-.modal-actions button{
-  min-height:46px;
-  border-radius:18px !important;
-  font-weight:950;
-}
-
-@media (max-width: 900px){
-  .rz-clients-tools .filters{
-    grid-template-columns:1fr 1fr;
-  }
-  .rz-clients-summary{
-    grid-template-columns: repeat(5, minmax(90px, 1fr));
-    overflow-x:auto;
-    padding-bottom:2px;
-  }
+  margin-top: 4px;
+  font-size: 14px;
+  font-weight: 850;
+  color: #0f172a;
+  word-break: break-word;
 }
 
 @media (max-width: 700px){
-  .rz-clients-shell .topbar{
-    margin-bottom:4px;
+  .rz-clients-topbar{
+    padding-top: 34px;
   }
+
+  .rz-clients-topbar .rz-nav-mount,
+  .rz-clients-shell .rz-nav-mount{
+    left: 0;
+    top: 0;
+  }
+
+  .rz-clients-shell .rz-hero-title{
+    font-size: 26px !important;
+  }
+
+  .rz-clients-shell .rz-owner-chip{
+    max-width: min(300px, calc(100vw - 74px)) !important;
+  }
+
   .rz-clients-tools{
-    padding:10px !important;
-    border-radius:24px !important;
+    width: 100%;
+    padding: 10px !important;
+    border-radius: 24px !important;
+    margin-top: 8px !important;
   }
+
   .rz-clients-tools .filters{
-    grid-template-columns:1fr 1fr;
-    gap:8px;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
   }
+
   .rz-clients-tools #search{
-    grid-column:1 / -1;
+    grid-column: 1 / -1;
   }
+
   .rz-clients-tools input,
   .rz-clients-tools select,
   .rz-clients-tools button{
-    height:42px !important;
-    min-height:42px !important;
-    font-size:14px !important;
-    padding:0 12px !important;
+    height: 42px !important;
+    min-height: 42px !important;
+    border-radius: 17px !important;
+    font-size: 14px !important;
   }
+
   .rz-clients-summary{
-    grid-template-columns: repeat(5, 92px);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px !important;
+    margin-top: 10px;
   }
-  .rz-summary-card{
-    padding:9px 10px;
-    border-radius:18px;
+
+  .rz-client-summary-card{
+    padding: 10px 12px;
+    border-radius: 18px;
   }
-  .rz-summary-value{
-    font-size:22px;
+
+  .rz-client-summary-value{
+    font-size: 24px;
   }
+
+  .rz-clients-shell .table-wrap{
+    width: 100%;
+    border-radius: 18px;
+    margin-top: 12px;
+  }
+
+  .rz-clients-shell table{
+    min-width: 920px !important;
+  }
+
+  #modal .modal-card{
+    width: calc(100vw - 18px);
+    max-width: calc(100vw - 18px);
+    margin: 9px auto;
+    max-height: calc(100dvh - 18px);
+    padding: 14px 14px 126px !important;
+    border-radius: 22px;
+  }
+
   .rz-client-detail-grid{
-    grid-template-columns:1fr;
-    padding-bottom:130px;
+    grid-template-columns: 1fr !important;
+    gap: 9px !important;
   }
-  .modal{
-    padding:8px !important;
-  }
-  .modal-card{
-    margin:0 !important;
-    max-height:calc(100dvh - 16px) !important;
-    padding-bottom:132px !important;
-  }
-  .modal-actions{
-    bottom:70px;
+
+  #modal .modal-actions{
+    bottom: 68px;
   }
 }

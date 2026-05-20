@@ -6,8 +6,8 @@ async function fetchJSON(url, opts = {}) {
   const res = await fetch(url, { ...opts, credentials: "include" });
   const text = await res.text();
   let data;
-  try { data = JSON.parse(text); } catch { throw new Error("Réponse serveur non JSON"); }
-  if (!res.ok) throw new Error(data?.error || data?.message || "Requête échouée");
+  try { data = JSON.parse(text); } catch { throw new Error("Server returned non-JSON"); }
+  if (!res.ok) throw new Error(data?.error || data?.message || "Request failed");
   return data;
 }
 
@@ -51,15 +51,6 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({
     "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
   }[c]));
-}
-
-function formatAdminIdentity(admin) {
-  const raw = String(admin?.email || admin?.username || "admin").trim();
-  const display = raw.includes("@") ? raw.split("@")[0] : raw;
-  return `
-    <span class="rz-owner-label">Connecté en tant que :</span>
-    <span class="rz-owner-name">${esc(display)}</span>
-  `;
 }
 
 // ---- helpers: unwrap Supabase/REST objects and format bytes ----
@@ -129,6 +120,17 @@ let debounceTimer = null;
 let lastItems = [];
 let currentDetailId = null;
 
+function formatAdminIdentity(admin) {
+  const raw = String(admin?.email || admin?.username || "admin").trim();
+  const display = raw.includes("@") ? raw.split("@")[0] : raw;
+  return `
+    <span class="rz-owner-text">
+      <span class="rz-owner-label">Connecté en tant que :</span>
+      <span class="rz-owner-name">${esc(display)}</span>
+    </span>
+  `;
+}
+
 // -------------------------
 // Session gate: page must be inaccessible without login
 // -------------------------
@@ -163,9 +165,9 @@ function renderSummary(summary) {
   ];
 
   el.innerHTML = cards.map(c => `
-    <div class="rz-summary-card">
-      <div class="rz-summary-label">${esc(c.label)}</div>
-      <div class="rz-summary-value">${esc(c.value)}</div>
+    <div class="rz-client-summary-card">
+      <div class="rz-client-summary-label">${esc(c.label)}</div>
+      <div class="rz-client-summary-value">${esc(c.value)}</div>
     </div>
   `).join("");
 }
@@ -373,7 +375,7 @@ async function loadClients() {
   renderTable(filtered);
 }
 
-// ✅ small helper: flash a row green + show Updated ✅ effect + show Updated ✅ effect
+// ✅ small helper: flash a row green + show Mis à jour ✅ effect + show Mis à jour ✅ effect
 function flashUpdatedRowAndBlock({ sessionId, blockEl }){
   // Table row flash
   const tr = document.querySelector(`tr[data-id="${CSS.escape(String(sessionId))}"]`);
@@ -476,13 +478,13 @@ async function openDetail(id) {
         <div id="${blockId}" style="grid-column: 1 / -1; border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
           <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; flex-wrap:wrap;">
             <div>
-              <div style="font-size:12px; opacity:.7;">Renommer l’appareil</div>
+              <div style="font-size:12px; opacity:.7;">Nom de l’appareil</div>
               
             </div>
             <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
               <div>
-                <div style="font-size:12px; opacity:.7;">Nom appareil</div>
-                <input id="${inputId}" type="text" maxlength="32" value="${esc(it.client_name || "")}" placeholder="ex : Stella" style="width:220px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
+                <div style="font-size:12px; opacity:.7;">Nom</div>
+                <input id="${inputId}" type="text" maxlength="32" value="${esc(it.client_name || "")}" placeholder="Ex: Stella" style="width:220px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
               </div>
               <button id="${btnId}" type="button" style="width:auto; padding:9px 14px;">Enregistrer</button>
             </div>
@@ -568,7 +570,7 @@ async function openDetail(id) {
             </div>
             <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
               <div>
-                <div style="font-size:12px; opacity:.7;">Utilisations en plus</div>
+                <div style="font-size:12px; opacity:.7;">Utilisations bonus</div>
                 <input id="${inputId}" type="number" min="0" max="1000" value="${esc(extra)}" style="width:120px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
               </div>
               <div style="min-width:240px;">
@@ -640,14 +642,14 @@ async function openDetail(id) {
               const used2 = Number(fp2.used_free_count ?? 0);
               const allowed2 = Number(fp2.allowed_total ?? (1 + extra2));
               const remaining2 = Number(fp2.remaining_free ?? Math.max(0, allowed2 - used2));
-              statsEl.textContent = `Utilisé : ${used2} · Autorisé : ${allowed2} · Restant : ${remaining2}`;
+              statsEl.textContent = `Used: ${used2} · Allowed: ${allowed2} · Remaining: ${remaining2}`;
             } else if (statsEl) {
               // fallback compute (still instant)
               const extra2 = Number(extraUses ?? 0);
               const used2 = Number(fp.used_free_count ?? 0);
               const allowed2 = Number(1 + extra2);
               const remaining2 = Math.max(0, allowed2 - used2);
-              statsEl.textContent = `Utilisé : ${used2} · Autorisé : ${allowed2} · Restant : ${remaining2}`;
+              statsEl.textContent = `Used: ${used2} · Allowed: ${allowed2} · Remaining: ${remaining2}`;
             }
 
             // Update background row remaining (if server returns remaining_seconds)
@@ -655,7 +657,7 @@ async function openDetail(id) {
               updateRowRemaining(it.id, refreshed.item.remaining_seconds);
             }
 
-            // ✅ Show "Updated ✅" (green) and flash highlight like before
+            // ✅ Show "Mis à jour ✅" (green) and flash highlight like before
             if (msg) {
               msg.style.display = "block";
               msg.style.color = "#198754";
@@ -742,6 +744,7 @@ const curBytes = Number(rowItem?.bonus_bytes || 0);
       <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; flex-wrap:wrap;">
         <div>
           <div style="font-size:12px; opacity:.7;">Bonus</div>
+
           <div id="${curId}" style="margin-top:8px; font-size:13px;">
             Bonus actuel : <b>${esc(formatCurrentBonusLine(curSec, curBytes))}</b>
           </div>
@@ -770,7 +773,7 @@ const curBytes = Number(rowItem?.bonus_bytes || 0);
           </div>
           <div style="min-width:220px;">
             <div style="font-size:12px; opacity:.7;">Note</div>
-            <input id="${noteId}" type="text" placeholder="Note" />
+            <input id="${noteId}" type="text" placeholder="ex: goodwill / compensation" />
           </div>
           <button id="${btnId}" type="button" style="width:auto;">Ajouter</button>
         </div>
@@ -823,10 +826,10 @@ const curBytes = Number(rowItem?.bonus_bytes || 0);
         const unlimited_data = !!document.getElementById(unlId)?.checked;
         const note = String(document.getElementById(noteId)?.value ?? "").trim();
 
-      if (!Number.isFinite(days) || days < 0) return alert("Jours must be >= 0");
-      if (!Number.isFinite(hours) || hours < 0) return alert("Heures must be >= 0");
-      if (!Number.isFinite(mins) || mins < 0) return alert("Minutes must be >= 0");
-      if (!Number.isFinite(gb) || gb < 0) return alert("Go must be >= 0");
+      if (!Number.isFinite(days) || days < 0) return alert("Jours doit être supérieur ou égal à 0");
+      if (!Number.isFinite(hours) || hours < 0) return alert("Heures doit être supérieur ou égal à 0");
+      if (!Number.isFinite(mins) || mins < 0) return alert("Minutes doit être supérieur ou égal à 0");
+      if (!Number.isFinite(gb) || gb < 0) return alert("Go doit être supérieur ou égal à 0");
 
       if (hours > 23) return alert("Heures doit être entre 0 et 23");
       if (mins > 59) return alert("Minutes doit être entre 0 et 59");
@@ -835,7 +838,7 @@ const curBytes = Number(rowItem?.bonus_bytes || 0);
         const add_mb = unlimited_data ? 0 : (gb * 1024);
 
         if (add_minutes === 0 && add_mb === 0 && !unlimited_data) {
-          return alert("Veuillez définir un bonus temps et/ou data.");
+          return alert("Ajoutez une durée et/ou une data bonus, ou cochez Data illimité.");
         }
 
         const prevText = btn.textContent;

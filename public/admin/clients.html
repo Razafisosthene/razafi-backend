@@ -6,13 +6,13 @@
   <title>RAZAFI Admin — Clients</title>
   <link rel="stylesheet" href="/admin/admin.css" />
 </head>
-<body>
+<body class="rz-admin-shell">
   <div class="login-container">
     <div class="card rz-dashboard-shell rz-clients-shell" style="max-width: 1200px; width: 96%;">
-      <div class="topbar">
+      <div class="topbar rz-clients-topbar">
         <div class="title">
           <h1 class="rz-hero-title">Clients</h1>
-          <div id="me" class="rz-owner-chip">Vérification de la session...</div>
+          <div id="me" class="rz-owner-chip"><span class="rz-owner-text"><span class="rz-owner-label">Vérification de la session…</span></span></div>
         </div>
 
         <!-- legacy nav kept hidden to avoid breaking clients.js -->
@@ -49,8 +49,8 @@
 
       <div id="summary" class="rz-clients-summary"></div>
 
-      <div class="table-wrap rz-clients-table-wrap">
-        <table id="table" class="rz-clients-table" style="width:100%; border-collapse: collapse; min-width: 980px;">
+      <div class="table-wrap">
+        <table id="table" style="width:100%; border-collapse: collapse; min-width: 980px;">
           <thead>
             <tr style="text-align:left;">
               <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Client</th>
@@ -71,7 +71,7 @@
       </div>
 
       <div id="empty" class="subtitle" style="margin-top:14px; display:none;">
-        Aucun client trouvé.
+        Aucun enregistrement trouvé.
       </div>
 
       <div id="error" class="error" style="display:none;"></div>
@@ -81,7 +81,7 @@
   <!-- Detail Modal -->
   <div id="modal" class="modal" style="display:none;">
     <div class="card modal-card">
-      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
+      <div class="rz-client-modal-head" style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
         <div>
           <h1 style="margin:0; font-size:22px;">Détails client</h1>
           <div id="modalSub" class="subtitle" style="margin:6px 0 0;">Chargement...</div>
@@ -91,7 +91,7 @@
 
       <hr style="opacity:.2; margin:14px 0;" />
 
-      <div id="detail" class="rz-client-detail-grid"></div>
+      <div id="detail" class="rz-client-detail-grid" style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;"></div>
 
       <div class="modal-actions">
         <button id="deleteBtn" class="danger" type="button">Supprimer</button>
