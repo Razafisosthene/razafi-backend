@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
@@ -8,11 +8,11 @@
 </head>
 <body>
   <div class="login-container">
-    <div class="card" style="max-width: 1200px; width: 96%;">
+    <div class="card rz-dashboard-shell rz-clients-shell" style="max-width: 1200px; width: 96%;">
       <div class="topbar">
         <div class="title">
-          <h1 style="margin:0;">Clients</h1>
-          <div id="me" class="subtitle">Checking session...</div>
+          <h1 class="rz-hero-title">Clients</h1>
+          <div id="me" class="rz-owner-chip">Vérification de la session...</div>
         </div>
 
         <!-- legacy nav kept hidden to avoid breaking clients.js -->
@@ -26,47 +26,44 @@
         </div>
       </div>
 
-      <div class="sticky-bar">
+      <div class="sticky-bar rz-clients-tools">
         <div class="filters">
-          <input id="search" class="filter-search" placeholder="Search: MAC / voucher code / MVola..." />
+          <input id="search" class="filter-search" placeholder="Rechercher : MAC / code / MVola..." />
           <select id="status" class="filter-select">
-            <option value="all">All</option>
-            <option value="active">Active</option>
-            <option value="pending">Pending</option>
-            <option value="expired">Expired</option>
-            <option value="used">Used</option>
+            <option value="all">Tous</option>
+            <option value="active">Actifs</option>
+            <option value="pending">En attente</option>
+            <option value="expired">Expirés</option>
+            <option value="used">Utilisés</option>
           </select>
           <select id="planFilter" class="filter-select" title="Filter by plan">
-            <option value="all">All plans</option>
+            <option value="all">Tous les plans</option>
           </select>
           <select id="poolFilter" class="filter-select" title="Filter by pool">
-            <option value="all">All pools</option>
+            <option value="all">Tous les pools</option>
           </select>
-          <button id="refreshBtn" class="filter-btn" type="button">Refresh</button>
-          <button id="clearBtn" class="filter-btn" type="button">Clear</button>
-        </div>
-        <div id="hint" class="subtitle" style="margin:10px 0 0; opacity:.9;">
-          Click a row to see details. Delete is inside the detail view.
+          <button id="refreshBtn" class="filter-btn" type="button">Actualiser</button>
+          <button id="clearBtn" class="filter-btn" type="button">Effacer</button>
         </div>
       </div>
 
-      <div id="summary" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;"></div>
+      <div id="summary" class="rz-clients-summary"></div>
 
       <div class="table-wrap">
         <table id="table" style="width:100%; border-collapse: collapse; min-width: 980px;">
           <thead>
             <tr style="text-align:left;">
               <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Client</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Voucher</th>
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Code</th>
               <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">MVola</th>
               <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Plan</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Price</th>
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Prix</th>
               <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">AP</th>
               <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Pool</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Status</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Time Remaining</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Data Remaining</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Expires</th>
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Statut</th>
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Temps restant</th>
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Data restante</th>
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Expiration</th>
             </tr>
           </thead>
           <tbody id="tbody"></tbody>
@@ -74,7 +71,7 @@
       </div>
 
       <div id="empty" class="subtitle" style="margin-top:14px; display:none;">
-        No records found.
+        Aucun client trouvé.
       </div>
 
       <div id="error" class="error" style="display:none;"></div>
@@ -86,10 +83,10 @@
     <div class="card modal-card">
       <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
         <div>
-          <h1 style="margin:0; font-size:22px;">Client Details</h1>
-          <div id="modalSub" class="subtitle" style="margin:6px 0 0;">Loading...</div>
+          <h1 style="margin:0; font-size:22px;">Détails client</h1>
+          <div id="modalSub" class="subtitle" style="margin:6px 0 0;">Chargement...</div>
         </div>
-        <button id="closeModalBtn" type="button" style="width:auto;">Close</button>
+        <button id="closeModalBtn" type="button" style="width:auto;">Fermer</button>
       </div>
 
       <hr style="opacity:.2; margin:14px 0;" />
@@ -97,8 +94,8 @@
       <div id="detail" style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;"></div>
 
       <div class="modal-actions">
-        <button id="deleteBtn" class="danger" type="button">Delete</button>
-        <button id="closeModalBtn2" type="button">Close</button>
+        <button id="deleteBtn" class="danger" type="button">Supprimer</button>
+        <button id="closeModalBtn2" type="button">Fermer</button>
       </div>
 
       <div id="modalErr" class="error" style="display:none;"></div>
