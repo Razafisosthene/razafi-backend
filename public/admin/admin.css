@@ -1591,3 +1591,170 @@ button.filter-btn.primary:hover{
   box-shadow:0 0 0 4px rgba(34,197,94,.13);
   vertical-align:middle;
 }
+
+/* ================================================================== */
+/* RAZAFI Dashboard compact French owner view                          */
+/* Scope: dashboard appearance only. No backend/API/permission changes. */
+/* ================================================================== */
+.rz-dashboard-tools.rz-dashboard-tools-compact{
+  max-width: 760px;
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 12px !important;
+  border-radius: 26px !important;
+}
+
+.rz-dashboard-tools-compact .filters{
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.rz-dashboard-tools-compact #poolFilter{
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  margin-bottom: 0;
+}
+
+.rz-dashboard-tools-compact #refresh{
+  min-width: 150px;
+  white-space: nowrap;
+}
+
+.rz-pools-grid{
+  grid-template-columns: minmax(0, 760px) !important;
+  justify-content: center;
+  gap: 12px !important;
+  margin-top: 12px !important;
+}
+
+.rz-pool-card.rz-pool-card-compact{
+  padding: 15px 16px 14px !important;
+  border-radius: 26px !important;
+  min-height: auto;
+}
+
+.rz-pool-card-compact::before{
+  height: 4px !important;
+}
+
+.rz-pool-compact-head{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rz-pool-card-compact .rz-pool-name{
+  font-size: 21px !important;
+  line-height: 1.05;
+  letter-spacing: -.045em;
+}
+
+.rz-pool-compact-sub{
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.rz-pool-usage-pill{
+  flex: 0 0 auto;
+  min-width: 58px;
+  padding: 8px 10px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(13,110,253,.12), rgba(13,110,253,.06));
+  color: #0d6efd;
+  border: 1px solid rgba(13,110,253,.10);
+  text-align: center;
+  font-weight: 950;
+  font-size: 18px;
+  line-height: 1;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.85);
+}
+
+.rz-pool-usage-pill span{
+  display: block;
+  margin-top: 4px;
+  color: rgba(13,110,253,.72);
+  font-size: 9px;
+  font-weight: 950;
+  letter-spacing: -.01em;
+}
+
+.rz-pool-card-compact .rz-progress-block{
+  margin-top: 12px !important;
+}
+
+.rz-pool-card-compact .rz-progress-top{
+  margin-bottom: 7px;
+  font-size: 12.5px;
+}
+
+.rz-pool-card-compact .rz-progress-track{
+  height: 9px !important;
+}
+
+.rz-dashboard-status{
+  max-width: 760px;
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  padding-bottom: 94px !important;
+}
+
+@media (min-width: 900px){
+  .rz-dashboard-tools-compact #refresh{
+    width: auto !important;
+  }
+}
+
+@media (max-width: 700px){
+  .rz-dashboard-tools.rz-dashboard-tools-compact{
+    padding: 12px !important;
+    margin-bottom: 6px;
+    border-radius: 24px !important;
+  }
+
+  .rz-dashboard-tools-compact .filters{
+    grid-template-columns: 1fr;
+    gap: 9px;
+  }
+
+  .rz-dashboard-tools-compact #refresh{
+    width: 100% !important;
+    min-height: 48px;
+  }
+
+  .rz-pools-grid{
+    gap: 10px !important;
+    margin-top: 10px !important;
+  }
+
+  .rz-pool-card.rz-pool-card-compact{
+    padding: 14px 15px 13px !important;
+    border-radius: 24px !important;
+  }
+
+  .rz-pool-card-compact .rz-pool-name{
+    font-size: 20px !important;
+  }
+
+  .rz-pool-compact-sub{
+    font-size: 12.5px;
+  }
+
+  .rz-pool-usage-pill{
+    min-width: 54px;
+    padding: 7px 9px;
+    border-radius: 16px;
+    font-size: 17px;
+  }
+
+  .rz-pool-card-compact .rz-progress-block{
+    margin-top: 10px !important;
+  }
+}

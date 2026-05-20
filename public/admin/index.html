@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>RAZAFI Admin — Dashboard</title>
+  <title>RAZAFI Admin — Tableau de bord</title>
   <link rel="stylesheet" href="/admin/admin.css" />
 </head>
 <body>
@@ -13,9 +13,9 @@
       <!-- TOP BAR -->
       <div class="topbar">
         <div class="title">
-          <h1 class="rz-hero-title">RAZAFI Dashboard</h1>
-          <div class="rz-hero-subtitle">Vue rapide des pools, clients connectés et capacité réseau.</div>
-          <div id="me" class="rz-owner-chip">Checking session...</div>
+          <h1 class="rz-hero-title">Tableau de bord</h1>
+          <div class="rz-hero-subtitle">Vue rapide des pools, clients connectés et utilisation réseau.</div>
+          <div id="me" class="rz-owner-chip">Vérification de la session...</div>
         </div>
 
         <!-- legacy nav kept hidden to avoid breaking old JS assumptions -->
@@ -26,17 +26,15 @@
           <a href="/admin/plans.html"><button type="button">Plans</button></a>
           <a href="/admin/pools.html"><button type="button">Pools</button></a>
           <a href="/admin/revenue.html"><button type="button">Revenue</button></a>
-                 <button id="logoutBtn" type="button">Logout</button>
+          <button id="logoutBtn" type="button">Logout</button>
         </div>
       </div>
 
-
-      <!-- READ-ONLY POOLS OVERVIEW (Tanaza truth) -->
-      <div class="sticky-bar rz-dashboard-tools">
+      <!-- READ-ONLY POOLS OVERVIEW (MikroTik / RADIUS truth) -->
+      <div class="sticky-bar rz-dashboard-tools rz-dashboard-tools-compact">
         <div class="filters">
-          <input id="q" class="filter-search" placeholder="Search pool / AP..." />
           <select id="poolFilter" class="filter-search" style="max-width:240px;">
-            <option value="">All pools</option>
+            <option value="">Tous les pools</option>
           </select>
           <button type="button" id="refresh" class="filter-btn primary" style="width:auto;">Actualiser</button>
         </div>
@@ -56,8 +54,8 @@
       const text = await res.text();
       let data;
       try { data = JSON.parse(text); }
-      catch { throw new Error("Server returned non-JSON"); }
-      if (!res.ok) throw new Error(data?.error || data?.message || "Request failed");
+      catch { throw new Error("Réponse serveur non JSON"); }
+      if (!res.ok) throw new Error(data?.error || data?.message || "Requête échouée");
       return data;
     }
 
@@ -65,11 +63,11 @@
     // READ-ONLY POOLS DASHBOARD
     // Source of truth for pool totals:
     //   /api/admin/pool-live-stats  (MikroTik / RADIUS)
-    // AP detail list stays on /api/admin/aps for now.
     // ---------------------------------------------------------------------------
 
     const $ = (id) => document.getElementById(id);
     let __initialMobilePoolScrollDone = false;
+
     function esc(s) {
       return String(s ?? "").replace(/[&<>"']/g, (c) => ({
         "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
@@ -90,7 +88,7 @@
       return `
         <div class="rz-progress-block">
           <div class="rz-progress-top">
-            <span>Utilisation</span>
+            <span>Utilisation réseau</span>
             <span>${esc(Math.round(p))}%</span>
           </div>
           <div class="rz-progress-track">
@@ -98,27 +96,6 @@
           </div>
         </div>
       `;
-    }
-
-    function isOnline(a) {
-      return (a.tanaza_online === true) || (String(a.tanaza_online).toLowerCase() === "true");
-    }
-
-    function apStatusClass(a) {
-      const v = a.tanaza_online;
-      if (v === true || String(v).toLowerCase() === "true") return "online";
-      if (v === false || String(v).toLowerCase() === "false") return "offline";
-      return "unknown";
-    }
-
-    function apConnected(a) {
-      const raw = (a.tanaza_connected ?? a.tanaza_connected_clients ?? a.tanaza_connectedClients ?? a.connectedClients ?? 0);
-      const n = Number.isFinite(Number(raw)) ? Number(raw) : 0;
-      return n;
-    }
-
-    function asArray(value) {
-      return Array.isArray(value) ? value : [];
     }
 
     function toNum(value, fallback = 0) {
@@ -142,23 +119,18 @@
       return [];
     }
 
+    function poolCountLabel(n) {
+      const count = Number(n) || 0;
+      return `${count} pool${count > 1 ? "s" : ""}`;
+    }
+
     async function loadDashboardPools() {
       const statusEl = $("status");
       const container = $("poolsContainer");
-      const qEl = $("q");
       const poolFilterEl = $("poolFilter");
       const refreshBtn = $("refresh");
 
       if (!container) return;
-
-      async function fetchAllAps() {
-        try {
-          const data = await fetchJSON("/api/admin/aps?limit=200&offset=0&active=all&stale=all");
-          return data.aps || [];
-        } catch {
-          return [];
-        }
-      }
 
       async function fetchPools() {
         const params = new URLSearchParams();
@@ -202,36 +174,17 @@
         return map;
       }
 
-      function render(pools, allAps, liveStatsByPool) {
-        const q = String(qEl?.value || "").trim().toLowerCase();
+      function render(pools, liveStatsByPool) {
         const selectedPool = String(poolFilterEl?.value || "").trim().toLowerCase();
 
-        const apsByPool = {};
-        for (const a of allAps || []) {
-          const pid = a.pool_id || "";
-          if (!pid) continue;
-          (apsByPool[pid] ||= []).push(a);
-        }
-
         const filteredPools = (pools || []).filter(p => {
-          if (selectedPool) {
-            const pnameExact = String(p.name || "").toLowerCase();
-            if (pnameExact !== selectedPool) return false;
-          }
-          if (!q) return true;
-          const pname = String(p.name || p.id || "").toLowerCase();
-          if (pname.includes(q)) return true;
-          const pid = String(p.id || "");
-          const aps = apsByPool[pid] || [];
-          return aps.some(a => {
-            const label = String(a.tanaza_label || a.ap_mac || "").toLowerCase();
-            const mac = String(a.ap_mac || "").toLowerCase();
-            return label.includes(q) || mac.includes(q);
-          });
+          if (!selectedPool) return true;
+          const pnameExact = String(p.name || "").toLowerCase();
+          return pnameExact === selectedPool;
         });
 
         if (!filteredPools.length) {
-          container.innerHTML = `<div class="rz-empty-card">No pools found.</div>`;
+          container.innerHTML = `<div class="rz-empty-card">Aucun pool trouvé.</div>`;
           return;
         }
 
@@ -247,113 +200,62 @@
               : (p.capacity_max === null || p.capacity_max === undefined ? null : Number(p.capacity_max));
           const percent = stats ? stats.percent : pct(live, cap);
 
-          const aps = (apsByPool[pid] || []).slice().sort((a,b) => {
-            const ao = isOnline(a) ? 1 : 0;
-            const bo = isOnline(b) ? 1 : 0;
-            if (ao !== bo) return bo - ao;
-            return (apConnected(b) - apConnected(a));
-          });
-
-          const apListHtml = aps.length
-            ? `
-              <div class="rz-ap-section">
-                <div class="rz-ap-title">
-                  <span>APs</span>
-                  <span>${esc(aps.length)} total</span>
-                </div>
-                <div class="rz-ap-list">
-                  ${aps.map(a => {
-                    const mac = String(a.ap_mac || "");
-                    const label = a.tanaza_label || mac || "—";
-                    const online = isOnline(a);
-                    const connected = apConnected(a);
-                    return `
-                      <div class="rz-ap-row ${online ? "" : "is-offline"}">
-                        <div class="rz-ap-main">
-                          <div class="rz-ap-name">${esc(label)}</div>
-                          <div class="rz-ap-mac">${esc(mac)}</div>
-                        </div>
-                        <div class="rz-ap-side">
-                          <span class="ap-dot ${apStatusClass(a)}"></span>
-                          <span>${esc(connected)}</span>
-                        </div>
-                      </div>
-                    `;
-                  }).join("")}
-                </div>
-              </div>
-            `
-            : `<div class="rz-ap-section"><div class="rz-empty-card">No APs assigned to this pool.</div></div>`;
-
           const saturated = stats?.is_saturated || (percent !== null && percent >= 90);
           const displayPercent = percent === null ? null : Math.max(0, Math.min(100, Number(percent)));
+          const capacityText = cap === null || cap === undefined ? "—" : cap;
+          const usageText = displayPercent === null ? "—" : Math.round(displayPercent);
+
           return `
-            <article class="rz-pool-card ${saturated ? "rz-saturated" : ""}">
-              <div class="rz-pool-head">
+            <article class="rz-pool-card rz-pool-card-compact ${saturated ? "rz-saturated" : ""}">
+              <div class="rz-pool-compact-head">
                 <div>
                   <div class="rz-pool-name">${esc(name)}</div>
-                  <div class="rz-pool-status">Réseau actif</div>
+                  <div class="rz-pool-compact-sub">${esc(live)}/${esc(capacityText)} connectés</div>
                 </div>
-                <div class="rz-pool-badge">${esc(live)}</div>
-              </div>
-
-              <div class="rz-pool-metrics">
-                <div class="rz-metric">
-                  <div class="rz-metric-label">Live clients</div>
-                  <div class="rz-metric-value">${esc(live)}</div>
-                </div>
-                <div class="rz-metric">
-                  <div class="rz-metric-label">Capacity</div>
-                  <div class="rz-metric-value">${esc(cap ?? "—")}</div>
+                <div class="rz-pool-usage-pill">
+                  ${esc(usageText)}
+                  <span>% utilisé</span>
                 </div>
               </div>
 
               ${displayPercent === null ? `
                 <div class="rz-progress-block">
-                  <div class="rz-progress-top"><span>Utilisation</span><span>—</span></div>
+                  <div class="rz-progress-top"><span>Utilisation réseau</span><span>—</span></div>
                   <div class="rz-progress-track"><div class="rz-progress-fill" style="width:0%;"></div></div>
                 </div>
               ` : pctBar(displayPercent)}
-
-              ${apListHtml}
             </article>
           `;
         }).join("");
+
         // Auto-center first pool card on mobile (run once only)
-if (
-  !__initialMobilePoolScrollDone &&
-  window.innerWidth <= 768
-) {
-  __initialMobilePoolScrollDone = true;
+        if (!__initialMobilePoolScrollDone && window.innerWidth <= 768) {
+          __initialMobilePoolScrollDone = true;
 
-  requestAnimationFrame(() => {
-    setTimeout(() => {
-      const firstCard = document.querySelector(".rz-pool-card");
+          requestAnimationFrame(() => {
+            setTimeout(() => {
+              const firstCard = document.querySelector(".rz-pool-card");
+              if (!firstCard) return;
 
-      if (!firstCard) return;
+              const rect = firstCard.getBoundingClientRect();
+              const absoluteTop = window.scrollY + rect.top;
+              const offset = 110;
 
-      const rect = firstCard.getBoundingClientRect();
-      const absoluteTop = window.scrollY + rect.top;
-
-      const offset = 140; // keep title visible below filters
-
-      window.scrollTo({
-        top: Math.max(0, absoluteTop - offset),
-        behavior: "smooth"
-      });
-    }, 250);
-  });
-}
-
+              window.scrollTo({
+                top: Math.max(0, absoluteTop - offset),
+                behavior: "smooth"
+              });
+            }, 250);
+          });
+        }
       }
 
       async function load() {
         try {
-          if (statusEl) statusEl.textContent = "Loading pools…";
-          container.innerHTML = `<div class="rz-loading-card">Loading…</div>`;
+          if (statusEl) statusEl.textContent = "Chargement des pools…";
+          container.innerHTML = `<div class="rz-loading-card">Chargement…</div>`;
 
-          const [allAps, pools, liveStatsByPool] = await Promise.all([
-            fetchAllAps(),
+          const [pools, liveStatsByPool] = await Promise.all([
             fetchPools(),
             fetchPoolLiveStatsMap(),
           ]);
@@ -366,24 +268,23 @@ if (
               .sort((a, b) => a.localeCompare(b));
 
             poolFilterEl.innerHTML =
-              `<option value="">All pools</option>` +
+              `<option value="">Tous les pools</option>` +
               names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
 
             poolFilterEl.value = names.includes(current) ? current : "";
           }
 
-          render(pools, allAps, liveStatsByPool);
-          
-          if (statusEl) statusEl.textContent = `Loaded ${pools?.length || 0} pool(s).`;
+          render(pools, liveStatsByPool);
+
+          if (statusEl) statusEl.textContent = `Chargé : ${poolCountLabel(pools?.length || 0)}.`;
         } catch (e) {
           if (statusEl) statusEl.textContent = "";
-          container.innerHTML = `<div class="rz-empty-card" style="color:#d9534f;">Failed to load: ${esc(e.message || e)}</div>`;
+          container.innerHTML = `<div class="rz-empty-card" style="color:#d9534f;">Échec du chargement : ${esc(e.message || e)}</div>`;
         }
       }
 
       refreshBtn?.addEventListener("click", load);
       poolFilterEl?.addEventListener("change", load);
-      qEl?.addEventListener("input", async () => { await load(); });
 
       await load();
     }
@@ -394,8 +295,8 @@ if (
 
       try {
         const admin = await fetchJSON("/api/admin/me");
-        if (meEl) meEl.textContent = "Connected as " + (admin.email || admin.username || "admin");
-        if (statusEl) statusEl.textContent = "Loading dashboard…";
+        if (meEl) meEl.textContent = "Connecté en tant que " + (admin.email || admin.username || "admin");
+        if (statusEl) statusEl.textContent = "Chargement du tableau de bord…";
         await loadDashboardPools();
       } catch (e) {
         window.location.href = "/admin/login.html";
