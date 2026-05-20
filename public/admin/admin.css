@@ -1819,3 +1819,171 @@ button.filter-btn.primary:hover{
     padding: 7px 10px !important;
   }
 }
+
+
+/* ================================================================== */
+/* RAZAFI Dashboard mobile space-saving polish                         */
+/* Scope: visual only. Bottom nav/filter/header compactness.           */
+/* ================================================================== */
+
+/* Identity chip: icon + clean two-line text */
+.rz-owner-chip{
+  align-items: center !important;
+  gap: 8px !important;
+  max-width: min(520px, 100%) !important;
+}
+
+.rz-owner-chip::before{
+  margin-top: 0 !important;
+  flex: 0 0 auto;
+}
+
+.rz-owner-text{
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.12;
+}
+
+.rz-owner-label,
+.rz-owner-name{
+  display: block;
+}
+
+.rz-owner-label{
+  font-size: 11px;
+  font-weight: 850;
+  color: #64748b;
+}
+
+.rz-owner-name{
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 950;
+  color: #1d4ed8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Bottom nav: closer to Telegram height while staying fixed */
+.rz-bottom-nav{
+  bottom: 10px !important;
+  width: min(420px, calc(100vw - 30px)) !important;
+  padding: 6px !important;
+  gap: 4px !important;
+  border-radius: 26px !important;
+  z-index: 99999 !important;
+}
+
+.rz-bottom-item{
+  min-height: 46px !important;
+  border-radius: 20px !important;
+  gap: 2px !important;
+  font-size: 10px !important;
+  line-height: 1.05 !important;
+}
+
+.rz-bottom-icon{
+  width: 20px !important;
+  height: 20px !important;
+}
+
+.rz-bottom-icon svg{
+  width: 20px !important;
+  height: 20px !important;
+}
+
+/* Leave enough room, but less than before */
+body.rz-admin-shell{
+  padding-bottom: 118px !important;
+}
+
+#status,
+.rz-dashboard-status{
+  padding-bottom: 76px !important;
+}
+
+@media (max-width: 700px){
+  body.rz-admin-shell .login-container{
+    padding-top: 10px !important;
+    padding-bottom: 96px !important;
+  }
+
+  body.rz-admin-shell > .login-container > .card{
+    padding-top: 13px !important;
+  }
+
+  body.rz-admin-shell .topbar{
+    margin-bottom: 8px !important;
+  }
+
+  .rz-hero-title{
+    font-size: 24px !important;
+    line-height: 1.02 !important;
+  }
+
+  .rz-owner-chip{
+    margin-top: 8px !important;
+    padding: 6px 9px !important;
+    border-radius: 18px !important;
+  }
+
+  .rz-owner-name{
+    max-width: 260px;
+  }
+
+  /* Compact filter/action block on mobile: same line */
+  .rz-dashboard-tools.rz-dashboard-tools-compact{
+    padding: 8px !important;
+    border-radius: 22px !important;
+    margin-top: 6px !important;
+    margin-bottom: 4px !important;
+  }
+
+  .rz-dashboard-tools-compact .filters{
+    grid-template-columns: minmax(0, 1fr) 116px !important;
+    gap: 8px !important;
+    align-items: center !important;
+  }
+
+  .rz-dashboard-tools-compact #poolFilter,
+  .rz-dashboard-tools select,
+  .sticky-bar select{
+    height: 42px !important;
+    min-height: 42px !important;
+    border-radius: 16px !important;
+    font-size: 15px !important;
+    padding: 0 12px !important;
+  }
+
+  .rz-dashboard-tools-compact #refresh{
+    width: auto !important;
+    min-width: 0 !important;
+    min-height: 42px !important;
+    height: 42px !important;
+    border-radius: 16px !important;
+    padding: 0 10px !important;
+    font-size: 14px !important;
+  }
+
+  .rz-dashboard-tools #refresh::before{
+    margin-right: 5px !important;
+    font-size: 15px !important;
+  }
+
+  .rz-pools-grid{
+    margin-top: 8px !important;
+  }
+
+  /* On very narrow phones, keep readability by stacking only if necessary */
+  @media (max-width: 340px){
+    .rz-dashboard-tools-compact .filters{
+      grid-template-columns: 1fr !important;
+    }
+
+    .rz-dashboard-tools-compact #refresh{
+      width: 100% !important;
+    }
+  }
+}

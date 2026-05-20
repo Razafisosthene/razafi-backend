@@ -283,8 +283,10 @@
       const raw = String(admin?.email || admin?.username || "admin").trim();
       const display = raw.includes("@") ? raw.split("@")[0] : raw;
       return `
-        <span class="rz-owner-label">Connecté en tant que :</span>
-        <span class="rz-owner-name">${esc(display)}</span>
+        <span class="rz-owner-text">
+          <span class="rz-owner-label">Connecté en tant que :</span>
+          <span class="rz-owner-name">${esc(display)}</span>
+        </span>
       `;
     }
 
