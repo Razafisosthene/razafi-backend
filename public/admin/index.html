@@ -14,7 +14,6 @@
       <div class="topbar">
         <div class="title">
           <h1 class="rz-hero-title">Tableau de bord</h1>
-          <div class="rz-hero-subtitle">Vue rapide des pools, clients connectés et utilisation réseau.</div>
           <div id="me" class="rz-owner-chip">Vérification de la session...</div>
         </div>
 
@@ -280,13 +279,22 @@
       await load();
     }
 
+    function formatAdminIdentity(admin) {
+      const raw = String(admin?.email || admin?.username || "admin").trim();
+      const display = raw.includes("@") ? raw.split("@")[0] : raw;
+      return `
+        <span class="rz-owner-label">Connecté en tant que :</span>
+        <span class="rz-owner-name">${esc(display)}</span>
+      `;
+    }
+
     async function checkSession() {
       const meEl = document.getElementById("me");
       const statusEl = document.getElementById("status");
 
       try {
         const admin = await fetchJSON("/api/admin/me");
-        if (meEl) meEl.textContent = "Connecté en tant que " + (admin.email || admin.username || "admin");
+        if (meEl) meEl.innerHTML = formatAdminIdentity(admin);
         if (statusEl) statusEl.textContent = "Chargement du tableau de bord…";
         await loadDashboardPools();
       } catch (e) {

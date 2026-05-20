@@ -1770,3 +1770,52 @@ button.filter-btn.primary:hover{
     margin-top: 10px !important;
   }
 }
+
+
+/* ================================================================== */
+/* RAZAFI compact admin identity (shared header polish)                */
+/* Scope: visual only. Keeps auth/session logic unchanged.             */
+/* ================================================================== */
+.rz-hero-subtitle{
+  display: none !important;
+}
+
+.rz-owner-chip{
+  display: inline-flex !important;
+  align-items: flex-start !important;
+  gap: 8px !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  line-height: 1.18 !important;
+}
+
+.rz-owner-chip::before{
+  margin-top: 4px;
+}
+
+.rz-owner-label,
+.rz-owner-name{
+  display: block;
+}
+
+.rz-owner-label{
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.rz-owner-name{
+  margin-top: 2px;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 950;
+  word-break: break-word;
+}
+
+@media (max-width: 700px){
+  .rz-owner-chip{
+    max-width: 100%;
+    padding: 7px 10px !important;
+  }
+}
