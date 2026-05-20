@@ -66,8 +66,6 @@
     // ---------------------------------------------------------------------------
 
     const $ = (id) => document.getElementById(id);
-    let __initialMobilePoolScrollDone = false;
-
     function esc(s) {
       return String(s ?? "").replace(/[&<>"']/g, (c) => ({
         "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
@@ -88,7 +86,7 @@
       return `
         <div class="rz-progress-block">
           <div class="rz-progress-top">
-            <span>Utilisation réseau</span>
+            <span>${esc(networkStatusLabel(p))}</span>
             <span>${esc(Math.round(p))}%</span>
           </div>
           <div class="rz-progress-track">
@@ -122,6 +120,19 @@
     function poolCountLabel(n) {
       const count = Number(n) || 0;
       return `${count} pool${count > 1 ? "s" : ""}`;
+    }
+
+    function networkStatusLabel(percentValue) {
+      if (percentValue === null || percentValue === undefined || Number.isNaN(Number(percentValue))) {
+        return "Statut réseau inconnu";
+      }
+
+      const p = Math.max(0, Math.min(100, Number(percentValue)));
+      if (p >= 91) return "Réseau saturé";
+      if (p >= 76) return "Réseau chargé";
+      if (p >= 51) return "Réseau occupé";
+      if (p >= 26) return "Réseau stable";
+      return "Réseau fluide";
     }
 
     async function loadDashboardPools() {
@@ -204,50 +215,30 @@
           const displayPercent = percent === null ? null : Math.max(0, Math.min(100, Number(percent)));
           const capacityText = cap === null || cap === undefined ? "—" : cap;
           const usageText = displayPercent === null ? "—" : Math.round(displayPercent);
+          const clientWord = live > 1 ? "clients connectés" : "client connecté";
 
           return `
             <article class="rz-pool-card rz-pool-card-compact ${saturated ? "rz-saturated" : ""}">
               <div class="rz-pool-compact-head">
                 <div>
                   <div class="rz-pool-name">${esc(name)}</div>
-                  <div class="rz-pool-compact-sub">${esc(live)}/${esc(capacityText)} connectés</div>
+                  <div class="rz-pool-compact-sub">${esc(live)} ${esc(clientWord)}</div>
                 </div>
                 <div class="rz-pool-usage-pill">
-                  ${esc(usageText)}
-                  <span>% utilisé</span>
+                  ${esc(live)}/${esc(capacityText)}
+                  <span>capacité</span>
                 </div>
               </div>
 
               ${displayPercent === null ? `
                 <div class="rz-progress-block">
-                  <div class="rz-progress-top"><span>Utilisation réseau</span><span>—</span></div>
+                  <div class="rz-progress-top"><span>Statut réseau inconnu</span><span>—</span></div>
                   <div class="rz-progress-track"><div class="rz-progress-fill" style="width:0%;"></div></div>
                 </div>
               ` : pctBar(displayPercent)}
             </article>
           `;
         }).join("");
-
-        // Auto-center first pool card on mobile (run once only)
-        if (!__initialMobilePoolScrollDone && window.innerWidth <= 768) {
-          __initialMobilePoolScrollDone = true;
-
-          requestAnimationFrame(() => {
-            setTimeout(() => {
-              const firstCard = document.querySelector(".rz-pool-card");
-              if (!firstCard) return;
-
-              const rect = firstCard.getBoundingClientRect();
-              const absoluteTop = window.scrollY + rect.top;
-              const offset = 110;
-
-              window.scrollTo({
-                top: Math.max(0, absoluteTop - offset),
-                behavior: "smooth"
-              });
-            }, 250);
-          });
-        }
       }
 
       async function load() {
