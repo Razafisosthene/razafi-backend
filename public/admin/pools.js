@@ -256,8 +256,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     rowsEl.innerHTML = `<tr><td class="rz-pools-empty" colspan="6">Chargement…</td></tr>`;
 
     const params = new URLSearchParams();
-    const q = (qEl?.value || "").trim();
-    if (q) params.set("q", q);
+    const q = (qEl?.value || "").trim().toLowerCase();
+
+    // Important safety: do NOT send q to /api/admin/pools.
+    // Some backend versions return db_error when q is used.
+    // We load the pools for the selected system, then filter locally in the browser.
     params.set("limit", "200");
     params.set("offset", "0");
     params.set("system", activeSystem);
@@ -269,12 +272,22 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     pools = poolsData.pools || poolsData.data || poolsData || [];
 
-    if (!pools.length) {
-      rowsEl.innerHTML = `<tr><td class="rz-pools-empty" colspan="6">Aucun pool.</td></tr>`;
+    const visiblePools = q
+      ? pools.filter((p) => [
+          p?.name,
+          p?.id,
+          p?.contact_phone,
+          p?.mikrotik_ip,
+          p?.radius_nas_id,
+        ].join(" ").toLowerCase().includes(q))
+      : pools;
+
+    if (!visiblePools.length) {
+      rowsEl.innerHTML = `<tr><td class="rz-pools-empty" colspan="6">Aucun pool trouvé.</td></tr>`;
       return;
     }
 
-    rowsEl.innerHTML = pools.map(p => {
+    rowsEl.innerHTML = visiblePools.map(p => {
       const pid = String(p.id || "");
       const name = p.name || "";
       const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "" : String(p.capacity_max);
@@ -743,6 +756,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadPools();
 
   refreshBtn?.addEventListener("click", () => loadPools().catch(e => showMsg(msgEl, e.message, true)));
+
+  let searchTimer = null;
+  qEl?.addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      loadPools().catch(err => showMsg(msgEl, err.message, true));
+    }, 250);
+  });
+
   qEl?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") loadPools().catch(err => showMsg(msgEl, err.message, true));
   });
