@@ -5,158 +5,203 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>RAZAFI Admin — Plans</title>
   <link rel="stylesheet" href="/admin/admin.css" />
+
+  <!-- Plans page local polish only: no global admin.css change -->
+  <style>
+    .rz-plans-shell{display:flex;flex-direction:column;gap:14px;}
+    .rz-plans-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+    .rz-plans-title-block{min-width:0;}
+    .rz-plans-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+    .rz-plans-me{white-space:normal;line-height:1.25;}
+    .rz-plans-me strong{display:block;color:var(--rz-text,#111827);font-weight:900;margin-top:2px;word-break:break-word;}
+    .rz-plans-filter-grid{display:grid;grid-template-columns:minmax(220px,1.4fr) repeat(3,minmax(150px,.7fr)) minmax(180px,.9fr) auto auto;gap:10px;align-items:center;}
+    .rz-plans-filter-grid select,.rz-plans-filter-grid input{margin-bottom:0;}
+    .rz-plans-table-card{margin-top:14px;border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);overflow:hidden;}
+    .rz-plans-table-wrap{overflow:auto;-webkit-overflow-scrolling:touch;}
+    .rz-plans-table{width:100%;border-collapse:separate;border-spacing:0;min-width:1120px;}
+    .rz-plans-table th{position:sticky;top:0;z-index:2;text-align:left;padding:12px 10px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--rz-muted,#6b7280);background:rgba(248,250,252,.96);border-bottom:1px solid rgba(17,24,39,.08);}
+    .rz-plans-table td{padding:12px 10px;border-bottom:1px solid rgba(17,24,39,.07);vertical-align:middle;font-size:14px;}
+    .rz-plans-table tbody tr:hover{background:rgba(13,110,253,.04);}
+    .rz-plan-name{font-weight:950;letter-spacing:-.02em;}
+    .rz-muted-mini{margin-top:4px;color:var(--rz-muted,#6b7280);font-size:12px;font-weight:700;}
+    .rz-status-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 9px;border-radius:999px;font-size:12px;font-weight:900;border:1px solid rgba(17,24,39,.08);background:rgba(255,255,255,.78);white-space:nowrap;}
+    .rz-status-pill.ok{background:rgba(22,163,74,.12);color:#15803d;border-color:rgba(22,163,74,.22);}
+    .rz-status-pill.off{background:rgba(107,114,128,.10);color:#4b5563;border-color:rgba(107,114,128,.18);}
+    .rz-status-pill.warn{background:rgba(245,158,11,.13);color:#92400e;border-color:rgba(245,158,11,.25);}
+    .rz-plan-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+    .rz-plan-actions button{width:auto;padding:8px 11px;border-radius:12px;font-size:13px;box-shadow:none;}
+    .rz-empty-state{padding:22px;color:var(--rz-muted,#6b7280);font-weight:800;}
+    .rz-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+    .rz-form-grid .full{grid-column:1/-1;}
+    .rz-form-hint{font-size:12px;color:var(--rz-muted,#6b7280);margin:-4px 0 6px;line-height:1.35;}
+    .rz-modal-title{margin:0 0 4px 0;font-size:24px;letter-spacing:-.04em;color:var(--rz-text,#111827);}
+    .rz-modal-sub{margin:0 0 14px 0;color:var(--rz-muted,#6b7280);font-size:13px;line-height:1.35;}
+    .rz-hidden-system-toggle{display:none!important;}
+    @media (max-width:980px){.rz-plans-filter-grid{grid-template-columns:1fr 1fr;}.rz-plans-filter-grid .filter-search{grid-column:1/-1;}.rz-plans-filter-grid button{width:100%;}}
+    @media (max-width:640px){.rz-plans-filter-grid{grid-template-columns:1fr;}.rz-plans-actions{width:100%;}.rz-plans-actions button{width:100%;}.rz-form-grid{grid-template-columns:1fr;}.rz-form-grid .full{grid-column:auto;}.rz-plans-table-card{border-radius:20px;}.rz-plans-table th,.rz-plans-table td{padding:10px 9px;}.rz-plan-actions button{flex:1 1 auto;}}
+  </style>
 </head>
-<body>
+<body class="rz-admin-shell plans-page">
   <div class="login-container">
-    <div class="card" style="max-width: 1100px; width: 96%;">
-      <div class="topbar">
-        <div>
-          <h1 style="margin:0;">Plans</h1>
-          <div id="me" class="subtitle">Loading...</div>
+    <div class="card rz-plans-shell" style="max-width: 1180px; width: 96%;">
+      <div class="topbar rz-plans-header">
+        <div class="title rz-plans-title-block">
+          <h1 class="rz-hero-title">Plans</h1>
+          <div class="rz-hero-subtitle">Créez, modifiez et organisez les forfaits affichés sur le portail WiFi.</div>
+          <div id="me" class="subtitle rz-plans-me">Vérification de la session…</div>
         </div>
 
-        <!-- legacy nav kept hidden to avoid breaking plans.js -->
+        <div class="rz-plans-actions">
+          <button id="newBtn" type="button" class="filter-btn primary">+ Nouveau plan</button>
+        </div>
+
+        <!-- Navigation legacy gardée cachée pour compatibilité JS / rollback rapide -->
         <div class="nav" style="display:none;">
           <a href="/admin/"><button type="button">Dashboard</button></a>
           <a href="/admin/clients.html"><button type="button">Clients</button></a>
           <a href="/admin/aps.html"><button type="button">APs</button></a>
           <a href="/admin/pools.html"><button type="button">Pools</button></a>
           <a href="/admin/revenue.html"><button type="button">Revenue</button></a>
-          <button id="logoutBtn" type="button">Logout</button>
+          <button id="logoutBtn" type="button">Déconnexion</button>
         </div>
       </div>
 
-      <hr style="opacity:.2; margin:18px 0;" />
+      <div class="sticky-bar">
+        <div class="filters rz-plans-filter-grid">
+          <input id="q" class="filter-search" placeholder="Rechercher un plan…" />
 
-      <div class="filters sticky-bar">
-        <input id="q" class="filter-search" placeholder="Search by name…" />
-        <select id="activeFilter" class="filter-select">
-          <option value="all">Active: all</option>
-          <option value="1">Active only</option>
-          <option value="0">Inactive only</option>
-        </select>
-        <select id="visibleFilter" class="filter-select">
-          <option value="all">Visible: all</option>
-          <option value="1">Visible only</option>
-          <option value="0">Hidden only</option>
-        </select>
-        <select id="deletedFilter" class="filter-select">
-          <option value="hide">Deleted: hide</option>
-          <option value="show">Deleted: show</option>
-          <option value="only">Deleted: only</option>
-        </select>
-
-        <div class="system-toggle" style="display:flex; gap:8px; align-items:center;">
-          <button id="systemPortalBtn" type="button" class="filter-btn">Portal</button>
-          <button id="systemMikrotikBtn" type="button" class="filter-btn">MikroTik</button>
-        </div>
-        <div id="poolFilterWrap" style="display:none;">
-          <select id="poolFilter" class="filter-select">
-            <option value="">Pool: all</option>
+          <select id="activeFilter" class="filter-select" aria-label="Filtrer par statut actif">
+            <option value="all">Statut : tous</option>
+            <option value="1">Actifs seulement</option>
+            <option value="0">Inactifs seulement</option>
           </select>
+
+          <select id="visibleFilter" class="filter-select" aria-label="Filtrer par visibilité">
+            <option value="all">Visibilité : tous</option>
+            <option value="1">Visibles seulement</option>
+            <option value="0">Masqués seulement</option>
+          </select>
+
+          <select id="deletedFilter" class="filter-select" aria-label="Filtrer les plans supprimés">
+            <option value="hide">Supprimés : masquer</option>
+            <option value="show">Supprimés : afficher</option>
+            <option value="only">Supprimés seulement</option>
+          </select>
+
+          <!-- UI simplifiée : MikroTik est utilisé directement. Le système Portal reste conservé côté code/backend. -->
+          <div class="system-toggle rz-hidden-system-toggle" aria-hidden="true">
+            <button id="systemPortalBtn" type="button" class="filter-btn">Portal</button>
+            <button id="systemMikrotikBtn" type="button" class="filter-btn">MikroTik</button>
+          </div>
+
+          <div id="poolFilterWrap">
+            <select id="poolFilter" class="filter-select" aria-label="Filtrer par pool">
+              <option value="">Tous les pools</option>
+            </select>
+          </div>
+
+          <button id="refreshBtn" type="button" class="filter-btn">Actualiser</button>
         </div>
 
-        <button id="refreshBtn" type="button" class="filter-btn">Refresh</button>
-        <button id="newBtn" type="button" class="filter-btn primary">+ New plan</button>
+        <div class="subtitle" style="margin-top:8px;">Les plans affichés ici sont utilisés par les routeurs/pools MikroTik. Le mode Portal reste conservé en interne si vous voulez le réactiver plus tard.</div>
       </div>
 
       <div id="error" class="error" style="margin-top:12px;"></div>
 
-      <div style="overflow:auto; margin-top:14px;">
-        <table style="width:100%; border-collapse:collapse;">
-          <thead>
-            <tr style="text-align:left; opacity:.9;">
-              <th style="padding:10px;">Name</th>
-              <th style="padding:10px;">Price</th>
-              <th style="padding:10px;">Duration</th>
-              <th style="padding:10px;">Data (GB)</th>
-              <th style="padding:10px;">Speed</th>
-              <th style="padding:10px;">Devices</th>
-              <th style="padding:10px;">Visible</th>
-              <th style="padding:10px;">Active</th>
-              <th style="padding:10px;">Auto-hide</th>
-              <th style="padding:10px;">Sales limit</th>
-              <th style="padding:10px;">Sort</th>
-              <th style="padding:10px;">Actions</th>
-            </tr>
-          </thead>
-          <tbody id="rows"></tbody>
-        </table>
+      <div class="rz-plans-table-card">
+        <div class="rz-plans-table-wrap">
+          <table class="rz-plans-table">
+            <thead>
+              <tr>
+                <th>Plan</th>
+                <th>Prix</th>
+                <th>Durée</th>
+                <th>Data</th>
+                <th>Vitesse</th>
+                <th>Appareils</th>
+                <th>Visible</th>
+                <th>Actif</th>
+                <th>Auto-hide</th>
+                <th>Limite ventes</th>
+                <th>Ordre</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="rows">
+              <tr><td colspan="12" class="rz-empty-state">Chargement…</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
-    <!-- Simple modal -->
-<div id="modal" class="modal" style="display:none;">
-  <div class="card modal-card">
-    <h2 id="modalTitle" style="margin-top:0;">New plan</h2>
-    <form id="form">
-      <input id="f_name" placeholder="Name" required />
-      <input id="f_price_ar" placeholder="Price (Ar)" required />
+      <!-- Modal plan -->
+      <div id="modal" class="modal" style="display:none;">
+        <div class="card modal-card" style="max-width: 680px;">
+          <h2 id="modalTitle" class="rz-modal-title">Nouveau plan</h2>
+          <p class="rz-modal-sub">Renseignez les informations du forfait. Les réglages seront appliqués selon le pool MikroTik sélectionné.</p>
 
-      <div class="form-row" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-        <input
-          id="f_duration_value"
-          placeholder="Duration"
-          required
-          style="width:140px; min-width:140px; flex:0 0 140px;"
-        />
+          <form id="form">
+            <div class="rz-form-grid">
+              <input id="f_name" class="full" placeholder="Nom du plan" required />
+              <input id="f_price_ar" placeholder="Prix (Ar)" required inputmode="numeric" />
+              <input id="f_max_devices" placeholder="Nombre d’appareils" required inputmode="numeric" />
 
-        <select id="f_duration_unit" style="width:auto;">
-          <option value="minutes">minutes</option>
-          <option value="hours">hours</option>
-          <option value="days">days</option>
-        </select>
+              <div class="form-row full" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                <input id="f_duration_value" placeholder="Durée" required style="width:140px; min-width:140px; flex:0 0 140px;" inputmode="numeric" />
+                <select id="f_duration_unit" style="width:auto; flex:1 1 160px;">
+                  <option value="minutes">minutes</option>
+                  <option value="hours">heures</option>
+                  <option value="days">jours</option>
+                </select>
+              </div>
+
+              <div class="form-row full" id="poolRow" style="display:flex; margin-top:2px;">
+                <select id="f_pool_id" style="flex:1;">
+                  <option value="">Sélectionner un pool…</option>
+                </select>
+              </div>
+              <div id="poolHint" class="rz-form-hint full">Obligatoire pour les plans MikroTik. Le pool/routeur applique ensuite l’accès.</div>
+
+              <label class="check-row full">
+                <input id="f_unlimited_data" type="checkbox" />
+                <span>Data illimitée</span>
+              </label>
+
+              <input id="f_data_gb" placeholder="Data (Go)" required inputmode="decimal" />
+              <input id="f_mikrotik_rate_limit" placeholder="Vitesse max (ex : 3M/3M)" />
+              <div class="rz-form-hint full">Optionnel. Exemple : 3M/3M. Si vide, le fallback d’urgence reste utilisé.</div>
+
+              <input id="f_sort_order" placeholder="Ordre d’affichage" inputmode="numeric" />
+              <input id="f_sales_limit" placeholder="Limite de ventes" inputmode="numeric" />
+              <div class="rz-form-hint full">Optionnel. Compte les vouchers pending + active pour ce plan/pool. Vide = aucune limite.</div>
+
+              <label class="check-row full">
+                <input id="f_auto_hide_when_limit_reached" type="checkbox" />
+                <span>Masquer automatiquement quand la limite est atteinte</span>
+              </label>
+
+              <label class="check-row">
+                <input id="f_is_visible" type="checkbox" checked />
+                <span>Visible sur le portail</span>
+              </label>
+
+              <label class="check-row">
+                <input id="f_is_active" type="checkbox" checked />
+                <span>Actif</span>
+              </label>
+            </div>
+
+            <div id="formError" class="error" style="margin:8px 0;"></div>
+
+            <div class="modal-actions">
+              <button id="cancelBtn" type="button" class="filter-btn">Annuler</button>
+              <button id="saveBtn" type="submit" class="filter-btn primary">Enregistrer</button>
+            </div>
+          </form>
+        </div>
       </div>
-
-      <div class="form-row" id="poolRow" style="display:none; margin-top:6px;">
-         <select id="f_pool_id" style="flex:1;">
-          <option value="">Select MikroTik pool…</option>
-        </select>
-      </div>
-      <div id="poolHint" class="subtitle" style="display:none; margin:4px 0 10px 0; opacity:.8;">
-        Required for MikroTik plans (enforcement is done by the pool/router).
-      </div>
-
-      <label class="check-row">
-        <input id="f_unlimited_data" type="checkbox" />
-        <span>Unlimited data</span>
-      </label>
-
-      <input id="f_data_gb" placeholder="Data (GB)" required />
-      <input id="f_mikrotik_rate_limit" placeholder="Speed limit (ex: 3M/3M)" />
-      <div class="subtitle" style="margin:-6px 0 8px 0; opacity:.75; font-size:12px;">
-        Optional for MikroTik plans. Example: 3M/3M. Empty = emergency fallback.
-      </div>
-      <input id="f_max_devices" placeholder="Max devices" required />
-      <input id="f_sort_order" placeholder="Sort order" />
-
-      <label class="check-row">
-        <input id="f_auto_hide_when_limit_reached" type="checkbox" />
-        <span>Auto-hide when sales limit is reached</span>
-      </label>
-      <input id="f_sales_limit" placeholder="Sales limit (valid vouchers)" inputmode="numeric" />
-      <div class="subtitle" style="margin:-6px 0 8px 0; opacity:.75; font-size:12px;">
-        Optional. Counts pending + active vouchers for this plan/pool. Empty = no limit.
-      </div>
-
-      <label class="check-row">
-        <input id="f_is_visible" type="checkbox" checked />
-        <span>Visible</span>
-      </label>
-      <label class="check-row">
-        <input id="f_is_active" type="checkbox" checked />
-        <span>Active</span>
-      </label>
-
-      <div id="formError" class="error" style="margin:8px 0;"></div>
-
-      <div style="display:flex; gap:10px; justify-content:flex-end;">
-        <button id="cancelBtn" type="button" style="width:auto;">Cancel</button>
-        <button id="saveBtn" type="submit" style="width:auto;">Save</button>
-      </div>
-    </form>
+    </div>
   </div>
-</div>
-
 
   <!-- NEW shared drawer -->
   <script src="/admin/nav.js"></script>
