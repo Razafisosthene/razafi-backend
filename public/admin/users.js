@@ -4,7 +4,7 @@ async function fetchJSON(url, opts = {}) {
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { data = { error: "non_json" }; }
-  if (!res.ok) throw new Error(data?.error || data?.message || "Request failed");
+  if (!res.ok) throw new Error(data?.error || data?.message || "Requête échouée");
   return data;
 }
 
@@ -25,6 +25,30 @@ function uniq(arr) {
     out.push(s);
   }
   return out;
+}
+
+function adminDisplayName(user) {
+  const raw = String(user?.email || user?.username || "admin").trim();
+  return raw.includes("@") ? raw.split("@")[0] : raw;
+}
+
+function roleLabel(role) {
+  const r = String(role || "pool_readonly").toLowerCase();
+  if (r === "superadmin") return "Superadmin";
+  if (r === "pool_readonly") return "Lecture seule";
+  return role || "Lecture seule";
+}
+
+function friendlyError(code) {
+  const s = String(code || "").trim();
+  const map = {
+    non_json: "Réponse serveur invalide.",
+    email_invalid: "Email invalide.",
+    password_too_short: "Le mot de passe doit contenir au moins 6 caractères.",
+    pool_required: "Sélectionnez au moins un pool.",
+    redirected: "Redirection…",
+  };
+  return map[s] || s || "Erreur inconnue.";
 }
 
 const elErr = document.getElementById("err");
@@ -54,12 +78,12 @@ let editingId = null;
 
 function showErr(msg) {
   elErr.style.display = msg ? "block" : "none";
-  elErr.textContent = msg || "";
+  elErr.textContent = msg ? friendlyError(msg) : "";
 }
 
 function showModalErr(msg) {
   modalErr.style.display = msg ? "block" : "none";
-  modalErr.textContent = msg || "";
+  modalErr.textContent = msg ? friendlyError(msg) : "";
 }
 
 function openModal(mode, user) {
@@ -69,19 +93,20 @@ function openModal(mode, user) {
 
   if (mode === "new") {
     editingId = null;
-    modalTitle.textContent = "New User";
-    modalSub.textContent = "Pool read-only user";
+    modalTitle.textContent = "Nouvel utilisateur";
+    modalSub.textContent = "Utilisateur avec accès limité aux pools sélectionnés.";
     emailInput.value = "";
     passwordInput.value = "";
+    passwordInput.placeholder = "6 caractères minimum";
     activeToggle.checked = true;
-    // empty selection
     for (const opt of poolsSelect.options) opt.selected = false;
   } else {
     editingId = user.id;
-    modalTitle.textContent = "Edit User";
-    modalSub.textContent = user.role === "superadmin" ? "Superadmin" : "Pool read-only user";
+    modalTitle.textContent = "Modifier utilisateur";
+    modalSub.textContent = user.role === "superadmin" ? "Superadmin" : "Utilisateur avec accès limité aux pools sélectionnés.";
     emailInput.value = user.email || "";
     passwordInput.value = "";
+    passwordInput.placeholder = "Laisser vide pour garder l’actuel";
     activeToggle.checked = user.is_active !== false;
 
     const assigned = new Set((user.pools || []).map(p => String(p.pool_id || p.id || "").trim()).filter(Boolean));
@@ -107,10 +132,9 @@ function selectedPools() {
 async function requireSuperadmin() {
   try {
     me = await fetchJSON("/api/admin/me");
-    document.getElementById("me").textContent = "Connected as " + (me.email || "admin");
+    document.getElementById("me").innerHTML = `Connecté :<strong>${esc(adminDisplayName(me))}</strong>`;
     const isSuper = !!me.is_superadmin || String(me.role || "").toLowerCase() === "superadmin";
     if (!isSuper) {
-      // server also blocks /admin/users.html, but keep UX clean
       window.location.href = "/admin/";
       throw new Error("redirected");
     }
@@ -132,24 +156,26 @@ async function loadPools() {
 
 function render(items) {
   if (!items.length) {
-    tbody.innerHTML = `<tr><td colspan="5" style="padding:12px; opacity:.75;">No users.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="rz-empty-state">Aucun utilisateur.</td></tr>`;
     return;
   }
 
   tbody.innerHTML = items.map(u => {
     const pools = (u.pools || []).map(p => esc(p.pool_name || p.pool_id || "")).join(", ") || "—";
-    const role = esc(u.role || "pool_readonly");
-    const status = u.is_active === false ? "Disabled" : "Active";
-    const statusHtml = u.is_active === false ? `<span class="badge danger">${status}</span>` : `<span class="badge success">${status}</span>`;
-    const canEdit = (String(u.role || "").toLowerCase() !== "superadmin"); // keep 1 superadmin simple
+    const role = esc(roleLabel(u.role));
+    const active = u.is_active !== false;
+    const statusHtml = active
+      ? `<span class="rz-status-pill ok">Actif</span>`
+      : `<span class="rz-status-pill off">Désactivé</span>`;
+    const canEdit = (String(u.role || "").toLowerCase() !== "superadmin");
     return `
       <tr>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(u.email || "—")}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${role}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${statusHtml}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${pools}</td>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08); text-align:right;">
-          <button data-edit="${esc(u.id)}" type="button" ${canEdit ? "" : "disabled"}>Edit</button>
+        <td><div class="rz-user-email">${esc(u.email || "—")}</div></td>
+        <td>${role}</td>
+        <td>${statusHtml}</td>
+        <td><div class="rz-user-pools">${pools}</div></td>
+        <td style="text-align:right;">
+          <button data-edit="${esc(u.id)}" type="button" class="filter-btn" style="width:auto;" ${canEdit ? "" : "disabled"}>Modifier</button>
         </td>
       </tr>
     `;
@@ -158,12 +184,11 @@ function render(items) {
 
 async function loadUsers() {
   showErr("");
-  tbody.innerHTML = `<tr><td colspan="5" style="padding:12px; opacity:.75;">Loading...</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="5" class="rz-empty-state">Chargement…</td></tr>`;
   const r = await fetchJSON("/api/admin/users");
   const items = r.items || [];
   render(items);
 
-  // bind edit buttons
   [...document.querySelectorAll("button[data-edit]")].forEach(btn => {
     btn.addEventListener("click", () => {
       const id = btn.getAttribute("data-edit");
@@ -186,7 +211,7 @@ async function onSave() {
   if (!pool_ids.length) return showModalErr("pool_required");
 
   saveBtn.disabled = true;
-  saveBtn.textContent = "Saving...";
+  saveBtn.textContent = "Enregistrement…";
   try {
     if (!editingId) {
       await fetchJSON("/api/admin/users", {
@@ -214,18 +239,18 @@ async function onSave() {
     showModalErr(e.message);
   } finally {
     saveBtn.disabled = false;
-    saveBtn.textContent = "Save";
+    saveBtn.textContent = "Enregistrer";
   }
 }
 
 async function onDelete() {
   showModalErr("");
   if (!editingId) return;
-  const confirmText = prompt("Type DELETE to confirm deletion:");
+  const confirmText = prompt("Tapez DELETE pour confirmer la suppression :");
   if (confirmText !== "DELETE") return;
 
   deleteBtn.disabled = true;
-  deleteBtn.textContent = "Deleting...";
+  deleteBtn.textContent = "Suppression…";
   try {
     await fetchJSON("/api/admin/users/" + encodeURIComponent(editingId), { method: "DELETE" });
     closeModal();
@@ -234,7 +259,7 @@ async function onDelete() {
     showModalErr(e.message);
   } finally {
     deleteBtn.disabled = false;
-    deleteBtn.textContent = "Delete";
+    deleteBtn.textContent = "Supprimer";
   }
 }
 

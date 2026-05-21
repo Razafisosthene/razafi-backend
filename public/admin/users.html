@@ -1,43 +1,86 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>RAZAFI Admin — Users</title>
+  <title>RAZAFI Admin — Utilisateurs</title>
   <link rel="stylesheet" href="/admin/admin.css" />
+
+  <!-- Users page local polish only: no global admin.css change -->
+  <style>
+    .rz-users-shell{display:flex;flex-direction:column;gap:14px;}
+    .rz-users-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+    .rz-users-title-block{min-width:0;}
+    .rz-users-me{white-space:normal;line-height:1.25;}
+    .rz-users-me strong{display:block;color:var(--rz-text,#111827);font-weight:900;margin-top:2px;word-break:break-word;}
+    .rz-users-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+    .rz-users-actions button{width:auto;}
+    .rz-users-table-card{margin-top:4px;border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);overflow:hidden;}
+    .rz-users-table-wrap{overflow:auto;-webkit-overflow-scrolling:touch;}
+    .rz-users-table{width:100%;border-collapse:separate;border-spacing:0;min-width:860px;}
+    .rz-users-table th{position:sticky;top:0;z-index:2;text-align:left;padding:12px 10px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--rz-muted,#6b7280);background:rgba(248,250,252,.96);border-bottom:1px solid rgba(17,24,39,.08);}
+    .rz-users-table th:last-child{text-align:right;}
+    .rz-users-table td{padding:12px 10px;border-bottom:1px solid rgba(17,24,39,.07);vertical-align:middle;font-size:14px;}
+    .rz-users-table tbody tr:hover{background:rgba(13,110,253,.04);}
+    .rz-user-email{font-weight:900;letter-spacing:-.02em;}
+    .rz-user-pools{max-width:420px;white-space:normal;line-height:1.35;}
+    .rz-status-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 9px;border-radius:999px;font-size:12px;font-weight:900;border:1px solid rgba(17,24,39,.08);background:rgba(255,255,255,.78);white-space:nowrap;}
+    .rz-status-pill.ok{background:rgba(22,163,74,.12);color:#15803d;border-color:rgba(22,163,74,.22);}
+    .rz-status-pill.off{background:rgba(107,114,128,.10);color:#4b5563;border-color:rgba(107,114,128,.18);}
+    .rz-empty-state{padding:16px;color:var(--rz-muted,#6b7280);font-weight:800;}
+    .rz-users-modal-title{margin:0;text-align:left;font-size:24px;letter-spacing:-.04em;color:var(--rz-text,#111827);}
+    .rz-users-modal-sub{text-align:left;margin:6px 0 0 0;color:var(--rz-muted,#6b7280);font-size:13px;line-height:1.35;}
+    .rz-users-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;}
+    .rz-users-form-grid .full{grid-column:1/-1;}
+    .rz-users-form-grid label{display:block;font-weight:850;margin-bottom:6px;color:var(--rz-text,#111827);}
+    .rz-users-pools-select{width:100%;padding:10px;min-height:180px;border-radius:16px;border:1px solid var(--rz-line,rgba(17,24,39,.08));background:rgba(255,255,255,.92);}
+    .rz-users-check{display:flex!important;align-items:center;gap:10px;margin:4px 0 0!important;}
+    .rz-users-check input{width:auto;margin:0;}
+    @media (max-width:700px){
+      .rz-users-actions{width:100%;}
+      .rz-users-actions button{width:100%;}
+      .rz-users-table-card{border-radius:20px;}
+      .rz-users-table th,.rz-users-table td{padding:10px 9px;}
+      .rz-users-form-grid{grid-template-columns:1fr;}
+      .rz-users-form-grid .full{grid-column:auto;}
+    }
+  </style>
 </head>
-<body>
+<body class="rz-admin-shell users-page">
   <div class="login-container">
-    <div class="card" style="max-width: 1100px; width: 96%;">
-      <div class="topbar">
-        <div class="title">
-          <h1 style="margin:0;">Users</h1>
-          <div id="me" class="subtitle">Checking session...</div>
+    <div class="card rz-users-shell" style="max-width: 1120px; width: 96%;">
+      <div class="topbar rz-users-header">
+        <div class="title rz-users-title-block">
+          <h1 class="rz-hero-title">Utilisateurs</h1>
+          <div id="me" class="subtitle rz-users-me">Vérification de la session…</div>
         </div>
-        <div class="actions">
-          <button id="refreshBtn" type="button">Refresh</button>
-          <button id="newBtn" type="button">New User</button>
-          <button id="logoutBtn" class="danger" type="button">Logout</button>
+
+        <div class="rz-users-actions">
+          <button id="refreshBtn" type="button" class="filter-btn primary">Actualiser</button>
+          <button id="newBtn" type="button" class="filter-btn primary">+ Nouvel utilisateur</button>
+          <button id="logoutBtn" class="danger" type="button">Déconnexion</button>
         </div>
       </div>
 
       <div id="err" class="error" style="display:none; margin-top:10px;"></div>
 
-      <div class="table-wrap">
-        <table style="width:100%; border-collapse: collapse;">
-          <thead>
-            <tr>
-              <th style="text-align:left; padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Email</th>
-              <th style="text-align:left; padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Role</th>
-              <th style="text-align:left; padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Status</th>
-              <th style="text-align:left; padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Pools</th>
-              <th style="text-align:right; padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Actions</th>
-            </tr>
-          </thead>
-          <tbody id="tbody">
-            <tr><td colspan="5" style="padding:12px; opacity:.75;">Loading...</td></tr>
-          </tbody>
-        </table>
+      <div class="rz-users-table-card">
+        <div class="rz-users-table-wrap">
+          <table class="rz-users-table">
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Rôle</th>
+                <th>Statut</th>
+                <th>Pools</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tbody">
+              <tr><td colspan="5" class="rz-empty-state">Chargement…</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
@@ -45,54 +88,49 @@
   <!-- Modal -->
   <div id="modal" class="modal" style="display:none;">
     <div class="modal-card">
-
       <div class="topbar">
         <div>
-          <h1 id="modalTitle" style="margin:0; text-align:left;">New User</h1>
-          <div id="modalSub" class="subtitle" style="text-align:left; margin:6px 0 0 0;">Pool read-only user</div>
+          <h1 id="modalTitle" class="rz-users-modal-title">Nouvel utilisateur</h1>
+          <div id="modalSub" class="rz-users-modal-sub">Utilisateur avec accès limité aux pools sélectionnés.</div>
         </div>
-        <button id="closeModalBtn" type="button" style="width:auto;">Close</button>
+        <button id="closeModalBtn" type="button" class="filter-btn" style="width:auto;">Fermer</button>
       </div>
 
       <div id="modalErr" class="error" style="display:none;"></div>
 
-      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:12px;">
+      <div class="rz-users-form-grid">
         <div>
-          <label style="display:block; font-weight:700; margin-bottom:6px;">Email</label>
-          <input id="emailInput" type="email" placeholder="user@example.com" />
+          <label>Email</label>
+          <input id="emailInput" type="email" placeholder="utilisateur@example.com" />
         </div>
 
         <div>
-          <label style="display:block; font-weight:700; margin-bottom:6px;">Password</label>
-          <input id="passwordInput" type="password" placeholder="min 6 chars (leave empty to keep)" />
+          <label>Mot de passe</label>
+          <input id="passwordInput" type="password" placeholder="6 caractères minimum" />
         </div>
 
-        <div style="grid-column: 1 / span 2;">
-          <label style="display:block; font-weight:700; margin-bottom:6px;">Assigned Pools (multi)</label>
-          <select id="poolsSelect" multiple size="8" style="width:100%; padding:10px;"></select>
-          <div class="subtitle" style="text-align:left; margin-top:6px; margin-bottom:0;">
-            User can ONLY see Dashboard + Clients + Revenue + Plans for these pools.
-          </div>
+        <div class="full">
+          <label>Pools assignés</label>
+          <select id="poolsSelect" multiple size="8" class="rz-users-pools-select"></select>
         </div>
 
         <div>
-          <label style="display:flex; align-items:center; gap:10px; font-weight:700;">
+          <label class="rz-users-check">
             <input id="activeToggle" type="checkbox" checked />
-            Active
+            <span>Actif</span>
           </label>
         </div>
       </div>
 
       <!-- IMPORTANT: keep these IDs because users.js binds them -->
       <div class="modal-actions users-modal-actions">
-        <button id="deleteBtn" class="danger" type="button">Delete</button>
+        <button id="deleteBtn" class="danger" type="button">Supprimer</button>
 
         <div class="users-modal-right-actions">
-          <button id="saveBtn" type="button">Save</button>
-          <button id="closeModalBtn2" type="button">Close</button>
+          <button id="saveBtn" type="button" class="filter-btn primary">Enregistrer</button>
+          <button id="closeModalBtn2" type="button" class="filter-btn">Fermer</button>
         </div>
       </div>
-
     </div>
   </div>
 
