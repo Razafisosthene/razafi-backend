@@ -13,9 +13,17 @@
     .rz-audit-title-block{min-width:0;}
     .rz-audit-me{white-space:normal;line-height:1.25;}
     .rz-audit-me strong{display:block;color:var(--rz-text,#111827);font-weight:900;margin-top:2px;word-break:break-word;}
-    .rz-audit-filter-grid{display:grid;grid-template-columns:minmax(220px,1.2fr) repeat(4,minmax(150px,.75fr)) minmax(180px,.8fr) minmax(180px,.8fr) auto auto;gap:10px;align-items:center;}
-    .rz-audit-filter-grid input,.rz-audit-filter-grid select{margin-bottom:0;}
-    .rz-audit-filter-grid button{width:auto;}
+    .rz-audit-filter-grid{
+      display:grid;
+      grid-template-columns:minmax(260px,1.45fr) minmax(150px,.75fr) minmax(170px,.9fr) minmax(160px,.85fr) minmax(160px,.85fr);
+      gap:10px;
+      align-items:center;
+    }
+    .rz-audit-filter-grid input,.rz-audit-filter-grid select{margin-bottom:0;min-width:0;width:100%;}
+    .rz-audit-filter-grid button{width:100%;}
+    .rz-audit-date-row{display:grid;grid-template-columns:minmax(190px,1fr) minmax(190px,1fr) auto auto;gap:10px;align-items:center;grid-column:1/-1;}
+    .rz-audit-date-row input{margin-bottom:0;}
+    .rz-audit-date-row button{min-height:52px;}
     .rz-audit-status-line{margin-top:14px;color:var(--rz-muted,#6b7280);font-weight:800;font-size:13px;}
     .rz-audit-table-card{margin-top:14px;border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);overflow:hidden;}
     .rz-audit-table-wrap{overflow:auto;-webkit-overflow-scrolling:touch;}
@@ -30,8 +38,8 @@
     .rz-audit-modal-title{font-weight:950;font-size:20px;letter-spacing:-.03em;color:var(--rz-text,#111827);}
     .rz-audit-copy-row{display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap;}
     .rz-audit-copy-title{font-weight:900;color:var(--rz-text,#111827);}
-    @media (max-width:1100px){.rz-audit-filter-grid{grid-template-columns:1fr 1fr;}.rz-audit-filter-grid .filter-search:first-child{grid-column:1/-1;}.rz-audit-filter-grid button{width:100%;}}
-    @media (max-width:640px){.rz-audit-filter-grid{grid-template-columns:1fr;}.rz-audit-table-card{border-radius:20px;}.rz-audit-table th,.rz-audit-table td{padding:10px 9px;}.rz-audit-pager button{flex:1 1 0;}}
+    @media (max-width:1100px){.rz-audit-filter-grid{grid-template-columns:1fr 1fr;}.rz-audit-filter-grid .filter-search:first-child{grid-column:1/-1;}.rz-audit-date-row{grid-template-columns:1fr 1fr;}.rz-audit-date-row button{width:100%;}}
+    @media (max-width:640px){.rz-audit-filter-grid{grid-template-columns:1fr;}.rz-audit-date-row{grid-template-columns:1fr;}.rz-audit-table-card{border-radius:20px;}.rz-audit-table th,.rz-audit-table td{padding:10px 9px;}.rz-audit-pager button{flex:1 1 0;}}
   </style>
 </head>
 <body class="rz-admin-shell audit-page">
@@ -73,11 +81,12 @@
             <option value="">Pool : tous</option>
           </select>
 
-          <input id="from" type="datetime-local" class="filter-search" aria-label="Date début" />
-          <input id="to" type="datetime-local" class="filter-search" aria-label="Date fin" />
-
-          <button type="button" id="apply" class="filter-btn primary">Appliquer</button>
-          <button type="button" id="clear" class="filter-btn">Effacer</button>
+          <div class="rz-audit-date-row">
+            <input id="from" type="datetime-local" class="filter-search" aria-label="Date début" />
+            <input id="to" type="datetime-local" class="filter-search" aria-label="Date fin" />
+            <button type="button" id="apply" class="filter-btn primary">Appliquer</button>
+            <button type="button" id="clear" class="filter-btn">Effacer</button>
+          </div>
         </div>
       </div>
 
