@@ -68,6 +68,26 @@ function pillHTML(text, tone = "neutral") {
   return `<span style="display:inline-block; padding:6px 10px; border-radius:999px; background:${bg}; color:${fg}; font-weight:900; font-size:12px;">${esc(text)}</span>`;
 }
 
+
+function payoutLabel(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "paid") return "Payé";
+  if (s === "draft") return "Brouillon";
+  if (s === "cancelled") return "Annulé";
+  if (s === "unpaid") return "Non payé";
+  return status || "—";
+}
+
+function transactionLabel(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "paid") return "Payée";
+  if (s === "pending") return "En attente";
+  if (s === "failed") return "Échouée";
+  if (s === "cancelled") return "Annulée";
+  if (s === "expired") return "Expirée";
+  return status || "—";
+}
+
 function payoutTone(status) {
   const s = String(status || "").toLowerCase();
   if (s === "paid") return "ok";
@@ -85,7 +105,7 @@ async function requireAdmin() {
   try {
     const admin = await fetchJSON("/api/admin/me");
     currentAdmin = admin;
-    byId("me").textContent = "Connected as " + admin.email;
+    byId("me").textContent = "Connecté : " + admin.email;
   } catch (e) {
     location.href = "/admin/login.html";
   }
@@ -145,7 +165,7 @@ function syncTxHeaders() {
     <th style="text-align:left; padding:10px;">Voucher</th>
     <th style="text-align:left; padding:10px;">Plan</th>
     <th style="text-align:left; padding:10px;">Pool</th>
-    <th style="text-align:left; padding:10px;">Statut payout</th>
+    <th style="text-align:left; padding:10px;">Statut reversement</th>
     <th style="text-align:left; padding:10px;">Reçu</th>
     <th style="text-align:left; padding:10px;">Statut transaction</th>
   `;
@@ -178,8 +198,8 @@ function renderSelectionChecks() {
     if (row) {
       row.style.opacity = cb.disabled && !cb.checked ? ".55" : "1";
       row.title = locked
-        ? "Déjà rattachée à un payout"
-        : (!!ctx && !cb.checked && !compatible ? "Un payout doit contenir un seul pool" : "");
+        ? "Déjà rattachée à un reversement"
+        : (!!ctx && !cb.checked && !compatible ? "Un reversement doit contenir un seul pool" : "");
     }
   });
 }
@@ -205,25 +225,26 @@ function ensurePayoutUI() {
   if (!byId("tabPayout")) {
     const btn = document.createElement("button");
     btn.id = "tabPayout";
-    btn.textContent = "Payouts";
+    btn.textContent = "Reversements";
     btn.type = "button";
-    btn.className = byId("tabTx")?.className || "";
-    btn.style.marginLeft = "10px";
-    byId("tabPool")?.insertAdjacentElement("afterend", btn);
+    btn.className = byId("tabTx")?.className || "filter-btn rz-tab-btn";
+        byId("tabPool")?.insertAdjacentElement("afterend", btn);
   }
 
   if (!byId("panelPayout")) {
     const panel = document.createElement("div");
     panel.id = "panelPayout";
     panel.style.display = "none";
+    panel.className = "rz-panel-card";
     panel.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin:12px 0 10px;">
-        <div id="payoutMeta" style="opacity:.75;">—</div>
+      <div class="rz-panel-note">Liste des reversements propriétaires. Cliquez sur une ligne pour voir les détails.</div>
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin:0 0 10px;">
+        <div id="payoutMeta" class="rz-table-meta">—</div>
         <div id="payoutActions" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
       </div>
 
-      <div style="overflow:auto;">
-        <table style="width:100%; border-collapse:collapse;">
+      <div class="rz-table-wrap">
+        <table class="rz-data-table" style="min-width:900px;">
           <thead>
             <tr>
               <th style="text-align:left; padding:10px;">Date</th>
@@ -254,17 +275,11 @@ function ensurePayoutUI() {
     box.style.flexWrap = "wrap";
     box.style.margin = "12px 0 8px";
     box.innerHTML = `
-      <div id="txSelectionMeta" style="opacity:.75;">0 sélectionnée</div>
+      <div id="txSelectionMeta" class="rz-table-meta">0 sélectionnée</div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <button id="autoCreatePayoutBtn" type="button" style="padding:10px 14px; border:none; border-radius:12px; background:#7c3aed; color:#fff; font-weight:800; cursor:pointer;">
-          Créer payouts auto
-        </button>
-        <button id="createPayoutBtn" type="button" style="padding:10px 14px; border:none; border-radius:12px; background:#2563eb; color:#fff; font-weight:800; cursor:pointer;">
-          Créer payout
-        </button>
-        <button id="clearSelectionBtn" type="button" style="padding:10px 14px; border:none; border-radius:12px; background:#e5e7eb; color:#111827; font-weight:800; cursor:pointer;">
-          Effacer sélection
-        </button>
+        <button id="autoCreatePayoutBtn" class="filter-btn primary" type="button">Créer reversements auto</button>
+        <button id="createPayoutBtn" class="filter-btn primary" type="button">Créer reversement</button>
+        <button id="clearSelectionBtn" class="filter-btn" type="button">Effacer sélection</button>
       </div>
     `;
     const txPanel = byId("panelTx");
@@ -292,6 +307,12 @@ function setTab(tab) {
   byId("panelPlan").style.display = tab === "plan" ? "" : "none";
   byId("panelPool").style.display = tab === "pool" ? "" : "none";
   if (byId("panelPayout")) byId("panelPayout").style.display = tab === "payout" ? "" : "none";
+
+  const map = { tx: "tabTx", plan: "tabPlan", pool: "tabPool", payout: "tabPayout" };
+  Object.entries(map).forEach(([key, id]) => {
+    const btn = byId(id);
+    if (btn) btn.classList.toggle("active", key === tab);
+  });
 }
 
 function wireTabs() {
@@ -354,7 +375,7 @@ function wirePayoutActions() {
       search: params.get("search") || "",
       from: params.get("from") || null,
       to: params.get("to") || null,
-      note: "Auto payout draft"
+      note: "Reversement auto brouillon"
     };
 
     const filterText = [];
@@ -363,18 +384,18 @@ function wirePayoutActions() {
     if (body.to) filterText.push(`Jusqu'à: ${fmtDate(body.to)}`);
 
     const msg = filterText.length
-      ? `Créer automatiquement les payouts draft pour les transactions non encore payées avec ces filtres ?\n\n${filterText.join("\n")}`
-      : "Créer automatiquement les payouts draft pour toutes les transactions non encore payées ?";
+      ? `Créer automatiquement les reversements brouillons pour les transactions non encore payées avec ces filtres ?\n\n${filterText.join("\n")}`
+      : "Créer automatiquement les reversements brouillons pour toutes les transactions non encore payées ?";
 
     if (!confirm(msg)) return;
 
     const btn = byId("autoCreatePayoutBtn");
-    const oldText = btn?.textContent || "Créer payouts auto";
+    const oldText = btn?.textContent || "Créer reversements auto";
 
     try {
       if (btn) {
         btn.disabled = true;
-        btn.textContent = "Création auto...";
+        btn.textContent = "Création...";
       }
 
       const r = await fetchJSON("/api/admin/revenue/payouts/auto-create", {
@@ -388,11 +409,11 @@ function wirePayoutActions() {
       const createdRows = Array.isArray(r?.created) ? r.created : [];
       const createdTotal = createdRows.reduce((sum, p) => sum + Number(p?.owner_total_ar || 0), 0);
 
-      let alertMsg = `Payouts auto terminés ✅\nCréés: ${created}\nIgnorés: ${skipped}`;
+      let alertMsg = `Reversements auto terminés ✅\nCréés: ${created}\nIgnorés: ${skipped}`;
       if (createdRows.length) alertMsg += `\nPart propriétaire totale: ${fmtAr(createdTotal)}`;
       if (r?.message === "no_unpaid_transactions") alertMsg += "\nAucune transaction impayée trouvée.";
       if (skipped && Array.isArray(r?.skipped) && r.skipped.length) {
-        alertMsg += "\n\nCertains pools ont été ignorés. Vérifiez que chaque pool a un owner business.";
+        alertMsg += "\n\nCertains pools ont été ignorés. Vérifiez que chaque pool possède un propriétaire.";
       }
 
       alert(alertMsg);
@@ -401,7 +422,7 @@ function wirePayoutActions() {
       await loadAll();
       setTab("payout");
     } catch (e) {
-      alert("Erreur création payouts auto: " + e.message);
+      alert("Erreur création reversements auto : " + e.message);
     } finally {
       if (btn) {
         btn.disabled = false;
@@ -421,11 +442,11 @@ function wirePayoutActions() {
     const selectedItems = ids.map(getTxById).filter(Boolean);
     const pools = Array.from(new Set(selectedItems.map((it) => String(it.pool_id || "")).filter(Boolean)));
     if (pools.length !== 1) {
-      alert("Un payout doit contenir des transactions d’un seul pool.");
+      alert("Un reversement doit contenir des transactions d’un seul pool.");
       return;
     }
 
-    if (!confirm(`Créer un payout avec ${ids.length} transaction(s) ?`)) return;
+    if (!confirm(`Créer un reversement avec ${ids.length} transaction(s) ?`)) return;
 
     try {
       const r = await fetchJSON("/api/admin/revenue/payouts/create", {
@@ -436,13 +457,13 @@ function wirePayoutActions() {
           mark_paid: false
         })
       });
-      alert(`Payout créé ✅${r?.payout?.owner_total_ar != null ? "\nPart propriétaire: " + fmtAr(r.payout.owner_total_ar) : ""}`);
+      alert(`Reversement créé ✅${r?.payout?.owner_total_ar != null ? "\nPart propriétaire: " + fmtAr(r.payout.owner_total_ar) : ""}`);
       selectedTxIds.clear();
       updateSelectionMeta();
       await loadAll();
       setTab("payout");
     } catch (e) {
-      alert("Erreur création payout: " + e.message);
+      alert("Erreur création reversement : " + e.message);
     }
   });
 
@@ -483,13 +504,13 @@ async function loadTotals() {
 
 async function loadByPlan() {
   const body = byId("planBody");
-  body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Loading...</td></tr>`;
+  body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Chargement...</td></tr>`;
   try {
     const params = buildCommonParams();
     const r = await fetchJSON("/api/admin/revenue/by-plan?" + params.toString());
     const items = r.items || [];
     if (!items.length) {
-      body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">No data.</td></tr>`;
+      body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Aucune donnée.</td></tr>`;
       return;
     }
     body.innerHTML = items.map(it => `
@@ -507,13 +528,13 @@ async function loadByPlan() {
 
 async function loadByPool() {
   const body = byId("poolBody");
-  body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Loading...</td></tr>`;
+  body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Chargement...</td></tr>`;
   try {
     const params = buildCommonParams();
     const r = await fetchJSON("/api/admin/revenue/by-pool?" + params.toString());
     const items = r.items || [];
     if (!items.length) {
-      body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">No data.</td></tr>`;
+      body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Aucune donnée.</td></tr>`;
       return;
     }
     body.innerHTML = items.map(it => `
@@ -531,7 +552,7 @@ async function loadByPool() {
 
 async function loadTransactions() {
   const body = byId("txBody");
-  body.innerHTML = `<tr><td colspan="12" style="padding:12px; opacity:.75;">Loading...</td></tr>`;
+  body.innerHTML = `<tr><td colspan="12" style="padding:12px; opacity:.75;">Chargement...</td></tr>`;
   syncTxHeaders();
 
   const params = buildCommonParams();
@@ -545,10 +566,10 @@ async function loadTransactions() {
     lastTxItems = items;
 
     byId("txMeta").textContent =
-      `Showing ${items.length} / ${total} (offset ${txOffset})`;
+      `${items.length} affichée${items.length > 1 ? "s" : ""} / ${total} (page ${Math.floor(txOffset / txLimit) + 1})`;
 
     if (!items.length) {
-      body.innerHTML = `<tr><td colspan="12" style="padding:12px; opacity:.75;">No results.</td></tr>`;
+      body.innerHTML = `<tr><td colspan="12" style="padding:12px; opacity:.75;">Aucun résultat.</td></tr>`;
       updateSelectionMeta();
       return;
     }
@@ -575,9 +596,9 @@ async function loadTransactions() {
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || it.transaction_voucher || "—")}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
-          <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${pillHTML(payoutStatus, tone)}</td>
+          <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${pillHTML(payoutLabel(payoutStatus), tone)}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.receipt_number || "—")}</td>
-          <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.transaction_status || "—")}</td>
+          <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(transactionLabel(it.transaction_status))}</td>
         </tr>
       `;
     }).join("");
@@ -597,7 +618,7 @@ async function loadTransactions() {
           const ctx = getSelectionContext();
           if (ctx && String(it?.pool_id || "") !== ctx.pool_id) {
             cb.checked = false;
-            alert("Un payout doit contenir des transactions d’un seul pool.");
+            alert("Un reversement doit contenir des transactions d’un seul pool.");
             e.stopPropagation();
             return;
           }
@@ -627,7 +648,7 @@ async function loadTransactions() {
 
 async function loadPayouts() {
   const body = byId("payoutBody");
-  body.innerHTML = `<tr><td colspan="9" style="padding:12px; opacity:.75;">Loading...</td></tr>`;
+  body.innerHTML = `<tr><td colspan="9" style="padding:12px; opacity:.75;">Chargement...</td></tr>`;
 
   try {
     const params = buildCommonParams();
@@ -635,10 +656,10 @@ async function loadPayouts() {
     const items = r.items || [];
     lastPayoutItems = items;
 
-    byId("payoutMeta").textContent = `${items.length} payout(s)`;
+    byId("payoutMeta").textContent = `${items.length} reversement${items.length > 1 ? "s" : ""}`;
 
     if (!items.length) {
-      body.innerHTML = `<tr><td colspan="9" style="padding:12px; opacity:.75;">Aucun payout.</td></tr>`;
+      body.innerHTML = `<tr><td colspan="9" style="padding:12px; opacity:.75;">Aucun reversement.</td></tr>`;
       return;
     }
 
@@ -653,7 +674,7 @@ async function loadPayouts() {
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.items_count ?? it.transaction_count ?? "—")}</td>
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${fmtAr(it.gross_total_ar)}</td>
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08); font-weight:800;">${fmtAr(it.owner_total_ar)}</td>
-          <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${pillHTML(status, payoutTone(status))}</td>
+          <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${pillHTML(payoutLabel(status), payoutTone(status))}</td>
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${it.receipt_number ? `<a href="/api/admin/revenue/payouts/${encodeURIComponent(it.id)}/receipt" target="_blank" rel="noopener" style="color:#2563eb; font-weight:800; text-decoration:none;">${esc(it.receipt_number)}</a>` : "—"}</td>
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);" onclick="event.stopPropagation()">
             ${canMarkPaid ? `<button class="mark-paid-btn" data-payoutid="${esc(it.id)}" style="padding:8px 10px; border:none; border-radius:10px; background:#16a34a; color:#fff; font-weight:800; cursor:pointer;">Marquer payé</button>` : "—"}
@@ -673,15 +694,15 @@ async function loadPayouts() {
       btn.addEventListener("click", async () => {
         const payoutId = btn.getAttribute("data-payoutid");
         if (!payoutId) return;
-        if (!confirm("Marquer ce payout comme payé ?")) return;
+        if (!confirm("Marquer ce reversement comme payé ?")) return;
         try {
           await fetchJSON(`/api/admin/revenue/payouts/${encodeURIComponent(payoutId)}/mark-paid`, {
             method: "POST"
           });
-          alert("Payout marqué payé ✅");
+          alert("Reversement marqué payé ✅");
           await loadAll();
         } catch (e) {
-          alert("Erreur: " + e.message);
+          alert("Erreur : " + e.message);
         }
       });
     });
@@ -730,8 +751,8 @@ function showTxDetail(it) {
         <div>
           <div style="opacity:.7; font-size:12px;">Montant brut</div>
           <div style="font-weight:1000; font-size:22px; margin-top:4px;">${fmtAr(it.gross_amount_ar ?? it.amount_num)}</div>
-          <div style="opacity:.7; font-size:12px; margin-top:6px;">Statut payout</div>
-          <div style="margin-top:4px;">${pillHTML(it.payout_status || "unpaid", payoutTone(it.payout_status || "unpaid"))}</div>
+          <div style="opacity:.7; font-size:12px; margin-top:6px;">Statut reversement</div>
+          <div style="margin-top:4px;">${pillHTML(payoutLabel(it.payout_status || "unpaid"), payoutTone(it.payout_status || "unpaid"))}</div>
         </div>
         <div style="text-align:right;">
           <div style="opacity:.7; font-size:12px;">Téléphone</div>
@@ -753,10 +774,10 @@ function showTxDetail(it) {
       kv("Plan", esc(it.plan_name || "—"), true)
     ) + row2(
       kv("Voucher", esc(it.voucher_code || it.transaction_voucher || "—"), true),
-      kv("Transaction status", esc(it.transaction_status || "—"))
+      kv("Statut transaction", esc(transactionLabel(it.transaction_status)))
     ) + row2(
-      kv("Client MAC", esc(it.client_mac || "—")),
-      kv("AP MAC", esc(it.ap_mac || "—"))
+      kv("MAC client", esc(it.client_mac || "—")),
+      kv("MAC AP", esc(it.ap_mac || "—"))
     ) + row2(
       kv("Reçu", esc(it.receipt_number || "—")),
       kv("Payé le", fmtDate(it.paid_at))
@@ -772,9 +793,9 @@ async function showPayoutDetail(it) {
   const modal = byId("modal");
   const bodyEl = byId("modalBody");
 
-  byId("modalTitle").textContent = "Détails payout";
+  byId("modalTitle").textContent = "Détails reversement";
   byId("modalSub").textContent =
-    `Payout ${it.id || "—"} • ${fmtDate(it.created_at)}`;
+    `Reversement ${it.id || "—"} • ${fmtDate(it.created_at)}`;
 
   let detail = null;
   try {
@@ -811,7 +832,7 @@ async function showPayoutDetail(it) {
         </table>
       </div>
     `
-    : `<div style="opacity:.75;">Aucun item.</div>`;
+    : `<div style="opacity:.75;">Aucune transaction.</div>`;
 
   bodyEl.innerHTML = `
     <div style="padding:12px; border-radius:14px; background: rgba(0,0,0,.03);">
@@ -821,7 +842,7 @@ async function showPayoutDetail(it) {
           <div style="font-weight:1000; font-size:22px; margin-top:4px;">${fmtAr(payout.owner_total_ar)}</div>
         </div>
         <div style="text-align:right;">
-          ${pillHTML(payout.status || "draft", payoutTone(payout.status || "draft"))}
+          ${pillHTML(payoutLabel(payout.status || "draft"), payoutTone(payout.status || "draft"))}
           <div style="opacity:.7; font-size:12px; margin-top:10px;">Reçu</div>
           <div style="font-weight:900; font-size:16px; margin-top:4px;">${payout.receipt_number ? `<a href="/api/admin/revenue/payouts/${encodeURIComponent(payout.id)}/receipt" target="_blank" rel="noopener" style="color:#2563eb; text-decoration:none;">${esc(payout.receipt_number)}</a>` : "—"}</div>
         </div>
@@ -845,7 +866,7 @@ async function showPayoutDetail(it) {
     </div>
 
     <div style="margin-top:14px;">
-      <div style="font-weight:900; margin-bottom:8px;">Transactions du payout</div>
+      <div style="font-weight:900; margin-bottom:8px;">Transactions du reversement</div>
       ${itemRows}
     </div>
   `;

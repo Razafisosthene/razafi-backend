@@ -1,177 +1,444 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>RAZAFI Admin — Revenue</title>
+  <title>RAZAFI Admin — Revenus</title>
   <link rel="stylesheet" href="/admin/admin.css" />
+  <style>
+    /* Revenue page only — scoped visual polish, no global admin.css change */
+    .rz-revenue-page{
+      max-width: 1200px;
+      width: 96%;
+    }
+
+    .rz-revenue-shell{
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .rz-revenue-head{
+      display:flex;
+      justify-content:space-between;
+      align-items:flex-start;
+      gap: 14px;
+      flex-wrap:wrap;
+    }
+
+    .rz-revenue-status{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      margin-top:10px;
+      padding:8px 12px;
+      border-radius:999px;
+      background:rgba(255,255,255,.70);
+      border:1px solid rgba(17,24,39,.08);
+      color:#6b7280;
+      font-size:12px;
+      font-weight:850;
+      max-width:100%;
+    }
+
+    .rz-revenue-status::before{
+      content:"";
+      width:8px;
+      height:8px;
+      border-radius:999px;
+      background:#16a34a;
+      box-shadow:0 0 0 4px rgba(22,163,74,.12);
+      flex:0 0 auto;
+    }
+
+    .rz-filter-dates{
+      display:flex;
+      gap:10px;
+      align-items:center;
+      flex-wrap:wrap;
+    }
+
+    .rz-filter-label{
+      font-size:13px;
+      color:#6b7280;
+      font-weight:850;
+    }
+
+    .rz-revenue-hint{
+      margin-top:8px;
+      color:#6b7280;
+      font-size:13px;
+      line-height:1.35;
+    }
+
+    .rz-stats-grid{
+      display:grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 2px;
+    }
+
+    .rz-stat-card{
+      position:relative;
+      overflow:hidden;
+      padding:16px;
+      border-radius:24px;
+      background:linear-gradient(180deg, rgba(255,255,255,.96), rgba(255,255,255,.78));
+      border:1px solid rgba(255,255,255,.92);
+      box-shadow:0 12px 28px rgba(15,23,42,.08);
+    }
+
+    .rz-stat-card::before{
+      content:"";
+      position:absolute;
+      inset:0 0 auto 0;
+      height:4px;
+      background:linear-gradient(90deg, #0d6efd, #60a5fa, #22c55e);
+    }
+
+    .rz-stat-label{
+      color:#6b7280;
+      font-size:12px;
+      font-weight:900;
+      text-transform:uppercase;
+      letter-spacing:.04em;
+    }
+
+    .rz-stat-value{
+      margin-top:8px;
+      font-size: clamp(22px, 4vw, 32px);
+      line-height:1;
+      font-weight:950;
+      letter-spacing:-.045em;
+      color:#0f172a;
+      word-break:break-word;
+    }
+
+    .rz-stat-value.rz-small-value{
+      font-size: clamp(16px, 3vw, 20px);
+      line-height:1.15;
+      letter-spacing:-.02em;
+    }
+
+    .rz-tabs{
+      display:flex;
+      gap:8px;
+      flex-wrap:wrap;
+      padding:8px;
+      border-radius:24px;
+      background:rgba(255,255,255,.68);
+      border:1px solid rgba(255,255,255,.90);
+      box-shadow:0 10px 26px rgba(15,23,42,.07);
+      width:fit-content;
+      max-width:100%;
+    }
+
+    .rz-tab-btn{
+      width:auto;
+      border-radius:18px;
+      background:rgba(255,255,255,.86);
+      color:#111827;
+      border:1px solid rgba(17,24,39,.08);
+      box-shadow:none;
+      padding:10px 14px;
+    }
+
+    .rz-tab-btn.active{
+      background:linear-gradient(135deg, #0d6efd, #2563eb);
+      color:#fff;
+      border-color:transparent;
+      box-shadow:0 10px 22px rgba(13,110,253,.20);
+    }
+
+    .rz-panel-card{
+      margin-top: 0;
+      padding: 14px;
+      border-radius: 26px;
+      background: rgba(255,255,255,.70);
+      border: 1px solid rgba(255,255,255,.90);
+      box-shadow: 0 12px 28px rgba(15,23,42,.08);
+      backdrop-filter: blur(16px);
+    }
+
+    .rz-panel-note{
+      margin: 0 0 12px 0;
+      color:#6b7280;
+      font-size:13px;
+      font-weight:750;
+    }
+
+    .rz-table-wrap{
+      overflow:auto;
+      border-radius:20px;
+      border:1px solid rgba(17,24,39,.07);
+      background:rgba(255,255,255,.72);
+      -webkit-overflow-scrolling:touch;
+    }
+
+    .rz-data-table{
+      width:100%;
+      border-collapse:collapse;
+    }
+
+    .rz-data-table th{
+      background:rgba(248,250,252,.94);
+      color:#6b7280;
+      font-size:12px;
+      font-weight:950;
+      text-transform:uppercase;
+      letter-spacing:.035em;
+      white-space:nowrap;
+      border-bottom:1px solid rgba(17,24,39,.08);
+    }
+
+    .rz-data-table td{
+      color:#111827;
+      vertical-align:middle;
+    }
+
+    .rz-data-table tbody tr:hover{
+      background:rgba(13,110,253,.035);
+    }
+
+    .rz-table-footer{
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      margin-top:10px;
+      gap:10px;
+      flex-wrap:wrap;
+    }
+
+    .rz-table-meta{
+      color:#6b7280;
+      font-size:13px;
+      font-weight:800;
+    }
+
+    .rz-modal-card{
+      max-width: 900px;
+      width: min(900px, calc(100% - 24px));
+      margin: 40px auto;
+      overflow:hidden;
+    }
+
+    .rz-modal-head{
+      display:flex;
+      justify-content:space-between;
+      align-items:flex-start;
+      gap:12px;
+      padding: 14px 16px;
+      background: rgba(248,250,252,.96);
+      border-bottom: 1px solid rgba(17,24,39,.08);
+    }
+
+    .rz-modal-title{
+      font-size:18px;
+      font-weight:950;
+      letter-spacing:-.03em;
+      color:#0f172a;
+    }
+
+    .rz-modal-body{
+      padding: 14px 16px;
+      max-height: 70vh;
+      overflow:auto;
+    }
+
+    .rz-modal-foot{
+      padding: 12px 16px;
+      background: rgba(255,255,255,.96);
+      border-top: 1px solid rgba(17,24,39,.08);
+      display:flex;
+      justify-content:flex-end;
+    }
+
+    @media (max-width: 760px){
+      .rz-revenue-page{
+        width:100%;
+      }
+      .rz-stats-grid{
+        grid-template-columns:1fr;
+      }
+      .rz-tabs{
+        width:100%;
+      }
+      .rz-tab-btn{
+        flex:1 1 calc(50% - 8px);
+      }
+      .rz-filter-dates,
+      .rz-filter-dates input,
+      .rz-filter-dates .filter-select{
+        width:100%;
+      }
+      .rz-modal-card{
+        width:100%;
+        margin:0;
+      }
+      .rz-modal-head{
+        align-items:center;
+      }
+    }
+  </style>
 </head>
-<body>
+<body class="rz-admin-shell">
   <div class="login-container">
-    <div class="card" style="max-width: 1200px; width: 96%;">
-      <div class="topbar">
-        <div class="title">
-          <h1 style="margin:0;">Revenue</h1>
-          <div id="me" class="subtitle">Checking session...</div>
-        </div>
-
-        <!-- legacy nav kept hidden to avoid breaking revenue.js -->
-        <div class="nav" style="display:none;">
-          <button id="dashBtn" type="button">Dashboard</button>
-          <button id="apsBtn" type="button">APs</button>
-          <button id="plansBtn" type="button">Plans</button>
-          <button id="poolsBtn" type="button">Pools</button>
-          <button id="clientsBtn" type="button">Clients</button>
-          <button id="revenueBtn" type="button" disabled style="opacity:.75; cursor:default;">Revenue</button>
-          <button id="logoutBtn" type="button">Logout</button>
-        </div>
-      </div>
-
-      <!-- Filters -->
-      <div class="sticky-bar">
-        <div class="filters" style="gap:10px; flex-wrap:wrap;">
-          <input id="search" class="filter-search" placeholder="Search: phone / voucher / request_ref / tx_ref / MAC..." />
-
-          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-            <label style="font-size:13px; opacity:.8;">From</label>
-            <input id="from" class="filter-select" type="date" style="min-width:160px;" />
-            <label style="font-size:13px; opacity:.8;">To</label>
-            <input id="to" class="filter-select" type="date" style="min-width:160px;" />
+    <div class="card rz-revenue-page">
+      <div class="rz-revenue-shell">
+        <div class="topbar rz-revenue-head">
+          <div class="title">
+            <h1 class="rz-hero-title">Revenus</h1>
+            <div class="rz-hero-subtitle">Suivi des paiements, répartitions propriétaires et payouts RAZAFI.</div>
+            <div id="me" class="rz-revenue-status">Vérification de la session...</div>
           </div>
 
-          <button id="refreshBtn" class="filter-btn" type="button">Refresh</button>
-          <button id="clearBtn" class="filter-btn" type="button">Clear</button>
+          <!-- Navigation legacy gardée cachée pour compatibilité avec revenue.js -->
+          <div class="nav" style="display:none;">
+            <button id="dashBtn" type="button">Dashboard</button>
+            <button id="apsBtn" type="button">APs</button>
+            <button id="plansBtn" type="button">Plans</button>
+            <button id="poolsBtn" type="button">Pools</button>
+            <button id="clientsBtn" type="button">Clients</button>
+            <button id="revenueBtn" type="button" disabled>Revenus</button>
+            <button id="logoutBtn" type="button">Déconnexion</button>
+          </div>
         </div>
 
-        <div id="hint" class="subtitle" style="margin-top:8px;">
-          Paid-only. Totals / By Plan / By Pool match your filters (date/search) and come from DB truth view.
-        </div>
-      </div>
+        <div class="sticky-bar">
+          <div class="filters">
+            <input id="search" class="filter-search" placeholder="Rechercher : téléphone, voucher, référence, MAC..." />
 
-      <!-- Summary -->
-      <div class="stats-row" style="margin-top: 14px;">
-        <div class="stat">
-          <div class="stat-label">Paid (all-time)</div>
-          <div id="paidTotal" class="stat-value">—</div>
-        </div>
-        <div class="stat">
-          <div class="stat-label">Paid Transactions</div>
-          <div id="paidCount" class="stat-value">—</div>
-        </div>
-        <div class="stat">
-          <div class="stat-label">Last Paid At</div>
-          <div id="lastPaidAt" class="stat-value" style="font-size:18px;">—</div>
-        </div>
-      </div>
+            <div class="rz-filter-dates">
+              <label class="rz-filter-label" for="from">Du</label>
+              <input id="from" class="filter-select" type="date" />
+              <label class="rz-filter-label" for="to">Au</label>
+              <input id="to" class="filter-select" type="date" />
+            </div>
 
-      <!-- Tabs -->
-      <div style="display:flex; gap:10px; margin-top: 16px; flex-wrap:wrap;">
-        <button id="tabTx" class="filter-btn" type="button">Transactions</button>
-        <button id="tabPlan" class="filter-btn" type="button">By Plan</button>
-        <button id="tabPool" class="filter-btn" type="button">By Pool</button>
-      </div>
+            <button id="refreshBtn" class="filter-btn primary" type="button">Actualiser</button>
+            <button id="clearBtn" class="filter-btn" type="button">Réinitialiser</button>
+          </div>
 
-      <!-- Transactions -->
-      <div id="panelTx" style="margin-top: 14px;">
-        <div class="subtitle" style="margin: 6px 0 10px 0;">
-          Click a row to see details (read-only).
+          <div id="hint" class="rz-revenue-hint">
+            Les montants affichés concernent uniquement les paiements réussis. Les totaux suivent les filtres appliqués.
+          </div>
         </div>
 
-        <div style="overflow:auto; border-radius:12px;">
-          <table id="txTable" style="width:100%; border-collapse: collapse; min-width: 1100px;">
-            <thead>
-              <tr style="text-align:left;">
-                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Date</th>
-                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Amount</th>
-                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Phone</th>
-                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Voucher</th>
-                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Plan</th>
-                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Pool</th>
-                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Client MAC</th>
-                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">AP MAC</th>
-                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Status</th>
-              </tr>
-            </thead>
-            <tbody id="txBody">
-              <tr><td colspan="9" style="padding:12px; opacity:.75;">Loading...</td></tr>
-            </tbody>
-          </table>
+        <div class="rz-stats-grid">
+          <div class="rz-stat-card">
+            <div class="rz-stat-label">Montant payé</div>
+            <div id="paidTotal" class="rz-stat-value">—</div>
+          </div>
+          <div class="rz-stat-card">
+            <div class="rz-stat-label">Transactions payées</div>
+            <div id="paidCount" class="rz-stat-value">—</div>
+          </div>
+          <div class="rz-stat-card">
+            <div class="rz-stat-label">Dernier paiement</div>
+            <div id="lastPaidAt" class="rz-stat-value rz-small-value">—</div>
+          </div>
         </div>
 
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; gap:10px; flex-wrap:wrap;">
-          <div class="subtitle" id="txMeta">—</div>
-          <div style="display:flex; gap:10px;">
-            <button id="prevBtn" class="filter-btn" type="button">Prev</button>
-            <button id="nextBtn" class="filter-btn" type="button">Next</button>
+        <div class="rz-tabs" aria-label="Sections revenus">
+          <button id="tabTx" class="filter-btn rz-tab-btn" type="button">Transactions</button>
+          <button id="tabPlan" class="filter-btn rz-tab-btn" type="button">Par forfait</button>
+          <button id="tabPool" class="filter-btn rz-tab-btn" type="button">Par pool</button>
+        </div>
+
+        <div id="panelTx" class="rz-panel-card">
+          <div class="rz-panel-note">Cliquez sur une ligne pour consulter les détails en lecture seule.</div>
+
+          <div class="rz-table-wrap">
+            <table id="txTable" class="rz-data-table" style="min-width: 1120px;">
+              <thead>
+                <tr>
+                  <th style="text-align:left; padding:10px;">Date</th>
+                  <th style="text-align:left; padding:10px;">Montant</th>
+                  <th style="text-align:left; padding:10px;">Téléphone</th>
+                  <th style="text-align:left; padding:10px;">Voucher</th>
+                  <th style="text-align:left; padding:10px;">Forfait</th>
+                  <th style="text-align:left; padding:10px;">Pool</th>
+                  <th style="text-align:left; padding:10px;">MAC client</th>
+                  <th style="text-align:left; padding:10px;">MAC AP</th>
+                  <th style="text-align:left; padding:10px;">Statut</th>
+                </tr>
+              </thead>
+              <tbody id="txBody">
+                <tr><td colspan="9" style="padding:12px; opacity:.75;">Chargement...</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="rz-table-footer">
+            <div class="rz-table-meta" id="txMeta">—</div>
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+              <button id="prevBtn" class="filter-btn" type="button">Précédent</button>
+              <button id="nextBtn" class="filter-btn" type="button">Suivant</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="panelPlan" class="rz-panel-card" style="display:none;">
+          <div class="rz-panel-note">Résumé des revenus payés par forfait, selon les filtres actuels.</div>
+          <div class="rz-table-wrap">
+            <table id="planTable" class="rz-data-table" style="min-width: 700px;">
+              <thead>
+                <tr>
+                  <th style="text-align:left; padding:10px;">Forfait</th>
+                  <th style="text-align:left; padding:10px;">Transactions payées</th>
+                  <th style="text-align:left; padding:10px;">Montant</th>
+                  <th style="text-align:left; padding:10px;">Dernier paiement</th>
+                </tr>
+              </thead>
+              <tbody id="planBody">
+                <tr><td colspan="4" style="padding:12px; opacity:.75;">Chargement...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="panelPool" class="rz-panel-card" style="display:none;">
+          <div class="rz-panel-note">Résumé des revenus payés par pool, selon les filtres actuels.</div>
+          <div class="rz-table-wrap">
+            <table id="poolTable" class="rz-data-table" style="min-width: 700px;">
+              <thead>
+                <tr>
+                  <th style="text-align:left; padding:10px;">Pool</th>
+                  <th style="text-align:left; padding:10px;">Transactions payées</th>
+                  <th style="text-align:left; padding:10px;">Montant</th>
+                  <th style="text-align:left; padding:10px;">Dernier paiement</th>
+                </tr>
+              </thead>
+              <tbody id="poolBody">
+                <tr><td colspan="4" style="padding:12px; opacity:.75;">Chargement...</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
-
-      <!-- By Plan -->
-      <div id="panelPlan" style="margin-top: 14px; display:none;">
-        <div class="subtitle" style="margin: 6px 0 10px 0;">All-time paid revenue by plan (DB truth view).</div>
-        <div style="overflow:auto; border-radius:12px;">
-          <table id="planTable" style="width:100%; border-collapse: collapse; min-width: 700px;">
-            <thead>
-              <tr style="text-align:left;">
-                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Plan</th>
-                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Paid Tx</th>
-                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Amount (Ar)</th>
-                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Last Paid</th>
-              </tr>
-            </thead>
-            <tbody id="planBody">
-              <tr><td colspan="4" style="padding:12px; opacity:.75;">Loading...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- By Pool -->
-      <div id="panelPool" style="margin-top: 14px; display:none;">
-        <div class="subtitle" style="margin: 6px 0 10px 0;">All-time paid revenue by pool (DB truth view).</div>
-        <div style="overflow:auto; border-radius:12px;">
-          <table id="poolTable" style="width:100%; border-collapse: collapse; min-width: 700px;">
-            <thead>
-              <tr style="text-align:left;">
-                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Pool</th>
-                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Paid Tx</th>
-                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Amount (Ar)</th>
-                <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Last Paid</th>
-              </tr>
-            </thead>
-            <tbody id="poolBody">
-              <tr><td colspan="4" style="padding:12px; opacity:.75;">Loading...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
     </div>
   </div>
 
-  <!-- Detail Modal (read-only) -->
   <div id="modal" class="modal" style="display:none;">
-    <div class="modal-card" style="max-width: 900px; width: calc(100% - 24px); margin: 40px auto; background:#ffffff; color:#111; border-radius: 14px; box-shadow: 0 10px 30px rgba(0,0,0,.35); overflow:hidden;">
-      <div class="modal-head" style="padding: 12px 16px; background: #f6f7f9; border-bottom: 1px solid rgba(0,0,0,.08);">
+    <div class="modal-card rz-modal-card">
+      <div class="rz-modal-head">
         <div>
-          <div class="modal-title" id="modalTitle">Transaction Details</div>
+          <div class="rz-modal-title" id="modalTitle">Détails</div>
           <div class="subtitle" id="modalSub">—</div>
         </div>
-        <button id="closeModal" class="filter-btn" type="button">Close</button>
+        <button id="closeModal" class="filter-btn" type="button">Fermer</button>
       </div>
 
-      <div class="modal-body" id="modalBody" style="padding: 14px 16px; max-height: 70vh; overflow:auto;">
-        <!-- filled by JS -->
+      <div class="rz-modal-body" id="modalBody">
+        <!-- rempli par revenue.js -->
       </div>
 
-      <div class="modal-foot" style="padding: 12px 16px; background: #ffffff; border-top: 1px solid rgba(0,0,0,.08);">
-        <button id="closeModal2" class="filter-btn" type="button">Close</button>
+      <div class="rz-modal-foot">
+        <button id="closeModal2" class="filter-btn" type="button">Fermer</button>
       </div>
     </div>
   </div>
 
-  <!-- NEW shared drawer -->
   <script src="/admin/nav.js"></script>
   <script src="/admin/revenue.js"></script>
 </body>
