@@ -106,6 +106,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const rowsEl = $id("rows");
   const msgEl = $id("msg");
   const qEl = $id("q");
+  const poolSelectFilterEl = $id("poolSelectFilter");
   const refreshBtn = $id("refresh");
   const logoutBtn = $id("logoutBtn", "logout");
   const meEl = $id("me");
@@ -251,14 +252,33 @@ document.addEventListener("DOMContentLoaded", async () => {
     return byPoolId;
   }
 
+  function syncPoolSelectorOptions() {
+    if (!poolSelectFilterEl) return;
+
+    const current = String(poolSelectFilterEl.value || "all");
+    const options = [`<option value="all">Tous les pools</option>`];
+
+    (pools || []).forEach((p) => {
+      const id = String(p?.id || "");
+      if (!id) return;
+      const label = String(p?.name || id);
+      const selected = id === current ? "selected" : "";
+      options.push(`<option value="${esc(id)}" ${selected}>${esc(label)}</option>`);
+    });
+
+    poolSelectFilterEl.innerHTML = options.join("");
+
+    const stillExists = current === "all" || (pools || []).some((p) => String(p?.id || "") === current);
+    poolSelectFilterEl.value = stillExists ? current : "all";
+  }
+
   async function loadPools() {
     showMsg(msgEl, "");
     rowsEl.innerHTML = `<tr><td class="rz-pools-empty" colspan="6">Chargement…</td></tr>`;
 
     const params = new URLSearchParams();
-    const q = (qEl?.value || "").trim().toLowerCase();
 
-    // Important safety: do NOT send q to /api/admin/pools.
+    // Important safety: do NOT send search/filter text to /api/admin/pools.
     // Some backend versions return db_error when q is used.
     // We load the pools for the selected system, then filter locally in the browser.
     params.set("limit", "200");
@@ -272,15 +292,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     pools = poolsData.pools || poolsData.data || poolsData || [];
 
-    const visiblePools = q
-      ? pools.filter((p) => [
-          p?.name,
-          p?.id,
-          p?.contact_phone,
-          p?.mikrotik_ip,
-          p?.radius_nas_id,
-        ].join(" ").toLowerCase().includes(q))
-      : pools;
+    syncPoolSelectorOptions();
+
+    const selectedPoolId = String(poolSelectFilterEl?.value || "all");
+    const visiblePools = selectedPoolId === "all"
+      ? pools
+      : pools.filter((p) => String(p?.id || "") === selectedPoolId);
 
     if (!visiblePools.length) {
       rowsEl.innerHTML = `<tr><td class="rz-pools-empty" colspan="6">Aucun pool trouvé.</td></tr>`;
@@ -757,6 +774,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   refreshBtn?.addEventListener("click", () => loadPools().catch(e => showMsg(msgEl, e.message, true)));
 
+  poolSelectFilterEl?.addEventListener("change", () => {
+    loadPools().catch(err => showMsg(msgEl, err.message, true));
+  });
+
+  // Backward-compatible: if an old HTML still has the q input, keep it harmless and local.
   let searchTimer = null;
   qEl?.addEventListener("input", () => {
     clearTimeout(searchTimer);
