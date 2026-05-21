@@ -40,6 +40,61 @@
     .rz-audit-copy-title{font-weight:900;color:var(--rz-text,#111827);}
     @media (max-width:1100px){.rz-audit-filter-grid{grid-template-columns:1fr 1fr;}.rz-audit-filter-grid .filter-search:first-child{grid-column:1/-1;}.rz-audit-date-row{grid-template-columns:1fr 1fr;}.rz-audit-date-row button{width:100%;}}
     @media (max-width:640px){.rz-audit-filter-grid{grid-template-columns:1fr;}.rz-audit-date-row{grid-template-columns:1fr;}.rz-audit-table-card{border-radius:20px;}.rz-audit-table th,.rz-audit-table td{padding:10px 9px;}.rz-audit-pager button{flex:1 1 0;}}
+
+
+    /* Audit V3 mobile fixes: visible status selector + centered modal */
+    .audit-page #status{
+      display:block !important;
+      color:var(--rz-text,#111827) !important;
+      background-color:rgba(255,255,255,.92) !important;
+      min-height:52px;
+      line-height:1.2;
+      overflow:visible;
+      appearance:auto;
+      -webkit-appearance:menulist;
+    }
+    .audit-page #status option{color:#111827;background:#fff;}
+    .audit-page .modal{
+      position:fixed !important;
+      inset:0 !important;
+      z-index:10000 !important;
+      display:none;
+      align-items:center !important;
+      justify-content:center !important;
+      padding:18px !important;
+      overflow:auto !important;
+      background:rgba(15,23,42,.52) !important;
+    }
+    .audit-page .modal[style*="display: flex"],
+    .audit-page .modal.is-open{display:flex !important;}
+    .audit-page .audit-modal-card{
+      margin:0 auto !important;
+      width:min(900px, calc(100vw - 28px)) !important;
+      max-height:calc(100vh - 80px) !important;
+      overflow:auto !important;
+      border-radius:24px !important;
+    }
+    @media (max-width:640px){
+      .audit-page .sticky-bar{padding:14px;}
+      .audit-page .rz-audit-filter-grid{gap:10px;}
+      .audit-page .rz-audit-filter-grid input,
+      .audit-page .rz-audit-filter-grid select,
+      .audit-page .rz-audit-date-row input,
+      .audit-page .rz-audit-date-row button{
+        width:100% !important;
+        max-width:none !important;
+        min-height:56px;
+      }
+      .audit-page .audit-modal-card{
+        width:calc(100vw - 28px) !important;
+        max-height:calc(100vh - 110px) !important;
+        border-radius:22px !important;
+      }
+      .audit-page .rz-audit-modal-head{align-items:flex-start;}
+      .audit-page .audit-modal-summary{grid-template-columns:1fr !important;}
+      .audit-page .rz-audit-copy-row button{width:100% !important;}
+    }
+
   </style>
 </head>
 <body class="rz-admin-shell audit-page">
@@ -58,7 +113,7 @@
           <input id="q" class="filter-search" placeholder="Rechercher : référence, MAC, téléphone…" />
 
           <select id="status" class="filter-select" aria-label="Filtrer par statut">
-            <option value="">Statut : tous</option>
+            <option value="" selected>Statut : tous</option>
             <option value="success">succès</option>
             <option value="info">info</option>
             <option value="pending">en attente</option>

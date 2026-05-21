@@ -69,6 +69,26 @@
   }
 
 
+  function ensureStatusSelector() {
+    const sel = $("status");
+    if (!sel) return;
+    const current = String(sel.value || "");
+    sel.innerHTML = `
+      <option value="">Statut : tous</option>
+      <option value="success">succès</option>
+      <option value="info">info</option>
+      <option value="pending">en attente</option>
+      <option value="warning">avertissement</option>
+      <option value="blocked">bloqué</option>
+      <option value="failed">échec</option>
+      <option value="ok">ok</option>
+      <option value="error">erreur</option>
+    `;
+    sel.value = current;
+    if (!sel.value) sel.selectedIndex = 0;
+  }
+
+
   function adminDisplayName(admin) {
     const raw = String(admin?.email || admin?.username || "admin").trim();
     return raw.includes("@") ? raw.split("@")[0] : raw;
@@ -226,12 +246,16 @@
       };
     }
 
+    modal.classList.add("is-open");
     modal.style.display = "flex";
   }
 
   function closeModal() {
     const modal = $("modal");
-    if (modal) modal.style.display = "none";
+    if (modal) {
+      modal.classList.remove("is-open");
+      modal.style.display = "none";
+    }
   }
 
   async function loadEventTypes() {
@@ -386,6 +410,7 @@
 
   // init
   setDefaultDates();
+  ensureStatusSelector();
   await checkSession();
   await loadEventTypes();
   await loadPlanAndPoolDropdowns();
