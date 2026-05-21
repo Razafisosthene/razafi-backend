@@ -1,84 +1,123 @@
 <!doctype html>
-<html lang="en">
+<html lang="fr">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>RAZAFI Admin — Pools</title>
   <link rel="stylesheet" href="/admin/admin.css" />
+
+  <!-- Pools page local polish only: no global admin.css change -->
+  <style>
+    .rz-pools-shell{display:flex;flex-direction:column;gap:14px;}
+    .rz-pools-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+    .rz-pools-title-block{min-width:0;}
+    .rz-pools-me{white-space:normal;line-height:1.25;}
+    .rz-pools-me strong{display:block;color:var(--rz-text,#111827);font-weight:900;margin-top:2px;word-break:break-word;}
+    .rz-pools-create-card{padding:16px;border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);}
+    .rz-pools-create-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px;}
+    .rz-pools-create-title{font-weight:950;font-size:18px;letter-spacing:-.02em;color:var(--rz-text,#111827);}
+    .rz-pools-form-grid{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr)) auto;gap:10px;align-items:center;}
+    .rz-pools-form-grid input,.rz-pools-form-grid select{margin-bottom:0;}
+    .rz-pools-form-grid button{width:auto;}
+    .rz-hidden-system-toggle{display:none!important;}
+    .rz-pools-filter-grid{display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:10px;align-items:center;}
+    .rz-pools-filter-grid input{margin-bottom:0;}
+    .rz-pools-filter-grid button{width:auto;}
+    .rz-pools-table-card{margin-top:14px;border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);overflow:hidden;}
+    .rz-pools-table-wrap{overflow:auto;-webkit-overflow-scrolling:touch;}
+    .rz-pools-table{width:100%;border-collapse:separate;border-spacing:0;min-width:1120px;}
+    .rz-pools-table th{position:sticky;top:0;z-index:2;text-align:left;padding:12px 10px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--rz-muted,#6b7280);background:rgba(248,250,252,.96);border-bottom:1px solid rgba(17,24,39,.08);}
+    .rz-pools-table td{padding:12px 10px;border-bottom:1px solid rgba(17,24,39,.07);vertical-align:top;font-size:14px;}
+    .rz-pools-table tbody tr:hover{background:rgba(13,110,253,.04);}
+    .rz-pools-empty{padding:16px;color:var(--rz-muted,#6b7280);font-weight:800;}
+    @media (max-width:980px){
+      .rz-pools-form-grid{grid-template-columns:1fr 1fr;}
+      .rz-pools-form-grid button{width:100%;}
+      .rz-pools-filter-grid{grid-template-columns:1fr;}
+      .rz-pools-filter-grid button{width:100%;}
+    }
+    @media (max-width:640px){
+      .rz-pools-form-grid{grid-template-columns:1fr;}
+      .rz-pools-create-card{border-radius:20px;}
+      .rz-pools-table-card{border-radius:20px;}
+      .rz-pools-table th,.rz-pools-table td{padding:10px 9px;}
+    }
+  </style>
 </head>
-<body>
-  <div class="login-container" style="align-items:flex-start;">
-    <div class="card" style="width:100%; max-width:1250px; margin:24px auto;">
-      <div class="topbar">
-        <div class="title">
-          <h1>Pools</h1>
-          <div class="subtitle">
-            Connected as <span id="me">…</span><br/>
-            Manage pools (Starlink) + capacity + AP assignment
-          </div>
+<body class="rz-admin-shell pools-page">
+  <div class="login-container">
+    <div class="card rz-pools-shell" style="width:100%; max-width:1250px;">
+      <div class="topbar rz-pools-header">
+        <div class="title rz-pools-title-block">
+          <h1 class="rz-hero-title">Pools</h1>
+          <div id="me" class="subtitle rz-pools-me">Vérification de la session…</div>
         </div>
 
-        <!-- legacy nav kept hidden to avoid breaking pools.js -->
+        <!-- Navigation legacy gardée cachée pour compatibilité JS / rollback rapide -->
         <div class="nav" style="display:none;">
           <a href="/admin/"><button type="button">Dashboard</button></a>
           <a href="/admin/clients.html"><button type="button">Clients</button></a>
           <a href="/admin/aps.html"><button type="button">APs</button></a>
           <a href="/admin/plans.html"><button type="button">Plans</button></a>
           <a href="/admin/revenue.html"><button type="button">Revenue</button></a>
-          <button id="logoutBtn" type="button">Logout</button>
+          <button id="logoutBtn" type="button">Déconnexion</button>
         </div>
       </div>
 
       <div id="msg" class="error" style="display:none;"></div>
 
       <!-- Create pool -->
-      <div class="card" style="padding:16px; margin-top:14px;">
-        <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:flex-end;">
-          <div>
-            <div style="font-weight:800; font-size:18px; color:#0d6efd;">Create pool</div>
-            <div class="subtitle" style="text-align:left; margin:6px 0 0;">Capacity = max concurrent clients for this Starlink</div>
-          </div>
-          <div class="form-row" style="flex:1 1 520px; justify-content:flex-end;">
-            <select id="newSystem" style="max-width:160px; margin-bottom:0;">
-              <option value="portal">Portal</option>
-              <option value="mikrotik">Mikrotik</option>
-            </select>
-            <input id="newMikrotikIp" placeholder="MikroTik IP (ex: 192.168.88.1)" style="max-width:260px; margin-bottom:0; display:none;" />
-            <input id="newRadiusNasId" placeholder="NAS ID (ex: razafi-pool-1)" style="max-width:240px; margin-bottom:0; display:none;" />
+      <div class="rz-pools-create-card">
+        <div class="rz-pools-create-head">
+          <div class="rz-pools-create-title">Nouveau pool</div>
+        </div>
 
-            <input id="newName" placeholder="Pool name" style="max-width:320px; margin-bottom:0;" />
-            <input id="newContactPhone" placeholder="Contact phone (optional)" style="max-width:220px; margin-bottom:0;" />
-            <input id="newCap" type="number" min="0" placeholder="capacity_max" style="max-width:220px; margin-bottom:0;" />
-            <button type="button" id="createPoolBtn" style="width:auto;">Create</button>
-          </div>
+        <div class="rz-pools-form-grid">
+          <select id="newSystem" class="rz-hidden-system-toggle" aria-hidden="true">
+            <option value="portal">Portal</option>
+            <option value="mikrotik">MikroTik</option>
+          </select>
+
+          <input id="newName" placeholder="Nom du pool" />
+          <input id="newMikrotikIp" placeholder="IP MikroTik" />
+          <input id="newRadiusNasId" placeholder="NAS ID" />
+          <input id="newContactPhone" placeholder="Téléphone contact" />
+          <input id="newCap" type="number" min="0" placeholder="Capacité max" />
+          <button type="button" id="createPoolBtn" class="filter-btn primary">Créer</button>
         </div>
       </div>
 
       <!-- Filters -->
       <div class="sticky-bar">
-        <div class="filters">
-          <button type="button" id="sysPortalBtn" class="filter-btn primary" style="width:auto;">Portal</button>
-          <button type="button" id="sysMikrotikBtn" class="filter-btn" style="width:auto;">Mikrotik</button>
-          <input id="q" class="filter-search" placeholder="Search pool name / id..." />
-          <button type="button" id="refresh" class="filter-btn primary" style="width:auto;">Refresh</button>
+        <div class="filters rz-pools-filter-grid">
+          <div class="rz-hidden-system-toggle" aria-hidden="true">
+            <button type="button" id="sysPortalBtn" class="filter-btn">Portal</button>
+            <button type="button" id="sysMikrotikBtn" class="filter-btn primary">MikroTik</button>
+          </div>
+          <input id="q" class="filter-search" placeholder="Rechercher un pool…" />
+          <button type="button" id="refresh" class="filter-btn primary">Actualiser</button>
         </div>
       </div>
 
       <!-- Table -->
-      <div class="table-wrap">
-        <table style="width:100%; border-collapse:collapse;">
-          <thead>
-            <tr style="text-align:left; border-bottom:1px solid rgba(0,0,0,0.08);">
-              <th style="padding:10px;">Pool</th>
-              <th style="padding:10px;">Capacity</th>
-              <th style="padding:10px;">Contact</th>
-              <th style="padding:10px;">Live clients</th>
-              <th style="padding:10px;">Pool %</th>
-              <th style="padding:10px;">Actions</th>
-            </tr>
-          </thead>
-          <tbody id="rows"></tbody>
-        </table>
+      <div class="rz-pools-table-card">
+        <div class="rz-pools-table-wrap">
+          <table class="rz-pools-table">
+            <thead>
+              <tr>
+                <th>Pool</th>
+                <th>Capacité</th>
+                <th>Contact</th>
+                <th>Clients live</th>
+                <th>Occupation</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="rows">
+              <tr><td class="rz-pools-empty" colspan="6">Chargement…</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>

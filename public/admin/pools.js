@@ -25,6 +25,11 @@ function esc(s) {
   }[c]));
 }
 
+function adminDisplayName(me) {
+  const raw = String(me?.email || me?.username || "admin").trim();
+  return raw.includes("@") ? raw.split("@")[0] : raw;
+}
+
 function pct(n, d) {
   const num = Number(n), den = Number(d);
   if (!Number.isFinite(num) || !Number.isFinite(den) || den <= 0) return null;
@@ -89,7 +94,7 @@ function normalizePoolLiveStatsPayload(data) {
 async function guardSession(meEl) {
   try {
     const me = await fetchJSON("/api/admin/me");
-    if (meEl) meEl.textContent = `${me.email || me.username || "admin"}`;
+    if (meEl) meEl.innerHTML = `Connecté :<strong>${esc(adminDisplayName(me))}</strong>`;
     return me;
   } catch {
     window.location.href = "/admin/login.html";
@@ -158,7 +163,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function buildOwnerOptions(selectedId) {
     const current = String(selectedId || "").trim();
-    const options = [`<option value="">— Choisir propriétaire business —</option>`];
+    const options = [`<option value="">— Choisir un propriétaire —</option>`];
 
     ownerUsers.forEach((u) => {
       const sel = String(u.id) === current ? "selected" : "";
@@ -248,7 +253,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   async function loadPools() {
     showMsg(msgEl, "");
-    rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="6">Loading...</td></tr>`;
+    rowsEl.innerHTML = `<tr><td class="rz-pools-empty" colspan="6">Chargement…</td></tr>`;
 
     const params = new URLSearchParams();
     const q = (qEl?.value || "").trim();
@@ -265,7 +270,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     pools = poolsData.pools || poolsData.data || poolsData || [];
 
     if (!pools.length) {
-      rowsEl.innerHTML = `<tr><td style="padding:10px;" colspan="6">No pools</td></tr>`;
+      rowsEl.innerHTML = `<tr><td class="rz-pools-empty" colspan="6">Aucun pool.</td></tr>`;
       return;
     }
 
@@ -395,7 +400,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                 ${canManage ? "" : "readonly disabled"}
               />
               <span style="font-size:12px; padding:2px 10px; border-radius:999px; background:${system === "mikrotik" ? "rgba(13,110,253,.12)" : "rgba(0,0,0,.06)"}; color:${system === "mikrotik" ? "#0d6efd" : "rgba(0,0,0,.75)"};">
-                ${system}
+                ${system === "mikrotik" ? "MikroTik" : "Portal"}
               </span>
             </div>
             ${isMikrotik ? `
@@ -403,14 +408,14 @@ document.addEventListener("DOMContentLoaded", async () => {
                 <input
                   data-mtik-ip="${esc(pid)}"
                   value="${esc(mikrotikIp)}"
-                  placeholder="MikroTik IP (ex: 192.168.88.1)"
+                  placeholder="IP MikroTik"
                   style="width:220px; margin-bottom:0;"
                   ${canManage ? "" : "readonly disabled"}
                 />
                 <input
                   data-nas-id="${esc(pid)}"
                   value="${esc(radiusNasId)}"
-                  placeholder="NAS ID (ex: razafi-pool-1)"
+                  placeholder="NAS ID"
                   style="width:200px; margin-bottom:0;"
                   ${canManage ? "" : "readonly disabled"}
                 />
@@ -438,7 +443,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             <input
               data-contact-phone="${esc(pid)}"
               value="${esc(contactPhone)}"
-              placeholder="Contact phone (optional)"
+              placeholder="Téléphone contact"
               style="width:220px; max-width:100%; margin-bottom:0;"
               ${canManage ? "" : "readonly disabled"}
             />
@@ -450,13 +455,13 @@ document.addEventListener("DOMContentLoaded", async () => {
           <td style="padding:10px; display:flex; gap:8px; flex-wrap:wrap;">
             ${canManage ? `<button type="button" data-save="${esc(pid)}" style="width:auto; padding:10px 14px;">Enregistrer</button>` : ``}
             <button type="button" data-toggle="${esc(pid)}" style="width:auto; padding:10px 14px;">APs</button>
-            ${canManage ? `<button type="button" data-delete="${esc(pid)}" class="danger" style="width:auto; padding:10px 14px;">Delete</button>` : ``}
+            ${canManage ? `<button type="button" data-delete="${esc(pid)}" class="danger" style="width:auto; padding:10px 14px;">Supprimer</button>` : ``}
           </td>
         </tr>
 
         <tr data-details="${esc(pid)}" style="display:none; border-top:1px solid rgba(0,0,0,.06);">
           <td colspan="6" style="padding:10px;">
-            <div style="opacity:.75; font-size:13px;">Loading APs...</div>
+            <div style="opacity:.75; font-size:13px;">Chargement des APs…</div>
           </td>
         </tr>
       `;
@@ -557,15 +562,15 @@ document.addEventListener("DOMContentLoaded", async () => {
       btn.addEventListener("click", async () => {
         const pid = btn.getAttribute("data-delete");
         if (!pid) return;
-        if (!confirm("Delete this pool? APs assigned to it will be unassigned.")) return;
+        if (!confirm("Supprimer ce pool ? Les APs rattachés seront détachés.")) return;
 
         try {
           btn.disabled = true;
           await fetchJSON(`/api/admin/pools/${encodeURIComponent(pid)}`, { method: "DELETE" });
           await loadPools();
-          showMsg(msgEl, "Pool deleted ✅", false);
+          showMsg(msgEl, "Pool supprimé ✅", false);
         } catch (e) {
-          showMsg(msgEl, `Delete failed: ${e.message}`, true);
+          showMsg(msgEl, `Suppression échouée : ${e.message}`, true);
         } finally {
           btn.disabled = false;
         }
@@ -596,7 +601,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           <div>
             <div style="font-weight:800; font-size:16px;">${esc(pool.name || pool.id)}</div>
             <div style="opacity:.75; font-size:13px; margin-top:6px;">
-              Pool capacity: ${esc(pool.capacity_max ?? "—")} (edit in table above)
+              Capacité pool : ${esc(pool.capacity_max ?? "—")}
             </div>
           </div>
         </div>
@@ -606,18 +611,18 @@ document.addEventListener("DOMContentLoaded", async () => {
             <thead>
               <tr style="text-align:left; border-bottom:1px solid rgba(0,0,0,0.08);">
                 <th style="padding:10px;">AP</th>
-                <th style="padding:10px;">Status</th>
-                <th style="padding:10px;">Connected</th>
-                <th style="padding:10px;">AP cap</th>
-                <th style="padding:10px;">AP %</th>
-                <th style="padding:10px;">Move</th>
+                <th style="padding:10px;">Statut</th>
+                <th style="padding:10px;">Connectés</th>
+                <th style="padding:10px;">Capacité AP</th>
+                <th style="padding:10px;">Occupation AP</th>
+                <th style="padding:10px;">Déplacer</th>
               </tr>
             </thead>
             <tbody>
               ${aps.map(a => {
                 const mac = String(a.ap_mac || "");
                 const label = a.tanaza_label || mac;
-                const online = (a.tanaza_online === true) ? "Online" : (a.tanaza_online === false ? "Offline" : "—");
+                const online = (a.tanaza_online === true) ? "En ligne" : (a.tanaza_online === false ? "Hors ligne" : "—");
                 const tanCraw = (a.tanaza_connected ?? a.tanaza_connected_clients ?? a.connectedClients ?? null);
                 const tanC = (tanCraw === null || tanCraw === undefined) ? null : Number(tanCraw);
                 const tanDisp = (tanC === null || Number.isNaN(tanC)) ? "—" : esc(tanC);
@@ -649,7 +654,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                           style="width:120px; margin-bottom:0;"
                           ${canManageAps ? "" : "readonly disabled"}
                         />
-                        ${canManageAps ? `<button type="button" data-saveapcap="${esc(mac)}" style="width:auto; padding:10px 14px;">Save</button>` : ``}
+                        ${canManageAps ? `<button type="button" data-saveapcap="${esc(mac)}" style="width:auto; padding:10px 14px;">Enregistrer</button>` : ``}
                       </div>
                     </td>
                     <td style="padding:10px;">${apPct === null ? "—" : pctBar(apPct)}</td>
@@ -659,7 +664,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                           <select data-move="${esc(mac)}" style="min-width:220px; padding:10px; border-radius:10px; border:1px solid #ddd;">
                             ${poolOptions}
                           </select>
-                          <button type="button" data-movebtn="${esc(mac)}" style="width:auto; padding:10px 14px;">Move</button>
+                          <button type="button" data-movebtn="${esc(mac)}" style="width:auto; padding:10px 14px;">Déplacer</button>
                         </div>
                       ` : `<span style="opacity:.7;">Lecture seule</span>`}
                     </td>
@@ -692,9 +697,9 @@ document.addEventListener("DOMContentLoaded", async () => {
             if (detailsRow2 && detailsRow2.style.display !== "none") {
               await loadPoolAps(poolId);
             }
-            showMsg(msgEl, "AP moved ✅", false);
+            showMsg(msgEl, "AP déplacé ✅", false);
           } catch (e) {
-            showMsg(msgEl, `Move failed: ${e.message}`, true);
+            showMsg(msgEl, `Déplacement échoué : ${e.message}`, true);
           } finally {
             btn.disabled = false;
           }
@@ -708,7 +713,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           const v = inp ? inp.value : "";
           const cap = (v === "" ? null : Number(v));
           if (cap !== null && (!Number.isFinite(cap) || cap < 0)) {
-            showMsg(msgEl, "Invalid AP capacity", true);
+            showMsg(msgEl, "Capacité AP invalide", true);
             return;
           }
 
@@ -721,9 +726,9 @@ document.addEventListener("DOMContentLoaded", async () => {
             });
             await loadPoolAps(poolId);
             await loadPools();
-            showMsg(msgEl, "AP capacity saved ✅", false);
+            showMsg(msgEl, "Capacité AP enregistrée ✅", false);
           } catch (e) {
-            showMsg(msgEl, `AP capacity save failed: ${e.message}`, true);
+            showMsg(msgEl, `Enregistrement capacité AP échoué : ${e.message}`, true);
           } finally {
             btn.disabled = false;
           }
@@ -731,7 +736,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       });
 
     } catch (e) {
-      cell.innerHTML = `<div style="color:#d9534f; font-size:13px;">Failed to load APs: ${esc(e.message)}</div>`;
+      cell.innerHTML = `<div style="color:#d9534f; font-size:13px;">Impossible de charger les APs : ${esc(e.message)}</div>`;
     }
   }
 
@@ -751,21 +756,21 @@ document.addEventListener("DOMContentLoaded", async () => {
     const radius_nas_id = (newRadiusNasIdEl?.value || "").trim();
 
     if (!name) {
-      showMsg(msgEl, "Pool name is required", true);
+      showMsg(msgEl, "Nom du pool requis", true);
       return;
     }
     if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
-      showMsg(msgEl, "Invalid pool capacity", true);
+      showMsg(msgEl, "Capacité du pool invalide", true);
       return;
     }
     if (system === "mikrotik" && !mikrotik_ip) {
-      showMsg(msgEl, "MikroTik IP is required for system=mikrotik", true);
+      showMsg(msgEl, "IP MikroTik requise", true);
       return;
     }
 
     try {
       createPoolBtn.disabled = true;
-      showMsg(msgEl, "Creating…", false);
+      showMsg(msgEl, "Création…", false);
       await fetchJSON("/api/admin/pools", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -783,10 +788,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (newMikrotikIpEl) newMikrotikIpEl.value = "";
       if (newRadiusNasIdEl) newRadiusNasIdEl.value = "";
       if (newContactPhoneEl) newContactPhoneEl.value = "";
-      showMsg(msgEl, "Created ✅", false);
+      showMsg(msgEl, "Créé ✅", false);
       await loadPools();
     } catch (e) {
-      showMsg(msgEl, `Create failed: ${e.message}`, true);
+      showMsg(msgEl, `Création échouée : ${e.message}`, true);
     } finally {
       createPoolBtn.disabled = false;
     }
