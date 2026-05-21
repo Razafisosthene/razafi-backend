@@ -101,11 +101,21 @@ function payoutTone(status) {
 // -------------------------
 let currentAdmin = null;
 
+function displayAdminName(admin) {
+  const email = String(admin?.email || "").trim();
+  const username = email.includes("@") ? email.split("@")[0] : email;
+  return username || "administrateur";
+}
+
 async function requireAdmin() {
   try {
     const admin = await fetchJSON("/api/admin/me");
     currentAdmin = admin;
-    byId("me").textContent = "Connecté : " + admin.email;
+
+    const me = byId("me");
+    if (me) {
+      me.innerHTML = `Connecté :<br><strong>${esc(displayAdminName(admin))}</strong>`;
+    }
   } catch (e) {
     location.href = "/admin/login.html";
   }
