@@ -21,6 +21,12 @@
       .replaceAll("'", "&#039;");
   }
 
+  function displayNameFromEmail(email) {
+    const raw = String(email || "").trim();
+    if (!raw) return "";
+    return raw.includes("@") ? raw.split("@")[0] : raw;
+  }
+
   function money(v) {
     const n = Number(v || 0);
     if (!Number.isFinite(n)) return "0 Ar";
@@ -37,24 +43,26 @@
   function badge(status) {
     const s = String(status || "draft").toLowerCase();
     const cls =
-      s === "paid" ? "badge-paid" :
-      s === "cancelled" ? "badge-cancelled" :
-      "badge-draft";
+      s === "paid" ? "owner-badge-paid" :
+      s === "cancelled" ? "owner-badge-cancelled" :
+      "owner-badge-draft";
 
     const label =
-      s === "paid" ? "payé" :
-      s === "cancelled" ? "annulé" :
-      "à payer";
+      s === "paid" ? "Payé" :
+      s === "cancelled" ? "Annulé" :
+      "À payer";
 
-    return `<span class="badge ${cls}">${label}</span>`;
+    return `<span class="owner-badge ${cls}">${label}</span>`;
   }
 
   function showError(msg) {
+    if (!els.errorBox) return;
     els.errorBox.style.display = "block";
     els.errorBox.textContent = msg;
   }
 
   function clearError() {
+    if (!els.errorBox) return;
     els.errorBox.style.display = "none";
     els.errorBox.textContent = "";
   }
@@ -69,8 +77,9 @@
     const owner = data.owner || {};
     const { summary, payouts } = normalizePayload(data);
 
-    els.ownerIdentity.textContent = owner.email
-      ? `Connecté comme ${owner.email}`
+    const displayName = displayNameFromEmail(owner.email);
+    els.ownerIdentity.innerHTML = displayName
+      ? `Connecté :<strong>${esc(displayName)}</strong>`
       : "Connecté";
 
     const totalOwner = summary.total_owner_ar ?? summary.total_earned ?? summary.owner_total_ar ?? 0;
@@ -84,7 +93,7 @@
     els.payoutCount.textContent = String(payoutCount);
 
     if (!payouts.length) {
-      els.payoutRows.innerHTML = `<tr><td colspan="7" class="empty-state">Aucun payout pour ce propriétaire.</td></tr>`;
+      els.payoutRows.innerHTML = `<tr><td colspan="7" class="owner-empty-state">Aucun payout pour ce propriétaire.</td></tr>`;
       return;
     }
 
@@ -104,7 +113,7 @@
           <td>${receiptNumber ? esc(receiptNumber) : "—"}</td>
           <td>
             ${canReceipt
-              ? `<a class="btn btn-receipt" href="${esc(receiptUrl)}" target="_blank" rel="noopener">Reçu PDF</a>`
+              ? `<a class="filter-btn primary owner-receipt-link" href="${esc(receiptUrl)}" target="_blank" rel="noopener">Reçu PDF</a>`
               : "—"}
           </td>
         </tr>
@@ -114,8 +123,10 @@
 
   async function loadOwnerRevenue() {
     clearError();
-    els.refreshBtn.disabled = true;
-    els.refreshBtn.textContent = "Chargement...";
+    if (els.refreshBtn) {
+      els.refreshBtn.disabled = true;
+      els.refreshBtn.textContent = "Chargement…";
+    }
 
     try {
       const res = await fetch("/api/owner/revenue", {
@@ -132,11 +143,13 @@
 
       render(data);
     } catch (e) {
-      showError(`Impossible de charger les revenus propriétaire: ${e.message || e}`);
-      els.payoutRows.innerHTML = `<tr><td colspan="7" class="empty-state">Erreur de chargement.</td></tr>`;
+      showError(`Impossible de charger les revenus propriétaire : ${e.message || e}`);
+      els.payoutRows.innerHTML = `<tr><td colspan="7" class="owner-empty-state">Erreur de chargement.</td></tr>`;
     } finally {
-      els.refreshBtn.disabled = false;
-      els.refreshBtn.textContent = "Refresh";
+      if (els.refreshBtn) {
+        els.refreshBtn.disabled = false;
+        els.refreshBtn.textContent = "Actualiser";
+      }
     }
   }
 

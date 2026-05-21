@@ -5,246 +5,111 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RAZAFI — Revenus propriétaire</title>
   <link rel="stylesheet" href="/admin/admin.css" />
+
+  <!-- Owner revenue page local polish only: no global admin.css change -->
   <style>
-    body
-    {
-      margin: 0;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: linear-gradient(135deg, #0b63f6, #002b66);
-      min-height: 100vh;
-      color: #111827;
-    }
-    .owner-shell {
-      width: min(1180px, calc(100% - 32px));
-      margin: 40px auto;
-      background: #fff;
-      border-radius: 22px;
-      padding: 28px;
-      box-shadow: 0 20px 60px rgba(0,0,0,.22);
-    }
-    .owner-header {
-      display: flex;
-      justify-content: space-between;
-      gap: 18px;
-      align-items: center;
-      margin-bottom: 28px;
-      flex-wrap: wrap;
-    }
-    .brand-row {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-    }
-    .brand-logo {
-      width: 54px;
-      height: 54px;
-      object-fit: contain;
-      border-radius: 12px;
-      background: #f3f4f6;
-      padding: 6px;
-    }
-    h1 {
-      margin: 0;
-      color: #0b63f6;
-      font-size: 28px;
-      line-height: 1.15;
-    }
-    .subtitle {
-      margin: 4px 0 0;
-      color: #6b7280;
-      font-size: 14px;
-    }
-    .actions {
-      display: flex;
-      gap: 10px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
-    .btn {
-      border: 0;
-      border-radius: 12px;
-      padding: 12px 16px;
-      font-weight: 800;
-      cursor: pointer;
-      text-decoration: none;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 42px;
-    }
-    .btn-primary { background: #0b63f6; color: #fff; }
-    .btn-muted { background: #eef2ff; color: #1d4ed8; }
-    .btn-receipt {
-      background: #0b63f6;
-      color: #fff;
-      padding: 9px 12px;
-      border-radius: 10px;
-      font-size: 13px;
-    }
-    .summary-grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 14px;
-      margin-bottom: 24px;
-    }
-    .card {
-      background: #f9fafb;
-      border: 1px solid #e5e7eb;
-      border-radius: 18px;
-      padding: 18px;
-    }
-    .card-label {
-      font-size: 13px;
-      color: #6b7280;
-      font-weight: 700;
-      margin-bottom: 8px;
-    }
-    .card-value {
-      font-size: 24px;
-      font-weight: 900;
-      color: #111827;
-    }
-    .card-value.green { color: #16a34a; }
-    .card-value.orange { color: #d97706; }
-    .section-title {
-      margin: 22px 0 12px;
-      font-size: 20px;
-      font-weight: 900;
-      color: #111827;
-    }
-    .table-wrap {
-      overflow-x: auto;
-      border: 1px solid #e5e7eb;
-      border-radius: 18px;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      min-width: 860px;
-      background: #fff;
-    }
-    th, td {
-      padding: 14px 12px;
-      border-bottom: 1px solid #eef2f7;
-      text-align: left;
-      vertical-align: middle;
-      font-size: 14px;
-    }
-    th {
-      background: #f8fafc;
-      font-weight: 900;
-      color: #111827;
-    }
-    tr:last-child td { border-bottom: 0; }
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      border-radius: 999px;
-      padding: 6px 10px;
-      font-weight: 900;
-      font-size: 12px;
-      text-transform: lowercase;
-    }
-    .badge-paid { background: #dcfce7; color: #15803d; }
-    .badge-draft { background: #fef3c7; color: #92400e; }
-    .badge-cancelled { background: #fee2e2; color: #991b1b; }
-    .empty-state {
-      text-align: center;
-      padding: 34px 16px;
-      color: #6b7280;
-      font-weight: 700;
-    }
-    .error-box {
-      display: none;
-      background: #fee2e2;
-      color: #991b1b;
-      border: 1px solid #fecaca;
-      padding: 14px;
-      border-radius: 14px;
-      margin-bottom: 16px;
-      font-weight: 700;
-    }
-    .owner-small {
-      color: #6b7280;
-      font-size: 13px;
-      margin-top: 6px;
-    }
-    @media (max-width: 850px) {
-      .owner-shell { width: calc(100% - 20px); margin: 16px auto; padding: 18px; }
-      .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      h1 { font-size: 24px; }
-    }
-    @media (max-width: 520px) {
-      .summary-grid { grid-template-columns: 1fr; }
-      .owner-header { align-items: flex-start; }
-      .actions { width: 100%; }
-      .btn { width: 100%; }
-    }
+    .owner-shell{display:flex;flex-direction:column;gap:14px;}
+    .owner-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+    .owner-title-block{min-width:0;}
+    .owner-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+    .owner-identity{white-space:normal;line-height:1.25;}
+    .owner-identity strong{display:block;color:var(--rz-text,#111827);font-weight:900;margin-top:2px;word-break:break-word;}
+    .owner-summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:8px;}
+    .owner-stat-card{padding:16px;border-radius:24px;background:rgba(255,255,255,.78);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);}
+    .owner-stat-label{font-size:12px;color:var(--rz-muted,#6b7280);font-weight:900;text-transform:uppercase;letter-spacing:.04em;}
+    .owner-stat-value{margin-top:7px;font-size:clamp(22px,3vw,30px);line-height:1;font-weight:950;letter-spacing:-.045em;color:var(--rz-text,#111827);}
+    .owner-stat-value.green{color:#16a34a;}
+    .owner-stat-value.orange{color:#d97706;}
+    .owner-section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:12px;}
+    .owner-section-title{margin:0;font-size:20px;font-weight:950;letter-spacing:-.035em;color:var(--rz-text,#111827);}
+    .owner-section-sub{margin-top:4px;color:var(--rz-muted,#6b7280);font-size:13px;line-height:1.35;}
+    .owner-table-card{margin-top:10px;border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);overflow:hidden;}
+    .owner-table-wrap{overflow:auto;-webkit-overflow-scrolling:touch;}
+    .owner-table{width:100%;border-collapse:separate;border-spacing:0;min-width:860px;background:transparent;}
+    .owner-table th{position:sticky;top:0;z-index:2;text-align:left;padding:12px 10px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--rz-muted,#6b7280);background:rgba(248,250,252,.96);border-bottom:1px solid rgba(17,24,39,.08);}
+    .owner-table td{padding:13px 10px;border-bottom:1px solid rgba(17,24,39,.07);vertical-align:middle;font-size:14px;}
+    .owner-table tbody tr:hover{background:rgba(13,110,253,.04);}
+    .owner-table tbody tr:last-child td{border-bottom:0;}
+    .owner-badge{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:6px 10px;font-weight:900;font-size:12px;border:1px solid rgba(17,24,39,.08);white-space:nowrap;}
+    .owner-badge-paid{background:rgba(22,163,74,.12);color:#15803d;border-color:rgba(22,163,74,.22);}
+    .owner-badge-draft{background:rgba(245,158,11,.13);color:#92400e;border-color:rgba(245,158,11,.25);}
+    .owner-badge-cancelled{background:rgba(239,68,68,.12);color:#991b1b;border-color:rgba(239,68,68,.22);}
+    .owner-empty-state{text-align:center;padding:28px 16px;color:var(--rz-muted,#6b7280);font-weight:800;}
+    .owner-error-box{display:none;background:rgba(239,68,68,.12);color:#991b1b;border:1px solid rgba(239,68,68,.22);padding:13px 14px;border-radius:16px;font-weight:800;}
+    .owner-receipt-link{width:auto!important;padding:8px 11px!important;border-radius:12px!important;font-size:13px!important;text-decoration:none;}
+    @media (max-width:850px){.owner-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr));}.owner-actions{width:100%;}.owner-actions .filter-btn{width:100%;}}
+    @media (max-width:520px){.owner-summary-grid{grid-template-columns:1fr;}.owner-table-card{border-radius:20px;}.owner-table th,.owner-table td{padding:10px 9px;}}
   </style>
 </head>
-<body>
-  <main class="owner-shell">
-    <div class="topbar"></div>
+<body class="rz-admin-shell owner-revenue-page">
+  <div class="login-container">
+    <main class="card owner-shell" style="max-width:1180px;width:96%;">
+      <div class="topbar owner-header">
+        <div class="title owner-title-block">
+          <h1 class="rz-hero-title">Revenus propriétaire</h1>
+          <div class="rz-hero-subtitle">Suivez vos parts, vos paiements et vos reçus RAZAFI.</div>
+          <div class="subtitle owner-identity" id="ownerIdentity">Vérification de la session…</div>
+        </div>
 
-    <header class="owner-header">
-      <div class="brand-row">
-        <img class="brand-logo" src="/RAZAFI.png" alt="RAZAFI" onerror="this.style.display='none'" />
-        <div>
-          <h1>Revenus propriétaire</h1>
-          <p class="subtitle">Suivi simple de vos revenus, paiements et reçus RAZAFI.</p>
-          <div class="owner-small" id="ownerIdentity">Chargement...</div>
+        <div class="owner-actions">
+          <button class="filter-btn primary" id="refreshBtn" type="button">Actualiser</button>
         </div>
       </div>
-      <div class="actions">
-        <a class="btn btn-muted" href="/admin/">Dashboard</a>
-        <button class="btn btn-primary" id="refreshBtn" type="button">Refresh</button>
-      </div>
-    </header>
 
-    <div id="errorBox" class="error-box"></div>
+      <div id="errorBox" class="owner-error-box"></div>
 
-    <section class="summary-grid">
-      <div class="card">
-        <div class="card-label">Total propriétaire</div>
-        <div class="card-value" id="totalOwner">—</div>
-      </div>
-      <div class="card">
-        <div class="card-label">Déjà payé</div>
-        <div class="card-value green" id="totalPaid">—</div>
-      </div>
-      <div class="card">
-        <div class="card-label">À payer</div>
-        <div class="card-value orange" id="totalUnpaid">—</div>
-      </div>
-      <div class="card">
-        <div class="card-label">Payouts</div>
-        <div class="card-value" id="payoutCount">—</div>
-      </div>
-    </section>
+      <section class="owner-summary-grid" aria-label="Résumé des revenus propriétaire">
+        <div class="owner-stat-card">
+          <div class="owner-stat-label">Total propriétaire</div>
+          <div class="owner-stat-value" id="totalOwner">—</div>
+        </div>
+        <div class="owner-stat-card">
+          <div class="owner-stat-label">Déjà payé</div>
+          <div class="owner-stat-value green" id="totalPaid">—</div>
+        </div>
+        <div class="owner-stat-card">
+          <div class="owner-stat-label">À payer</div>
+          <div class="owner-stat-value orange" id="totalUnpaid">—</div>
+        </div>
+        <div class="owner-stat-card">
+          <div class="owner-stat-label">Payouts</div>
+          <div class="owner-stat-value" id="payoutCount">—</div>
+        </div>
+      </section>
 
-    <section>
-      <h2 class="section-title">Mes payouts</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Pool</th>
-              <th>Brut</th>
-              <th>Part propriétaire</th>
-              <th>Statut</th>
-              <th>Reçu</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody id="payoutRows">
-            <tr><td colspan="7" class="empty-state">Chargement...</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-  </main>
-  <script src="/admin/owner-revenue.js"></script>
+      <section>
+        <div class="owner-section-head">
+          <div>
+            <h2 class="owner-section-title">Mes payouts</h2>
+            <div class="owner-section-sub">Liste des paiements propriétaire générés par RAZAFI.</div>
+          </div>
+        </div>
+
+        <div class="owner-table-card">
+          <div class="owner-table-wrap">
+            <table class="owner-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Pool</th>
+                  <th>Brut</th>
+                  <th>Part propriétaire</th>
+                  <th>Statut</th>
+                  <th>Reçu</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="payoutRows">
+                <tr><td colspan="7" class="owner-empty-state">Chargement…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
   <script src="/admin/nav.js"></script>
+  <script src="/admin/owner-revenue.js"></script>
 </body>
 </html>
