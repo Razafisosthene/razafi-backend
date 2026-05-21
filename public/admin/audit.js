@@ -3,40 +3,16 @@
     const res = await fetch(url, { credentials: "include", ...opts });
     const text = await res.text();
     let data;
-    try { data = JSON.parse(text); } catch { throw new Error("Réponse serveur invalide"); }
-    if (!res.ok) throw new Error(data?.error || data?.message || "Requête échouée");
+    try { data = JSON.parse(text); } catch { throw new Error("Server returned non-JSON"); }
+    if (!res.ok) throw new Error(data?.error || data?.message || "Request failed");
     return data;
   }
 
   const $ = (id) => document.getElementById(id);
 
+  // Cached lookups (used for dropdowns and as fallback display names)
   const planNameById = new Map();
   const poolNameById = new Map();
-
-  function esc(s) {
-    return String(s ?? "").replace(/[&<>"']/g, (c) => ({
-      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-    }[c]));
-  }
-
-  function adminDisplayName(admin) {
-    const raw = String(admin?.email || admin?.username || "admin").trim();
-    return raw.includes("@") ? raw.split("@")[0] : raw;
-  }
-
-  function statusLabel(raw) {
-    const s = String(raw || "").trim().toLowerCase();
-    return ({
-      success: "succès",
-      ok: "succès",
-      info: "info",
-      pending: "en attente",
-      warning: "avertissement",
-      blocked: "bloqué",
-      failed: "échec",
-      error: "échec"
-    }[s] || raw || "—");
-  }
 
   function planDisplay(ev) {
     const planId = ev?.plan_id || "";
@@ -51,9 +27,10 @@
   }
 
   async function loadPlanAndPoolDropdowns() {
+    // Plans
     try {
       const sel = $("plan_id");
-      if (sel) sel.innerHTML = `<option value="">Plan : tous</option>`;
+      if (sel) sel.innerHTML = `<option value="">Plan (all)</option>`;
 
       const data = await fetchJSON(`/api/admin/plans?active=all&visible=all&limit=200&offset=0`);
       const plans = (data && data.plans) ? data.plans : [];
@@ -63,11 +40,14 @@
         planNameById.set(p.id, name);
         if (sel) sel.insertAdjacentHTML("beforeend", `<option value="${esc(p.id)}">${esc(name)}</option>`);
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
 
+    // Pools
     try {
       const sel = $("pool_id");
-      if (sel) sel.innerHTML = `<option value="">Pool : tous</option>`;
+      if (sel) sel.innerHTML = `<option value="">Pool (all)</option>`;
 
       const data = await fetchJSON(`/api/admin/pools?limit=200&offset=0`);
       const pools = (data && data.pools) ? data.pools : [];
@@ -77,7 +57,15 @@
         poolNameById.set(p.id, name);
         if (sel) sel.insertAdjacentHTML("beforeend", `<option value="${esc(p.id)}">${esc(name)}</option>`);
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
+  }
+
+  function esc(s) {
+    return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
   }
 
   function toISOFromLocalInput(v) {
@@ -87,7 +75,7 @@
     return d.toISOString();
   }
 
-  function setDefaultDates(force = false) {
+  function setDefaultDates() {
     const now = new Date();
     const from = new Date(now.getTime() - 24 * 3600 * 1000);
     const fmt = (d) => {
@@ -96,8 +84,8 @@
     };
     const fromEl = $("from");
     const toEl = $("to");
-    if (fromEl && (force || !fromEl.value)) fromEl.value = fmt(from);
-    if (toEl && (force || !toEl.value)) toEl.value = fmt(now);
+    if (fromEl && !fromEl.value) fromEl.value = fmt(from);
+    if (toEl && !toEl.value) toEl.value = fmt(now);
   }
 
   function normalizeStatus(raw) {
@@ -125,6 +113,7 @@
     return JSON.stringify(v ?? null, null, 2);
   }
 
+  // Pagination
   let cursorStack = [];
   let nextCursor = "";
 
@@ -155,14 +144,17 @@
     const modal = $("modal");
     if (!modal) return;
 
+    // Summary fields
     const createdAt = ev.created_at || ev.createdAt || "—";
     const statusRaw = ev.status || "—";
-    const status = normalizeStatus(statusRaw) || "info";
+    const status = normalizeStatus(statusRaw) || "—";
     const eventType = ev.event_type || ev.eventType || "—";
     const requestRef = ev.request_ref || "—";
     const mvola = ev.mvola_phone || "—";
     const clientMac = ev.client_mac || "—";
     const apMac = ev.ap_mac || "—";
+    const planId = ev.plan_id || "—";
+    const poolId = ev.pool_id || "—";
     const planText = planDisplay(ev);
     const poolText = poolDisplay(ev);
     const message = ev.message || "—";
@@ -173,6 +165,7 @@
     };
 
     setText("m_date", createdAt);
+    setText("m_status", statusRaw || "—");
     setText("m_event", eventType);
     setText("m_request_ref", requestRef);
     setText("m_mvola_phone", mvola);
@@ -182,15 +175,18 @@
     setText("m_pool_id", poolText);
     setText("m_message", message);
 
+    // Status badge class
     const badge = $("m_status_badge");
     if (badge) {
-      badge.className = `badge audit-badge status-${status}`;
-      badge.textContent = statusLabel(statusRaw);
+      badge.className = `badge audit-badge status-${status || "info"}`;
+      badge.textContent = statusRaw || "—";
     }
 
+    // Metadata
     const metaPre = $("m_metadata");
     if (metaPre) {
       const meta = ev.metadata ?? null;
+      // If metadata.response is a JSON-string, parse & pretty-print it.
       const metaObj = safeJSONParse(meta) ?? meta;
       if (metaObj && typeof metaObj === "object" && metaObj.response) {
         const parsedResp = safeJSONParse(metaObj.response);
@@ -199,35 +195,26 @@
       metaPre.textContent = prettyJSON(metaObj);
     }
 
+    // Copy buttons
     const copyEventBtn = $("copyEvent");
     if (copyEventBtn) {
       copyEventBtn.onclick = async () => {
-        try {
-          await navigator.clipboard.writeText(JSON.stringify(ev, null, 2));
-          copyEventBtn.textContent = "Copié ✅";
-          setTimeout(() => { copyEventBtn.textContent = "Copier l’événement"; }, 1200);
-        } catch {}
+        try { await navigator.clipboard.writeText(JSON.stringify(ev, null, 2)); } catch {}
       };
     }
     const copyMetaBtn = $("copyMeta");
     if (copyMetaBtn) {
       copyMetaBtn.onclick = async () => {
-        try {
-          await navigator.clipboard.writeText(prettyJSON(ev.metadata ?? null));
-          copyMetaBtn.textContent = "Copié ✅";
-          setTimeout(() => { copyMetaBtn.textContent = "Copier les métadonnées"; }, 1200);
-        } catch {}
+        try { await navigator.clipboard.writeText(prettyJSON(ev.metadata ?? null)); } catch {}
       };
     }
 
     modal.style.display = "flex";
-    document.body.classList.add("rz-audit-modal-open");
   }
 
   function closeModal() {
     const modal = $("modal");
     if (modal) modal.style.display = "none";
-    document.body.classList.remove("rz-audit-modal-open");
   }
 
   async function loadEventTypes() {
@@ -237,14 +224,16 @@
       const sel = $("event_type");
       if (!sel) return;
 
-      sel.innerHTML = `<option value="">Événement : tous</option>` +
+      sel.innerHTML = `<option value="">Event type (all)</option>` +
         list.map(x => {
           const v = (typeof x === "string") ? x : (x.event_type || "");
           const c = (typeof x === "object") ? (x.count || "") : "";
           if (!v) return "";
           return `<option value="${esc(v)}">${esc(v)}${c ? " (" + esc(c) + ")" : ""}</option>`;
         }).join("");
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
   async function loadPage(pushPrevCursor) {
@@ -253,8 +242,8 @@
     if (!tbody) return;
 
     try {
-      if (statusLine) statusLine.textContent = "Chargement…";
-      tbody.innerHTML = `<tr><td colspan="8" class="rz-audit-empty">Chargement…</td></tr>`;
+      if (statusLine) statusLine.textContent = "Loading…";
+      tbody.innerHTML = "";
 
       const params = buildParams();
       const url = `/api/admin/audit?${params.toString()}`;
@@ -266,14 +255,9 @@
       if (pushPrevCursor) cursorStack.push(nextCursor || "");
       nextCursor = returnedNext || "";
 
-      const prevBtn = $("prev");
-      const nextBtn = $("next");
-      if (prevBtn) prevBtn.disabled = cursorStack.length === 0;
-      if (nextBtn) nextBtn.disabled = !nextCursor;
-
       if (!items.length) {
-        tbody.innerHTML = `<tr><td colspan="8" class="rz-audit-empty">Aucun résultat.</td></tr>`;
-        if (statusLine) statusLine.textContent = "Aucun résultat.";
+        tbody.innerHTML = `<tr><td colspan="8" style="padding:12px; opacity:.75;">No results.</td></tr>`;
+        if (statusLine) statusLine.textContent = "No results.";
         return;
       }
 
@@ -291,7 +275,7 @@
         const payload = esc(JSON.stringify(it));
 
         const badge = statusRaw
-          ? `<span class="badge audit-badge status-${esc(statusNorm || "info")}">${esc(statusLabel(statusRaw))}</span>`
+          ? `<span class="badge audit-badge status-${esc(statusNorm || "info")}">${esc(statusRaw)}</span>`
           : "—";
 
         return `
@@ -308,24 +292,26 @@
         `;
       }).join("");
 
-      if (statusLine) statusLine.textContent = `${items.length} événement(s) chargé(s).` +
-        (nextCursor ? " Suite disponible." : "");
+      if (statusLine) statusLine.textContent = `Loaded ${items.length} event(s).` +
+        (nextCursor ? " (More available)" : "");
 
+      // bind rows
       document.querySelectorAll("tr.audit-row").forEach(tr => {
-        tr.addEventListener("click", () => {
+        tr.addEventListener("click", (e) => {
+          // avoid selecting text causing click? keep simple
           try {
             const raw = tr.getAttribute("data-payload") || "{}";
             const obj = JSON.parse(raw);
             openModal(obj);
           } catch {
-            openModal({ error: "payload_parse_failed", message: "Impossible de lire le détail de cet événement." });
+            openModal({ error: "Failed to parse payload" });
           }
         });
       });
 
     } catch (e) {
       if (statusLine) statusLine.textContent = "";
-      tbody.innerHTML = `<tr><td colspan="8" style="padding:12px; color:#d9534f;">Chargement échoué : ${esc(e.message || e)}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" style="padding:12px; color:#d9534f;">Failed to load: ${esc(e.message || e)}</td></tr>`;
     }
   }
 
@@ -333,12 +319,13 @@
     try {
       const admin = await fetchJSON("/api/admin/me");
       const meEl = $("me");
-      if (meEl) meEl.innerHTML = `Connecté :<strong>${esc(adminDisplayName(admin))}</strong>`;
+      if (meEl) meEl.textContent = "Connected as " + (admin.email || admin.username || "admin");
     } catch {
       window.location.href = "/admin/login.html";
     }
   }
 
+  // UI actions
   const applyBtn = $("apply");
   if (applyBtn) applyBtn.addEventListener("click", async () => {
     cursorStack = [];
@@ -355,7 +342,7 @@
     if ($("pool_id")) $("pool_id").value = "";
     cursorStack = [];
     nextCursor = "";
-    setDefaultDates(true);
+    setDefaultDates();
     await loadPage(false);
   });
 
@@ -380,10 +367,7 @@
     if (e.target === modal) closeModal();
   });
 
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeModal();
-  });
-
+  // init
   setDefaultDates();
   await checkSession();
   await loadEventTypes();

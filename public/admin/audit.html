@@ -5,196 +5,111 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>RAZAFI Admin — Audit</title>
   <link rel="stylesheet" href="/admin/admin.css" />
-
-  <!-- Audit page local polish only: no global admin.css change -->
-  <style>
-    .rz-audit-shell{display:flex;flex-direction:column;gap:14px;}
-    .rz-audit-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;}
-    .rz-audit-title-block{min-width:0;}
-    .rz-audit-me{white-space:normal;line-height:1.25;}
-    .rz-audit-me strong{display:block;color:var(--rz-text,#111827);font-weight:900;margin-top:2px;word-break:break-word;}
-
-    .rz-audit-filter-card{padding:14px;border-radius:24px;background:rgba(255,255,255,.78);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);backdrop-filter:blur(18px);}
-    .rz-audit-filter-grid{display:grid;grid-template-columns:minmax(230px,1.35fr) minmax(150px,.7fr) minmax(170px,.8fr) minmax(150px,.75fr) minmax(150px,.75fr);gap:10px;align-items:center;}
-    .rz-audit-date-grid{display:grid;grid-template-columns:minmax(180px,1fr) minmax(180px,1fr) auto auto;gap:10px;align-items:center;margin-top:10px;}
-    .rz-audit-filter-grid input,.rz-audit-filter-grid select,.rz-audit-date-grid input,.rz-audit-date-grid button{margin-bottom:0;min-height:52px;}
-    .rz-audit-filter-grid select,.rz-audit-date-grid input{width:100%;max-width:none!important;}
-    .rz-audit-status-select{min-width:150px!important;}
-    .rz-audit-date-input{font-size:14px!important;}
-    .rz-audit-date-input::-webkit-calendar-picker-indicator{opacity:.75;}
-    .rz-audit-date-input::-webkit-datetime-edit{padding:0 2px;}
-    .rz-audit-date-input::-webkit-datetime-edit-fields-wrapper{display:flex;align-items:center;}
-
-    .rz-audit-status-line{margin-top:12px;color:var(--rz-muted,#6b7280);font-weight:850;font-size:13px;}
-    .rz-audit-table-card{margin-top:14px;border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);overflow:hidden;}
-    .rz-audit-table-wrap{overflow:auto;-webkit-overflow-scrolling:touch;}
-    .rz-audit-table{width:100%;border-collapse:separate;border-spacing:0;min-width:1120px;}
-    .rz-audit-table th{position:sticky;top:0;z-index:2;text-align:left;padding:12px 10px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--rz-muted,#6b7280);background:rgba(248,250,252,.96);border-bottom:1px solid rgba(17,24,39,.08);}
-    .rz-audit-table td{padding:12px 10px;border-bottom:1px solid rgba(17,24,39,.07);vertical-align:middle;font-size:14px;}
-    .rz-audit-table tbody tr:hover{filter:brightness(.985);}
-    .rz-audit-pager{display:flex;gap:10px;justify-content:flex-end;margin-top:12px;flex-wrap:wrap;}
-    .rz-audit-pager button{width:auto;}
-    .rz-audit-empty{padding:14px;color:var(--rz-muted,#6b7280);font-weight:800;}
-
-    /* Strong modal centering for mobile and after scroll */
-    #modal.rz-audit-modal{
-      position:fixed!important;
-      inset:0!important;
-      z-index:10000!important;
-      background:rgba(15,23,42,.58)!important;
-      display:none;
-      align-items:center!important;
-      justify-content:center!important;
-      padding:16px!important;
-      overflow:auto!important;
-      backdrop-filter:blur(8px);
-    }
-    #modal.rz-audit-modal .audit-modal-card{
-      width:min(920px, calc(100vw - 28px))!important;
-      max-width:920px!important;
-      max-height:min(86vh, 760px)!important;
-      overflow:auto!important;
-      margin:0 auto!important;
-      background:#fff!important;
-      color:#111827!important;
-      border-radius:24px!important;
-      box-shadow:0 28px 70px rgba(15,23,42,.34)!important;
-      border:1px solid rgba(255,255,255,.9)!important;
-    }
-    .rz-audit-modal-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:12px;}
-    .rz-audit-modal-title{font-weight:950;font-size:20px;letter-spacing:-.03em;}
-    .rz-audit-copy-row{display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap;}
-    .rz-audit-copy-row button{width:auto;}
-
-    @media (max-width:980px){
-      .rz-audit-filter-grid{grid-template-columns:1fr 1fr;}
-      .rz-audit-filter-grid .filter-search{grid-column:1/-1;}
-      .rz-audit-date-grid{grid-template-columns:1fr 1fr;}
-      .rz-audit-date-grid button{width:100%;}
-    }
-    @media (max-width:640px){
-      .rz-audit-filter-grid,.rz-audit-date-grid{grid-template-columns:1fr;}
-      .rz-audit-filter-card{border-radius:22px;padding:14px;}
-      .rz-audit-filter-grid input,.rz-audit-filter-grid select,.rz-audit-date-grid input,.rz-audit-date-grid button{width:100%!important;min-height:58px;font-size:16px!important;}
-      .rz-audit-status-select{display:block!important;min-width:0!important;}
-      .rz-audit-table-card{border-radius:20px;}
-      .rz-audit-table{min-width:760px;}
-      .rz-audit-table th,.rz-audit-table td{padding:10px 9px;}
-      .rz-audit-pager button{width:100%;}
-      #modal.rz-audit-modal{padding:12px!important;align-items:center!important;}
-      #modal.rz-audit-modal .audit-modal-card{width:calc(100vw - 24px)!important;max-height:82vh!important;border-radius:22px!important;padding:14px!important;}
-      .audit-modal-summary{grid-template-columns:1fr!important;}
-      .rz-audit-copy-row button{width:100%;}
-    }
-  </style>
 </head>
-<body class="rz-admin-shell audit-page">
+<body>
   <div class="login-container">
-    <div class="card rz-audit-shell" style="max-width: 1180px; width: 96%;">
-      <div class="topbar rz-audit-header">
-        <div class="title rz-audit-title-block">
-          <h1 class="rz-hero-title">Audit</h1>
-          <div id="me" class="subtitle rz-audit-me">Vérification de la session…</div>
+    <div class="card" style="max-width: 1100px; width: 96%;">
+      <div class="topbar">
+        <div class="title">
+          <h1 style="margin:0;">Audit</h1>
+          <div id="me" class="subtitle">Checking session...</div>
         </div>
         <div class="nav" style="display:none;"></div>
       </div>
 
+      <hr style="opacity:.2; margin:18px 0;" />
+
       <!-- Filters -->
-      <div class="sticky-bar rz-audit-filter-card">
-        <div class="filters rz-audit-filter-grid">
-          <input id="q" class="filter-search" placeholder="Rechercher : référence, MAC, téléphone…" />
+      <div class="sticky-bar">
+        <div class="filters">
+          <input id="q" class="filter-search" placeholder="Search: request_ref / client_mac / phone..." />
 
-          <select id="status" class="filter-select rz-audit-status-select" aria-label="Filtrer par statut">
-            <option value="">Statut : tous</option>
-            <option value="success">succès</option>
+          <select id="status" class="filter-select">
+            <option value="">Status (all)</option>
+            <option value="success">success</option>
             <option value="info">info</option>
-            <option value="pending">en attente</option>
-            <option value="warning">avertissement</option>
-            <option value="blocked">bloqué</option>
-            <option value="failed">échec</option>
+            <option value="pending">pending</option>
+            <option value="warning">warning</option>
+            <option value="blocked">blocked</option>
+            <option value="failed">failed</option>
             <option value="ok">ok</option>
-            <option value="error">erreur</option>
+            <option value="error">error</option>
           </select>
 
-          <select id="event_type" class="filter-select" aria-label="Filtrer par événement">
-            <option value="">Événement : tous</option>
+          <select id="event_type" class="filter-select">
+            <option value="">Event type (all)</option>
           </select>
 
-          <select id="plan_id" class="filter-select" aria-label="Filtrer par plan">
-            <option value="">Plan : tous</option>
+          <select id="plan_id" class="filter-select" style="max-width:220px;">
+            <option value="">Plan (all)</option>
           </select>
 
-          <select id="pool_id" class="filter-select" aria-label="Filtrer par pool">
-            <option value="">Pool : tous</option>
+          <select id="pool_id" class="filter-select" style="max-width:220px;">
+            <option value="">Pool (all)</option>
           </select>
-        </div>
 
-        <div class="rz-audit-date-grid">
-          <input id="from" type="datetime-local" class="filter-search rz-audit-date-input" aria-label="Date de début" />
-          <input id="to" type="datetime-local" class="filter-search rz-audit-date-input" aria-label="Date de fin" />
-          <button type="button" id="apply" class="filter-btn primary">Appliquer</button>
-          <button type="button" id="clear" class="filter-btn">Effacer</button>
-        </div>
-      </div>
+          <input id="from" type="datetime-local" class="filter-search" style="max-width:220px;" />
+          <input id="to" type="datetime-local" class="filter-search" style="max-width:220px;" />
 
-      <div id="statusLine" class="rz-audit-status-line"></div>
-
-      <div class="rz-audit-table-card">
-        <div class="rz-audit-table-wrap">
-          <table class="rz-audit-table">
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Statut</th>
-                <th>Événement</th>
-                <th>MVola</th>
-                <th>Référence</th>
-                <th>MAC client</th>
-                <th>Plan</th>
-                <th>Pool</th>
-              </tr>
-            </thead>
-            <tbody id="rows">
-              <tr><td colspan="8" class="rz-audit-empty">Chargement…</td></tr>
-            </tbody>
-          </table>
+          <button type="button" id="apply" class="filter-btn primary" style="width:auto;">Apply</button>
+          <button type="button" id="clear" class="filter-btn" style="width:auto;">Clear</button>
         </div>
       </div>
 
-      <div class="rz-audit-pager">
-        <button id="prev" type="button" class="filter-btn">Précédent</button>
-        <button id="next" type="button" class="filter-btn primary">Suivant</button>
+      <div id="statusLine" style="margin-top:14px; opacity:.85;"></div>
+
+      <div class="table-wrap">
+        <table style="width:100%; border-collapse:collapse;">
+          <thead>
+            <tr style="text-align:left; border-bottom:1px solid rgba(0,0,0,0.08);">
+              <th style="padding:10px;">Date</th>
+              <th style="padding:10px;">Status</th>
+              <th style="padding:10px;">Event</th>
+              <th style="padding:10px;">MVola</th>
+              <th style="padding:10px;">RequestRef</th>
+              <th style="padding:10px;">Client MAC</th>
+              <th style="padding:10px;">Plan</th>
+              <th style="padding:10px;">Pool</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:12px; flex-wrap:wrap;">
+        <button id="prev" type="button" style="width:auto;">Prev</button>
+        <button id="next" type="button" style="width:auto;">Next</button>
       </div>
 
       <!-- Details modal -->
-      <div id="modal" class="modal rz-audit-modal" style="display:none;">
+      <div id="modal" class="modal" style="display:none;">
         <div class="card modal-card audit-modal-card">
-          <div class="rz-audit-modal-head">
-            <div class="rz-audit-modal-title">Détail de l’événement</div>
-            <button id="closeModal" type="button" class="filter-btn" style="width:auto;">Fermer</button>
+          <div style="display:flex; justify-content:space-between; gap:10px; align-items:center;">
+            <div style="font-weight:900;">Audit event</div>
+            <button id="closeModal" type="button" style="width:auto;">Close</button>
           </div>
 
           <div class="audit-modal-summary">
             <div class="audit-kv">
-              <div class="k">Événement</div><div class="v" id="m_event">—</div>
+              <div class="k">Event</div><div class="v" id="m_event">—</div>
             </div>
             <div class="audit-kv">
-              <div class="k">Statut</div><div class="v"><span id="m_status_badge" class="badge audit-badge">—</span></div>
+              <div class="k">Status</div><div class="v"><span id="m_status_badge" class="badge audit-badge">—</span></div>
             </div>
             <div class="audit-kv">
               <div class="k">Date</div><div class="v" id="m_date">—</div>
             </div>
             <div class="audit-kv">
-              <div class="k">Référence</div><div class="v" id="m_request_ref">—</div>
+              <div class="k">RequestRef</div><div class="v" id="m_request_ref">—</div>
             </div>
             <div class="audit-kv">
               <div class="k">MVola</div><div class="v" id="m_mvola_phone">—</div>
             </div>
             <div class="audit-kv">
-              <div class="k">MAC client</div><div class="v" id="m_client_mac">—</div>
+              <div class="k">Client MAC</div><div class="v" id="m_client_mac">—</div>
             </div>
             <div class="audit-kv">
-              <div class="k">MAC AP</div><div class="v" id="m_ap_mac">—</div>
+              <div class="k">AP MAC</div><div class="v" id="m_ap_mac">—</div>
             </div>
             <div class="audit-kv">
               <div class="k">Plan</div><div class="v" id="m_plan_id">—</div>
@@ -207,10 +122,10 @@
             </div>
           </div>
 
-          <div class="rz-audit-copy-row">
-            <div style="font-weight:900;">Métadonnées</div>
-            <button id="copyMeta" type="button" class="filter-btn audit-copy-btn">Copier les métadonnées</button>
-            <button id="copyEvent" type="button" class="filter-btn audit-copy-btn">Copier l’événement</button>
+          <div style="display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap;">
+            <div style="font-weight:800;">Metadata</div>
+            <button id="copyMeta" type="button" class="audit-copy-btn" style="width:auto;">Copy metadata</button>
+            <button id="copyEvent" type="button" class="audit-copy-btn" style="width:auto;">Copy event</button>
           </div>
 
           <pre id="m_metadata" class="audit-meta-pre"></pre>
