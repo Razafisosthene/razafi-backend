@@ -3,116 +3,150 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>RAZAFI Admin — APs</title>
+  <title>RAZAFI Admin — Points d’accès</title>
   <link rel="stylesheet" href="/admin/admin.css" />
+
+  <!-- APs page local polish only: no global admin.css change -->
+  <style>
+    .rz-aps-shell{display:flex;flex-direction:column;gap:14px;}
+    .rz-aps-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+    .rz-aps-title-block{min-width:0;}
+    .rz-aps-me{white-space:normal;line-height:1.25;}
+    .rz-aps-me strong{display:block;color:var(--rz-text,#111827);font-weight:900;margin-top:2px;word-break:break-word;}
+    .rz-aps-import-card{border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);padding:14px;}
+    .rz-aps-import-title{font-size:16px;font-weight:950;letter-spacing:-.02em;margin-bottom:10px;color:var(--rz-text,#111827);}
+    .rz-aps-import-grid{display:grid;grid-template-columns:minmax(220px,1.3fr) minmax(220px,1fr) auto auto;gap:10px;align-items:center;}
+    .rz-aps-import-grid input,.rz-aps-import-grid select{margin-bottom:0;}
+    .rz-aps-filter-grid{display:grid;grid-template-columns:minmax(220px,1.4fr) minmax(220px,1fr) minmax(150px,.7fr) minmax(150px,.7fr) auto;gap:10px;align-items:center;}
+    .rz-aps-filter-grid input,.rz-aps-filter-grid select{margin-bottom:0;}
+    .rz-aps-table-card{margin-top:0;border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);overflow:hidden;}
+    .rz-aps-table-wrap{overflow:auto;-webkit-overflow-scrolling:touch;}
+    .rz-aps-table{width:100%;border-collapse:separate;border-spacing:0;min-width:820px;}
+    .rz-aps-table th{position:sticky;top:0;z-index:2;text-align:left;padding:12px 10px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--rz-muted,#6b7280);background:rgba(248,250,252,.96);border-bottom:1px solid rgba(17,24,39,.08);}
+    .rz-aps-table td{padding:12px 10px;border-bottom:1px solid rgba(17,24,39,.07);vertical-align:middle;font-size:14px;}
+    .rz-aps-table tbody tr:hover{background:rgba(13,110,253,.04);}
+    .rz-ap-name{font-weight:950;letter-spacing:-.02em;}
+    .rz-ap-mac-text{margin-top:4px;color:var(--rz-muted,#6b7280);font-size:12px;font-weight:700;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;}
+    .rz-status-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 9px;border-radius:999px;font-size:12px;font-weight:900;border:1px solid rgba(17,24,39,.08);background:rgba(255,255,255,.78);white-space:nowrap;}
+    .rz-status-pill.ok{background:rgba(22,163,74,.12);color:#15803d;border-color:rgba(22,163,74,.22);}
+    .rz-status-pill.off{background:rgba(239,68,68,.11);color:#b91c1c;border-color:rgba(239,68,68,.22);}
+    .rz-status-pill.neutral{background:rgba(107,114,128,.10);color:#4b5563;border-color:rgba(107,114,128,.18);}
+    .rz-ap-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+    .rz-ap-actions button{width:auto;padding:8px 11px;border-radius:12px;font-size:13px;box-shadow:none;}
+    .rz-empty-state{padding:22px;color:var(--rz-muted,#6b7280);font-weight:800;}
+    .rz-aps-message{margin-top:8px;font-size:13px;font-weight:800;color:var(--rz-muted,#6b7280);}
+    .rz-aps-message.ok{color:#15803d;}
+    .rz-aps-message.error{color:#b91c1c;}
+    .rz-modal-title{margin:0 0 4px 0;font-size:24px;letter-spacing:-.04em;color:var(--rz-text,#111827);}
+    .rz-modal-sub{margin:0 0 14px 0;color:var(--rz-muted,#6b7280);font-size:13px;line-height:1.35;word-break:break-word;}
+    .rz-modal-field{display:flex;flex-direction:column;gap:6px;margin-top:12px;}
+    .rz-modal-field label{font-size:13px;font-weight:850;color:var(--rz-muted,#6b7280);}
+    @media (max-width:980px){.rz-aps-import-grid,.rz-aps-filter-grid{grid-template-columns:1fr 1fr;}.rz-aps-import-grid input,.rz-aps-filter-grid input{grid-column:1/-1;}.rz-aps-import-grid button,.rz-aps-filter-grid button{width:100%;}}
+    @media (max-width:640px){.rz-aps-import-grid,.rz-aps-filter-grid{grid-template-columns:1fr;}.rz-aps-table-card,.rz-aps-import-card{border-radius:20px;}.rz-aps-table th,.rz-aps-table td{padding:10px 9px;}.rz-ap-actions button{flex:1 1 auto;}}
+  </style>
 </head>
-<body>
+<body class="rz-admin-shell aps-page">
   <div class="login-container">
-    <div class="card" style="max-width: 1100px; width: 96%;">
-      <div class="topbar">
-        <div class="title">
-          <h1 style="margin:0;">Access Points</h1>
-          <div id="me" class="subtitle">Loading...</div>
+    <div class="card rz-aps-shell" style="max-width: 1180px; width: 96%;">
+      <div class="topbar rz-aps-header">
+        <div class="title rz-aps-title-block">
+          <h1 class="rz-hero-title">Points d’accès</h1>
+          <div id="me" class="subtitle rz-aps-me">Vérification de la session…</div>
         </div>
 
-        <!-- legacy nav kept hidden to avoid breaking aps.js -->
+        <!-- Navigation legacy gardée cachée pour compatibilité JS / rollback rapide -->
         <div class="nav" style="display:none;">
           <a href="/admin/"><button type="button">Dashboard</button></a>
           <a href="/admin/clients.html"><button type="button">Clients</button></a>
           <a href="/admin/plans.html"><button type="button">Plans</button></a>
           <a href="/admin/pools.html"><button type="button">Pools</button></a>
           <a href="/admin/revenue.html"><button type="button">Revenue</button></a>
-          <button id="logoutBtn" type="button">Logout</button>
+          <button id="logoutBtn" type="button">Déconnexion</button>
         </div>
       </div>
 
-      <hr style="opacity:.2; margin:18px 0;" />
-
-      <!-- Tanaza import (by MAC) -->
-      <div class="card" style="margin-top:14px;">
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-          <div style="font-weight:700;">Import AP from Tanaza (by MAC)</div>
-          <div class="subtitle" style="opacity:.8;">Paste AP MAC, fetch details from Tanaza, choose a pool, then import.</div>
-        </div>
-
-        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px;">
-          <input id="tanazaMacInput" placeholder="AP MAC (e.g. E0:E1:A9:B0:5B:51)" style="min-width:260px; flex:1;" />
-          
-          <select id="tanazaPoolSel" style="min-width:220px; width:auto;">
-            <option value="">Select pool...</option>
+      <section class="rz-aps-import-card">
+        <div class="rz-aps-import-title">Importer depuis Tanaza</div>
+        <div class="rz-aps-import-grid">
+          <input id="tanazaMacInput" placeholder="MAC AP — ex : E0:E1:A9:B0:5B:51" />
+          <select id="tanazaPoolSel">
+            <option value="">Sélectionner un pool…</option>
           </select>
-          <button id="tanazaFetchBtn" type="button" style="width:auto;">Fetch from Tanaza</button>
-          <button id="tanazaImportBtn" type="button" style="width:auto;">Import</button>
+          <button id="tanazaFetchBtn" type="button" class="filter-btn">Vérifier</button>
+          <button id="tanazaImportBtn" type="button" class="filter-btn primary">Importer</button>
         </div>
+        <div id="tanazaPreview" class="rz-aps-message"></div>
+        <div id="tanazaMsg" class="rz-aps-message"></div>
+      </section>
 
-        <div id="tanazaPreview" class="subtitle" style="margin-top:8px;"></div>
-        <div id="tanazaMsg" class="subtitle" style="margin-top:6px;"></div>
+      <div class="sticky-bar">
+        <div class="filters rz-aps-filter-grid">
+          <input id="q" class="filter-search" placeholder="Rechercher une MAC AP…" />
+          <select id="poolFilter" class="filter-select" aria-label="Filtrer par pool"><option value="">Tous les pools</option></select>
+
+          <select id="activeFilter" class="filter-select" aria-label="Filtrer par statut actif">
+            <option value="all">Statut : tous</option>
+            <option value="1">Actifs seulement</option>
+            <option value="0">Inactifs seulement</option>
+          </select>
+
+          <select id="staleFilter" class="filter-select" aria-label="Filtrer par fraîcheur">
+            <option value="all">Signal : tous</option>
+            <option value="0">Récents seulement</option>
+            <option value="1">Anciens seulement</option>
+          </select>
+
+          <button id="refreshBtn" type="button" class="filter-btn primary">Actualiser</button>
+        </div>
       </div>
 
-      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-        <input id="q" placeholder="Search AP MAC…" style="flex:1; min-width:240px;" />
-        <select id="poolFilter" style="width:auto; min-width:260px;"><option value="">Pool: all</option></select>
+      <div id="error" class="error" style="margin-top:0;"></div>
 
-        <select id="activeFilter" style="width:auto;">
-          <option value="all">Active: all</option>
-          <option value="1">Active only</option>
-          <option value="0">Inactive only</option>
-        </select>
-
-        <select id="staleFilter" style="width:auto;">
-          <option value="all">Stale: all</option>
-          <option value="0">Fresh only</option>
-          <option value="1">Stale only</option>
-        </select>
-
-        <button id="refreshBtn" type="button" style="width:auto;">Refresh</button>
+      <div class="rz-aps-table-card">
+        <div class="rz-aps-table-wrap">
+          <table class="rz-aps-table">
+            <thead>
+              <tr>
+                <th>Point d’accès</th>
+                <th>Statut</th>
+                <th>Clients Tanaza</th>
+                <th>Pool</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="rows">
+              <tr><td colspan="5" class="rz-empty-state">Chargement…</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
-      <div id="error" class="error" style="margin-top:12px;"></div>
+      <!-- Modal assignation pool -->
+      <div id="modal" class="modal" style="display:none;">
+        <div class="card modal-card" style="max-width:520px;">
+          <h2 class="rz-modal-title">Modifier le pool</h2>
+          <div class="rz-modal-sub">AP : <span id="m_ap" style="font-weight:900;"></span></div>
 
-      <div class="table-wrap">
-        <table style="width:100%; border-collapse:collapse;">
-          <thead>
-            <tr style="text-align:left; opacity:.9;">
-              <th style="padding:10px;">AP</th>
-              <th style="padding:10px;">Status</th>
-              <th style="padding:10px;">Connected (Tanaza)</th>
-              <th style="padding:10px;">Pool</th>
-              <th style="padding:10px;">Actions</th>
-            </tr>
-          </thead>
-          <tbody id="rows"></tbody>
-        </table>
-      </div>
+          <form id="form">
+            <div class="rz-modal-field">
+              <label for="poolSelect">Pool</label>
+              <select id="poolSelect"></select>
+            </div>
 
-      <!-- Assign pool modal -->
-      <div id="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.5);">
-        <div class="card" style="max-width:520px; margin:10vh auto; width:92%;">
-          <h2 style="margin-top:0;">Assign Pool</h2>
-
-          <div class="subtitle" style="margin-top:6px;">
-            AP: <span id="m_ap" style="font-weight:700;"></span>
-          </div>
-
-          <form id="form" style="margin-top:14px;">
-            <label style="display:block; margin:10px 0 6px; opacity:.85;">Pool</label>
-            <select id="poolSelect"></select>
-
-            <label style="display:flex; gap:10px; align-items:center; margin:12px 0;">
+            <label class="check-row">
               <input id="unassign" type="checkbox" />
-              <span>Unassign (no pool)</span>
+              <span>Aucun pool</span>
             </label>
 
             <div id="formError" class="error" style="margin:8px 0;"></div>
 
-            <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:14px;">
-              <button id="cancelBtn" type="button" style="width:auto;">Cancel</button>
-              <button id="saveBtn" type="submit" style="width:auto;">Save</button>
+            <div class="modal-actions">
+              <button id="cancelBtn" type="button" class="filter-btn">Annuler</button>
+              <button id="saveBtn" type="submit" class="filter-btn primary">Enregistrer</button>
             </div>
           </form>
         </div>
       </div>
-
     </div>
   </div>
 
