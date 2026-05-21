@@ -5,64 +5,155 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>RAZAFI Admin — Accès gratuit</title>
   <link rel="stylesheet" href="/admin/admin.css" />
+
+  <!-- Free access page local polish only: no global admin.css change -->
+  <style>
+    .rz-free-shell{display:flex;flex-direction:column;gap:14px;}
+    .rz-free-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+    .rz-free-title-block{min-width:0;}
+    .rz-free-me{white-space:normal;line-height:1.25;}
+    .rz-free-me strong{display:block;color:var(--rz-text,#111827);font-weight:900;margin-top:2px;word-break:break-word;}
+
+    .rz-free-card{border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);padding:16px;}
+    .rz-free-card-title{font-size:18px;font-weight:950;letter-spacing:-.03em;color:var(--rz-text,#111827);margin:0 0 12px;}
+    .rz-free-form-grid{display:grid;grid-template-columns:repeat(6,minmax(140px,1fr));gap:10px;align-items:end;}
+    .rz-free-form-grid .span-2{grid-column:span 2;}
+    .rz-free-field label{display:block;margin-bottom:6px;color:var(--rz-muted,#6b7280);font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;}
+    .rz-free-field input,.rz-free-field select{margin-bottom:0;}
+    .rz-free-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;}
+    .rz-free-actions button{width:auto;}
+    .rz-free-actions .primary{background:linear-gradient(135deg,#0d6efd,#2563eb);color:#fff;border-color:transparent;}
+    .rz-free-message{min-height:20px;font-size:13px;font-weight:800;margin-top:10px;}
+
+    .rz-free-filters{display:grid;grid-template-columns:minmax(240px,1fr) minmax(220px,.7fr) minmax(170px,.5fr) auto;gap:10px;align-items:center;}
+    .rz-free-filters input,.rz-free-filters select{margin-bottom:0;}
+    .rz-free-filters button{width:auto;}
+
+    .rz-free-table-card{border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);overflow:hidden;}
+    .rz-free-table-wrap{overflow:auto;-webkit-overflow-scrolling:touch;}
+    .rz-free-table{width:100%;border-collapse:separate;border-spacing:0;min-width:920px;}
+    .rz-free-table th{position:sticky;top:0;z-index:2;text-align:left;padding:12px 10px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--rz-muted,#6b7280);background:rgba(248,250,252,.96);border-bottom:1px solid rgba(17,24,39,.08);}
+    .rz-free-table td{padding:12px 10px;border-bottom:1px solid rgba(17,24,39,.07);vertical-align:middle;font-size:14px;}
+    .rz-free-table tbody tr:hover{background:rgba(13,110,253,.04);}
+    .rz-free-person{font-weight:950;letter-spacing:-.02em;}
+    .rz-free-sub{margin-top:4px;color:var(--rz-muted,#6b7280);font-size:12px;font-weight:750;}
+    .rz-mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-weight:850;}
+    .rz-status-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 9px;border-radius:999px;font-size:12px;font-weight:900;border:1px solid rgba(17,24,39,.08);background:rgba(255,255,255,.78);white-space:nowrap;}
+    .rz-status-pill.ok{background:rgba(22,163,74,.12);color:#15803d;border-color:rgba(22,163,74,.22);}
+    .rz-status-pill.off{background:rgba(239,68,68,.11);color:#b91c1c;border-color:rgba(239,68,68,.22);}
+    .rz-free-row-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+    .rz-free-row-actions button{width:auto;padding:8px 11px;border-radius:12px;font-size:13px;box-shadow:none;}
+    .rz-empty-state{padding:22px;color:var(--rz-muted,#6b7280);font-weight:800;}
+
+    @media (max-width:980px){
+      .rz-free-form-grid{grid-template-columns:1fr 1fr;}
+      .rz-free-form-grid .span-2{grid-column:1/-1;}
+      .rz-free-filters{grid-template-columns:1fr 1fr;}
+      .rz-free-filters .filter-search{grid-column:1/-1;}
+      .rz-free-filters button{width:100%;}
+    }
+    @media (max-width:640px){
+      .rz-free-form-grid,.rz-free-filters{grid-template-columns:1fr;}
+      .rz-free-form-grid .span-2{grid-column:auto;}
+      .rz-free-actions button{width:100%;}
+      .rz-free-card,.rz-free-table-card{border-radius:20px;}
+      .rz-free-table th,.rz-free-table td{padding:10px 9px;}
+      .rz-free-row-actions button{flex:1 1 auto;}
+    }
+  </style>
 </head>
-<body>
+<body class="rz-admin-shell free-access-page">
   <div class="login-container">
-    <div class="card" style="max-width: 1180px; width: 96%;">
-      <div class="topbar">
-        <div class="title">
-          <h1 style="margin:0;">Accès gratuit</h1>
-          <div id="me" class="subtitle">Loading...</div>
-          <div class="subtitle" style="margin-top:4px; opacity:.8;">Appareils autorisés — accès WiFi sans paiement via MAC address.</div>
+    <div class="card rz-free-shell" style="max-width: 1180px; width: 96%;">
+      <div class="topbar rz-free-header">
+        <div class="title rz-free-title-block">
+          <h1 class="rz-hero-title">Accès gratuit</h1>
+          <div id="me" class="subtitle rz-free-me">Vérification de la session…</div>
         </div>
+
         <div class="nav" style="display:none;">
           <a href="/admin/"><button type="button">Dashboard</button></a>
           <a href="/admin/clients.html"><button type="button">Clients</button></a>
           <a href="/admin/aps.html"><button type="button">APs</button></a>
           <a href="/admin/pools.html"><button type="button">Pools</button></a>
           <a href="/admin/revenue.html"><button type="button">Revenue</button></a>
-          <button id="logoutBtn" type="button">Logout</button>
+          <button id="logoutBtn" type="button">Déconnexion</button>
         </div>
       </div>
-      <hr style="opacity:.2; margin:18px 0;" />
-      <div class="card" style="margin-top:14px;">
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-          <div>
-            <div style="font-weight:800; font-size:18px;">Ajouter un appareil</div>
-            <div class="subtitle" style="opacity:.8; margin-top:4px;">Choisir un pool, renseigner la personne et l'adresse MAC, puis synchroniser.</div>
-          </div>
-        </div>
-        <form id="addForm" style="margin-top:12px;">
-          <div style="display:grid; grid-template-columns: repeat(6, minmax(140px, 1fr)); gap:10px; align-items:end;">
-            <div style="grid-column: span 2;">
-              <label style="display:block; margin-bottom:6px; opacity:.85;">Pool</label>
-              <select id="poolId" required><option value="">Chargement...</option></select>
+
+      <section class="rz-free-card">
+        <h2 class="rz-free-card-title">Ajouter un appareil</h2>
+        <form id="addForm">
+          <div class="rz-free-form-grid">
+            <div class="rz-free-field span-2">
+              <label for="poolId">Pool</label>
+              <select id="poolId" required><option value="">Chargement…</option></select>
             </div>
-            <div><label style="display:block; margin-bottom:6px; opacity:.85;">Nom</label><input id="personName" placeholder="Jean" required /></div>
-            <div><label style="display:block; margin-bottom:6px; opacity:.85;">Rôle</label><select id="role"><option value="pool_owner">Pool owner</option><option value="staff">Staff</option><option value="family">Family</option><option value="vip">VIP</option></select></div>
-            <div><label style="display:block; margin-bottom:6px; opacity:.85;">Appareil</label><input id="deviceName" placeholder="Téléphone" required /></div>
-            <div><label style="display:block; margin-bottom:6px; opacity:.85;">MAC</label><input id="macAddress" placeholder="AA:BB:CC:DD:EE:FF" required /></div>
+            <div class="rz-free-field">
+              <label for="personName">Nom</label>
+              <input id="personName" placeholder="Jean" required />
+            </div>
+            <div class="rz-free-field">
+              <label for="role">Rôle</label>
+              <select id="role">
+                <option value="pool_owner">Propriétaire</option>
+                <option value="staff">Staff</option>
+                <option value="family">Famille</option>
+                <option value="vip">VIP</option>
+              </select>
+            </div>
+            <div class="rz-free-field">
+              <label for="deviceName">Appareil</label>
+              <input id="deviceName" placeholder="Téléphone" required />
+            </div>
+            <div class="rz-free-field">
+              <label for="macAddress">MAC</label>
+              <input id="macAddress" placeholder="AA:BB:CC:DD:EE:FF" required />
+            </div>
           </div>
-          <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
-            <button id="addBtn" type="submit" style="width:auto;">+ Ajouter appareil</button>
-            <button id="syncSelectedBtn" type="button" style="width:auto;">Synchroniser ce pool</button>
-            <button id="syncAllBtn" type="button" style="width:auto;">Synchroniser tous</button>
-            <button id="refreshBtn" type="button" style="width:auto;">Refresh</button>
+          <div class="rz-free-actions">
+            <button id="addBtn" type="submit" class="filter-btn primary">+ Ajouter</button>
+            <button id="syncSelectedBtn" type="button" class="filter-btn">Synchroniser le pool</button>
+            <button id="syncAllBtn" type="button" class="filter-btn">Synchroniser tous</button>
+            <button id="refreshBtn" type="button" class="filter-btn primary">Actualiser</button>
           </div>
         </form>
-        <div id="msg" class="subtitle" style="margin-top:10px;"></div>
+        <div id="msg" class="subtitle rz-free-message"></div>
+      </section>
+
+      <div class="sticky-bar">
+        <div class="filters rz-free-filters">
+          <input id="q" class="filter-search" placeholder="Rechercher : nom / MAC / appareil…" />
+          <select id="poolFilter" class="filter-select"><option value="all">Tous les pools</option></select>
+          <select id="statusFilter" class="filter-select">
+            <option value="all">Tous les statuts</option>
+            <option value="active">Actifs seulement</option>
+            <option value="disabled">Désactivés seulement</option>
+          </select>
+          <button id="refreshListBtn" type="button" class="filter-btn primary">Actualiser</button>
+        </div>
       </div>
-      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:14px;">
-        <input id="q" placeholder="Search: nom / MAC / appareil…" style="flex:1; min-width:240px;" />
-        <select id="poolFilter" style="width:auto; min-width:260px;"><option value="all">Tous les pools</option></select>
-        <select id="statusFilter" style="width:auto;"><option value="all">Tous les statuts</option><option value="active">Actifs seulement</option><option value="disabled">Désactivés seulement</option></select>
-      </div>
-      <div class="table-wrap">
-        <table style="width:100%; border-collapse:collapse; margin-top:12px;">
-          <thead><tr style="text-align:left; opacity:.9;"><th style="padding:10px;">Personne</th><th style="padding:10px;">Appareil</th><th style="padding:10px;">MAC</th><th style="padding:10px;">Pool</th><th style="padding:10px;">Statut</th><th style="padding:10px;">Sync</th><th style="padding:10px;">Actions</th></tr></thead>
-          <tbody id="rows"></tbody>
-        </table>
-      </div>
+
+      <section class="rz-free-table-card">
+        <div class="rz-free-table-wrap">
+          <table class="rz-free-table">
+            <thead>
+              <tr>
+                <th>Personne</th>
+                <th>Appareil</th>
+                <th>MAC</th>
+                <th>Pool</th>
+                <th>Statut</th>
+                <th>Sync</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="rows">
+              <tr><td colspan="7" class="rz-empty-state">Chargement…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
   </div>
   <script src="/admin/nav.js"></script>
