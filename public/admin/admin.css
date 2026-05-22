@@ -2739,3 +2739,59 @@ body.rz-drawer-open .rz-bottom-nav{
     flex: 1 1 150px;
   }
 }
+
+
+/* ================================================================== */
+/* RAZAFI Audit modal open-position fix                               */
+/* Scope: Audit modal UX only. No API/business logic changes.          */
+/* ================================================================== */
+body.rz-audit-modal-open{
+  overflow: hidden !important;
+}
+
+body.rz-audit-modal-open .rz-bottom-nav{
+  display: none !important;
+}
+
+#modal.modal:has(.rz-audit-modal-card),
+#modal.modal.rz-audit-modal-open{
+  align-items: flex-start !important;
+  justify-content: center !important;
+  padding-top: max(12px, env(safe-area-inset-top)) !important;
+  padding-bottom: max(12px, env(safe-area-inset-bottom)) !important;
+  overflow: hidden !important;
+  overscroll-behavior: contain !important;
+  z-index: 2147483000 !important;
+}
+
+#modal .rz-audit-modal-card{
+  margin: 0 auto !important;
+  max-height: calc(100dvh - 24px) !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain !important;
+  -webkit-overflow-scrolling: touch !important;
+  scroll-margin-top: 0 !important;
+}
+
+#modal .rz-audit-modal-head{
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding-bottom: 10px;
+  background: linear-gradient(180deg, #fff 70%, rgba(255,255,255,.92));
+}
+
+@media (max-width: 700px){
+  #modal.modal:has(.rz-audit-modal-card),
+  #modal.modal.rz-audit-modal-open{
+    padding: 8px !important;
+    align-items: flex-start !important;
+  }
+
+  #modal .rz-audit-modal-card{
+    width: calc(100vw - 16px) !important;
+    max-width: calc(100vw - 16px) !important;
+    max-height: calc(100dvh - 16px) !important;
+    margin: 0 auto !important;
+  }
+}

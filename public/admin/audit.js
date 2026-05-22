@@ -220,24 +220,34 @@
       };
     }
 
+    // UX fix: always open Audit modal at the visible top.
+    // CSS uses this class to lock the page behind the modal and avoid scroll-position drift.
+    document.body.classList.add("rz-audit-modal-open");
+
     modal.style.display = "flex";
 
-    // UX fix: always show the top of the modal immediately when opened.
-    // This prevents the modal from reopening in a previous internal scroll position.
-    requestAnimationFrame(() => {
+    const resetModalScroll = () => {
       try {
         modal.scrollTop = 0;
         const card = modal.querySelector(".modal-card");
-        if (card) card.scrollTop = 0;
+        if (card) {
+          card.scrollTop = 0;
+          card.scrollIntoView({ block: "start", inline: "nearest" });
+        }
         const meta = $("m_metadata");
         if (meta) meta.scrollTop = 0;
       } catch {}
-    });
+    };
+
+    resetModalScroll();
+    requestAnimationFrame(resetModalScroll);
+    setTimeout(resetModalScroll, 50);
   }
 
   function closeModal() {
     const modal = $("modal");
     if (modal) modal.style.display = "none";
+    document.body.classList.remove("rz-audit-modal-open");
   }
 
   async function loadEventTypes() {
