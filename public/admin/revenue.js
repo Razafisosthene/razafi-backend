@@ -45,6 +45,60 @@ function byId(id) {
   return document.getElementById(id);
 }
 
+function firstFiniteNumber(...values) {
+  for (const v of values) {
+    if (v == null || v === "") continue;
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function setOwnerShareLoading(text = "Calcul...") {
+  const el = byId("ownerShareTotal");
+  if (el) el.textContent = text;
+}
+
+function setOwnerShareTotal(amount, hint = "Selon les filtres actuels") {
+  const el = byId("ownerShareTotal");
+  const hintEl = byId("ownerShareHint");
+  if (el) el.textContent = fmtAr(amount ?? 0);
+  if (hintEl) hintEl.textContent = hint;
+}
+
+function updateOwnerShareLabel() {
+  const label = byId("ownerShareLabel");
+  const badge = document.querySelector(".rz-owner-stat-badge");
+  if (!label) return;
+
+  if (currentAdmin?.is_superadmin) {
+    label.textContent = "Part propriétaire";
+    if (badge) badge.textContent = "💰 Propriétaires";
+  } else {
+    label.textContent = "Ma part propriétaire";
+    if (badge) badge.textContent = "💰 Votre part";
+  }
+}
+
+async function loadOwnerShareTotalFallback() {
+  // Fallback front-end: use the same filtered/authorized revenue endpoint and sum owner_amount_ar.
+  // This keeps the change safe even if /totals does not yet return owner_total_ar.
+  const params = buildCommonParams();
+  params.set("limit", "5000");
+  params.set("offset", "0");
+
+  const r = await fetchJSON("/api/admin/revenue/share-transactions?" + params.toString());
+  const items = Array.isArray(r.items) ? r.items : [];
+  const sum = items.reduce((total, it) => total + Number(it?.owner_amount_ar || 0), 0);
+  const totalRows = Number(r.total || items.length || 0);
+
+  const hint = totalRows > items.length
+    ? `Selon les filtres actuels • ${items.length}/${totalRows} lignes calculées`
+    : "Selon les filtres actuels";
+
+  setOwnerShareTotal(sum, hint);
+}
+
 // ✅ Common filter params for ALL endpoints
 function buildCommonParams() {
   const search = byId("search")?.value?.trim() || "";
@@ -111,6 +165,7 @@ async function requireAdmin() {
   try {
     const admin = await fetchJSON("/api/admin/me");
     currentAdmin = admin;
+    updateOwnerShareLabel();
 
     const me = byId("me");
     if (me) {
@@ -498,6 +553,8 @@ function wireModal() {
 // Data loaders
 // -------------------------
 async function loadTotals() {
+  setOwnerShareLoading();
+
   try {
     const params = buildCommonParams();
     const r = await fetchJSON("/api/admin/revenue/totals?" + params.toString());
@@ -505,10 +562,24 @@ async function loadTotals() {
     byId("paidTotal").textContent = fmtAr(it.total_amount_ar ?? 0);
     byId("paidCount").textContent = String(it.paid_transactions ?? 0);
     byId("lastPaidAt").textContent = fmtDate(it.last_paid_at);
+
+    const ownerTotal = firstFiniteNumber(
+      it.owner_total_ar,
+      it.total_owner_amount_ar,
+      it.owner_amount_ar,
+      it.total_owner_share_ar
+    );
+
+    if (ownerTotal != null) {
+      setOwnerShareTotal(ownerTotal);
+    } else {
+      await loadOwnerShareTotalFallback();
+    }
   } catch (e) {
     byId("paidTotal").textContent = "—";
     byId("paidCount").textContent = "—";
     byId("lastPaidAt").textContent = "—";
+    setOwnerShareTotal(0, "Impossible de calculer pour le moment");
   }
 }
 

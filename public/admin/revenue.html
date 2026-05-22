@@ -73,7 +73,7 @@
 
     .rz-stats-grid{
       display:grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 12px;
       margin-top: 2px;
     }
@@ -94,6 +94,46 @@
       inset:0 0 auto 0;
       height:4px;
       background:linear-gradient(90deg, #0d6efd, #60a5fa, #22c55e);
+    }
+
+    .rz-stat-card-owner{
+      background:
+        radial-gradient(circle at top right, rgba(22,163,74,.16), transparent 34%),
+        linear-gradient(180deg, rgba(240,253,244,.98), rgba(255,255,255,.84));
+      border-color: rgba(22,163,74,.24);
+      box-shadow: 0 16px 34px rgba(22,163,74,.12), 0 12px 28px rgba(15,23,42,.08);
+    }
+
+    .rz-stat-card-owner::before{
+      background:linear-gradient(90deg, #16a34a, #22c55e, #0d6efd);
+    }
+
+    .rz-owner-stat-top{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+    }
+
+    .rz-owner-stat-badge{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      padding:5px 9px;
+      border-radius:999px;
+      background:rgba(22,163,74,.12);
+      color:#15803d;
+      font-size:11px;
+      font-weight:950;
+      white-space:nowrap;
+    }
+
+    .rz-owner-stat-hint{
+      margin-top:8px;
+      color:#64748b;
+      font-size:12px;
+      font-weight:800;
+      line-height:1.25;
     }
 
     .rz-stat-label{
@@ -328,6 +368,14 @@
           <div class="rz-stat-card">
             <div class="rz-stat-label">Montant payé</div>
             <div id="paidTotal" class="rz-stat-value">—</div>
+          </div>
+          <div class="rz-stat-card rz-stat-card-owner">
+            <div class="rz-owner-stat-top">
+              <div id="ownerShareLabel" class="rz-stat-label">Ma part propriétaire</div>
+              <div class="rz-owner-stat-badge">💰 Votre part</div>
+            </div>
+            <div id="ownerShareTotal" class="rz-stat-value">—</div>
+            <div id="ownerShareHint" class="rz-owner-stat-hint">Selon les filtres actuels</div>
           </div>
           <div class="rz-stat-card">
             <div class="rz-stat-label">Transactions payées</div>
