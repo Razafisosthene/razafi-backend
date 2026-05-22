@@ -259,7 +259,27 @@ document.addEventListener("DOMContentLoaded", async () => {
     applySystemUI();
     await loadMikrotikPools().catch(() => {});
 
-    modal.style.display = "block";
+    // UX fix: open the Plans modal at the visible top, like Audit.
+    // The CSS class is Plans-specific to avoid affecting other admin pages.
+    document.body.classList.add("rz-plans-modal-open");
+    modal.classList.add("rz-plans-modal-open");
+    modal.style.display = "flex";
+
+    const resetPlansModalScroll = () => {
+      try {
+        modal.scrollTop = 0;
+        const card = modal.querySelector(".modal-card");
+        if (card) {
+          card.scrollTop = 0;
+          card.scrollIntoView({ block: "start", inline: "nearest" });
+        }
+      } catch (_) {}
+    };
+
+    resetPlansModalScroll();
+    requestAnimationFrame(resetPlansModalScroll);
+    setTimeout(resetPlansModalScroll, 50);
+
     editingSystem = (mode === "new") ? currentSystem : ((plan && plan.system) ? plan.system : currentSystem);
 
     if (mode === "new") {
@@ -336,6 +356,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function closeModal() {
     modal.style.display = "none";
+    modal.classList.remove("rz-plans-modal-open");
+    document.body.classList.remove("rz-plans-modal-open");
     editingId = null;
     editingSystem = null;
     if (f_pool_id) f_pool_id.disabled = false;
@@ -473,7 +495,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   if (poolFilter) poolFilter.addEventListener("change", () => {
     try {
-      const isModalOpen = modal && modal.style.display === "block";
+      const isModalOpen = modal && modal.style.display !== "none";
       const isNew = (editingId === null);
       if (isModalOpen && isNew) lockPoolToFilterIfNeeded("new");
     } catch (_) {}

@@ -2795,3 +2795,62 @@ body.rz-audit-modal-open .rz-bottom-nav{
     margin: 0 auto !important;
   }
 }
+
+/* ================================================================== */
+/* RAZAFI Plans modal open-position fix                               */
+/* Scope: Plans modal UX only. No API/business logic changes.          */
+/* Mirrors the stable Audit modal behavior with Plans-specific classes. */
+/* ================================================================== */
+body.rz-plans-modal-open{
+  overflow: hidden !important;
+}
+
+body.rz-plans-modal-open .rz-bottom-nav{
+  display: none !important;
+}
+
+#modal.modal:has(.rz-plans-modal-card),
+#modal.modal.rz-plans-modal-open{
+  align-items: flex-start !important;
+  justify-content: center !important;
+  padding-top: max(12px, env(safe-area-inset-top)) !important;
+  padding-bottom: max(12px, env(safe-area-inset-bottom)) !important;
+  overflow: hidden !important;
+  overscroll-behavior: contain !important;
+  z-index: 2147483000 !important;
+}
+
+#modal .rz-plans-modal-card{
+  margin: 0 auto !important;
+  width: min(680px, calc(100vw - 24px)) !important;
+  max-width: min(680px, calc(100vw - 24px)) !important;
+  max-height: calc(100dvh - 24px) !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain !important;
+  -webkit-overflow-scrolling: touch !important;
+  scroll-margin-top: 0 !important;
+}
+
+#modal .rz-plans-modal-card .modal-actions{
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  background: linear-gradient(180deg, rgba(255,255,255,.88), #fff 38%);
+  padding-top: 12px;
+}
+
+@media (max-width: 700px){
+  #modal.modal:has(.rz-plans-modal-card),
+  #modal.modal.rz-plans-modal-open{
+    padding: 8px !important;
+    align-items: flex-start !important;
+  }
+
+  #modal .rz-plans-modal-card{
+    width: calc(100vw - 16px) !important;
+    max-width: calc(100vw - 16px) !important;
+    max-height: calc(100dvh - 16px) !important;
+    margin: 0 auto !important;
+  }
+}
+
