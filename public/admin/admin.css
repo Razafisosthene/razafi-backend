@@ -2795,3 +2795,66 @@ body.rz-audit-modal-open .rz-bottom-nav{
     margin: 0 auto !important;
   }
 }
+
+
+/* ================================================================== */
+/* RAZAFI Plans modal open-position fix                               */
+/* Scope: Plans modal UX only. No API/business logic changes.          */
+/* ================================================================== */
+body.rz-plans-modal-open{
+  overflow: hidden !important;
+}
+
+body.rz-plans-modal-open .rz-bottom-nav{
+  display: none !important;
+}
+
+#modal.rz-plans-modal,
+#modal.modal.rz-plans-modal-open,
+body.plans-page #modal.modal{
+  align-items: flex-start !important;
+  justify-content: center !important;
+  padding-top: max(12px, env(safe-area-inset-top)) !important;
+  padding-bottom: max(12px, env(safe-area-inset-bottom)) !important;
+  overflow: hidden !important;
+  overscroll-behavior: contain !important;
+  z-index: 2147483000 !important;
+}
+
+#modal .rz-plans-modal-card,
+body.plans-page #modal .modal-card{
+  margin: 0 auto !important;
+  width: min(680px, calc(100vw - 24px)) !important;
+  max-width: min(680px, calc(100vw - 24px)) !important;
+  max-height: calc(100dvh - 24px) !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain !important;
+  -webkit-overflow-scrolling: touch !important;
+  scroll-margin-top: 0 !important;
+}
+
+body.plans-page #modal .modal-actions{
+  position: sticky !important;
+  bottom: 0 !important;
+  z-index: 6 !important;
+  background: linear-gradient(180deg, rgba(255,255,255,.82), #fff 35%) !important;
+  padding-top: 12px !important;
+}
+
+@media (max-width: 700px){
+  #modal.rz-plans-modal,
+  #modal.modal.rz-plans-modal-open,
+  body.plans-page #modal.modal{
+    padding: 8px !important;
+    align-items: flex-start !important;
+  }
+
+  #modal .rz-plans-modal-card,
+  body.plans-page #modal .modal-card{
+    width: calc(100vw - 16px) !important;
+    max-width: calc(100vw - 16px) !important;
+    max-height: calc(100dvh - 16px) !important;
+    margin: 0 auto !important;
+    border-radius: 22px !important;
+  }
+}
