@@ -3,8 +3,8 @@
     const res = await fetch(url, { credentials: "include", ...opts });
     const text = await res.text();
     let data;
-    try { data = JSON.parse(text); } catch { throw new Error("Server returned non-JSON"); }
-    if (!res.ok) throw new Error(data?.error || data?.message || "Request failed");
+    try { data = JSON.parse(text); } catch { throw new Error("Réponse serveur non JSON"); }
+    if (!res.ok) throw new Error(data?.error || data?.message || "Requête échouée");
     return data;
   }
 
@@ -30,7 +30,7 @@
     // Plans
     try {
       const sel = $("plan_id");
-      if (sel) sel.innerHTML = `<option value="">Plan (all)</option>`;
+      if (sel) sel.innerHTML = `<option value="">Tous les plans</option>`;
 
       const data = await fetchJSON(`/api/admin/plans?active=all&visible=all&limit=200&offset=0`);
       const plans = (data && data.plans) ? data.plans : [];
@@ -47,7 +47,7 @@
     // Pools
     try {
       const sel = $("pool_id");
-      if (sel) sel.innerHTML = `<option value="">Pool (all)</option>`;
+      if (sel) sel.innerHTML = `<option value="">Tous les pools</option>`;
 
       const data = await fetchJSON(`/api/admin/pools?limit=200&offset=0`);
       const pools = (data && data.pools) ? data.pools : [];
@@ -66,6 +66,17 @@
     return String(s ?? "").replace(/[&<>"']/g, (c) => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
     }[c]));
+  }
+
+  function formatAdminIdentity(admin) {
+    const raw = String(admin?.email || admin?.username || "admin").trim();
+    const display = raw.includes("@") ? raw.split("@")[0] : raw;
+    return `
+      <span class="rz-owner-text">
+        <span class="rz-owner-label">Connecté en tant que :</span>
+        <span class="rz-owner-name">${esc(display)}</span>
+      </span>
+    `;
   }
 
   function toISOFromLocalInput(v) {
@@ -224,7 +235,7 @@
       const sel = $("event_type");
       if (!sel) return;
 
-      sel.innerHTML = `<option value="">Event type (all)</option>` +
+      sel.innerHTML = `<option value="">Tous les événements</option>` +
         list.map(x => {
           const v = (typeof x === "string") ? x : (x.event_type || "");
           const c = (typeof x === "object") ? (x.count || "") : "";
@@ -242,7 +253,7 @@
     if (!tbody) return;
 
     try {
-      if (statusLine) statusLine.textContent = "Loading…";
+      if (statusLine) statusLine.textContent = "Chargement…";
       tbody.innerHTML = "";
 
       const params = buildParams();
@@ -256,8 +267,8 @@
       nextCursor = returnedNext || "";
 
       if (!items.length) {
-        tbody.innerHTML = `<tr><td colspan="8" style="padding:12px; opacity:.75;">No results.</td></tr>`;
-        if (statusLine) statusLine.textContent = "No results.";
+        tbody.innerHTML = `<tr><td colspan="8" style="padding:12px; opacity:.75;">Aucun résultat.</td></tr>`;
+        if (statusLine) statusLine.textContent = "Aucun résultat.";
         return;
       }
 
@@ -292,8 +303,8 @@
         `;
       }).join("");
 
-      if (statusLine) statusLine.textContent = `Loaded ${items.length} event(s).` +
-        (nextCursor ? " (More available)" : "");
+      if (statusLine) statusLine.textContent = `Chargé : ${items.length} événement(s).` +
+        (nextCursor ? " Suite disponible." : "");
 
       // bind rows
       document.querySelectorAll("tr.audit-row").forEach(tr => {
@@ -304,14 +315,14 @@
             const obj = JSON.parse(raw);
             openModal(obj);
           } catch {
-            openModal({ error: "Failed to parse payload" });
+            openModal({ error: "Impossible de lire le détail" });
           }
         });
       });
 
     } catch (e) {
       if (statusLine) statusLine.textContent = "";
-      tbody.innerHTML = `<tr><td colspan="8" style="padding:12px; color:#d9534f;">Failed to load: ${esc(e.message || e)}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" style="padding:12px; color:#d9534f;">Échec du chargement : ${esc(e.message || e)}</td></tr>`;
     }
   }
 
@@ -319,7 +330,7 @@
     try {
       const admin = await fetchJSON("/api/admin/me");
       const meEl = $("me");
-      if (meEl) meEl.textContent = "Connected as " + (admin.email || admin.username || "admin");
+      if (meEl) meEl.innerHTML = formatAdminIdentity(admin);
     } catch {
       window.location.href = "/admin/login.html";
     }

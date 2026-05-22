@@ -6,67 +6,65 @@
   <title>RAZAFI Admin — Audit</title>
   <link rel="stylesheet" href="/admin/admin.css" />
 </head>
-<body>
+<body class="rz-admin-shell">
   <div class="login-container">
-    <div class="card" style="max-width: 1100px; width: 96%;">
-      <div class="topbar">
+    <div class="card rz-dashboard-shell rz-audit-shell" style="max-width: 1200px; width: 96%;">
+      <div class="topbar rz-audit-topbar">
         <div class="title">
-          <h1 style="margin:0;">Audit</h1>
-          <div id="me" class="subtitle">Checking session...</div>
+          <h1 class="rz-hero-title">Audit</h1>
+          <div id="me" class="rz-owner-chip"><span class="rz-owner-text"><span class="rz-owner-label">Vérification de la session…</span></span></div>
         </div>
         <div class="nav" style="display:none;"></div>
       </div>
 
-      <hr style="opacity:.2; margin:18px 0;" />
-
       <!-- Filters -->
-      <div class="sticky-bar">
+      <div class="sticky-bar rz-audit-tools">
         <div class="filters">
-          <input id="q" class="filter-search" placeholder="Search: request_ref / client_mac / phone..." />
+          <input id="q" class="filter-search" placeholder="Rechercher : ref / MAC / téléphone..." />
 
           <select id="status" class="filter-select">
-            <option value="">Status (all)</option>
-            <option value="success">success</option>
-            <option value="info">info</option>
-            <option value="pending">pending</option>
-            <option value="warning">warning</option>
-            <option value="blocked">blocked</option>
-            <option value="failed">failed</option>
-            <option value="ok">ok</option>
-            <option value="error">error</option>
+            <option value="">Tous les statuts</option>
+            <option value="success">Succès</option>
+            <option value="info">Info</option>
+            <option value="pending">En attente</option>
+            <option value="warning">Avertissement</option>
+            <option value="blocked">Bloqué</option>
+            <option value="failed">Échec</option>
+            <option value="ok">OK</option>
+            <option value="error">Erreur</option>
           </select>
 
           <select id="event_type" class="filter-select">
-            <option value="">Event type (all)</option>
+            <option value="">Tous les événements</option>
           </select>
 
-          <select id="plan_id" class="filter-select" style="max-width:220px;">
-            <option value="">Plan (all)</option>
+          <select id="plan_id" class="filter-select">
+            <option value="">Tous les plans</option>
           </select>
 
-          <select id="pool_id" class="filter-select" style="max-width:220px;">
-            <option value="">Pool (all)</option>
+          <select id="pool_id" class="filter-select">
+            <option value="">Tous les pools</option>
           </select>
 
-          <input id="from" type="datetime-local" class="filter-search" style="max-width:220px;" />
-          <input id="to" type="datetime-local" class="filter-search" style="max-width:220px;" />
+          <input id="from" type="datetime-local" class="filter-search" />
+          <input id="to" type="datetime-local" class="filter-search" />
 
-          <button type="button" id="apply" class="filter-btn primary" style="width:auto;">Apply</button>
-          <button type="button" id="clear" class="filter-btn" style="width:auto;">Clear</button>
+          <button type="button" id="apply" class="filter-btn primary">Appliquer</button>
+          <button type="button" id="clear" class="filter-btn">Effacer</button>
         </div>
       </div>
 
-      <div id="statusLine" style="margin-top:14px; opacity:.85;"></div>
+      <div id="statusLine" class="rz-audit-status-line"></div>
 
-      <div class="table-wrap">
-        <table style="width:100%; border-collapse:collapse;">
+      <div class="table-wrap rz-audit-table-wrap">
+        <table class="rz-audit-table" style="width:100%; border-collapse:collapse;">
           <thead>
             <tr style="text-align:left; border-bottom:1px solid rgba(0,0,0,0.08);">
               <th style="padding:10px;">Date</th>
-              <th style="padding:10px;">Status</th>
-              <th style="padding:10px;">Event</th>
+              <th style="padding:10px;">Statut</th>
+              <th style="padding:10px;">Événement</th>
               <th style="padding:10px;">MVola</th>
-              <th style="padding:10px;">RequestRef</th>
+              <th style="padding:10px;">Référence</th>
               <th style="padding:10px;">Client MAC</th>
               <th style="padding:10px;">Plan</th>
               <th style="padding:10px;">Pool</th>
@@ -76,31 +74,31 @@
         </table>
       </div>
 
-      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:12px; flex-wrap:wrap;">
-        <button id="prev" type="button" style="width:auto;">Prev</button>
-        <button id="next" type="button" style="width:auto;">Next</button>
+      <div class="rz-audit-pager">
+        <button id="prev" type="button">Précédent</button>
+        <button id="next" type="button">Suivant</button>
       </div>
 
       <!-- Details modal -->
       <div id="modal" class="modal" style="display:none;">
-        <div class="card modal-card audit-modal-card">
-          <div style="display:flex; justify-content:space-between; gap:10px; align-items:center;">
-            <div style="font-weight:900;">Audit event</div>
-            <button id="closeModal" type="button" style="width:auto;">Close</button>
+        <div class="card modal-card audit-modal-card rz-audit-modal-card">
+          <div class="rz-audit-modal-head">
+            <div class="rz-audit-modal-title">Détail audit</div>
+            <button id="closeModal" type="button">Fermer</button>
           </div>
 
-          <div class="audit-modal-summary">
+          <div class="audit-modal-summary rz-audit-modal-summary">
             <div class="audit-kv">
-              <div class="k">Event</div><div class="v" id="m_event">—</div>
+              <div class="k">Événement</div><div class="v" id="m_event">—</div>
             </div>
             <div class="audit-kv">
-              <div class="k">Status</div><div class="v"><span id="m_status_badge" class="badge audit-badge">—</span></div>
+              <div class="k">Statut</div><div class="v"><span id="m_status_badge" class="badge audit-badge">—</span></div>
             </div>
             <div class="audit-kv">
               <div class="k">Date</div><div class="v" id="m_date">—</div>
             </div>
             <div class="audit-kv">
-              <div class="k">RequestRef</div><div class="v" id="m_request_ref">—</div>
+              <div class="k">Référence</div><div class="v" id="m_request_ref">—</div>
             </div>
             <div class="audit-kv">
               <div class="k">MVola</div><div class="v" id="m_mvola_phone">—</div>
@@ -122,10 +120,10 @@
             </div>
           </div>
 
-          <div style="display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap;">
-            <div style="font-weight:800;">Metadata</div>
-            <button id="copyMeta" type="button" class="audit-copy-btn" style="width:auto;">Copy metadata</button>
-            <button id="copyEvent" type="button" class="audit-copy-btn" style="width:auto;">Copy event</button>
+          <div class="rz-audit-meta-head">
+            <div class="rz-audit-meta-title">Métadonnées</div>
+            <button id="copyMeta" type="button" class="audit-copy-btn">Copier metadata</button>
+            <button id="copyEvent" type="button" class="audit-copy-btn">Copier événement</button>
           </div>
 
           <pre id="m_metadata" class="audit-meta-pre"></pre>

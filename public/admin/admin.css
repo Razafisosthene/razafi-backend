@@ -2402,4 +2402,340 @@ body.rz-drawer-open .rz-bottom-nav{
     min-height: 44px !important;
   }
 }
+/* ================================================================== */
+/* RAZAFI Audit page premium redesign                                  */
+/* Scope: Audit UX/layout only. No API/business logic changes.         */
+/* ================================================================== */
+.rz-audit-shell{
+  background: transparent !important;
+}
 
+.rz-audit-shell,
+.rz-audit-shell *{
+  min-width: 0;
+}
+
+.rz-audit-topbar{
+  position: relative;
+  justify-content: center !important;
+  text-align: center;
+  margin-bottom: 12px !important;
+}
+
+.rz-audit-topbar .rz-nav-mount,
+.rz-audit-shell .rz-nav-mount{
+  position: absolute;
+  left: 0;
+  top: 4px;
+  z-index: 5;
+}
+
+.rz-audit-topbar .title{
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.rz-audit-shell .rz-owner-chip{
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  max-width: min(320px, calc(100vw - 110px)) !important;
+  padding: 6px 10px !important;
+  border-radius: 18px !important;
+  text-align: left;
+}
+
+.rz-audit-tools{
+  width: min(100%, 1080px);
+  margin-left: auto;
+  margin-right: auto;
+  padding: 12px !important;
+  border-radius: 28px !important;
+  z-index: 24;
+}
+
+.rz-audit-tools .filters{
+  display: grid !important;
+  grid-template-columns: minmax(220px, 1.3fr) minmax(130px, .75fr) minmax(160px, 1fr) minmax(140px, .85fr) minmax(140px, .85fr) minmax(170px, .95fr) minmax(170px, .95fr) auto auto;
+  gap: 10px !important;
+  align-items: center !important;
+}
+
+.rz-audit-tools input,
+.rz-audit-tools select,
+.rz-audit-tools button{
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  margin: 0 !important;
+  height: 44px !important;
+  min-height: 44px !important;
+  padding: 0 12px !important;
+  border-radius: 18px !important;
+  font-size: 14px !important;
+  line-height: 1.1 !important;
+}
+
+.rz-audit-tools select,
+.rz-audit-tools select#status{
+  color: #0f172a !important;
+  background: rgba(248,250,252,.92) !important;
+  appearance: auto !important;
+  -webkit-appearance: menulist !important;
+  padding-bottom: 0 !important;
+  line-height: 44px !important;
+}
+
+.rz-audit-tools button{
+  white-space: nowrap;
+  font-weight: 950 !important;
+}
+
+.rz-audit-status-line{
+  width: min(100%, 1080px);
+  margin: 12px auto 0;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.rz-audit-status-line::before{
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 8px;
+  border-radius: 999px;
+  background: #0d6efd;
+  box-shadow: 0 0 0 4px rgba(13,110,253,.10);
+  vertical-align: middle;
+}
+
+.rz-audit-table-wrap{
+  width: min(100%, 1080px);
+  max-width: 100%;
+  margin: 14px auto 0;
+  overflow-x: auto;
+  overflow-y: visible;
+  border-radius: 22px;
+  -webkit-overflow-scrolling: touch;
+  background: rgba(255,255,255,.54);
+  box-shadow: 0 10px 26px rgba(15,23,42,.06);
+}
+
+.rz-audit-table{
+  min-width: 880px;
+  background: rgba(255,255,255,.84);
+}
+
+.rz-audit-table thead th{
+  background: rgba(255,255,255,.90);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.rz-audit-table tbody td{
+  font-size: 13px;
+  vertical-align: middle;
+}
+
+.rz-audit-pager{
+  width: min(100%, 1080px);
+  margin: 12px auto 0;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.rz-audit-pager button{
+  width: auto;
+  min-height: 42px;
+  padding: 0 16px;
+  border-radius: 16px;
+  font-weight: 950;
+}
+
+.rz-audit-modal-card{
+  max-width: min(900px, calc(100vw - 24px)) !important;
+  width: min(900px, calc(100vw - 24px)) !important;
+  max-height: calc(100dvh - 34px) !important;
+  margin: 14px auto !important;
+  padding: 16px !important;
+  border-radius: 24px !important;
+}
+
+.rz-audit-modal-head{
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.rz-audit-modal-title,
+.rz-audit-meta-title{
+  font-weight: 950;
+  color: #0f172a;
+}
+
+.rz-audit-modal-head button,
+.rz-audit-meta-head button{
+  width: auto !important;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 15px;
+}
+
+.rz-audit-modal-summary{
+  margin-top: 14px !important;
+}
+
+.rz-audit-meta-head{
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.rz-audit-shell .audit-kv{
+  border: 1px solid rgba(15,23,42,.08);
+  background: rgba(248,250,252,.78);
+  border-radius: 16px;
+  padding: 11px 12px;
+}
+
+.rz-audit-shell .audit-kv .k{
+  color: #64748b;
+  opacity: 1;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.rz-audit-shell .audit-kv .v{
+  margin-top: 4px;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.rz-audit-shell .audit-meta-pre{
+  border-radius: 18px;
+  max-height: 44vh;
+  border: 1px solid rgba(15,23,42,.10);
+}
+
+body.rz-drawer-open .rz-audit-tools,
+body.rz-drawer-open .rz-audit-status-line,
+body.rz-drawer-open .rz-audit-table-wrap,
+body.rz-drawer-open .rz-bottom-nav{
+  z-index: 1 !important;
+}
+
+@media (max-width: 900px){
+  .rz-audit-tools .filters{
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .rz-audit-tools #q{
+    grid-column: 1 / -1;
+  }
+
+  .rz-audit-pager button{
+    flex: 1 1 0;
+  }
+}
+
+@media (max-width: 700px){
+  .rz-audit-topbar{
+    padding-top: 34px;
+  }
+
+  .rz-audit-topbar .rz-nav-mount,
+  .rz-audit-shell .rz-nav-mount{
+    left: 0;
+    top: 0;
+  }
+
+  .rz-audit-shell .rz-hero-title{
+    font-size: 26px !important;
+  }
+
+  .rz-audit-shell .rz-owner-chip{
+    max-width: min(320px, calc(100vw - 74px)) !important;
+  }
+
+  .rz-audit-tools{
+    width: 100%;
+    padding: 10px !important;
+    border-radius: 24px !important;
+    margin-top: 8px !important;
+  }
+
+  .rz-audit-tools .filters{
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
+  }
+
+  .rz-audit-tools #q,
+  .rz-audit-tools #event_type,
+  .rz-audit-tools #from,
+  .rz-audit-tools #to{
+    grid-column: 1 / -1;
+  }
+
+  .rz-audit-tools input,
+  .rz-audit-tools select,
+  .rz-audit-tools button,
+  .rz-audit-tools select#status{
+    height: 42px !important;
+    min-height: 42px !important;
+    max-height: 42px !important;
+    border-radius: 17px !important;
+    font-size: 14px !important;
+    line-height: 42px !important;
+    padding: 0 12px !important;
+    padding-bottom: 0 !important;
+  }
+
+  .rz-audit-table-wrap{
+    width: 100%;
+    border-radius: 18px;
+    margin-top: 12px;
+  }
+
+  .rz-audit-table{
+    min-width: 820px !important;
+  }
+
+  .rz-audit-status-line,
+  .rz-audit-pager{
+    width: 100%;
+  }
+
+  .rz-audit-modal-card{
+    width: calc(100vw - 18px) !important;
+    max-width: calc(100vw - 18px) !important;
+    margin: 9px auto !important;
+    max-height: calc(100dvh - 18px) !important;
+    padding: 14px !important;
+    border-radius: 22px !important;
+  }
+
+  .rz-audit-modal-head{
+    align-items: flex-start;
+  }
+
+  .rz-audit-modal-summary{
+    grid-template-columns: 1fr !important;
+    gap: 9px !important;
+  }
+
+  .rz-audit-meta-head button{
+    flex: 1 1 150px;
+  }
+}
