@@ -31,14 +31,101 @@
     .rz-plan-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
     .rz-plan-actions button{width:auto;padding:8px 11px;border-radius:12px;font-size:13px;box-shadow:none;}
     .rz-empty-state{padding:22px;color:var(--rz-muted,#6b7280);font-weight:800;}
-    .rz-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+    .rz-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
     .rz-form-grid .full{grid-column:1/-1;}
-    .rz-form-hint{font-size:12px;color:var(--rz-muted,#6b7280);margin:-4px 0 6px;line-height:1.35;}
+    .rz-form-hint{font-size:12px;color:var(--rz-muted,#6b7280);margin:-2px 0 4px;line-height:1.35;}
     .rz-modal-title{margin:0 0 4px 0;font-size:24px;letter-spacing:-.04em;color:var(--rz-text,#111827);}
     .rz-modal-sub{margin:0 0 14px 0;color:var(--rz-muted,#6b7280);font-size:13px;line-height:1.35;}
     .rz-hidden-system-toggle{display:none!important;}
+
+    /* Plans modal: iPhone-like mobile organization only */
+    .rz-plans-modal-card .check-row{
+      display:flex;
+      align-items:center;
+      justify-content:flex-start;
+      gap:10px;
+      margin:0;
+      padding:12px 14px;
+      border-radius:18px;
+      background:rgba(248,250,252,.78);
+      border:1px solid rgba(15,23,42,.07);
+      color:var(--rz-text,#111827);
+      font-weight:850;
+      line-height:1.2;
+    }
+    .rz-plans-modal-card .check-row input[type="checkbox"]{
+      width:20px;
+      height:20px;
+      flex:0 0 20px;
+      margin:0;
+      accent-color:#0d6efd;
+    }
+    .rz-plans-modal-card .check-row span{
+      display:block;
+      min-width:0;
+    }
+    .rz-plans-modal-card input,
+    .rz-plans-modal-card select{
+      margin-bottom:0;
+    }
+
     @media (max-width:980px){.rz-plans-filter-grid{grid-template-columns:1fr 1fr;}.rz-plans-filter-grid .filter-search{grid-column:1/-1;}.rz-plans-filter-grid button{width:100%;}}
-    @media (max-width:640px){.rz-plans-filter-grid{grid-template-columns:1fr;}.rz-plans-actions{width:100%;}.rz-plans-actions button{width:100%;}.rz-form-grid{grid-template-columns:1fr;}.rz-form-grid .full{grid-column:auto;}.rz-plans-table-card{border-radius:20px;}.rz-plans-table th,.rz-plans-table td{padding:10px 9px;}.rz-plan-actions button{flex:1 1 auto;}}
+    @media (max-width:640px){
+      .rz-plans-filter-grid{grid-template-columns:1fr;}
+      .rz-plans-actions{width:100%;}
+      .rz-plans-actions button{width:100%;}
+      .rz-form-grid{grid-template-columns:1fr;gap:10px;}
+      .rz-form-grid .full{grid-column:auto;}
+      .rz-plans-table-card{border-radius:20px;}
+      .rz-plans-table th,.rz-plans-table td{padding:10px 9px;}
+      .rz-plan-actions button{flex:1 1 auto;}
+      .rz-plans-modal-card{
+        padding:16px!important;
+      }
+      .rz-plans-modal-card .rz-modal-title{
+        font-size:22px;
+      }
+      .rz-plans-modal-card .rz-modal-sub{
+        margin-bottom:12px;
+      }
+      .rz-plans-modal-card .form-row.full{
+        display:grid!important;
+        grid-template-columns:1fr 1fr;
+        gap:10px!important;
+      }
+      .rz-plans-modal-card .form-row.full input,
+      .rz-plans-modal-card .form-row.full select{
+        width:100%!important;
+        min-width:0!important;
+        flex:auto!important;
+      }
+      .rz-plans-modal-card #poolRow{
+        display:block!important;
+      }
+      .rz-plans-modal-card #poolRow select{
+        width:100%!important;
+      }
+      .rz-plans-modal-card .check-row{
+        width:100%;
+        min-height:54px;
+        padding:12px 14px;
+        justify-content:flex-start;
+        text-align:left;
+      }
+      .rz-plans-modal-card .check-row span{
+        font-size:15px;
+        line-height:1.25;
+      }
+      .rz-plans-modal-card .modal-actions{
+        gap:10px;
+        padding-top:12px;
+        margin-top:12px;
+      }
+      .rz-plans-modal-card .modal-actions button{
+        width:50%;
+        min-height:48px;
+      }
+    }
   </style>
 </head>
 <body class="rz-admin-shell plans-page">
