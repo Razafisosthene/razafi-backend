@@ -80,18 +80,18 @@
 
   <!-- Detail Modal -->
   <div id="modal" class="modal" style="display:none;">
-    <div class="card modal-card">
-      <div class="rz-client-modal-head" style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
+    <div class="card modal-card rz-clients-modal-card">
+      <div class="rz-client-modal-head">
         <div>
-          <h1 style="margin:0; font-size:22px;">Détails client</h1>
+          <h1 class="rz-client-modal-title">Détails client</h1>
           <div id="modalSub" class="subtitle" style="margin:6px 0 0;">Chargement...</div>
         </div>
-        <button id="closeModalBtn" type="button" style="width:auto;">Fermer</button>
+        <button id="closeModalBtn" type="button" class="rz-client-close-btn">Fermer</button>
       </div>
 
-      <hr style="opacity:.2; margin:14px 0;" />
+      <hr class="rz-client-modal-separator" />
 
-      <div id="detail" class="rz-client-detail-grid" style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;"></div>
+      <div id="detail" class="rz-client-detail-grid"></div>
 
       <div class="modal-actions">
         <button id="deleteBtn" class="danger" type="button">Supprimer</button>

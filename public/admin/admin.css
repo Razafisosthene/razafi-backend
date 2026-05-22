@@ -2854,3 +2854,286 @@ body.rz-plans-modal-open .rz-bottom-nav{
   }
 }
 
+
+
+/* ================================================================== */
+/* RAZAFI Clients modal iPhone-like polish                             */
+/* Scope: Clients modal only. Keeps logic, read-only, flash animation. */
+/* ================================================================== */
+body.rz-clients-modal-open{
+  overflow: hidden !important;
+}
+
+body.rz-clients-modal-open .rz-bottom-nav{
+  display: none !important;
+}
+
+#modal .rz-clients-modal-card{
+  width: min(900px, calc(100vw - 22px)) !important;
+  max-width: min(900px, calc(100vw - 22px)) !important;
+  margin: 10px auto !important;
+  max-height: calc(100dvh - 20px) !important;
+  overflow: auto !important;
+  padding: 16px !important;
+  border-radius: 28px !important;
+  background: rgba(255,255,255,.96) !important;
+  border: 1px solid rgba(226,232,240,.88) !important;
+  box-shadow: 0 24px 70px rgba(15,23,42,.28) !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+.rz-client-modal-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+  padding: 4px 2px 2px;
+}
+
+.rz-client-modal-title{
+  margin:0 !important;
+  text-align:left !important;
+  color:#0f172a !important;
+  font-size:24px !important;
+  line-height:1.04 !important;
+  font-weight:950 !important;
+  letter-spacing:-.045em;
+}
+
+#modalSub{
+  text-align:left !important;
+  margin:6px 0 0 !important;
+  color:#64748b !important;
+  font-size:13px !important;
+  font-weight:800;
+}
+
+.rz-client-close-btn{
+  width:auto !important;
+  min-height:38px !important;
+  padding:0 13px !important;
+  border-radius:999px !important;
+  background:rgba(15,23,42,.06) !important;
+  color:#0f172a !important;
+  box-shadow:none !important;
+  font-size:13px !important;
+  flex:0 0 auto;
+}
+
+.rz-client-modal-separator{
+  border:0;
+  border-top:1px solid rgba(15,23,42,.08);
+  margin:14px 0 !important;
+}
+
+#modal .rz-client-detail-grid{
+  display:grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap:10px !important;
+}
+
+#modal .rz-detail-card{
+  border:1px solid rgba(226,232,240,.9) !important;
+  border-radius:20px !important;
+  padding:12px 13px !important;
+  background:linear-gradient(180deg, rgba(248,250,252,.96), rgba(255,255,255,.82)) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.85);
+}
+
+#modal .rz-detail-label,
+.rz-client-editor-label{
+  font-size:11px !important;
+  color:#64748b !important;
+  font-weight:900 !important;
+  letter-spacing:-.01em;
+}
+
+#modal .rz-detail-value{
+  margin-top:4px;
+  color:#0f172a;
+  font-size:14px;
+  font-weight:900;
+  word-break:break-word;
+}
+
+.rz-client-editor-card{
+  grid-column:1 / -1;
+  padding:14px !important;
+  border-radius:24px !important;
+  border:1px solid rgba(226,232,240,.92) !important;
+  background:linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,250,252,.88)) !important;
+  box-shadow:0 10px 26px rgba(15,23,42,.06);
+}
+
+.rz-client-editor-row{
+  display:flex;
+  align-items:flex-end;
+  justify-content:space-between;
+  gap:14px;
+  flex-wrap:wrap;
+}
+
+.rz-client-editor-controls{
+  display:flex;
+  align-items:flex-end;
+  justify-content:flex-end;
+  gap:10px;
+  flex-wrap:wrap;
+  flex:1 1 420px;
+}
+
+.rz-client-bonus-controls{
+  display:grid !important;
+  grid-template-columns: repeat(4, minmax(74px, 1fr)) minmax(180px, 1.3fr) auto;
+  width:100%;
+}
+
+.rz-client-editor-current{
+  margin-top:6px !important;
+  color:#0f172a !important;
+  font-size:13px !important;
+  font-weight:900 !important;
+}
+
+.rz-client-editor-input{
+  width:100% !important;
+  min-height:42px !important;
+  margin:0 !important;
+  padding:0 12px !important;
+  border-radius:16px !important;
+  border:1px solid rgba(15,23,42,.10) !important;
+  background:rgba(255,255,255,.92) !important;
+  box-shadow: inset 0 1px 2px rgba(15,23,42,.03) !important;
+}
+
+.rz-client-editor-input-small{ max-width:130px; }
+.rz-client-editor-input-mini{ max-width:96px; }
+.rz-client-editor-note{ min-width:180px; flex:1 1 220px; }
+
+.rz-client-editor-btn{
+  width:auto !important;
+  min-height:42px !important;
+  padding:0 15px !important;
+  border-radius:16px !important;
+  font-size:14px !important;
+  font-weight:950 !important;
+  box-shadow:0 10px 20px rgba(13,110,253,.15) !important;
+}
+
+.rz-client-checkline{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin-top:8px;
+  color:#334155;
+  font-size:13px;
+  font-weight:850;
+  white-space:nowrap;
+}
+
+.rz-client-checkline input{
+  width:18px !important;
+  height:18px !important;
+  min-height:18px !important;
+  margin:0 !important;
+  padding:0 !important;
+  flex:0 0 auto;
+}
+
+#modal .modal-actions{
+  position: static !important;
+  display:flex !important;
+  gap:10px !important;
+  justify-content:flex-end !important;
+  padding:14px 0 0 !important;
+  margin-top:14px !important;
+  background:transparent !important;
+  border-top:1px solid rgba(15,23,42,.08) !important;
+}
+
+#modal .modal-actions button{
+  min-height:44px !important;
+  border-radius:18px !important;
+  font-weight:950 !important;
+}
+
+@media (max-width:700px){
+  #modal .rz-clients-modal-card{
+    width:calc(100vw - 16px) !important;
+    max-width:calc(100vw - 16px) !important;
+    margin:8px auto !important;
+    max-height:calc(100dvh - 16px) !important;
+    padding:14px !important;
+    border-radius:26px !important;
+  }
+
+  .rz-client-modal-head{
+    gap:10px;
+  }
+
+  .rz-client-modal-title{
+    font-size:22px !important;
+  }
+
+  #modal .rz-client-detail-grid{
+    grid-template-columns:1fr !important;
+    gap:9px !important;
+  }
+
+  #modal .rz-detail-card{
+    padding:11px 12px !important;
+    border-radius:18px !important;
+  }
+
+  .rz-client-editor-card{
+    padding:12px !important;
+    border-radius:22px !important;
+  }
+
+  .rz-client-editor-row{
+    display:flex;
+    flex-direction:column;
+    align-items:stretch;
+    gap:11px;
+  }
+
+  .rz-client-editor-controls,
+  .rz-client-bonus-controls{
+    display:grid !important;
+    grid-template-columns:1fr 1fr !important;
+    gap:9px !important;
+    width:100%;
+    flex:unset;
+  }
+
+  .rz-client-editor-note{
+    min-width:0 !important;
+    grid-column:1 / -1;
+  }
+
+  .rz-client-editor-input,
+  .rz-client-editor-input-small,
+  .rz-client-editor-input-mini{
+    max-width:none !important;
+    width:100% !important;
+    min-height:42px !important;
+  }
+
+  .rz-client-editor-btn{
+    grid-column:1 / -1;
+    width:100% !important;
+  }
+
+  .rz-client-checkline{
+    white-space:normal;
+    align-items:center;
+  }
+
+  #modal .modal-actions{
+    flex-direction:column;
+  }
+
+  #modal .modal-actions button{
+    width:100% !important;
+  }
+}

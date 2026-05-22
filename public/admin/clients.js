@@ -424,7 +424,20 @@ async function openDetail(id) {
   modalErr.textContent = "";
   detail.innerHTML = "";
   sub.textContent = "Chargement...";
+  document.body.classList.add("rz-clients-modal-open");
+  modal.classList.add("rz-clients-modal-open");
   modal.style.display = "flex";
+
+  const resetClientsModalScroll = () => {
+    try {
+      modal.scrollTop = 0;
+      const card = modal.querySelector(".modal-card");
+      if (card) card.scrollTop = 0;
+    } catch (_) {}
+  };
+  resetClientsModalScroll();
+  requestAnimationFrame(resetClientsModalScroll);
+  setTimeout(resetClientsModalScroll, 50);
 
   try {
     const data = await fetchJSON("/api/admin/voucher-sessions/" + encodeURIComponent(id));
@@ -476,18 +489,18 @@ async function openDetail(id) {
       const msgId = `renameMsg_${it.id}`;
 
       detail.insertAdjacentHTML("beforeend", `
-        <div id="${blockId}" style="grid-column: 1 / -1; border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
-          <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; flex-wrap:wrap;">
+        <div id="${blockId}" class="rz-client-editor-card rz-client-rename-card">
+          <div class="rz-client-editor-row">
             <div>
               <div style="font-size:12px; opacity:.7;">Nom de l’appareil</div>
               
             </div>
-            <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+            <div class="rz-client-editor-controls">
               <div>
-                <div style="font-size:12px; opacity:.7;">Nom</div>
-                <input id="${inputId}" type="text" maxlength="32" value="${esc(it.client_name || "")}" placeholder="Ex: Stella" style="width:220px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
+                <div class="rz-client-editor-label">Nom</div>
+                <input id="${inputId}" type="text" maxlength="32" value="${esc(it.client_name || "")}" placeholder="Ex: Stella" class="rz-client-editor-input" />
               </div>
-              <button id="${btnId}" type="button" style="width:auto; padding:9px 14px;">Enregistrer</button>
+              <button id="${btnId}" type="button" class="rz-client-editor-btn">Enregistrer</button>
             </div>
           </div>
           <div id="${msgId}" class="subtitle" style="margin-top:10px; display:none;"></div>
@@ -562,23 +575,23 @@ async function openDetail(id) {
       const msgId = `saveMsg_${it.id}`;
 
       detail.insertAdjacentHTML("beforeend", `
-        <div id="${blockId}" style="grid-column: 1 / -1; border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
-          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+        <div id="${blockId}" class="rz-client-editor-card rz-client-free-card">
+          <div class="rz-client-editor-row">
             <div>
-              <div style="font-size:12px; opacity:.7;">Accès gratuit</div>
-              <div id="${statsId}" style="font-size:15px; font-weight:800; margin-top:4px;">Utilisé : ${esc(used)} · Autorisé : ${esc(allowed)} · Restant : ${esc(remaining)}</div>
+              <div class="rz-client-editor-label">Accès gratuit</div>
+              <div id="${statsId}" class="rz-client-editor-current">Utilisé : ${esc(used)} · Autorisé : ${esc(allowed)} · Restant : ${esc(remaining)}</div>
               
             </div>
-            <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+            <div class="rz-client-editor-controls">
               <div>
-                <div style="font-size:12px; opacity:.7;">Utilisations bonus</div>
-                <input id="${inputId}" type="number" min="0" max="1000" value="${esc(extra)}" style="width:120px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
+                <div class="rz-client-editor-label">Utilisations bonus</div>
+                <input id="${inputId}" type="number" min="0" max="1000" value="${esc(extra)}" class="rz-client-editor-input rz-client-editor-input-small" />
               </div>
-              <div style="min-width:240px;">
-                <div style="font-size:12px; opacity:.7;">Note</div>
-                <input id="${noteId}" type="text" placeholder="Note" style="width:240px; padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15);" />
+              <div class="rz-client-editor-note">
+                <div class="rz-client-editor-label">Note</div>
+                <input id="${noteId}" type="text" placeholder="Note" class="rz-client-editor-input" />
               </div>
-              <button id="${btnId}" type="button" style="width:auto; padding:9px 14px;">Enregistrer</button>
+              <button id="${btnId}" type="button" class="rz-client-editor-btn">Enregistrer</button>
             </div>
           </div>
           <div id="${msgId}" class="subtitle" style="margin-top:10px; display:none;"></div>
@@ -741,42 +754,42 @@ const curBytes = Number(rowItem?.bonus_bytes || 0);
   }
 
   detail.insertAdjacentHTML("beforeend", `
-    <div id="${blockId}" style="grid-column: 1 / -1; border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:12px;">
-      <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; flex-wrap:wrap;">
+    <div id="${blockId}" class="rz-client-editor-card rz-client-bonus-card">
+      <div class="rz-client-editor-row">
         <div>
-          <div style="font-size:12px; opacity:.7;">Bonus</div>
+          <div class="rz-client-editor-label">Bonus</div>
 
-          <div id="${curId}" style="margin-top:8px; font-size:13px;">
+          <div id="${curId}" class="rz-client-editor-current">
             Bonus actuel : <b>${esc(formatCurrentBonusLine(curSec, curBytes))}</b>
           </div>
         </div>
 
-        <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
+        <div class="rz-client-editor-controls rz-client-bonus-controls">
           <div>
-            <div style="font-size:12px; opacity:.7;">+ Jours</div>
-            <input id="${dayId}" type="number" min="0" step="1" value="0" style="width:90px;" />
+            <div class="rz-client-editor-label">+ Jours</div>
+            <input id="${dayId}" type="number" min="0" step="1" value="0" class="rz-client-editor-input rz-client-editor-input-mini" />
           </div>
           <div>
-            <div style="font-size:12px; opacity:.7;">+ Heures</div>
-            <input id="${hourId}" type="number" min="0" step="1" value="0" style="width:90px;" />
+            <div class="rz-client-editor-label">+ Heures</div>
+            <input id="${hourId}" type="number" min="0" step="1" value="0" class="rz-client-editor-input rz-client-editor-input-mini" />
           </div>
           <div>
-            <div style="font-size:12px; opacity:.7;">+ Minutes</div>
-            <input id="${minId}" type="number" min="0" step="1" value="0" style="width:90px;" />
+            <div class="rz-client-editor-label">+ Minutes</div>
+            <input id="${minId}" type="number" min="0" step="1" value="0" class="rz-client-editor-input rz-client-editor-input-mini" />
           </div>
           <div>
-            <div style="font-size:12px; opacity:.7;">+ Go</div>
-            <input id="${gbId}" type="number" min="0" step="1" value="0" style="width:90px;" />
-            <div style="margin-top:8px; display:flex; align-items:center; gap:8px;">
+            <div class="rz-client-editor-label">+ Go</div>
+            <input id="${gbId}" type="number" min="0" step="1" value="0" class="rz-client-editor-input rz-client-editor-input-mini" />
+            <label class="rz-client-checkline">
               <input type="checkbox" id="${unlId}" />
-              <label for="${unlId}" style="font-size:13px;">Data illimité</label>
-            </div>
+              <span>Data illimité</span>
+            </label>
           </div>
-          <div style="min-width:220px;">
-            <div style="font-size:12px; opacity:.7;">Note</div>
-            <input id="${noteId}" type="text" placeholder="ex: goodwill / compensation" />
+          <div class="rz-client-editor-note">
+            <div class="rz-client-editor-label">Note</div>
+            <input id="${noteId}" type="text" placeholder="ex: goodwill / compensation" class="rz-client-editor-input" />
           </div>
-          <button id="${btnId}" type="button" style="width:auto;">Ajouter</button>
+          <button id="${btnId}" type="button" class="rz-client-editor-btn">Ajouter</button>
         </div>
       </div>
       <div id="${msgId}" class="subtitle" style="display:none; margin-top:8px;"></div>
@@ -931,7 +944,12 @@ async function deleteCurrent() {
 // Modal controls
 // -------------------------
 function closeModal() {
-  document.getElementById("modal").style.display = "none";
+  const modal = document.getElementById("modal");
+  if (modal) {
+    modal.style.display = "none";
+    modal.classList.remove("rz-clients-modal-open");
+  }
+  document.body.classList.remove("rz-clients-modal-open");
   currentDetailId = null;
 }
 
