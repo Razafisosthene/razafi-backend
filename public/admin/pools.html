@@ -37,10 +37,37 @@
       .rz-pools-filter-grid button{width:100%;}
     }
     @media (max-width:640px){
+      .rz-pools-shell{gap:12px;}
+      .rz-pools-header{gap:8px;}
       .rz-pools-form-grid{grid-template-columns:1fr;}
-      .rz-pools-create-card{border-radius:20px;}
-      .rz-pools-table-card{border-radius:20px;}
-      .rz-pools-table th,.rz-pools-table td{padding:10px 9px;}
+      .rz-pools-create-card{border-radius:22px;padding:14px;}
+      .rz-pools-table-card{border-radius:24px;background:transparent;border:0;box-shadow:none;overflow:visible;}
+      .rz-pools-table-wrap{overflow:visible;}
+      .rz-pools-table{display:block;width:100%;min-width:0;border-spacing:0;}
+      .rz-pools-table thead{display:none;}
+      .rz-pools-table tbody{display:flex;flex-direction:column;gap:12px;width:100%;}
+      .rz-pools-table tr[data-poolrow]{display:block;width:100%;padding:14px;border-radius:24px;background:rgba(255,255,255,.86);border:1px solid rgba(255,255,255,.92);box-shadow:0 12px 28px rgba(15,23,42,.08);overflow:hidden;}
+      .rz-pools-table tr[data-details]{width:100%;padding:0;border:0;background:transparent;box-shadow:none;}
+      .rz-pools-table tr[data-details]:not([style*="display:none"]){display:block!important;}
+      .rz-pools-table td{display:block;width:100%;padding:10px 0!important;border-bottom:1px solid rgba(17,24,39,.07);font-size:14px;}
+      .rz-pools-table tr[data-poolrow] td:last-child{border-bottom:0;padding-bottom:0!important;}
+      .rz-pools-table td::before{display:block;margin-bottom:6px;color:var(--rz-muted,#6b7280);font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;}
+      .rz-pools-table tr[data-poolrow] td:nth-child(1)::before{content:"Pool";}
+      .rz-pools-table tr[data-poolrow] td:nth-child(2)::before{content:"Capacité";}
+      .rz-pools-table tr[data-poolrow] td:nth-child(3)::before{content:"Contact";}
+      .rz-pools-table tr[data-poolrow] td:nth-child(4)::before{content:"Clients live";}
+      .rz-pools-table tr[data-poolrow] td:nth-child(5)::before{content:"Occupation";}
+      .rz-pools-table tr[data-poolrow] td:nth-child(6)::before{content:"Actions";}
+      .rz-pools-table tr[data-details] td{padding:12px!important;border-bottom:0;border-radius:22px;background:rgba(255,255,255,.78);border:1px solid rgba(255,255,255,.90);box-shadow:0 10px 24px rgba(15,23,42,.07);}
+      .rz-pools-table tr[data-details] td::before{content:"APs du pool";}
+      .rz-pools-table input,.rz-pools-table select{width:100%!important;max-width:100%!important;min-width:0!important;margin-bottom:0!important;}
+      .rz-pools-table td[style*="display:flex"]{display:flex!important;flex-direction:column;align-items:stretch;gap:8px;}
+      .rz-pools-table td[style*="display:flex"] button{width:100%!important;}
+      .rz-pools-table [style*="min-width:170px"]{min-width:0!important;width:100%!important;}
+      .pool-announcement-row{align-items:stretch;}
+      .pool-announcement-row select{width:100%;}
+      .pool-announcement-check{width:100%;}
+      .rz-pools-empty{display:block!important;border-radius:22px;background:rgba(255,255,255,.86);}
     }
   </style>
 </head>
