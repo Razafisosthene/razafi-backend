@@ -475,12 +475,22 @@ async function openDetail(id) {
 
     sub.textContent = `Code ${it.voucher_code || "—"}`;
 
+    // Keep modal live status consistent with the table.
+    // /api/admin/clients is the enriched live source; /api/admin/voucher-sessions/:id
+    // may not always include the same live fields.
+    const modalLiveSource = rowItem || it || {};
+    const modalStatus = normStatus(rowItem?.status || it?.status);
+    const modalIsOnline =
+      modalStatus === "active" &&
+      (modalLiveSource?.is_online === true || normStatus(modalLiveSource?.live_status) === "online");
+    const modalLiveUpdatedAt = modalLiveSource?.live_status_updated_at || it?.live_status_updated_at || null;
+
     const rows = [
-      ["Nom appareil", it.client_name || "—"],
-      ["MAC client", it.client_mac],
-      ["Connexion", (normStatus(it.status) === "active" && (it.is_online === true || normStatus(it.live_status) === "online")) ? "🟢 Connecté" : "⚫ Hors ligne"],
-      ["Dernier signal", fmtDate(it.live_status_updated_at)],
-      ["AP", it.ap_name || "—"],
+      ["Nom appareil", it.client_name || rowItem?.client_name || "—"],
+      ["MAC client", it.client_mac || rowItem?.client_mac],
+      ["Connexion", modalIsOnline ? "🟢 Connecté" : "⚫ Hors ligne"],
+      ["Dernier signal", fmtDate(modalLiveUpdatedAt)],
+      ["AP", it.ap_name || rowItem?.ap_name || "—"],
       ["Pool", it.pool?.name || it.pool_name || it.pool_id],
       ["Statut", it.status || "—"],
       ["Code", it.voucher_code],
