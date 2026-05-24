@@ -158,8 +158,8 @@ function renderSummary(summary) {
   const el = document.getElementById("summary");
   const cards = [
     { label: "Actifs", value: summary.active ?? 0 },
-    { label: "En attente", value: summary.pending ?? 0 },
-    { label: "Utilisés", value: summary.used ?? 0 },
+    { label: "Connectés", value: summary.online ?? 0 },
+    { label: "Hors ligne", value: summary.offline ?? 0 },
     { label: "Expirés", value: summary.expired ?? 0 },
     { label: "Total", value: summary.total ?? 0 },
   ];
@@ -183,14 +183,17 @@ function normStatus(statusRaw) {
 }
 
 function computeSummaryFromItems(items) {
-  const summary = { total: 0, active: 0, pending: 0, used: 0, expired: 0 };
+  const summary = { total: 0, active: 0, online: 0, offline: 0, pending: 0, used: 0, expired: 0 };
   if (!Array.isArray(items)) return summary;
   summary.total = items.length;
 
   for (const it of items) {
     const s = normStatus(it?.status);
-    if (s === "active") summary.active++;
-    else if (s === "pending") summary.pending++;
+    if (s === "active") {
+      summary.active++;
+      if (it?.is_online === true || normStatus(it?.live_status) === "online") summary.online++;
+      else summary.offline++;
+    } else if (s === "pending") summary.pending++;
     else if (s === "used") summary.used++;
     else if (s === "expired") summary.expired++;
   }
@@ -239,7 +242,37 @@ function initPlanAndPoolFiltersFromItems(items) {
 function filterItemsByStatus(items, uiStatusFilter) {
   const f = normStatus(uiStatusFilter);
   if (!Array.isArray(items) || f === "all" || !f) return items || [];
+
+  if (f === "online") {
+    return (items || []).filter(it =>
+      normStatus(it?.status) === "active" &&
+      (it?.is_online === true || normStatus(it?.live_status) === "online")
+    );
+  }
+
+  if (f === "offline") {
+    return (items || []).filter(it =>
+      normStatus(it?.status) === "active" &&
+      !(it?.is_online === true || normStatus(it?.live_status) === "online")
+    );
+  }
+
   return (items || []).filter(it => normStatus(it?.status) === f);
+}
+
+function renderLiveClientLabel(it) {
+  const isActiveVoucher = normStatus(it?.status) === "active";
+  const isOnline = isActiveVoucher && (it?.is_online === true || normStatus(it?.live_status) === "online");
+  const dot = isOnline ? "🟢" : "⚫";
+  const title = isOnline ? "Connecté" : "Hors ligne";
+  const label = it?.client_name || it?.client_mac || "—";
+
+  return `
+    <span title="${esc(title)}" style="display:inline-flex; align-items:center; gap:7px; font-weight:800; white-space:nowrap;">
+      <span aria-hidden="true">${dot}</span>
+      <span>${esc(label)}</span>
+    </span>
+  `;
 }
 
 // -------------------------
@@ -294,12 +327,7 @@ function renderTable(items) {
     // ✅ AP: human name if available, else MAC, else —
     const apDisplay = it.ap_name || it.ap_mac || "—";
 
-    const clientCell = it.client_name
-      ? `<div style="display:flex; flex-direction:column; gap:2px;">
-           <div style="font-weight:800;">${esc(it.client_name)}</div>
-           <div style="font-size:12px; opacity:.75;">${esc(it.client_mac || "—")}</div>
-         </div>`
-      : `${esc(it.client_mac || "—")}`;
+    const clientCell = renderLiveClientLabel(it);
 const rowStatus = normStatus(it.status);
     const rowBonusSeconds = toNum(it.bonus_seconds, 0);
     const rowBonusBytes = Number(v(it.bonus_bytes ?? 0));
@@ -450,6 +478,8 @@ async function openDetail(id) {
     const rows = [
       ["Nom appareil", it.client_name || "—"],
       ["MAC client", it.client_mac],
+      ["Connexion", (normStatus(it.status) === "active" && (it.is_online === true || normStatus(it.live_status) === "online")) ? "🟢 Connecté" : "⚫ Hors ligne"],
+      ["Dernier signal", fmtDate(it.live_status_updated_at)],
       ["AP", it.ap_name || "—"],
       ["Pool", it.pool?.name || it.pool_name || it.pool_id],
       ["Statut", it.status || "—"],

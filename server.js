@@ -1620,6 +1620,11 @@ function safeNumber(v, def = 0) {
   return Number.isFinite(n) ? n : def;
 }
 
+function normalizeLiveMac(mac) {
+  const m = normalizeMacColon(String(mac || "")) || String(mac || "").trim();
+  return String(m || "").toUpperCase();
+}
+
 // GET /api/admin/clients?status=all|active|pending|expired&search=&limit=200&offset=0
 app.get("/api/admin/clients", requireAdmin, async (req, res) => {
   try {
@@ -1762,6 +1767,68 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         it.client_name = map?.[k] || null;
       }
     } catch (_) {}
+
+    // ------------------------------
+    // Live connection status (MikroTik/RADIUS truth)
+    // 🟢 Online only when the latest recent RADIUS accounting row is Interim-Update.
+    // ⚫ Offline otherwise. Voucher status remains separate from live status.
+    // ------------------------------
+    try {
+      const activeMacs = Array.from(
+        new Set(
+          (items || [])
+            .filter((i) => String(i?.truth_status || i?.status || "").toLowerCase() === "active")
+            .map((i) => normalizeLiveMac(i?.client_mac))
+            .filter(Boolean)
+        )
+      );
+
+      const latestByMac = {};
+      if (activeMacs.length) {
+        const cutoffIso = getUtcCutoffIso(2);
+        const { data: liveRows, error: liveErr } = await supabase
+          .from("radius_acct_sessions")
+          .select("client_mac,calling_station_id,acct_status_type,updated_at,nas_id")
+          .in("client_mac", activeMacs)
+          .gte("updated_at", cutoffIso)
+          .order("updated_at", { ascending: false })
+          .limit(1000);
+
+        if (!liveErr && Array.isArray(liveRows)) {
+          for (const row of liveRows) {
+            const mac = normalizeLiveMac(row?.client_mac || row?.calling_station_id);
+            if (!mac || latestByMac[mac]) continue;
+            latestByMac[mac] = row;
+          }
+        } else if (liveErr) {
+          console.error("ADMIN CLIENTS: live status lookup failed:", liveErr?.message || liveErr);
+        }
+      }
+
+      for (const it of items) {
+        const mac = normalizeLiveMac(it?.client_mac);
+        const row = latestByMac[mac] || null;
+        const isActiveVoucher = String(it?.truth_status || it?.status || "").toLowerCase() === "active";
+        const isOnline = !!(
+          isActiveVoucher &&
+          row &&
+          String(row?.acct_status_type || "").toLowerCase() === "interim-update"
+        );
+
+        it.is_online = isOnline;
+        it.live_status = isOnline ? "online" : "offline";
+        it.live_status_label = isOnline ? "Connecté" : "Hors ligne";
+        it.live_status_updated_at = row?.updated_at || null;
+      }
+    } catch (e) {
+      console.error("ADMIN CLIENTS: live status enrichment failed:", e?.message || e);
+      for (const it of items || []) {
+        it.is_online = false;
+        it.live_status = "offline";
+        it.live_status_label = "Hors ligne";
+        it.live_status_updated_at = null;
+      }
+    }
 
     try {
       const apMacs = Array.from(new Set(items.map(i => i.ap_mac).filter(Boolean)));
@@ -1961,11 +2028,13 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     const pending = items.filter(i => i.truth_status === "pending").length;
     const used = items.filter(i => i.truth_status === "used").length;
     const expired = items.filter(i => i.truth_status === "expired").length;
+    const online = items.filter(i => i.truth_status === "active" && i.is_online === true).length;
+    const offline = items.filter(i => i.truth_status === "active" && i.is_online !== true).length;
 
     res.json({
       items,
       total,
-      summary: { total, active, pending, used, expired }
+      summary: { total, active, online, offline, pending, used, expired }
     });
 
   } catch (e) {
