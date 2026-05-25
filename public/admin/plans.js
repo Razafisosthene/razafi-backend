@@ -267,7 +267,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       price_ar: plan.price_ar,
       duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
       data_mb: plan.data_mb ?? null,
-      max_devices: plan.max_devices ?? 1,
+      max_devices: 1,
       sort_order: plan.sort_order ?? 0,
       sales_limit: plan.sales_limit ?? null,
       auto_hide_when_limit_reached: !!plan.auto_hide_when_limit_reached,
@@ -348,7 +348,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       f_data_gb.setAttribute("required", "required");
       f_data_gb.value = "";
       if (f_mikrotik_rate_limit) f_mikrotik_rate_limit.value = "";
-      f_max_devices.value = "";
+      f_max_devices.value = "1";
       f_sort_order.value = "0";
       if (f_sales_limit) f_sales_limit.value = "";
       if (f_auto_hide_when_limit_reached) f_auto_hide_when_limit_reached.checked = false;
@@ -393,7 +393,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
 
       if (f_mikrotik_rate_limit) f_mikrotik_rate_limit.value = normalizeMikrotikRateLimitInput(plan.mikrotik_rate_limit) || "";
-      f_max_devices.value = plan.max_devices ?? 1;
+      f_max_devices.value = "1";
       f_sort_order.value = plan.sort_order ?? 0;
       if (f_sales_limit) f_sales_limit.value = plan.sales_limit ?? "";
       if (f_auto_hide_when_limit_reached) f_auto_hide_when_limit_reached.checked = !!plan.auto_hide_when_limit_reached;
@@ -711,7 +711,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         duration_hours,
         duration_minutes,
         data_mb,
-        max_devices: Number(f_max_devices.value),
+        max_devices: 1,
         sort_order: Number(f_sort_order.value || 0),
         sales_limit: (f_sales_limit && f_sales_limit.value !== "") ? Number(f_sales_limit.value) : null,
         auto_hide_when_limit_reached: !!(f_auto_hide_when_limit_reached && f_auto_hide_when_limit_reached.checked),
@@ -757,10 +757,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
       }
 
-      if (!Number.isFinite(payload.max_devices) || payload.max_devices <= 0) {
-        setFormError("Nombre d’appareils invalide.");
-        return;
-      }
 
       if (payload.sales_limit !== null && (!Number.isFinite(payload.sales_limit) || payload.sales_limit < 0)) {
         setFormError("Limite de ventes invalide.");
