@@ -153,6 +153,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   const formError = document.getElementById("formError");
   const cancelBtn = document.getElementById("cancelBtn");
   const saveBtn = document.getElementById("saveBtn");
+  const modalToggleBtn = document.getElementById("modalToggleBtn");
+  const modalDeleteBtn = document.getElementById("modalDeleteBtn");
+  const modalActionNote = document.getElementById("modalActionNote");
 
   const f_name = document.getElementById("f_name");
   const f_price_ar = document.getElementById("f_price_ar");
@@ -250,6 +253,57 @@ document.addEventListener("DOMContentLoaded", async () => {
     } else {
       f_pool_id.disabled = false;
       if (poolHint) poolHint.textContent = poolHintDefault;
+    }
+  }
+
+  function isPlanSoftDeleted(plan) {
+    return !!(plan && !plan.is_active && !plan.is_visible);
+  }
+
+  function buildPlanPayloadFromExisting(plan, overrides = {}) {
+    return {
+      system: currentSystem,
+      name: plan.name,
+      price_ar: plan.price_ar,
+      duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
+      data_mb: plan.data_mb ?? null,
+      max_devices: plan.max_devices ?? 1,
+      sort_order: plan.sort_order ?? 0,
+      sales_limit: plan.sales_limit ?? null,
+      auto_hide_when_limit_reached: !!plan.auto_hide_when_limit_reached,
+      mikrotik_rate_limit: plan.mikrotik_rate_limit ?? null,
+      pool_id: plan.pool_id ?? null,
+      is_visible: !!plan.is_visible,
+      is_active: !!plan.is_active,
+      ...overrides,
+    };
+  }
+
+  function refreshModalActionButtons(plan, mode) {
+    if (!modalToggleBtn || !modalDeleteBtn) return;
+    const isNew = mode === "new" || !plan;
+    const deleted = isPlanSoftDeleted(plan);
+
+    modalToggleBtn.style.display = isNew || deleted ? "none" : "";
+    modalDeleteBtn.style.display = isNew ? "none" : "";
+
+    if (!isNew && !deleted) {
+      modalToggleBtn.textContent = plan.is_active ? "Désactiver" : "Activer";
+      modalToggleBtn.classList.toggle("primary", !plan.is_active);
+      modalToggleBtn.classList.toggle("danger", !!plan.is_active);
+    }
+
+    if (!isNew) {
+      modalDeleteBtn.textContent = deleted ? "Restaurer" : "Supprimer";
+      modalDeleteBtn.classList.toggle("primary", deleted);
+      modalDeleteBtn.classList.toggle("danger", !deleted);
+    }
+
+    if (modalActionNote) {
+      modalActionNote.style.display = isNew ? "none" : "block";
+      modalActionNote.textContent = deleted
+        ? "Plan supprimé : vous pouvez le restaurer, puis le réactiver si nécessaire."
+        : "Astuce mobile : toutes les actions importantes sont maintenant dans cette fiche.";
     }
   }
 
@@ -352,6 +406,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
       if (poolHint) poolHint.textContent = poolHintDefault;
     }
+
+    refreshModalActionButtons(plan, mode);
   }
 
   function closeModal() {
@@ -362,6 +418,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     editingSystem = null;
     if (f_pool_id) f_pool_id.disabled = false;
     if (poolHint) poolHint.textContent = poolHintDefault;
+    if (modalToggleBtn) modalToggleBtn.style.display = "none";
+    if (modalDeleteBtn) modalDeleteBtn.style.display = "none";
+    if (modalActionNote) modalActionNote.style.display = "none";
     setFormError("");
   }
 
@@ -378,7 +437,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   async function loadPlans() {
     showError("");
-    rowsEl.innerHTML = `<tr><td class="rz-empty-state" colspan="12">Chargement…</td></tr>`;
+    rowsEl.innerHTML = `<tr><td class="rz-empty-state" colspan="11">Chargement…</td></tr>`;
 
     const params = new URLSearchParams();
     const q = qEl.value.trim();
@@ -421,7 +480,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
 
       if (!filtered.length) {
-        rowsEl.innerHTML = `<tr><td class="rz-empty-state" colspan="12">Aucun plan trouvé.</td></tr>`;
+        rowsEl.innerHTML = `<tr><td class="rz-empty-state" colspan="11">Aucun plan trouvé.</td></tr>`;
         return;
       }
 
@@ -430,24 +489,12 @@ document.addEventListener("DOMContentLoaded", async () => {
         const badgeHtml = deleted ? ' <span class="badge badge-deleted">Supprimé</span>' : "";
         const poolName = p.pool_name || p.pool?.name || "";
 
-        const actionsHtml = (
-          '<button type="button" data-edit="' + esc(p.id) + '">Modifier</button>' +
-          (deleted
-            ? ('<button type="button" data-restore="' + esc(p.id) + '">Restaurer</button>')
-            : (
-                '<button type="button" class="danger" data-delete="' + esc(p.id) + '">Supprimer</button>' +
-                '<button type="button" data-toggle="' + esc(p.id) + '">' +
-                  (p.is_active ? "Désactiver" : "Activer") +
-                '</button>'
-              )
-          )
-        );
-
         return `
-          <tr>
+          <tr class="rz-plan-row" data-plan-id="${esc(p.id)}" tabindex="0" title="Ouvrir la fiche du plan">
             <td>
               <div class="rz-plan-name">${esc(p.name)}${badgeHtml}</div>
               ${poolName ? `<div class="rz-muted-mini">Pool : ${esc(poolName)}</div>` : ""}
+              <div class="rz-plan-quick-note">Toucher pour ouvrir la fiche</div>
             </td>
             <td><strong>${formatAr(p.price_ar)}</strong></td>
             <td>${esc(formatDurationFromPlan(p))}</td>
@@ -459,12 +506,12 @@ document.addEventListener("DOMContentLoaded", async () => {
             <td>${p.auto_hide_when_limit_reached ? statusPill("Oui", "warn") : "—"}</td>
             <td>${esc(p.sales_limit ?? "—")}</td>
             <td>${esc(p.sort_order)}</td>
-            <td><div class="rz-plan-actions">${actionsHtml}</div></td>
+            <td class="rz-row-chevron">Ouvrir ›</td>
           </tr>
         `;
       }).join("");
     } catch (e) {
-      rowsEl.innerHTML = `<tr><td class="rz-empty-state" colspan="12">Impossible de charger les plans.</td></tr>`;
+      rowsEl.innerHTML = `<tr><td class="rz-empty-state" colspan="11">Impossible de charger les plans.</td></tr>`;
       showError(e.message);
     }
   }
@@ -537,96 +584,97 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (e.key === "Enter") loadPlans().catch(e => showError(e.message));
   });
 
-  rowsEl.addEventListener("click", async (e) => {
-    const btn = e.target.closest("button");
-    if (!btn) return;
-
-    const editId = btn.getAttribute("data-edit");
-    const toggleId = btn.getAttribute("data-toggle");
-    const deleteId = btn.getAttribute("data-delete");
-    const restoreId = btn.getAttribute("data-restore");
-
+  async function openPlanDetailsById(id) {
+    if (!id || window.__IS_READONLY) return;
     try {
-      if (editId) {
-        const data = await fetchJSON(`/api/admin/plans?system=${encodeURIComponent(currentSystem)}&limit=200&offset=0`);
-        const plan = (data.plans || []).find(x => x.id === editId);
-        if (!plan) throw new Error("Plan introuvable.");
-        await openModal("edit", plan);
+      // Refresh the selected plan before opening so the modal uses the latest values.
+      const params = new URLSearchParams();
+      params.set("system", currentSystem);
+      params.set("limit", "200");
+      params.set("offset", "0");
+      if (poolFilter && poolFilter.value) params.set("pool_id", poolFilter.value);
+      const data = await fetchJSON(`/api/admin/plans?${params.toString()}`);
+      const plan = (data.plans || []).find(x => String(x.id) === String(id));
+      if (!plan) {
+        const fallback = lastPlansById[id];
+        if (!fallback) throw new Error("Plan introuvable.");
+        await openModal("edit", fallback);
         return;
       }
+      lastPlansById[plan.id] = plan;
+      await openModal("edit", plan);
+    } catch (err) {
+      showError(err.message);
+    }
+  }
 
-      if (deleteId) {
-        const plan = getPlanOrThrow(deleteId);
-        const ok = window.confirm(`Supprimer le plan "${plan.name}" ?\n\nIl sera masqué du portail et de l’administration, mais conservé dans la base de données.`);
-        if (!ok) return;
+  rowsEl.addEventListener("click", async (e) => {
+    const row = e.target.closest("tr[data-plan-id]");
+    if (!row) return;
+    await openPlanDetailsById(row.getAttribute("data-plan-id"));
+  });
 
-        const payload = {
-          system: currentSystem,
-          name: plan.name,
-          price_ar: plan.price_ar,
-          duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
-          data_mb: plan.data_mb ?? null,
-          max_devices: plan.max_devices ?? 1,
-          sort_order: plan.sort_order ?? 0,
-          sales_limit: plan.sales_limit ?? null,
-          auto_hide_when_limit_reached: !!plan.auto_hide_when_limit_reached,
-          mikrotik_rate_limit: plan.mikrotik_rate_limit ?? null,
-          pool_id: plan.pool_id ?? null,
-          is_visible: false,
-          is_active: false,
-        };
+  rowsEl.addEventListener("keydown", async (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const row = e.target.closest("tr[data-plan-id]");
+    if (!row) return;
+    e.preventDefault();
+    await openPlanDetailsById(row.getAttribute("data-plan-id"));
+  });
 
-        await fetchJSON(`/api/admin/plans/${deleteId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        await reloadAll();
-        return;
-      }
-
-      if (restoreId) {
-        const plan = getPlanOrThrow(restoreId);
-        const ok = window.confirm(`Restaurer le plan "${plan.name}" ?\n\nIl sera visible dans l’administration. Par sécurité, il restera inactif jusqu’à réactivation.`);
-        if (!ok) return;
-
-        const payload = {
-          system: currentSystem,
-          name: plan.name,
-          price_ar: plan.price_ar,
-          duration_minutes: plan.duration_minutes ?? (Number(plan.duration_hours ?? 1) * 60),
-          data_mb: plan.data_mb ?? null,
-          max_devices: plan.max_devices ?? 1,
-          sort_order: plan.sort_order ?? 0,
-          sales_limit: plan.sales_limit ?? null,
-          auto_hide_when_limit_reached: !!plan.auto_hide_when_limit_reached,
-          mikrotik_rate_limit: plan.mikrotik_rate_limit ?? null,
-          pool_id: plan.pool_id ?? null,
-          is_visible: true,
-          is_active: false,
-        };
-
-        await fetchJSON(`/api/admin/plans/${restoreId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        await reloadAll();
-        return;
-      }
-
-      if (toggleId) {
-        await fetchJSON(`/api/admin/plans/${toggleId}/toggle`, {
+  if (modalToggleBtn) {
+    modalToggleBtn.addEventListener("click", async () => {
+      if (!editingId || window.__IS_READONLY) return;
+      setFormError("");
+      setBusy(modalToggleBtn, true, "Patientez…");
+      try {
+        await fetchJSON(`/api/admin/plans/${editingId}/toggle`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({}),
         });
+        closeModal();
         await reloadAll();
+      } catch (err) {
+        setFormError(err.message);
+      } finally {
+        setBusy(modalToggleBtn, false);
       }
-    } catch (err) {
-      showError(err.message);
-    }
-  });
+    });
+  }
+
+  if (modalDeleteBtn) {
+    modalDeleteBtn.addEventListener("click", async () => {
+      if (!editingId || window.__IS_READONLY) return;
+      setFormError("");
+      const plan = getPlanOrThrow(editingId);
+      const deleted = isPlanSoftDeleted(plan);
+      const message = deleted
+        ? `Restaurer le plan "${plan.name}" ?\n\nIl sera visible dans l’administration. Par sécurité, il restera inactif jusqu’à réactivation.`
+        : `Supprimer le plan "${plan.name}" ?\n\nIl sera masqué du portail et de l’administration, mais conservé dans la base de données.`;
+      const ok = window.confirm(message);
+      if (!ok) return;
+
+      setBusy(modalDeleteBtn, true, deleted ? "Restauration…" : "Suppression…");
+      try {
+        const payload = deleted
+          ? buildPlanPayloadFromExisting(plan, { is_visible: true, is_active: false })
+          : buildPlanPayloadFromExisting(plan, { is_visible: false, is_active: false });
+
+        await fetchJSON(`/api/admin/plans/${editingId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        closeModal();
+        await reloadAll();
+      } catch (err) {
+        setFormError(err.message);
+      } finally {
+        setBusy(modalDeleteBtn, false);
+      }
+    });
+  }
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
