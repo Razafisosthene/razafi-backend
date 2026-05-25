@@ -101,7 +101,7 @@ function flashPoolCard(poolId, text = "Enregistré ✅") {
 function flashCreateArea(text = "Créé ✅") {
   const card = document.querySelector(".rz-pools-create-card");
   flashElement(card);
-  const btn = document.getElementById("createPoolBtn");
+  const btn = document.getElementById("openCreatePoolModalBtn") || document.getElementById("createPoolBtn");
   if (btn) showInlineSuccess(btn, text);
 }
 
@@ -153,6 +153,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   const meEl = $id("me");
 
   const createPoolSection = $id("createPoolSection");
+  const openCreatePoolModalBtn = $id("openCreatePoolModalBtn");
+  const createPoolModalBackdrop = $id("createPoolModalBackdrop");
+  const createPoolModalClose = $id("createPoolModalClose");
+  const createPoolModalCancel = $id("createPoolModalCancel");
   const newPoolName = $id("newName", "newPoolName");
   const newPoolCap = $id("newCap", "newPoolCap");
   const newSystemEl = $id("newSystem");
@@ -234,6 +238,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   function setCreateVisibilityByRole() {
     const canManage = isSuperadmin();
     if (createPoolSection) createPoolSection.classList.toggle("is-visible", canManage);
+    if (openCreatePoolModalBtn) openCreatePoolModalBtn.style.display = canManage ? "" : "none";
     if (createPoolBtn) createPoolBtn.style.display = canManage ? "" : "none";
 
     const createFields = [
@@ -864,12 +869,37 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
+
+  function openCreatePoolModal() {
+    if (!isSuperadmin()) return;
+    createPoolModalBackdrop?.classList.add("is-open");
+    if (createPoolModalBackdrop) createPoolModalBackdrop.setAttribute("aria-hidden", "false");
+    document.body.style.overflow = "hidden";
+    setActiveSystem(activeSystem);
+    setTimeout(() => newPoolName?.focus(), 60);
+  }
+
+  function closeCreatePoolModal() {
+    createPoolModalBackdrop?.classList.remove("is-open");
+    if (createPoolModalBackdrop) createPoolModalBackdrop.setAttribute("aria-hidden", "true");
+    if (!modalBackdrop?.classList.contains("is-open")) document.body.style.overflow = "";
+  }
+
   modalClose?.addEventListener("click", closePoolModal);
   modalBackdrop?.addEventListener("click", (e) => {
     if (e.target === modalBackdrop) closePoolModal();
   });
+
+  openCreatePoolModalBtn?.addEventListener("click", openCreatePoolModal);
+  createPoolModalClose?.addEventListener("click", closeCreatePoolModal);
+  createPoolModalCancel?.addEventListener("click", closeCreatePoolModal);
+  createPoolModalBackdrop?.addEventListener("click", (e) => {
+    if (e.target === createPoolModalBackdrop) closeCreatePoolModal();
+  });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && modalBackdrop?.classList.contains("is-open")) closePoolModal();
+    if (e.key !== "Escape") return;
+    if (createPoolModalBackdrop?.classList.contains("is-open")) closeCreatePoolModal();
+    else if (modalBackdrop?.classList.contains("is-open")) closePoolModal();
   });
 
   await loadPools();
@@ -937,6 +967,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (newRadiusNasIdEl) newRadiusNasIdEl.value = "";
       if (newContactPhoneEl) newContactPhoneEl.value = "";
       showMsg(msgEl, "Créé ✅", false);
+      closeCreatePoolModal();
       await loadPools();
       flashCreateArea("Créé ✅");
     } catch (e) {
