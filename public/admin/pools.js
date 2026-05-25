@@ -99,7 +99,7 @@ function flashPoolCard(poolId, text = "Enregistré ✅") {
 }
 
 function flashCreateArea(text = "Créé ✅") {
-  const card = document.querySelector(".rz-pools-create-card");
+  const card = document.querySelector(".rz-pools-create-simple") || document.querySelector(".rz-pools-create-card");
   flashElement(card);
   const btn = document.getElementById("openCreatePoolModalBtn") || document.getElementById("createPoolBtn");
   if (btn) showInlineSuccess(btn, text);
@@ -419,6 +419,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     modalBackdrop?.classList.remove("is-open");
     if (modalBackdrop) modalBackdrop.setAttribute("aria-hidden", "true");
     document.body.style.overflow = "";
+    document.body.classList.remove("rz-modal-open");
     if (modalBody) modalBody.innerHTML = "";
     if (modalActions) modalActions.innerHTML = "";
   }
@@ -578,9 +579,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     if (modalActions) {
       modalActions.innerHTML = `
-        ${canManageAll ? `<button type="button" id="modalDeleteBtn" class="danger">Supprimer</button>` : ``}
-        <button type="button" id="modalCancelBtn">Fermer</button>
         <button type="button" id="modalSaveBtn" class="filter-btn primary">Enregistrer</button>
+        ${canManageAll ? `<button type="button" id="modalDeleteBtn" class="danger">Supprimer</button>` : ``}
       `;
     }
 
@@ -589,6 +589,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     modalBackdrop?.classList.add("is-open");
     if (modalBackdrop) modalBackdrop.setAttribute("aria-hidden", "false");
     document.body.style.overflow = "hidden";
+    document.body.classList.add("rz-modal-open");
 
     if (isSuperadmin()) {
       loadPoolApsIntoModal(pid).catch((e) => {
@@ -875,6 +876,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     createPoolModalBackdrop?.classList.add("is-open");
     if (createPoolModalBackdrop) createPoolModalBackdrop.setAttribute("aria-hidden", "false");
     document.body.style.overflow = "hidden";
+    document.body.classList.add("rz-modal-open");
     setActiveSystem(activeSystem);
     setTimeout(() => newPoolName?.focus(), 60);
   }
@@ -882,7 +884,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   function closeCreatePoolModal() {
     createPoolModalBackdrop?.classList.remove("is-open");
     if (createPoolModalBackdrop) createPoolModalBackdrop.setAttribute("aria-hidden", "true");
-    if (!modalBackdrop?.classList.contains("is-open")) document.body.style.overflow = "";
+    if (!modalBackdrop?.classList.contains("is-open")) {
+      document.body.style.overflow = "";
+      document.body.classList.remove("rz-modal-open");
+    }
   }
 
   modalClose?.addEventListener("click", closePoolModal);

@@ -102,6 +102,23 @@
     .rz-pools-form-grid button{width:auto;}
     .rz-hidden-system-toggle{display:none!important;}
 
+
+    /* Modal open: hide admin bottom navigation/drawer for true fullscreen focus */
+    body.rz-modal-open .rz-admin-bottom-nav,
+    body.rz-modal-open .rz-bottom-nav,
+    body.rz-modal-open .bottom-nav,
+    body.rz-modal-open .mobile-bottom-nav,
+    body.rz-modal-open .rz-mobile-nav,
+    body.rz-modal-open .admin-mobile-nav,
+    body.rz-modal-open .rz-tabbar,
+    body.rz-modal-open .tabbar,
+    body.rz-modal-open nav[aria-label="Mobile navigation"],
+    body.rz-modal-open nav[aria-label="Navigation mobile"]{
+      display:none!important;
+      visibility:hidden!important;
+      pointer-events:none!important;
+    }
+
     .rz-pool-modal-backdrop{
       position:fixed;
       inset:0;
@@ -294,32 +311,28 @@
       .rz-pools-form-grid{grid-template-columns:1fr;}
       .rz-pools-create-card{border-radius:26px;padding:14px;}
 
-      /*
-        Mobile modal safety:
-        the admin bottom navigation is fixed and can cover the modal actions.
-        Keep the modal above it and give the scroll area enough bottom padding.
-      */
+      /* Mobile modal: true fullscreen sheet; bottom admin nav is hidden while open */
       .rz-pool-modal-backdrop{
-        padding:10px 10px calc(104px + env(safe-area-inset-bottom,0px));
+        padding:10px 10px calc(10px + env(safe-area-inset-bottom,0px));
         align-items:flex-end;
       }
       .rz-pool-modal{
         border-radius:32px 32px 0 0;
-        max-height:calc(100dvh - 128px - env(safe-area-inset-bottom,0px));
+        max-height:calc(100dvh - 20px - env(safe-area-inset-bottom,0px));
       }
       @supports not (height:100dvh){
-        .rz-pool-modal{max-height:calc(100vh - 128px);}
+        .rz-pool-modal{max-height:calc(100vh - 20px);}
       }
       .rz-form-grid{grid-template-columns:1fr;}
       .rz-modal-body{
-        padding:14px 14px calc(250px + env(safe-area-inset-bottom,0px));
+        padding:14px 14px calc(158px + env(safe-area-inset-bottom,0px));
       }
       .rz-modal-actions{
         padding:10px 14px calc(14px + env(safe-area-inset-bottom,0px));
         flex-direction:column;
       }
       .rz-modal-actions button{width:100%!important;}
-      .rz-modal-actions .danger{margin-right:0;order:3;}
+      .rz-modal-actions .danger{margin-right:0;order:2;}
     }
   </style>
 </head>
@@ -441,7 +454,6 @@
       </div>
 
       <div class="rz-modal-actions">
-        <button type="button" id="createPoolModalCancel">Fermer</button>
         <button type="button" id="createPoolBtn" class="filter-btn primary">Créer</button>
       </div>
     </div>
