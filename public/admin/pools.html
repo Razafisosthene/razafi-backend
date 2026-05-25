@@ -293,11 +293,31 @@
       .rz-pool-name{font-size:17px;}
       .rz-pools-form-grid{grid-template-columns:1fr;}
       .rz-pools-create-card{border-radius:26px;padding:14px;}
-      .rz-pool-modal-backdrop{padding:10px;align-items:flex-end;}
-      .rz-pool-modal{border-radius:32px 32px 0 0;max-height:92vh;}
+
+      /*
+        Mobile modal safety:
+        the admin bottom navigation is fixed and can cover the modal actions.
+        Keep the modal above it and give the scroll area enough bottom padding.
+      */
+      .rz-pool-modal-backdrop{
+        padding:10px 10px calc(104px + env(safe-area-inset-bottom,0px));
+        align-items:flex-end;
+      }
+      .rz-pool-modal{
+        border-radius:32px 32px 0 0;
+        max-height:calc(100dvh - 128px - env(safe-area-inset-bottom,0px));
+      }
+      @supports not (height:100dvh){
+        .rz-pool-modal{max-height:calc(100vh - 128px);}
+      }
       .rz-form-grid{grid-template-columns:1fr;}
-      .rz-modal-body{padding:14px 14px 118px;}
-      .rz-modal-actions{padding:10px 14px 14px;flex-direction:column;}
+      .rz-modal-body{
+        padding:14px 14px calc(250px + env(safe-area-inset-bottom,0px));
+      }
+      .rz-modal-actions{
+        padding:10px 14px calc(14px + env(safe-area-inset-bottom,0px));
+        flex-direction:column;
+      }
       .rz-modal-actions button{width:100%!important;}
       .rz-modal-actions .danger{margin-right:0;order:3;}
     }
