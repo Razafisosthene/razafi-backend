@@ -13,25 +13,234 @@
     .rz-pools-title-block{min-width:0;}
     .rz-pools-me{white-space:normal;line-height:1.25;}
     .rz-pools-me strong{display:block;color:var(--rz-text,#111827);font-weight:900;margin-top:2px;word-break:break-word;}
-    .rz-pools-create-card{padding:16px;border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);}
+
+    .rz-pools-filter-card{
+      position:sticky;
+      top:10px;
+      z-index:8;
+      padding:12px;
+      border-radius:26px;
+      background:rgba(255,255,255,.78);
+      border:1px solid rgba(255,255,255,.92);
+      box-shadow:0 16px 36px rgba(15,23,42,.08);
+      backdrop-filter:blur(18px);
+      -webkit-backdrop-filter:blur(18px);
+    }
+    .rz-pools-filter-grid{display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:10px;align-items:center;}
+    .rz-pools-filter-grid select{margin-bottom:0;}
+    .rz-pools-filter-grid button{width:auto;margin-bottom:0;}
+
+    .rz-pools-list{
+      display:grid;
+      grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:14px;
+      margin-top:2px;
+    }
+    .rz-pool-card{
+      width:100%;
+      text-align:left;
+      border:1px solid rgba(255,255,255,.92);
+      background:linear-gradient(180deg,rgba(255,255,255,.92),rgba(255,255,255,.76));
+      border-radius:30px;
+      padding:18px;
+      box-shadow:0 18px 38px rgba(15,23,42,.09);
+      cursor:pointer;
+      transition:transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+      color:var(--rz-text,#111827);
+    }
+    .rz-pool-card:hover{transform:translateY(-2px);box-shadow:0 22px 46px rgba(15,23,42,.12);border-color:rgba(13,110,253,.18);}
+    .rz-pool-card:active{transform:scale(.992);}
+    .rz-pool-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+    .rz-pool-name{font-size:18px;font-weight:950;letter-spacing:-.025em;line-height:1.18;word-break:break-word;}
+    .rz-pool-chevron{flex:0 0 auto;width:30px;height:30px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;background:rgba(17,24,39,.06);font-weight:950;color:rgba(17,24,39,.55);}
+    .rz-pool-meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;}
+    .rz-pill{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      max-width:100%;
+      padding:8px 11px;
+      border-radius:999px;
+      background:rgba(17,24,39,.055);
+      color:rgba(17,24,39,.74);
+      font-size:13px;
+      font-weight:850;
+      line-height:1.15;
+    }
+    .rz-pill strong{font-weight:950;color:rgba(17,24,39,.92);}
+    .rz-pill-ok{background:rgba(25,135,84,.11);color:#137a3a;}
+    .rz-pill-muted{background:rgba(107,114,128,.10);color:#5f6672;}
+    .rz-pill-warn{background:rgba(255,193,7,.16);color:#8a5f00;}
+    .rz-pools-empty{
+      padding:18px;
+      border-radius:26px;
+      background:rgba(255,255,255,.82);
+      border:1px solid rgba(255,255,255,.92);
+      color:var(--rz-muted,#6b7280);
+      font-weight:850;
+      box-shadow:0 14px 30px rgba(15,23,42,.07);
+    }
+
+    .rz-pools-create-card{
+      display:none;
+      margin-top:8px;
+      padding:16px;
+      border-radius:28px;
+      background:rgba(255,255,255,.76);
+      border:1px solid rgba(255,255,255,.88);
+      box-shadow:0 12px 28px rgba(15,23,42,.08);
+    }
+    .rz-pools-create-card.is-visible{display:block;}
     .rz-pools-create-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px;}
     .rz-pools-create-title{font-weight:950;font-size:18px;letter-spacing:-.02em;color:var(--rz-text,#111827);}
+    .rz-pools-create-subtitle{font-size:13px;color:var(--rz-muted,#6b7280);font-weight:750;margin-top:4px;}
     .rz-pools-form-grid{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr)) auto;gap:10px;align-items:center;}
     .rz-pools-form-grid input,.rz-pools-form-grid select{margin-bottom:0;}
     .rz-pools-form-grid button{width:auto;}
     .rz-hidden-system-toggle{display:none!important;}
-    .rz-pools-filter-grid{display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:10px;align-items:center;}
-    .rz-pools-filter-grid input{margin-bottom:0;}
-    .rz-pools-filter-grid button{width:auto;}
-    .rz-pools-table-card{margin-top:14px;border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);overflow:hidden;}
-    .rz-pools-table-wrap{overflow:auto;-webkit-overflow-scrolling:touch;}
-    .rz-pools-table{width:100%;border-collapse:separate;border-spacing:0;min-width:1120px;}
-    .rz-pools-table th{position:sticky;top:0;z-index:2;text-align:left;padding:12px 10px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--rz-muted,#6b7280);background:rgba(248,250,252,.96);border-bottom:1px solid rgba(17,24,39,.08);}
-    .rz-pools-table td{padding:12px 10px;border-bottom:1px solid rgba(17,24,39,.07);vertical-align:top;font-size:14px;}
-    .rz-pools-table tbody tr:hover{background:rgba(13,110,253,.04);}
-    .rz-pools-empty{padding:16px;color:var(--rz-muted,#6b7280);font-weight:800;}
 
-    /* Pools save feedback: eye-catching but UI-only */
+    .rz-pool-modal-backdrop{
+      position:fixed;
+      inset:0;
+      z-index:1000;
+      display:none;
+      align-items:center;
+      justify-content:center;
+      padding:18px;
+      background:rgba(15,23,42,.42);
+      backdrop-filter:blur(16px);
+      -webkit-backdrop-filter:blur(16px);
+    }
+    .rz-pool-modal-backdrop.is-open{display:flex;}
+    .rz-pool-modal{
+      width:min(760px,100%);
+      max-height:min(88vh,900px);
+      overflow:hidden;
+      border-radius:34px;
+      background:rgba(255,255,255,.94);
+      border:1px solid rgba(255,255,255,.96);
+      box-shadow:0 30px 90px rgba(15,23,42,.30);
+      display:flex;
+      flex-direction:column;
+      animation:rzModalPop .18s ease-out;
+    }
+    @keyframes rzModalPop{
+      from{opacity:0;transform:translateY(10px) scale(.985);}
+      to{opacity:1;transform:translateY(0) scale(1);}
+    }
+    .rz-pool-modal-head{
+      padding:18px 18px 14px;
+      border-bottom:1px solid rgba(17,24,39,.08);
+      display:flex;
+      gap:12px;
+      align-items:flex-start;
+      justify-content:space-between;
+      background:rgba(255,255,255,.72);
+      backdrop-filter:blur(12px);
+      -webkit-backdrop-filter:blur(12px);
+    }
+    .rz-modal-title{font-size:20px;font-weight:950;letter-spacing:-.03em;line-height:1.15;color:var(--rz-text,#111827);word-break:break-word;}
+    .rz-modal-sub{margin-top:7px;display:flex;gap:8px;flex-wrap:wrap;}
+    .rz-modal-close{
+      flex:0 0 auto;
+      width:40px;
+      height:40px;
+      border-radius:999px;
+      border:0;
+      background:rgba(17,24,39,.07);
+      color:rgba(17,24,39,.78);
+      font-size:22px;
+      line-height:1;
+      font-weight:900;
+      cursor:pointer;
+    }
+    .rz-modal-body{
+      padding:16px 18px 110px;
+      overflow:auto;
+      -webkit-overflow-scrolling:touch;
+    }
+    .rz-modal-section{
+      padding:14px;
+      border-radius:26px;
+      background:rgba(248,250,252,.80);
+      border:1px solid rgba(17,24,39,.06);
+      margin-bottom:12px;
+    }
+    .rz-modal-section-title{
+      font-size:14px;
+      font-weight:950;
+      color:rgba(17,24,39,.88);
+      margin-bottom:12px;
+      letter-spacing:-.01em;
+    }
+    .rz-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+    .rz-field{display:flex;flex-direction:column;gap:6px;}
+    .rz-field label{font-size:12px;font-weight:900;color:var(--rz-muted,#6b7280);}
+    .rz-field input,.rz-field select,.rz-field textarea{
+      width:100%;
+      margin:0!important;
+      border-radius:16px!important;
+      min-height:44px;
+    }
+    .rz-field textarea{min-height:112px;resize:vertical;padding:12px;}
+    .rz-readonly-box{
+      min-height:44px;
+      display:flex;
+      align-items:center;
+      padding:10px 12px;
+      border-radius:16px;
+      background:rgba(17,24,39,.055);
+      color:rgba(17,24,39,.84);
+      font-weight:850;
+      word-break:break-word;
+    }
+    .rz-ann-preview{
+      margin-top:10px;
+      padding:12px 13px;
+      border-radius:20px;
+      background:linear-gradient(180deg,rgba(13,110,253,.10),rgba(13,110,253,.055));
+      border:1px solid rgba(13,110,253,.14);
+      color:#0f315f;
+      font-size:13px;
+      font-weight:750;
+      line-height:1.35;
+      white-space:pre-wrap;
+    }
+    .rz-ann-preview.is-empty{color:#6b7280;background:rgba(17,24,39,.045);border-color:rgba(17,24,39,.06);}
+    .rz-tech-toggle{
+      width:100%;
+      border:0;
+      border-radius:18px;
+      padding:12px 14px;
+      background:rgba(17,24,39,.07);
+      color:rgba(17,24,39,.78);
+      font-weight:950;
+      text-align:left;
+      cursor:pointer;
+      margin-bottom:10px;
+    }
+    .rz-tech-panel{display:none;}
+    .rz-tech-panel.is-open{display:block;}
+    .rz-ap-table-wrap{overflow:auto;-webkit-overflow-scrolling:touch;}
+    .rz-ap-table{width:100%;border-collapse:collapse;min-width:680px;}
+    .rz-ap-table th,.rz-ap-table td{padding:10px;text-align:left;border-top:1px solid rgba(17,24,39,.08);vertical-align:top;font-size:13px;}
+    .rz-ap-table th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--rz-muted,#6b7280);}
+    .rz-modal-actions{
+      position:absolute;
+      left:0;
+      right:0;
+      bottom:0;
+      padding:12px 18px 16px;
+      display:flex;
+      gap:10px;
+      justify-content:flex-end;
+      border-top:1px solid rgba(17,24,39,.08);
+      background:rgba(255,255,255,.88);
+      backdrop-filter:blur(16px);
+      -webkit-backdrop-filter:blur(16px);
+    }
+    .rz-modal-actions button{width:auto;margin:0;}
+    .rz-modal-actions .danger{margin-right:auto;}
     .rz-pool-success-pill{
       display:inline-flex;
       align-items:center;
@@ -62,50 +271,34 @@
       35%{background-color:rgba(25,135,84,.14);box-shadow:0 0 0 8px rgba(25,135,84,.08);}
       100%{background-color:transparent;box-shadow:none;}
     }
+
     @media (max-width:980px){
+      .rz-pools-list{grid-template-columns:1fr;}
       .rz-pools-form-grid{grid-template-columns:1fr 1fr;}
       .rz-pools-form-grid button{width:100%;}
-      .rz-pools-filter-grid{grid-template-columns:1fr;}
-      .rz-pools-filter-grid button{width:100%;}
     }
     @media (max-width:640px){
       .rz-pools-shell{gap:12px;}
       .rz-pools-header{gap:8px;}
+      .rz-pools-filter-grid{grid-template-columns:1fr;}
+      .rz-pools-filter-grid button{width:100%;}
+      .rz-pool-card{border-radius:28px;padding:16px;}
+      .rz-pool-name{font-size:17px;}
       .rz-pools-form-grid{grid-template-columns:1fr;}
-      .rz-pools-create-card{border-radius:22px;padding:14px;}
-      .rz-pools-table-card{border-radius:24px;background:transparent;border:0;box-shadow:none;overflow:visible;}
-      .rz-pools-table-wrap{overflow:visible;}
-      .rz-pools-table{display:block;width:100%;min-width:0;border-spacing:0;}
-      .rz-pools-table thead{display:none;}
-      .rz-pools-table tbody{display:flex;flex-direction:column;gap:12px;width:100%;}
-      .rz-pools-table tr[data-poolrow]{display:block;width:100%;padding:14px;border-radius:24px;background:rgba(255,255,255,.86);border:1px solid rgba(255,255,255,.92);box-shadow:0 12px 28px rgba(15,23,42,.08);overflow:hidden;}
-      .rz-pools-table tr[data-details]{width:100%;padding:0;border:0;background:transparent;box-shadow:none;}
-      .rz-pools-table tr[data-details]:not([style*="display:none"]){display:block!important;}
-      .rz-pools-table td{display:block;width:100%;padding:10px 0!important;border-bottom:1px solid rgba(17,24,39,.07);font-size:14px;}
-      .rz-pools-table tr[data-poolrow] td:last-child{border-bottom:0;padding-bottom:0!important;}
-      .rz-pools-table td::before{display:block;margin-bottom:6px;color:var(--rz-muted,#6b7280);font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;}
-      .rz-pools-table tr[data-poolrow] td:nth-child(1)::before{content:"Pool";}
-      .rz-pools-table tr[data-poolrow] td:nth-child(2)::before{content:"Capacité";}
-      .rz-pools-table tr[data-poolrow] td:nth-child(3)::before{content:"Contact";}
-      .rz-pools-table tr[data-poolrow] td:nth-child(4)::before{content:"Clients live";}
-      .rz-pools-table tr[data-poolrow] td:nth-child(5)::before{content:"Occupation";}
-      .rz-pools-table tr[data-poolrow] td:nth-child(6)::before{content:"Actions";}
-      .rz-pools-table tr[data-details] td{padding:12px!important;border-bottom:0;border-radius:22px;background:rgba(255,255,255,.78);border:1px solid rgba(255,255,255,.90);box-shadow:0 10px 24px rgba(15,23,42,.07);}
-      .rz-pools-table tr[data-details] td::before{content:"APs du pool";}
-      .rz-pools-table input,.rz-pools-table select{width:100%!important;max-width:100%!important;min-width:0!important;margin-bottom:0!important;}
-      .rz-pools-table td[style*="display:flex"]{display:flex!important;flex-direction:column;align-items:stretch;gap:8px;}
-      .rz-pools-table td[style*="display:flex"] button{width:100%!important;}
-      .rz-pools-table [style*="min-width:170px"]{min-width:0!important;width:100%!important;}
-      .pool-announcement-row{align-items:stretch;}
-      .pool-announcement-row select{width:100%;}
-      .pool-announcement-check{width:100%;}
-      .rz-pools-empty{display:block!important;border-radius:22px;background:rgba(255,255,255,.86);}
+      .rz-pools-create-card{border-radius:26px;padding:14px;}
+      .rz-pool-modal-backdrop{padding:10px;align-items:flex-end;}
+      .rz-pool-modal{border-radius:32px 32px 0 0;max-height:92vh;}
+      .rz-form-grid{grid-template-columns:1fr;}
+      .rz-modal-body{padding:14px 14px 118px;}
+      .rz-modal-actions{padding:10px 14px 14px;flex-direction:column;}
+      .rz-modal-actions button{width:100%!important;}
+      .rz-modal-actions .danger{margin-right:0;order:3;}
     }
   </style>
 </head>
 <body class="rz-admin-shell pools-page">
   <div class="login-container">
-    <div class="card rz-pools-shell" style="width:100%; max-width:1250px;">
+    <div class="card rz-pools-shell" style="width:100%; max-width:1050px;">
       <div class="topbar rz-pools-header">
         <div class="title rz-pools-title-block">
           <h1 class="rz-hero-title">Pools</h1>
@@ -125,10 +318,32 @@
 
       <div id="msg" class="error" style="display:none;"></div>
 
-      <!-- Create pool -->
-      <div class="rz-pools-create-card">
+      <!-- Filters directly after connected user -->
+      <div class="rz-pools-filter-card">
+        <div class="filters rz-pools-filter-grid">
+          <div class="rz-hidden-system-toggle" aria-hidden="true">
+            <button type="button" id="sysPortalBtn" class="filter-btn">Portal</button>
+            <button type="button" id="sysMikrotikBtn" class="filter-btn primary">MikroTik</button>
+          </div>
+          <select id="poolSelectFilter" class="filter-select" aria-label="Choisir un pool">
+            <option value="all">Tous les pools</option>
+          </select>
+          <button type="button" id="refresh" class="filter-btn primary">Actualiser</button>
+        </div>
+      </div>
+
+      <!-- Clean card list -->
+      <div id="rows" class="rz-pools-list">
+        <div class="rz-pools-empty">Chargement…</div>
+      </div>
+
+      <!-- Create pool: bottom + superadmin only -->
+      <div id="createPoolSection" class="rz-pools-create-card">
         <div class="rz-pools-create-head">
-          <div class="rz-pools-create-title">Nouveau pool</div>
+          <div>
+            <div class="rz-pools-create-title">Nouveau pool</div>
+            <div class="rz-pools-create-subtitle">Section superadmin uniquement.</div>
+          </div>
         </div>
 
         <div class="rz-pools-form-grid">
@@ -145,41 +360,21 @@
           <button type="button" id="createPoolBtn" class="filter-btn primary">Créer</button>
         </div>
       </div>
+    </div>
+  </div>
 
-      <!-- Filters -->
-      <div class="sticky-bar">
-        <div class="filters rz-pools-filter-grid">
-          <div class="rz-hidden-system-toggle" aria-hidden="true">
-            <button type="button" id="sysPortalBtn" class="filter-btn">Portal</button>
-            <button type="button" id="sysMikrotikBtn" class="filter-btn primary">MikroTik</button>
-          </div>
-          <select id="poolSelectFilter" class="filter-select" aria-label="Choisir un pool">
-            <option value="all">Tous les pools</option>
-          </select>
-          <button type="button" id="refresh" class="filter-btn primary">Actualiser</button>
+  <!-- Pool modal -->
+  <div id="poolModalBackdrop" class="rz-pool-modal-backdrop" aria-hidden="true">
+    <div class="rz-pool-modal" role="dialog" aria-modal="true" aria-labelledby="poolModalTitle">
+      <div class="rz-pool-modal-head">
+        <div>
+          <div id="poolModalTitle" class="rz-modal-title">Pool</div>
+          <div id="poolModalSub" class="rz-modal-sub"></div>
         </div>
+        <button id="poolModalClose" type="button" class="rz-modal-close" aria-label="Fermer">×</button>
       </div>
-
-      <!-- Table -->
-      <div class="rz-pools-table-card">
-        <div class="rz-pools-table-wrap">
-          <table class="rz-pools-table">
-            <thead>
-              <tr>
-                <th>Pool</th>
-                <th>Capacité</th>
-                <th>Contact</th>
-                <th>Clients live</th>
-                <th>Occupation</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody id="rows">
-              <tr><td class="rz-pools-empty" colspan="6">Chargement…</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <div id="poolModalBody" class="rz-modal-body"></div>
+      <div id="poolModalActions" class="rz-modal-actions"></div>
     </div>
   </div>
 

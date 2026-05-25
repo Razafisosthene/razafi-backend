@@ -21,7 +21,7 @@ const $id = (...ids) => {
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+    "&":"&amp;","<":"&lt;",'"':"&quot;","'":"&#39;"
   }[c]));
 }
 
@@ -64,7 +64,6 @@ function showMsg(el, text, isError = true) {
   el.style.color = isError ? "#d9534f" : "#198754";
 }
 
-
 function flashElement(el) {
   if (!el) return;
   el.classList.remove("rz-pool-flash-success");
@@ -91,14 +90,12 @@ function showInlineSuccess(anchorEl, text = "Enregistré ✅") {
   }, 2600);
 }
 
-function flashPoolRow(poolId, text = "Enregistré ✅") {
+function flashPoolCard(poolId, text = "Enregistré ✅") {
   if (!poolId) return;
-  const row = document.querySelector(`tr[data-poolrow="${CSS.escape(String(poolId))}"]`);
-  if (!row) return;
-  flashElement(row);
-  const saveBtn = row.querySelector(`button[data-save="${CSS.escape(String(poolId))}"]`)
-    || row.querySelector("button");
-  if (saveBtn) showInlineSuccess(saveBtn, text);
+  const card = document.querySelector(`[data-poolcard="${CSS.escape(String(poolId))}"]`);
+  if (!card) return;
+  flashElement(card);
+  showInlineSuccess(card.querySelector(".rz-pool-chevron") || card, text);
 }
 
 function flashCreateArea(text = "Créé ✅") {
@@ -155,6 +152,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const logoutBtn = $id("logoutBtn", "logout");
   const meEl = $id("me");
 
+  const createPoolSection = $id("createPoolSection");
   const newPoolName = $id("newName", "newPoolName");
   const newPoolCap = $id("newCap", "newPoolCap");
   const newSystemEl = $id("newSystem");
@@ -166,15 +164,30 @@ document.addEventListener("DOMContentLoaded", async () => {
   const sysPortalBtn = $id("sysPortalBtn");
   const sysMikrotikBtn = $id("sysMikrotikBtn");
 
+  const modalBackdrop = $id("poolModalBackdrop");
+  const modalClose = $id("poolModalClose");
+  const modalTitle = $id("poolModalTitle");
+  const modalSub = $id("poolModalSub");
+  const modalBody = $id("poolModalBody");
+  const modalActions = $id("poolModalActions");
+
   let pools = [];
   let allAps = [];
+  let liveStatsByPool = {};
   let currentAdmin = null;
   let ownerUsers = [];
+  let currentModalPoolId = null;
 
   let activeSystem = "portal";
 
   function isSuperadmin() {
     return !!currentAdmin?.is_superadmin;
+  }
+
+  function canEditOwnerFields() {
+    // Current backend still decides final permissions.
+    // Frontend allows owners to prepare the future UX for capacity/phone/announcement.
+    return true;
   }
 
   function ownerLabelById(ownerId) {
@@ -220,6 +233,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function setCreateVisibilityByRole() {
     const canManage = isSuperadmin();
+    if (createPoolSection) createPoolSection.classList.toggle("is-visible", canManage);
     if (createPoolBtn) createPoolBtn.style.display = canManage ? "" : "none";
 
     const createFields = [
@@ -316,9 +330,45 @@ document.addEventListener("DOMContentLoaded", async () => {
     poolSelectFilterEl.value = stillExists ? current : "all";
   }
 
+  function poolById(poolId) {
+    return (pools || []).find((p) => String(p?.id || "") === String(poolId || "")) || null;
+  }
+
+  function ownerShare(p) {
+    return Number.isFinite(Number(p?.owner_share_pct)) ? Number(p.owner_share_pct) : 0;
+  }
+
+  function announcementState(p) {
+    const enabled = p?.portal_announcement_enabled === true || String(p?.portal_announcement_enabled).toLowerCase() === "true";
+    const msg = String(p?.portal_announcement_message || "").trim();
+    return { enabled, msg, active: enabled && !!msg };
+  }
+
+  function cardHtml(p) {
+    const pid = String(p.id || "");
+    const name = p.name || "Pool";
+    const contactPhone = String(p.contact_phone ?? p.contactPhone ?? "").trim();
+    const share = ownerShare(p);
+    const ann = announcementState(p);
+
+    return `
+      <button type="button" class="rz-pool-card" data-poolcard="${esc(pid)}">
+        <div class="rz-pool-card-top">
+          <div class="rz-pool-name">${esc(name)}</div>
+          <span class="rz-pool-chevron">›</span>
+        </div>
+        <div class="rz-pool-meta">
+          <span class="rz-pill">📞 <strong>${esc(contactPhone || "Téléphone non défini")}</strong></span>
+          <span class="rz-pill">Part propriétaire : <strong>${esc(share)}%</strong></span>
+          <span class="rz-pill ${ann.active ? "rz-pill-ok" : "rz-pill-muted"}">Annonce portail : <strong>${ann.active ? "Actif" : "Inactif"}</strong></span>
+        </div>
+      </button>
+    `;
+  }
+
   async function loadPools() {
     showMsg(msgEl, "");
-    rowsEl.innerHTML = `<tr><td class="rz-pools-empty" colspan="6">Chargement…</td></tr>`;
+    rowsEl.innerHTML = `<div class="rz-pools-empty">Chargement…</div>`;
 
     const params = new URLSearchParams();
 
@@ -329,12 +379,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     params.set("offset", "0");
     params.set("system", activeSystem);
 
-    const [poolsData, liveStatsByPool] = await Promise.all([
+    const [poolsData, liveStats] = await Promise.all([
       fetchJSON(`/api/admin/pools?${params.toString()}`),
       loadPoolLiveStatsMap(),
     ]);
 
     pools = poolsData.pools || poolsData.data || poolsData || [];
+    liveStatsByPool = liveStats || {};
 
     syncPoolSelectorOptions();
 
@@ -344,478 +395,482 @@ document.addEventListener("DOMContentLoaded", async () => {
       : pools.filter((p) => String(p?.id || "") === selectedPoolId);
 
     if (!visiblePools.length) {
-      rowsEl.innerHTML = `<tr><td class="rz-pools-empty" colspan="6">Aucun pool trouvé.</td></tr>`;
+      rowsEl.innerHTML = `<div class="rz-pools-empty">Aucun pool trouvé.</div>`;
       return;
     }
 
-    rowsEl.innerHTML = visiblePools.map(p => {
-      const pid = String(p.id || "");
-      const name = p.name || "";
-      const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "" : String(p.capacity_max);
-      const contactPhone = (p.contact_phone ?? p.contactPhone ?? "");
-      const system = String(p.system || "portal").toLowerCase() === "mikrotik" ? "mikrotik" : "portal";
-      const isMikrotik = system === "mikrotik";
-      const mikrotikIp = p.mikrotik_ip || p.mikrotikIp || "";
-      const radiusNasId = p.radius_nas_id || p.radiusNasId || "";
-      const platformSharePct = Number.isFinite(Number(p.platform_share_pct)) ? Number(p.platform_share_pct) : 100;
-      const ownerSharePct = Number.isFinite(Number(p.owner_share_pct)) ? Number(p.owner_share_pct) : 0;
-      const ownerAdminUserId = String(p.owner_admin_user_id || p.ownerAdminUserId || "").trim();
-      const canManage = isSuperadmin();
-      const annEnabled = p.portal_announcement_enabled === true || String(p.portal_announcement_enabled).toLowerCase() === "true";
-      const annType = String(p.portal_announcement_type || "information").trim().toLowerCase();
-      const annPriority = String(p.portal_announcement_priority || "normal").trim().toLowerCase();
-      const annMessage = String(p.portal_announcement_message || "").trim();
+    rowsEl.innerHTML = visiblePools.map(cardHtml).join("");
 
-      const stats = liveStatsByPool[pid] || null;
-      const liveClients = stats ? toNum(stats.active_clients, 0) : 0;
-      const capacityForPct = (stats && stats.capacity_max !== null && stats.capacity_max !== undefined)
-        ? stats.capacity_max
-        : p.capacity_max;
-      const pp = pct(liveClients, capacityForPct);
+    rowsEl.querySelectorAll("[data-poolcard]").forEach((card) => {
+      card.addEventListener("click", () => {
+        const pid = card.getAttribute("data-poolcard");
+        openPoolModal(pid);
+      });
+    });
+  }
 
-      const ownerBusinessBlock = canManage
-        ? `
-          <div style="margin-top:8px;">
-            <div style="opacity:.75; font-size:12px; margin-bottom:4px;">Propriétaire business</div>
-            <select
-              data-owner-admin="${esc(pid)}"
-              style="min-width:320px; max-width:100%; padding:10px; border-radius:10px; border:1px solid #ddd;"
-            >
-              ${buildOwnerOptions(ownerAdminUserId)}
-            </select>
-          </div>
-        `
-        : `
-          <div style="margin-top:8px; font-size:13px;">
-            <span style="opacity:.75;">Propriétaire business :</span>
-            <strong>${esc(ownerLabelById(ownerAdminUserId))}</strong>
-          </div>
-        `;
+  function closePoolModal() {
+    currentModalPoolId = null;
+    modalBackdrop?.classList.remove("is-open");
+    if (modalBackdrop) modalBackdrop.setAttribute("aria-hidden", "true");
+    document.body.style.overflow = "";
+    if (modalBody) modalBody.innerHTML = "";
+    if (modalActions) modalActions.innerHTML = "";
+  }
 
-      const commissionBlock = canManage
-        ? `
-          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; align-items:flex-end;">
-            <div>
-              <div style="opacity:.75; font-size:12px; margin-bottom:4px;">Part plateforme (%)</div>
-              <input
-                data-platform-pct="${esc(pid)}"
-                type="number"
-                min="0"
-                max="100"
-                step="1"
-                value="${esc(platformSharePct)}"
-                placeholder="100"
-                style="width:160px; margin-bottom:0;"
-              />
+  function openPoolModal(poolId) {
+    const p = poolById(poolId);
+    if (!p) return;
+
+    currentModalPoolId = String(poolId);
+    const pid = String(p.id || "");
+    const name = p.name || "Pool";
+    const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "" : String(p.capacity_max);
+    const contactPhone = String(p.contact_phone ?? p.contactPhone ?? "");
+    const system = String(p.system || "portal").toLowerCase() === "mikrotik" ? "mikrotik" : "portal";
+    const isMikrotik = system === "mikrotik";
+    const mikrotikIp = p.mikrotik_ip || p.mikrotikIp || "";
+    const radiusNasId = p.radius_nas_id || p.radiusNasId || "";
+    const platformSharePct = Number.isFinite(Number(p.platform_share_pct)) ? Number(p.platform_share_pct) : 100;
+    const ownerSharePct = ownerShare(p);
+    const ownerAdminUserId = String(p.owner_admin_user_id || p.ownerAdminUserId || "").trim();
+    const canManageAll = isSuperadmin();
+    const canEditBasic = canManageAll || canEditOwnerFields();
+
+    const annEnabled = p.portal_announcement_enabled === true || String(p.portal_announcement_enabled).toLowerCase() === "true";
+    const annType = String(p.portal_announcement_type || "information").trim().toLowerCase();
+    const annPriority = String(p.portal_announcement_priority || "normal").trim().toLowerCase();
+    const annMessage = String(p.portal_announcement_message || "").trim();
+
+    const stats = liveStatsByPool[pid] || null;
+    const liveClients = stats ? toNum(stats.active_clients, 0) : 0;
+    const capacityForPct = (stats && stats.capacity_max !== null && stats.capacity_max !== undefined)
+      ? stats.capacity_max
+      : p.capacity_max;
+    const pp = pct(liveClients, capacityForPct);
+
+    if (modalTitle) modalTitle.textContent = name;
+    if (modalSub) {
+      modalSub.innerHTML = `
+        <span class="rz-pill">Part propriétaire : <strong>${esc(ownerSharePct)}%</strong></span>
+        <span class="rz-pill">${esc(liveClients)} client(s) live</span>
+        <span class="rz-pill">${pp === null ? "Occupation : —" : `Occupation : ${esc(pp)}%`}</span>
+      `;
+    }
+
+    if (modalBody) {
+      modalBody.innerHTML = `
+        <div class="rz-modal-section">
+          <div class="rz-modal-section-title">Informations du pool</div>
+          <div class="rz-form-grid">
+            <div class="rz-field">
+              <label>Nom du pool</label>
+              ${canManageAll ? `
+                <input id="modalPoolName" value="${esc(name)}" />
+              ` : `
+                <div class="rz-readonly-box">${esc(name)}</div>
+              `}
             </div>
-            <div>
-              <div style="opacity:.75; font-size:12px; margin-bottom:4px;">Part propriétaire (%)</div>
-              <input
-                data-owner-pct="${esc(pid)}"
-                type="number"
-                min="0"
-                max="100"
-                step="1"
-                value="${esc(ownerSharePct)}"
-                placeholder="0"
-                style="width:160px; margin-bottom:0;"
-              />
+            <div class="rz-field">
+              <label>Part propriétaire</label>
+              <div class="rz-readonly-box">${esc(ownerSharePct)}%</div>
+            </div>
+            <div class="rz-field">
+              <label>Capacité max</label>
+              <input id="modalPoolCap" type="number" min="0" value="${esc(cap)}" placeholder="—" ${canEditBasic ? "" : "readonly disabled"} />
+            </div>
+            <div class="rz-field">
+              <label>Téléphone contact</label>
+              <input id="modalPoolPhone" value="${esc(contactPhone)}" placeholder="Téléphone contact" ${canEditBasic ? "" : "readonly disabled"} />
             </div>
           </div>
-        `
-        : `
-          <div style="margin-top:8px; font-size:13px;">
-            <span style="opacity:.75;">Votre part :</span>
-            <strong>${esc(ownerSharePct)}%</strong>
-          </div>
-        `;
+        </div>
 
-
-      const announcementBlock = canManage
-        ? `
-          <div class="pool-announcement-box">
-            <div style="font-weight:800; color:#0d6efd; margin-bottom:8px;">Annonce portail</div>
-            <div class="pool-announcement-row">
-              <label class="pool-announcement-check">
-                <input type="checkbox" data-ann-enabled="${esc(pid)}" ${annEnabled ? "checked" : ""} />
-                Activer
-              </label>
-              <select data-ann-type="${esc(pid)}" title="Type de message">
+        <div class="rz-modal-section">
+          <div class="rz-modal-section-title">Annonce portail</div>
+          <div class="rz-form-grid">
+            <div class="rz-field">
+              <label>Statut</label>
+              <select id="modalAnnEnabled" ${canEditBasic ? "" : "disabled"}>
+                <option value="false" ${!annEnabled ? "selected" : ""}>Inactif</option>
+                <option value="true" ${annEnabled ? "selected" : ""}>Actif</option>
+              </select>
+            </div>
+            <div class="rz-field">
+              <label>Type</label>
+              <select id="modalAnnType" ${canEditBasic ? "" : "disabled"}>
                 <option value="important" ${annType === "important" ? "selected" : ""}>⚠️ Important</option>
                 <option value="promotion" ${annType === "promotion" ? "selected" : ""}>🎁 Promotion</option>
                 <option value="information" ${annType === "information" ? "selected" : ""}>ℹ️ Information</option>
                 <option value="maintenance" ${annType === "maintenance" ? "selected" : ""}>🔧 Maintenance</option>
               </select>
-              <select data-ann-priority="${esc(pid)}" title="Priorité">
+            </div>
+            <div class="rz-field">
+              <label>Priorité</label>
+              <select id="modalAnnPriority" ${canEditBasic ? "" : "disabled"}>
                 <option value="normal" ${annPriority !== "urgent" ? "selected" : ""}>Priorité normale</option>
                 <option value="urgent" ${annPriority === "urgent" ? "selected" : ""}>Urgent</option>
               </select>
             </div>
-            <textarea
-              data-ann-message="${esc(pid)}"
-              maxlength="500"
-              placeholder="Ex: MVola est momentanément indisponible. Profitez de nos offres gratuites en attendant."
-            >${esc(annMessage)}</textarea>
-            <div style="opacity:.65; font-size:12px; margin-top:6px;">Visible sur le portail seulement si le message est activé et non vide.</div>
-          </div>
-        `
-        : (annEnabled && annMessage
-          ? `<div class="pool-announcement-box"><strong>Annonce portail :</strong><br>${esc(annMessage)}</div>`
-          : "");
-
-      return `
-        <tr style="border-top:1px solid rgba(0,0,0,.06);" data-poolrow="${esc(pid)}">
-          <td style="padding:10px;">
-            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-weight:700;">
-              <input
-                data-name="${esc(pid)}"
-                value="${esc(name)}"
-                style="width:260px; max-width:100%; margin-bottom:0;"
-                ${canManage ? "" : "readonly disabled"}
-              />
-              <span style="font-size:12px; padding:2px 10px; border-radius:999px; background:${system === "mikrotik" ? "rgba(13,110,253,.12)" : "rgba(0,0,0,.06)"}; color:${system === "mikrotik" ? "#0d6efd" : "rgba(0,0,0,.75)"};">
-                ${system === "mikrotik" ? "MikroTik" : "Portal"}
-              </span>
+            <div class="rz-field">
+              <label>Visible si activé + message non vide</label>
+              <div class="rz-readonly-box">${annEnabled && annMessage ? "Actif sur le portail" : "Inactif sur le portail"}</div>
             </div>
-            ${isMikrotik ? `
-              <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
-                <input
-                  data-mtik-ip="${esc(pid)}"
-                  value="${esc(mikrotikIp)}"
-                  placeholder="IP MikroTik"
-                  style="width:220px; margin-bottom:0;"
-                  ${canManage ? "" : "readonly disabled"}
-                />
-                <input
-                  data-nas-id="${esc(pid)}"
-                  value="${esc(radiusNasId)}"
-                  placeholder="NAS ID"
-                  style="width:200px; margin-bottom:0;"
-                  ${canManage ? "" : "readonly disabled"}
-                />
+          </div>
+          <div class="rz-field" style="margin-top:10px;">
+            <label>Message</label>
+            <textarea id="modalAnnMessage" maxlength="500" placeholder="Ex: MVola est momentanément indisponible. Profitez de nos offres gratuites en attendant." ${canEditBasic ? "" : "readonly disabled"}>${esc(annMessage)}</textarea>
+          </div>
+          <div id="modalAnnPreview" class="rz-ann-preview ${annMessage ? "" : "is-empty"}">${esc(annMessage || "Aperçu : aucun message affiché sur le portail.")}</div>
+        </div>
+
+        ${canManageAll ? `
+          <div class="rz-modal-section">
+            <button type="button" id="techToggle" class="rz-tech-toggle">Technique / Superadmin ▾</button>
+            <div id="techPanel" class="rz-tech-panel">
+              <div class="rz-form-grid">
+                <div class="rz-field">
+                  <label>Propriétaire business</label>
+                  <select id="modalOwnerAdmin">
+                    ${buildOwnerOptions(ownerAdminUserId)}
+                  </select>
+                </div>
+                <div class="rz-field">
+                  <label>Pool ID</label>
+                  <div class="rz-readonly-box">${esc(pid)}</div>
+                </div>
+                <div class="rz-field">
+                  <label>Part plateforme (%)</label>
+                  <input id="modalPlatformPct" type="number" min="0" max="100" step="1" value="${esc(platformSharePct)}" />
+                </div>
+                <div class="rz-field">
+                  <label>Part propriétaire (%)</label>
+                  <input id="modalOwnerPct" type="number" min="0" max="100" step="1" value="${esc(ownerSharePct)}" />
+                </div>
+                ${isMikrotik ? `
+                  <div class="rz-field">
+                    <label>IP MikroTik</label>
+                    <input id="modalMikrotikIp" value="${esc(mikrotikIp)}" placeholder="IP MikroTik" />
+                  </div>
+                  <div class="rz-field">
+                    <label>NAS ID</label>
+                    <input id="modalNasId" value="${esc(radiusNasId)}" placeholder="NAS ID" />
+                  </div>
+                ` : ``}
               </div>
-            ` : ``}
-            ${ownerBusinessBlock}
-            ${commissionBlock}
-            ${announcementBlock}
-            <div style="opacity:.7; font-size:12px; margin-top:6px;">ID: ${esc(pid)}</div>
-          </td>
-
-          <td style="padding:10px;">
-            <input
-              data-cap="${esc(pid)}"
-              type="number"
-              min="0"
-              value="${esc(cap)}"
-              placeholder="—"
-              style="width:160px; margin-bottom:0;"
-              ${canManage ? "" : "readonly disabled"}
-            />
-          </td>
-
-          <td style="padding:10px;">
-            <input
-              data-contact-phone="${esc(pid)}"
-              value="${esc(contactPhone)}"
-              placeholder="Téléphone contact"
-              style="width:220px; max-width:100%; margin-bottom:0;"
-              ${canManage ? "" : "readonly disabled"}
-            />
-          </td>
-
-          <td style="padding:10px;">${esc(liveClients)}</td>
-          <td style="padding:10px;">${pp === null ? "—" : pctBar(pp)}</td>
-
-          <td style="padding:10px; display:flex; gap:8px; flex-wrap:wrap;">
-            ${canManage ? `<button type="button" data-save="${esc(pid)}" style="width:auto; padding:10px 14px;">Enregistrer</button>` : ``}
-            <button type="button" data-toggle="${esc(pid)}" style="width:auto; padding:10px 14px;">APs</button>
-            ${canManage ? `<button type="button" data-delete="${esc(pid)}" class="danger" style="width:auto; padding:10px 14px;">Supprimer</button>` : ``}
-          </td>
-        </tr>
-
-        <tr data-details="${esc(pid)}" style="display:none; border-top:1px solid rgba(0,0,0,.06);">
-          <td colspan="6" style="padding:10px;">
-            <div style="opacity:.75; font-size:13px;">Chargement des APs…</div>
-          </td>
-        </tr>
-      `;
-    }).join("");
-
-    rowsEl.querySelectorAll("button[data-save]").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const pid = btn.getAttribute("data-save");
-        const nameInput = rowsEl.querySelector(`input[data-name="${CSS.escape(pid)}"]`);
-        const capInput = rowsEl.querySelector(`input[data-cap="${CSS.escape(pid)}"]`);
-        const phoneInput = rowsEl.querySelector(`input[data-contact-phone="${CSS.escape(pid)}"]`);
-
-        const name = (nameInput?.value || "").trim();
-        const capStr = String(capInput?.value || "").trim();
-        const capacity_max = capStr === "" ? null : Number(capStr);
-
-        const contact_phone_raw = (phoneInput?.value || "").trim();
-        const contact_phone = contact_phone_raw === "" ? null : contact_phone_raw;
-
-        const mtikIpInput = rowsEl.querySelector(`input[data-mtik-ip="${CSS.escape(pid)}"]`);
-        const nasInput = rowsEl.querySelector(`input[data-nas-id="${CSS.escape(pid)}"]`);
-        const mikrotik_ip = (mtikIpInput?.value || "").trim();
-        const radius_nas_id = (nasInput?.value || "").trim();
-
-        const payload = { name, capacity_max, contact_phone };
-
-        const annEnabledInput = rowsEl.querySelector(`input[data-ann-enabled="${CSS.escape(pid)}"]`);
-        const annTypeInput = rowsEl.querySelector(`select[data-ann-type="${CSS.escape(pid)}"]`);
-        const annPriorityInput = rowsEl.querySelector(`select[data-ann-priority="${CSS.escape(pid)}"]`);
-        const annMessageInput = rowsEl.querySelector(`textarea[data-ann-message="${CSS.escape(pid)}"]`);
-
-        payload.portal_announcement_enabled = !!annEnabledInput?.checked;
-        payload.portal_announcement_type = (annTypeInput?.value || "information").trim();
-        payload.portal_announcement_priority = (annPriorityInput?.value || "normal").trim();
-        payload.portal_announcement_message = (annMessageInput?.value || "").trim() || null;
-
-        if (mtikIpInput || nasInput) {
-          payload.mikrotik_ip = mikrotik_ip || null;
-          payload.radius_nas_id = radius_nas_id || null;
-        }
-
-        if (isSuperadmin()) {
-          const ownerAdminSelect = rowsEl.querySelector(`select[data-owner-admin="${CSS.escape(pid)}"]`);
-          payload.owner_admin_user_id = (ownerAdminSelect?.value || "").trim() || null;
-
-          const platformInput = rowsEl.querySelector(`input[data-platform-pct="${CSS.escape(pid)}"]`);
-          const ownerInput = rowsEl.querySelector(`input[data-owner-pct="${CSS.escape(pid)}"]`);
-
-          const platform_share_pct = Number(platformInput?.value);
-          const owner_share_pct = Number(ownerInput?.value);
-
-          if (
-            !Number.isFinite(platform_share_pct) ||
-            !Number.isFinite(owner_share_pct) ||
-            platform_share_pct < 0 ||
-            platform_share_pct > 100 ||
-            owner_share_pct < 0 ||
-            owner_share_pct > 100 ||
-            (platform_share_pct + owner_share_pct) !== 100
-          ) {
-            showMsg(msgEl, "La somme des parts doit être exactement égale à 100%.", true);
-            return;
-          }
-
-          payload.platform_share_pct = Math.round(platform_share_pct);
-          payload.owner_share_pct = Math.round(owner_share_pct);
-        }
-
-        try {
-          btn.disabled = true;
-          await fetchJSON(`/api/admin/pools/${encodeURIComponent(pid)}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          });
-          await loadPools();
-          showMsg(msgEl, "Enregistré ✅", false);
-          flashPoolRow(pid, "Enregistré ✅");
-        } catch (e) {
-          showMsg(msgEl, `Échec de l'enregistrement : ${e.message}`, true);
-        } finally {
-          btn.disabled = false;
-        }
-      });
-    });
-
-    rowsEl.querySelectorAll("button[data-toggle]").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const pid = btn.getAttribute("data-toggle");
-        const detailsRow = rowsEl.querySelector(`tr[data-details="${CSS.escape(pid)}"]`);
-        if (!detailsRow) return;
-        const visible = detailsRow.style.display !== "none";
-        detailsRow.style.display = visible ? "none" : "";
-        if (!visible) await loadPoolAps(pid);
-      });
-    });
-
-    rowsEl.querySelectorAll("button[data-delete]").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const pid = btn.getAttribute("data-delete");
-        if (!pid) return;
-        if (!confirm("Supprimer ce pool ? Les APs rattachés seront détachés.")) return;
-
-        try {
-          btn.disabled = true;
-          await fetchJSON(`/api/admin/pools/${encodeURIComponent(pid)}`, { method: "DELETE" });
-          await loadPools();
-          showMsg(msgEl, "Pool supprimé ✅", false);
-        } catch (e) {
-          showMsg(msgEl, `Suppression échouée : ${e.message}`, true);
-        } finally {
-          btn.disabled = false;
-        }
-      });
-    });
-  }
-
-  async function loadPoolAps(poolId) {
-    const detailsRow = rowsEl.querySelector(`tr[data-details="${CSS.escape(poolId)}"]`);
-    if (!detailsRow) return;
-    const cell = detailsRow.querySelector("td");
-    if (!cell) return;
-
-    try {
-      await loadAllAps();
-
-      const data = await fetchJSON(`/api/admin/pools/${encodeURIComponent(poolId)}/aps`);
-      const pool = data.pool || {};
-      const aps = data.aps || [];
-
-      const poolOptions = (pools || [])
-        .filter(p => (String(p.system || "portal").toLowerCase() === activeSystem))
-        .map(p => `<option value="${esc(p.id)}">${esc(p.name || p.id)}</option>`)
-        .join("");
-
-      cell.innerHTML = `
-        <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:flex-start;">
-          <div>
-            <div style="font-weight:800; font-size:16px;">${esc(pool.name || pool.id)}</div>
-            <div style="opacity:.75; font-size:13px; margin-top:6px;">
-              Capacité pool : ${esc(pool.capacity_max ?? "—")}
             </div>
           </div>
-        </div>
 
-        <div class="table-wrap" style="margin-top:10px;">
-          <table style="width:100%; border-collapse:collapse;">
-            <thead>
-              <tr style="text-align:left; border-bottom:1px solid rgba(0,0,0,0.08);">
-                <th style="padding:10px;">AP</th>
-                <th style="padding:10px;">Statut</th>
-                <th style="padding:10px;">Connectés</th>
-                <th style="padding:10px;">Capacité AP</th>
-                <th style="padding:10px;">Occupation AP</th>
-                <th style="padding:10px;">Déplacer</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${aps.map(a => {
-                const mac = String(a.ap_mac || "");
-                const label = a.tanaza_label || mac;
-                const online = (a.tanaza_online === true) ? "En ligne" : (a.tanaza_online === false ? "Hors ligne" : "—");
-                const tanCraw = (a.tanaza_connected ?? a.tanaza_connected_clients ?? a.connectedClients ?? null);
-                const tanC = (tanCraw === null || tanCraw === undefined) ? null : Number(tanCraw);
-                const tanDisp = (tanC === null || Number.isNaN(tanC)) ? "—" : esc(tanC);
-
-                const apCap = (a.ap_capacity_max ?? a.capacity_max ?? null);
-                const apCapNum = (apCap === null || apCap === undefined || apCap === "") ? null : Number(apCap);
-                const apPct = (apCapNum && apCapNum > 0 && tanC !== null && Number.isFinite(tanC))
-                  ? Math.min(999, Math.round((tanC / apCapNum) * 100))
-                  : null;
-
-                const canManageAps = isSuperadmin();
-
-                return `
-                  <tr style="border-top:1px solid rgba(0,0,0,.06);">
-                    <td style="padding:10px;">
-                      <div style="font-weight:700;">${esc(label)}</div>
-                      <div style="opacity:.7; font-size:12px; margin-top:6px;">${esc(mac)}</div>
-                    </td>
-                    <td style="padding:10px;">${esc(online)}</td>
-                    <td style="padding:10px;">${tanDisp}</td>
-                    <td style="padding:10px;">
-                      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                        <input
-                          data-apcap="${esc(mac)}"
-                          type="number"
-                          min="0"
-                          value="${apCapNum === null || Number.isNaN(apCapNum) ? "" : esc(apCapNum)}"
-                          placeholder="—"
-                          style="width:120px; margin-bottom:0;"
-                          ${canManageAps ? "" : "readonly disabled"}
-                        />
-                        ${canManageAps ? `<button type="button" data-saveapcap="${esc(mac)}" style="width:auto; padding:10px 14px;">Enregistrer</button>` : ``}
-                      </div>
-                    </td>
-                    <td style="padding:10px;">${apPct === null ? "—" : pctBar(apPct)}</td>
-                    <td style="padding:10px;">
-                      ${canManageAps ? `
-                        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                          <select data-move="${esc(mac)}" style="min-width:220px; padding:10px; border-radius:10px; border:1px solid #ddd;">
-                            ${poolOptions}
-                          </select>
-                          <button type="button" data-movebtn="${esc(mac)}" style="width:auto; padding:10px 14px;">Déplacer</button>
-                        </div>
-                      ` : `<span style="opacity:.7;">Lecture seule</span>`}
-                    </td>
-                  </tr>
-                `;
-              }).join("")}
-            </tbody>
-          </table>
-        </div>
+          <div class="rz-modal-section">
+            <div class="rz-modal-section-title">APs du pool</div>
+            <div id="modalApsBox">
+              <div style="opacity:.75;font-size:13px;font-weight:800;">Chargement des APs…</div>
+            </div>
+          </div>
+        ` : ``}
       `;
+    }
 
-      cell.querySelectorAll("select[data-move]").forEach(sel => { sel.value = poolId; });
+    if (modalActions) {
+      modalActions.innerHTML = `
+        ${canManageAll ? `<button type="button" id="modalDeleteBtn" class="danger">Supprimer</button>` : ``}
+        <button type="button" id="modalCancelBtn">Fermer</button>
+        <button type="button" id="modalSaveBtn" class="filter-btn primary">Enregistrer</button>
+      `;
+    }
 
-      cell.querySelectorAll("button[data-movebtn]").forEach(btn => {
-        btn.addEventListener("click", async () => {
-          const mac = btn.getAttribute("data-movebtn");
-          const sel = cell.querySelector(`select[data-move="${CSS.escape(mac)}"]`);
-          const newPoolId = sel?.value || "";
-          if (!newPoolId) return;
+    bindModalEvents(pid);
 
-          try {
-            btn.disabled = true;
-            await fetchJSON(`/api/admin/aps/${encodeURIComponent(mac)}`, {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ pool_id: newPoolId }),
-            });
-            await loadPools();
-            flashPoolRow(newPoolId, "AP déplacé ✅");
-            const detailsRow2 = rowsEl.querySelector(`tr[data-details="${CSS.escape(poolId)}"]`);
-            if (detailsRow2 && detailsRow2.style.display !== "none") {
-              await loadPoolAps(poolId);
-            }
-            showMsg(msgEl, "AP déplacé ✅", false);
-          } catch (e) {
-            showMsg(msgEl, `Déplacement échoué : ${e.message}`, true);
-          } finally {
-            btn.disabled = false;
-          }
-        });
+    modalBackdrop?.classList.add("is-open");
+    if (modalBackdrop) modalBackdrop.setAttribute("aria-hidden", "false");
+    document.body.style.overflow = "hidden";
+
+    if (isSuperadmin()) {
+      loadPoolApsIntoModal(pid).catch((e) => {
+        const box = $id("modalApsBox");
+        if (box) box.innerHTML = `<div style="color:#d9534f;font-size:13px;font-weight:800;">Impossible de charger les APs : ${esc(e.message)}</div>`;
       });
-
-      cell.querySelectorAll("button[data-saveapcap]").forEach(btn => {
-        btn.addEventListener("click", async () => {
-          const mac = btn.getAttribute("data-saveapcap") || "";
-          const inp = cell.querySelector(`input[data-apcap="${CSS.escape(mac)}"]`);
-          const v = inp ? inp.value : "";
-          const cap = (v === "" ? null : Number(v));
-          if (cap !== null && (!Number.isFinite(cap) || cap < 0)) {
-            showMsg(msgEl, "Capacité AP invalide", true);
-            return;
-          }
-
-          try {
-            btn.disabled = true;
-            await fetchJSON(`/api/admin/aps/${encodeURIComponent(mac)}`, {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ pool_id: poolId, capacity_max: cap }),
-            });
-            await loadPoolAps(poolId);
-            await loadPools();
-            showMsg(msgEl, "Capacité AP enregistrée ✅", false);
-            flashPoolRow(poolId, "Capacité AP enregistrée ✅");
-          } catch (e) {
-            showMsg(msgEl, `Enregistrement capacité AP échoué : ${e.message}`, true);
-          } finally {
-            btn.disabled = false;
-          }
-        });
-      });
-
-    } catch (e) {
-      cell.innerHTML = `<div style="color:#d9534f; font-size:13px;">Impossible de charger les APs : ${esc(e.message)}</div>`;
     }
   }
+
+  function bindModalEvents(pid) {
+    const annMessage = $id("modalAnnMessage");
+    const annPreview = $id("modalAnnPreview");
+    const techToggle = $id("techToggle");
+    const techPanel = $id("techPanel");
+    const cancelBtn = $id("modalCancelBtn");
+    const saveBtn = $id("modalSaveBtn");
+    const deleteBtn = $id("modalDeleteBtn");
+
+    annMessage?.addEventListener("input", () => {
+      const msg = String(annMessage.value || "").trim();
+      if (!annPreview) return;
+      annPreview.textContent = msg || "Aperçu : aucun message affiché sur le portail.";
+      annPreview.classList.toggle("is-empty", !msg);
+    });
+
+    techToggle?.addEventListener("click", () => {
+      techPanel?.classList.toggle("is-open");
+    });
+
+    cancelBtn?.addEventListener("click", closePoolModal);
+    saveBtn?.addEventListener("click", () => saveModalPool(pid));
+    deleteBtn?.addEventListener("click", () => deletePoolFromModal(pid));
+  }
+
+  async function saveModalPool(pid) {
+    const p = poolById(pid);
+    if (!p) return;
+
+    const saveBtn = $id("modalSaveBtn");
+    const canManageAll = isSuperadmin();
+
+    const nameInput = $id("modalPoolName");
+    const capInput = $id("modalPoolCap");
+    const phoneInput = $id("modalPoolPhone");
+
+    const name = canManageAll
+      ? (nameInput?.value || "").trim()
+      : String(p.name || "").trim();
+
+    const capStr = String(capInput?.value || "").trim();
+    const capacity_max = capStr === "" ? null : Number(capStr);
+
+    if (!name) {
+      showMsg(msgEl, "Nom du pool requis", true);
+      return;
+    }
+    if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
+      showMsg(msgEl, "Capacité du pool invalide", true);
+      return;
+    }
+
+    const contact_phone_raw = (phoneInput?.value || "").trim();
+    const contact_phone = contact_phone_raw === "" ? null : contact_phone_raw;
+
+    const payload = { name, capacity_max, contact_phone };
+
+    payload.portal_announcement_enabled = String($id("modalAnnEnabled")?.value || "false") === "true";
+    payload.portal_announcement_type = ($id("modalAnnType")?.value || "information").trim();
+    payload.portal_announcement_priority = ($id("modalAnnPriority")?.value || "normal").trim();
+    payload.portal_announcement_message = ($id("modalAnnMessage")?.value || "").trim() || null;
+
+    if (canManageAll) {
+      const mtikIpInput = $id("modalMikrotikIp");
+      const nasInput = $id("modalNasId");
+      if (mtikIpInput || nasInput) {
+        payload.mikrotik_ip = (mtikIpInput?.value || "").trim() || null;
+        payload.radius_nas_id = (nasInput?.value || "").trim() || null;
+      }
+
+      payload.owner_admin_user_id = ($id("modalOwnerAdmin")?.value || "").trim() || null;
+
+      const platform_share_pct = Number($id("modalPlatformPct")?.value);
+      const owner_share_pct = Number($id("modalOwnerPct")?.value);
+
+      if (
+        !Number.isFinite(platform_share_pct) ||
+        !Number.isFinite(owner_share_pct) ||
+        platform_share_pct < 0 ||
+        platform_share_pct > 100 ||
+        owner_share_pct < 0 ||
+        owner_share_pct > 100 ||
+        (platform_share_pct + owner_share_pct) !== 100
+      ) {
+        showMsg(msgEl, "La somme des parts doit être exactement égale à 100%.", true);
+        return;
+      }
+
+      payload.platform_share_pct = Math.round(platform_share_pct);
+      payload.owner_share_pct = Math.round(owner_share_pct);
+    }
+
+    try {
+      if (saveBtn) saveBtn.disabled = true;
+      await fetchJSON(`/api/admin/pools/${encodeURIComponent(pid)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      await loadPools();
+      showMsg(msgEl, "Enregistré ✅", false);
+      flashPoolCard(pid, "Enregistré ✅");
+      closePoolModal();
+    } catch (e) {
+      showMsg(msgEl, `Échec de l'enregistrement : ${e.message}`, true);
+    } finally {
+      if (saveBtn) saveBtn.disabled = false;
+    }
+  }
+
+  async function deletePoolFromModal(pid) {
+    if (!isSuperadmin()) return;
+    if (!pid) return;
+    if (!confirm("Supprimer ce pool ? Les APs rattachés seront détachés.")) return;
+
+    const deleteBtn = $id("modalDeleteBtn");
+
+    try {
+      if (deleteBtn) deleteBtn.disabled = true;
+      await fetchJSON(`/api/admin/pools/${encodeURIComponent(pid)}`, { method: "DELETE" });
+      closePoolModal();
+      await loadPools();
+      showMsg(msgEl, "Pool supprimé ✅", false);
+    } catch (e) {
+      showMsg(msgEl, `Suppression échouée : ${e.message}`, true);
+    } finally {
+      if (deleteBtn) deleteBtn.disabled = false;
+    }
+  }
+
+  async function loadPoolApsIntoModal(poolId) {
+    if (!isSuperadmin()) return;
+
+    const box = $id("modalApsBox");
+    if (!box) return;
+
+    await loadAllAps();
+
+    const data = await fetchJSON(`/api/admin/pools/${encodeURIComponent(poolId)}/aps`);
+    const pool = data.pool || {};
+    const aps = data.aps || [];
+
+    if (!aps.length) {
+      box.innerHTML = `<div style="opacity:.75;font-size:13px;font-weight:800;">Aucun AP rattaché à ce pool.</div>`;
+      return;
+    }
+
+    const poolOptions = (pools || [])
+      .filter(p => (String(p.system || "portal").toLowerCase() === activeSystem))
+      .map(p => `<option value="${esc(p.id)}">${esc(p.name || p.id)}</option>`)
+      .join("");
+
+    box.innerHTML = `
+      <div style="font-weight:900;margin-bottom:8px;">${esc(pool.name || pool.id || "Pool")}</div>
+      <div class="rz-ap-table-wrap">
+        <table class="rz-ap-table">
+          <thead>
+            <tr>
+              <th>AP</th>
+              <th>Statut</th>
+              <th>Connectés</th>
+              <th>Capacité AP</th>
+              <th>Occupation AP</th>
+              <th>Déplacer</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${aps.map(a => {
+              const mac = String(a.ap_mac || "");
+              const label = a.tanaza_label || mac;
+              const online = (a.tanaza_online === true) ? "En ligne" : (a.tanaza_online === false ? "Hors ligne" : "—");
+              const tanCraw = (a.tanaza_connected ?? a.tanaza_connected_clients ?? a.connectedClients ?? null);
+              const tanC = (tanCraw === null || tanCraw === undefined) ? null : Number(tanCraw);
+              const tanDisp = (tanC === null || Number.isNaN(tanC)) ? "—" : esc(tanC);
+
+              const apCap = (a.ap_capacity_max ?? a.capacity_max ?? null);
+              const apCapNum = (apCap === null || apCap === undefined || apCap === "") ? null : Number(apCap);
+              const apPct = (apCapNum && apCapNum > 0 && tanC !== null && Number.isFinite(tanC))
+                ? Math.min(999, Math.round((tanC / apCapNum) * 100))
+                : null;
+
+              return `
+                <tr>
+                  <td>
+                    <div style="font-weight:900;">${esc(label)}</div>
+                    <div style="opacity:.65;font-size:12px;margin-top:4px;">${esc(mac)}</div>
+                  </td>
+                  <td>${esc(online)}</td>
+                  <td>${tanDisp}</td>
+                  <td>
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                      <input data-apcap="${esc(mac)}" type="number" min="0" value="${apCapNum === null || Number.isNaN(apCapNum) ? "" : esc(apCapNum)}" placeholder="—" style="width:110px;margin-bottom:0;" />
+                      <button type="button" data-saveapcap="${esc(mac)}" style="width:auto;padding:9px 12px;">OK</button>
+                    </div>
+                  </td>
+                  <td>${apPct === null ? "—" : pctBar(apPct)}</td>
+                  <td>
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                      <select data-move="${esc(mac)}" style="min-width:190px;padding:9px;border-radius:12px;border:1px solid #ddd;">
+                        ${poolOptions}
+                      </select>
+                      <button type="button" data-movebtn="${esc(mac)}" style="width:auto;padding:9px 12px;">Déplacer</button>
+                    </div>
+                  </td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    box.querySelectorAll("select[data-move]").forEach(sel => { sel.value = poolId; });
+
+    box.querySelectorAll("button[data-movebtn]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const mac = btn.getAttribute("data-movebtn");
+        const sel = box.querySelector(`select[data-move="${CSS.escape(mac)}"]`);
+        const newPoolId = sel?.value || "";
+        if (!newPoolId) return;
+
+        try {
+          btn.disabled = true;
+          await fetchJSON(`/api/admin/aps/${encodeURIComponent(mac)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pool_id: newPoolId }),
+          });
+          await loadPools();
+          await loadPoolApsIntoModal(poolId);
+          flashPoolCard(newPoolId, "AP déplacé ✅");
+          showMsg(msgEl, "AP déplacé ✅", false);
+        } catch (e) {
+          showMsg(msgEl, `Déplacement échoué : ${e.message}`, true);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
+
+    box.querySelectorAll("button[data-saveapcap]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const mac = btn.getAttribute("data-saveapcap") || "";
+        const inp = box.querySelector(`input[data-apcap="${CSS.escape(mac)}"]`);
+        const v = inp ? inp.value : "";
+        const cap = (v === "" ? null : Number(v));
+        if (cap !== null && (!Number.isFinite(cap) || cap < 0)) {
+          showMsg(msgEl, "Capacité AP invalide", true);
+          return;
+        }
+
+        try {
+          btn.disabled = true;
+          await fetchJSON(`/api/admin/aps/${encodeURIComponent(mac)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pool_id: poolId, capacity_max: cap }),
+          });
+          await loadPoolApsIntoModal(poolId);
+          await loadPools();
+          showMsg(msgEl, "Capacité AP enregistrée ✅", false);
+          flashPoolCard(poolId, "Capacité AP enregistrée ✅");
+        } catch (e) {
+          showMsg(msgEl, `Enregistrement capacité AP échoué : ${e.message}`, true);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
+  }
+
+  modalClose?.addEventListener("click", closePoolModal);
+  modalBackdrop?.addEventListener("click", (e) => {
+    if (e.target === modalBackdrop) closePoolModal();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && modalBackdrop?.classList.contains("is-open")) closePoolModal();
+  });
 
   await loadPools();
 
@@ -839,6 +894,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   createPoolBtn?.addEventListener("click", async () => {
+    if (!isSuperadmin()) return;
+
     const name = (newPoolName?.value || "").trim();
     const capStr = String(newPoolCap?.value || "").trim();
     const capacity_max = capStr === "" ? null : Number(capStr);
