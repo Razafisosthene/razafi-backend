@@ -64,6 +64,50 @@ function showMsg(el, text, isError = true) {
   el.style.color = isError ? "#d9534f" : "#198754";
 }
 
+
+function flashElement(el) {
+  if (!el) return;
+  el.classList.remove("rz-pool-flash-success");
+  void el.offsetWidth;
+  el.classList.add("rz-pool-flash-success");
+  setTimeout(() => el.classList.remove("rz-pool-flash-success"), 1500);
+}
+
+function showInlineSuccess(anchorEl, text = "Enregistré ✅") {
+  if (!anchorEl || !anchorEl.parentElement) return;
+  const parent = anchorEl.parentElement;
+  parent.querySelectorAll(".rz-pool-success-pill").forEach((el) => el.remove());
+
+  const pill = document.createElement("span");
+  pill.className = "rz-pool-success-pill";
+  pill.textContent = text;
+  anchorEl.insertAdjacentElement("afterend", pill);
+
+  setTimeout(() => {
+    pill.style.transition = "opacity .25s ease, transform .25s ease";
+    pill.style.opacity = "0";
+    pill.style.transform = "translateY(-3px)";
+    setTimeout(() => pill.remove(), 280);
+  }, 2600);
+}
+
+function flashPoolRow(poolId, text = "Enregistré ✅") {
+  if (!poolId) return;
+  const row = document.querySelector(`tr[data-poolrow="${CSS.escape(String(poolId))}"]`);
+  if (!row) return;
+  flashElement(row);
+  const saveBtn = row.querySelector(`button[data-save="${CSS.escape(String(poolId))}"]`)
+    || row.querySelector("button");
+  if (saveBtn) showInlineSuccess(saveBtn, text);
+}
+
+function flashCreateArea(text = "Créé ✅") {
+  const card = document.querySelector(".rz-pools-create-card");
+  flashElement(card);
+  const btn = document.getElementById("createPoolBtn");
+  if (btn) showInlineSuccess(btn, text);
+}
+
 function asArray(value) {
   if (Array.isArray(value)) return value;
   return [];
@@ -569,6 +613,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           });
           await loadPools();
           showMsg(msgEl, "Enregistré ✅", false);
+          flashPoolRow(pid, "Enregistré ✅");
         } catch (e) {
           showMsg(msgEl, `Échec de l'enregistrement : ${e.message}`, true);
         } finally {
@@ -723,6 +768,7 @@ document.addEventListener("DOMContentLoaded", async () => {
               body: JSON.stringify({ pool_id: newPoolId }),
             });
             await loadPools();
+            flashPoolRow(newPoolId, "AP déplacé ✅");
             const detailsRow2 = rowsEl.querySelector(`tr[data-details="${CSS.escape(poolId)}"]`);
             if (detailsRow2 && detailsRow2.style.display !== "none") {
               await loadPoolAps(poolId);
@@ -757,6 +803,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             await loadPoolAps(poolId);
             await loadPools();
             showMsg(msgEl, "Capacité AP enregistrée ✅", false);
+            flashPoolRow(poolId, "Capacité AP enregistrée ✅");
           } catch (e) {
             showMsg(msgEl, `Enregistrement capacité AP échoué : ${e.message}`, true);
           } finally {
@@ -834,6 +881,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (newContactPhoneEl) newContactPhoneEl.value = "";
       showMsg(msgEl, "Créé ✅", false);
       await loadPools();
+      flashCreateArea("Créé ✅");
     } catch (e) {
       showMsg(msgEl, `Création échouée : ${e.message}`, true);
     } finally {
