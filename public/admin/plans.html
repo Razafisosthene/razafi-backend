@@ -22,6 +22,12 @@
     .rz-plans-table th{position:sticky;top:0;z-index:2;text-align:left;padding:12px 10px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--rz-muted,#6b7280);background:rgba(248,250,252,.96);border-bottom:1px solid rgba(17,24,39,.08);}
     .rz-plans-table td{padding:12px 10px;border-bottom:1px solid rgba(17,24,39,.07);vertical-align:middle;font-size:14px;}
     .rz-plans-table tbody tr{transition:background .16s ease, transform .16s ease;}.rz-plans-table tbody tr.rz-plan-row{cursor:pointer;}.rz-plans-table tbody tr.rz-plan-row:hover{background:rgba(13,110,253,.055);}.rz-plans-table tbody tr.rz-plan-row:active{transform:scale(.997);}.rz-row-chevron{color:var(--rz-muted,#6b7280);font-weight:950;text-align:right;white-space:nowrap;}.rz-plan-quick-note{display:none;margin-top:4px;color:#0d6efd;font-size:12px;font-weight:900;}
+    .rz-plan-row.rz-plan-row-flash{background:rgba(25,135,84,.16)!important;box-shadow:inset 4px 0 0 rgba(25,135,84,.88),0 14px 30px rgba(25,135,84,.12);}
+    .rz-plan-save-badge{display:inline-flex;align-items:center;gap:6px;margin-top:8px;padding:5px 9px;border-radius:999px;background:rgba(25,135,84,.12);border:1px solid rgba(25,135,84,.28);color:#15803d;font-size:12px;font-weight:950;animation:rzPlanBadgePop .18s ease-out;}
+    .rz-plan-feedback-toast{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:100000;display:inline-flex;align-items:center;gap:8px;padding:11px 14px;border-radius:999px;background:rgba(240,253,244,.94);border:1px solid rgba(25,135,84,.28);color:#15803d;font-size:13px;font-weight:950;box-shadow:0 18px 45px rgba(15,23,42,.16);backdrop-filter:blur(16px);animation:rzPlanToastIn .18s ease-out;}
+    @keyframes rzPlanBadgePop{from{opacity:0;transform:translateY(4px) scale(.96);}to{opacity:1;transform:translateY(0) scale(1);}}
+    @keyframes rzPlanToastIn{from{opacity:0;transform:translateX(-50%) translateY(8px) scale(.96);}to{opacity:1;transform:translateX(-50%) translateY(0) scale(1);}}
+
     .rz-plan-name{font-weight:950;letter-spacing:-.02em;}
     .rz-muted-mini{margin-top:4px;color:var(--rz-muted,#6b7280);font-size:12px;font-weight:700;}
     .rz-status-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 9px;border-radius:999px;font-size:12px;font-weight:900;border:1px solid rgba(17,24,39,.08);background:rgba(255,255,255,.78);white-space:nowrap;}

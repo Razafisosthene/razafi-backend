@@ -116,6 +116,74 @@ function setBusy(btn, busy, busyText) {
   }
 }
 
+
+function showPlanFeedbackToast(message) {
+  const old = document.querySelector(".rz-plan-feedback-toast");
+  if (old) old.remove();
+
+  const toast = document.createElement("div");
+  toast.className = "rz-plan-feedback-toast";
+  toast.textContent = message || "Enregistré ✅";
+  document.body.appendChild(toast);
+
+  window.setTimeout(() => {
+    toast.style.opacity = "0";
+    toast.style.transform = "translateX(-50%) translateY(8px) scale(.98)";
+  }, 1800);
+  window.setTimeout(() => toast.remove(), 2300);
+}
+
+function findPlanIdBySnapshot(snapshot) {
+  if (!snapshot) return "";
+  if (snapshot.id && lastPlansById[String(snapshot.id)]) return String(snapshot.id);
+
+  const wantedName = String(snapshot.name || "").trim();
+  const wantedPool = String(snapshot.pool_id || "").trim();
+  if (!wantedName) return "";
+
+  const plans = Object.values(lastPlansById || {});
+  const match = plans.find((p) => {
+    const sameName = String(p?.name || "").trim() === wantedName;
+    const samePool = !wantedPool || String(p?.pool_id || "").trim() === wantedPool;
+    return sameName && samePool;
+  });
+
+  return match?.id ? String(match.id) : "";
+}
+
+function flashPlanRow(snapshot, message) {
+  const planId = findPlanIdBySnapshot(snapshot);
+  const row = planId ? document.querySelector(`tr[data-plan-id="${CSS.escape(planId)}"]`) : null;
+  const feedbackText = message || "Enregistré ✅";
+
+  if (!row) {
+    showPlanFeedbackToast(feedbackText);
+    return;
+  }
+
+  row.classList.add("rz-plan-row-flash");
+  row.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+
+  const firstCell = row.querySelector("td");
+  if (firstCell) {
+    const oldBadge = firstCell.querySelector(".rz-plan-save-badge");
+    if (oldBadge) oldBadge.remove();
+
+    const badge = document.createElement("div");
+    badge.className = "rz-plan-save-badge";
+    badge.textContent = feedbackText;
+    firstCell.appendChild(badge);
+
+    window.setTimeout(() => {
+      badge.style.opacity = "0";
+      badge.style.transform = "translateY(-2px)";
+    }, 1900);
+    window.setTimeout(() => badge.remove(), 2400);
+  }
+
+  window.setTimeout(() => row.classList.remove("rz-plan-row-flash"), 1600);
+}
+
 // ------------------------------------------------------------------
 // System support kept internally for future rollback/hybrid mode.
 // Current UI is intentionally MikroTik-only.
@@ -633,8 +701,10 @@ document.addEventListener("DOMContentLoaded", async () => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({}),
         });
+        const planSnapshot = { id: editingId, name: lastPlansById[editingId]?.name, pool_id: lastPlansById[editingId]?.pool_id };
         closeModal();
         await reloadAll();
+        flashPlanRow(planSnapshot, "Mis à jour ✅");
       } catch (err) {
         setFormError(err.message);
       } finally {
@@ -666,8 +736,10 @@ document.addEventListener("DOMContentLoaded", async () => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
+        const planSnapshot = { id: editingId, name: plan.name, pool_id: plan.pool_id };
         closeModal();
         await reloadAll();
+        flashPlanRow(planSnapshot, deleted ? "Restauré ✅" : "Supprimé ✅");
       } catch (err) {
         setFormError(err.message);
       } finally {
@@ -786,8 +858,16 @@ document.addEventListener("DOMContentLoaded", async () => {
         });
       }
 
+      const planSnapshot = {
+        id: editingId,
+        name: payload.name,
+        pool_id: payload.pool_id,
+      };
+      const feedbackText = editingId ? "Enregistré ✅" : "Créé ✅";
+
       closeModal();
       await reloadAll();
+      flashPlanRow(planSnapshot, feedbackText);
     } catch (err) {
       setFormError(err.message);
     } finally {
