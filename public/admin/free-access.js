@@ -26,11 +26,24 @@ function displayAdminName(me) {
   return raw.includes("@") ? raw.split("@")[0] : raw;
 }
 
+function friendlyError(code) {
+  const s = String(code || "").trim();
+  const map = {
+    active_device_must_be_disabled_first: "Désactivez d’abord cet appareil avant suppression.",
+    free_access_limit_reached: "Limite accès gratuit atteinte pour ce pool.",
+    pool_not_found: "Pool introuvable.",
+    not_found: "Appareil introuvable.",
+    superadmin_only: "Accès réservé au superadmin.",
+    readonly_forbidden: "Action non autorisée.",
+  };
+  return map[s] || s || "Erreur inconnue.";
+}
+
 function showMsg(text, isError = false) {
   const el = $id("msg");
   if (!el) return;
   const msg = String(text || "").trim();
-  el.textContent = msg;
+  el.textContent = msg ? friendlyError(msg) : "";
   el.classList.toggle("is-visible", !!msg);
   el.classList.toggle("is-error", !!msg && !!isError);
   el.style.color = "";
@@ -79,11 +92,34 @@ function statusPill(active) {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-  const meEl = $id("me"), rowsEl = $id("rows"), addForm = $id("addForm");
-  const poolIdEl = $id("poolId"), poolFilterEl = $id("poolFilter"), personNameEl = $id("personName"), roleEl = $id("role"), deviceNameEl = $id("deviceName"), macAddressEl = $id("macAddress"), qEl = $id("q"), statusFilterEl = $id("statusFilter");
-  const addBtn = $id("addBtn"), syncSelectedBtn = $id("syncSelectedBtn"), syncAllBtn = $id("syncAllBtn"), refreshBtn = $id("refreshBtn"), refreshListBtn = $id("refreshListBtn");
-  const limitBoxEl = $id("freeAccessLimitBox"), limitTextEl = $id("freeAccessLimitText"), limitPillEl = $id("freeAccessLimitPill");
-  let pools = [], items = [], usageByPool = {};
+  const meEl = $id("me");
+  const rowsEl = $id("rows");
+  const addForm = $id("addForm");
+
+  const poolIdEl = $id("poolId");
+  const poolFilterEl = $id("poolFilter");
+  const personNameEl = $id("personName");
+  const roleEl = $id("role");
+  const deviceNameEl = $id("deviceName");
+  const macAddressEl = $id("macAddress");
+  const qEl = $id("q");
+  const statusFilterEl = $id("statusFilter");
+
+  const addBtn = $id("addBtn");
+  const refreshListBtn = $id("refreshListBtn");
+  const openAddModalBtn = $id("openAddModalBtn");
+
+  const modalBackdrop = $id("freeAccessModalBackdrop");
+  const modalClose = $id("freeAccessModalClose");
+  const modalCancel = $id("freeAccessModalCancel");
+
+  const limitBoxEl = $id("freeAccessLimitBox");
+  const limitTextEl = $id("freeAccessLimitText");
+  const limitPillEl = $id("freeAccessLimitPill");
+
+  let pools = [];
+  let items = [];
+  let usageByPool = {};
 
   async function guardSession() {
     try {
@@ -102,6 +138,23 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
+  function openModal() {
+    if (!modalBackdrop) return;
+    showMsg("", false);
+    modalBackdrop.classList.add("is-open");
+    modalBackdrop.setAttribute("aria-hidden", "false");
+    document.body.classList.add("rz-free-modal-open");
+    setTimeout(() => personNameEl?.focus(), 80);
+    updateLimitBox();
+  }
+
+  function closeModal() {
+    if (!modalBackdrop) return;
+    modalBackdrop.classList.remove("is-open");
+    modalBackdrop.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("rz-free-modal-open");
+  }
+
   function poolLimitById(poolId) {
     const p = pools.find((x) => String(x.id || "") === String(poolId || ""));
     const n = Number(p?.free_access_limit);
@@ -112,8 +165,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     return items.filter((x) => String(x.pool_id || "") === String(poolId || "") && x.is_active === true).length;
   }
 
+  function selectedPoolForLimit() {
+    const modalPool = String(poolIdEl?.value || "").trim();
+    if (modalPool) return modalPool;
+
+    const filterPool = String(poolFilterEl?.value || "").trim();
+    if (filterPool && filterPool !== "all") return filterPool;
+
+    return "";
+  }
+
   function updateLimitBox() {
-    const poolId = String(poolIdEl?.value || "").trim();
+    const poolId = selectedPoolForLimit();
     if (!limitBoxEl || !limitTextEl || !limitPillEl || !poolId) {
       if (limitBoxEl) limitBoxEl.style.display = "none";
       return;
@@ -128,11 +191,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     limitBoxEl.style.display = "flex";
     limitBoxEl.classList.toggle("is-full", full);
-    if (full) {
-      limitTextEl.textContent = `${pool?.name || "Ce pool"} : aucune place restante.`;
-    } else {
-      limitTextEl.textContent = `${pool?.name || "Ce pool"} : ${remaining} place(s) restante(s).`;
-    }
+    limitTextEl.textContent = full
+      ? `${pool?.name || "Ce pool"} : aucune place restante.`
+      : `${pool?.name || "Ce pool"} : ${remaining} place(s) restante(s).`;
     limitPillEl.textContent = `${used} / ${limit} utilisé(s)`;
 
     if (addBtn) {
@@ -156,8 +217,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     const data = await fetchJSON("/api/admin/pools?limit=200&offset=0&system=mikrotik");
     pools = data.pools || data.data || [];
     const opts = pools.map((p) => `<option value="${esc(p.id)}">${esc(p.name || p.id)}${p.radius_nas_id ? ` — ${esc(p.radius_nas_id)}` : ""}</option>`).join("");
-    poolIdEl.innerHTML = opts || `<option value="">Aucun pool MikroTik</option>`;
-    poolFilterEl.innerHTML = `<option value="all">Tous les pools</option>` + opts;
+    if (poolIdEl) poolIdEl.innerHTML = opts || `<option value="">Aucun pool MikroTik</option>`;
+    if (poolFilterEl) poolFilterEl.innerHTML = `<option value="all">Tous les pools</option>` + opts;
     updateLimitBox();
   }
 
@@ -198,6 +259,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       const active = it.is_active === true;
       const poolName = it.pool?.name || poolNameById(pools, it.pool_id);
       const synced = it.last_synced_at ? new Date(it.last_synced_at).toLocaleString("fr-FR") : "—";
+      const deleteButton = active
+        ? `<button type="button" data-delete-blocked="${esc(it.id)}" class="danger rz-free-delete-disabled" title="Désactivez d’abord cet appareil avant suppression.">Supprimer</button>`
+        : `<button type="button" data-delete="${esc(it.id)}" class="danger">Supprimer</button>`;
+
       return `
         <tr data-free-row="${esc(it.id)}">
           <td data-label="Personne">
@@ -213,7 +278,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             <div class="rz-free-row-actions">
               <button type="button" data-toggle="${esc(it.id)}" data-active="${active ? "1" : "0"}" class="filter-btn">${active ? "Désactiver" : "Activer"}</button>
               <button type="button" data-syncpool="${esc(it.pool_id)}" class="filter-btn">Synchroniser</button>
-              <button type="button" data-delete="${esc(it.id)}" class="danger">Supprimer</button>
+              ${deleteButton}
             </div>
           </td>
         </tr>
@@ -232,19 +297,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!data.ok) throw new Error((data.results || []).map((r) => r.error).filter(Boolean).join(" / ") || "Échec de synchronisation.");
     const r = (data.results || [])[0] || {};
     showMsg(`Synchronisé ✅ Ajoutés : ${r.added_count ?? "?"} • Actifs : ${r.active_count ?? "?"}`, false);
-    await loadDevices();
-    await loadUsage();
-  }
-
-  async function syncAll() {
-    showMsg("Synchronisation en cours…", false);
-    const data = await fetchJSON("/api/admin/free-access-devices/sync", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({})
-    });
-    if (!data.ok) throw new Error((data.results || []).map((r) => `${r.pool_name || r.pool_id}: ${r.error}`).filter(Boolean).join(" / ") || "Échec de synchronisation.");
-    showMsg("Synchronisation terminée ✅", false);
     await loadDevices();
     await loadUsage();
   }
@@ -283,10 +335,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       deviceNameEl.value = "";
       macAddressEl.value = "";
       showMsg("Appareil ajouté ✅", false);
+      closeModal();
       await loadDevices();
       await loadUsage();
     } catch (e) {
-      showMsg(`Ajout échoué : ${e.message}`, true);
+      showMsg(`Ajout échoué : ${friendlyError(e.message)}`, true);
     } finally {
       setButtonBusy(addBtn, false);
       updateLimitBox();
@@ -296,9 +349,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   rowsEl.addEventListener("click", async (e) => {
     const toggleBtn = e.target.closest("button[data-toggle]");
     const deleteBtn = e.target.closest("button[data-delete]");
+    const deleteBlockedBtn = e.target.closest("button[data-delete-blocked]");
     const syncPoolBtn = e.target.closest("button[data-syncpool]");
 
     try {
+      if (deleteBlockedBtn) {
+        showMsg("Désactivez d’abord cet appareil avant suppression.", true);
+        return;
+      }
+
       if (toggleBtn) {
         const id = toggleBtn.getAttribute("data-toggle");
         const isActive = toggleBtn.getAttribute("data-active") === "1";
@@ -316,7 +375,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       if (deleteBtn) {
         const id = deleteBtn.getAttribute("data-delete");
-        if (!confirm("Supprimer cet accès gratuit ?")) return;
+        if (!confirm("Supprimer cet accès gratuit désactivé ?")) return;
         setButtonBusy(deleteBtn, true, "Suppression…");
         await fetchJSON(`/api/admin/free-access-devices/${encodeURIComponent(id)}`, { method: "DELETE" });
         showMsg("Accès supprimé ✅", false);
@@ -330,39 +389,26 @@ document.addEventListener("DOMContentLoaded", async () => {
         await syncPool(poolId);
       }
     } catch (err) {
-      showMsg(err.message || String(err), true);
+      showMsg(friendlyError(err.message || String(err)), true);
       await loadDevices().catch(() => {});
+      await loadUsage().catch(() => {});
     }
   });
 
-  syncSelectedBtn?.addEventListener("click", async () => {
-    try {
-      setButtonBusy(syncSelectedBtn, true, "Synchronisation…");
-      await syncPool(poolIdEl.value);
-    } catch (e) {
-      showMsg(`Synchronisation échouée : ${e.message}`, true);
-    } finally {
-      setButtonBusy(syncSelectedBtn, false);
-    }
-  });
-
-  syncAllBtn?.addEventListener("click", async () => {
-    try {
-      if (!confirm("Synchroniser tous les pools ?")) return;
-      setButtonBusy(syncAllBtn, true, "Synchronisation…");
-      await syncAll();
-    } catch (e) {
-      showMsg(`Synchronisation échouée : ${e.message}`, true);
-    } finally {
-      setButtonBusy(syncAllBtn, false);
-    }
-  });
-
-  const refreshList = () => loadDevices().then(loadUsage).catch((e) => showMsg(e.message, true));
-  refreshBtn?.addEventListener("click", refreshList);
+  const refreshList = () => loadDevices().then(loadUsage).catch((e) => showMsg(friendlyError(e.message), true));
   refreshListBtn?.addEventListener("click", refreshList);
-  poolIdEl?.addEventListener("change", updateLimitBox);
   poolFilterEl?.addEventListener("change", refreshList);
   statusFilterEl?.addEventListener("change", render);
   qEl?.addEventListener("input", render);
+  poolIdEl?.addEventListener("change", updateLimitBox);
+
+  openAddModalBtn?.addEventListener("click", openModal);
+  modalClose?.addEventListener("click", closeModal);
+  modalCancel?.addEventListener("click", closeModal);
+  modalBackdrop?.addEventListener("click", (e) => {
+    if (e.target === modalBackdrop) closeModal();
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && modalBackdrop?.classList.contains("is-open")) closeModal();
+  });
 });

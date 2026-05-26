@@ -16,20 +16,21 @@
 
     .rz-free-card{border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);padding:16px;}
     .rz-free-card-title{font-size:18px;font-weight:950;letter-spacing:-.03em;color:var(--rz-text,#111827);margin:0 0 12px;}
-    .rz-free-form-grid{display:grid;grid-template-columns:repeat(6,minmax(140px,1fr));gap:10px;align-items:end;}
-    .rz-free-form-grid .span-2{grid-column:span 2;}
-    .rz-free-field label{display:block;margin-bottom:6px;color:var(--rz-muted,#6b7280);font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;}
-    .rz-free-field input,.rz-free-field select{margin-bottom:0;}
-    .rz-free-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;}
-    .rz-free-actions button{width:auto;}
-    .rz-free-actions .primary{background:linear-gradient(135deg,#0d6efd,#2563eb);color:#fff;border-color:transparent;}
-    .rz-free-message{min-height:20px;font-size:13px;font-weight:800;margin-top:10px;}
-    .rz-free-limit-box{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:12px;padding:12px;border-radius:18px;background:rgba(13,110,253,.07);border:1px solid rgba(13,110,253,.12);}
-    .rz-free-limit-title{font-weight:950;color:var(--rz-text,#111827);}
-    .rz-free-limit-sub{margin-top:3px;color:var(--rz-muted,#6b7280);font-size:12px;font-weight:750;}
-    .rz-free-limit-pill{display:inline-flex;align-items:center;gap:6px;padding:8px 11px;border-radius:999px;background:rgba(255,255,255,.84);border:1px solid rgba(17,24,39,.08);font-size:13px;font-weight:950;color:rgba(17,24,39,.82);}
-    .rz-free-limit-box.is-full{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.18);}
-    .rz-free-limit-box.is-full .rz-free-limit-pill{color:#b91c1c;}
+
+    .rz-free-message{
+      display:none;
+      min-height:20px;
+      font-size:13px;
+      font-weight:800;
+      margin-top:0;
+      padding:10px 12px;
+      border-radius:16px;
+      background:rgba(25,135,84,.10);
+      border:1px solid rgba(25,135,84,.16);
+      color:#198754;
+    }
+    .rz-free-message.is-visible{display:block;}
+    .rz-free-message.is-error{background:rgba(239,68,68,.09);border-color:rgba(239,68,68,.18);color:#b91c1c;}
 
     .rz-free-filters{display:grid;grid-template-columns:minmax(240px,1fr) minmax(220px,.7fr) minmax(170px,.5fr) auto;gap:10px;align-items:center;}
     .rz-free-filters input,.rz-free-filters select{margin-bottom:0;}
@@ -49,33 +50,129 @@
     .rz-status-pill.off{background:rgba(239,68,68,.11);color:#b91c1c;border-color:rgba(239,68,68,.22);}
     .rz-free-row-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
     .rz-free-row-actions button{width:auto;padding:8px 11px;border-radius:12px;font-size:13px;box-shadow:none;}
+    .rz-free-delete-disabled{opacity:.48;cursor:not-allowed!important;filter:grayscale(.15);}
     .rz-empty-state{padding:22px;color:var(--rz-muted,#6b7280);font-weight:800;}
-
-    /* Step 2 UX polish only */
-    .rz-free-message{
-      display:none;
-      padding:10px 12px;
-      border-radius:16px;
-      background:rgba(25,135,84,.10);
-      border:1px solid rgba(25,135,84,.16);
-      color:#198754;
-    }
-    .rz-free-message.is-visible{display:block;}
-    .rz-free-message.is-error{background:rgba(239,68,68,.09);border-color:rgba(239,68,68,.18);color:#b91c1c;}
-    .rz-free-limit-warning{display:none;margin-top:8px;font-size:12px;font-weight:900;color:#b91c1c;}
-    .rz-free-limit-box.is-full .rz-free-limit-warning{display:block;}
-    .rz-free-limit-box.is-full .rz-free-limit-title::after{content:" • Limite atteinte";color:#b91c1c;}
     .rz-free-row-flash{animation:rzFreeFlash 1.45s ease-out;}
     @keyframes rzFreeFlash{
       0%{background:rgba(25,135,84,.22);box-shadow:inset 4px 0 0 rgba(25,135,84,.85);}
       65%{background:rgba(25,135,84,.10);box-shadow:inset 4px 0 0 rgba(25,135,84,.45);}
       100%{background:transparent;box-shadow:inset 0 0 0 rgba(25,135,84,0);}
     }
-    .rz-free-soft-danger{background:rgba(239,68,68,.08)!important;color:#b91c1c!important;border-color:rgba(239,68,68,.16)!important;}
+
+    .rz-free-bottom-add{
+      display:flex;
+      flex-direction:column;
+      gap:12px;
+      padding:16px;
+      border-radius:24px;
+      background:rgba(255,255,255,.76);
+      border:1px solid rgba(255,255,255,.88);
+      box-shadow:0 12px 28px rgba(15,23,42,.08);
+    }
+    .rz-free-bottom-add-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+    .rz-free-bottom-title{font-size:18px;font-weight:950;letter-spacing:-.03em;color:var(--rz-text,#111827);}
+    .rz-free-bottom-sub{font-size:13px;color:var(--rz-muted,#6b7280);font-weight:750;margin-top:3px;}
+    .rz-free-bottom-add button{width:auto;}
+
+    .rz-free-limit-box{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:12px;border-radius:18px;background:rgba(13,110,253,.07);border:1px solid rgba(13,110,253,.12);}
+    .rz-free-limit-title{font-weight:950;color:var(--rz-text,#111827);}
+    .rz-free-limit-sub{margin-top:3px;color:var(--rz-muted,#6b7280);font-size:12px;font-weight:750;}
+    .rz-free-limit-pill{display:inline-flex;align-items:center;gap:6px;padding:8px 11px;border-radius:999px;background:rgba(255,255,255,.84);border:1px solid rgba(17,24,39,.08);font-size:13px;font-weight:950;color:rgba(17,24,39,.82);}
+    .rz-free-limit-warning{display:none;margin-top:8px;font-size:12px;font-weight:900;color:#b91c1c;}
+    .rz-free-limit-box.is-full{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.18);}
+    .rz-free-limit-box.is-full .rz-free-limit-pill{color:#b91c1c;}
+    .rz-free-limit-box.is-full .rz-free-limit-warning{display:block;}
+    .rz-free-limit-box.is-full .rz-free-limit-title::after{content:" • Limite atteinte";color:#b91c1c;}
+
+    /* Modal open: hide admin mobile navigation and lock background scroll */
+    body.rz-free-modal-open{overflow:hidden;}
+    body.rz-free-modal-open .rz-admin-bottom-nav,
+    body.rz-free-modal-open .rz-bottom-nav,
+    body.rz-free-modal-open .bottom-nav,
+    body.rz-free-modal-open .mobile-bottom-nav,
+    body.rz-free-modal-open .rz-mobile-nav,
+    body.rz-free-modal-open .admin-mobile-nav,
+    body.rz-free-modal-open .rz-tabbar,
+    body.rz-free-modal-open .tabbar,
+    body.rz-free-modal-open nav[aria-label="Mobile navigation"],
+    body.rz-free-modal-open nav[aria-label="Navigation mobile"]{
+      display:none!important;
+      visibility:hidden!important;
+      pointer-events:none!important;
+    }
+    .rz-free-modal-backdrop{
+      position:fixed;
+      inset:0;
+      z-index:1000;
+      display:none;
+      align-items:center;
+      justify-content:center;
+      padding:18px;
+      background:rgba(15,23,42,.42);
+      backdrop-filter:blur(16px);
+      -webkit-backdrop-filter:blur(16px);
+    }
+    .rz-free-modal-backdrop.is-open{display:flex;}
+    .rz-free-modal{
+      width:min(720px,100%);
+      max-height:min(92vh,920px);
+      overflow:hidden;
+      border-radius:34px;
+      background:rgba(255,255,255,.96);
+      border:1px solid rgba(255,255,255,.96);
+      box-shadow:0 30px 90px rgba(15,23,42,.30);
+      display:flex;
+      flex-direction:column;
+      animation:rzFreeModalPop .18s ease-out;
+    }
+    @keyframes rzFreeModalPop{
+      from{opacity:0;transform:translateY(10px) scale(.985);}
+      to{opacity:1;transform:translateY(0) scale(1);}
+    }
+    .rz-free-modal-head{
+      padding:18px 18px 14px;
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:12px;
+      border-bottom:1px solid rgba(17,24,39,.07);
+    }
+    .rz-free-modal-title{font-size:22px;font-weight:950;letter-spacing:-.03em;color:var(--rz-text,#111827);}
+    .rz-free-modal-sub{margin-top:4px;color:var(--rz-muted,#6b7280);font-size:13px;font-weight:750;}
+    .rz-free-modal-close{
+      flex:0 0 auto;
+      width:42px!important;
+      height:42px;
+      border-radius:999px!important;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      padding:0!important;
+      margin:0!important;
+      font-size:22px;
+      line-height:1;
+      box-shadow:none!important;
+      background:rgba(17,24,39,.06)!important;
+      color:rgba(17,24,39,.78)!important;
+    }
+    .rz-free-modal-body{
+      overflow:auto;
+      -webkit-overflow-scrolling:touch;
+      padding:18px;
+    }
+    .rz-free-form-grid{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:12px;
+      align-items:end;
+    }
+    .rz-free-field.span-2{grid-column:1/-1;}
+    .rz-free-field label{display:block;margin-bottom:6px;color:var(--rz-muted,#6b7280);font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;}
+    .rz-free-field input,.rz-free-field select{margin-bottom:0;}
+    .rz-free-modal-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:16px;}
+    .rz-free-modal-actions button{width:auto;}
 
     @media (max-width:980px){
-      .rz-free-form-grid{grid-template-columns:1fr 1fr;}
-      .rz-free-form-grid .span-2{grid-column:1/-1;}
       .rz-free-filters{grid-template-columns:1fr 1fr;}
       .rz-free-filters .filter-search{grid-column:1/-1;}
       .rz-free-filters button{width:100%;}
@@ -116,12 +213,21 @@
       .rz-free-person,.rz-free-sub{text-align:right;}
     }
     @media (max-width:640px){
-      .rz-free-form-grid,.rz-free-filters{grid-template-columns:1fr;}
-      .rz-free-form-grid .span-2{grid-column:auto;}
-      .rz-free-actions button{width:100%;}
-      .rz-free-card,.rz-free-table-card{border-radius:20px;}
+      .rz-free-filters{grid-template-columns:1fr;}
+      .rz-free-card,.rz-free-table-card,.rz-free-bottom-add{border-radius:20px;}
       .rz-free-table th,.rz-free-table td{padding:10px 9px;}
       .rz-free-row-actions button{flex:1 1 auto;}
+      .rz-free-bottom-add button{width:100%;}
+      .rz-free-modal-backdrop{padding:0;align-items:stretch;}
+      .rz-free-modal{
+        width:100%;
+        height:100%;
+        max-height:none;
+        border-radius:0;
+      }
+      .rz-free-form-grid{grid-template-columns:1fr;}
+      .rz-free-field.span-2{grid-column:auto;}
+      .rz-free-modal-actions button{width:100%;}
     }
   </style>
 </head>
@@ -144,8 +250,74 @@
         </div>
       </div>
 
-      <section class="rz-free-card">
-        <h2 class="rz-free-card-title">Ajouter un appareil</h2>
+      <div class="sticky-bar">
+        <div class="filters rz-free-filters">
+          <input id="q" class="filter-search" placeholder="Rechercher : nom / MAC / appareil…" />
+          <select id="poolFilter" class="filter-select"><option value="all">Tous les pools</option></select>
+          <select id="statusFilter" class="filter-select">
+            <option value="all">Tous les statuts</option>
+            <option value="active">Actifs seulement</option>
+            <option value="disabled">Désactivés seulement</option>
+          </select>
+          <button id="refreshListBtn" type="button" class="filter-btn primary">Actualiser</button>
+        </div>
+      </div>
+
+      <div id="msg" class="subtitle rz-free-message"></div>
+
+      <section class="rz-free-table-card">
+        <div class="rz-free-table-wrap">
+          <table class="rz-free-table">
+            <thead>
+              <tr>
+                <th>Personne</th>
+                <th>Appareil</th>
+                <th>MAC</th>
+                <th>Pool</th>
+                <th>Statut</th>
+                <th>Sync</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="rows">
+              <tr><td colspan="7" class="rz-empty-state">Chargement…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="rz-free-bottom-add">
+        <div class="rz-free-bottom-add-head">
+          <div>
+            <div class="rz-free-bottom-title">Ajouter un appareil</div>
+            <div class="rz-free-bottom-sub">Ajoutez un appareil autorisé dans un pool MikroTik.</div>
+          </div>
+          <button id="openAddModalBtn" type="button" class="filter-btn primary">+ Ajouter un appareil</button>
+        </div>
+
+        <div id="freeAccessLimitBox" class="rz-free-limit-box" style="display:none;">
+          <div>
+            <div class="rz-free-limit-title">Limite accès gratuit</div>
+            <div id="freeAccessLimitText" class="rz-free-limit-sub">Sélectionnez un pool.</div>
+            <div id="freeAccessLimitWarning" class="rz-free-limit-warning">Limite atteinte : désactivez ou supprimez un appareil avant d’en ajouter un autre.</div>
+          </div>
+          <span id="freeAccessLimitPill" class="rz-free-limit-pill">—</span>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div id="freeAccessModalBackdrop" class="rz-free-modal-backdrop" aria-hidden="true">
+    <div class="rz-free-modal" role="dialog" aria-modal="true" aria-labelledby="freeAccessModalTitle">
+      <div class="rz-free-modal-head">
+        <div>
+          <div id="freeAccessModalTitle" class="rz-free-modal-title">Ajouter un appareil</div>
+          <div class="rz-free-modal-sub">Renseignez l’appareil à autoriser gratuitement.</div>
+        </div>
+        <button id="freeAccessModalClose" type="button" class="rz-free-modal-close" aria-label="Fermer">×</button>
+      </div>
+
+      <div class="rz-free-modal-body">
         <form id="addForm">
           <div class="rz-free-form-grid">
             <div class="rz-free-field span-2">
@@ -174,59 +346,16 @@
               <input id="macAddress" placeholder="AA:BB:CC:DD:EE:FF" required />
             </div>
           </div>
-          <div class="rz-free-actions">
+
+          <div class="rz-free-modal-actions">
+            <button id="freeAccessModalCancel" type="button" class="filter-btn">Annuler</button>
             <button id="addBtn" type="submit" class="filter-btn primary">+ Ajouter</button>
-            <button id="syncSelectedBtn" type="button" class="filter-btn">Synchroniser le pool</button>
-            <button id="syncAllBtn" type="button" class="filter-btn rz-free-soft-danger" title="Action globale superadmin">Synchroniser tous</button>
-            <button id="refreshBtn" type="button" class="filter-btn primary">Actualiser</button>
           </div>
         </form>
-        <div id="freeAccessLimitBox" class="rz-free-limit-box" style="display:none;">
-          <div>
-            <div class="rz-free-limit-title">Limite accès gratuit</div>
-            <div id="freeAccessLimitText" class="rz-free-limit-sub">Sélectionnez un pool.</div>
-            <div id="freeAccessLimitWarning" class="rz-free-limit-warning">Limite atteinte : désactivez ou supprimez un appareil avant d’en ajouter un autre.</div>
-          </div>
-          <span id="freeAccessLimitPill" class="rz-free-limit-pill">—</span>
-        </div>
-        <div id="msg" class="subtitle rz-free-message"></div>
-      </section>
-
-      <div class="sticky-bar">
-        <div class="filters rz-free-filters">
-          <input id="q" class="filter-search" placeholder="Rechercher : nom / MAC / appareil…" />
-          <select id="poolFilter" class="filter-select"><option value="all">Tous les pools</option></select>
-          <select id="statusFilter" class="filter-select">
-            <option value="all">Tous les statuts</option>
-            <option value="active">Actifs seulement</option>
-            <option value="disabled">Désactivés seulement</option>
-          </select>
-          <button id="refreshListBtn" type="button" class="filter-btn primary">Actualiser</button>
-        </div>
       </div>
-
-      <section class="rz-free-table-card">
-        <div class="rz-free-table-wrap">
-          <table class="rz-free-table">
-            <thead>
-              <tr>
-                <th>Personne</th>
-                <th>Appareil</th>
-                <th>MAC</th>
-                <th>Pool</th>
-                <th>Statut</th>
-                <th>Sync</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody id="rows">
-              <tr><td colspan="7" class="rz-empty-state">Chargement…</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
     </div>
   </div>
+
   <script src="/admin/nav.js"></script>
   <script src="./free-access.js"></script>
 </body>

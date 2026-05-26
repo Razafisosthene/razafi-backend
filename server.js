@@ -2684,12 +2684,21 @@ app.delete("/api/admin/free-access-devices/:id", requireAdmin, requireSuperadmin
 
     const { data: existing, error: getErr } = await supabase
       .from("free_access_devices")
-      .select("id,pool_id")
+      .select("id,pool_id,is_active")
       .eq("id", id)
       .maybeSingle();
 
     if (getErr) return res.status(500).json({ error: getErr.message });
     if (!existing) return res.status(404).json({ error: "not_found" });
+
+    // Safety rule: an active MAC cannot be deleted directly.
+    // Disable it first, then delete. This prevents accidental removal of currently allowed access.
+    if (existing.is_active === true) {
+      return res.status(409).json({
+        error: "active_device_must_be_disabled_first",
+        message: "Désactivez d’abord cet appareil avant suppression.",
+      });
+    }
 
     const { error } = await supabase
       .from("free_access_devices")
