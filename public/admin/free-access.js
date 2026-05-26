@@ -29,8 +29,34 @@ function displayAdminName(me) {
 function showMsg(text, isError = false) {
   const el = $id("msg");
   if (!el) return;
-  el.textContent = text || "";
-  el.style.color = isError ? "#d9534f" : "#198754";
+  const msg = String(text || "").trim();
+  el.textContent = msg;
+  el.classList.toggle("is-visible", !!msg);
+  el.classList.toggle("is-error", !!msg && !!isError);
+  el.style.color = "";
+}
+
+function flashRowById(id) {
+  if (!id || !window.CSS || !CSS.escape) return;
+  const row = document.querySelector(`[data-free-row="${CSS.escape(String(id))}"]`);
+  if (!row) return;
+  row.classList.remove("rz-free-row-flash");
+  void row.offsetWidth;
+  row.classList.add("rz-free-row-flash");
+  setTimeout(() => row.classList.remove("rz-free-row-flash"), 1500);
+}
+
+function setButtonBusy(btn, busy, text) {
+  if (!btn) return;
+  if (busy) {
+    btn.dataset.originalText = btn.textContent || "";
+    btn.disabled = true;
+    if (text) btn.textContent = text;
+  } else {
+    btn.disabled = false;
+    if (btn.dataset.originalText) btn.textContent = btn.dataset.originalText;
+    delete btn.dataset.originalText;
+  }
 }
 
 function roleLabel(role) {
@@ -102,7 +128,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     limitBoxEl.style.display = "flex";
     limitBoxEl.classList.toggle("is-full", full);
-    limitTextEl.textContent = `${pool?.name || "Ce pool"} : ${remaining} place(s) restante(s).`;
+    if (full) {
+      limitTextEl.textContent = `${pool?.name || "Ce pool"} : aucune place restante.`;
+    } else {
+      limitTextEl.textContent = `${pool?.name || "Ce pool"} : ${remaining} place(s) restante(s).`;
+    }
     limitPillEl.textContent = `${used} / ${limit} utilisé(s)`;
 
     if (addBtn) {
@@ -169,17 +199,17 @@ document.addEventListener("DOMContentLoaded", async () => {
       const poolName = it.pool?.name || poolNameById(pools, it.pool_id);
       const synced = it.last_synced_at ? new Date(it.last_synced_at).toLocaleString("fr-FR") : "—";
       return `
-        <tr>
-          <td>
+        <tr data-free-row="${esc(it.id)}">
+          <td data-label="Personne">
             <div class="rz-free-person">${esc(it.person_name)}</div>
             <div class="rz-free-sub">${esc(roleLabel(it.role))}</div>
           </td>
-          <td>${esc(it.device_name)}</td>
-          <td class="rz-mono">${esc(it.mac_address)}</td>
-          <td>${esc(poolName)}</td>
-          <td>${statusPill(active)}</td>
-          <td class="rz-free-sub">${esc(synced)}</td>
-          <td>
+          <td data-label="Appareil">${esc(it.device_name)}</td>
+          <td data-label="MAC" class="rz-mono">${esc(it.mac_address)}</td>
+          <td data-label="Pool">${esc(poolName)}</td>
+          <td data-label="Statut">${statusPill(active)}</td>
+          <td data-label="Sync" class="rz-free-sub">${esc(synced)}</td>
+          <td data-label="Actions">
             <div class="rz-free-row-actions">
               <button type="button" data-toggle="${esc(it.id)}" data-active="${active ? "1" : "0"}" class="filter-btn">${active ? "Désactiver" : "Activer"}</button>
               <button type="button" data-syncpool="${esc(it.pool_id)}" class="filter-btn">Synchroniser</button>
@@ -203,6 +233,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const r = (data.results || [])[0] || {};
     showMsg(`Synchronisé ✅ Ajoutés : ${r.added_count ?? "?"} • Actifs : ${r.active_count ?? "?"}`, false);
     await loadDevices();
+    await loadUsage();
   }
 
   async function syncAll() {
@@ -215,6 +246,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!data.ok) throw new Error((data.results || []).map((r) => `${r.pool_name || r.pool_id}: ${r.error}`).filter(Boolean).join(" / ") || "Échec de synchronisation.");
     showMsg("Synchronisation terminée ✅", false);
     await loadDevices();
+    await loadUsage();
   }
 
   if (!(await guardSession())) return;
@@ -240,7 +272,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!mac_address) return showMsg("MAC invalide. Format attendu : AA:BB:CC:DD:EE:FF", true);
 
     try {
-      addBtn.disabled = true;
+      setButtonBusy(addBtn, true, "Ajout…");
       showMsg("Ajout en cours…", false);
       await fetchJSON("/api/admin/free-access-devices", {
         method: "POST",
@@ -256,7 +288,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     } catch (e) {
       showMsg(`Ajout échoué : ${e.message}`, true);
     } finally {
-      addBtn.disabled = false;
+      setButtonBusy(addBtn, false);
+      updateLimitBox();
     }
   });
 
@@ -269,7 +302,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (toggleBtn) {
         const id = toggleBtn.getAttribute("data-toggle");
         const isActive = toggleBtn.getAttribute("data-active") === "1";
-        toggleBtn.disabled = true;
+        setButtonBusy(toggleBtn, true, isActive ? "Désactivation…" : "Activation…");
         await fetchJSON(`/api/admin/free-access-devices/${encodeURIComponent(id)}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -278,12 +311,13 @@ document.addEventListener("DOMContentLoaded", async () => {
         showMsg(isActive ? "Accès désactivé ✅" : "Accès activé ✅", false);
         await loadDevices();
         await loadUsage();
+        flashRowById(id);
       }
 
       if (deleteBtn) {
         const id = deleteBtn.getAttribute("data-delete");
         if (!confirm("Supprimer cet accès gratuit ?")) return;
-        deleteBtn.disabled = true;
+        setButtonBusy(deleteBtn, true, "Suppression…");
         await fetchJSON(`/api/admin/free-access-devices/${encodeURIComponent(id)}`, { method: "DELETE" });
         showMsg("Accès supprimé ✅", false);
         await loadDevices();
@@ -292,7 +326,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       if (syncPoolBtn) {
         const poolId = syncPoolBtn.getAttribute("data-syncpool");
-        syncPoolBtn.disabled = true;
+        setButtonBusy(syncPoolBtn, true, "Sync…");
         await syncPool(poolId);
       }
     } catch (err) {
@@ -302,13 +336,26 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   syncSelectedBtn?.addEventListener("click", async () => {
-    try { await syncPool(poolIdEl.value); }
-    catch (e) { showMsg(`Synchronisation échouée : ${e.message}`, true); }
+    try {
+      setButtonBusy(syncSelectedBtn, true, "Synchronisation…");
+      await syncPool(poolIdEl.value);
+    } catch (e) {
+      showMsg(`Synchronisation échouée : ${e.message}`, true);
+    } finally {
+      setButtonBusy(syncSelectedBtn, false);
+    }
   });
 
   syncAllBtn?.addEventListener("click", async () => {
-    try { await syncAll(); }
-    catch (e) { showMsg(`Synchronisation échouée : ${e.message}`, true); }
+    try {
+      if (!confirm("Synchroniser tous les pools ?")) return;
+      setButtonBusy(syncAllBtn, true, "Synchronisation…");
+      await syncAll();
+    } catch (e) {
+      showMsg(`Synchronisation échouée : ${e.message}`, true);
+    } finally {
+      setButtonBusy(syncAllBtn, false);
+    }
   });
 
   const refreshList = () => loadDevices().then(loadUsage).catch((e) => showMsg(e.message, true));
