@@ -10961,10 +10961,21 @@ const { error: vsErr } = await supabase
     plan_name_db: planRowFromDb?.name || null,
   });
 
+  // MVola can reject descriptions containing plan display text / speed values
+  // such as "5M/5M" with a misleading validation error (formatError / Missing field).
+  // Keep the MVola-facing text short, stable, and free of plan speed/name details.
+  // The full plan name is still kept in DB/audit fields for admin history.
+  const mvolaDescriptionText = `Achat WiFi RAZAFI ${amount} Ar`;
+
+  console.info("📦 MVOLA descriptionText", {
+    requestRef,
+    descriptionText: mvolaDescriptionText,
+  });
+
   const payload = {
     amount: String(amount),
     currency: "Ar",
-    descriptionText: `Achat WiFi ${plan}`,
+    descriptionText: mvolaDescriptionText,
     requestingOrganisationTransactionReference: requestRef,
     requestDate: new Date().toISOString(),
     debitParty: [{ key: "msisdn", value: phone }],
