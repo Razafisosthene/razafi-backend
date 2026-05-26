@@ -24,6 +24,12 @@
     .rz-free-actions button{width:auto;}
     .rz-free-actions .primary{background:linear-gradient(135deg,#0d6efd,#2563eb);color:#fff;border-color:transparent;}
     .rz-free-message{min-height:20px;font-size:13px;font-weight:800;margin-top:10px;}
+    .rz-free-limit-box{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:12px;padding:12px;border-radius:18px;background:rgba(13,110,253,.07);border:1px solid rgba(13,110,253,.12);}
+    .rz-free-limit-title{font-weight:950;color:var(--rz-text,#111827);}
+    .rz-free-limit-sub{margin-top:3px;color:var(--rz-muted,#6b7280);font-size:12px;font-weight:750;}
+    .rz-free-limit-pill{display:inline-flex;align-items:center;gap:6px;padding:8px 11px;border-radius:999px;background:rgba(255,255,255,.84);border:1px solid rgba(17,24,39,.08);font-size:13px;font-weight:950;color:rgba(17,24,39,.82);}
+    .rz-free-limit-box.is-full{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.18);}
+    .rz-free-limit-box.is-full .rz-free-limit-pill{color:#b91c1c;}
 
     .rz-free-filters{display:grid;grid-template-columns:minmax(240px,1fr) minmax(220px,.7fr) minmax(170px,.5fr) auto;gap:10px;align-items:center;}
     .rz-free-filters input,.rz-free-filters select{margin-bottom:0;}
@@ -118,6 +124,13 @@
             <button id="refreshBtn" type="button" class="filter-btn primary">Actualiser</button>
           </div>
         </form>
+        <div id="freeAccessLimitBox" class="rz-free-limit-box" style="display:none;">
+          <div>
+            <div class="rz-free-limit-title">Limite accès gratuit</div>
+            <div id="freeAccessLimitText" class="rz-free-limit-sub">Sélectionnez un pool.</div>
+          </div>
+          <span id="freeAccessLimitPill" class="rz-free-limit-pill">—</span>
+        </div>
         <div id="msg" class="subtitle rz-free-message"></div>
       </section>
 

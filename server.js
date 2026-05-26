@@ -2107,6 +2107,53 @@ function sanitizeFreeAccessText(v, max = 80) {
     .slice(0, max);
 }
 
+
+function normalizeFreeAccessLimit(value, fallback = 5) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  // 0 means no free-access device allowed for this pool.
+  // Negative values are intentionally not allowed in V1.
+  return Math.max(0, Math.round(n));
+}
+
+async function getFreeAccessUsageForPool(poolId) {
+  const cleanPoolId = String(poolId || "").trim();
+  if (!cleanPoolId || !supabase) {
+    return { pool_id: cleanPoolId, used: 0, limit: 5, remaining: 5, limit_reached: false };
+  }
+
+  const { data: pool, error: poolErr } = await supabase
+    .from("internet_pools")
+    .select("id,free_access_limit")
+    .eq("id", cleanPoolId)
+    .maybeSingle();
+
+  if (poolErr) throw poolErr;
+  if (!pool) {
+    const err = new Error("pool_not_found");
+    err.status = 404;
+    throw err;
+  }
+
+  const limit = normalizeFreeAccessLimit(pool.free_access_limit, 5);
+  const { count, error: countErr } = await supabase
+    .from("free_access_devices")
+    .select("id", { count: "exact", head: true })
+    .eq("pool_id", cleanPoolId)
+    .eq("is_active", true);
+
+  if (countErr) throw countErr;
+
+  const used = Number(count || 0);
+  return {
+    pool_id: cleanPoolId,
+    used,
+    limit,
+    remaining: Math.max(0, limit - used),
+    limit_reached: used >= limit,
+  };
+}
+
 // ------------------------------
 // RouterOS API minimal client
 // ------------------------------
@@ -2387,7 +2434,7 @@ app.get("/api/admin/free-access-devices", requireAdmin, requireSuperadmin, async
         last_synced_at,
         created_at,
         updated_at,
-        pool:internet_pools ( id, name, radius_nas_id )
+        pool:internet_pools ( id, name, radius_nas_id, free_access_limit )
       `)
       .order("created_at", { ascending: false });
 
@@ -2400,6 +2447,61 @@ app.get("/api/admin/free-access-devices", requireAdmin, requireSuperadmin, async
   } catch (e) {
     console.error("FREE ACCESS LIST ERROR", e);
     return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// GET /api/admin/free-access-devices/usage
+app.get("/api/admin/free-access-devices/usage", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const pool_id = String(req.query.pool_id || "").trim();
+    if (pool_id) {
+      const usage = await getFreeAccessUsageForPool(pool_id);
+      return res.json({ ok: true, usage });
+    }
+
+    const { data: pools, error: poolsErr } = await supabase
+      .from("internet_pools")
+      .select("id,name,free_access_limit")
+      .eq("system", "mikrotik")
+      .order("id", { ascending: true });
+
+    if (poolsErr) return res.status(500).json({ error: poolsErr.message });
+
+    const { data: rows, error: rowsErr } = await supabase
+      .from("free_access_devices")
+      .select("pool_id")
+      .eq("is_active", true);
+
+    if (rowsErr) return res.status(500).json({ error: rowsErr.message });
+
+    const counts = {};
+    for (const row of rows || []) {
+      const pid = String(row?.pool_id || "").trim();
+      if (pid) counts[pid] = (counts[pid] || 0) + 1;
+    }
+
+    const usage_by_pool = {};
+    for (const p of pools || []) {
+      const pid = String(p?.id || "").trim();
+      const limit = normalizeFreeAccessLimit(p?.free_access_limit, 5);
+      const used = Number(counts[pid] || 0);
+      usage_by_pool[pid] = {
+        pool_id: pid,
+        pool_name: p?.name || null,
+        used,
+        limit,
+        remaining: Math.max(0, limit - used),
+        limit_reached: used >= limit,
+      };
+    }
+
+    return res.json({ ok: true, usage_by_pool });
+  } catch (e) {
+    console.error("FREE ACCESS USAGE ERROR", e);
+    const status = e?.status || 500;
+    return res.status(status).json({ error: String(e?.message || e) });
   }
 });
 
@@ -2422,12 +2524,21 @@ app.post("/api/admin/free-access-devices", requireAdmin, requireSuperadmin, asyn
 
     const { data: pool, error: pErr } = await supabase
       .from("internet_pools")
-      .select("id")
+      .select("id,free_access_limit")
       .eq("id", pool_id)
       .maybeSingle();
 
     if (pErr) return res.status(500).json({ error: pErr.message });
     if (!pool) return res.status(404).json({ error: "pool_not_found" });
+
+    const usage = await getFreeAccessUsageForPool(pool_id);
+    if (is_active && usage.limit_reached) {
+      return res.status(409).json({
+        error: "free_access_limit_reached",
+        message: `Limite accès gratuit atteinte pour ce pool (${usage.used}/${usage.limit}).`,
+        usage,
+      });
+    }
 
     const payload = {
       pool_id,
@@ -2453,7 +2564,7 @@ app.post("/api/admin/free-access-devices", requireAdmin, requireSuperadmin, asyn
         last_synced_at,
         created_at,
         updated_at,
-        pool:internet_pools ( id, name, radius_nas_id )
+        pool:internet_pools ( id, name, radius_nas_id, free_access_limit )
       `)
       .single();
 
@@ -2507,6 +2618,28 @@ app.patch("/api/admin/free-access-devices/:id", requireAdmin, requireSuperadmin,
       patch.is_active = !!req.body.is_active;
     }
 
+    if (patch.is_active === true) {
+      const { data: existingForLimit, error: existingErr } = await supabase
+        .from("free_access_devices")
+        .select("id,pool_id,is_active")
+        .eq("id", id)
+        .maybeSingle();
+
+      if (existingErr) return res.status(500).json({ error: existingErr.message });
+      if (!existingForLimit) return res.status(404).json({ error: "not_found" });
+
+      if (existingForLimit.is_active !== true) {
+        const usage = await getFreeAccessUsageForPool(existingForLimit.pool_id);
+        if (usage.limit_reached) {
+          return res.status(409).json({
+            error: "free_access_limit_reached",
+            message: `Limite accès gratuit atteinte pour ce pool (${usage.used}/${usage.limit}).`,
+            usage,
+          });
+        }
+      }
+    }
+
     const { data, error } = await supabase
       .from("free_access_devices")
       .update(patch)
@@ -2522,7 +2655,7 @@ app.patch("/api/admin/free-access-devices/:id", requireAdmin, requireSuperadmin,
         last_synced_at,
         created_at,
         updated_at,
-        pool:internet_pools ( id, name, radius_nas_id )
+        pool:internet_pools ( id, name, radius_nas_id, free_access_limit )
       `)
       .maybeSingle();
 
@@ -5732,7 +5865,7 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
 
     let query = supabase
       .from("internet_pools")
-      .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`, { count: "exact" });
+      .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`, { count: "exact" });
 
     // 🔐 Pool scoping (server-side)
     if (!req.admin?.is_superadmin) {
@@ -5771,6 +5904,11 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
     const capRaw = req.body?.capacity_max;
     const capacity_max = capRaw === undefined || capRaw === null || capRaw === "" ? null : Number(capRaw);
 
+    const freeLimitRaw = req.body?.free_access_limit;
+    const free_access_limit = freeLimitRaw === undefined || freeLimitRaw === null || freeLimitRaw === ""
+      ? 5
+      : Number(freeLimitRaw);
+
     const systemRaw = req.body?.system;
     const system = systemRaw === undefined || systemRaw === null || String(systemRaw).trim() === "" ? "portal" : String(systemRaw).trim();
     if (!["portal", "mikrotik"].includes(system)) return res.status(400).json({ error: "system_invalid" });
@@ -5793,6 +5931,9 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
     if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
       return res.status(400).json({ error: "capacity_max_invalid" });
     }
+    if (!Number.isFinite(free_access_limit) || free_access_limit < 0) {
+      return res.status(400).json({ error: "free_access_limit_invalid" });
+    }
 
     const payload = {
       name,
@@ -5804,11 +5945,12 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
     if (mikrotik_ip) payload.mikrotik_ip = mikrotik_ip;
     if (radius_nas_id) payload.radius_nas_id = radius_nas_id;
     if (capacity_max !== null) payload.capacity_max = Math.round(capacity_max);
+    payload.free_access_limit = Math.round(free_access_limit);
 
     const { data, error } = await supabase
       .from("internet_pools")
       .insert(payload)
-      .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
+      .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -5838,6 +5980,18 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
         return res.status(400).json({ error: "capacity_max_invalid" });
       }
       updates.capacity_max = capacity_max === null ? null : Math.round(capacity_max);
+    }
+
+    if (req.body?.free_access_limit !== undefined) {
+      if (!req.admin?.is_superadmin) {
+        return res.status(403).json({ error: "superadmin_only" });
+      }
+      const limRaw = req.body.free_access_limit;
+      const free_access_limit = limRaw === null || limRaw === "" ? 0 : Number(limRaw);
+      if (!Number.isFinite(free_access_limit) || free_access_limit < 0) {
+        return res.status(400).json({ error: "free_access_limit_invalid" });
+      }
+      updates.free_access_limit = Math.round(free_access_limit);
     }
 
     // Optional: contact phone (nullable, can be cleared)
@@ -5957,7 +6111,7 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       .from("internet_pools")
       .update(updates)
       .eq("id", id)
-      .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
+      .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });

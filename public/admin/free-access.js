@@ -56,7 +56,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const meEl = $id("me"), rowsEl = $id("rows"), addForm = $id("addForm");
   const poolIdEl = $id("poolId"), poolFilterEl = $id("poolFilter"), personNameEl = $id("personName"), roleEl = $id("role"), deviceNameEl = $id("deviceName"), macAddressEl = $id("macAddress"), qEl = $id("q"), statusFilterEl = $id("statusFilter");
   const addBtn = $id("addBtn"), syncSelectedBtn = $id("syncSelectedBtn"), syncAllBtn = $id("syncAllBtn"), refreshBtn = $id("refreshBtn"), refreshListBtn = $id("refreshListBtn");
-  let pools = [], items = [];
+  const limitBoxEl = $id("freeAccessLimitBox"), limitTextEl = $id("freeAccessLimitText"), limitPillEl = $id("freeAccessLimitPill");
+  let pools = [], items = [], usageByPool = {};
 
   async function guardSession() {
     try {
@@ -75,12 +76,59 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
+  function poolLimitById(poolId) {
+    const p = pools.find((x) => String(x.id || "") === String(poolId || ""));
+    const n = Number(p?.free_access_limit);
+    return Number.isFinite(n) && n >= 0 ? Math.round(n) : 5;
+  }
+
+  function getLocalActiveUsage(poolId) {
+    return items.filter((x) => String(x.pool_id || "") === String(poolId || "") && x.is_active === true).length;
+  }
+
+  function updateLimitBox() {
+    const poolId = String(poolIdEl?.value || "").trim();
+    if (!limitBoxEl || !limitTextEl || !limitPillEl || !poolId) {
+      if (limitBoxEl) limitBoxEl.style.display = "none";
+      return;
+    }
+
+    const pool = pools.find((x) => String(x.id || "") === poolId);
+    const usage = usageByPool[poolId] || null;
+    const used = usage ? Number(usage.used || 0) : getLocalActiveUsage(poolId);
+    const limit = usage ? Number(usage.limit || 0) : poolLimitById(poolId);
+    const remaining = Math.max(0, limit - used);
+    const full = used >= limit;
+
+    limitBoxEl.style.display = "flex";
+    limitBoxEl.classList.toggle("is-full", full);
+    limitTextEl.textContent = `${pool?.name || "Ce pool"} : ${remaining} place(s) restante(s).`;
+    limitPillEl.textContent = `${used} / ${limit} utilisé(s)`;
+
+    if (addBtn) {
+      addBtn.disabled = full;
+      addBtn.title = full ? "Limite accès gratuit atteinte pour ce pool" : "";
+    }
+  }
+
+  async function loadUsage() {
+    try {
+      const data = await fetchJSON("/api/admin/free-access-devices/usage");
+      usageByPool = data.usage_by_pool || {};
+    } catch (e) {
+      usageByPool = {};
+      console.warn("Free-access usage load failed:", e?.message || e);
+    }
+    updateLimitBox();
+  }
+
   async function loadPools() {
     const data = await fetchJSON("/api/admin/pools?limit=200&offset=0&system=mikrotik");
     pools = data.pools || data.data || [];
     const opts = pools.map((p) => `<option value="${esc(p.id)}">${esc(p.name || p.id)}${p.radius_nas_id ? ` — ${esc(p.radius_nas_id)}` : ""}</option>`).join("");
     poolIdEl.innerHTML = opts || `<option value="">Aucun pool MikroTik</option>`;
     poolFilterEl.innerHTML = `<option value="all">Tous les pools</option>` + opts;
+    updateLimitBox();
   }
 
   async function loadDevices() {
@@ -90,6 +138,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const data = await fetchJSON(url);
     items = data.items || [];
     render();
+    updateLimitBox();
   }
 
   function render() {
@@ -172,6 +221,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   try {
     await loadPools();
     await loadDevices();
+    await loadUsage();
   } catch (e) {
     showMsg(`Chargement échoué : ${e.message}`, true);
   }
@@ -202,6 +252,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       macAddressEl.value = "";
       showMsg("Appareil ajouté ✅", false);
       await loadDevices();
+      await loadUsage();
     } catch (e) {
       showMsg(`Ajout échoué : ${e.message}`, true);
     } finally {
@@ -226,6 +277,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         });
         showMsg(isActive ? "Accès désactivé ✅" : "Accès activé ✅", false);
         await loadDevices();
+        await loadUsage();
       }
 
       if (deleteBtn) {
@@ -235,6 +287,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         await fetchJSON(`/api/admin/free-access-devices/${encodeURIComponent(id)}`, { method: "DELETE" });
         showMsg("Accès supprimé ✅", false);
         await loadDevices();
+        await loadUsage();
       }
 
       if (syncPoolBtn) {
@@ -258,9 +311,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     catch (e) { showMsg(`Synchronisation échouée : ${e.message}`, true); }
   });
 
-  const refreshList = () => loadDevices().catch((e) => showMsg(e.message, true));
+  const refreshList = () => loadDevices().then(loadUsage).catch((e) => showMsg(e.message, true));
   refreshBtn?.addEventListener("click", refreshList);
   refreshListBtn?.addEventListener("click", refreshList);
+  poolIdEl?.addEventListener("change", updateLimitBox);
   poolFilterEl?.addEventListener("change", refreshList);
   statusFilterEl?.addEventListener("change", render);
   qEl?.addEventListener("input", render);

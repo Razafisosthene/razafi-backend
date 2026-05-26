@@ -159,6 +159,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const createPoolModalCancel = $id("createPoolModalCancel");
   const newPoolName = $id("newName", "newPoolName");
   const newPoolCap = $id("newCap", "newPoolCap");
+  const newFreeAccessLimitEl = $id("newFreeAccessLimit");
   const newSystemEl = $id("newSystem");
   const newMikrotikIpEl = $id("newMikrotikIp");
   const newRadiusNasIdEl = $id("newRadiusNasId");
@@ -244,6 +245,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const createFields = [
       newPoolName,
       newPoolCap,
+      newFreeAccessLimitEl,
       newSystemEl,
       newMikrotikIpEl,
       newRadiusNasIdEl,
@@ -306,6 +308,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       byPoolId[poolId] = {
         active_clients: toNum(row?.active_clients, 0),
         capacity_max: row?.capacity_max === null || row?.capacity_max === undefined ? null : toNum(row?.capacity_max, null),
+        free_access_limit: row?.free_access_limit === null || row?.free_access_limit === undefined ? 5 : toNum(row?.free_access_limit, 5),
         is_saturated: row?.is_saturated === true || String(row?.is_saturated).toLowerCase() === "true",
         radius_nas_id: String(row?.radius_nas_id || "").trim(),
         raw: row,
@@ -354,6 +357,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const name = p.name || "Pool";
     const contactPhone = String(p.contact_phone ?? p.contactPhone ?? "").trim();
     const share = ownerShare(p);
+    const freeLimit = Number.isFinite(Number(p.free_access_limit)) ? Number(p.free_access_limit) : 5;
     const ann = announcementState(p);
 
     return `
@@ -365,6 +369,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         <div class="rz-pool-meta">
           <span class="rz-pill">📞 <strong>${esc(contactPhone || "Téléphone non défini")}</strong></span>
           <span class="rz-pill">Part propriétaire : <strong>${esc(share)}%</strong></span>
+          <span class="rz-pill">Accès gratuit : <strong>${esc(freeLimit)} max</strong></span>
           <span class="rz-pill ${ann.active ? "rz-pill-ok" : "rz-pill-muted"}">Annonce portail : <strong>${ann.active ? "Actif" : "Inactif"}</strong></span>
         </div>
       </button>
@@ -432,6 +437,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const pid = String(p.id || "");
     const name = p.name || "Pool";
     const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "" : String(p.capacity_max);
+    const freeAccessLimit = (p.free_access_limit === null || p.free_access_limit === undefined) ? "5" : String(p.free_access_limit);
     const contactPhone = String(p.contact_phone ?? p.contactPhone ?? "");
     const system = String(p.system || "portal").toLowerCase() === "mikrotik" ? "mikrotik" : "portal";
     const isMikrotik = system === "mikrotik";
@@ -484,6 +490,10 @@ document.addEventListener("DOMContentLoaded", async () => {
             <div class="rz-field">
               <label>Capacité max</label>
               <input id="modalPoolCap" type="number" min="0" value="${esc(cap)}" placeholder="—" ${canEditBasic ? "" : "readonly disabled"} />
+            </div>
+            <div class="rz-field">
+              <label>Limite accès gratuit</label>
+              <input id="modalFreeAccessLimit" type="number" min="0" value="${esc(freeAccessLimit)}" placeholder="5" ${canManageAll ? "" : "readonly disabled"} />
             </div>
             <div class="rz-field">
               <label>Téléphone contact</label>
@@ -634,6 +644,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const nameInput = $id("modalPoolName");
     const capInput = $id("modalPoolCap");
     const phoneInput = $id("modalPoolPhone");
+    const freeAccessLimitInput = $id("modalFreeAccessLimit");
 
     const name = canManageAll
       ? (nameInput?.value || "").trim()
@@ -648,6 +659,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
       showMsg(msgEl, "Capacité du pool invalide", true);
+      return;
+    }
+
+    const freeLimitStr = String(freeAccessLimitInput?.value || "").trim();
+    const free_access_limit = freeLimitStr === "" ? 5 : Number(freeLimitStr);
+    if (canManageAll && (!Number.isFinite(free_access_limit) || free_access_limit < 0)) {
+      showMsg(msgEl, "Limite accès gratuit invalide", true);
       return;
     }
 
@@ -670,6 +688,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
 
       payload.owner_admin_user_id = ($id("modalOwnerAdmin")?.value || "").trim() || null;
+      payload.free_access_limit = Math.round(free_access_limit);
 
       const platform_share_pct = Number($id("modalPlatformPct")?.value);
       const owner_share_pct = Number($id("modalOwnerPct")?.value);
@@ -960,6 +979,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         body: JSON.stringify({
           name,
           capacity_max,
+          free_access_limit: Math.round(free_access_limit),
           contact_phone: ((newContactPhoneEl?.value || "").trim() || null),
           system,
           mikrotik_ip: system === "mikrotik" ? mikrotik_ip : null,
