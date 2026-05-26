@@ -65,6 +65,9 @@
            <a class="rz-item" href="/admin/free-access.html" id="rzNavFree">
             <span class="rz-item-label">Accès gratuit</span>
           </a>
+          <a class="rz-item" data-href="/admin/block-devices.html" href="/admin/block-devices.html" id="rzNavBlocked">
+            <span class="rz-item-label">Appareils bloqués</span>
+          </a>
           <a class="rz-item" data-href="/admin/revenue.html" href="/admin/revenue.html">
             <span class="rz-item-label">Revenue</span>
           </a>
@@ -179,10 +182,12 @@
         const elPools = $("#rzNavPools");
         const elAudit = $("#rzNavAudit");
         const elUsers = $("#rzNavUsers");
+        const elBlocked = $("#rzNavBlocked");
         if (elAPs) elAPs.style.display = "none";
         if (elPools) elPools.style.display = "none";
         if (elAudit) elAudit.style.display = "none";
         if (elUsers) elUsers.style.display = "none";
+        if (elBlocked) elBlocked.style.display = "none";
       } else {
         // Superadmin only: show Users (if present)
         const elUsers = $("#rzNavUsers");

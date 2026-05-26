@@ -2762,6 +2762,509 @@ app.post("/api/admin/free-access-devices/sync", requireAdmin, requireSuperadmin,
   }
 });
 
+
+// ------------------------------------------------------------
+// ADMIN: Blocked Devices (MAC blacklist per pool, multi-router)
+// V1: superadmin only. Backend DB is source of truth.
+// Sync applies MikroTik /ip hotspot ip-binding type=blocked on the correct router
+// and removes active Hotspot sessions for newly/actively blocked MACs.
+// ------------------------------------------------------------
+
+const BLOCKED_DEVICE_COMMENT_PREFIX = "RAZAFI_BLOCKED_DEVICE";
+
+function blockedDeviceComment(poolId) {
+  return `${BLOCKED_DEVICE_COMMENT_PREFIX}:${String(poolId || "").trim()}`;
+}
+
+function sanitizeBlockedDeviceText(v, max = 120) {
+  return String(v || "")
+    .replace(/[\r\n\t]/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .slice(0, max);
+}
+
+async function assertMacNotActiveFreeAccess(poolId, macAddress, ignoreBlockedDeviceId = null) {
+  const cleanPoolId = String(poolId || "").trim();
+  const mac = normalizeMacColon(String(macAddress || "")) || null;
+  if (!cleanPoolId || !mac || !supabase) return;
+
+  const { data, error } = await supabase
+    .from("free_access_devices")
+    .select("id,person_name,device_name,mac_address,is_active")
+    .eq("pool_id", cleanPoolId)
+    .eq("mac_address", String(mac).toUpperCase())
+    .eq("is_active", true)
+    .limit(1);
+
+  if (error) throw error;
+  if (Array.isArray(data) && data.length) {
+    const err = new Error("mac_is_active_in_free_access");
+    err.status = 409;
+    throw err;
+  }
+}
+
+async function disconnectBlockedMacsFromRouter(api, macs) {
+  const normalized = Array.from(new Set(
+    (macs || [])
+      .map((m) => normalizeMacColon(String(m || "")) || null)
+      .filter(Boolean)
+      .map((m) => String(m).toUpperCase())
+  ));
+
+  let disconnected = 0;
+
+  for (const mac of normalized) {
+    try {
+      const activeRows = rosRows(await api.command(["/ip/hotspot/active/print", `?mac-address=${mac}`]));
+      for (const row of activeRows || []) {
+        const rowId = row?.[".id"];
+        if (!rowId) continue;
+        try {
+          await api.command(["/ip/hotspot/active/remove", `=.id=${rowId}`]);
+          disconnected += 1;
+        } catch (e) {
+          console.error("BLOCKED DEVICE ACTIVE REMOVE ERROR", mac, e?.message || e);
+        }
+      }
+    } catch (e) {
+      console.error("BLOCKED DEVICE ACTIVE PRINT ERROR", mac, e?.message || e);
+    }
+  }
+
+  return disconnected;
+}
+
+async function syncBlockedDevicesPool(poolId) {
+  const { pool, router } = await getRouterForPool(poolId);
+  const comment = blockedDeviceComment(pool.id);
+
+  const { data: devices, error: dErr } = await supabase
+    .from("blocked_devices")
+    .select("id,person_name,mac_address,reason,is_active")
+    .eq("pool_id", pool.id)
+    .order("person_name", { ascending: true });
+
+  if (dErr) throw dErr;
+
+  const allDevices = (devices || [])
+    .map((d) => ({
+      ...d,
+      mac_address: normalizeMacColon(String(d.mac_address || "")) || String(d.mac_address || "").trim().toUpperCase(),
+    }))
+    .filter((d) => d.mac_address);
+
+  const activeDevices = allDevices.filter((d) => d.is_active === true);
+  const activeMacSet = new Set(activeDevices.map((d) => String(d.mac_address).toUpperCase()));
+
+  const api = new RouterOsApiClient({
+    host: router.api_host,
+    port: router.api_port || 8728,
+    user: router.api_user,
+    password: router.api_password,
+    timeoutMs: 9000,
+  });
+
+  let removed_count = 0;
+  let added_count = 0;
+  let kept_count = 0;
+  let disconnected_count = 0;
+
+  try {
+    await api.connect();
+    await api.login();
+
+    // Read existing RAZAFI block bindings for this pool.
+    const existingRows = rosRows(await api.command(["/ip/hotspot/ip-binding/print", `?comment=${comment}`]));
+    const existingByMac = new Map();
+    for (const row of existingRows || []) {
+      const mac = normalizeMacColon(String(row?.["mac-address"] || "")) || null;
+      if (!mac) continue;
+      existingByMac.set(String(mac).toUpperCase(), row);
+    }
+
+    // Remove stale bindings no longer active in DB.
+    for (const [mac, row] of existingByMac.entries()) {
+      if (!activeMacSet.has(mac) && row?.[".id"]) {
+        await api.command(["/ip/hotspot/ip-binding/remove", `=.id=${row[".id"]}`]);
+        removed_count += 1;
+        existingByMac.delete(mac);
+      }
+    }
+
+    // Ensure every active blocked MAC exists as type=blocked.
+    for (const d of activeDevices) {
+      const mac = String(d.mac_address).toUpperCase();
+      const existing = existingByMac.get(mac);
+      if (existing?.[".id"]) {
+        const needsSet = String(existing.type || "").toLowerCase() !== "blocked" || String(existing.disabled || "no").toLowerCase() === "yes";
+        if (needsSet) {
+          await api.command(["/ip/hotspot/ip-binding/set", `=.id=${existing[".id"]}`, "=type=blocked", "=disabled=no", `=comment=${comment}`]);
+        }
+        kept_count += 1;
+      } else {
+        await api.command(["/ip/hotspot/ip-binding/add", `=mac-address=${mac}`, "=type=blocked", `=comment=${comment}`]);
+        added_count += 1;
+      }
+    }
+
+    // Immediate effect: disconnect active sessions for active blocked MACs.
+    disconnected_count = await disconnectBlockedMacsFromRouter(api, Array.from(activeMacSet));
+  } finally {
+    api.close();
+  }
+
+  const nowIso = new Date().toISOString();
+  if (allDevices.length) {
+    await supabase
+      .from("blocked_devices")
+      .update({ last_synced_at: nowIso, updated_at: nowIso })
+      .eq("pool_id", pool.id);
+  }
+
+  return {
+    ok: true,
+    pool_id: pool.id,
+    pool_name: pool.name || null,
+    nas_id: pool.radius_nas_id || null,
+    router_name: router.display_name || null,
+    router_host: router.api_host,
+    active_count: activeDevices.length,
+    added_count,
+    kept_count,
+    removed_count,
+    disconnected_count,
+    via: "routeros_api",
+  };
+}
+
+// GET /api/admin/blocked-devices
+app.get("/api/admin/blocked-devices", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const pool_id = String(req.query.pool_id || "all").trim();
+
+    let q = supabase
+      .from("blocked_devices")
+      .select(`
+        id,
+        pool_id,
+        person_name,
+        mac_address,
+        reason,
+        is_active,
+        last_synced_at,
+        created_at,
+        updated_at,
+        pool:internet_pools ( id, name, radius_nas_id )
+      `)
+      .order("created_at", { ascending: false });
+
+    if (pool_id && pool_id !== "all") q = q.eq("pool_id", pool_id);
+
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ error: error.message });
+
+    return res.json({ ok: true, items: data || [] });
+  } catch (e) {
+    console.error("BLOCKED DEVICES LIST ERROR", e);
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// GET /api/admin/blocked-devices/usage
+app.get("/api/admin/blocked-devices/usage", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const { data: pools, error: poolsErr } = await supabase
+      .from("internet_pools")
+      .select("id,name")
+      .eq("system", "mikrotik")
+      .order("name", { ascending: true });
+
+    if (poolsErr) return res.status(500).json({ error: poolsErr.message });
+
+    const { data: rows, error: rowsErr } = await supabase
+      .from("blocked_devices")
+      .select("pool_id,is_active");
+
+    if (rowsErr) return res.status(500).json({ error: rowsErr.message });
+
+    const counts = {};
+    for (const row of rows || []) {
+      const pid = String(row?.pool_id || "").trim();
+      if (!pid) continue;
+      if (!counts[pid]) counts[pid] = { active: 0, total: 0 };
+      counts[pid].total += 1;
+      if (row?.is_active === true) counts[pid].active += 1;
+    }
+
+    const usage_by_pool = {};
+    for (const p of pools || []) {
+      const pid = String(p?.id || "").trim();
+      usage_by_pool[pid] = {
+        pool_id: pid,
+        pool_name: p?.name || null,
+        active: Number(counts[pid]?.active || 0),
+        total: Number(counts[pid]?.total || 0),
+      };
+    }
+
+    return res.json({ ok: true, usage_by_pool });
+  } catch (e) {
+    console.error("BLOCKED DEVICES USAGE ERROR", e);
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// POST /api/admin/blocked-devices
+app.post("/api/admin/blocked-devices", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const pool_id = String(req.body?.pool_id || "").trim();
+    const person_name = sanitizeBlockedDeviceText(req.body?.person_name, 80);
+    const mac_address = normalizeMacColon(String(req.body?.mac_address || "")) || null;
+    const reason = sanitizeBlockedDeviceText(req.body?.reason, 160);
+    const is_active = req.body?.is_active === undefined ? true : !!req.body.is_active;
+
+    if (!pool_id) return res.status(400).json({ error: "pool_id_required" });
+    if (!person_name) return res.status(400).json({ error: "person_name_required" });
+    if (!mac_address) return res.status(400).json({ error: "mac_address_invalid" });
+
+    const { data: pool, error: pErr } = await supabase
+      .from("internet_pools")
+      .select("id")
+      .eq("id", pool_id)
+      .maybeSingle();
+
+    if (pErr) return res.status(500).json({ error: pErr.message });
+    if (!pool) return res.status(404).json({ error: "pool_not_found" });
+
+    if (is_active) await assertMacNotActiveFreeAccess(pool_id, mac_address);
+
+    const payload = {
+      pool_id,
+      person_name,
+      mac_address: String(mac_address).toUpperCase(),
+      reason,
+      is_active,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from("blocked_devices")
+      .insert(payload)
+      .select(`
+        id,
+        pool_id,
+        person_name,
+        mac_address,
+        reason,
+        is_active,
+        last_synced_at,
+        created_at,
+        updated_at,
+        pool:internet_pools ( id, name, radius_nas_id )
+      `)
+      .single();
+
+    if (error) {
+      if (String(error.message || "").toLowerCase().includes("duplicate") || String(error.code || "") === "23505") {
+        return res.status(409).json({ error: "blocked_device_already_exists_for_pool" });
+      }
+      return res.status(500).json({ error: error.message });
+    }
+
+    // Best-effort immediate sync when a new active block is created.
+    let sync_result = null;
+    if (is_active) {
+      try { sync_result = await syncBlockedDevicesPool(pool_id); } catch (e) { sync_result = { ok: false, error: String(e?.message || e) }; }
+    }
+
+    return res.json({ ok: true, item: data, sync_result });
+  } catch (e) {
+    console.error("BLOCKED DEVICE CREATE ERROR", e);
+    const status = e?.status || 500;
+    return res.status(status).json({ error: String(e?.message || e) });
+  }
+});
+
+// PATCH /api/admin/blocked-devices/:id
+app.patch("/api/admin/blocked-devices/:id", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    const { data: existing, error: existingErr } = await supabase
+      .from("blocked_devices")
+      .select("id,pool_id,mac_address,is_active")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (existingErr) return res.status(500).json({ error: existingErr.message });
+    if (!existing) return res.status(404).json({ error: "not_found" });
+
+    const patch = { updated_at: new Date().toISOString() };
+
+    if (req.body?.person_name !== undefined) {
+      const v = sanitizeBlockedDeviceText(req.body.person_name, 80);
+      if (!v) return res.status(400).json({ error: "person_name_required" });
+      patch.person_name = v;
+    }
+
+    if (req.body?.reason !== undefined) {
+      patch.reason = sanitizeBlockedDeviceText(req.body.reason, 160);
+    }
+
+    if (req.body?.mac_address !== undefined) {
+      const mac = normalizeMacColon(String(req.body.mac_address || "")) || null;
+      if (!mac) return res.status(400).json({ error: "mac_address_invalid" });
+      patch.mac_address = String(mac).toUpperCase();
+    }
+
+    if (req.body?.is_active !== undefined) {
+      patch.is_active = !!req.body.is_active;
+    }
+
+    const targetMac = patch.mac_address || existing.mac_address;
+    const targetPool = existing.pool_id;
+    if (patch.is_active === true) await assertMacNotActiveFreeAccess(targetPool, targetMac, id);
+
+    const { data, error } = await supabase
+      .from("blocked_devices")
+      .update(patch)
+      .eq("id", id)
+      .select(`
+        id,
+        pool_id,
+        person_name,
+        mac_address,
+        reason,
+        is_active,
+        last_synced_at,
+        created_at,
+        updated_at,
+        pool:internet_pools ( id, name, radius_nas_id )
+      `)
+      .maybeSingle();
+
+    if (error) {
+      if (String(error.message || "").toLowerCase().includes("duplicate") || String(error.code || "") === "23505") {
+        return res.status(409).json({ error: "blocked_device_already_exists_for_pool" });
+      }
+      return res.status(500).json({ error: error.message });
+    }
+    if (!data) return res.status(404).json({ error: "not_found" });
+
+    // Best-effort immediate sync after activation/deactivation/MAC edits.
+    let sync_result = null;
+    try { sync_result = await syncBlockedDevicesPool(data.pool_id); } catch (e) { sync_result = { ok: false, error: String(e?.message || e) }; }
+
+    return res.json({ ok: true, item: data, sync_result });
+  } catch (e) {
+    console.error("BLOCKED DEVICE PATCH ERROR", e);
+    const status = e?.status || 500;
+    return res.status(status).json({ error: String(e?.message || e) });
+  }
+});
+
+// DELETE /api/admin/blocked-devices/:id
+app.delete("/api/admin/blocked-devices/:id", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    const { data: existing, error: getErr } = await supabase
+      .from("blocked_devices")
+      .select("id,pool_id,is_active")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (getErr) return res.status(500).json({ error: getErr.message });
+    if (!existing) return res.status(404).json({ error: "not_found" });
+
+    // Safety rule: an active block cannot be deleted directly.
+    // Disable it first, then delete. This prevents accidental unblock/delete mistakes.
+    if (existing.is_active === true) {
+      return res.status(409).json({
+        error: "active_block_must_be_disabled_first",
+        message: "Désactivez d’abord le blocage avant suppression.",
+      });
+    }
+
+    const { error } = await supabase
+      .from("blocked_devices")
+      .delete()
+      .eq("id", id);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    let sync_result = null;
+    try { sync_result = await syncBlockedDevicesPool(existing.pool_id); } catch (e) { sync_result = { ok: false, error: String(e?.message || e) }; }
+
+    return res.json({ ok: true, deleted_id: id, pool_id: existing.pool_id, sync_result });
+  } catch (e) {
+    console.error("BLOCKED DEVICE DELETE ERROR", e);
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// POST /api/admin/blocked-devices/sync
+// Body optional: { pool_id: "..." } ; if omitted, sync all pools that have blocked_devices rows.
+app.post("/api/admin/blocked-devices/sync", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const pool_id = String(req.body?.pool_id || req.query?.pool_id || "").trim();
+
+    let poolIds = [];
+
+    if (pool_id) {
+      poolIds = [pool_id];
+    } else {
+      const { data, error } = await supabase
+        .from("blocked_devices")
+        .select("pool_id");
+
+      if (error) return res.status(500).json({ error: error.message });
+
+      poolIds = Array.from(new Set((data || []).map((r) => String(r.pool_id || "").trim()).filter(Boolean)));
+    }
+
+    if (!poolIds.length) return res.json({ ok: true, results: [] });
+
+    const results = [];
+
+    for (const pid of poolIds) {
+      try {
+        const result = await syncBlockedDevicesPool(pid);
+        results.push(result);
+      } catch (e) {
+        console.error("BLOCKED DEVICES SYNC POOL ERROR", pid, e?.message || e);
+        results.push({
+          ok: false,
+          pool_id: pid,
+          error: String(e?.message || e),
+        });
+      }
+    }
+
+    const ok = results.every((r) => r.ok);
+    return res.status(ok ? 200 : 207).json({ ok, results });
+  } catch (e) {
+    console.error("BLOCKED DEVICES SYNC ERROR", e);
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
 // GET one voucher_session for detail view (Truth View)
 app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
   try {

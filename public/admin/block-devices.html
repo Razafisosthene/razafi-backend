@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>RAZAFI Admin — Blocage appareils</title>
+  <link rel="stylesheet" href="/admin/admin.css" />
+
+  <style>
+    .rz-free-shell{display:flex;flex-direction:column;gap:14px;}
+    .rz-free-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+    .rz-free-title-block{min-width:0;}
+    .rz-free-me{white-space:normal;line-height:1.25;}
+    .rz-free-me strong{display:block;color:var(--rz-text,#111827);font-weight:900;margin-top:2px;word-break:break-word;}
+
+    .rz-free-card{border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);padding:16px;}
+    .rz-free-card-title{font-size:18px;font-weight:950;letter-spacing:-.03em;color:var(--rz-text,#111827);margin:0 0 12px;}
+
+    .rz-free-message{
+      display:none;
+      min-height:20px;
+      font-size:13px;
+      font-weight:800;
+      margin-top:0;
+      padding:10px 12px;
+      border-radius:16px;
+      background:rgba(239,68,68,.10);
+      border:1px solid rgba(25,135,84,.16);
+      color:#198754;
+    }
+    .rz-free-message.is-visible{display:block;}
+    .rz-free-message.is-error{background:rgba(239,68,68,.09);border-color:rgba(239,68,68,.18);color:#b91c1c;}
+
+    .rz-free-filters{display:grid;grid-template-columns:minmax(240px,1fr) minmax(220px,.7fr) minmax(170px,.5fr) auto;gap:10px;align-items:center;}
+    .rz-free-filters input,.rz-free-filters select{margin-bottom:0;}
+    .rz-free-filters button{width:auto;}
+
+    .rz-free-table-card{border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);overflow:hidden;}
+    .rz-free-table-wrap{overflow:auto;-webkit-overflow-scrolling:touch;}
+    .rz-free-table{width:100%;border-collapse:separate;border-spacing:0;min-width:920px;}
+    .rz-free-table th{position:sticky;top:0;z-index:2;text-align:left;padding:12px 10px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--rz-muted,#6b7280);background:rgba(248,250,252,.96);border-bottom:1px solid rgba(17,24,39,.08);}
+    .rz-free-table td{padding:12px 10px;border-bottom:1px solid rgba(17,24,39,.07);vertical-align:middle;font-size:14px;}
+    .rz-free-table tbody tr:hover{background:rgba(13,110,253,.04);}
+    .rz-free-person{font-weight:950;letter-spacing:-.02em;}
+    .rz-free-sub{margin-top:4px;color:var(--rz-muted,#6b7280);font-size:12px;font-weight:750;}
+    .rz-mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-weight:850;}
+    .rz-status-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 9px;border-radius:999px;font-size:12px;font-weight:900;border:1px solid rgba(17,24,39,.08);background:rgba(255,255,255,.78);white-space:nowrap;}
+    .rz-status-pill.ok{background:rgba(22,163,74,.12);color:#15803d;border-color:rgba(22,163,74,.22);}
+    .rz-status-pill.off{background:rgba(239,68,68,.11);color:#b91c1c;border-color:rgba(239,68,68,.22);}
+    .rz-free-row-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+    .rz-free-row-actions button{width:auto;padding:8px 11px;border-radius:12px;font-size:13px;box-shadow:none;}
+    .rz-free-delete-disabled{opacity:.48;cursor:not-allowed!important;filter:grayscale(.15);}
+    .rz-empty-state{padding:22px;color:var(--rz-muted,#6b7280);font-weight:800;}
+    .rz-free-row-flash{animation:rzFreeFlash 1.45s ease-out;}
+    @keyframes rzFreeFlash{
+      0%{background:rgba(239,68,68,.22);box-shadow:inset 4px 0 0 rgba(239,68,68,.85);}
+      65%{background:rgba(239,68,68,.10);box-shadow:inset 4px 0 0 rgba(239,68,68,.45);}
+      100%{background:transparent;box-shadow:inset 0 0 0 rgba(239,68,68,0);}
+    }
+
+    .rz-free-bottom-add{
+      display:flex;
+      flex-direction:column;
+      gap:12px;
+      padding:16px;
+      border-radius:24px;
+      background:rgba(255,255,255,.76);
+      border:1px solid rgba(255,255,255,.88);
+      box-shadow:0 12px 28px rgba(15,23,42,.08);
+    }
+    .rz-free-bottom-add-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+    .rz-free-bottom-title{font-size:18px;font-weight:950;letter-spacing:-.03em;color:var(--rz-text,#111827);}
+    .rz-free-bottom-sub{font-size:13px;color:var(--rz-muted,#6b7280);font-weight:750;margin-top:3px;}
+    .rz-free-bottom-add button{width:auto;}
+
+    .rz-free-limit-box{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:12px;border-radius:18px;background:rgba(13,110,253,.07);border:1px solid rgba(13,110,253,.12);}
+    .rz-free-limit-title{font-weight:950;color:var(--rz-text,#111827);}
+    .rz-free-limit-sub{margin-top:3px;color:var(--rz-muted,#6b7280);font-size:12px;font-weight:750;}
+    .rz-free-limit-pill{display:inline-flex;align-items:center;gap:6px;padding:8px 11px;border-radius:999px;background:rgba(255,255,255,.84);border:1px solid rgba(17,24,39,.08);font-size:13px;font-weight:950;color:rgba(17,24,39,.82);}
+    .rz-free-limit-warning{display:none;margin-top:8px;font-size:12px;font-weight:900;color:#b91c1c;}
+    .rz-free-limit-box.is-full{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.18);}
+    .rz-free-limit-box.is-full .rz-free-limit-pill{color:#b91c1c;}
+    .rz-free-limit-box.is-full .rz-free-limit-warning{display:block;}
+    .rz-free-limit-box.is-full .rz-free-limit-title::after{content:" • Limite atteinte";color:#b91c1c;}
+
+    /* Modal open: hide admin mobile navigation and lock background scroll */
+    body.rz-free-modal-open{overflow:hidden;}
+    body.rz-free-modal-open .rz-admin-bottom-nav,
+    body.rz-free-modal-open .rz-bottom-nav,
+    body.rz-free-modal-open .bottom-nav,
+    body.rz-free-modal-open .mobile-bottom-nav,
+    body.rz-free-modal-open .rz-mobile-nav,
+    body.rz-free-modal-open .admin-mobile-nav,
+    body.rz-free-modal-open .rz-tabbar,
+    body.rz-free-modal-open .tabbar,
+    body.rz-free-modal-open nav[aria-label="Mobile navigation"],
+    body.rz-free-modal-open nav[aria-label="Navigation mobile"]{
+      display:none!important;
+      visibility:hidden!important;
+      pointer-events:none!important;
+    }
+    .rz-free-modal-backdrop{
+      position:fixed;
+      inset:0;
+      z-index:1000;
+      display:none;
+      align-items:center;
+      justify-content:center;
+      padding:18px;
+      background:rgba(15,23,42,.42);
+      backdrop-filter:blur(16px);
+      -webkit-backdrop-filter:blur(16px);
+    }
+    .rz-free-modal-backdrop.is-open{display:flex;}
+    .rz-free-modal{
+      width:min(720px,100%);
+      max-height:min(92vh,920px);
+      overflow:hidden;
+      border-radius:34px;
+      background:rgba(255,255,255,.96);
+      border:1px solid rgba(255,255,255,.96);
+      box-shadow:0 30px 90px rgba(15,23,42,.30);
+      display:flex;
+      flex-direction:column;
+      animation:rzFreeModalPop .18s ease-out;
+    }
+    @keyframes rzFreeModalPop{
+      from{opacity:0;transform:translateY(10px) scale(.985);}
+      to{opacity:1;transform:translateY(0) scale(1);}
+    }
+    .rz-free-modal-head{
+      padding:18px 18px 14px;
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:12px;
+      border-bottom:1px solid rgba(17,24,39,.07);
+    }
+    .rz-free-modal-title{font-size:22px;font-weight:950;letter-spacing:-.03em;color:var(--rz-text,#111827);}
+    .rz-free-modal-sub{margin-top:4px;color:var(--rz-muted,#6b7280);font-size:13px;font-weight:750;}
+    .rz-free-modal-close{
+      flex:0 0 auto;
+      width:42px!important;
+      height:42px;
+      border-radius:999px!important;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      padding:0!important;
+      margin:0!important;
+      font-size:22px;
+      line-height:1;
+      box-shadow:none!important;
+      background:rgba(17,24,39,.06)!important;
+      color:rgba(17,24,39,.78)!important;
+    }
+    .rz-free-modal-body{
+      overflow:auto;
+      -webkit-overflow-scrolling:touch;
+      padding:18px;
+    }
+    .rz-free-form-grid{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:12px;
+      align-items:end;
+    }
+    .rz-free-field.span-2{grid-column:1/-1;}
+    .rz-free-field label{display:block;margin-bottom:6px;color:var(--rz-muted,#6b7280);font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;}
+    .rz-free-field input,.rz-free-field select{margin-bottom:0;}
+    .rz-free-modal-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:16px;}
+    .rz-free-modal-actions button{width:auto;}
+
+    @media (max-width:980px){
+      .rz-free-filters{grid-template-columns:1fr 1fr;}
+      .rz-free-filters .filter-search{grid-column:1/-1;}
+      .rz-free-filters button{width:100%;}
+    }
+    @media (max-width:700px){
+      .rz-free-table-wrap{overflow:visible;}
+      .rz-free-table{min-width:0;border-spacing:0 12px;}
+      .rz-free-table thead{display:none;}
+      .rz-free-table,.rz-free-table tbody,.rz-free-table tr,.rz-free-table td{display:block;width:100%;}
+      .rz-free-table tr{
+        border-radius:22px;
+        background:rgba(255,255,255,.78);
+        border:1px solid rgba(17,24,39,.07);
+        box-shadow:0 10px 22px rgba(15,23,42,.06);
+        overflow:hidden;
+        margin-bottom:12px;
+      }
+      .rz-free-table td{
+        display:flex;
+        justify-content:space-between;
+        gap:12px;
+        padding:11px 12px;
+        border-bottom:1px solid rgba(17,24,39,.06);
+        text-align:right;
+      }
+      .rz-free-table td::before{
+        content:attr(data-label);
+        flex:0 0 auto;
+        color:var(--rz-muted,#6b7280);
+        font-size:12px;
+        font-weight:950;
+        text-transform:uppercase;
+        letter-spacing:.04em;
+        text-align:left;
+      }
+      .rz-free-table td:last-child{border-bottom:0;display:block;text-align:left;}
+      .rz-free-table td:last-child::before{display:block;margin-bottom:8px;}
+      .rz-free-person,.rz-free-sub{text-align:right;}
+    }
+    @media (max-width:640px){
+      .rz-free-filters{grid-template-columns:1fr;}
+      .rz-free-card,.rz-free-table-card,.rz-free-bottom-add{border-radius:20px;}
+      .rz-free-table th,.rz-free-table td{padding:10px 9px;}
+      .rz-free-row-actions button{flex:1 1 auto;}
+      .rz-free-bottom-add button{width:100%;}
+      .rz-free-modal-backdrop{padding:0;align-items:stretch;}
+      .rz-free-modal{
+        width:100%;
+        height:100%;
+        max-height:none;
+        border-radius:0;
+      }
+      .rz-free-form-grid{grid-template-columns:1fr;}
+      .rz-free-field.span-2{grid-column:auto;}
+      .rz-free-modal-actions button{width:100%;}
+    }
+  </style>
+</head>
+<body class="rz-admin-shell block-devices-page">
+  <div class="login-container">
+    <div class="card rz-free-shell" style="max-width: 1180px; width: 96%;">
+      <div class="topbar rz-free-header">
+        <div class="title rz-free-title-block">
+          <h1 class="rz-hero-title">Blocage appareils</h1>
+          <div id="me" class="subtitle rz-free-me">Vérification de la session…</div>
+        </div>
+
+        <div class="nav" style="display:none;">
+          <a href="/admin/"><button type="button">Dashboard</button></a>
+          <a href="/admin/clients.html"><button type="button">Clients</button></a>
+          <a href="/admin/aps.html"><button type="button">APs</button></a>
+          <a href="/admin/pools.html"><button type="button">Pools</button></a>
+          <a href="/admin/revenue.html"><button type="button">Revenue</button></a>
+          <button id="logoutBtn" type="button">Déconnexion</button>
+        </div>
+      </div>
+
+      <div class="sticky-bar">
+        <div class="filters rz-free-filters">
+          <input id="q" class="filter-search" placeholder="Rechercher : nom / MAC / raison…" />
+          <select id="poolFilter" class="filter-select"><option value="all">Tous les pools</option></select>
+          <select id="statusFilter" class="filter-select">
+            <option value="all">Tous les statuts</option>
+            <option value="active">Bloqués seulement</option>
+            <option value="disabled">Désactivés seulement</option>
+          </select>
+          <button id="refreshListBtn" type="button" class="filter-btn primary">Actualiser</button>
+        </div>
+      </div>
+
+      <div id="msg" class="subtitle rz-free-message"></div>
+
+      <section class="rz-free-table-card">
+        <div class="rz-free-table-wrap">
+          <table class="rz-free-table">
+            <thead>
+              <tr>
+                <th>Personne</th>
+                <th>MAC</th>
+                <th>Raison</th>
+                <th>Pool</th>
+                <th>Statut</th>
+                <th>Sync</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="rows">
+              <tr><td colspan="7" class="rz-empty-state">Chargement…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="rz-free-bottom-add">
+        <div class="rz-free-bottom-add-head">
+          <div>
+            <div class="rz-free-bottom-title">Bloquer un appareil</div>
+            <div class="rz-free-bottom-sub">Ajoutez une adresse MAC à bloquer dans un pool MikroTik.</div>
+          </div>
+          <button id="openAddModalBtn" type="button" class="filter-btn danger">+ Bloquer un appareil</button>
+        </div>
+
+        <div id="blockedUsageBox" class="rz-free-limit-box" style="display:none;">
+          <div>
+            <div class="rz-free-limit-title">Blocages actifs</div>
+            <div id="blockedUsageText" class="rz-free-limit-sub">Sélectionnez un pool.</div>
+            <div id="blockedUsageWarning" class="rz-free-limit-warning">Un blocage actif coupe immédiatement l’appareil concerné après synchronisation.</div>
+          </div>
+          <span id="blockedUsagePill" class="rz-free-limit-pill">—</span>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div id="blockedModalBackdrop" class="rz-free-modal-backdrop" aria-hidden="true">
+    <div class="rz-free-modal" role="dialog" aria-modal="true" aria-labelledby="blockedModalTitle">
+      <div class="rz-free-modal-head">
+        <div>
+          <div id="blockedModalTitle" class="rz-free-modal-title">Bloquer un appareil</div>
+          <div class="rz-free-modal-sub">Le blocage est par pool. Il peut être activé ou désactivé plus tard.</div>
+        </div>
+        <button id="blockedModalClose" type="button" class="rz-free-modal-close" aria-label="Fermer">×</button>
+      </div>
+
+      <div class="rz-free-modal-body">
+        <form id="addForm">
+          <div class="rz-free-form-grid">
+            <div class="rz-free-field span-2">
+              <label for="poolId">Pool</label>
+              <select id="poolId" required><option value="">Chargement…</option></select>
+            </div>
+            <div class="rz-free-field">
+              <label for="personName">Nom</label>
+              <input id="personName" placeholder="Nom du client" required />
+            </div>
+            <div class="rz-free-field">
+              <label for="macAddress">MAC</label>
+              <input id="macAddress" placeholder="AA:BB:CC:DD:EE:FF" required />
+            </div>
+            <div class="rz-free-field span-2">
+              <label for="reason">Raison</label>
+              <input id="reason" placeholder="Ex : non paiement, abus, test…" />
+            </div>
+          </div>
+
+          <div class="rz-free-modal-actions">
+            <button id="blockedModalCancel" type="button" class="filter-btn">Annuler</button>
+            <button id="addBtn" type="submit" class="filter-btn danger">+ Bloquer</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script src="/admin/nav.js"></script>
+  <script src="./block-devices.js"></script>
+</body>
+</html>
