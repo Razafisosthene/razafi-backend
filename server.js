@@ -10742,23 +10742,55 @@ try {
 
 
 
-// derive amount from plan string when possible
-  let amount = (planRowFromDb && planRowFromDb.price_ar !== undefined && planRowFromDb.price_ar !== null) ? Number(planRowFromDb.price_ar) : null;
-  if (plan && typeof plan === "string") {
+// Derive payment amount safely.
+// IMPORTANT: when plan_id is provided and the plan exists in DB, price_ar is the ONLY source of truth.
+// Do NOT re-parse the displayed plan text afterwards, because plan labels may contain other numbers
+// such as duration, data quota, or MikroTik speed limits (example: "10M/10M"), which can corrupt amount.
+  let amount = null;
+  let amountSource = "fallback";
+
+  if (planRowFromDb && planRowFromDb.price_ar !== undefined && planRowFromDb.price_ar !== null) {
+    const dbAmount = Number(planRowFromDb.price_ar);
+    if (Number.isFinite(dbAmount)) {
+      amount = Math.trunc(dbAmount);
+      amountSource = "plans.price_ar";
+    }
+  }
+
+  // Legacy fallback only when DB price is unavailable.
+  // This keeps old flows working, but System 3 plan_id flows remain protected from label/speed parsing.
+  if ((amount === null || Number.isNaN(amount)) && plan && typeof plan === "string") {
     try {
       const matches = Array.from(plan.matchAll(/(\d+)/g)).map(m => m[1]);
       if (matches.length > 0) {
         const candidates = matches.filter(x => parseInt(x, 10) >= 1000);
         const choice = (candidates.length ? candidates[candidates.length - 1] : matches[matches.length - 1]);
         amount = parseInt(choice, 10);
+        amountSource = "legacy_plan_text";
       }
     } catch (e) {
       amount = null;
+      amountSource = "fallback";
     }
   }
+
   if (amount === null || Number.isNaN(amount)) {
     amount = String(plan).includes("5000") ? 5000 : 1000;
+    amountSource = "last_resort_default";
   }
+
+  // MVola amount must be a non-negative integer. Reject strange values before calling MVola.
+  if (!Number.isFinite(Number(amount)) || Number(amount) < 0) {
+    return res.status(400).json({
+      ok: false,
+      error: "invalid_plan_amount",
+      message: "Montant du plan invalide. Veuillez choisir un autre plan ou contacter l’assistance.",
+      plan_id: planIdForSession || null,
+      amount_source: amountSource,
+    });
+  }
+
+  amount = Math.trunc(Number(amount));
 
   
 
@@ -10820,6 +10852,7 @@ if (supabase) {
       pool_id: pool_id || null,
       client_mac: clientMacForSession,
       ap_mac: apMacForSession,
+      amount_source: amountSource,
     };
 
     if (supabase) {
@@ -10881,6 +10914,7 @@ const { error: vsErr } = await supabase
       pool_id: pool_id || null,
       client_mac: client_mac || null,
       ap_mac: ap_mac || null,
+      amount_source: amountSource,
     };
 
     if (supabase) {
@@ -10911,13 +10945,21 @@ const { error: vsErr } = await supabase
         pool_id: pool_id || null,
         plan_id: planIdForSession || null,
         message: "MVola payment initiated (NEW system)",
-        metadata: { amount, plan, correlationId }
+        metadata: { amount, plan, amount_source: amountSource, correlationId }
       });
 
     }
   } catch (dbErr) {
     console.error("⚠️ Warning: unable to insert initial transaction row:", dbErr?.message || dbErr);
   }
+
+  console.info("💵 SEND-PAYMENT amount resolved", {
+    requestRef,
+    plan_id: planIdForSession || null,
+    amount,
+    amountSource,
+    plan_name_db: planRowFromDb?.name || null,
+  });
 
   const payload = {
     amount: String(amount),
