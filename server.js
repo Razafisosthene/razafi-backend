@@ -2856,71 +2856,67 @@ async function syncBlockedDevicesPool(poolId) {
     .filter((d) => d.mac_address);
 
   const activeDevices = allDevices.filter((d) => d.is_active === true);
-  const activeMacSet = new Set(activeDevices.map((d) => String(d.mac_address).toUpperCase()));
 
-  const api = new RouterOsApiClient({
-    host: router.api_host,
-    port: router.api_port || 8728,
-    user: router.api_user,
-    password: router.api_password,
-    timeoutMs: 9000,
-  });
+  // IMPORTANT:
+  // Render cannot reliably reach MikroTik private/WireGuard IPs directly.
+  // Free-access already uses the VPS sync agent. Blocked-devices must do the same.
+  const vpsBlockUrl =
+    process.env.BLOCKED_DEVICE_SYNC_AGENT_URL ||
+    process.env.BLOCKED_DEVICES_SYNC_AGENT_URL ||
+    "http://159.89.16.34:3001/block-device";
+  const vpsBlockSecret =
+    process.env.BLOCKED_DEVICE_SYNC_AGENT_SECRET ||
+    process.env.BLOCKED_DEVICES_SYNC_AGENT_SECRET ||
+    process.env.FREE_ACCESS_SYNC_AGENT_SECRET ||
+    "razafi_sync_secret";
 
-  let removed_count = 0;
   let added_count = 0;
   let kept_count = 0;
+  let removed_count = 0;
   let disconnected_count = 0;
+  const agent_results = [];
 
-  try {
-    await api.connect();
-    await api.login();
+  for (const d of activeDevices) {
+    const mac = String(d.mac_address || "").toUpperCase();
+    if (!mac) continue;
 
-    // Read existing RAZAFI block bindings for this pool.
-    const existingRows = rosRows(await api.command(["/ip/hotspot/ip-binding/print", `?comment=${comment}`]));
-    const existingByMac = new Map();
-    for (const row of existingRows || []) {
-      const mac = normalizeMacColon(String(row?.["mac-address"] || "")) || null;
-      if (!mac) continue;
-      existingByMac.set(String(mac).toUpperCase(), row);
+    const resp = await fetch(vpsBlockUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-secret": vpsBlockSecret,
+      },
+      body: JSON.stringify({
+        router_ip: router.api_host,
+        router_port: router.api_port || 8728,
+        api_user: router.api_user,
+        api_password: router.api_password,
+        mac_address: mac,
+        comment,
+      }),
+    });
+
+    const result = await resp.json().catch(() => ({}));
+    agent_results.push({ mac_address: mac, status: resp.status, ...result });
+
+    if (!resp.ok || !result.ok) {
+      throw new Error(result.error || `blocked_device_sync_agent_failed_${resp.status}`);
     }
 
-    // Remove stale bindings no longer active in DB.
-    for (const [mac, row] of existingByMac.entries()) {
-      if (!activeMacSet.has(mac) && row?.[".id"]) {
-        await api.command(["/ip/hotspot/ip-binding/remove", `=.id=${row[".id"]}`]);
-        removed_count += 1;
-        existingByMac.delete(mac);
-      }
-    }
-
-    // Ensure every active blocked MAC exists as type=blocked.
-    for (const d of activeDevices) {
-      const mac = String(d.mac_address).toUpperCase();
-      const existing = existingByMac.get(mac);
-      if (existing?.[".id"]) {
-        const needsSet = String(existing.type || "").toLowerCase() !== "blocked" || String(existing.disabled || "no").toLowerCase() === "yes";
-        if (needsSet) {
-          await api.command(["/ip/hotspot/ip-binding/set", `=.id=${existing[".id"]}`, "=type=blocked", "=disabled=no", `=comment=${comment}`]);
-        }
-        kept_count += 1;
-      } else {
-        await api.command(["/ip/hotspot/ip-binding/add", `=mac-address=${mac}`, "=type=blocked", `=comment=${comment}`]);
-        added_count += 1;
-      }
-    }
-
-    // Immediate effect: disconnect active sessions for active blocked MACs.
-    disconnected_count = await disconnectBlockedMacsFromRouter(api, Array.from(activeMacSet));
-  } finally {
-    api.close();
+    // The VPS endpoint is idempotent: it removes the existing block for that MAC/comment,
+    // then adds it again as type=blocked and disconnects any active hotspot session.
+    added_count += result.blocked ? 1 : 0;
+    disconnected_count += Number(result.disconnected_count || 0);
   }
 
   const nowIso = new Date().toISOString();
-  if (allDevices.length) {
+
+  if (activeDevices.length) {
     await supabase
       .from("blocked_devices")
       .update({ last_synced_at: nowIso, updated_at: nowIso })
-      .eq("pool_id", pool.id);
+      .eq("pool_id", pool.id)
+      .eq("is_active", true);
   }
 
   return {
@@ -2931,11 +2927,14 @@ async function syncBlockedDevicesPool(poolId) {
     router_name: router.display_name || null,
     router_host: router.api_host,
     active_count: activeDevices.length,
+    inactive_count: allDevices.length - activeDevices.length,
     added_count,
     kept_count,
     removed_count,
     disconnected_count,
-    via: "routeros_api",
+    via: "vps_sync_agent_block_device",
+    sync_agent_url: vpsBlockUrl,
+    agent_results,
   };
 }
 
