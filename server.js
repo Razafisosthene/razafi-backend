@@ -2684,7 +2684,7 @@ app.delete("/api/admin/free-access-devices/:id", requireAdmin, requireSuperadmin
 
     const { data: existing, error: getErr } = await supabase
       .from("free_access_devices")
-      .select("id,pool_id,is_active")
+      .select("id,pool_id,mac_address,is_active")
       .eq("id", id)
       .maybeSingle();
 
@@ -2805,6 +2805,72 @@ async function assertMacNotActiveFreeAccess(poolId, macAddress, ignoreBlockedDev
   }
 }
 
+async function sendBlockedDeviceAgentCommand(poolId, macAddress, action = "block") {
+  const cleanPoolId = String(poolId || "").trim();
+  const mac = normalizeMacColon(String(macAddress || "")) || null;
+  const mode = String(action || "block").trim().toLowerCase() === "unblock" ? "unblock" : "block";
+
+  if (!cleanPoolId) throw new Error("pool_id_required");
+  if (!mac) throw new Error("mac_address_invalid");
+
+  const { pool, router } = await getRouterForPool(cleanPoolId);
+  const comment = blockedDeviceComment(pool.id);
+
+  const defaultUrl = mode === "unblock"
+    ? "http://159.89.16.34:3001/unblock-device"
+    : "http://159.89.16.34:3001/block-device";
+
+  const agentUrl = mode === "unblock"
+    ? (process.env.BLOCKED_DEVICE_UNBLOCK_AGENT_URL ||
+       process.env.BLOCKED_DEVICES_UNBLOCK_AGENT_URL ||
+       process.env.BLOCKED_DEVICE_SYNC_AGENT_BASE_URL && `${process.env.BLOCKED_DEVICE_SYNC_AGENT_BASE_URL.replace(/\/$/, "")}/unblock-device` ||
+       defaultUrl)
+    : (process.env.BLOCKED_DEVICE_SYNC_AGENT_URL ||
+       process.env.BLOCKED_DEVICES_SYNC_AGENT_URL ||
+       process.env.BLOCKED_DEVICE_SYNC_AGENT_BASE_URL && `${process.env.BLOCKED_DEVICE_SYNC_AGENT_BASE_URL.replace(/\/$/, "")}/block-device` ||
+       defaultUrl);
+
+  const agentSecret =
+    process.env.BLOCKED_DEVICE_SYNC_AGENT_SECRET ||
+    process.env.BLOCKED_DEVICES_SYNC_AGENT_SECRET ||
+    process.env.FREE_ACCESS_SYNC_AGENT_SECRET ||
+    "razafi_sync_secret";
+
+  const resp = await fetch(agentUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-secret": agentSecret,
+    },
+    body: JSON.stringify({
+      router_ip: router.api_host,
+      router_port: router.api_port || 8728,
+      api_user: router.api_user,
+      api_password: router.api_password,
+      mac_address: String(mac).toUpperCase(),
+      comment,
+    }),
+  });
+
+  const result = await resp.json().catch(() => ({}));
+
+  if (!resp.ok || !result.ok) {
+    throw new Error(result.error || `blocked_device_${mode}_agent_failed_${resp.status}`);
+  }
+
+  return {
+    ok: true,
+    mode,
+    pool,
+    router,
+    status: resp.status,
+    agent_url: agentUrl,
+    mac_address: String(mac).toUpperCase(),
+    ...result,
+  };
+}
+
+
 async function disconnectBlockedMacsFromRouter(api, macs) {
   const normalized = Array.from(new Set(
     (macs || [])
@@ -2838,7 +2904,6 @@ async function disconnectBlockedMacsFromRouter(api, macs) {
 
 async function syncBlockedDevicesPool(poolId) {
   const { pool, router } = await getRouterForPool(poolId);
-  const comment = blockedDeviceComment(pool.id);
 
   const { data: devices, error: dErr } = await supabase
     .from("blocked_devices")
@@ -2856,20 +2921,13 @@ async function syncBlockedDevicesPool(poolId) {
     .filter((d) => d.mac_address);
 
   const activeDevices = allDevices.filter((d) => d.is_active === true);
+  const inactiveDevices = allDevices.filter((d) => d.is_active !== true);
 
   // IMPORTANT:
   // Render cannot reliably reach MikroTik private/WireGuard IPs directly.
-  // Free-access already uses the VPS sync agent. Blocked-devices must do the same.
-  const vpsBlockUrl =
-    process.env.BLOCKED_DEVICE_SYNC_AGENT_URL ||
-    process.env.BLOCKED_DEVICES_SYNC_AGENT_URL ||
-    "http://159.89.16.34:3001/block-device";
-  const vpsBlockSecret =
-    process.env.BLOCKED_DEVICE_SYNC_AGENT_SECRET ||
-    process.env.BLOCKED_DEVICES_SYNC_AGENT_SECRET ||
-    process.env.FREE_ACCESS_SYNC_AGENT_SECRET ||
-    "razafi_sync_secret";
-
+  // Blocked-devices uses the VPS sync agent for BOTH directions:
+  // - active rows   -> /block-device
+  // - inactive rows -> /unblock-device
   let added_count = 0;
   let kept_count = 0;
   let removed_count = 0;
@@ -2880,28 +2938,8 @@ async function syncBlockedDevicesPool(poolId) {
     const mac = String(d.mac_address || "").toUpperCase();
     if (!mac) continue;
 
-    const resp = await fetch(vpsBlockUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-secret": vpsBlockSecret,
-      },
-      body: JSON.stringify({
-        router_ip: router.api_host,
-        router_port: router.api_port || 8728,
-        api_user: router.api_user,
-        api_password: router.api_password,
-        mac_address: mac,
-        comment,
-      }),
-    });
-
-    const result = await resp.json().catch(() => ({}));
-    agent_results.push({ mac_address: mac, status: resp.status, ...result });
-
-    if (!resp.ok || !result.ok) {
-      throw new Error(result.error || `blocked_device_sync_agent_failed_${resp.status}`);
-    }
+    const result = await sendBlockedDeviceAgentCommand(pool.id, mac, "block");
+    agent_results.push({ mac_address: mac, action: "block", ...result });
 
     // The VPS endpoint is idempotent: it removes the existing block for that MAC/comment,
     // then adds it again as type=blocked and disconnects any active hotspot session.
@@ -2909,14 +2947,22 @@ async function syncBlockedDevicesPool(poolId) {
     disconnected_count += Number(result.disconnected_count || 0);
   }
 
+  for (const d of inactiveDevices) {
+    const mac = String(d.mac_address || "").toUpperCase();
+    if (!mac) continue;
+
+    const result = await sendBlockedDeviceAgentCommand(pool.id, mac, "unblock");
+    agent_results.push({ mac_address: mac, action: "unblock", ...result });
+    removed_count += Number(result.removed_count || result.unblocked_count || 0);
+  }
+
   const nowIso = new Date().toISOString();
 
-  if (activeDevices.length) {
+  if (allDevices.length) {
     await supabase
       .from("blocked_devices")
       .update({ last_synced_at: nowIso, updated_at: nowIso })
-      .eq("pool_id", pool.id)
-      .eq("is_active", true);
+      .eq("pool_id", pool.id);
   }
 
   return {
@@ -2927,17 +2973,15 @@ async function syncBlockedDevicesPool(poolId) {
     router_name: router.display_name || null,
     router_host: router.api_host,
     active_count: activeDevices.length,
-    inactive_count: allDevices.length - activeDevices.length,
+    inactive_count: inactiveDevices.length,
     added_count,
     kept_count,
     removed_count,
     disconnected_count,
-    via: "vps_sync_agent_block_device",
-    sync_agent_url: vpsBlockUrl,
+    via: "vps_sync_agent_block_and_unblock_device",
     agent_results,
   };
 }
-
 // GET /api/admin/blocked-devices
 app.get("/api/admin/blocked-devices", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
@@ -3161,11 +3205,29 @@ app.patch("/api/admin/blocked-devices/:id", requireAdmin, requireSuperadmin, asy
     }
     if (!data) return res.status(404).json({ error: "not_found" });
 
+    // Best-effort safety cleanup:
+    // If an active block was deactivated, or if an active blocked MAC was changed,
+    // explicitly remove the old MikroTik block before the full pool sync.
+    let unblock_previous_result = null;
+    const oldMac = String(existing.mac_address || "").toUpperCase();
+    const newMac = String(data.mac_address || "").toUpperCase();
+    const oldWasActive = existing.is_active === true;
+    const nowIsActive = data.is_active === true;
+    const macChanged = oldMac && newMac && oldMac !== newMac;
+
+    if (oldWasActive && (!nowIsActive || macChanged)) {
+      try {
+        unblock_previous_result = await sendBlockedDeviceAgentCommand(existing.pool_id, oldMac, "unblock");
+      } catch (e) {
+        unblock_previous_result = { ok: false, error: String(e?.message || e) };
+      }
+    }
+
     // Best-effort immediate sync after activation/deactivation/MAC edits.
     let sync_result = null;
     try { sync_result = await syncBlockedDevicesPool(data.pool_id); } catch (e) { sync_result = { ok: false, error: String(e?.message || e) }; }
 
-    return res.json({ ok: true, item: data, sync_result });
+    return res.json({ ok: true, item: data, unblock_previous_result, sync_result });
   } catch (e) {
     console.error("BLOCKED DEVICE PATCH ERROR", e);
     const status = e?.status || 500;
@@ -3183,7 +3245,7 @@ app.delete("/api/admin/blocked-devices/:id", requireAdmin, requireSuperadmin, as
 
     const { data: existing, error: getErr } = await supabase
       .from("blocked_devices")
-      .select("id,pool_id,is_active")
+      .select("id,pool_id,mac_address,is_active")
       .eq("id", id)
       .maybeSingle();
 
@@ -3199,6 +3261,16 @@ app.delete("/api/admin/blocked-devices/:id", requireAdmin, requireSuperadmin, as
       });
     }
 
+    // Best-effort: make sure the disabled block is removed from MikroTik before deleting the DB row.
+    let unblock_result = null;
+    if (existing.mac_address) {
+      try {
+        unblock_result = await sendBlockedDeviceAgentCommand(existing.pool_id, existing.mac_address, "unblock");
+      } catch (e) {
+        unblock_result = { ok: false, error: String(e?.message || e) };
+      }
+    }
+
     const { error } = await supabase
       .from("blocked_devices")
       .delete()
@@ -3209,7 +3281,7 @@ app.delete("/api/admin/blocked-devices/:id", requireAdmin, requireSuperadmin, as
     let sync_result = null;
     try { sync_result = await syncBlockedDevicesPool(existing.pool_id); } catch (e) { sync_result = { ok: false, error: String(e?.message || e) }; }
 
-    return res.json({ ok: true, deleted_id: id, pool_id: existing.pool_id, sync_result });
+    return res.json({ ok: true, deleted_id: id, pool_id: existing.pool_id, unblock_result, sync_result });
   } catch (e) {
     console.error("BLOCKED DEVICE DELETE ERROR", e);
     return res.status(500).json({ error: String(e?.message || e) });
