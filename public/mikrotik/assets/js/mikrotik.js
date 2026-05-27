@@ -2357,8 +2357,8 @@ function saturationLabel(pct) {
             <div class="processing-card">
               <div class="spinner" aria-hidden="true"></div>
               <div class="processing-text">
-                <div class="processing-title">📲 Vérifiez votre téléphone</div>
-                <div class="processing-sub">Une demande MVola va être envoyée. Validez-la pour recevoir votre code WiFi.</div>
+                <div class="processing-title">📲 Vérifiez votre téléphone MVola</div>
+                <div class="processing-sub">Entrez votre PIN si demandé. Votre code WiFi apparaîtra automatiquement après confirmation.</div>
               </div>
             </div>
           </div>
@@ -2457,31 +2457,12 @@ function saturationLabel(pct) {
   }
 
   function scheduleProcessingWaitMessages(card) {
+    // UX vFinal: no timer-based message changes.
+    // The browser cannot know when the user entered the MVola PIN,
+    // so we keep one clear message during the whole polling period.
     try {
       if (!card) return;
       clearProcessingWaitMessages(card);
-
-      const timers = [];
-
-      timers.push(setTimeout(() => {
-        if (!card.classList.contains("processing")) return;
-        updateProcessingMessage(
-          card,
-          "⏳ En attente de confirmation MVola...",
-          "Gardez cette page ouverte pendant que RAZAFI attend la validation."
-        );
-      }, 5000));
-
-      timers.push(setTimeout(() => {
-        if (!card.classList.contains("processing")) return;
-        updateProcessingMessage(
-          card,
-          "⏳ Confirmation en cours...",
-          "Si vous avez déjà validé avec votre PIN MVola, patientez quelques secondes. Votre code WiFi s’affichera automatiquement dès confirmation."
-        );
-      }, 12000));
-
-      processingWaitTimers.set(card, timers);
     } catch (_) {}
   }
 
@@ -2494,8 +2475,8 @@ function saturationLabel(pct) {
     if (isProcessing) {
       updateProcessingMessage(
         card,
-        "📲 Vérifiez votre téléphone",
-        "Une demande MVola va être envoyée. Validez-la pour recevoir votre code WiFi."
+        "📲 Vérifiez votre téléphone MVola",
+        "Entrez votre PIN si demandé. Votre code WiFi apparaîtra automatiquement après confirmation."
       );
     }
 
@@ -2930,21 +2911,21 @@ function bindPlanHandlers() {
 
               updateProcessingMessage(
                 card,
-                "✅ Demande MVola envoyée",
-                "Validez la transaction sur votre téléphone. Votre code WiFi apparaîtra automatiquement ici."
+                "📲 Vérifiez votre téléphone MVola",
+                "Entrez votre PIN si demandé. Votre code WiFi apparaîtra automatiquement après confirmation."
               );
               scheduleProcessingWaitMessages(card);
-              showToast("✅ Demande MVola envoyée. Validez sur votre téléphone.", "success", 5200);
+              showToast("📲 Demande MVola envoyée. Vérifiez votre téléphone.", "success", 5200);
 
               const code = await pollDernierCode(cleaned, { timeoutMs: 180000, intervalMs: 3000, baselineCode });
               if (!code) {
                 clearProcessingWaitMessages(card);
                 updateProcessingMessage(
                   card,
-                  "⏰ Paiement non confirmé pour le moment",
-                  "Si vous avez validé MVola, patientez un instant puis réessayez."
+                  "❌ Paiement non confirmé",
+                  "Vérifiez votre téléphone MVola, votre solde ou votre réseau mobile puis réessayez."
                 );
-                showToast("⏰ Pas de code reçu pour le moment. Si vous avez validé MVola, réessayez dans 1-2 minutes.", "info", 6500);
+                showToast("❌ Paiement non confirmé. Vérifiez votre téléphone MVola, votre solde ou votre réseau mobile puis réessayez.", "error", 7500);
                 setProcessing(card, false);
                 updatePayButtonState(card);
                 return;
@@ -2964,7 +2945,18 @@ function bindPlanHandlers() {
               showToast("🎉 Code reçu ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
             } catch (e) {
               console.error("[RAZAFI] payment error", e);
-              showToast("❌ " + friendlyErrorMessage(e), "error", 6500);
+              const friendly = friendlyErrorMessage(e);
+              const isPaymentLikeError = /paiement|mvola|payment/i.test(String(friendly || "") + " " + String(e?.message || ""));
+              if (isPaymentLikeError) {
+                updateProcessingMessage(
+                  card,
+                  "❌ Paiement non confirmé",
+                  "Vérifiez votre téléphone MVola, votre solde ou votre réseau mobile puis réessayez."
+                );
+                showToast("❌ Paiement non confirmé. Vérifiez votre téléphone MVola, votre solde ou votre réseau mobile puis réessayez.", "error", 7500);
+              } else {
+                showToast("❌ " + friendly, "error", 6500);
+              }
             } finally {
               setProcessing(card, false);
               updatePayButtonState(card);
