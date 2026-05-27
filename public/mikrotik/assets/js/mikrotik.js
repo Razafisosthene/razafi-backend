@@ -2446,7 +2446,47 @@ function saturationLabel(pct) {
     } catch (_) {}
   }
 
+  const processingWaitTimers = new WeakMap();
+
+  function clearProcessingWaitMessages(card) {
+    try {
+      const timers = processingWaitTimers.get(card) || [];
+      timers.forEach((t) => clearTimeout(t));
+      processingWaitTimers.delete(card);
+    } catch (_) {}
+  }
+
+  function scheduleProcessingWaitMessages(card) {
+    try {
+      if (!card) return;
+      clearProcessingWaitMessages(card);
+
+      const timers = [];
+
+      timers.push(setTimeout(() => {
+        if (!card.classList.contains("processing")) return;
+        updateProcessingMessage(
+          card,
+          "⏳ En attente de confirmation MVola...",
+          "Gardez cette page ouverte pendant que RAZAFI attend la validation."
+        );
+      }, 5000));
+
+      timers.push(setTimeout(() => {
+        if (!card.classList.contains("processing")) return;
+        updateProcessingMessage(
+          card,
+          "⏳ Confirmation en cours...",
+          "Si vous avez déjà validé avec votre PIN MVola, patientez quelques secondes. Votre code WiFi s’affichera automatiquement dès confirmation."
+        );
+      }, 12000));
+
+      processingWaitTimers.set(card, timers);
+    } catch (_) {}
+  }
+
   function setProcessing(card, isProcessing) {
+    if (!isProcessing) clearProcessingWaitMessages(card);
     card.classList.toggle("processing", !!isProcessing);
     const overlay = card.querySelector(".processing-overlay");
     if (overlay) overlay.classList.toggle("hidden", !isProcessing);
@@ -2893,10 +2933,12 @@ function bindPlanHandlers() {
                 "✅ Demande MVola envoyée",
                 "Validez la transaction sur votre téléphone. Votre code WiFi apparaîtra automatiquement ici."
               );
+              scheduleProcessingWaitMessages(card);
               showToast("✅ Demande MVola envoyée. Validez sur votre téléphone.", "success", 5200);
 
               const code = await pollDernierCode(cleaned, { timeoutMs: 180000, intervalMs: 3000, baselineCode });
               if (!code) {
+                clearProcessingWaitMessages(card);
                 updateProcessingMessage(
                   card,
                   "⏰ Paiement non confirmé pour le moment",
@@ -2913,6 +2955,7 @@ function bindPlanHandlers() {
               } catch (_) {}
 
               
+              clearProcessingWaitMessages(card);
               await refreshPortalAfterNewCode({
                 phone: cleaned,
                 code,
