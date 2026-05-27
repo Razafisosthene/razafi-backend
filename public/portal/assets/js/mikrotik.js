@@ -2357,8 +2357,8 @@ function saturationLabel(pct) {
             <div class="processing-card">
               <div class="spinner" aria-hidden="true"></div>
               <div class="processing-text">
-                <div class="processing-title">Traitement du paiement…</div>
-                <div class="processing-sub">Merci de valider la transaction sur votre mobile MVola.</div>
+                <div class="processing-title">📲 Vérifiez votre téléphone</div>
+                <div class="processing-sub">Une demande MVola va être envoyée. Validez-la pour recevoir votre code WiFi.</div>
               </div>
             </div>
           </div>
@@ -2436,10 +2436,28 @@ function saturationLabel(pct) {
     });
   }
 
+  function updateProcessingMessage(card, title, subtitle) {
+    try {
+      if (!card) return;
+      const titleEl = card.querySelector(".processing-title");
+      const subEl = card.querySelector(".processing-sub");
+      if (titleEl && title) titleEl.textContent = title;
+      if (subEl && subtitle) subEl.textContent = subtitle;
+    } catch (_) {}
+  }
+
   function setProcessing(card, isProcessing) {
     card.classList.toggle("processing", !!isProcessing);
     const overlay = card.querySelector(".processing-overlay");
     if (overlay) overlay.classList.toggle("hidden", !isProcessing);
+
+    if (isProcessing) {
+      updateProcessingMessage(
+        card,
+        "📲 Vérifiez votre téléphone",
+        "Une demande MVola va être envoyée. Validez-la pour recevoir votre code WiFi."
+      );
+    }
 
     const inputs = card.querySelectorAll("input, button");
     inputs.forEach((el) => {
@@ -2767,8 +2785,13 @@ function bindPlanHandlers() {
           }
 
           if (confirmWrap) confirmWrap.classList.add("hidden");
-          showToast("⏳ Paiement lancé. Merci de valider la transaction sur votre mobile MVola.", "info");
+          showToast("📲 Vérifiez votre téléphone pour valider MVola.", "info", 5200);
           setProcessing(card, true);
+          updateProcessingMessage(
+            card,
+            "📡 Envoi de la demande MVola…",
+            "Gardez cette page ouverte. La demande va arriver sur votre téléphone."
+          );
 
           (async () => {
             try {
@@ -2865,11 +2888,20 @@ function bindPlanHandlers() {
                 }
               }
 
-              showToast("✅ Paiement initié. Validez la transaction sur votre mobile MVola…", "success", 5200);
-              showToast("⏳ En attente du code…", "info", 5200);
+              updateProcessingMessage(
+                card,
+                "✅ Demande MVola envoyée",
+                "Validez la transaction sur votre téléphone. Votre code WiFi apparaîtra automatiquement ici."
+              );
+              showToast("✅ Demande MVola envoyée. Validez sur votre téléphone.", "success", 5200);
 
               const code = await pollDernierCode(cleaned, { timeoutMs: 180000, intervalMs: 3000, baselineCode });
               if (!code) {
+                updateProcessingMessage(
+                  card,
+                  "⏰ Paiement non confirmé pour le moment",
+                  "Si vous avez validé MVola, patientez un instant puis réessayez."
+                );
                 showToast("⏰ Pas de code reçu pour le moment. Si vous avez validé MVola, réessayez dans 1-2 minutes.", "info", 6500);
                 setProcessing(card, false);
                 updatePayButtonState(card);
