@@ -272,6 +272,20 @@ function renderSelectionChecks() {
 // -------------------------
 // UI wiring
 // -------------------------
+
+function setupRevenueFilterDisclosure() {
+  const box = byId("revenueFilterBox");
+  if (!box) return;
+
+  const applyInitialState = () => {
+    const isMobile = window.matchMedia("(max-width: 760px)").matches;
+    if (isMobile) box.removeAttribute("open");
+    else box.setAttribute("open", "");
+  };
+
+  applyInitialState();
+}
+
 function wireNav() {
   const go = (p) => () => (location.href = p);
   byId("dashBtn").onclick = go("/admin/index.html");
@@ -968,6 +982,7 @@ async function loadAll() {
   await requireAdmin();
   wireNav();
   ensurePayoutUI();
+  setupRevenueFilterDisclosure();
   wireTabs();
   wireFilters();
   wirePayoutActions();

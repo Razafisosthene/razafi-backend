@@ -293,6 +293,91 @@
       justify-content:flex-end;
     }
 
+
+
+    .rz-filter-disclosure{
+      border-radius:26px;
+      background:rgba(255,255,255,.72);
+      border:1px solid rgba(255,255,255,.90);
+      box-shadow:0 12px 28px rgba(15,23,42,.08);
+      overflow:hidden;
+    }
+
+    .rz-filter-disclosure > summary{
+      list-style:none;
+      cursor:pointer;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      padding:14px 16px;
+      font-weight:950;
+      color:#0f172a;
+      user-select:none;
+    }
+
+    .rz-filter-disclosure > summary::-webkit-details-marker{
+      display:none;
+    }
+
+    .rz-filter-summary-left{
+      display:inline-flex;
+      align-items:center;
+      gap:10px;
+      min-width:0;
+    }
+
+    .rz-filter-summary-icon{
+      width:34px;
+      height:34px;
+      border-radius:14px;
+      display:inline-grid;
+      place-items:center;
+      background:rgba(13,110,253,.10);
+      color:#0d6efd;
+      font-weight:1000;
+      flex:0 0 auto;
+    }
+
+    .rz-filter-summary-text{
+      display:flex;
+      flex-direction:column;
+      gap:2px;
+      min-width:0;
+    }
+
+    .rz-filter-summary-title{
+      font-size:15px;
+      line-height:1.15;
+    }
+
+    .rz-filter-summary-subtitle{
+      color:#64748b;
+      font-size:12px;
+      font-weight:800;
+      line-height:1.2;
+    }
+
+    .rz-filter-summary-chevron{
+      color:#64748b;
+      font-size:18px;
+      font-weight:950;
+      transition:transform .18s ease;
+      flex:0 0 auto;
+    }
+
+    .rz-filter-disclosure[open] .rz-filter-summary-chevron{
+      transform:rotate(180deg);
+    }
+
+    .rz-filter-disclosure .sticky-bar{
+      margin:0;
+      box-shadow:none;
+      border:0;
+      border-top:1px solid rgba(17,24,39,.07);
+      background:rgba(255,255,255,.50);
+    }
+
     @media (max-width: 760px){
       .rz-revenue-page{
         width:100%;
@@ -317,6 +402,18 @@
       }
       .rz-modal-head{
         align-items:center;
+      }
+      .rz-filter-disclosure{
+        order:2;
+      }
+      .rz-filter-disclosure:not([open]){
+        box-shadow:0 10px 22px rgba(15,23,42,.06);
+      }
+      .rz-filter-disclosure > summary{
+        padding:12px 14px;
+      }
+      .rz-filter-summary-subtitle{
+        display:none;
       }
     }
   </style>
@@ -344,26 +441,6 @@
           </div>
         </div>
 
-        <div class="sticky-bar">
-          <div class="filters">
-            <input id="search" class="filter-search" placeholder="Rechercher : téléphone, voucher, référence, MAC..." />
-
-            <div class="rz-filter-dates">
-              <label class="rz-filter-label" for="from">Du</label>
-              <input id="from" class="filter-select" type="date" />
-              <label class="rz-filter-label" for="to">Au</label>
-              <input id="to" class="filter-select" type="date" />
-            </div>
-
-            <button id="refreshBtn" class="filter-btn primary" type="button">Actualiser</button>
-            <button id="clearBtn" class="filter-btn" type="button">Réinitialiser</button>
-          </div>
-
-          <div id="hint" class="rz-revenue-hint">
-            Les montants affichés concernent uniquement les paiements réussis. Les totaux suivent les filtres appliqués.
-          </div>
-        </div>
-
         <div class="rz-stats-grid">
           <div class="rz-stat-card">
             <div class="rz-stat-label">Montant payé</div>
@@ -386,6 +463,39 @@
             <div id="lastPaidAt" class="rz-stat-value rz-small-value">—</div>
           </div>
         </div>
+
+        <details id="revenueFilterBox" class="rz-filter-disclosure" open>
+          <summary aria-label="Afficher ou masquer les filtres de revenus">
+            <span class="rz-filter-summary-left">
+              <span class="rz-filter-summary-icon">☰</span>
+              <span class="rz-filter-summary-text">
+                <span class="rz-filter-summary-title">Filtres / Recherche</span>
+                <span class="rz-filter-summary-subtitle">Recherche, dates et actualisation des revenus</span>
+              </span>
+            </span>
+            <span class="rz-filter-summary-chevron">⌄</span>
+          </summary>
+
+          <div class="sticky-bar">
+            <div class="filters">
+              <input id="search" class="filter-search" placeholder="Rechercher : téléphone, voucher, référence, MAC..." />
+
+              <div class="rz-filter-dates">
+                <label class="rz-filter-label" for="from">Du</label>
+                <input id="from" class="filter-select" type="date" />
+                <label class="rz-filter-label" for="to">Au</label>
+                <input id="to" class="filter-select" type="date" />
+              </div>
+
+              <button id="refreshBtn" class="filter-btn primary" type="button">Actualiser</button>
+              <button id="clearBtn" class="filter-btn" type="button">Réinitialiser</button>
+            </div>
+
+            <div id="hint" class="rz-revenue-hint">
+              Les montants affichés concernent uniquement les paiements réussis. Les totaux suivent les filtres appliqués.
+            </div>
+          </div>
+        </details>
 
         <div class="rz-tabs" aria-label="Sections revenus">
           <button id="tabTx" class="filter-btn rz-tab-btn" type="button">Transactions</button>
