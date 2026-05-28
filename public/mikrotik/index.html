@@ -146,31 +146,28 @@
 
 
 
-    <!-- ========= CONDITIONS D’UTILISATION ========= -->
+    <!-- ========= RÈGLES D’UTILISATION ========= -->
     <section class="card terms-card" aria-labelledby="termsTitle">
-      <h3 id="termsTitle">Conditions d’utilisation</h3>
+      <h3 id="termsTitle">Règles d’utilisation</h3>
 
       <label class="terms-check" for="acceptTermsCheckbox">
         <input type="checkbox" id="acceptTermsCheckbox">
-        <span>J’accepte les conditions d’utilisation du WiFi RAZAFI</span>
+        <span>J’accepte les règles d’utilisation du WiFi RAZAFI</span>
       </label>
 
       <button type="button" id="toggleTermsBtn" class="terms-toggle" aria-expanded="false" aria-controls="termsContent">
-        Voir les conditions
+        Voir les règles
       </button>
 
       <div id="termsContent" class="terms-content hidden">
         <ul class="terms-list">
-          <li>Accès selon le forfait choisi</li>
-          <li>Code personnel (1 appareil, pas de partage)</li>
           <li>Activités illégales interdites</li>
-          <li>Données utilisées uniquement pour le service</li>
-          <li>Service sans garantie (coupures possibles)</li>
+          <li>Le service peut être ralenti ou interrompu selon le réseau disponible ou les coupures JIRAMA</li>
         </ul>
       </div>
 
       <div id="termsError" class="terms-error hidden" role="alert" aria-live="polite">
-        Veuillez accepter les conditions avant de continuer.
+        Veuillez accepter les règles avant de continuer.
       </div>
     </section>
 
@@ -251,7 +248,7 @@
           const willOpen = content.classList.contains("hidden");
           content.classList.toggle("hidden", !willOpen);
           toggleBtn.setAttribute("aria-expanded", willOpen ? "true" : "false");
-          toggleBtn.textContent = willOpen ? "Masquer les conditions" : "Voir les conditions";
+          toggleBtn.textContent = willOpen ? "Masquer les règles" : "Voir les règles";
         });
       }
 
