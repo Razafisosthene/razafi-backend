@@ -1133,11 +1133,11 @@
       const safeUrl = String(url || "").trim();
       if (!wrap || !img) return;
 
-      // Always start hidden. We only show the logo after the image really loads.
-      // This avoids the broken-image icon in captive portal / walled-garden situations.
       const hideLogo = () => {
         try {
           wrap.classList.add("hidden");
+          img.onload = null;
+          img.onerror = null;
           img.removeAttribute("src");
           img.alt = "";
         } catch (_) {}
@@ -1148,21 +1148,40 @@
         return;
       }
 
+      // Captive browsers can be aggressive with image caching/lazy loading.
+      // Load with a fresh Image() first, then reveal the visible logo only after success.
       wrap.classList.add("hidden");
+      img.onload = null;
+      img.onerror = null;
+      img.removeAttribute("src");
       img.alt = "";
+      try {
+        img.loading = "eager";
+        img.decoding = "sync";
+      } catch (_) {}
 
-      img.onload = () => {
+      const bust = safeUrl.includes("?") ? "&_=" : "?_=";
+      const finalUrl = safeUrl + bust + Date.now();
+
+      const preloader = new Image();
+      try {
+        preloader.loading = "eager";
+        preloader.decoding = "sync";
+      } catch (_) {}
+
+      preloader.onload = () => {
         try {
+          img.src = finalUrl;
           img.alt = "Logo";
           wrap.classList.remove("hidden");
         } catch (_) {}
       };
 
-      img.onerror = () => {
+      preloader.onerror = () => {
         hideLogo();
       };
 
-      img.src = safeUrl;
+      preloader.src = finalUrl;
     } catch (_) {}
   }
 
