@@ -2263,8 +2263,7 @@ function saturationLabel(pct) {
         active_clients: (j.active_clients === null || j.active_clients === undefined) ? null : Number(j.active_clients),
         capacity_max: (j.capacity_max === null || j.capacity_max === undefined) ? null : Number(j.capacity_max),
       };
-      renderOwnerLogo(buildOwnerLogoProxyUrl());
-      poolIsFull = !!j.is_full;
+          poolIsFull = !!j.is_full;
     } catch (e) {
       console.warn("[RAZAFI] portal context fetch failed", e?.message || e);
       poolContext = { pool_name: null, display_name: null, brand_name: null, branding_logo_url: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
