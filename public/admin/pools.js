@@ -509,11 +509,11 @@ document.addEventListener("DOMContentLoaded", async () => {
           <div class="rz-form-grid">
             <div class="rz-field">
               <label>Lieu *</label>
-              <input id="modalPoolName" value="${esc(placeName)}" placeholder="Ex: Anosy" ${canEditBusiness ? "" : "readonly disabled"} />
+              <input id="modalPoolName" value="${esc(place)}" placeholder="Ex: Anosy" ${canEditBusiness ? "" : "readonly disabled"} />
             </div>
             <div class="rz-field">
               <label>Marque (optionnel)</label>
-              <input id="modalBrandName" value="${esc(brandName)}" placeholder="Ex: Hilton" ${canEditBusiness ? "" : "readonly disabled"} />
+              <input id="modalBrandName" value="${esc(brand)}" placeholder="Ex: Hilton" ${canEditBusiness ? "" : "readonly disabled"} />
             </div>
             <div class="rz-field">
               <label>Téléphone contact</label>
@@ -527,14 +527,14 @@ document.addEventListener("DOMContentLoaded", async () => {
           <div class="rz-field" style="margin-top:10px;">
             <label>Logo (optionnel)</label>
             <div class="rz-logo-preview-wrap">
-              <img id="modalLogoPreview" class="rz-logo-preview ${logoUrl ? "" : "is-empty"}" src="${esc(logoUrl)}" alt="Logo">
+              <img id="modalLogoPreview" class="rz-logo-preview ${hasLogo ? "" : "is-empty"}" src="${esc(cleanText(p.branding_logo_url))}" alt="Logo">
               <div style="flex:1;min-width:210px;">
                 <div class="rz-logo-note">Si aucun logo n’est ajouté, rien ne sera affiché en haut du portail.</div>
                 <div class="rz-logo-note">Formats conseillés : PNG, JPG ou WEBP. Taille max : 1 MB.</div>
                 <div class="rz-logo-actions" style="margin-top:8px;">
                   <input id="modalLogoFile" type="file" accept="image/png,image/jpeg,image/webp" style="display:none;" ${canEditBusiness ? "" : "disabled"} />
-                  <button type="button" id="modalLogoChooseBtn" class="filter-btn" ${canEditBusiness ? "" : "disabled"}>${logoUrl ? "Remplacer le logo" : "Ajouter un logo"}</button>
-                  <button type="button" id="modalLogoDeleteBtn" class="danger" style="${logoUrl ? "" : "display:none;"}" ${canEditBusiness ? "" : "disabled"}>Supprimer le logo</button>
+                  <button type="button" id="modalLogoChooseBtn" class="filter-btn" ${canEditBusiness ? "" : "disabled"}>${hasLogo ? "Remplacer le logo" : "Ajouter un logo"}</button>
+                  <button type="button" id="modalLogoDeleteBtn" class="danger" style="${hasLogo ? "" : "display:none;"}" ${canEditBusiness ? "" : "disabled"}>Supprimer le logo</button>
                 </div>
               </div>
             </div>
