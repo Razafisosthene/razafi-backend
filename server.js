@@ -163,6 +163,77 @@ const DEFAULT_SUPPORT_PHONE = process.env.DEFAULT_SUPPORT_PHONE || "038 75 00 59
 
 // Portal announcement fields (per pool, optional UX feature)
 const POOL_ANNOUNCEMENT_SELECT = "portal_announcement_enabled,portal_announcement_type,portal_announcement_message,portal_announcement_priority";
+const POOL_BRANDING_SELECT = "brand_name,branding_logo_url";
+const POOL_LOGO_BUCKET = "pool-branding";
+const POOL_LOGO_MAX_BYTES = 1024 * 1024; // 1 MB
+const POOL_LOGO_ALLOWED_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+function cleanOptionalText(value, maxLen = 120) {
+  const s = String(value ?? "").replace(/[\r\n\t]/g, " ").replace(/\s{2,}/g, " ").trim();
+  return s ? s.slice(0, maxLen) : null;
+}
+
+function buildPoolDisplayName(poolRow) {
+  const place = cleanOptionalText(poolRow?.name, 120);
+  const brand = cleanOptionalText(poolRow?.brand_name, 120);
+  if (brand && place) return `${brand} – ${place}`;
+  return place || brand || null;
+}
+
+function withPoolDisplayName(poolRow) {
+  if (!poolRow || typeof poolRow !== "object") return poolRow;
+  return {
+    ...poolRow,
+    brand_name: cleanOptionalText(poolRow.brand_name, 120),
+    branding_logo_url: cleanOptionalText(poolRow.branding_logo_url, 2000),
+    display_name: buildPoolDisplayName(poolRow),
+  };
+}
+
+function normalizeLogoPayload(body = {}) {
+  const rawDataUrl = String(body?.data_url || body?.dataUrl || "").trim();
+  let mimeType = String(body?.mime_type || body?.mimeType || "").trim().toLowerCase();
+  let base64 = String(body?.image_base64 || body?.base64 || "").trim();
+
+  if (rawDataUrl) {
+    const m = rawDataUrl.match(/^data:([^;]+);base64,(.+)$/i);
+    if (!m) return { error: "logo_data_url_invalid" };
+    mimeType = String(m[1] || "").trim().toLowerCase();
+    base64 = String(m[2] || "").trim();
+  }
+
+  if (!mimeType || !POOL_LOGO_ALLOWED_TYPES.has(mimeType)) {
+    return { error: "logo_type_invalid" };
+  }
+  if (!base64) return { error: "logo_required" };
+
+  let buffer;
+  try {
+    buffer = Buffer.from(base64, "base64");
+  } catch (_) {
+    return { error: "logo_base64_invalid" };
+  }
+
+  if (!buffer || !buffer.length) return { error: "logo_required" };
+  if (buffer.length > POOL_LOGO_MAX_BYTES) return { error: "logo_too_large" };
+
+  const ext = mimeType === "image/png" ? "png" : (mimeType === "image/webp" ? "webp" : "jpg");
+  return { buffer, mimeType, ext };
+}
+
+function storagePathFromPublicUrl(url) {
+  try {
+    const s = String(url || "").trim();
+    if (!s) return null;
+    const marker = `/object/public/${POOL_LOGO_BUCKET}/`;
+    const idx = s.indexOf(marker);
+    if (idx === -1) return null;
+    const pathPart = s.slice(idx + marker.length).split(/[?#]/)[0];
+    return pathPart ? decodeURIComponent(pathPart) : null;
+  } catch (_) {
+    return null;
+  }
+}
 
 function normalizePortalAnnouncementType(value) {
   const v = String(value || "information").trim().toLowerCase();
@@ -299,6 +370,15 @@ async function requireAdmin(req, res, next) {
         return next();
       }
 
+      // Limited write endpoints for pool owners. Route-level checks still enforce
+      // pool ownership and allowed fields. Everything else remains read-only.
+      const allowOwnerPoolPatch = method === "PATCH" && /^\/api\/admin\/pools\/[^/]+$/.test(fullPath);
+      const allowOwnerLogoWrite = (method === "POST" || method === "DELETE") && /^\/api\/admin\/pools\/[^/]+\/logo$/.test(fullPath);
+
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite) {
+        return next();
+      }
+
       // read-only is GET-only
       if (method !== "GET" && method !== "HEAD") {
         return res.status(403).json({ error: "readonly_forbidden" });
@@ -409,9 +489,9 @@ app.get("/api/admin/_ping", requireAdmin, (req, res) => {
 });
 
 app.set("trust proxy", 1);
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
 app.use(cookieParser());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 // ===== Context detector: OLD vs NEW system =====
 app.use((req, res, next) => {
   req.isNewSystem = req.path.startsWith("/api/new/");
@@ -766,7 +846,6 @@ async function requireAdminPage(req, res, next) {
     if (!is_superadmin) {
       const forbidden = [
         "/aps.html",
-        "/pools.html",
         "/audit.html",
         "/users.html",
         "/settings.html",
@@ -5083,7 +5162,7 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
     if (nas_id) {
       const { data: poolRow, error: poolRowErr } = await supabase
         .from("internet_pools")
-        .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id")
+        .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,${POOL_BRANDING_SELECT}`)
         .eq("radius_nas_id", nas_id)
         .maybeSingle();
 
@@ -5118,6 +5197,9 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
           nas_id,
           pool_id: null,
           pool_name: null,
+          brand_name: null,
+          branding_logo_url: null,
+          display_name: null,
           contact_phone: DEFAULT_SUPPORT_PHONE,
           pool_capacity_max: null,
           pool_active_clients: 0,
@@ -5132,7 +5214,7 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
 
       const { data: poolRow, error: poolErr } = await supabase
         .from("internet_pools")
-        .select("id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id")
+        .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,${POOL_BRANDING_SELECT}`)
         .eq("id", pool_id)
         .maybeSingle();
 
@@ -5151,6 +5233,9 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
         nas_id,
         pool_id: null,
         pool_name: null,
+        brand_name: null,
+        branding_logo_url: null,
+        display_name: null,
         contact_phone: DEFAULT_SUPPORT_PHONE,
         pool_capacity_max: null,
         pool_active_clients: 0,
@@ -5215,6 +5300,9 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
         nas_id,
         pool_id,
         pool_name: pool?.name ?? null,
+        brand_name: cleanOptionalText(pool?.brand_name, 120),
+        branding_logo_url: cleanOptionalText(pool?.branding_logo_url, 2000),
+        display_name: buildPoolDisplayName(pool),
         contact_phone: pool?.contact_phone || DEFAULT_SUPPORT_PHONE,
 
         // old keys
@@ -6448,13 +6536,16 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
 
     let query = supabase
       .from("internet_pools")
-      .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`, { count: "exact" });
+      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`, { count: "exact" });
 
-    // 🔐 Pool scoping (server-side)
+    // 🔐 Pool scoping (server-side): pool assignments OR business owner
     if (!req.admin?.is_superadmin) {
-      const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
-      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
-      query = query.in("id", allowed);
+      const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids.map(String).filter(Boolean) : [];
+      if (allowed.length) {
+        query = query.or(`id.in.(${allowed.join(",")}),owner_admin_user_id.eq.${req.admin.id}`);
+      } else {
+        query = query.eq("owner_admin_user_id", req.admin.id);
+      }
     }
 
     // safest filter: by id only (schema-stable)
@@ -6472,7 +6563,7 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
       return res.status(500).json({ error: "db_error" });
     }
 
-    return res.json({ ok: true, pools: data || [], total: count ?? (data ? data.length : 0) });
+    return res.json({ ok: true, pools: (data || []).map(withPoolDisplayName), total: count ?? (data ? data.length : 0) });
   } catch (e) {
     console.error("ADMIN POOLS LIST EX", e);
     return res.status(500).json({ error: "internal error" });
@@ -6507,6 +6598,8 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
       ? null
       : String(contact_phone_raw).trim();
 
+    const brand_name = cleanOptionalText(req.body?.brand_name, 120);
+
     if (!name) return res.status(400).json({ error: "name_required" });
     if (system === "mikrotik" && (!mikrotik_ip || mikrotik_ip.length < 3)) {
       return res.status(400).json({ error: "mikrotik_ip_required" });
@@ -6525,6 +6618,7 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
       owner_share_pct: 0,
     };
     if (contact_phone !== null) payload.contact_phone = contact_phone.length ? contact_phone : null;
+    if (brand_name) payload.brand_name = brand_name;
     if (mikrotik_ip) payload.mikrotik_ip = mikrotik_ip;
     if (radius_nas_id) payload.radius_nas_id = radius_nas_id;
     if (capacity_max !== null) payload.capacity_max = Math.round(capacity_max);
@@ -6533,11 +6627,11 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
     const { data, error } = await supabase
       .from("internet_pools")
       .insert(payload)
-      .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
+      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
-    return res.json({ ok: true, pool: data });
+    return res.json({ ok: true, pool: withPoolDisplayName(data) });
   } catch (e) {
     console.error("ADMIN POOLS CREATE EX", e);
     return res.status(500).json({ error: "internal error" });
@@ -6550,13 +6644,38 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
     const id = String(req.params.id || "").trim();
     if (!id) return res.status(400).json({ error: "id_required" });
 
+    const { data: currentPool, error: currentPoolErr } = await supabase
+      .from("internet_pools")
+      .select("id,system,owner_admin_user_id")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (currentPoolErr) return res.status(400).json({ error: currentPoolErr.message, details: currentPoolErr });
+    if (!currentPool?.id) return res.status(404).json({ error: "not_found" });
+
+    const assignedPools = Array.isArray(req.admin?.pool_ids) ? req.admin.pool_ids.map(String) : [];
+    const canEditThisPool = !!(
+      req.admin?.is_superadmin ||
+      assignedPools.includes(id) ||
+      (currentPool.owner_admin_user_id && String(currentPool.owner_admin_user_id) === String(req.admin?.id || ""))
+    );
+
+    if (!canEditThisPool) return res.status(403).json({ error: "forbidden_pool" });
+
+    const isSuperadmin = !!req.admin?.is_superadmin;
     const updates = {};
     if (req.body?.name !== undefined) {
       const name = String(req.body.name || "").trim();
       if (!name) return res.status(400).json({ error: "name_required" });
       updates.name = name;
     }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "brand_name")) {
+      updates.brand_name = cleanOptionalText(req.body.brand_name, 120);
+    }
+
     if (req.body?.capacity_max !== undefined) {
+      if (!isSuperadmin) return res.status(403).json({ error: "superadmin_only" });
       const capRaw = req.body.capacity_max;
       const capacity_max = capRaw === null || capRaw === "" ? null : Number(capRaw);
       if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
@@ -6566,7 +6685,7 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
     }
 
     if (req.body?.free_access_limit !== undefined) {
-      if (!req.admin?.is_superadmin) {
+      if (!isSuperadmin) {
         return res.status(403).json({ error: "superadmin_only" });
       }
       const limRaw = req.body.free_access_limit;
@@ -6585,12 +6704,14 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
     }
 
     const hasMikrotikIp = Object.prototype.hasOwnProperty.call(req.body || {}, "mikrotik_ip");
+    if (hasMikrotikIp && !isSuperadmin) return res.status(403).json({ error: "superadmin_only" });
     if (hasMikrotikIp) {
       const v = req.body.mikrotik_ip === null || req.body.mikrotik_ip === "" ? null : String(req.body.mikrotik_ip).trim();
       updates.mikrotik_ip = v && v.length ? v : null;
     }
 
     const hasRadiusNasId = Object.prototype.hasOwnProperty.call(req.body || {}, "radius_nas_id");
+    if (hasRadiusNasId && !isSuperadmin) return res.status(403).json({ error: "superadmin_only" });
     if (hasRadiusNasId) {
       const v = req.body.radius_nas_id === null || req.body.radius_nas_id === "" ? null : String(req.body.radius_nas_id).trim();
       updates.radius_nas_id = v && v.length ? v : null;
@@ -6599,7 +6720,7 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
     const hasPlatformSharePct = Object.prototype.hasOwnProperty.call(req.body || {}, "platform_share_pct");
     const hasOwnerSharePct = Object.prototype.hasOwnProperty.call(req.body || {}, "owner_share_pct");
     if (hasPlatformSharePct || hasOwnerSharePct) {
-      if (!req.admin?.is_superadmin) {
+      if (!isSuperadmin) {
         return res.status(403).json({ error: "superadmin_only" });
       }
 
@@ -6624,7 +6745,7 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
 
     const hasOwnerAdminUserId = Object.prototype.hasOwnProperty.call(req.body || {}, "owner_admin_user_id");
     if (hasOwnerAdminUserId) {
-      if (!req.admin?.is_superadmin) {
+      if (!isSuperadmin) {
         return res.status(403).json({ error: "superadmin_only" });
       }
 
@@ -6676,13 +6797,7 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
 
     // Safety: don't allow clearing mikrotik_ip on an existing mikrotik pool
     if (hasMikrotikIp && updates.mikrotik_ip === null) {
-      const { data: curPool, error: curErr } = await supabase
-        .from("internet_pools")
-        .select("id,system")
-        .eq("id", id)
-        .single();
-      if (curErr) return res.status(400).json({ error: curErr.message, details: curErr });
-      if (curPool?.system === "mikrotik") {
+      if (currentPool?.system === "mikrotik") {
         return res.status(400).json({ error: "mikrotik_ip_required" });
       }
     }
@@ -6694,18 +6809,136 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       .from("internet_pools")
       .update(updates)
       .eq("id", id)
-      .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
+      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
-    return res.json({ ok: true, pool: data });
+    return res.json({ ok: true, pool: withPoolDisplayName(data) });
   } catch (e) {
     console.error("ADMIN POOLS PATCH EX", e);
     return res.status(500).json({ error: "internal error" });
   }
 });
 
-app.delete("/api/admin/pools/:id", requireAdmin, async (req, res) => {
+
+app.post("/api/admin/pools/:id/logo", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    const { data: pool, error: poolErr } = await supabase
+      .from("internet_pools")
+      .select("id,owner_admin_user_id,branding_logo_url")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (poolErr) return res.status(400).json({ error: poolErr.message, details: poolErr });
+    if (!pool?.id) return res.status(404).json({ error: "not_found" });
+
+    const assignedPools = Array.isArray(req.admin?.pool_ids) ? req.admin.pool_ids.map(String) : [];
+    const canEditThisPool = !!(
+      req.admin?.is_superadmin ||
+      assignedPools.includes(id) ||
+      (pool.owner_admin_user_id && String(pool.owner_admin_user_id) === String(req.admin?.id || ""))
+    );
+
+    if (!canEditThisPool) return res.status(403).json({ error: "forbidden_pool" });
+
+    const parsed = normalizeLogoPayload(req.body || {});
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+
+    const objectPath = `logos/${id}/logo-${Date.now()}.${parsed.ext}`;
+    const { error: uploadErr } = await supabase.storage
+      .from(POOL_LOGO_BUCKET)
+      .upload(objectPath, parsed.buffer, {
+        contentType: parsed.mimeType,
+        upsert: true,
+        cacheControl: "3600",
+      });
+
+    if (uploadErr) {
+      console.error("POOL LOGO UPLOAD ERROR", uploadErr);
+      return res.status(500).json({ error: "logo_upload_failed" });
+    }
+
+    const publicRes = supabase.storage.from(POOL_LOGO_BUCKET).getPublicUrl(objectPath);
+    const publicUrl = publicRes?.data?.publicUrl || null;
+    if (!publicUrl) return res.status(500).json({ error: "logo_public_url_failed" });
+
+    const { data, error } = await supabase
+      .from("internet_pools")
+      .update({ branding_logo_url: publicUrl })
+      .eq("id", id)
+      .select(`id,name,${POOL_BRANDING_SELECT},contact_phone,system,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
+      .single();
+
+    if (error) return res.status(400).json({ error: error.message, details: error });
+
+    // Best effort: remove the previous logo after DB update succeeds.
+    try {
+      const oldPath = storagePathFromPublicUrl(pool.branding_logo_url);
+      if (oldPath && oldPath !== objectPath) {
+        await supabase.storage.from(POOL_LOGO_BUCKET).remove([oldPath]);
+      }
+    } catch (_) {}
+
+    return res.json({ ok: true, pool: withPoolDisplayName(data), branding_logo_url: publicUrl });
+  } catch (e) {
+    console.error("ADMIN POOL LOGO UPLOAD EX", e);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+app.delete("/api/admin/pools/:id/logo", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    const { data: pool, error: poolErr } = await supabase
+      .from("internet_pools")
+      .select("id,owner_admin_user_id,branding_logo_url")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (poolErr) return res.status(400).json({ error: poolErr.message, details: poolErr });
+    if (!pool?.id) return res.status(404).json({ error: "not_found" });
+
+    const assignedPools = Array.isArray(req.admin?.pool_ids) ? req.admin.pool_ids.map(String) : [];
+    const canEditThisPool = !!(
+      req.admin?.is_superadmin ||
+      assignedPools.includes(id) ||
+      (pool.owner_admin_user_id && String(pool.owner_admin_user_id) === String(req.admin?.id || ""))
+    );
+
+    if (!canEditThisPool) return res.status(403).json({ error: "forbidden_pool" });
+
+    const oldPath = storagePathFromPublicUrl(pool.branding_logo_url);
+
+    const { data, error } = await supabase
+      .from("internet_pools")
+      .update({ branding_logo_url: null })
+      .eq("id", id)
+      .select(`id,name,${POOL_BRANDING_SELECT},contact_phone,system,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
+      .single();
+
+    if (error) return res.status(400).json({ error: error.message, details: error });
+
+    try {
+      if (oldPath) await supabase.storage.from(POOL_LOGO_BUCKET).remove([oldPath]);
+    } catch (_) {}
+
+    return res.json({ ok: true, pool: withPoolDisplayName(data) });
+  } catch (e) {
+    console.error("ADMIN POOL LOGO DELETE EX", e);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+app.delete("/api/admin/pools/:id", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
     const id = String(req.params.id || "").trim();
     if (!id) return res.status(400).json({ error: "id_required" });

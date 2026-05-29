@@ -1126,6 +1126,26 @@
     el.textContent = s.trim() ? s : fallback;
   }
 
+  function renderOwnerLogo(url) {
+    try {
+      const wrap = document.getElementById("ownerLogoWrap");
+      const img = document.getElementById("ownerLogo");
+      const safeUrl = String(url || "").trim();
+      if (!wrap || !img) return;
+
+      if (!safeUrl) {
+        img.removeAttribute("src");
+        img.alt = "";
+        wrap.classList.add("hidden");
+        return;
+      }
+
+      img.src = safeUrl;
+      img.alt = "Logo";
+      wrap.classList.remove("hidden");
+    } catch (_) {}
+  }
+
   function formatRemainingFromExpires(expiresIso) {
     try {
       const d = new Date(expiresIso);
@@ -1865,7 +1885,7 @@ function submitToLoginUrl(code, ev) {
   const plansLoading = $("plansLoading");
 
   // -------- Pool context (AP -> Pool) --------
-  let poolContext = { pool_name: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
+  let poolContext = { pool_name: null, display_name: null, brand_name: null, branding_logo_url: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
   let poolIsFull = false;
 
   // -------- Portal announcement (per pool, controlled from admin) --------
@@ -2004,7 +2024,7 @@ function saturationLabel(pct) {
     animate = false;
     if (!_netEls.card) return;
 
-    const name = poolContext.pool_name ? String(poolContext.pool_name) : "—";
+    const name = poolContext.display_name ? String(poolContext.display_name) : (poolContext.pool_name ? String(poolContext.pool_name) : "—");
 
     let pct = (poolContext.pool_percent === null || poolContext.pool_percent === undefined)
       ? null
@@ -2110,8 +2130,9 @@ function saturationLabel(pct) {
   function applyPoolContextUI() {
     const nameLine = ensurePoolNameLine();
     if (nameLine) {
-      nameLine.textContent = poolContext.pool_name ? String(poolContext.pool_name) : "";
-      nameLine.style.display = poolContext.pool_name ? "" : "none";
+      const displayName = poolContext.display_name ? String(poolContext.display_name) : (poolContext.pool_name ? String(poolContext.pool_name) : "");
+      nameLine.textContent = displayName;
+      nameLine.style.display = displayName ? "" : "none";
     }
 
     const banner = ensurePoolBanner();
@@ -2120,7 +2141,7 @@ function saturationLabel(pct) {
         const pct = (poolContext.pool_percent !== null && poolContext.pool_percent !== undefined)
           ? ` (${poolContext.pool_percent}%)`
           : "";
-        const poolName = poolContext.pool_name ? String(poolContext.pool_name) : "Ce point WiFi";
+        const poolName = poolContext.display_name ? String(poolContext.display_name) : (poolContext.pool_name ? String(poolContext.pool_name) : "Ce point WiFi");
         banner.innerHTML = `
           <strong>⚠️ Le WiFi ${escapeHtml(poolName)} est momentanément saturé${escapeHtml(pct)}.</strong><br>
           Les achats sont temporairement indisponibles. Veuillez patienter ou contacter l’assistance sur place.
@@ -2137,7 +2158,7 @@ function saturationLabel(pct) {
       const showingHasVoucher = _uiEls.voucherHas && !_uiEls.voucherHas.classList.contains("hidden");
 
       if (poolIsFull && showingNoVoucher && !showingHasVoucher) {
-        const placeName = (poolContext.pool_name ? String(poolContext.pool_name) : "ce point WiFi");
+        const placeName = (poolContext.display_name ? String(poolContext.display_name) : (poolContext.pool_name ? String(poolContext.pool_name) : "ce point WiFi"));
         if (_uiEls.accessMsg) _uiEls.accessMsg.textContent = `⚠️ WiFi ${placeName} est momentanément saturé.`;
         if (_uiEls.noVoucherMsg) _uiEls.noVoucherMsg.textContent = "Vous n’avez pas de code actif.";
         if (_uiEls.choosePlanHint) _uiEls.choosePlanHint.textContent =
@@ -2148,6 +2169,8 @@ function saturationLabel(pct) {
         if (_uiEls.choosePlanHint && _uiDefaults.choosePlanHint) _uiEls.choosePlanHint.textContent = _uiDefaults.choosePlanHint;
       }
     } catch (_) {}
+
+    try { renderOwnerLogo(poolContext.branding_logo_url); } catch (_) {}
 
     // Network info card: update snapshot values as soon as poolContext is known
     try { renderNetworkInfo({ animate: false }); } catch (_) {}
@@ -2178,7 +2201,7 @@ function saturationLabel(pct) {
 
   async function fetchPortalContext() {
     if (!nasId && !apMac) {
-      poolContext = { pool_name: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
+      poolContext = { pool_name: null, display_name: null, brand_name: null, branding_logo_url: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
       poolIsFull = false;
       applyPoolContextUI();
       return;
@@ -2194,15 +2217,19 @@ function saturationLabel(pct) {
 
       poolContext = {
         pool_name: j.pool_name ?? null,
+        display_name: j.display_name ?? j.pool_display_name ?? j.pool_name ?? null,
+        brand_name: j.brand_name ?? null,
+        branding_logo_url: j.branding_logo_url ?? null,
         pool_percent: (j.pool_percent === null || j.pool_percent === undefined) ? null : Number(j.pool_percent),
         is_full: !!j.is_full,
         active_clients: (j.active_clients === null || j.active_clients === undefined) ? null : Number(j.active_clients),
         capacity_max: (j.capacity_max === null || j.capacity_max === undefined) ? null : Number(j.capacity_max),
       };
+      renderOwnerLogo(poolContext.branding_logo_url);
       poolIsFull = !!j.is_full;
     } catch (e) {
       console.warn("[RAZAFI] portal context fetch failed", e?.message || e);
-      poolContext = { pool_name: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
+      poolContext = { pool_name: null, display_name: null, brand_name: null, branding_logo_url: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
       poolIsFull = false;
     } finally {
       applyPoolContextUI();

@@ -218,6 +218,30 @@
       font-weight:850;
       word-break:break-word;
     }
+    .rz-logo-preview-wrap{
+      display:flex;
+      align-items:center;
+      gap:12px;
+      flex-wrap:wrap;
+      padding:12px;
+      border-radius:20px;
+      background:rgba(17,24,39,.045);
+      border:1px dashed rgba(17,24,39,.12);
+    }
+    .rz-logo-preview{
+      width:90px;
+      height:58px;
+      object-fit:contain;
+      border-radius:14px;
+      background:rgba(255,255,255,.72);
+      border:1px solid rgba(17,24,39,.08);
+      padding:6px;
+    }
+    .rz-logo-preview.is-empty{display:none;}
+    .rz-logo-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+    .rz-logo-actions button{width:auto;margin:0;}
+    .rz-logo-note{font-size:12px;font-weight:800;color:var(--rz-muted,#6b7280);line-height:1.35;}
+
     .rz-ann-preview{
       margin-top:10px;
       padding:12px 13px;
@@ -426,8 +450,13 @@
             </select>
 
             <div class="rz-field">
-              <label>Nom du pool</label>
-              <input id="newName" placeholder="Nom du pool" />
+              <label>Lieu *</label>
+              <input id="newName" placeholder="Ex: Anosy" />
+            </div>
+
+            <div class="rz-field">
+              <label>Marque (optionnel)</label>
+              <input id="newBrandName" placeholder="Ex: Hilton" />
             </div>
 
             <div class="rz-field">

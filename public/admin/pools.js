@@ -164,6 +164,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const newMikrotikIpEl = $id("newMikrotikIp");
   const newRadiusNasIdEl = $id("newRadiusNasId");
   const newContactPhoneEl = $id("newContactPhone");
+  const newBrandNameEl = $id("newBrandName");
   const createPoolBtn = $id("createPoolBtn");
 
   const sysPortalBtn = $id("sysPortalBtn");
@@ -190,8 +191,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function canEditOwnerFields() {
-    // Current backend still decides final permissions.
-    // Frontend allows owners to prepare the future UX for capacity/phone/announcement.
+    // Backend remains the source of truth. Owners can edit only safe business fields
+    // for their own pools; superadmin keeps full control.
     return true;
   }
 
@@ -200,6 +201,27 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!id) return "—";
     const u = ownerUsers.find((x) => String(x.id || "").trim() === id);
     return u?.email || id;
+  }
+
+  function cleanText(v) {
+    return String(v ?? "").replace(/[\r\n\t]/g, " ").replace(/\s{2,}/g, " ").trim();
+  }
+
+  function poolDisplayName(p) {
+    const serverDisplay = cleanText(p?.display_name);
+    if (serverDisplay) return serverDisplay;
+    const place = cleanText(p?.name);
+    const brand = cleanText(p?.brand_name);
+    if (brand && place) return `${brand} – ${place}`;
+    return place || brand || "Pool";
+  }
+
+  function poolLocationName(p) {
+    return cleanText(p?.name) || "Pool";
+  }
+
+  function poolBrandName(p) {
+    return cleanText(p?.brand_name);
   }
 
   async function loadOwnerUsers() {
@@ -250,6 +272,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       newMikrotikIpEl,
       newRadiusNasIdEl,
       newContactPhoneEl,
+      newBrandNameEl,
     ];
     createFields.forEach((el) => {
       if (el) el.disabled = !canManage;
@@ -327,7 +350,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     (pools || []).forEach((p) => {
       const id = String(p?.id || "");
       if (!id) return;
-      const label = String(p?.name || id);
+      const label = poolDisplayName(p);
       const selected = id === current ? "selected" : "";
       options.push(`<option value="${esc(id)}" ${selected}>${esc(label)}</option>`);
     });
@@ -354,7 +377,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function cardHtml(p) {
     const pid = String(p.id || "");
-    const name = p.name || "Pool";
+    const name = poolDisplayName(p);
+    const place = poolLocationName(p);
+    const brand = poolBrandName(p);
+    const hasLogo = !!cleanText(p.branding_logo_url);
     const contactPhone = String(p.contact_phone ?? p.contactPhone ?? "").trim();
     const share = ownerShare(p);
     const freeLimit = Number.isFinite(Number(p.free_access_limit)) ? Number(p.free_access_limit) : 5;
@@ -367,6 +393,9 @@ document.addEventListener("DOMContentLoaded", async () => {
           <span class="rz-pool-chevron">›</span>
         </div>
         <div class="rz-pool-meta">
+          <span class="rz-pill">📍 <strong>${esc(place)}</strong></span>
+          <span class="rz-pill">🏷️ <strong>${esc(brand || "Marque non définie")}</strong></span>
+          <span class="rz-pill ${hasLogo ? "rz-pill-ok" : "rz-pill-muted"}">Logo : <strong>${hasLogo ? "Oui" : "Non"}</strong></span>
           <span class="rz-pill">📞 <strong>${esc(contactPhone || "Téléphone non défini")}</strong></span>
           <span class="rz-pill">Part propriétaire : <strong>${esc(share)}%</strong></span>
           <span class="rz-pill">Accès gratuit : <strong>${esc(freeLimit)} max</strong></span>
@@ -435,7 +464,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     currentModalPoolId = String(poolId);
     const pid = String(p.id || "");
-    const name = p.name || "Pool";
+    const name = poolDisplayName(p);
+    const place = poolLocationName(p);
+    const brand = poolBrandName(p);
+    const hasLogo = !!cleanText(p.branding_logo_url);
     const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "" : String(p.capacity_max);
     const freeAccessLimit = (p.free_access_limit === null || p.free_access_limit === undefined) ? "5" : String(p.free_access_limit);
     const contactPhone = String(p.contact_phone ?? p.contactPhone ?? "");
@@ -447,7 +479,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const ownerSharePct = ownerShare(p);
     const ownerAdminUserId = String(p.owner_admin_user_id || p.ownerAdminUserId || "").trim();
     const canManageAll = isSuperadmin();
-    const canEditBasic = canManageAll || canEditOwnerFields();
+    const canEditBusiness = canManageAll || canEditOwnerFields();
 
     const annEnabled = p.portal_announcement_enabled === true || String(p.portal_announcement_enabled).toLowerCase() === "true";
     const annType = String(p.portal_announcement_type || "information").trim().toLowerCase();
@@ -473,31 +505,56 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (modalBody) {
       modalBody.innerHTML = `
         <div class="rz-modal-section">
-          <div class="rz-modal-section-title">Informations du pool</div>
+          <div class="rz-modal-section-title">Branding portail</div>
           <div class="rz-form-grid">
             <div class="rz-field">
-              <label>Nom du pool</label>
-              ${canManageAll ? `
-                <input id="modalPoolName" value="${esc(name)}" />
-              ` : `
-                <div class="rz-readonly-box">${esc(name)}</div>
-              `}
+              <label>Lieu *</label>
+              <input id="modalPoolName" value="${esc(placeName)}" placeholder="Ex: Anosy" ${canEditBusiness ? "" : "readonly disabled"} />
             </div>
+            <div class="rz-field">
+              <label>Marque (optionnel)</label>
+              <input id="modalBrandName" value="${esc(brandName)}" placeholder="Ex: Hilton" ${canEditBusiness ? "" : "readonly disabled"} />
+            </div>
+            <div class="rz-field">
+              <label>Téléphone contact</label>
+              <input id="modalPoolPhone" value="${esc(contactPhone)}" placeholder="Téléphone contact" ${canEditBusiness ? "" : "readonly disabled"} />
+            </div>
+            <div class="rz-field">
+              <label>Aperçu portail</label>
+              <div class="rz-readonly-box">${esc(name)}</div>
+            </div>
+          </div>
+          <div class="rz-field" style="margin-top:10px;">
+            <label>Logo (optionnel)</label>
+            <div class="rz-logo-preview-wrap">
+              <img id="modalLogoPreview" class="rz-logo-preview ${logoUrl ? "" : "is-empty"}" src="${esc(logoUrl)}" alt="Logo">
+              <div style="flex:1;min-width:210px;">
+                <div class="rz-logo-note">Si aucun logo n’est ajouté, rien ne sera affiché en haut du portail.</div>
+                <div class="rz-logo-note">Formats conseillés : PNG, JPG ou WEBP. Taille max : 1 MB.</div>
+                <div class="rz-logo-actions" style="margin-top:8px;">
+                  <input id="modalLogoFile" type="file" accept="image/png,image/jpeg,image/webp" style="display:none;" ${canEditBusiness ? "" : "disabled"} />
+                  <button type="button" id="modalLogoChooseBtn" class="filter-btn" ${canEditBusiness ? "" : "disabled"}>${logoUrl ? "Remplacer le logo" : "Ajouter un logo"}</button>
+                  <button type="button" id="modalLogoDeleteBtn" class="danger" style="${logoUrl ? "" : "display:none;"}" ${canEditBusiness ? "" : "disabled"}>Supprimer le logo</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="rz-modal-section">
+          <div class="rz-modal-section-title">Paramètres business</div>
+          <div class="rz-form-grid">
             <div class="rz-field">
               <label>Part propriétaire</label>
               <div class="rz-readonly-box">${esc(ownerSharePct)}%</div>
             </div>
             <div class="rz-field">
               <label>Capacité max</label>
-              <input id="modalPoolCap" type="number" min="0" value="${esc(cap)}" placeholder="—" ${canEditBasic ? "" : "readonly disabled"} />
+              <input id="modalPoolCap" type="number" min="0" value="${esc(cap)}" placeholder="—" ${canManageAll ? "" : "readonly disabled"} />
             </div>
             <div class="rz-field">
               <label>Limite accès gratuit</label>
               <input id="modalFreeAccessLimit" type="number" min="0" value="${esc(freeAccessLimit)}" placeholder="5" ${canManageAll ? "" : "readonly disabled"} />
-            </div>
-            <div class="rz-field">
-              <label>Téléphone contact</label>
-              <input id="modalPoolPhone" value="${esc(contactPhone)}" placeholder="Téléphone contact" ${canEditBasic ? "" : "readonly disabled"} />
             </div>
           </div>
         </div>
@@ -507,14 +564,14 @@ document.addEventListener("DOMContentLoaded", async () => {
           <div class="rz-form-grid">
             <div class="rz-field">
               <label>Statut</label>
-              <select id="modalAnnEnabled" ${canEditBasic ? "" : "disabled"}>
+              <select id="modalAnnEnabled" ${canEditBusiness ? "" : "disabled"}>
                 <option value="false" ${!annEnabled ? "selected" : ""}>Inactif</option>
                 <option value="true" ${annEnabled ? "selected" : ""}>Actif</option>
               </select>
             </div>
             <div class="rz-field">
               <label>Type</label>
-              <select id="modalAnnType" ${canEditBasic ? "" : "disabled"}>
+              <select id="modalAnnType" ${canEditBusiness ? "" : "disabled"}>
                 <option value="important" ${annType === "important" ? "selected" : ""}>⚠️ Important</option>
                 <option value="promotion" ${annType === "promotion" ? "selected" : ""}>🎁 Promotion</option>
                 <option value="information" ${annType === "information" ? "selected" : ""}>ℹ️ Information</option>
@@ -523,7 +580,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             </div>
             <div class="rz-field">
               <label>Priorité</label>
-              <select id="modalAnnPriority" ${canEditBasic ? "" : "disabled"}>
+              <select id="modalAnnPriority" ${canEditBusiness ? "" : "disabled"}>
                 <option value="normal" ${annPriority !== "urgent" ? "selected" : ""}>Priorité normale</option>
                 <option value="urgent" ${annPriority === "urgent" ? "selected" : ""}>Urgent</option>
               </select>
@@ -535,7 +592,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           </div>
           <div class="rz-field" style="margin-top:10px;">
             <label>Message</label>
-            <textarea id="modalAnnMessage" maxlength="500" placeholder="Ex: MVola est momentanément indisponible. Profitez de nos offres gratuites en attendant." ${canEditBasic ? "" : "readonly disabled"}>${esc(annMessage)}</textarea>
+            <textarea id="modalAnnMessage" maxlength="500" placeholder="Ex: MVola est momentanément indisponible. Profitez de nos offres gratuites en attendant." ${canEditBusiness ? "" : "readonly disabled"}>${esc(annMessage)}</textarea>
           </div>
           <div id="modalAnnPreview" class="rz-ann-preview ${annMessage ? "" : "is-empty"}">${esc(annMessage || "Aperçu : aucun message affiché sur le portail.")}</div>
         </div>
@@ -617,6 +674,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     const cancelBtn = $id("modalCancelBtn");
     const saveBtn = $id("modalSaveBtn");
     const deleteBtn = $id("modalDeleteBtn");
+    const logoChooseBtn = $id("modalLogoChooseBtn");
+    const logoFile = $id("modalLogoFile");
+    const logoDeleteBtn = $id("modalLogoDeleteBtn");
 
     annMessage?.addEventListener("input", () => {
       const msg = String(annMessage.value || "").trim();
@@ -629,9 +689,79 @@ document.addEventListener("DOMContentLoaded", async () => {
       techPanel?.classList.toggle("is-open");
     });
 
+    logoChooseBtn?.addEventListener("click", () => logoFile?.click());
+    logoFile?.addEventListener("change", () => uploadPoolLogo(pid, logoFile));
+    logoDeleteBtn?.addEventListener("click", () => deletePoolLogo(pid));
+
     cancelBtn?.addEventListener("click", closePoolModal);
     saveBtn?.addEventListener("click", () => saveModalPool(pid));
     deleteBtn?.addEventListener("click", () => deletePoolFromModal(pid));
+  }
+
+  function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("Lecture du fichier impossible"));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function uploadPoolLogo(pid, inputEl) {
+    const file = inputEl?.files?.[0];
+    if (!file) return;
+
+    const allowed = ["image/png", "image/jpeg", "image/webp"];
+    if (!allowed.includes(String(file.type || "").toLowerCase())) {
+      showMsg(msgEl, "Logo invalide : utilisez PNG, JPG ou WEBP.", true);
+      inputEl.value = "";
+      return;
+    }
+    if (file.size > 1024 * 1024) {
+      showMsg(msgEl, "Logo trop lourd : maximum 1 MB.", true);
+      inputEl.value = "";
+      return;
+    }
+
+    const btn = $id("modalLogoChooseBtn");
+    try {
+      if (btn) btn.disabled = true;
+      showMsg(msgEl, "Upload du logo…", false);
+      const dataUrl = await fileToDataUrl(file);
+      await fetchJSON(`/api/admin/pools/${encodeURIComponent(pid)}/logo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data_url: dataUrl }),
+      });
+      await loadPools();
+      showMsg(msgEl, "Logo enregistré ✅", false);
+      flashPoolCard(pid, "Logo enregistré ✅");
+      const fresh = poolById(pid);
+      if (fresh) openPoolModal(pid);
+    } catch (e) {
+      showMsg(msgEl, `Upload logo échoué : ${e.message}`, true);
+    } finally {
+      if (btn) btn.disabled = false;
+      if (inputEl) inputEl.value = "";
+    }
+  }
+
+  async function deletePoolLogo(pid) {
+    if (!confirm("Supprimer le logo de ce pool ?")) return;
+    const btn = $id("modalLogoDeleteBtn");
+    try {
+      if (btn) btn.disabled = true;
+      await fetchJSON(`/api/admin/pools/${encodeURIComponent(pid)}/logo`, { method: "DELETE" });
+      await loadPools();
+      showMsg(msgEl, "Logo supprimé ✅", false);
+      flashPoolCard(pid, "Logo supprimé ✅");
+      const fresh = poolById(pid);
+      if (fresh) openPoolModal(pid);
+    } catch (e) {
+      showMsg(msgEl, `Suppression logo échouée : ${e.message}`, true);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   }
 
   async function saveModalPool(pid) {
@@ -642,13 +772,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     const canManageAll = isSuperadmin();
 
     const nameInput = $id("modalPoolName");
+    const brandInput = $id("modalBrandName");
     const capInput = $id("modalPoolCap");
     const phoneInput = $id("modalPoolPhone");
     const freeAccessLimitInput = $id("modalFreeAccessLimit");
 
-    const name = canManageAll
-      ? (nameInput?.value || "").trim()
-      : String(p.name || "").trim();
+    const name = (nameInput?.value || "").trim();
+    const brand_name = (brandInput?.value || "").trim() || null;
 
     const capStr = String(capInput?.value || "").trim();
     const capacity_max = capStr === "" ? null : Number(capStr);
@@ -661,7 +791,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       showMsg(msgEl, "Capacité du pool invalide", true);
       return;
     }
-
     const freeLimitStr = String(freeAccessLimitInput?.value || "").trim();
     const free_access_limit = freeLimitStr === "" ? 5 : Number(freeLimitStr);
     if (canManageAll && (!Number.isFinite(free_access_limit) || free_access_limit < 0)) {
@@ -672,7 +801,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     const contact_phone_raw = (phoneInput?.value || "").trim();
     const contact_phone = contact_phone_raw === "" ? null : contact_phone_raw;
 
-    const payload = { name, capacity_max, contact_phone };
+    const payload = { name, brand_name, contact_phone };
+    if (canManageAll) payload.capacity_max = capacity_max;
 
     payload.portal_announcement_enabled = String($id("modalAnnEnabled")?.value || "false") === "true";
     payload.portal_announcement_type = ($id("modalAnnType")?.value || "information").trim();
@@ -767,11 +897,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const poolOptions = (pools || [])
       .filter(p => (String(p.system || "portal").toLowerCase() === activeSystem))
-      .map(p => `<option value="${esc(p.id)}">${esc(p.name || p.id)}</option>`)
+      .map(p => `<option value="${esc(p.id)}">${esc(poolDisplayName(p) || p.id)}</option>`)
       .join("");
 
     box.innerHTML = `
-      <div style="font-weight:900;margin-bottom:8px;">${esc(pool.name || pool.id || "Pool")}</div>
+      <div style="font-weight:900;margin-bottom:8px;">${esc(poolDisplayName(pool) || pool.id || "Pool")}</div>
       <div class="rz-ap-table-wrap">
         <table class="rz-ap-table">
           <thead>
@@ -953,6 +1083,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     const name = (newPoolName?.value || "").trim();
     const capStr = String(newPoolCap?.value || "").trim();
     const capacity_max = capStr === "" ? null : Number(capStr);
+    const freeLimitStr = String(newFreeAccessLimitEl?.value || "5").trim();
+    const free_access_limit = freeLimitStr === "" ? 5 : Number(freeLimitStr);
     const system = (newSystemEl?.value || activeSystem) === "mikrotik" ? "mikrotik" : "portal";
     const mikrotik_ip = (newMikrotikIpEl?.value || "").trim();
     const radius_nas_id = (newRadiusNasIdEl?.value || "").trim();
@@ -963,6 +1095,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     if (capacity_max !== null && (!Number.isFinite(capacity_max) || capacity_max < 0)) {
       showMsg(msgEl, "Capacité du pool invalide", true);
+      return;
+    }
+    if (!Number.isFinite(free_access_limit) || free_access_limit < 0) {
+      showMsg(msgEl, "Limite accès gratuit invalide", true);
       return;
     }
     if (system === "mikrotik" && !mikrotik_ip) {
@@ -978,6 +1114,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name,
+          brand_name: ((newBrandNameEl?.value || "").trim() || null),
           capacity_max,
           free_access_limit: Math.round(free_access_limit),
           contact_phone: ((newContactPhoneEl?.value || "").trim() || null),
@@ -991,6 +1128,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (newMikrotikIpEl) newMikrotikIpEl.value = "";
       if (newRadiusNasIdEl) newRadiusNasIdEl.value = "";
       if (newContactPhoneEl) newContactPhoneEl.value = "";
+      if (newBrandNameEl) newBrandNameEl.value = "";
       showMsg(msgEl, "Créé ✅", false);
       closeCreatePoolModal();
       await loadPools();
