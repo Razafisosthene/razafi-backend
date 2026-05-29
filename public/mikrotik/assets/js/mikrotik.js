@@ -2147,6 +2147,24 @@ function saturationLabel(pct) {
     return div;
   }
 
+  function buildOwnerLogoProxyUrl() {
+    try {
+      const qp = new URLSearchParams();
+      if (nasId) qp.set("nas_id", nasId);
+      else if (apMac) qp.set("ap_mac", apMac);
+      else return "";
+
+      // Cache-bust only when the stored Supabase URL changes, so logo replacement
+      // is visible without forcing a fresh request on every page load.
+      const v = poolContext?.branding_logo_url ? String(hashToInt(poolContext.branding_logo_url)) : "";
+      if (v) qp.set("v", v);
+
+      return apiUrl(`/api/portal/logo?${qp.toString()}`);
+    } catch (_) {
+      return "";
+    }
+  }
+
   function applyPoolContextUI() {
     const nameLine = ensurePoolNameLine();
     if (nameLine) {
@@ -2190,7 +2208,7 @@ function saturationLabel(pct) {
       }
     } catch (_) {}
 
-    try { renderOwnerLogo(poolContext.branding_logo_url); } catch (_) {}
+    try { renderOwnerLogo(buildOwnerLogoProxyUrl()); } catch (_) {}
 
     // Network info card: update snapshot values as soon as poolContext is known
     try { renderNetworkInfo({ animate: false }); } catch (_) {}
@@ -2245,7 +2263,7 @@ function saturationLabel(pct) {
         active_clients: (j.active_clients === null || j.active_clients === undefined) ? null : Number(j.active_clients),
         capacity_max: (j.capacity_max === null || j.capacity_max === undefined) ? null : Number(j.capacity_max),
       };
-      renderOwnerLogo(poolContext.branding_logo_url);
+      renderOwnerLogo(buildOwnerLogoProxyUrl());
       poolIsFull = !!j.is_full;
     } catch (e) {
       console.warn("[RAZAFI] portal context fetch failed", e?.message || e);

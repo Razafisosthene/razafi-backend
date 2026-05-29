@@ -5128,6 +5128,118 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
 // ===============================
 
 
+
+// ---------------------------------------------------------------------------
+// PORTAL (User) — Pool logo proxy
+// Serves owner logos from portal.razafistore.com instead of exposing/loading
+// Supabase Storage directly in captive portal browsers.
+// This is valid for every pool because the pool is resolved by nas_id or ap_mac.
+// ---------------------------------------------------------------------------
+function inferImageMimeFromPath(p) {
+  const s = String(p || "").toLowerCase();
+  if (s.endsWith(".png")) return "image/png";
+  if (s.endsWith(".webp")) return "image/webp";
+  if (s.endsWith(".jpg") || s.endsWith(".jpeg")) return "image/jpeg";
+  return "application/octet-stream";
+}
+
+app.get("/api/portal/logo", normalizeApMac, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+
+    const ap_mac = req.ap_mac || null;
+    const nas_id_raw =
+      req.query.nas_id ||
+      req.query.nasId ||
+      req.query.nasID ||
+      req.query.nasid ||
+      req.headers["x-nas-id"] ||
+      req.headers["x-nas_id"] ||
+      "";
+
+    const nas_id = String(nas_id_raw || "").trim() || null;
+
+    if (!ap_mac && !nas_id) {
+      return res.status(400).json({ ok: false, error: "ap_mac_or_nas_id_required" });
+    }
+
+    let pool = null;
+
+    // MikroTik/System 3: resolve directly by NAS-ID.
+    if (nas_id) {
+      const { data, error } = await supabase
+        .from("internet_pools")
+        .select("id,branding_logo_url,radius_nas_id")
+        .eq("radius_nas_id", nas_id)
+        .maybeSingle();
+
+      if (error) {
+        console.error("PORTAL LOGO NAS POOL ERROR", error);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+      pool = data || null;
+    }
+
+    // Legacy/Tanaza fallback: resolve AP -> pool.
+    if (!pool && ap_mac) {
+      const { data: apRow, error: apErr } = await supabase
+        .from("ap_registry")
+        .select("ap_mac,pool_id,is_active")
+        .eq("ap_mac", ap_mac)
+        .maybeSingle();
+
+      if (apErr) {
+        console.error("PORTAL LOGO AP REGISTRY ERROR", apErr);
+        return res.status(500).json({ ok: false, error: "db_error" });
+      }
+
+      if (apRow?.pool_id) {
+        const { data, error } = await supabase
+          .from("internet_pools")
+          .select("id,branding_logo_url")
+          .eq("id", apRow.pool_id)
+          .maybeSingle();
+
+        if (error) {
+          console.error("PORTAL LOGO POOL ERROR", error);
+          return res.status(500).json({ ok: false, error: "db_error" });
+        }
+        pool = data || null;
+      }
+    }
+
+    const logoUrl = cleanOptionalText(pool?.branding_logo_url, 2000);
+    if (!logoUrl) return res.status(404).json({ ok: false, error: "logo_not_configured" });
+
+    const storagePath = storagePathFromPublicUrl(logoUrl);
+    if (!storagePath) return res.status(404).json({ ok: false, error: "logo_path_invalid" });
+
+    const { data: fileBlob, error: dlErr } = await supabase
+      .storage
+      .from(POOL_LOGO_BUCKET)
+      .download(storagePath);
+
+    if (dlErr || !fileBlob) {
+      console.error("PORTAL LOGO DOWNLOAD ERROR", dlErr || "empty_file", storagePath);
+      return res.status(404).json({ ok: false, error: "logo_not_found" });
+    }
+
+    const arrayBuffer = await fileBlob.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    if (!buffer.length) return res.status(404).json({ ok: false, error: "logo_empty" });
+
+    const contentType = String(fileBlob.type || "").trim() || inferImageMimeFromPath(storagePath);
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", "public, max-age=300");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    return res.send(buffer);
+  } catch (e) {
+    console.error("PORTAL LOGO ERROR", e?.message || e);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // PORTAL (User) — Context for AP/Pool (pool name + usage)
 // Source of truth:
