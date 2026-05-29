@@ -1133,16 +1133,36 @@
       const safeUrl = String(url || "").trim();
       if (!wrap || !img) return;
 
+      // Always start hidden. We only show the logo after the image really loads.
+      // This avoids the broken-image icon in captive portal / walled-garden situations.
+      const hideLogo = () => {
+        try {
+          wrap.classList.add("hidden");
+          img.removeAttribute("src");
+          img.alt = "";
+        } catch (_) {}
+      };
+
       if (!safeUrl) {
-        img.removeAttribute("src");
-        img.alt = "";
-        wrap.classList.add("hidden");
+        hideLogo();
         return;
       }
 
+      wrap.classList.add("hidden");
+      img.alt = "";
+
+      img.onload = () => {
+        try {
+          img.alt = "Logo";
+          wrap.classList.remove("hidden");
+        } catch (_) {}
+      };
+
+      img.onerror = () => {
+        hideLogo();
+      };
+
       img.src = safeUrl;
-      img.alt = "Logo";
-      wrap.classList.remove("hidden");
     } catch (_) {}
   }
 
