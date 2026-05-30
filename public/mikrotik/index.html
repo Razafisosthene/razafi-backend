@@ -12,14 +12,177 @@
   <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png" />
 
   <link rel="stylesheet" href="assets/css/style.css" />
-  <style>
-    /* RAZAFI Portal – Status badges (premium) */
+    <style>
+    /* =========================================================
+       RAZAFI Portal – Apple-inspired Phase 1
+       Conservative UI only: same IDs, same JS hooks, same logic.
+       ========================================================= */
+    :root{
+      --ios-bg:#f5f5f7;
+      --ios-card:#ffffff;
+      --ios-text:#111827;
+      --ios-muted:#6b7280;
+      --ios-border:rgba(17,24,39,.08);
+      --ios-shadow:0 18px 42px rgba(15,23,42,.08);
+      --ios-soft-shadow:0 10px 28px rgba(15,23,42,.06);
+      --ios-blue:#007aff;
+      --ios-green:#34c759;
+      --ios-radius:26px;
+    }
+
+    html{background:var(--ios-bg);}
+    body.theme-light{
+      background:
+        radial-gradient(circle at top left, rgba(0,122,255,.08), transparent 28%),
+        linear-gradient(180deg,#fbfbfd 0%,#f5f5f7 48%,#f2f2f7 100%);
+      color:var(--ios-text);
+    }
+    body.theme-dark{
+      --ios-bg:#050507;
+      --ios-card:#151518;
+      --ios-text:#f5f5f7;
+      --ios-muted:#a1a1aa;
+      --ios-border:rgba(255,255,255,.10);
+      --ios-shadow:0 18px 46px rgba(0,0,0,.42);
+      --ios-soft-shadow:0 10px 30px rgba(0,0,0,.34);
+      background:
+        radial-gradient(circle at top left, rgba(0,122,255,.18), transparent 28%),
+        linear-gradient(180deg,#050507 0%,#0b0b0f 54%,#111116 100%);
+      color:var(--ios-text);
+    }
+
+    .portal-header{
+      max-width:680px;
+      margin:0 auto;
+      padding:calc(14px + env(safe-area-inset-top,0px)) 18px 6px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+    }
+    .brand{display:flex;align-items:center;min-height:42px;}
+    .brand.hidden{display:none!important;}
+    .brand-owner-logo{
+      max-height:48px;
+      max-width:190px;
+      object-fit:contain;
+      display:block;
+      filter:drop-shadow(0 8px 16px rgba(15,23,42,.08));
+    }
+    .theme-toggle{
+      width:38px;
+      height:38px;
+      min-width:38px;
+      border-radius:999px;
+      border:1px solid var(--ios-border);
+      background:rgba(255,255,255,.76);
+      color:var(--ios-text);
+      box-shadow:0 8px 22px rgba(15,23,42,.06);
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      font-size:17px;
+      line-height:1;
+      cursor:pointer;
+      -webkit-tap-highlight-color:transparent;
+    }
+    body.theme-dark .theme-toggle{background:rgba(255,255,255,.08);}
+    .theme-toggle:active{transform:scale(.96);}
+
+    .portal-container{
+      max-width:680px;
+      margin:0 auto;
+      padding:10px 16px 22px;
+    }
+    .card,
+    .portal-announcement,
+    #networkInfoCard{
+      border-radius:var(--ios-radius)!important;
+      border:1px solid var(--ios-border)!important;
+      background:var(--ios-card)!important;
+      box-shadow:var(--ios-soft-shadow);
+    }
+    .status-card{
+      padding:24px 20px 20px!important;
+      box-shadow:var(--ios-shadow)!important;
+      overflow:hidden;
+      animation:razafiFadeUp .32s ease both;
+    }
+    .portal-hero{
+      text-align:center;
+      padding:6px 4px 14px;
+    }
+    .portal-hero-eyebrow{
+      margin:0 0 6px;
+      color:var(--ios-muted);
+      font-size:15px;
+      font-weight:700;
+      letter-spacing:-.01em;
+    }
+    .status-card h2{
+      margin:0;
+      font-size:1.06rem;
+      line-height:1.2;
+      font-weight:800;
+      color:var(--ios-muted);
+      letter-spacing:-.01em;
+    }
+    #poolNameLine,
+    #poolName{
+      text-align:center;
+      font-weight:900!important;
+      font-size:clamp(1.78rem,7vw,2.55rem)!important;
+      line-height:1.02!important;
+      letter-spacing:-.055em;
+      color:var(--ios-text)!important;
+      margin:8px auto 12px!important;
+    }
+    #poolName .pool-name-line,
+    #poolNameLine .pool-name-line{display:block;}
+    #poolName:empty{display:none;}
+    .hero-network-pill{
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      gap:7px;
+      margin:4px auto 8px;
+      padding:7px 13px;
+      border-radius:999px;
+      background:rgba(52,199,89,.12);
+      border:1px solid rgba(52,199,89,.22);
+      color:#167a35;
+      font-size:13px;
+      font-weight:800;
+      white-space:nowrap;
+    }
+    body.theme-dark .hero-network-pill{
+      color:#7ee59b;
+      background:rgba(52,199,89,.14);
+      border-color:rgba(52,199,89,.26);
+    }
+    .hero-network-dot{
+      width:8px;height:8px;border-radius:999px;background:var(--ios-green);
+      box-shadow:0 0 0 4px rgba(52,199,89,.14);
+      flex:0 0 auto;
+    }
+    .hero-availability{
+      margin:0;
+      color:var(--ios-muted);
+      font-size:13px;
+      font-weight:700;
+    }
+    .hero-availability strong{color:var(--ios-text);}
+    .voucher-panel{
+      margin-top:14px;
+      padding-top:16px;
+      border-top:1px solid var(--ios-border);
+    }
     .status-badge{
       display:inline-flex;align-items:center;gap:6px;
-      padding:6px 14px;border-radius:999px;
-      font-weight:600;font-size:13px;letter-spacing:.4px;
+      padding:7px 14px;border-radius:999px;
+      font-weight:800;font-size:12px;letter-spacing:.35px;
       border:1px solid transparent;
-      user-select:none; -webkit-user-select:none;
+      user-select:none;-webkit-user-select:none;
       white-space:nowrap;
     }
     .status-badge.hidden{display:none!important;}
@@ -28,56 +191,106 @@
     .badge-active{background:#DFF7E8;border-color:#53C48A;color:#0F6A3E;}
     .badge-used{background:#FDE2E2;border-color:#E45A5A;color:#8A1F1F;}
     .badge-expired{background:#EAEAF0;border-color:#A5A7B5;color:#4A4D5A;}
-
     body.theme-dark .badge-pending{background:rgba(255,199,0,.15);border-color:rgba(255,199,0,.35);color:#FFD76A;}
     body.theme-dark .badge-active{background:rgba(83,196,138,.15);border-color:rgba(83,196,138,.35);color:#53C48A;}
     body.theme-dark .badge-used{background:rgba(228,90,90,.18);border-color:rgba(228,90,90,.35);color:#FF7A7A;}
     body.theme-dark .badge-expired{background:rgba(165,167,181,.15);border-color:rgba(165,167,181,.35);color:#C5C7D4;}
-
-    @keyframes pendingPulse {
-      0%   { box-shadow: 0 0 0 rgba(255,199,0,0.00); filter: brightness(1); }
-      50%  { box-shadow: 0 0 6px rgba(255,199,0,0.45); filter: brightness(1.03); }
-      100% { box-shadow: 0 0 0 rgba(255,199,0,0.00); filter: brightness(1); }
+    @keyframes pendingPulse{
+      0%{box-shadow:0 0 0 rgba(255,199,0,0);filter:brightness(1);}
+      50%{box-shadow:0 0 6px rgba(255,199,0,.45);filter:brightness(1.03);}
+      100%{box-shadow:0 0 0 rgba(255,199,0,0);filter:brightness(1);}
     }
-    .badge-pending.pulse{animation: pendingPulse 2.8s ease-in-out infinite;}
+    .badge-pending.pulse{animation:pendingPulse 2.8s ease-in-out infinite;}
 
+    #accessMsg{font-size:15px;line-height:1.45;margin:12px 0;color:var(--ios-muted);}
+    #voucherNone p{margin:.35rem 0;}
+    .voucher-info{
+      margin:14px 0 16px;
+      padding:0;
+      list-style:none;
+      display:grid;
+      gap:9px;
+    }
+    .voucher-info li{
+      padding:10px 12px;
+      border-radius:16px;
+      background:rgba(118,118,128,.08);
+      border:1px solid rgba(118,118,128,.08);
+      line-height:1.35;
+    }
+    body.theme-dark .voucher-info li{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.07);}
+    .primary-btn,.secondary-btn,.choose-plan-btn,.pay-btn{
+      border-radius:999px!important;
+      min-height:46px;
+      font-weight:800!important;
+      letter-spacing:-.01em;
+      -webkit-tap-highlight-color:transparent;
+      transition:transform .12s ease, box-shadow .16s ease, opacity .16s ease;
+    }
+    .primary-btn:active,.secondary-btn:active,.choose-plan-btn:active,.pay-btn:active{transform:scale(.98);}
+    .primary-btn{box-shadow:0 12px 24px rgba(0,122,255,.16);}
+    .secondary-btn{background:rgba(118,118,128,.12)!important;border-color:transparent!important;color:var(--ios-text)!important;}
 
-    .terms-card{margin-top:18px;}
+    .plans-shell{margin-top:18px;animation:razafiFadeUp .38s ease both;animation-delay:.04s;}
+    .section-title-ios{
+      margin:0 4px 10px;
+      font-size:1.18rem;
+      font-weight:900;
+      letter-spacing:-.025em;
+      color:var(--ios-text);
+    }
+    .section-subtitle-ios{
+      margin:-4px 4px 12px;
+      color:var(--ios-muted);
+      font-size:13px;
+      line-height:1.35;
+    }
+    .plans-grid{gap:12px!important;}
+    .plan-card{
+      border-radius:24px!important;
+      border:1px solid var(--ios-border)!important;
+      background:var(--ios-card)!important;
+      box-shadow:var(--ios-soft-shadow)!important;
+    }
+    .plan-card:active{transform:scale(.992);}
+
+    .portal-announcement{margin-top:18px!important;padding:14px 15px!important;animation:razafiFadeUp .38s ease both;}
+    #networkInfoCard,.faq,.terms-card{margin-top:18px!important;animation:razafiFadeUp .38s ease both;}
+    .network-card{padding:16px!important;}
+    .network-title{font-weight:900;letter-spacing:-.02em;}
+    .network-bar{border-radius:999px!important;overflow:hidden;}
+    .network-bar-fill{border-radius:999px!important;}
+
+    .terms-card{padding:16px!important;}
     .terms-check{display:flex;align-items:flex-start;gap:10px;cursor:pointer;margin-top:6px;line-height:1.45;}
-    .terms-check input{margin-top:3px;flex:0 0 auto;}
-    .terms-toggle{margin-top:10px;padding:0;background:none;border:none;color:#0d6efd;font-weight:700;cursor:pointer;}
+    .terms-check input{margin-top:3px;flex:0 0 auto;accent-color:var(--ios-blue);}
+    .terms-toggle{margin-top:10px;padding:0;background:none;border:none;color:var(--ios-blue);font-weight:800;cursor:pointer;}
     .terms-toggle:hover{text-decoration:underline;}
-    .terms-content{margin-top:10px;padding:12px 14px;border:1px solid rgba(13,110,253,.18);border-radius:12px;background:rgba(13,110,253,.05);}
-    .terms-list{margin:0;padding-left:18px;color:var(--muted,#5f6b7a);}
+    .terms-content{margin-top:10px;padding:12px 14px;border:1px solid rgba(0,122,255,.16);border-radius:18px;background:rgba(0,122,255,.055);}
+    .terms-list{margin:0;padding-left:18px;color:var(--ios-muted);}
     .terms-list li+li{margin-top:6px;}
-    .terms-error{margin-top:10px;padding:10px 12px;border-radius:10px;border:1px solid rgba(220,53,69,.22);background:rgba(220,53,69,.08);color:#b42318;font-weight:600;}
+    .terms-error{margin-top:10px;padding:10px 12px;border-radius:16px;border:1px solid rgba(220,53,69,.22);background:rgba(220,53,69,.08);color:#b42318;font-weight:700;}
     body.theme-dark .terms-content{border-color:rgba(83,148,255,.28);background:rgba(83,148,255,.10);}
     body.theme-dark .terms-toggle{color:#7cb6ff;}
     body.theme-dark .terms-error{border-color:rgba(255,122,122,.30);background:rgba(255,122,122,.10);color:#ff9d9d;}
 
+    .portal-footer{padding:4px 16px calc(18px + env(safe-area-inset-bottom,0px));text-align:center;}
+    .muted{color:var(--ios-muted)!important;}
 
-    .brand-owner-logo{
-      max-height:64px;
-      max-width:220px;
-      object-fit:contain;
-      display:block;
+    @keyframes razafiFadeUp{
+      from{opacity:0;transform:translateY(8px);}
+      to{opacity:1;transform:translateY(0);}
     }
-    .brand.hidden{display:none!important;}
-
-    #poolName{
-      text-align:center;
-      font-weight:900;
-      font-size:1.55rem;
-      line-height:1.18;
-      letter-spacing:-0.01em;
-      color:#111827;
-      margin-top:10px;
-      margin-bottom:18px;
+    @media (prefers-reduced-motion:reduce){
+      *{animation:none!important;transition:none!important;scroll-behavior:auto!important;}
     }
-    #poolName .pool-name-line{
-      display:block;
+    @media (max-width:420px){
+      .portal-container{padding-left:14px;padding-right:14px;}
+      .status-card{padding:22px 16px 18px!important;}
+      #poolNameLine,#poolName{font-size:clamp(1.62rem,8vw,2.12rem)!important;}
+      .brand-owner-logo{max-height:42px;max-width:170px;}
+      .theme-toggle{width:36px;height:36px;min-width:36px;}
     }
-
   </style>
 </head>
 
@@ -97,65 +310,81 @@
   <!-- ================= MAIN ================= -->
   <main class="portal-container">
 
-    <!-- ========= STATUS ========= -->
+    <!-- ========= HERO + STATUS VOUCHER ========= -->
     <section class="card status-card">
+      <div class="portal-hero">
+        <h2>Bienvenue sur</h2>
+        <!-- Filled by mikrotik.js through poolNameLine. poolName is kept for compatibility. -->
+        <p id="poolName" class="muted small"></p>
 
-      <h2>Bienvenue sur WiFi</h2>
-
-      <!-- 🔹 Option C: pool/site name (filled by mikrotik.js using nas_id) -->
-      <p id="poolName" class="muted small"></p>
-
-      <div id="statusBadgeMain" class="status-badge hidden"></div>
-      <div id="bonusBadgeMain" class="status-badge hidden" style="margin-top:8px; border-color: rgba(13,110,253,.35); background: rgba(13,110,253,.10);">🎁 BONUS DISPONIBLE</div>
-
-      <p id="accessMsg" class="muted">Vérification de votre accès en cours…</p>
-
-      <!-- 🔹 Pool full banner (optional, controlled by backend) -->
-      <div
-        id="poolFullBanner"
-        style="display:none; margin:10px 0; padding:10px 12px;
-               border-radius:10px;
-               border:1px solid rgba(200,120,0,0.35);
-               background:rgba(255,200,0,0.10);">
-        <strong>⚠️ Réseau momentanément saturé.</strong><br>
-        Les achats sont temporairement indisponibles.
+        <div class="hero-network-pill" aria-live="polite">
+          <span class="hero-network-dot" aria-hidden="true"></span>
+          <span id="heroNetworkStatus">Réseau disponible</span>
+        </div>
+        <p class="hero-availability">Disponibilité : <strong id="heroAvailabilityText">en cours d’analyse</strong></p>
       </div>
 
-      <!-- NO ACTIVE VOUCHER -->
-      <div id="voucherNone">
-        <p id="noVoucherMsg" class="muted">Vous n’avez pas de code actif.</p>
-        <p class="muted small">
-          Choisissez un plan ci-dessous pour acheter un code.
-        </p>
+      <div class="voucher-panel">
+        <div id="statusBadgeMain" class="status-badge hidden"></div>
+        <div id="bonusBadgeMain" class="status-badge hidden" style="margin-top:8px; border-color: rgba(13,110,253,.35); background: rgba(13,110,253,.10);">🎁 BONUS DISPONIBLE</div>
+
+        <p id="accessMsg" class="muted">Vérification de votre accès en cours…</p>
+
+        <!-- 🔹 Pool full banner (optional, controlled by backend) -->
+        <div
+          id="poolFullBanner"
+          style="display:none; margin:10px 0; padding:10px 12px;
+                 border-radius:16px;
+                 border:1px solid rgba(200,120,0,0.35);
+                 background:rgba(255,200,0,0.10);">
+          <strong>⚠️ Réseau momentanément saturé.</strong><br>
+          Les achats sont temporairement indisponibles.
+        </div>
+
+        <!-- NO ACTIVE VOUCHER -->
+        <div id="voucherNone">
+          <p id="noVoucherMsg" class="muted">Vous n’avez pas de code actif.</p>
+          <p class="muted small">
+            Choisissez un plan ci-dessous pour acheter un code.
+          </p>
+        </div>
+
+        <!-- ACTIVE VOUCHER -->
+        <div id="voucherHas" class="hidden">
+          <p id="hasVoucherMsg" class="success">✅ Vérification…</p>
+
+          <ul class="voucher-info">
+            <li>📦 Forfait : <strong id="plan-name">—</strong></li>
+            <li>⏳ Durée : <strong id="plan-duration">—</strong></li>
+            <li>📊 Données incluses : <strong id="plan-data-total">—</strong></li>
+            <li id="row-plan-speed">🚀 Vitesse max : <strong id="plan-speed">—</strong></li>
+            <li>🔌 Appareils autorisés : <strong id="plan-max-devices">—</strong></li>
+
+            <li id="row-time-left">⏳ Temps restant : <strong id="time-left">—</strong></li>
+            <li id="row-expires-at" class="hidden">📆 Expiré le : <strong id="expires-at">—</strong></li>
+
+            <li id="row-data-left">📊 Données restantes : <strong id="data-left">—</strong></li>
+            <li id="row-data-used" class="hidden">📉 Données utilisées : <strong id="data-used">—</strong></li>
+          </ul>
+
+          <button id="useVoucherBtn" class="primary-btn" disabled>
+            Utiliser ce code
+          </button>
+
+          <button id="copyVoucherBtn" class="secondary-btn" disabled>
+            Copier le code
+          </button>
+        </div>
       </div>
+    </section>
 
-      <!-- ACTIVE VOUCHER -->
-      <div id="voucherHas" class="hidden">
-        <p id="hasVoucherMsg" class="success">✅ Vérification…</p>
-
-        <ul class="voucher-info">
-          <li>📦 Forfait : <strong id="plan-name">—</strong></li>
-          <li>⏳ Durée : <strong id="plan-duration">—</strong></li>
-          <li>📊 Données incluses : <strong id="plan-data-total">—</strong></li>
-          <li id="row-plan-speed">🚀 Vitesse max : <strong id="plan-speed">—</strong></li>
-          <li>🔌 Appareils autorisés : <strong id="plan-max-devices">—</strong></li>
-
-          <li id="row-time-left">⏳ Temps restant : <strong id="time-left">—</strong></li>
-          <li id="row-expires-at" class="hidden">📆 Expiré le : <strong id="expires-at">—</strong></li>
-
-          <li id="row-data-left">📊 Données restantes : <strong id="data-left">—</strong></li>
-          <li id="row-data-used" class="hidden">📉 Données utilisées : <strong id="data-used">—</strong></li>
-        </ul>
-
-        <button id="useVoucherBtn" class="primary-btn" disabled>
-          Utiliser ce code
-        </button>
-
-        <button id="copyVoucherBtn" class="secondary-btn" disabled>
-          Copier le code
-        </button>
+    <!-- ========= PLANS ========= -->
+    <section class="plans-shell">
+      <h3 class="section-title-ios">Plans</h3>
+      <p class="section-subtitle-ios">Choisissez votre forfait et confirmez avec MVola.</p>
+      <div id="plansGrid" class="plans-grid">
+        <p class="muted small">Chargement des plans…</p>
       </div>
-
     </section>
 
     <!-- ========= ANNONCE PORTAIL (par pool) ========= -->
@@ -166,46 +395,6 @@
         <div class="portal-announcement-message" id="portalAnnouncementMessage"></div>
       </div>
     </section>
-
-
-
-    <!-- ========= RÈGLES D’UTILISATION ========= -->
-    <section class="card terms-card" aria-labelledby="termsTitle">
-      <h3 id="termsTitle">Règles d’utilisation</h3>
-
-      <label class="terms-check" for="acceptTermsCheckbox">
-        <input type="checkbox" id="acceptTermsCheckbox">
-        <span>J’accepte les règles d’utilisation du WiFi RAZAFI</span>
-      </label>
-
-      <button type="button" id="toggleTermsBtn" class="terms-toggle" aria-expanded="false" aria-controls="termsContent">
-        Voir les règles
-      </button>
-<div id="termsContent" class="terms-content hidden">
-  <ul class="terms-list">
-    <li>Activités illégales interdites.</li>
-    <li>Le service peut être ralenti ou interrompu selon le réseau disponible ou les coupures JIRAMA.</li>
-    <li>
-      Assistance WhatsApp : <strong>034 05 005 92</strong>
-      (réclamation, suggestion ou aide). Pour un traitement plus rapide,
-      joignez si possible une capture d’écran de « Votre dernière consommation »
-      ou votre code d’accès.
-    </li>
-  </ul>
-</div>
-      <div id="termsError" class="terms-error hidden" role="alert" aria-live="polite">
-        Veuillez accepter les règles avant de continuer.
-      </div>
-    </section>
-
-    <!-- ========= PLANS ========= -->
-    <section>
-      <h3>Plans</h3>
-      <div id="plansGrid" class="plans-grid">
-        <p class="muted small">Chargement des plans…</p>
-      </div>
-    </section>
-
 
     <!-- ========= ÉTAT DU RÉSEAU (Pool saturation + débit) ========= -->
     <section id="networkInfoCard" class="card network-card io-reveal" aria-live="polite">
@@ -236,7 +425,6 @@
       </div>
     </section>
 
-
     <!-- ========= ASSISTANCE ========= -->
     <section class="card faq">
       <h3>🛟 Assistance</h3>
@@ -250,6 +438,35 @@
         <strong>📞 Besoin d’aide ?</strong><br>
         Service client : <strong id="supportPhone">038 75 005 92</strong>
       </p>
+    </section>
+
+    <!-- ========= RÈGLES D’UTILISATION ========= -->
+    <section class="card terms-card" aria-labelledby="termsTitle">
+      <h3 id="termsTitle">Règles d’utilisation</h3>
+
+      <label class="terms-check" for="acceptTermsCheckbox">
+        <input type="checkbox" id="acceptTermsCheckbox">
+        <span>J’accepte les règles d’utilisation du WiFi RAZAFI</span>
+      </label>
+
+      <button type="button" id="toggleTermsBtn" class="terms-toggle" aria-expanded="false" aria-controls="termsContent">
+        Voir les règles
+      </button>
+      <div id="termsContent" class="terms-content hidden">
+        <ul class="terms-list">
+          <li>Activités illégales interdites.</li>
+          <li>Le service peut être ralenti ou interrompu selon le réseau disponible ou les coupures JIRAMA.</li>
+          <li>
+            Assistance WhatsApp : <strong>034 05 005 92</strong>
+            (réclamation, suggestion ou aide). Pour un traitement plus rapide,
+            joignez si possible une capture d’écran de « Votre dernière consommation »
+            ou votre code d’accès.
+          </li>
+        </ul>
+      </div>
+      <div id="termsError" class="terms-error hidden" role="alert" aria-live="polite">
+        Veuillez accepter les règles avant de continuer.
+      </div>
     </section>
 
   </main>
@@ -269,6 +486,37 @@
       const content = document.getElementById("termsContent");
       const checkbox = document.getElementById("acceptTermsCheckbox");
       const error = document.getElementById("termsError");
+
+      // Mirror network availability into the premium hero without changing mikrotik.js logic.
+      const heroStatus = document.getElementById("heroNetworkStatus");
+      const heroAvailability = document.getElementById("heroAvailabilityText");
+      const netStatus = document.getElementById("netStatusText");
+      const netPercent = document.getElementById("netPercent");
+      const netCapacity = document.getElementById("netCapacityText");
+
+      function syncHeroNetwork() {
+        if (heroStatus && netStatus) {
+          const s = (netStatus.textContent || "").trim();
+          heroStatus.textContent = s && s !== "—" ? s : "Réseau disponible";
+        }
+        if (heroAvailability) {
+          const p = netPercent ? (netPercent.textContent || "").trim() : "";
+          const c = netCapacity ? (netCapacity.textContent || "").trim() : "";
+          if (p && p !== "—%") heroAvailability.textContent = p;
+          else if (c && c !== "—") heroAvailability.textContent = c;
+          else heroAvailability.textContent = "en cours d’analyse";
+        }
+      }
+
+      syncHeroNetwork();
+      if (window.MutationObserver) {
+        const observer = new MutationObserver(syncHeroNetwork);
+        [netStatus, netPercent, netCapacity].forEach(function (el) {
+          if (el) observer.observe(el, { childList: true, characterData: true, subtree: true });
+        });
+      } else {
+        window.setInterval(syncHeroNetwork, 1500);
+      }
 
       if (toggleBtn && content) {
         toggleBtn.addEventListener("click", function () {
