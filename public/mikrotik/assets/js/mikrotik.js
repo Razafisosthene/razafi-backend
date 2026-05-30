@@ -2188,8 +2188,23 @@ function saturationLabel(pct) {
     const nameLine = ensurePoolNameLine();
     if (nameLine) {
       const displayName = poolContext.display_name ? String(poolContext.display_name) : (poolContext.pool_name ? String(poolContext.pool_name) : "");
-      nameLine.textContent = displayName;
-      nameLine.style.display = displayName ? "" : "none";
+      const cleanName = displayName.trim();
+
+      if (cleanName) {
+        const parts = cleanName
+          .split(/\s*[–-]\s*/g)
+          .map((part) => part.trim())
+          .filter(Boolean);
+
+        const lines = parts.length >= 2 ? [parts[0], parts.slice(1).join(" ")] : [cleanName];
+        nameLine.innerHTML = lines
+          .map((line) => `<span class="pool-name-line">${escapeHtml(line)}</span>`)
+          .join("");
+        nameLine.style.display = "";
+      } else {
+        nameLine.innerHTML = "";
+        nameLine.style.display = "none";
+      }
     }
 
     const banner = ensurePoolBanner();
