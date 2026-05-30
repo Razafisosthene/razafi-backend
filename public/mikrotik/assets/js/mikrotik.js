@@ -851,6 +851,42 @@
 
   const themeToggle = $("themeToggle");
 
+  function razafiScrollIntoCenter(el) {
+    if (!el || typeof el.scrollIntoView !== "function") return;
+    window.setTimeout(function () {
+      try {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      } catch (_) {
+        try { el.scrollIntoView(); } catch (_) {}
+      }
+    }, 120);
+  }
+
+  function bindTermsAutoScrollOnOpen() {
+    try {
+      const toggleBtn = document.getElementById("toggleTermsBtn");
+      const content = document.getElementById("termsContent");
+      if (!toggleBtn || !content || toggleBtn.dataset.razafiScrollBound === "1") return;
+
+      toggleBtn.dataset.razafiScrollBound = "1";
+      toggleBtn.addEventListener("click", function () {
+        window.setTimeout(function () {
+          const isOpen =
+            toggleBtn.getAttribute("aria-expanded") === "true" &&
+            !content.classList.contains("hidden");
+
+          if (isOpen) razafiScrollIntoCenter(content);
+        }, 140);
+      });
+    } catch (_) {}
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bindTermsAutoScrollOnOpen);
+  } else {
+    bindTermsAutoScrollOnOpen();
+  }
+
   function setVoucherDetailsOpen(open) {
     if (!voucherDetails || !voucherDetailsToggle) return;
     voucherDetails.classList.toggle("hidden", !open);
@@ -865,7 +901,9 @@
     voucherDetailsToggle.dataset.bound = "1";
     voucherDetailsToggle.addEventListener("click", function () {
       const isOpen = voucherDetailsToggle.getAttribute("aria-expanded") === "true";
-      setVoucherDetailsOpen(!isOpen);
+      const willOpen = !isOpen;
+      setVoucherDetailsOpen(willOpen);
+      if (willOpen) razafiScrollIntoCenter(voucherDetails);
     });
   }
 
