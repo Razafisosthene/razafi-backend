@@ -2145,11 +2145,13 @@ function saturationLabel(pct) {
     }
 
     if (pct >= 90) {
-      _netEls.capacityText.textContent = "très limitée";
+      _netEls.capacityText.textContent = "très élevée";
     } else if (pct >= 70) {
+      _netEls.capacityText.textContent = "élevée";
+    } else if (pct >= 40) {
       _netEls.capacityText.textContent = "modérée";
     } else {
-      _netEls.capacityText.textContent = "élevée";
+      _netEls.capacityText.textContent = "faible";
     }
   }
 
