@@ -508,6 +508,29 @@
           padding: 5px 8px;
         }
       }
+
+      /* Apple Cards Phase 1 overrides (kept here because this style is injected after index.html) */
+      .plan-card { padding: 18px 16px 16px !important; border-radius: 28px !important; }
+      .plan-card::before { display: none !important; width: 0 !important; }
+      .plan-card.selected { border-color: rgba(0,122,255,.42) !important; box-shadow: 0 18px 38px rgba(0,122,255,.13), 0 0 0 1px rgba(0,122,255,.12) inset !important; }
+      .plan-card .plan-ux-badge { position: static !important; box-shadow: none !important; margin: 0 0 10px !important; font-size: 10px !important; text-transform: uppercase; }
+      .plan-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+      .plan-name { margin: 0 !important; font-size: 1.08rem !important; line-height: 1.15 !important; font-weight: 900 !important; letter-spacing: -.025em; }
+      .plan-subtitle { margin: 5px 0 0 !important; font-size: 12px !important; font-weight: 750; opacity: .82; }
+      .plan-selected-mark { display: none; padding: 6px 10px; border-radius: 999px; background: rgba(0,122,255,.11); color: #007aff; font-size: 12px; font-weight: 900; white-space: nowrap; }
+      .plan-card.selected .plan-selected-mark { display: inline-flex; }
+      .plan-price-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 2px 0 14px; }
+      .plan-card .price { margin: 0 !important; font-size: clamp(1.9rem,8vw,2.55rem) !important; line-height: .95 !important; font-weight: 950 !important; letter-spacing: -.065em !important; }
+      .plan-price-caption { font-size: 12px; font-weight: 800; opacity: .76; white-space: nowrap; padding-bottom: 3px; }
+      .plan-chip-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 0 14px; }
+      .plan-chip { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 10px 11px; border-radius: 18px; background: rgba(118,118,128,.085); border: 1px solid rgba(118,118,128,.08); }
+      .plan-chip-label { opacity: .72; font-size: 10px; font-weight: 850; text-transform: uppercase; letter-spacing: .035em; }
+      .plan-chip-value { font-size: 13px; font-weight: 900; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .plan-speed-line { margin: 0 0 14px !important; font-size: 13px !important; font-weight: 750; opacity: .78; line-height: 1.35; }
+      .plan-card .choose-plan-btn { width: 100%; }
+      .plan-card.selected .choose-plan-btn { background: rgba(118,118,128,.16) !important; color: inherit !important; box-shadow: none !important; }
+      .plan-card .plan-payment { margin-top: 14px; }
+      @media (max-width: 380px) { .plan-chip-row { grid-template-columns: 1fr; } .plan-price-row { align-items: flex-start; flex-direction: column; gap: 4px; } .plan-price-caption { padding-bottom: 0; } }
     `;
     document.head.appendChild(st);
   }
@@ -2488,9 +2511,11 @@ function saturationLabel(pct) {
       ? `<span class="plan-ux-badge ${uiMeta.isFreeTest ? "badge-free" : "badge-recommended"}">${escapeHtml(uiMeta.badge)}</span>`
       : "";
     const ctaText = uiMeta.cta || "Choisir";
-    const line1 = `⏳ Durée: ${formatDuration(durationMinutes)} • 📊 Data: ${formatData(dataMb)}`;
-    const line2 = speedHuman ? `🚀 Vitesse max : ${speedHuman}` : "";
-    const line3 = `🔌 ${formatDevices(maxDevices)}`;
+    const durationText = formatDuration(durationMinutes);
+    const dataText = formatData(dataMb);
+    const devicesText = formatDevices(maxDevices);
+    const speedText = speedHuman || "Selon le forfait";
+    const planSubtitle = isUnlimited ? "Accès illimité" : "Forfait data";
 
     return `
       <div class="card plan-card ${familyClass} ${variantClass} ${roleClass}" 
@@ -2507,11 +2532,40 @@ function saturationLabel(pct) {
            data-plan-recommended="${uiMeta.isRecommended ? "1" : "0"}"
            data-plan-free-test="${uiMeta.isFreeTest ? "1" : "0"}">
         ${badgeHtml}
-        <h4>${escapeHtml(name)}</h4>
-        <p class="price">${price}</p>
-        <p class="plan-meta">${line1}</p>
-        ${line2 ? `<p class="plan-speed">${escapeHtml(line2)}</p>` : ""}
-        <p class="plan-devices">${line3}</p>
+
+        <div class="plan-card-head">
+          <div class="plan-title-wrap">
+            <h4 class="plan-name">${escapeHtml(name)}</h4>
+            <p class="plan-subtitle">${escapeHtml(planSubtitle)}</p>
+          </div>
+          <span class="plan-selected-mark">✓ Sélectionné</span>
+        </div>
+
+        <div class="plan-price-row">
+          <p class="price">${price}</p>
+          <span class="plan-price-caption">RAZAFI WiFi</span>
+        </div>
+
+        <div class="plan-chip-row" aria-label="Détails du forfait">
+          <div class="plan-chip">
+            <span class="plan-chip-label">Durée</span>
+            <span class="plan-chip-value">${escapeHtml(durationText)}</span>
+          </div>
+          <div class="plan-chip">
+            <span class="plan-chip-label">Données</span>
+            <span class="plan-chip-value">${escapeHtml(dataText)}</span>
+          </div>
+          <div class="plan-chip">
+            <span class="plan-chip-label">Vitesse</span>
+            <span class="plan-chip-value">${escapeHtml(speedText)}</span>
+          </div>
+          <div class="plan-chip">
+            <span class="plan-chip-label">Appareil</span>
+            <span class="plan-chip-value">${escapeHtml(devicesText)}</span>
+          </div>
+        </div>
+
+        <p class="plan-speed-line">Choisissez ce forfait, puis confirmez le paiement MVola.</p>
 
         <button class="choose-plan-btn">${escapeHtml(ctaText)}</button>
 
