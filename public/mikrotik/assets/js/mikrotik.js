@@ -281,10 +281,44 @@
     banner.style.display = "";
     const when = last.ts ? formatLocalTime(last.ts) : "";
     banner.innerHTML = `
-      <div><strong>Dernier code généré :</strong> <span style="letter-spacing:1px;">${escapeHtml(last.code)}</span> ${when ? `<span class="small">(${escapeHtml(when)})</span>` : ""}</div>
+      <div><strong>Dernier code généré :</strong></div>
+      <div style="margin-top:3px; font-weight:900; letter-spacing:.8px;">${escapeHtml(last.code)} ${when ? `<span class="small" style="font-weight:700; letter-spacing:0;">(${escapeHtml(when)})</span>` : ""}</div>
     `;
 
 }
+
+  function setupVoucherDetailsToggle() {
+    const btn = document.getElementById("voucherDetailsToggle");
+    const wrap = document.getElementById("voucherDetailsWrap");
+    if (!btn || !wrap || btn.dataset.razafiReady === "1") return;
+    btn.dataset.razafiReady = "1";
+    btn.addEventListener("click", function () {
+      if (wrap.classList.contains("is-direct")) return;
+      const willOpen = wrap.classList.contains("is-collapsed");
+      wrap.classList.toggle("is-collapsed", !willOpen);
+      btn.setAttribute("aria-expanded", willOpen ? "true" : "false");
+      btn.textContent = willOpen ? "Masquer votre dernière consommation" : "Voir votre dernière consommation";
+    });
+  }
+
+  function setVoucherDetailsUx({ compactFinished = false } = {}) {
+    setupVoucherDetailsToggle();
+    const btn = document.getElementById("voucherDetailsToggle");
+    const wrap = document.getElementById("voucherDetailsWrap");
+    if (!btn || !wrap) return;
+
+    if (compactFinished) {
+      wrap.classList.remove("is-direct");
+      wrap.classList.add("is-collapsed");
+      btn.textContent = "Voir votre dernière consommation";
+      btn.setAttribute("aria-expanded", "false");
+    } else {
+      wrap.classList.add("is-direct");
+      wrap.classList.remove("is-collapsed");
+      btn.textContent = "Détails du forfait acheté";
+      btn.setAttribute("aria-expanded", "true");
+    }
+  }
 
   function friendlyErrorMessage(err) {
     // Network errors from fetch are often TypeError
@@ -1448,10 +1482,16 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
       useBtn.disabled = !canUse;
       useBtn.style.display = canUse ? "" : "none";
     }
+    const compactFinishedUx = (status === "used" || status === "expired") && !canUse;
+
     if (copyBtn) {
-      copyBtn.disabled = !code;
-      copyBtn.style.display = code ? "" : "none";
+      // RAZAFI UX: copying is useful only for support/reclamation after a finished forfait.
+      // When the code is ready/usable, keep one clear action: "Utiliser ce code".
+      copyBtn.disabled = !(code && compactFinishedUx);
+      copyBtn.style.display = (code && compactFinishedUx) ? "" : "none";
     }
+
+    setVoucherDetailsUx({ compactFinished: compactFinishedUx });
 
     // Persist last code (fallback for captive quirks)
     if (code) {

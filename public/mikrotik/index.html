@@ -219,6 +219,48 @@
       line-height:1.35;
     }
     body.theme-dark .voucher-info li{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.07);}
+
+    .voucher-actions{
+      display:grid;
+      gap:10px;
+      margin:12px 0 10px;
+    }
+    .voucher-details-wrap{
+      margin-top:12px;
+      border-top:1px solid var(--ios-border);
+      padding-top:12px;
+    }
+    .voucher-details-toggle{
+      width:100%;
+      border:0;
+      background:transparent;
+      color:var(--ios-blue);
+      padding:8px 2px;
+      font-weight:900;
+      font-size:14px;
+      text-align:left;
+      cursor:pointer;
+      -webkit-tap-highlight-color:transparent;
+    }
+    .voucher-details-toggle:active{transform:scale(.99);}
+    .voucher-details-wrap.is-direct .voucher-details-toggle{
+      color:var(--ios-text);
+      cursor:default;
+      pointer-events:none;
+      padding-bottom:2px;
+    }
+    .voucher-details-wrap.is-collapsed .voucher-info{display:none;}
+    .voucher-details-wrap.is-direct .voucher-info{margin-top:8px;}
+    .razafi-banner{
+      border-radius:18px!important;
+      background:rgba(118,118,128,.08)!important;
+      border:1px solid rgba(118,118,128,.10)!important;
+      color:var(--ios-text);
+    }
+    body.theme-dark .razafi-banner{
+      background:rgba(255,255,255,.06)!important;
+      border-color:rgba(255,255,255,.08)!important;
+    }
     .primary-btn,.secondary-btn,.choose-plan-btn,.pay-btn{
       border-radius:999px!important;
       min-height:46px;
