@@ -2198,9 +2198,12 @@ function saturationLabel(pct) {
 
         const lines = parts.length >= 2 ? [parts[0], parts.slice(1).join(" ")] : [cleanName];
         nameLine.innerHTML = lines
-          .map((line) => `<span class="pool-name-line">${escapeHtml(line)}</span>`)
+          .map((line) => `<span class="pool-name-line" style="display:block;">${escapeHtml(line)}</span>`)
           .join("");
         nameLine.style.display = "";
+        nameLine.style.textAlign = "center";
+        nameLine.style.fontWeight = "900";
+        nameLine.style.lineHeight = "1.18";
       } else {
         nameLine.innerHTML = "";
         nameLine.style.display = "none";
