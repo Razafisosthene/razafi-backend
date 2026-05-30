@@ -2543,7 +2543,6 @@ function saturationLabel(pct) {
 
         <div class="plan-price-row">
           <p class="price">${price}</p>
-          <span class="plan-price-caption">RAZAFI WiFi</span>
         </div>
 
         <div class="plan-chip-row" aria-label="Détails du forfait">
