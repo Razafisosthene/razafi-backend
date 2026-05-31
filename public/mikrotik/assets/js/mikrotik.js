@@ -949,7 +949,6 @@
         ".card.faq",
         "section.terms-card",
         ".terms-card",
-        ".portal-footer"
       ];
 
       selectors.forEach(function (sel) {
