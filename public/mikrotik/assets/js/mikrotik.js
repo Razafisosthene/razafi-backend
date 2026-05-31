@@ -510,7 +510,7 @@
       }
 
       /* Apple Cards Phase 1 overrides (kept here because this style is injected after index.html) */
-      .plan-card { padding: 16px 15px 14px !important; border-radius: 28px !important; }
+      .plan-card { padding: 15px 15px 13px !important; border-radius: 28px !important; }
       .plan-card::before { display: none !important; width: 0 !important; }
       .plan-card.selected { border-color: rgba(0,122,255,.58) !important; box-shadow: 0 22px 46px rgba(0,122,255,.16), 0 0 0 1.5px rgba(0,122,255,.18) inset !important; transform: translateY(-1px); }
       .plan-card .plan-ux-badge { position: static !important; box-shadow: none !important; margin: 0 0 10px !important; font-size: 10px !important; text-transform: uppercase; }
@@ -519,13 +519,13 @@
       .plan-subtitle { margin: 5px 0 0 !important; font-size: 12px !important; font-weight: 750; opacity: .82; }
       .plan-selected-mark { display: none; padding: 6px 10px; border-radius: 999px; background: #007aff; color: #fff; font-size: 12px; font-weight: 900; white-space: nowrap; box-shadow: 0 8px 18px rgba(0,122,255,.18); }
       .plan-card.selected .plan-selected-mark { display: inline-flex; }
-      .plan-price-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 0 0 10px; }
+      .plan-price-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 0 0 8px; }
       .plan-card .price { margin: 0 !important; font-size: clamp(1.9rem,8vw,2.55rem) !important; line-height: .95 !important; font-weight: 950 !important; letter-spacing: -.065em !important; }
       .plan-price-caption { font-size: 12px; font-weight: 800; opacity: .76; white-space: nowrap; padding-bottom: 3px; }
-      .plan-compact-meta { display: block; margin: 0 0 10px; font-size: 13px; font-weight: 850; line-height: 1.28; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .plan-compact-meta { display: block; margin: 0 0 9px; font-size: 13px; font-weight: 850; line-height: 1.28; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .plan-compact-sep { margin: 0 5px; opacity: .62; font-weight: 900; }
       .plan-speed-line { display: none !important; }
-      .plan-card .choose-plan-btn { width: 100%; min-height: 42px !important; padding: 10px 14px !important; margin-top: 2px !important; box-shadow: 0 10px 20px rgba(0,122,255,.14) !important; }
+      .plan-card .choose-plan-btn { width: 100%; min-height: 38px !important; padding: 8px 14px !important; margin-top: 1px !important; box-shadow: 0 8px 18px rgba(0,122,255,.13) !important; }
       .plan-card.selected .choose-plan-btn { background: rgba(118,118,128,.16) !important; color: inherit !important; box-shadow: none !important; border: 1px solid rgba(118,118,128,.10) !important; }
       .plan-card .plan-payment { margin-top: 14px; }
       @media (max-width: 380px) { .plan-price-row { align-items: flex-start; flex-direction: column; gap: 4px; } .plan-price-caption { padding-bottom: 0; } }
@@ -2572,7 +2572,7 @@ function saturationLabel(pct) {
         </div>
 
         <div class="plan-compact-meta" aria-label="Détails du forfait">
-          <span>⏳ ${escapeHtml(durationText)}</span><span class="plan-compact-sep">·</span><span>${isUnlimited ? "♾️" : "📦"} ${escapeHtml(dataText)}</span><span class="plan-compact-sep">·</span><span>🚀 ${escapeHtml(speedText)}</span>
+          <span>⏳ ${escapeHtml(durationText)}</span><span class="plan-compact-sep">·</span><span>📦 ${escapeHtml(dataText)}</span><span class="plan-compact-sep">·</span><span>🚀 ${escapeHtml(speedText)}</span>
         </div>
 
         <p class="plan-speed-line">Choisissez ce forfait, puis confirmez le paiement MVola.</p>
