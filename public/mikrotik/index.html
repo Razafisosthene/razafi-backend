@@ -261,15 +261,25 @@
     .secondary-btn{background:rgba(118,118,128,.12)!important;border-color:transparent!important;color:var(--ios-text)!important;}
 
     .plans-shell{margin-top:18px;animation:razafiFadeUp .38s ease both;animation-delay:.04s;}
+    .plans-heading-row{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      margin:0 4px 6px;
+      min-width:0;
+    }
     .section-title-ios{
-      margin:0 4px 10px;
+      margin:0;
       font-size:1.18rem;
       font-weight:900;
       letter-spacing:-.025em;
       color:var(--ios-text);
+      line-height:1.1;
+      flex:0 0 auto;
     }
     .section-subtitle-ios{
-      margin:-4px 4px 12px;
+      margin:0 4px 12px;
       color:var(--ios-muted);
       font-size:13px;
       line-height:1.35;
@@ -278,12 +288,15 @@
     .plan-filters{
       display:flex;
       align-items:center;
+      justify-content:flex-end;
       gap:8px;
-      margin:0 4px 14px;
+      margin:0;
       padding:2px 0 1px;
       overflow-x:auto;
       -webkit-overflow-scrolling:touch;
       scrollbar-width:none;
+      min-width:0;
+      flex:1 1 auto;
     }
     .plan-filters::-webkit-scrollbar{display:none;}
     .plan-filter-btn{
@@ -315,6 +328,10 @@
       background:#f5f5f7;
       color:#111827;
       box-shadow:none;
+    }
+    @media (max-width:360px){
+      .plans-heading-row{gap:8px;}
+      .plan-filter-btn{min-height:32px;padding:0 12px;font-size:13px;}
     }
 
     .plans-grid{gap:14px!important;}
@@ -594,14 +611,16 @@
 
     <!-- ========= PLANS ========= -->
     <section class="plans-shell">
-      <h3 class="section-title-ios">Plans</h3>
-      <p class="section-subtitle-ios">Choisissez votre forfait et confirmez avec MVola.</p>
+      <div class="plans-heading-row">
+        <h3 class="section-title-ios">Plans</h3>
 
-      <div id="planFilters" class="plan-filters" role="tablist" aria-label="Filtrer les forfaits">
-        <button type="button" class="plan-filter-btn active" data-plan-filter="all" aria-pressed="true">Tous</button>
-        <button type="button" class="plan-filter-btn" data-plan-filter="data" aria-pressed="false">Data</button>
-        <button type="button" class="plan-filter-btn" data-plan-filter="unlimited" aria-pressed="false">Illimité</button>
+        <div id="planFilters" class="plan-filters" role="tablist" aria-label="Filtrer les forfaits">
+          <button type="button" class="plan-filter-btn active" data-plan-filter="all" aria-pressed="true">Tous</button>
+          <button type="button" class="plan-filter-btn" data-plan-filter="data" aria-pressed="false">Data</button>
+          <button type="button" class="plan-filter-btn" data-plan-filter="unlimited" aria-pressed="false">Illimité</button>
+        </div>
       </div>
+      <p class="section-subtitle-ios">Choisissez votre forfait et confirmez avec MVola.</p>
 
       <div id="plansGrid" class="plans-grid">
         <p class="muted small">Chargement des plans…</p>
