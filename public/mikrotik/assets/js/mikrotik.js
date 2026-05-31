@@ -2070,6 +2070,8 @@ function submitToLoginUrl(code, ev) {
   // -------- Plans: fetch + render (DB only) --------
   const plansGrid = $("plansGrid");
   const plansLoading = $("plansLoading");
+  const planFilters = $("planFilters");
+  let activePlanFilter = "all";
 
   // -------- Pool context (AP -> Pool) --------
   let poolContext = { pool_name: null, display_name: null, brand_name: null, branding_logo_url: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
@@ -2669,6 +2671,9 @@ function saturationLabel(pct) {
       const planUiMeta = buildPlanUiMeta(plans);
       plansGrid.innerHTML = plans.map((plan, index) => planCardHTML(plan, planUiMeta[getPlanIdentity(plan, index)] || {})).join("");
 
+      bindPlanFilters();
+      applyPlanFilter({ resetSelection: false });
+
       bindPlanHandlers();
       bindTermsAcceptanceGuard();
       closeAllPayments();
@@ -2682,6 +2687,57 @@ function saturationLabel(pct) {
   // -------- Plan selection & payment integration --------
   function getPlanCards() {
     return $all(".plan-card");
+  }
+
+  function getPlanFilterType(card) {
+    if (!card) return "data";
+    return String(card.getAttribute("data-plan-unlimited") || "") === "1" ? "unlimited" : "data";
+  }
+
+  function updatePlanFilterButtons() {
+    if (!planFilters) return;
+    planFilters.querySelectorAll(".plan-filter-btn").forEach((btn) => {
+      const isActive = String(btn.getAttribute("data-plan-filter") || "all") === activePlanFilter;
+      btn.classList.toggle("active", isActive);
+      btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
+  }
+
+  function applyPlanFilter({ resetSelection = false } = {}) {
+    const filter = String(activePlanFilter || "all");
+
+    getPlanCards().forEach((card) => {
+      const type = getPlanFilterType(card);
+      const shouldShow = filter === "all" || type === filter;
+      card.classList.toggle("hidden-by-filter", !shouldShow);
+      card.style.display = shouldShow ? "" : "none";
+
+      if (!shouldShow && resetSelection) {
+        resetPlanSelectionUi(card);
+      }
+    });
+
+    if (resetSelection) {
+      try { closeAllPayments(); } catch (_) {}
+    }
+
+    updatePlanFilterButtons();
+  }
+
+  function bindPlanFilters() {
+    if (!planFilters || planFilters.dataset.bound === "1") return;
+    planFilters.dataset.bound = "1";
+
+    planFilters.querySelectorAll(".plan-filter-btn").forEach((btn) => {
+      btn.addEventListener("click", function () {
+        const nextFilter = String(btn.getAttribute("data-plan-filter") || "all").trim() || "all";
+        if (nextFilter === activePlanFilter) return;
+        activePlanFilter = nextFilter;
+        applyPlanFilter({ resetSelection: true });
+      });
+    });
+
+    updatePlanFilterButtons();
   }
 
   function getChooseButtonDefaultLabel(btn) {

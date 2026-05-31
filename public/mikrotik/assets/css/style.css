@@ -261,6 +261,52 @@ img {
   margin-bottom: 18px;
 }
 
+
+/* ===============================
+   PLAN FILTERS – TikTok / Apple style
+   =============================== */
+.plan-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 4px 14px;
+  padding: 2px 0 1px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.plan-filters::-webkit-scrollbar { display: none; }
+.plan-filter-btn {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 999px;
+  min-height: 34px;
+  padding: 0 15px;
+  background: rgba(118,118,128,.12);
+  color: #374151;
+  font-size: 14px;
+  font-weight: 850;
+  letter-spacing: -.01em;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform .12s ease, background .16s ease, color .16s ease, box-shadow .16s ease;
+}
+.plan-filter-btn:active { transform: scale(.97); }
+.plan-filter-btn.active {
+  background: #1f2937;
+  color: #fff;
+  box-shadow: 0 7px 16px rgba(17,24,39,.12);
+}
+body.theme-dark .plan-filter-btn {
+  background: rgba(255,255,255,.09);
+  color: #d1d5db;
+}
+body.theme-dark .plan-filter-btn.active {
+  background: #f5f5f7;
+  color: #111827;
+  box-shadow: none;
+}
+
 /* ===============================
    PLANS
    =============================== */
