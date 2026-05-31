@@ -930,6 +930,37 @@
     });
   }
 
+
+  function syncMagicCodeFocusMode({ status = "none", canUse = false, code = "", hasUsableBonus = false, bonusModeActive = false } = {}) {
+    try {
+      const s = String(status || "").toLowerCase();
+      const hasCode = !!String(code || "").trim();
+      const isBonusOffer = !!hasUsableBonus && !!canUse && (s === "used" || s === "expired");
+
+      // Focus mode is ONLY for a normal newly usable magic code (free or paid).
+      // It must NOT trigger for bonus offers, because the user may prefer buying another plan.
+      const shouldFocus = hasCode && !!canUse && !bonusModeActive && !isBonusOffer && (s === "pending" || s === "active");
+
+      const selectors = [
+        ".plans-shell",
+        "#portalAnnouncementCard",
+        "#networkInfoCard",
+        "section.card.faq",
+        ".card.faq",
+        "section.terms-card",
+        ".terms-card",
+        ".portal-footer"
+      ];
+
+      selectors.forEach(function (sel) {
+        document.querySelectorAll(sel).forEach(function (el) {
+          if (!el) return;
+          el.style.display = shouldFocus ? "none" : "";
+        });
+      });
+    } catch (_) {}
+  }
+
   function syncVoucherCompactUx({ status = "none", canUse = false, code = "" } = {}) {
     bindVoucherDetailsToggle();
 
@@ -983,6 +1014,7 @@
 
     if (!has) {
       try { syncVoucherCompactUx({ status: "none", canUse: false, code: "" }); } catch (_) {}
+      try { syncMagicCodeFocusMode({ status: "none", canUse: false, code: "" }); } catch (_) {}
     }
 
     const codeEl = $("voucher-code");
@@ -1570,6 +1602,7 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
       useBtn.style.display = canUse ? "" : "none";
     }
     syncVoucherCompactUx({ status, canUse, code });
+    syncMagicCodeFocusMode({ status, canUse, code, hasUsableBonus, bonusModeActive });
 
     // Persist last code (fallback for captive quirks)
     if (code) {
@@ -2460,6 +2493,7 @@ function saturationLabel(pct) {
     // Fallback: at least show the code even if status endpoint fails temporarily
     if (!ok && safeCode) {
       setVoucherUI({ phone: safePhone, code: safeCode, meta: receiptMeta, focus: false });
+      syncMagicCodeFocusMode({ status: "pending", canUse: true, code: safeCode, hasUsableBonus: false, bonusModeActive: false });
     }
 
     // Premium: scroll (only if voucher is above viewport) + replayable pop+glow
