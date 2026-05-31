@@ -522,10 +522,10 @@
       .plan-price-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 0 0 3px; }
       .plan-card .price { margin: 0 !important; font-size: clamp(1.78rem,7.45vw,2.38rem) !important; line-height: .95 !important; font-weight: 950 !important; letter-spacing: -.06em !important; }
       .plan-price-caption { font-size: 12px; font-weight: 800; opacity: .76; white-space: nowrap; padding-bottom: 3px; }
-      .plan-compact-meta { display: block; margin: 0 0 8px; font-size: 13px; font-weight: 850; line-height: 1.24; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .plan-compact-meta { display: block; margin: 0 0 6px; font-size: 13px; font-weight: 850; line-height: 1.24; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .plan-compact-sep { margin: 0 5px; opacity: .62; font-weight: 900; }
       .plan-speed-line { display: none !important; }
-      .plan-card .choose-plan-btn { width: 100%; height: 44px !important; min-height: 44px !important; padding: 0 14px !important; margin-top: 0 !important; background: #1f2937 !important; color: #fff !important; border: 0 !important; box-shadow: 0 7px 16px rgba(17,24,39,.14) !important; font-size: .98rem !important; font-weight: 850 !important; line-height: 1 !important; }
+      .plan-card .choose-plan-btn { width: 90%; height: 40px !important; min-height: 40px !important; padding: 0 14px !important; margin: 0 auto !important; background: #1f2937 !important; color: #fff !important; border: 0 !important; box-shadow: 0 7px 16px rgba(17,24,39,.14) !important; font-size: .96rem !important; font-weight: 850 !important; line-height: 1 !important; }
       .plan-card.selected .choose-plan-btn { background: rgba(118,118,128,.16) !important; color: inherit !important; box-shadow: none !important; border: 1px solid rgba(118,118,128,.10) !important; }
       .plan-card .plan-payment { margin-top: 14px; }
       @media (max-width: 380px) { .plan-price-row { align-items: flex-start; flex-direction: column; gap: 4px; } .plan-price-caption { padding-bottom: 0; } }
