@@ -2176,15 +2176,8 @@ function saturationLabel(pct) {
       return;
     }
 
-    if (pct >= 90) {
-      _netEls.capacityText.textContent = "très élevée";
-    } else if (pct >= 70) {
-      _netEls.capacityText.textContent = "élevée";
-    } else if (pct >= 40) {
-      _netEls.capacityText.textContent = "modérée";
-    } else {
-      _netEls.capacityText.textContent = "faible";
-    }
+    const safePct = Math.max(0, Math.min(100, Math.round(pct)));
+    _netEls.capacityText.textContent = safePct + "%";
   }
 
   function setBarLevelClass(level) {
