@@ -2759,12 +2759,31 @@ function saturationLabel(pct) {
 
     window.setTimeout(function () {
       try {
-        // Start is better than center when the mobile keyboard is open: it keeps
-        // the MVola field + Pay/Cancel buttons closer to the visible area.
-        target.scrollIntoView({ behavior: "smooth", block: "start" });
+        // Mobile keyboard UX: target the MVola input itself and keep it around
+        // the visible center. Using "start" can push the input above the
+        // captive-browser header, leaving only Pay/Cancel visible.
+        target.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
       } catch (_) {
         try { target.scrollIntoView(); } catch (_) {}
       }
+
+      // Extra guard for Android/iPhone captive browsers: after scrollIntoView,
+      // verify the input is not hidden behind the top browser bar or keyboard.
+      if (!input || typeof input.getBoundingClientRect !== "function") return;
+      window.setTimeout(function () {
+        try {
+          const rect = input.getBoundingClientRect();
+          const viewportHeight = (window.visualViewport && window.visualViewport.height) || window.innerHeight || document.documentElement.clientHeight || 0;
+          const topSafe = 90;
+          const bottomSafe = Math.max(180, viewportHeight - 170);
+
+          if (rect.top < topSafe) {
+            window.scrollBy({ top: rect.top - topSafe, behavior: "smooth" });
+          } else if (rect.bottom > bottomSafe) {
+            window.scrollBy({ top: rect.bottom - bottomSafe, behavior: "smooth" });
+          }
+        } catch (_) {}
+      }, 120);
     }, Math.max(0, Number(delayMs) || 0));
   }
 
