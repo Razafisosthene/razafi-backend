@@ -364,46 +364,36 @@
       white-space:nowrap;
       padding-bottom:3px;
     }
-    .plan-chip-row{
+    .plan-compact-meta{
       display:grid;
-      grid-template-columns:1fr 1fr;
-      gap:8px;
+      gap:7px;
       margin:0 0 14px;
+      padding:2px 0 0;
     }
-    .plan-chip{
+    .plan-compact-item{
       display:flex;
-      flex-direction:column;
-      gap:2px;
+      align-items:center;
+      gap:8px;
       min-width:0;
-      padding:10px 11px;
-      border-radius:18px;
-      background:rgba(118,118,128,.085);
-      border:1px solid rgba(118,118,128,.08);
-    }
-    body.theme-dark .plan-chip{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.07);}
-    .plan-chip-label{
-      color:var(--ios-muted);
-      font-size:10px;
-      font-weight:850;
-      text-transform:uppercase;
-      letter-spacing:.035em;
-    }
-    .plan-chip-value{
       color:var(--ios-text);
-      font-size:13px;
-      font-weight:900;
-      line-height:1.2;
+      font-size:13.5px;
+      font-weight:850;
+      line-height:1.22;
+    }
+    .plan-compact-icon{
+      width:20px;
+      min-width:20px;
+      text-align:center;
+      font-size:14px;
+      line-height:1;
+    }
+    .plan-compact-text{
+      min-width:0;
       overflow:hidden;
       text-overflow:ellipsis;
       white-space:nowrap;
     }
-    .plan-speed-line{
-      margin:0 0 14px!important;
-      color:var(--ios-muted)!important;
-      font-size:13px!important;
-      font-weight:750;
-      line-height:1.35;
-    }
+    .plan-speed-line{display:none!important;}
     .plan-card .choose-plan-btn{
       width:100%;
       background:var(--ios-blue)!important;
@@ -419,7 +409,6 @@
     }
     .plan-card .plan-payment{margin-top:14px;}
     @media (max-width:380px){
-      .plan-chip-row{grid-template-columns:1fr;}
       .plan-price-row{align-items:flex-start;flex-direction:column;gap:4px;}
       .plan-price-caption{padding-bottom:0;}
     }

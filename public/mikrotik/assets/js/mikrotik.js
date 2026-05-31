@@ -522,15 +522,15 @@
       .plan-price-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 2px 0 14px; }
       .plan-card .price { margin: 0 !important; font-size: clamp(1.9rem,8vw,2.55rem) !important; line-height: .95 !important; font-weight: 950 !important; letter-spacing: -.065em !important; }
       .plan-price-caption { font-size: 12px; font-weight: 800; opacity: .76; white-space: nowrap; padding-bottom: 3px; }
-      .plan-chip-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 0 14px; }
-      .plan-chip { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 10px 11px; border-radius: 18px; background: rgba(118,118,128,.085); border: 1px solid rgba(118,118,128,.08); }
-      .plan-chip-label { opacity: .72; font-size: 10px; font-weight: 850; text-transform: uppercase; letter-spacing: .035em; }
-      .plan-chip-value { font-size: 13px; font-weight: 900; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .plan-speed-line { margin: 0 0 14px !important; font-size: 13px !important; font-weight: 750; opacity: .78; line-height: 1.35; }
+      .plan-compact-meta { display: grid; gap: 7px; margin: 0 0 14px; padding: 2px 0 0; }
+      .plan-compact-item { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13.5px; font-weight: 850; line-height: 1.22; }
+      .plan-compact-icon { width: 20px; min-width: 20px; text-align: center; font-size: 14px; line-height: 1; }
+      .plan-compact-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .plan-speed-line { display: none !important; }
       .plan-card .choose-plan-btn { width: 100%; }
       .plan-card.selected .choose-plan-btn { background: rgba(118,118,128,.16) !important; color: inherit !important; box-shadow: none !important; border: 1px solid rgba(118,118,128,.10) !important; }
       .plan-card .plan-payment { margin-top: 14px; }
-      @media (max-width: 380px) { .plan-chip-row { grid-template-columns: 1fr; } .plan-price-row { align-items: flex-start; flex-direction: column; gap: 4px; } .plan-price-caption { padding-bottom: 0; } }
+      @media (max-width: 380px) { .plan-price-row { align-items: flex-start; flex-direction: column; gap: 4px; } .plan-price-caption { padding-bottom: 0; } }
     `;
     document.head.appendChild(st);
   }
@@ -2573,22 +2573,18 @@ function saturationLabel(pct) {
           <p class="price">${price}</p>
         </div>
 
-        <div class="plan-chip-row" aria-label="Détails du forfait">
-          <div class="plan-chip">
-            <span class="plan-chip-label">Durée</span>
-            <span class="plan-chip-value">${escapeHtml(durationText)}</span>
+        <div class="plan-compact-meta" aria-label="Détails du forfait">
+          <div class="plan-compact-item">
+            <span class="plan-compact-icon" aria-hidden="true">⏳</span>
+            <span class="plan-compact-text">${escapeHtml(durationText)}</span>
           </div>
-          <div class="plan-chip">
-            <span class="plan-chip-label">Données</span>
-            <span class="plan-chip-value">${escapeHtml(dataText)}</span>
+          <div class="plan-compact-item">
+            <span class="plan-compact-icon" aria-hidden="true">📦</span>
+            <span class="plan-compact-text">${escapeHtml(dataText)}</span>
           </div>
-          <div class="plan-chip">
-            <span class="plan-chip-label">Vitesse</span>
-            <span class="plan-chip-value">${escapeHtml(speedText)}</span>
-          </div>
-          <div class="plan-chip">
-            <span class="plan-chip-label">Appareil</span>
-            <span class="plan-chip-value">${escapeHtml(devicesText)}</span>
+          <div class="plan-compact-item">
+            <span class="plan-compact-icon" aria-hidden="true">🚀</span>
+            <span class="plan-compact-text">${escapeHtml(speedText)}</span>
           </div>
         </div>
 

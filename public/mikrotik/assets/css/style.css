@@ -851,3 +851,46 @@ input[type="tel"] {
 body.theme-dark .portal-announcement-icon {
   background: rgba(255,255,255,0.10);
 }
+
+/* ===============================
+   COMPACT PLAN CARDS (RAZAFI Apple UX)
+   UI-only: internal max_devices data remains untouched.
+   =============================== */
+
+.plan-compact-meta {
+  display: grid;
+  gap: 7px;
+  margin: 0 0 14px;
+  padding: 2px 0 0;
+}
+
+.plan-compact-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-main);
+  font-size: 0.95rem;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.plan-compact-icon {
+  width: 20px;
+  min-width: 20px;
+  text-align: center;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.plan-compact-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-speed-line {
+  display: none !important;
+}
+
