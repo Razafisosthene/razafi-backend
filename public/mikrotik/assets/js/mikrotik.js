@@ -514,9 +514,9 @@
       .plan-card::before { display: none !important; width: 0 !important; }
       .plan-card.selected { border-color: rgba(0,122,255,.58) !important; box-shadow: 0 22px 46px rgba(0,122,255,.16), 0 0 0 1.5px rgba(0,122,255,.18) inset !important; transform: translateY(-1px); }
       .plan-card .plan-ux-badge { position: static !important; box-shadow: none !important; margin: 0 0 10px !important; font-size: 10px !important; text-transform: uppercase; }
-      .plan-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+      .plan-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
       .plan-name { margin: 0 !important; font-size: 1.08rem !important; line-height: 1.15 !important; font-weight: 900 !important; letter-spacing: -.025em; }
-      .plan-subtitle { margin: 5px 0 0 !important; font-size: 12px !important; font-weight: 750; opacity: .82; }
+      .plan-subtitle { display: none !important; }
       .plan-selected-mark { display: none; padding: 6px 10px; border-radius: 999px; background: #007aff; color: #fff; font-size: 12px; font-weight: 900; white-space: nowrap; box-shadow: 0 8px 18px rgba(0,122,255,.18); }
       .plan-card.selected .plan-selected-mark { display: inline-flex; }
       .plan-price-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 0 0 3px; }
@@ -525,7 +525,7 @@
       .plan-compact-meta { display: block; margin: 0 0 6px; font-size: 13px; font-weight: 850; line-height: 1.24; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .plan-compact-sep { margin: 0 5px; opacity: .62; font-weight: 900; }
       .plan-speed-line { display: none !important; }
-      .plan-card .choose-plan-btn { width: 90%; height: 40px !important; min-height: 40px !important; padding: 0 14px !important; margin: 0 auto !important; background: #1f2937 !important; color: #fff !important; border: 0 !important; box-shadow: 0 7px 16px rgba(17,24,39,.14) !important; font-size: .96rem !important; font-weight: 850 !important; line-height: 1 !important; }
+      .plan-card .choose-plan-btn { width: 90%; height: 36px !important; min-height: 36px !important; padding: 0 14px !important; margin: 0 auto !important; background: #1f2937 !important; color: #fff !important; border: 0 !important; box-shadow: 0 6px 14px rgba(17,24,39,.12) !important; font-size: .90rem !important; font-weight: 650 !important; line-height: 1 !important; }
       .plan-card.selected .choose-plan-btn { background: rgba(118,118,128,.16) !important; color: inherit !important; box-shadow: none !important; border: 1px solid rgba(118,118,128,.10) !important; }
       .plan-card .plan-payment { margin-top: 14px; }
       @media (max-width: 380px) { .plan-price-row { align-items: flex-start; flex-direction: column; gap: 4px; } .plan-price-caption { padding-bottom: 0; } }
@@ -2541,8 +2541,6 @@ function saturationLabel(pct) {
     const dataText = formatData(dataMb);
     const devicesText = formatDevices(maxDevices);
     const speedText = speedHuman || "Selon le forfait";
-    const planSubtitle = isUnlimited ? "Accès illimité" : "Forfait data";
-
     return `
       <div class="card plan-card ${familyClass} ${variantClass} ${roleClass}" 
            data-plan-id="${escapeHtml(plan.id)}"
@@ -2562,7 +2560,6 @@ function saturationLabel(pct) {
         <div class="plan-card-head">
           <div class="plan-title-wrap">
             <h4 class="plan-name">${escapeHtml(name)}</h4>
-            <p class="plan-subtitle">${escapeHtml(planSubtitle)}</p>
           </div>
           <span class="plan-selected-mark">✓ Sélectionné</span>
         </div>
