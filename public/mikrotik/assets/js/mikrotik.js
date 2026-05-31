@@ -2750,6 +2750,24 @@ function saturationLabel(pct) {
     }, 80);
   }
 
+  function scrollPaymentFormIntoView(card, delayMs = 220) {
+    if (!card) return;
+    const payment = card.querySelector(".plan-payment");
+    const input = card.querySelector(".mvola-input");
+    const target = input || payment || card;
+    if (!target || typeof target.scrollIntoView !== "function") return;
+
+    window.setTimeout(function () {
+      try {
+        // Start is better than center when the mobile keyboard is open: it keeps
+        // the MVola field + Pay/Cancel buttons closer to the visible area.
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (_) {
+        try { target.scrollIntoView(); } catch (_) {}
+      }
+    }, Math.max(0, Number(delayMs) || 0));
+  }
+
   function closeAllPayments() {
     const planCards = getPlanCards();
     planCards.forEach((card) => {
@@ -3035,18 +3053,29 @@ function bindPlanHandlers() {
           setPlanSelectedUi(card);
           const payment = card.querySelector(".plan-payment");
           if (payment) payment.classList.remove("hidden");
-          scrollSelectedPlanIntoView(card);
+          scrollPaymentFormIntoView(card, 120);
           if (input) {
             try { input.focus({ preventScroll: true }); } catch (_) { try { input.focus(); } catch (_) {} }
+            // Android/iPhone keyboards resize the visible area after focus, so scroll once more
+            // after the keyboard starts opening. This keeps the MVola field + Pay/Cancel visible.
+            scrollPaymentFormIntoView(card, 420);
             updatePayButtonState(card);
           }
         });
       }
 
       if (input) {
+        let lastPaymentScrollAt = 0;
         input.addEventListener("input", function () {
           if (card.classList.contains("processing")) return;
           updatePayButtonState(card);
+
+          // While the user types, keep the payment actions reachable above the keyboard.
+          const now = Date.now();
+          if (now - lastPaymentScrollAt > 900) {
+            lastPaymentScrollAt = now;
+            scrollPaymentFormIntoView(card, 80);
+          }
         });
       }
 
