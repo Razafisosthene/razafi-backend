@@ -512,12 +512,12 @@
       /* Apple Cards Phase 1 overrides (kept here because this style is injected after index.html) */
       .plan-card { padding: 18px 16px 16px !important; border-radius: 28px !important; }
       .plan-card::before { display: none !important; width: 0 !important; }
-      .plan-card.selected { border-color: rgba(0,122,255,.42) !important; box-shadow: 0 18px 38px rgba(0,122,255,.13), 0 0 0 1px rgba(0,122,255,.12) inset !important; }
+      .plan-card.selected { border-color: rgba(0,122,255,.58) !important; box-shadow: 0 22px 46px rgba(0,122,255,.16), 0 0 0 1.5px rgba(0,122,255,.18) inset !important; transform: translateY(-1px); }
       .plan-card .plan-ux-badge { position: static !important; box-shadow: none !important; margin: 0 0 10px !important; font-size: 10px !important; text-transform: uppercase; }
       .plan-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
       .plan-name { margin: 0 !important; font-size: 1.08rem !important; line-height: 1.15 !important; font-weight: 900 !important; letter-spacing: -.025em; }
       .plan-subtitle { margin: 5px 0 0 !important; font-size: 12px !important; font-weight: 750; opacity: .82; }
-      .plan-selected-mark { display: none; padding: 6px 10px; border-radius: 999px; background: rgba(0,122,255,.11); color: #007aff; font-size: 12px; font-weight: 900; white-space: nowrap; }
+      .plan-selected-mark { display: none; padding: 6px 10px; border-radius: 999px; background: #007aff; color: #fff; font-size: 12px; font-weight: 900; white-space: nowrap; box-shadow: 0 8px 18px rgba(0,122,255,.18); }
       .plan-card.selected .plan-selected-mark { display: inline-flex; }
       .plan-price-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 2px 0 14px; }
       .plan-card .price { margin: 0 !important; font-size: clamp(1.9rem,8vw,2.55rem) !important; line-height: .95 !important; font-weight: 950 !important; letter-spacing: -.065em !important; }
@@ -528,7 +528,7 @@
       .plan-chip-value { font-size: 13px; font-weight: 900; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .plan-speed-line { margin: 0 0 14px !important; font-size: 13px !important; font-weight: 750; opacity: .78; line-height: 1.35; }
       .plan-card .choose-plan-btn { width: 100%; }
-      .plan-card.selected .choose-plan-btn { background: rgba(118,118,128,.16) !important; color: inherit !important; box-shadow: none !important; }
+      .plan-card.selected .choose-plan-btn { background: rgba(118,118,128,.16) !important; color: inherit !important; box-shadow: none !important; border: 1px solid rgba(118,118,128,.10) !important; }
       .plan-card .plan-payment { margin-top: 14px; }
       @media (max-width: 380px) { .plan-chip-row { grid-template-columns: 1fr; } .plan-price-row { align-items: flex-start; flex-direction: column; gap: 4px; } .plan-price-caption { padding-bottom: 0; } }
     `;
@@ -2601,7 +2601,7 @@ function saturationLabel(pct) {
 
         <p class="plan-speed-line">Choisissez ce forfait, puis confirmez le paiement MVola.</p>
 
-        <button class="choose-plan-btn">${escapeHtml(ctaText)}</button>
+        <button class="choose-plan-btn" data-default-label="${escapeHtml(ctaText)}" aria-pressed="false">${escapeHtml(ctaText)}</button>
 
         <div class="plan-payment hidden" aria-live="polite">
           <h5>Paiement</h5>
@@ -2711,10 +2711,49 @@ function saturationLabel(pct) {
     return $all(".plan-card");
   }
 
+  function getChooseButtonDefaultLabel(btn) {
+    if (!btn) return "Choisir";
+    const fromDataset = String(btn.getAttribute("data-default-label") || btn.dataset.defaultLabel || "").trim();
+    return fromDataset || "Choisir";
+  }
+
+  function resetPlanSelectionUi(card) {
+    if (!card) return;
+    card.classList.remove("selected");
+    const chooseBtn = card.querySelector(".choose-plan-btn");
+    if (chooseBtn) {
+      chooseBtn.textContent = getChooseButtonDefaultLabel(chooseBtn);
+      chooseBtn.setAttribute("aria-pressed", "false");
+      chooseBtn.removeAttribute("title");
+    }
+  }
+
+  function setPlanSelectedUi(card) {
+    if (!card) return;
+    card.classList.add("selected");
+    const chooseBtn = card.querySelector(".choose-plan-btn");
+    if (chooseBtn) {
+      chooseBtn.textContent = "✓ Sélectionné";
+      chooseBtn.setAttribute("aria-pressed", "true");
+      chooseBtn.title = "Forfait sélectionné";
+    }
+  }
+
+  function scrollSelectedPlanIntoView(card) {
+    if (!card || typeof card.scrollIntoView !== "function") return;
+    window.setTimeout(function () {
+      try {
+        card.scrollIntoView({ behavior: "smooth", block: "center" });
+      } catch (_) {
+        try { card.scrollIntoView(); } catch (_) {}
+      }
+    }, 80);
+  }
+
   function closeAllPayments() {
     const planCards = getPlanCards();
     planCards.forEach((card) => {
-      card.classList.remove("selected");
+      resetPlanSelectionUi(card);
       const payment = card.querySelector(".plan-payment");
       if (payment) payment.classList.add("hidden");
     });
@@ -2872,7 +2911,7 @@ function saturationLabel(pct) {
   function resetCardPaymentState(card) {
     if (!card) return;
 
-    card.classList.remove("selected");
+    resetPlanSelectionUi(card);
 
     const payment = card.querySelector(".plan-payment");
     if (payment) payment.classList.add("hidden");
@@ -2993,11 +3032,12 @@ function bindPlanHandlers() {
           } catch (_) {}
 
           closeAllPayments();
-          card.classList.add("selected");
+          setPlanSelectedUi(card);
           const payment = card.querySelector(".plan-payment");
           if (payment) payment.classList.remove("hidden");
+          scrollSelectedPlanIntoView(card);
           if (input) {
-            input.focus({ preventScroll: false });
+            try { input.focus({ preventScroll: true }); } catch (_) { try { input.focus(); } catch (_) {} }
             updatePayButtonState(card);
           }
         });
