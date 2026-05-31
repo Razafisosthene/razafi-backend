@@ -428,6 +428,15 @@
     #networkInfoCard,.faq,.terms-card{margin-top:18px!important;animation:razafiFadeUp .38s ease both;}
     .network-card{padding:16px!important;}
     .network-title{font-weight:900;letter-spacing:-.02em;}
+    .network-speed-value{
+      margin-top:4px;
+      color:var(--ios-muted)!important;
+      font-size:13px!important;
+      line-height:1.35!important;
+      font-weight:700!important;
+      letter-spacing:-.01em;
+    }
+    #netCapacityWrap{display:none!important;}
     .network-bar{border-radius:999px!important;overflow:hidden;}
     .network-bar-fill{border-radius:999px!important;}
 
@@ -595,7 +604,7 @@
         </div>
       </div>
 
-      <div id="netCapacityWrap" class="muted small" style="margin-top:8px;">
+      <div id="netCapacityWrap" class="muted small hidden" style="display:none;">
         Occupation : <strong id="netCapacityText">—</strong>
       </div>
 
