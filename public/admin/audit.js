@@ -22,7 +22,13 @@
 
   function poolDisplay(ev) {
     const poolId = ev?.pool_id || "";
-    const name = ev?.pool_name || ev?.pool?.name || (poolId ? poolNameById.get(poolId) : "");
+    const name =
+      ev?.pool_display_name ||
+      ev?.pool?.display_name ||
+      ev?.display_name ||
+      ev?.pool_name ||
+      ev?.pool?.name ||
+      (poolId ? poolNameById.get(poolId) : "");
     return name || poolId || "—";
   }
 
@@ -53,7 +59,7 @@
       const pools = (data && data.pools) ? data.pools : [];
       for (const p of pools) {
         if (!p?.id) continue;
-        const name = p?.name || p.id;
+        const name = p?.display_name || p?.pool_display_name || p?.name || p.id;
         poolNameById.set(p.id, name);
         if (sel) sel.insertAdjacentHTML("beforeend", `<option value="${esc(p.id)}">${esc(name)}</option>`);
       }
