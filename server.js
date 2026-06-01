@@ -1378,18 +1378,40 @@ app.get("/api/admin/audit", requireAdmin, async (req, res) => {
     if (poolIds.length) {
       const { data: poolsData, error: poolsErr } = await supabase
         .from("internet_pools")
-        .select("id,name")
+        .select("id,name,brand_name,radius_nas_id")
         .in("id", poolIds);
       if (!poolsErr && Array.isArray(poolsData)) {
-        for (const p of poolsData) poolMap[p.id] = p.name || "";
+        for (const p of poolsData) {
+          const place = cleanOptionalText(p?.name, 120);
+          const brand = cleanOptionalText(p?.brand_name, 120);
+          poolMap[p.id] = {
+            name: place || "",
+            display_name: buildPoolDisplayName(p),
+            brand_name: brand,
+            place,
+            nas_id: cleanOptionalText(p?.radius_nas_id, 120),
+          };
+        }
       }
     }
 
-    const items = itemsRaw.map((it) => ({
-      ...it,
-      plan_name: it?.plan_id ? (planMap[it.plan_id] || null) : null,
-      pool_name: it?.pool_id ? (poolMap[it.pool_id] || null) : null,
-    }));
+    const items = itemsRaw.map((it) => {
+      const poolInfo = it?.pool_id ? (poolMap[it.pool_id] || null) : null;
+
+      return {
+        ...it,
+        plan_name: it?.plan_id ? (planMap[it.plan_id] || null) : null,
+
+        // Backward-compatible: keep the old field unchanged for existing admin UI.
+        pool_name: poolInfo ? (poolInfo.name || null) : null,
+
+        // New clearer identifiers for audit UI / future notification templates.
+        pool_display_name: poolInfo ? (poolInfo.display_name || poolInfo.name || null) : null,
+        pool_brand_name: poolInfo ? (poolInfo.brand_name || null) : null,
+        pool_place: poolInfo ? (poolInfo.place || null) : null,
+        pool_nas_id: poolInfo ? (poolInfo.nas_id || null) : null,
+      };
+    });
 
     return res.json({ items, next_cursor: "" });
   } catch (e) {
