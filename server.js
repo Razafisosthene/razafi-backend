@@ -3874,7 +3874,7 @@ function makeOwnerReceiptNumber() {
 async function getScopedMikrotikPoolsMap(admin) {
   let q = supabase
     .from("internet_pools")
-    .select("id,name,system,platform_share_pct,owner_share_pct")
+    .select("id,name,brand_name,radius_nas_id,system,platform_share_pct,owner_share_pct")
     .eq("system", "mikrotik");
 
   if (!admin?.is_superadmin) {
@@ -3891,7 +3891,11 @@ async function getScopedMikrotikPoolsMap(admin) {
       String(p.id || ""),
       {
         id: p.id,
-        name: p.name || null,
+        name: cleanOptionalText(p?.name, 120),
+        brand_name: cleanOptionalText(p?.brand_name, 120),
+        display_name: buildPoolDisplayName(p),
+        place: cleanOptionalText(p?.name, 120),
+        nas_id: cleanOptionalText(p?.radius_nas_id, 120),
         system: p.system || null,
         platform_share_pct: Number.isFinite(Number(p.platform_share_pct)) ? Number(p.platform_share_pct) : 100,
         owner_share_pct: Number.isFinite(Number(p.owner_share_pct)) ? Number(p.owner_share_pct) : 0,
@@ -4015,6 +4019,10 @@ async function getShareTransactionsCore({ admin, from = null, to = null, search 
       platform_share_pct: 100,
       owner_share_pct: 0,
       name: r?.pool_name || null,
+      display_name: r?.pool_name || null,
+      brand_name: null,
+      place: r?.pool_name || null,
+      nas_id: null,
     };
 
     const gross_amount_ar = roundMoney2(r?.amount_num);
@@ -4032,6 +4040,10 @@ async function getShareTransactionsCore({ admin, from = null, to = null, search 
       ...r,
       system: "mikrotik",
       pool_name: poolCfg.name || r?.pool_name || null,
+      pool_display_name: poolCfg.display_name || poolCfg.name || r?.pool_name || null,
+      pool_brand_name: poolCfg.brand_name || null,
+      pool_place: poolCfg.place || poolCfg.name || r?.pool_name || null,
+      pool_nas_id: poolCfg.nas_id || null,
       gross_amount_ar,
       platform_share_pct,
       owner_share_pct,
@@ -4142,7 +4154,7 @@ app.get("/api/admin/revenue/share-transactions", requireAdmin, async (req, res) 
 
     let poolsQuery = supabase
       .from("internet_pools")
-      .select("id,name,system,platform_share_pct,owner_share_pct")
+      .select("id,name,brand_name,radius_nas_id,system,platform_share_pct,owner_share_pct")
       .eq("system", "mikrotik");
 
     if (!req.admin?.is_superadmin) {
@@ -4165,7 +4177,11 @@ app.get("/api/admin/revenue/share-transactions", requireAdmin, async (req, res) 
         String(p.id || ""),
         {
           id: p.id,
-          name: p.name || null,
+          name: cleanOptionalText(p?.name, 120),
+          brand_name: cleanOptionalText(p?.brand_name, 120),
+          display_name: buildPoolDisplayName(p),
+          place: cleanOptionalText(p?.name, 120),
+          nas_id: cleanOptionalText(p?.radius_nas_id, 120),
           platform_share_pct: Number.isFinite(Number(p.platform_share_pct)) ? Number(p.platform_share_pct) : 100,
           owner_share_pct: Number.isFinite(Number(p.owner_share_pct)) ? Number(p.owner_share_pct) : 0,
         },
@@ -4274,6 +4290,10 @@ app.get("/api/admin/revenue/share-transactions", requireAdmin, async (req, res) 
         platform_share_pct: 100,
         owner_share_pct: 0,
         name: r?.pool_name || null,
+        display_name: r?.pool_name || null,
+        brand_name: null,
+        place: r?.pool_name || null,
+        nas_id: null,
       };
 
       const gross_amount_ar = roundMoney2(r?.amount_num);
@@ -4291,6 +4311,10 @@ app.get("/api/admin/revenue/share-transactions", requireAdmin, async (req, res) 
         ...r,
         system: "mikrotik",
         pool_name: poolCfg.name || r?.pool_name || null,
+        pool_display_name: poolCfg.display_name || poolCfg.name || r?.pool_name || null,
+        pool_brand_name: poolCfg.brand_name || null,
+        pool_place: poolCfg.place || poolCfg.name || r?.pool_name || null,
+        pool_nas_id: poolCfg.nas_id || null,
         gross_amount_ar,
         platform_share_pct,
         owner_share_pct,
@@ -4352,7 +4376,7 @@ app.get("/api/admin/revenue/payouts", requireAdmin, async (req, res) => {
     if (poolIds.length) {
       const { data: poolRows, error: poolErr } = await supabase
         .from("internet_pools")
-        .select("id,name,system")
+        .select("id,name,brand_name,radius_nas_id,system")
         .in("id", poolIds)
         .eq("system", "mikrotik");
       if (poolErr) return res.status(500).json({ error: poolErr.message });
@@ -4373,7 +4397,11 @@ app.get("/api/admin/revenue/payouts", requireAdmin, async (req, res) => {
       .filter((r) => !!poolMap[String(r?.pool_id || "")])
       .map((r) => ({
         ...r,
-        pool_name: poolMap[String(r?.pool_id || "")]?.name || null,
+        pool_name: cleanOptionalText(poolMap[String(r?.pool_id || "")]?.name, 120),
+        pool_display_name: buildPoolDisplayName(poolMap[String(r?.pool_id || "")] || {}),
+        pool_brand_name: cleanOptionalText(poolMap[String(r?.pool_id || "")]?.brand_name, 120),
+        pool_place: cleanOptionalText(poolMap[String(r?.pool_id || "")]?.name, 120),
+        pool_nas_id: cleanOptionalText(poolMap[String(r?.pool_id || "")]?.radius_nas_id, 120),
         owner_email: ownerMap[String(r?.admin_user_id || "")]?.email || null,
         system: "mikrotik",
       }));
@@ -4415,7 +4443,7 @@ app.get("/api/admin/revenue/payouts/:id", requireAdmin, async (req, res) => {
         .order("transaction_created_at", { ascending: false }),
       supabase
         .from("internet_pools")
-        .select("id,name,system")
+        .select("id,name,brand_name,radius_nas_id,system")
         .eq("id", payout.pool_id)
         .limit(1),
       supabase
@@ -4433,7 +4461,11 @@ app.get("/api/admin/revenue/payouts/:id", requireAdmin, async (req, res) => {
     return res.json({
       item: {
         ...payout,
-        pool_name: pool?.name || null,
+        pool_name: cleanOptionalText(pool?.name, 120),
+        pool_display_name: buildPoolDisplayName(pool),
+        pool_brand_name: cleanOptionalText(pool?.brand_name, 120),
+        pool_place: cleanOptionalText(pool?.name, 120),
+        pool_nas_id: cleanOptionalText(pool?.radius_nas_id, 120),
         owner_email: owner?.email || null,
         system: pool?.system || "mikrotik",
       },
@@ -5080,6 +5112,29 @@ app.get("/api/admin/revenue/by-pool", requireAdmin, async (req, res) => {
       if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
       items = items.filter((r) => allowed.includes(String(r?.pool_id || "").trim()));
     }
+
+    const poolIds = Array.from(new Set((items || []).map((r) => String(r?.pool_id || "").trim()).filter(Boolean)));
+    let poolMap = {};
+    if (poolIds.length) {
+      const { data: poolRows, error: poolErr } = await supabase
+        .from("internet_pools")
+        .select("id,name,brand_name,radius_nas_id")
+        .in("id", poolIds);
+      if (poolErr) return res.status(500).json({ error: poolErr.message });
+      poolMap = Object.fromEntries((poolRows || []).map((p) => [String(p?.id || ""), p]));
+    }
+
+    items = (items || []).map((r) => {
+      const pool = poolMap[String(r?.pool_id || "")] || null;
+      return {
+        ...r,
+        pool_name: cleanOptionalText(pool?.name, 120) || r?.pool_name || null,
+        pool_display_name: pool ? (buildPoolDisplayName(pool) || cleanOptionalText(pool?.name, 120)) : (r?.pool_name || null),
+        pool_brand_name: pool ? cleanOptionalText(pool?.brand_name, 120) : null,
+        pool_place: pool ? cleanOptionalText(pool?.name, 120) : (r?.pool_name || null),
+        pool_nas_id: pool ? cleanOptionalText(pool?.radius_nas_id, 120) : null,
+      };
+    });
 
     res.json({ items });
   } catch (e) {
@@ -11991,7 +12046,7 @@ app.get("/api/owner/revenue", requireAdmin, async (req, res) => {
     // Business ownership is separate from admin access assignment.
     const { data: ownedPoolRows, error: ownedPoolsErr } = await supabase
       .from("internet_pools")
-      .select("id,name,system,platform_share_pct,owner_share_pct,contact_phone,owner_admin_user_id")
+      .select("id,name,brand_name,radius_nas_id,system,platform_share_pct,owner_share_pct,contact_phone,owner_admin_user_id")
       .eq("owner_admin_user_id", ownerId)
       .eq("system", "mikrotik")
       .order("name", { ascending: true });
@@ -12039,7 +12094,7 @@ app.get("/api/owner/revenue", requireAdmin, async (req, res) => {
     if (missingPoolIds.length) {
       const { data: extraPools, error: extraPoolsErr } = await supabase
         .from("internet_pools")
-        .select("id,name,system,platform_share_pct,owner_share_pct,contact_phone,owner_admin_user_id")
+        .select("id,name,brand_name,radius_nas_id,system,platform_share_pct,owner_share_pct,contact_phone,owner_admin_user_id")
         .in("id", missingPoolIds);
       if (extraPoolsErr) return res.status(500).json({ error: extraPoolsErr.message });
       for (const p of extraPools || []) poolMap[String(p.id || "")] = p;
@@ -12064,7 +12119,11 @@ app.get("/api/owner/revenue", requireAdmin, async (req, res) => {
       if (!pid) continue;
       byPoolMap[pid] = {
         pool_id: pid,
-        pool_name: p?.name || null,
+        pool_name: cleanOptionalText(p?.name, 120),
+        pool_display_name: buildPoolDisplayName(p),
+        pool_brand_name: cleanOptionalText(p?.brand_name, 120),
+        pool_place: cleanOptionalText(p?.name, 120),
+        pool_nas_id: cleanOptionalText(p?.radius_nas_id, 120),
         platform_share_pct: Number(p?.platform_share_pct || 0),
         owner_share_pct: Number(p?.owner_share_pct || 0),
         payout_count: 0,
@@ -12102,7 +12161,11 @@ app.get("/api/owner/revenue", requireAdmin, async (req, res) => {
         if (!byPoolMap[pid]) {
           byPoolMap[pid] = {
             pool_id: pid,
-            pool_name: pool?.name || null,
+            pool_name: cleanOptionalText(pool?.name, 120),
+            pool_display_name: buildPoolDisplayName(pool),
+            pool_brand_name: cleanOptionalText(pool?.brand_name, 120),
+            pool_place: cleanOptionalText(pool?.name, 120),
+            pool_nas_id: cleanOptionalText(pool?.radius_nas_id, 120),
             platform_share_pct: Number(pool?.platform_share_pct || 0),
             owner_share_pct: Number(pool?.owner_share_pct || 0),
             payout_count: 0,
@@ -12122,7 +12185,11 @@ app.get("/api/owner/revenue", requireAdmin, async (req, res) => {
       const pool = poolMap[String(r?.pool_id || "")] || null;
       return {
         ...r,
-        pool_name: pool?.name || null,
+        pool_name: cleanOptionalText(pool?.name, 120),
+        pool_display_name: buildPoolDisplayName(pool),
+        pool_brand_name: cleanOptionalText(pool?.brand_name, 120),
+        pool_place: cleanOptionalText(pool?.name, 120),
+        pool_nas_id: cleanOptionalText(pool?.radius_nas_id, 120),
         system: pool?.system || "mikrotik",
         owner_email: ownerUser.email || null,
         receipt_url: r?.receipt_number ? `/api/admin/revenue/payouts/${encodeURIComponent(r.id)}/receipt` : null,
@@ -12139,7 +12206,7 @@ app.get("/api/owner/revenue", requireAdmin, async (req, res) => {
       },
       summary,
       pools: Object.values(byPoolMap),
-      owned_pools: ownedPools,
+      owned_pools: ownedPools.map(withPoolDisplayName),
       payouts,
       total: count || 0,
       limit,
@@ -12190,7 +12257,7 @@ app.get("/api/admin/revenue/payouts/:id/receipt", requireAdmin, async (req, res)
     const [{ data: pool }, { data: owner }] = await Promise.all([
       supabase
         .from("internet_pools")
-        .select("id,name")
+        .select("id,name,brand_name,radius_nas_id")
         .eq("id", payout.pool_id)
         .maybeSingle(),
       supabase

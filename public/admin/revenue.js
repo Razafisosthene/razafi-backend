@@ -31,6 +31,10 @@ function fmtAr(n) {
   return x.toLocaleString() + " Ar";
 }
 
+function poolDisplayName(obj) {
+  return obj?.pool_display_name || obj?.pool_name || obj?.pool?.display_name || obj?.pool?.name || "—";
+}
+
 function dateToISOStart(d) {
   if (!d) return "";
   return new Date(d + "T00:00:00.000Z").toISOString();
@@ -199,7 +203,7 @@ function getSelectionContext() {
   if (!first) return null;
   return {
     pool_id: String(first.pool_id || ""),
-    pool_name: first.pool_name || "—",
+    pool_name: poolDisplayName(first),
     owner_label: first.owner_email || first.owner_name || null
   };
 }
@@ -634,7 +638,7 @@ async function loadByPool() {
     }
     body.innerHTML = items.map(it => `
       <tr>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(poolDisplayName(it))}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.paid_transactions ?? 0)}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08); font-weight:700;">${fmtAr(it.total_amount_ar ?? 0)}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtDate(it.last_paid_at)}</td>
@@ -690,7 +694,7 @@ async function loadTransactions() {
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || it.transaction_voucher || "—")}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
-          <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
+          <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(poolDisplayName(it))}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${pillHTML(payoutLabel(payoutStatus), tone)}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.receipt_number || "—")}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(transactionLabel(it.transaction_status))}</td>
@@ -764,7 +768,7 @@ async function loadPayouts() {
       return `
         <tr data-pi="${idx}" style="cursor:pointer;">
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${fmtDate(it.created_at || it.paid_at)}</td>
-          <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
+          <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(poolDisplayName(it))}</td>
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.admin_email || it.owner_email || "—")}</td>
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.items_count ?? it.transaction_count ?? "—")}</td>
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${fmtAr(it.gross_total_ar)}</td>
@@ -865,7 +869,7 @@ function showTxDetail(it) {
     ))}
 
     ${section("Vente", row2(
-      kv("Pool", esc(it.pool_name || "—"), true),
+      kv("Pool", esc(poolDisplayName(it)), true),
       kv("Plan", esc(it.plan_name || "—"), true)
     ) + row2(
       kv("Voucher", esc(it.voucher_code || it.transaction_voucher || "—"), true),
@@ -947,7 +951,7 @@ async function showPayoutDetail(it) {
     <div style="margin-top:14px;">
       <div style="font-weight:900; margin-bottom:8px;">Résumé</div>
       <div style="display:flex; gap:14px; flex-wrap:wrap;">
-        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Pool</div><div style="font-weight:800;">${esc(payout.pool_name || "—")}</div></div>
+        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Pool</div><div style="font-weight:800;">${esc(poolDisplayName(payout))}</div></div>
         <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Propriétaire</div><div style="font-weight:800;">${esc(payout.admin_email || payout.owner_email || "—")}</div></div>
         <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Montant brut</div><div style="font-weight:800;">${fmtAr(payout.gross_total_ar)}</div></div>
         <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Plateforme</div><div style="font-weight:800;">${fmtAr(payout.platform_total_ar)}</div></div>

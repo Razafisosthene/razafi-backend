@@ -33,6 +33,10 @@
     return `${Math.round(n).toLocaleString("fr-FR")} Ar`;
   }
 
+  function poolDisplayName(obj) {
+    return obj?.pool_display_name || obj?.pool_name || obj?.pool?.display_name || obj?.pool?.name || "—";
+  }
+
   function fmtDate(v) {
     if (!v) return "—";
     const d = new Date(v);
@@ -106,7 +110,7 @@
       return `
         <tr>
           <td>${esc(fmtDate(p.paid_at || p.created_at))}</td>
-          <td>${esc(p.pool_name || p.pool?.name || "—")}</td>
+          <td>${esc(poolDisplayName(p))}</td>
           <td><strong>${esc(money(p.gross_total_ar))}</strong></td>
           <td><strong>${esc(money(p.owner_total_ar))}</strong></td>
           <td>${badge(p.status)}</td>
