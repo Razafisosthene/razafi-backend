@@ -2229,7 +2229,7 @@ async function getFreeAccessUsageForPool(poolId) {
 
   const { data: pool, error: poolErr } = await supabase
     .from("internet_pools")
-    .select("id,free_access_limit")
+    .select("id,name,brand_name,radius_nas_id,free_access_limit")
     .eq("id", cleanPoolId)
     .maybeSingle();
 
@@ -2250,12 +2250,37 @@ async function getFreeAccessUsageForPool(poolId) {
   if (countErr) throw countErr;
 
   const used = Number(count || 0);
+  const poolDisplayName = buildPoolDisplayName(pool) || pool?.name || null;
   return {
     pool_id: cleanPoolId,
+    pool_name: pool?.name || null,
+    pool_display_name: poolDisplayName,
+    pool_brand_name: cleanOptionalText(pool?.brand_name, 120),
+    pool_place: cleanOptionalText(pool?.name, 120),
+    pool_nas_id: cleanOptionalText(pool?.radius_nas_id, 120),
     used,
     limit,
     remaining: Math.max(0, limit - used),
     limit_reached: used >= limit,
+  };
+}
+
+function serializeFreeAccessDevice(row) {
+  const pool = row?.pool && typeof row.pool === "object" ? row.pool : null;
+  const poolDisplayName = pool ? (buildPoolDisplayName(pool) || pool?.name || null) : null;
+
+  return {
+    ...row,
+    pool_name: pool ? (pool?.name || null) : null,
+    pool_display_name: poolDisplayName,
+    pool_brand_name: pool ? (cleanOptionalText(pool?.brand_name, 120) || null) : null,
+    pool_place: pool ? (cleanOptionalText(pool?.name, 120) || null) : null,
+    pool_nas_id: pool ? (cleanOptionalText(pool?.radius_nas_id, 120) || null) : null,
+    pool: pool ? {
+      ...pool,
+      brand_name: cleanOptionalText(pool?.brand_name, 120) || null,
+      display_name: poolDisplayName,
+    } : pool,
   };
 }
 
@@ -2429,7 +2454,7 @@ function rosRows(sentences) {
 async function getRouterForPool(poolId) {
   const { data: pool, error: pErr } = await supabase
     .from("internet_pools")
-    .select("id,name,radius_nas_id")
+    .select("id,name,brand_name,radius_nas_id")
     .eq("id", poolId)
     .maybeSingle();
 
@@ -2509,6 +2534,10 @@ async function syncFreeAccessPool(poolId) {
     ok: true,
     pool_id: pool.id,
     pool_name: pool.name || null,
+    pool_display_name: buildPoolDisplayName(pool) || pool.name || null,
+    pool_brand_name: cleanOptionalText(pool.brand_name, 120),
+    pool_place: cleanOptionalText(pool.name, 120),
+    pool_nas_id: cleanOptionalText(pool.radius_nas_id, 120),
     nas_id: pool.radius_nas_id || null,
     router_name: router.display_name || null,
     router_host: router.api_host,
@@ -2539,7 +2568,7 @@ app.get("/api/admin/free-access-devices", requireAdmin, requireSuperadmin, async
         last_synced_at,
         created_at,
         updated_at,
-        pool:internet_pools ( id, name, radius_nas_id, free_access_limit )
+        pool:internet_pools ( id, name, brand_name, radius_nas_id, free_access_limit )
       `)
       .order("created_at", { ascending: false });
 
@@ -2548,7 +2577,7 @@ app.get("/api/admin/free-access-devices", requireAdmin, requireSuperadmin, async
     const { data, error } = await q;
     if (error) return res.status(500).json({ error: error.message });
 
-    return res.json({ items: data || [] });
+    return res.json({ items: (data || []).map(serializeFreeAccessDevice) });
   } catch (e) {
     console.error("FREE ACCESS LIST ERROR", e);
     return res.status(500).json({ error: String(e?.message || e) });
@@ -2568,7 +2597,7 @@ app.get("/api/admin/free-access-devices/usage", requireAdmin, requireSuperadmin,
 
     const { data: pools, error: poolsErr } = await supabase
       .from("internet_pools")
-      .select("id,name,free_access_limit")
+      .select("id,name,brand_name,radius_nas_id,free_access_limit")
       .eq("system", "mikrotik")
       .order("id", { ascending: true });
 
@@ -2592,9 +2621,14 @@ app.get("/api/admin/free-access-devices/usage", requireAdmin, requireSuperadmin,
       const pid = String(p?.id || "").trim();
       const limit = normalizeFreeAccessLimit(p?.free_access_limit, 5);
       const used = Number(counts[pid] || 0);
+      const poolDisplayName = buildPoolDisplayName(p) || p?.name || null;
       usage_by_pool[pid] = {
         pool_id: pid,
         pool_name: p?.name || null,
+        pool_display_name: poolDisplayName,
+        pool_brand_name: cleanOptionalText(p?.brand_name, 120),
+        pool_place: cleanOptionalText(p?.name, 120),
+        pool_nas_id: cleanOptionalText(p?.radius_nas_id, 120),
         used,
         limit,
         remaining: Math.max(0, limit - used),
@@ -2669,7 +2703,7 @@ app.post("/api/admin/free-access-devices", requireAdmin, requireSuperadmin, asyn
         last_synced_at,
         created_at,
         updated_at,
-        pool:internet_pools ( id, name, radius_nas_id, free_access_limit )
+        pool:internet_pools ( id, name, brand_name, radius_nas_id, free_access_limit )
       `)
       .single();
 
@@ -2680,7 +2714,7 @@ app.post("/api/admin/free-access-devices", requireAdmin, requireSuperadmin, asyn
       return res.status(500).json({ error: error.message });
     }
 
-    return res.json({ ok: true, item: data });
+    return res.json({ ok: true, item: serializeFreeAccessDevice(data) });
   } catch (e) {
     console.error("FREE ACCESS CREATE ERROR", e);
     return res.status(500).json({ error: String(e?.message || e) });
@@ -2760,7 +2794,7 @@ app.patch("/api/admin/free-access-devices/:id", requireAdmin, requireSuperadmin,
         last_synced_at,
         created_at,
         updated_at,
-        pool:internet_pools ( id, name, radius_nas_id, free_access_limit )
+        pool:internet_pools ( id, name, brand_name, radius_nas_id, free_access_limit )
       `)
       .maybeSingle();
 
@@ -2772,7 +2806,7 @@ app.patch("/api/admin/free-access-devices/:id", requireAdmin, requireSuperadmin,
     }
     if (!data) return res.status(404).json({ error: "not_found" });
 
-    return res.json({ ok: true, item: data });
+    return res.json({ ok: true, item: serializeFreeAccessDevice(data) });
   } catch (e) {
     console.error("FREE ACCESS PATCH ERROR", e);
     return res.status(500).json({ error: String(e?.message || e) });
@@ -3074,6 +3108,10 @@ async function syncBlockedDevicesPool(poolId) {
     ok: true,
     pool_id: pool.id,
     pool_name: pool.name || null,
+    pool_display_name: buildPoolDisplayName(pool) || pool.name || null,
+    pool_brand_name: cleanOptionalText(pool.brand_name, 120),
+    pool_place: cleanOptionalText(pool.name, 120),
+    pool_nas_id: cleanOptionalText(pool.radius_nas_id, 120),
     nas_id: pool.radius_nas_id || null,
     router_name: router.display_name || null,
     router_host: router.api_host,
@@ -5064,7 +5102,7 @@ app.get("/api/admin/revenue/by-plan", requireAdmin, async (req, res) => {
         .order("total_amount_ar", { ascending: false });
 
       if (error) return res.status(500).json({ error: error.message });
-      return res.json({ items: data || [] });
+      return res.json({ items: (data || []).map(serializeFreeAccessDevice) });
     }
 
     // pool_readonly: use scoped RPC (server-side)
@@ -5084,7 +5122,7 @@ app.get("/api/admin/revenue/by-plan", requireAdmin, async (req, res) => {
       });
 
     if (error) return res.status(500).json({ error: error.message });
-    return res.json({ items: data || [] });
+    return res.json({ items: (data || []).map(serializeFreeAccessDevice) });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
