@@ -375,7 +375,11 @@ async function requireAdmin(req, res, next) {
       const allowOwnerPoolPatch = method === "PATCH" && /^\/api\/admin\/pools\/[^/]+$/.test(fullPath);
       const allowOwnerLogoWrite = (method === "POST" || method === "DELETE") && /^\/api\/admin\/pools\/[^/]+\/logo$/.test(fullPath);
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite) {
+      // Phase 2A: owner can only show/hide plans. The route below still verifies
+      // pool ownership and accepts only { is_visible } for non-superadmins.
+      const allowOwnerPlanVisibilityPatch = method === "PATCH" && /^\/api\/admin\/plans\/[^/]+$/.test(fullPath);
+
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch) {
         return next();
       }
 
@@ -1490,7 +1494,9 @@ function buildAdminPermissions(admin) {
     // Current safe owner capability already enforced route-by-route on /api/admin/pools/:id.
     pools_branding_manage: isSuperadmin ? true : true,
 
-    // Prepared for future phases. These remain false for owners in Phase 1.
+    // Phase 2A: owners can show/hide existing plans only.
+    // Full plan creation/editing remains superadmin-only.
+    plans_visibility_manage: true,
     plans_manage: isSuperadmin,
     free_access_manage: isSuperadmin,
     blocked_manage: isSuperadmin,
@@ -7517,6 +7523,42 @@ if (existingErr) {
   return res.status(500).json({ error: "db_error" });
 }
 if (!existingPlan) return res.status(404).json({ error: "not_found" });
+
+// Phase 2A: owners/business operators may only show/hide plans from their own pools.
+// They cannot change price, duration, data, speed, active status, sales limit, or pool.
+if (!req.admin?.is_superadmin) {
+  const allowedPools = Array.isArray(req.admin?.pool_ids) ? req.admin.pool_ids : [];
+  if (!allowedPools.length) return res.status(403).json({ error: "no_pools_assigned" });
+
+  const planPoolId = String(existingPlan.pool_id || "").trim();
+  if (!planPoolId || !allowedPools.includes(planPoolId)) {
+    return res.status(403).json({ error: "forbidden_pool" });
+  }
+
+  const keys = Object.keys(b || {});
+  const forbiddenKeys = keys.filter((k) => k !== "is_visible");
+  if (forbiddenKeys.length || b.is_visible === undefined) {
+    return res.status(403).json({ error: "plans_visibility_only" });
+  }
+
+  const visible = toBool(b.is_visible);
+  if (visible === null) return res.status(400).json({ error: "is_visible invalid" });
+
+  const { data, error } = await supabase
+    .from("plans")
+    .update({ is_visible: visible })
+    .eq("id", id)
+    .eq("pool_id", planPoolId)
+    .select("*")
+    .single();
+
+  if (error) {
+    console.error("ADMIN PLANS OWNER VISIBILITY PATCH ERROR", error);
+    return res.status(500).json({ error: "db_error" });
+  }
+
+  return res.json({ ok: true, plan: data });
+}
 
 
     const patch = {};

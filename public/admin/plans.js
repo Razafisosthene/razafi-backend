@@ -116,6 +116,23 @@ function statusPill(text, tone) {
   return `<span class="rz-status-pill ${esc(tone || "")}">${esc(text)}</span>`;
 }
 
+function renderVisibilityAction(plan) {
+  if (!ownerPlanVisibilityOnly || !plan || isPlanSoftDeleted(plan)) {
+    return `<span class="rz-row-chevron">Ouvrir ›</span>`;
+  }
+
+  const nextVisible = !plan.is_visible;
+  const label = nextVisible ? "Afficher" : "Masquer";
+  return `
+    <button
+      class="rz-plan-visibility-btn"
+      type="button"
+      data-plan-visible-toggle="${esc(plan.id)}"
+      data-next-visible="${nextVisible ? "1" : "0"}"
+      aria-label="${esc(label)} ce plan sur le portail">${esc(label)}</button>
+  `;
+}
+
 function setBusy(btn, busy, busyText) {
   if (!btn) return;
   if (busy) {
@@ -209,6 +226,9 @@ let editingId = null;
 let editingSystem = null;
 let lastPlansById = {};
 let searchTimer = null;
+let currentAdmin = null;
+let isSuperadminUser = false;
+let ownerPlanVisibilityOnly = false;
 
 document.addEventListener("DOMContentLoaded", async () => {
   const meEl = document.getElementById("me");
@@ -507,6 +527,18 @@ document.addEventListener("DOMContentLoaded", async () => {
   async function guardSession() {
     try {
       const me = await fetchJSON("/api/admin/me");
+      currentAdmin = me || {};
+      isSuperadminUser = !!currentAdmin?.is_superadmin || String(currentAdmin?.role || "").toLowerCase() === "superadmin";
+      ownerPlanVisibilityOnly = !isSuperadminUser && currentAdmin?.permissions?.plans_visibility_manage !== false;
+
+      // Owner Phase 2A: keep Plans safe. Owners can only show/hide existing plans.
+      // Full create/edit/delete stays visually hidden and server-protected.
+      window.__OWNER_PLAN_VISIBILITY_ONLY = ownerPlanVisibilityOnly;
+      window.__IS_READONLY = !isSuperadminUser && !ownerPlanVisibilityOnly;
+
+      if (newBtn && ownerPlanVisibilityOnly) newBtn.style.display = "none";
+      if (newBtn && isSuperadminUser) newBtn.style.display = "";
+
       meEl.innerHTML = `Connecté :<strong>${esc(displayAdminName(me.email))}</strong>`;
       return true;
     } catch {
@@ -570,11 +602,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         const poolName = poolDisplayNameFromRow(p) || p.pool_name || p.pool?.name || "";
 
         return `
-          <tr class="rz-plan-row" data-plan-id="${esc(p.id)}" tabindex="0" title="Ouvrir la fiche du plan">
+          <tr class="rz-plan-row" data-plan-id="${esc(p.id)}" tabindex="0" title="${ownerPlanVisibilityOnly ? "Gestion visibilité portail uniquement" : "Ouvrir la fiche du plan"}">
             <td>
               <div class="rz-plan-name">${esc(p.name)}${badgeHtml}</div>
               ${poolName ? `<div class="rz-muted-mini">Pool : ${esc(poolName)}</div>` : ""}
-              <div class="rz-plan-quick-note">Toucher pour ouvrir la fiche</div>
+              <div class="rz-plan-quick-note">${ownerPlanVisibilityOnly ? "Affichage portail uniquement" : "Toucher pour ouvrir la fiche"}</div>
             </td>
             <td><strong>${formatAr(p.price_ar)}</strong></td>
             <td>${esc(formatDurationFromPlan(p))}</td>
@@ -586,7 +618,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             <td>${p.auto_hide_when_limit_reached ? statusPill("Oui", "warn") : "—"}</td>
             <td>${esc(p.sales_limit ?? "—")}</td>
             <td>${esc(p.sort_order)}</td>
-            <td class="rz-row-chevron">Ouvrir ›</td>
+            <td>${renderVisibilityAction(p)}</td>
           </tr>
         `;
       }).join("");
@@ -664,8 +696,41 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (e.key === "Enter") loadPlans().catch(e => showError(e.message));
   });
 
+  async function togglePlanVisibilityById(id, nextVisible, btn) {
+    if (!id || !ownerPlanVisibilityOnly) return;
+
+    const plan = lastPlansById[id];
+    if (!plan) {
+      showError("Plan introuvable. Actualisez puis réessayez.");
+      return;
+    }
+
+    const next = !!nextVisible;
+    const actionLabel = next ? "Afficher" : "Masquer";
+    const ok = window.confirm(`${actionLabel} le plan "${plan.name}" sur le portail ?`);
+    if (!ok) return;
+
+    setBusy(btn, true, "Patientez…");
+    showError("");
+    try {
+      await fetchJSON(`/api/admin/plans/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_visible: next }),
+      });
+
+      const snapshot = { id, name: plan.name, pool_id: plan.pool_id };
+      await reloadAll();
+      flashPlanRow(snapshot, next ? "Affiché ✅" : "Masqué ✅");
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      setBusy(btn, false);
+    }
+  }
+
   async function openPlanDetailsById(id) {
-    if (!id || window.__IS_READONLY) return;
+    if (!id || window.__IS_READONLY || ownerPlanVisibilityOnly) return;
     try {
       // Refresh the selected plan before opening so the modal uses the latest values.
       const params = new URLSearchParams();
@@ -689,6 +754,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   rowsEl.addEventListener("click", async (e) => {
+    const visibilityBtn = e.target.closest("[data-plan-visible-toggle]");
+    if (visibilityBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = visibilityBtn.getAttribute("data-plan-visible-toggle");
+      const nextVisible = visibilityBtn.getAttribute("data-next-visible") === "1";
+      await togglePlanVisibilityById(id, nextVisible, visibilityBtn);
+      return;
+    }
+
     const row = e.target.closest("tr[data-plan-id]");
     if (!row) return;
     await openPlanDetailsById(row.getAttribute("data-plan-id"));
