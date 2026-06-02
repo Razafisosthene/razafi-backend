@@ -160,21 +160,38 @@ async function requireAdmin() {
 // -------------------------
 function renderSummary(summary) {
   const el = document.getElementById("summary");
-    const cards = [
-  { label: "Actifs", value: summary.active ?? 0 },
-  { label: "Connectés", value: summary.online ?? 0 },
-  { label: "Hors ligne", value: summary.offline ?? 0 },
-  { label: "En attente", value: summary.pending ?? 0 },
-  { label: "Expirés", value: summary.expired ?? 0 },
-  { label: "Total", value: summary.total ?? 0 },
-];
+  const currentStatus = normStatus(document.getElementById("status")?.value || "all");
 
-  el.innerHTML = cards.map(c => `
-    <div class="rz-client-summary-card">
-      <div class="rz-client-summary-label">${esc(c.label)}</div>
-      <div class="rz-client-summary-value">${esc(c.value)}</div>
-    </div>
-  `).join("");
+  const cards = [
+    { label: "Actifs", value: summary.active ?? 0, status: "active" },
+    { label: "Connectés", value: summary.online ?? 0, status: "online" },
+    { label: "Hors ligne", value: summary.offline ?? 0, status: "offline" },
+    { label: "En attente", value: summary.pending ?? 0, status: "pending" },
+    { label: "Expirés", value: summary.expired ?? 0, status: "expired" },
+    { label: "Total", value: summary.total ?? 0, status: "all" },
+  ];
+
+  el.innerHTML = cards.map(c => {
+    const isSelected = currentStatus === c.status;
+    return `
+      <button type="button"
+        class="rz-client-summary-card ${isSelected ? "rz-client-summary-card-active" : ""}"
+        data-summary-status="${esc(c.status)}"
+        style="text-align:left; cursor:pointer; border:0;">
+        <div class="rz-client-summary-label">${esc(c.label)}</div>
+        <div class="rz-client-summary-value">${esc(c.value)}</div>
+      </button>
+    `;
+  }).join("");
+
+  el.querySelectorAll("[data-summary-status]").forEach(card => {
+    card.addEventListener("click", () => {
+      const status = card.getAttribute("data-summary-status") || "all";
+      const statusSelect = document.getElementById("status");
+      if (statusSelect) statusSelect.value = status;
+      loadClients().catch(showTopError);
+    });
+  });
 }
 
 
