@@ -1765,7 +1765,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         is_bonus_session,
 
         plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
-        pool:internet_pools ( id, name )
+        pool:internet_pools ( id, name, brand_name, radius_nas_id )
       `, { count: "exact" })
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
@@ -1832,7 +1832,11 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       ap_name: null,
 
       pool_id: r.pool_id,
-      pool_name: r.pool?.name || null,
+      pool_name: cleanOptionalText(r.pool?.name, 120),
+      pool_display_name: buildPoolDisplayName(r.pool) || cleanOptionalText(r.pool?.name, 120),
+      pool_brand_name: cleanOptionalText(r.pool?.brand_name, 120),
+      pool_place: cleanOptionalText(r.pool?.name, 120),
+      pool_nas_id: cleanOptionalText(r.pool?.radius_nas_id, 120),
 
       plan_id: r.plan_id,
       plan_name: r.plans?.name || null,
