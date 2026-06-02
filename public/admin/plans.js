@@ -14,6 +14,18 @@ function esc(s) {
   }[c]));
 }
 
+function poolDisplayNameFromRow(p) {
+  const direct = String(p?.display_name || p?.pool_display_name || "").trim();
+  if (direct) return direct;
+  const nestedDirect = String(p?.pool?.display_name || p?.pool?.pool_display_name || "").trim();
+  if (nestedDirect) return nestedDirect;
+
+  const place = String(p?.name || p?.pool_name || p?.pool?.name || "").trim();
+  const brand = String(p?.brand_name || p?.pool_brand_name || p?.pool?.brand_name || "").trim();
+  if (brand && place) return `${brand} – ${place}`;
+  return place || brand || "";
+}
+
 function displayAdminName(email) {
   const raw = String(email || "").trim();
   if (!raw) return "admin";
@@ -304,7 +316,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const items = data.items || data.pools || [];
     mikrotikPoolsCache = (items || [])
       .filter(p => p && p.id)
-      .map(p => ({ id: p.id, name: p.name || p.id }))
+      .map(p => ({ id: p.id, name: poolDisplayNameFromRow(p) || p.name || p.id }))
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
     populateTargets(mikrotikPoolsCache);
@@ -555,7 +567,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       rowsEl.innerHTML = filtered.map(p => {
         const deleted = (!p.is_active && !p.is_visible);
         const badgeHtml = deleted ? ' <span class="badge badge-deleted">Supprimé</span>' : "";
-        const poolName = p.pool_name || p.pool?.name || "";
+        const poolName = poolDisplayNameFromRow(p) || p.pool_name || p.pool?.name || "";
 
         return `
           <tr class="rz-plan-row" data-plan-id="${esc(p.id)}" tabindex="0" title="Ouvrir la fiche du plan">
