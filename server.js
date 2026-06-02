@@ -7783,11 +7783,14 @@ async function resolvePoolEmailLabel(poolId) {
   try {
     const { data, error } = await supabase
       .from("internet_pools")
-      .select("name")
+      .select("name, brand_name, radius_nas_id")
       .eq("id", pid)
       .maybeSingle();
 
-    if (!error && data?.name) return `${String(data.name).trim()} (${pid})`;
+    if (!error && data) {
+      const displayName = buildPoolDisplayName(data) || cleanOptionalText(data?.name, 120);
+      if (displayName) return `${displayName} (${pid})`;
+    }
   } catch (_) {}
   return pid;
 }
