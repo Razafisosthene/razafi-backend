@@ -160,13 +160,14 @@ async function requireAdmin() {
 // -------------------------
 function renderSummary(summary) {
   const el = document.getElementById("summary");
-  const cards = [
-    { label: "Actifs", value: summary.active ?? 0 },
-    { label: "Connectés", value: summary.online ?? 0 },
-    { label: "Hors ligne", value: summary.offline ?? 0 },
-    { label: "Expirés", value: summary.expired ?? 0 },
-    { label: "Total", value: summary.total ?? 0 },
-  ];
+    const cards = [
+  { label: "Actifs", value: summary.active ?? 0 },
+  { label: "Connectés", value: summary.online ?? 0 },
+  { label: "Hors ligne", value: summary.offline ?? 0 },
+  { label: "En attente", value: summary.pending ?? 0 },
+  { label: "Expirés", value: summary.expired ?? 0 },
+  { label: "Total", value: summary.total ?? 0 },
+];
 
   el.innerHTML = cards.map(c => `
     <div class="rz-client-summary-card">
