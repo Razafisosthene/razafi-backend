@@ -1475,6 +1475,35 @@ app.get("/api/admin/pool-live-stats", requireAdmin, async (req, res) => {
     return res.status(500).json({ error: String(e?.message || e) });
   }
 });
+function buildAdminPermissions(admin) {
+  const isSuperadmin = !!admin?.is_superadmin;
+
+  // Phase 1: expose a stable permission object without opening new owner actions yet.
+  // Superadmin keeps full power. Owner/current pool_readonly keeps current behavior.
+  return {
+    dashboard_view: true,
+    clients_view: true,
+    revenue_view: true,
+    plans_view: true,
+    pools_view: true,
+
+    // Current safe owner capability already enforced route-by-route on /api/admin/pools/:id.
+    pools_branding_manage: isSuperadmin ? true : true,
+
+    // Prepared for future phases. These remain false for owners in Phase 1.
+    plans_manage: isSuperadmin,
+    free_access_manage: isSuperadmin,
+    blocked_manage: isSuperadmin,
+
+    // Technical/admin-only areas.
+    aps_manage: isSuperadmin,
+    users_manage: isSuperadmin,
+    audit_view: isSuperadmin,
+    settings_manage: isSuperadmin,
+    owner_revenue_view: isSuperadmin,
+  };
+}
+
 app.get("/api/admin/me", requireAdmin, async (req, res) => {
   return res.json({
     id: req.admin.id,
@@ -1482,6 +1511,7 @@ app.get("/api/admin/me", requireAdmin, async (req, res) => {
     role: req.admin.role || "superadmin",
     is_superadmin: !!req.admin.is_superadmin,
     pool_ids: Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [],
+    permissions: buildAdminPermissions(req.admin),
   });
 });
 // ------------------------------------------------------------

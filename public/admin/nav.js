@@ -71,8 +71,8 @@
           <a class="rz-item" data-href="/admin/revenue.html" href="/admin/revenue.html">
             <span class="rz-item-label">Revenue</span>
           </a>
-          <a class="rz-item" data-href="/admin/owner-revenue.html" href="/admin/owner-revenue.html">
-          <span class="rz-item-label">Owner Revenue</span>
+          <a class="rz-item" data-href="/admin/owner-revenue.html" href="/admin/owner-revenue.html" id="rzNavOwnerRevenue">
+            <span class="rz-item-label">Owner Revenue</span>
           </a>
           <a class="rz-item" data-href="/admin/users.html" href="/admin/users.html" id="rzNavUsers">
             <span class="rz-item-label">Users</span>
@@ -183,15 +183,19 @@
         const elAudit = $("#rzNavAudit");
         const elUsers = $("#rzNavUsers");
         const elBlocked = $("#rzNavBlocked");
+        const elOwnerRevenue = $("#rzNavOwnerRevenue");
         if (elAPs) elAPs.style.display = "none";
         if (elPools) elPools.style.display = "none";
         if (elAudit) elAudit.style.display = "none";
         if (elUsers) elUsers.style.display = "none";
         if (elBlocked) elBlocked.style.display = "none";
+        if (elOwnerRevenue) elOwnerRevenue.style.display = "none";
       } else {
-        // Superadmin only: show Users (if present)
+        // Superadmin only: show Users and Owner Revenue (if present)
         const elUsers = $("#rzNavUsers");
+        const elOwnerRevenue = $("#rzNavOwnerRevenue");
         if (elUsers) elUsers.style.display = "";
+        if (elOwnerRevenue) elOwnerRevenue.style.display = "";
       }
 
 // drawer label
