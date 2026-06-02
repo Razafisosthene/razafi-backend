@@ -53,6 +53,10 @@ function esc(s) {
   }[c]));
 }
 
+function poolDisplayName(it) {
+  return it?.pool_display_name || it?.pool?.display_name || it?.pool_name || it?.pool?.name || it?.pool_id || "—";
+}
+
 // ---- helpers: unwrap Supabase/REST objects and format bytes ----
 function v(x) {
   if (x && typeof x === "object" && "value" in x) return x.value;
@@ -212,7 +216,7 @@ function initPlanAndPoolFiltersFromItems(items) {
 
   for (const it of (items || [])) {
     if (it?.plan_id && it?.plan_name) plans.set(String(it.plan_id), String(it.plan_name));
-    if (it?.pool_id && it?.pool_name) pools.set(String(it.pool_id), String(it.pool_name));
+    if (it?.pool_id) pools.set(String(it.pool_id), String(poolDisplayName(it)));
   }
 
   // Only populate if we actually have data (prevents empty dropdowns)
@@ -356,7 +360,7 @@ tr.innerHTML = `
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_price ?? "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(apDisplay)}</td>
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.pool_name || "—")}</td>
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(poolDisplayName(it))}</td>
 
       <!-- ✅ remaining_seconds now is DB truth (view); display time remaining -->
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
@@ -491,7 +495,7 @@ async function openDetail(id) {
       ["Connexion", modalIsOnline ? "🟢 Connecté" : "⚫ Hors ligne"],
       ["Dernier signal", fmtDate(modalLiveUpdatedAt)],
       ["AP", it.ap_name || rowItem?.ap_name || "—"],
-      ["Pool", it.pool?.name || it.pool_name || it.pool_id],
+      ["Pool", poolDisplayName(rowItem || it)],
       ["Statut", it.status || "—"],
       ["Code", it.voucher_code],
       ["MVola", it.mvola_phone],
