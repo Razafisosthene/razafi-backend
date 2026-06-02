@@ -116,6 +116,11 @@ function statusPill(text, tone) {
   return `<span class="rz-status-pill ${esc(tone || "")}">${esc(text)}</span>`;
 }
 
+
+function isPlanSoftDeleted(plan) {
+  return !!(plan && !plan.is_active && !plan.is_visible);
+}
+
 function renderVisibilityAction(plan) {
   if (!ownerPlanVisibilityOnly || !plan || isPlanSoftDeleted(plan)) {
     return `<span class="rz-row-chevron">Ouvrir ›</span>`;
@@ -356,9 +361,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  function isPlanSoftDeleted(plan) {
-    return !!(plan && !plan.is_active && !plan.is_visible);
-  }
 
   function buildPlanPayloadFromExisting(plan, overrides = {}) {
     return {
