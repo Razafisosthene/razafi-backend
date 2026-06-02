@@ -1524,7 +1524,7 @@ app.get("/api/admin/users", requireAdmin, requireSuperadmin, async (req, res) =>
     if (ids.length) {
       const { data: rows, error: perr } = await supabase
         .from("admin_user_pools")
-        .select("admin_user_id,pool_id, internet_pools ( id, name )")
+        .select("admin_user_id,pool_id, internet_pools ( id, name, brand_name, radius_nas_id )")
         .in("admin_user_id", ids);
 
       if (perr) return res.status(500).json({ error: perr.message });
@@ -1532,9 +1532,23 @@ app.get("/api/admin/users", requireAdmin, requireSuperadmin, async (req, res) =>
       for (const r of rows || []) {
         const uid = r.admin_user_id;
         if (!poolsByUser[uid]) poolsByUser[uid] = [];
+        const poolRow = r.internet_pools || null;
+        const poolPlace = cleanOptionalText(poolRow?.name, 120);
+        const poolBrand = cleanOptionalText(poolRow?.brand_name, 120);
+        const poolNasId = cleanOptionalText(poolRow?.radius_nas_id, 120);
+        const poolDisplayName = buildPoolDisplayName(poolRow) || poolPlace || null;
+
         poolsByUser[uid].push({
           pool_id: r.pool_id,
-          pool_name: r.internet_pools?.name ?? null,
+
+          // Backward-compatible: keep old field as place-only for existing UI.
+          pool_name: poolPlace,
+
+          // New clearer fields for Users UI.
+          pool_display_name: poolDisplayName,
+          pool_brand_name: poolBrand,
+          pool_place: poolPlace,
+          pool_nas_id: poolNasId,
         });
       }
     }
