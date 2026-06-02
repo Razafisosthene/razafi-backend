@@ -2284,6 +2284,25 @@ function serializeFreeAccessDevice(row) {
   };
 }
 
+function serializeBlockedDevice(row) {
+  const pool = row?.pool && typeof row.pool === "object" ? row.pool : null;
+  const poolDisplayName = pool ? (buildPoolDisplayName(pool) || pool?.name || null) : null;
+
+  return {
+    ...row,
+    pool_name: pool ? (pool?.name || null) : null,
+    pool_display_name: poolDisplayName,
+    pool_brand_name: pool ? (cleanOptionalText(pool?.brand_name, 120) || null) : null,
+    pool_place: pool ? (cleanOptionalText(pool?.name, 120) || null) : null,
+    pool_nas_id: pool ? (cleanOptionalText(pool?.radius_nas_id, 120) || null) : null,
+    pool: pool ? {
+      ...pool,
+      brand_name: cleanOptionalText(pool?.brand_name, 120) || null,
+      display_name: poolDisplayName,
+    } : pool,
+  };
+}
+
 // ------------------------------
 // RouterOS API minimal client
 // ------------------------------
@@ -3144,7 +3163,7 @@ app.get("/api/admin/blocked-devices", requireAdmin, requireSuperadmin, async (re
         last_synced_at,
         created_at,
         updated_at,
-        pool:internet_pools ( id, name, radius_nas_id )
+        pool:internet_pools ( id, name, brand_name, radius_nas_id )
       `)
       .order("created_at", { ascending: false });
 
@@ -3153,7 +3172,7 @@ app.get("/api/admin/blocked-devices", requireAdmin, requireSuperadmin, async (re
     const { data, error } = await q;
     if (error) return res.status(500).json({ error: error.message });
 
-    return res.json({ ok: true, items: data || [] });
+    return res.json({ ok: true, items: (data || []).map(serializeBlockedDevice) });
   } catch (e) {
     console.error("BLOCKED DEVICES LIST ERROR", e);
     return res.status(500).json({ error: String(e?.message || e) });
@@ -3167,7 +3186,7 @@ app.get("/api/admin/blocked-devices/usage", requireAdmin, requireSuperadmin, asy
 
     const { data: pools, error: poolsErr } = await supabase
       .from("internet_pools")
-      .select("id,name")
+      .select("id,name,brand_name,radius_nas_id")
       .eq("system", "mikrotik")
       .order("name", { ascending: true });
 
@@ -3191,9 +3210,14 @@ app.get("/api/admin/blocked-devices/usage", requireAdmin, requireSuperadmin, asy
     const usage_by_pool = {};
     for (const p of pools || []) {
       const pid = String(p?.id || "").trim();
+      const poolDisplayName = buildPoolDisplayName(p) || p?.name || null;
       usage_by_pool[pid] = {
         pool_id: pid,
         pool_name: p?.name || null,
+        pool_display_name: poolDisplayName,
+        pool_brand_name: cleanOptionalText(p?.brand_name, 120),
+        pool_place: cleanOptionalText(p?.name, 120),
+        pool_nas_id: cleanOptionalText(p?.radius_nas_id, 120),
         active: Number(counts[pid]?.active || 0),
         total: Number(counts[pid]?.total || 0),
       };
@@ -3254,7 +3278,7 @@ app.post("/api/admin/blocked-devices", requireAdmin, requireSuperadmin, async (r
         last_synced_at,
         created_at,
         updated_at,
-        pool:internet_pools ( id, name, radius_nas_id )
+        pool:internet_pools ( id, name, brand_name, radius_nas_id )
       `)
       .single();
 
@@ -3271,7 +3295,7 @@ app.post("/api/admin/blocked-devices", requireAdmin, requireSuperadmin, async (r
       try { sync_result = await syncBlockedDevicesPool(pool_id); } catch (e) { sync_result = { ok: false, error: String(e?.message || e) }; }
     }
 
-    return res.json({ ok: true, item: data, sync_result });
+    return res.json({ ok: true, item: serializeBlockedDevice(data), sync_result });
   } catch (e) {
     console.error("BLOCKED DEVICE CREATE ERROR", e);
     const status = e?.status || 500;
@@ -3336,7 +3360,7 @@ app.patch("/api/admin/blocked-devices/:id", requireAdmin, requireSuperadmin, asy
         last_synced_at,
         created_at,
         updated_at,
-        pool:internet_pools ( id, name, radius_nas_id )
+        pool:internet_pools ( id, name, brand_name, radius_nas_id )
       `)
       .maybeSingle();
 
@@ -3370,7 +3394,7 @@ app.patch("/api/admin/blocked-devices/:id", requireAdmin, requireSuperadmin, asy
     let sync_result = null;
     try { sync_result = await syncBlockedDevicesPool(data.pool_id); } catch (e) { sync_result = { ok: false, error: String(e?.message || e) }; }
 
-    return res.json({ ok: true, item: data, unblock_previous_result, sync_result });
+    return res.json({ ok: true, item: serializeBlockedDevice(data), unblock_previous_result, sync_result });
   } catch (e) {
     console.error("BLOCKED DEVICE PATCH ERROR", e);
     const status = e?.status || 500;
