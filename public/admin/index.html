@@ -134,6 +134,20 @@
       return "Réseau fluide";
     }
 
+    function cleanText(value) {
+      return String(value ?? "").replace(/[\r\n\t]/g, " ").replace(/\s{2,}/g, " ").trim();
+    }
+
+    function poolDisplayName(pool) {
+      const serverDisplay = cleanText(pool?.display_name || pool?.pool_display_name);
+      if (serverDisplay) return serverDisplay;
+
+      const place = cleanText(pool?.name || pool?.pool_name);
+      const brand = cleanText(pool?.brand_name || pool?.pool_brand_name);
+      if (brand && place) return `${brand} – ${place}`;
+      return place || brand || cleanText(pool?.id) || "Pool";
+    }
+
     async function loadDashboardPools() {
       const statusEl = $("status");
       const container = $("poolsContainer");
@@ -185,12 +199,11 @@
       }
 
       function render(pools, liveStatsByPool) {
-        const selectedPool = String(poolFilterEl?.value || "").trim().toLowerCase();
+        const selectedPool = String(poolFilterEl?.value || "").trim();
 
         const filteredPools = (pools || []).filter(p => {
           if (!selectedPool) return true;
-          const pnameExact = String(p.name || "").toLowerCase();
-          return pnameExact === selectedPool;
+          return String(p?.id || "") === selectedPool;
         });
 
         if (!filteredPools.length) {
@@ -200,7 +213,7 @@
 
         container.innerHTML = filteredPools.map(p => {
           const pid = String(p.id || "");
-          const name = p.name || pid;
+          const name = poolDisplayName(p);
 
           const stats = liveStatsByPool[pid] || null;
           const live = stats ? toNum(stats.active_clients, 0) : 0;
@@ -251,17 +264,17 @@
           ]);
 
           if (poolFilterEl) {
-            const current = poolFilterEl.value || "";
-            const names = (pools || [])
-              .map(p => String(p.name || ""))
-              .filter(Boolean)
-              .sort((a, b) => a.localeCompare(b));
+            const current = String(poolFilterEl.value || "");
+            const poolOptions = (pools || [])
+              .filter(p => p && p.id)
+              .map(p => ({ id: String(p.id), label: poolDisplayName(p) }))
+              .sort((a, b) => a.label.localeCompare(b.label));
 
             poolFilterEl.innerHTML =
               `<option value="">Tous les pools</option>` +
-              names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+              poolOptions.map(p => `<option value="${esc(p.id)}">${esc(p.label)}</option>`).join("");
 
-            poolFilterEl.value = names.includes(current) ? current : "";
+            poolFilterEl.value = poolOptions.some(p => p.id === current) ? current : "";
           }
 
           render(pools, liveStatsByPool);
