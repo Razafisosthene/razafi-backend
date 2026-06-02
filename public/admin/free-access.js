@@ -82,9 +82,33 @@ function roleLabel(role) {
   }[r] || r || "—");
 }
 
+function cleanPoolText(v) {
+  return String(v ?? "").replace(/[\r\n\t]/g, " ").replace(/\s{2,}/g, " ").trim();
+}
+
+function poolDisplayName(pool) {
+  const serverDisplay = cleanPoolText(pool?.display_name || pool?.pool_display_name);
+  if (serverDisplay) return serverDisplay;
+
+  const place = cleanPoolText(pool?.name || pool?.pool_name || pool?.pool_place);
+  const brand = cleanPoolText(pool?.brand_name || pool?.pool_brand_name);
+  if (brand && place) return `${brand} – ${place}`;
+  return place || brand || "—";
+}
+
 function poolNameById(pools, id) {
   const p = pools.find((x) => String(x.id || "") === String(id || ""));
-  return p?.name || String(id || "") || "—";
+  return poolDisplayName(p) || String(id || "") || "—";
+}
+
+function itemPoolDisplayName(item, pools) {
+  const fromItem = cleanPoolText(item?.pool_display_name);
+  if (fromItem) return fromItem;
+  const fromNested = poolDisplayName(item?.pool);
+  if (fromNested && fromNested !== "—") return fromNested;
+  const legacy = cleanPoolText(item?.pool_name);
+  if (legacy) return legacy;
+  return poolNameById(pools, item?.pool_id);
 }
 
 function statusPill(active) {
@@ -192,8 +216,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     limitBoxEl.style.display = "flex";
     limitBoxEl.classList.toggle("is-full", full);
     limitTextEl.textContent = full
-      ? `${pool?.name || "Ce pool"} : aucune place restante.`
-      : `${pool?.name || "Ce pool"} : ${remaining} place(s) restante(s).`;
+      ? `${poolDisplayName(pool) || "Ce pool"} : aucune place restante.`
+      : `${poolDisplayName(pool) || "Ce pool"} : ${remaining} place(s) restante(s).`;
     limitPillEl.textContent = `${used} / ${limit} utilisé(s)`;
 
     if (addBtn) {
@@ -216,7 +240,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   async function loadPools() {
     const data = await fetchJSON("/api/admin/pools?limit=200&offset=0&system=mikrotik");
     pools = data.pools || data.data || [];
-    const opts = pools.map((p) => `<option value="${esc(p.id)}">${esc(p.name || p.id)}${p.radius_nas_id ? ` — ${esc(p.radius_nas_id)}` : ""}</option>`).join("");
+    const opts = pools.map((p) => `<option value="${esc(p.id)}">${esc(poolDisplayName(p) || p.id)}</option>`).join("");
     if (poolIdEl) poolIdEl.innerHTML = opts || `<option value="">Aucun pool MikroTik</option>`;
     if (poolFilterEl) poolFilterEl.innerHTML = `<option value="all">Tous les pools</option>` + opts;
     updateLimitBox();
@@ -245,8 +269,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         x.role,
         x.device_name,
         x.mac_address,
-        poolNameById(pools, x.pool_id),
-        x.pool?.name
+        itemPoolDisplayName(x, pools),
+        x.pool?.name,
+        x.pool?.display_name,
+        x.pool_display_name
       ].join(" ").toLowerCase().includes(q));
     }
 
@@ -257,7 +283,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     rowsEl.innerHTML = filtered.map((it) => {
       const active = it.is_active === true;
-      const poolName = it.pool?.name || poolNameById(pools, it.pool_id);
+      const poolName = itemPoolDisplayName(it, pools);
       const synced = it.last_synced_at ? new Date(it.last_synced_at).toLocaleString("fr-FR") : "—";
       const deleteButton = active
         ? `<button type="button" data-delete-blocked="${esc(it.id)}" class="danger rz-free-delete-disabled" title="Désactivez d’abord cet appareil avant suppression.">Supprimer</button>`
