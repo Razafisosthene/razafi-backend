@@ -39,6 +39,18 @@ function roleLabel(role) {
   return role || "Lecture seule";
 }
 
+function poolDisplayName(p) {
+  return String(
+    p?.pool_display_name ||
+    p?.display_name ||
+    p?.pool_name ||
+    p?.name ||
+    p?.pool_id ||
+    p?.id ||
+    ""
+  ).trim();
+}
+
 function friendlyError(code) {
   const s = String(code || "").trim();
   const map = {
@@ -148,7 +160,7 @@ async function loadPools() {
   const r = await fetchJSON("/api/admin/pools?limit=500&offset=0");
   allPools = (r.pools || r.items || []).map(p => ({
     id: String(p.id || p.pool_id || "").trim(),
-    name: p.name || p.pool_name || p.id || ""
+    name: poolDisplayName(p) || p.id || ""
   })).filter(p => p.id);
 
   poolsSelect.innerHTML = allPools.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("\n");
@@ -161,7 +173,7 @@ function render(items) {
   }
 
   tbody.innerHTML = items.map(u => {
-    const pools = (u.pools || []).map(p => esc(p.pool_name || p.pool_id || "")).join(", ") || "—";
+    const pools = (u.pools || []).map(p => esc(poolDisplayName(p) || p.pool_id || "")).join(", ") || "—";
     const role = esc(roleLabel(u.role));
     const active = u.is_active !== false;
     const statusHtml = active
