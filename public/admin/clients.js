@@ -123,6 +123,47 @@ function computeQuota(it) {
 let debounceTimer = null;
 let lastItems = [];
 let currentDetailId = null;
+let __initialClientUrlFiltersApplied = false;
+let __initialPoolIdFromUrl = null;
+
+function readInitialClientUrlFilters() {
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    const status = String(params.get("status") || "").trim().toLowerCase();
+    const poolId = String(params.get("pool_id") || "").trim();
+    return { status, poolId };
+  } catch (_) {
+    return { status: "", poolId: "" };
+  }
+}
+
+function applyInitialClientUrlFiltersBeforeLoad() {
+  if (__initialClientUrlFiltersApplied) return;
+  const initial = readInitialClientUrlFilters();
+  const statusSelect = document.getElementById("status");
+
+  if (initial.status && statusSelect) {
+    const allowedStatuses = Array.from(statusSelect.options || []).map(opt => String(opt.value));
+    if (allowedStatuses.includes(initial.status)) {
+      statusSelect.value = initial.status;
+    }
+  }
+
+  __initialPoolIdFromUrl = initial.poolId || null;
+  __initialClientUrlFiltersApplied = true;
+}
+
+function applyInitialPoolFilterWhenReady() {
+  if (!__initialPoolIdFromUrl) return;
+  const poolSel = document.getElementById("poolFilter");
+  if (!poolSel) return;
+
+  const exists = Array.from(poolSel.options || []).some(opt => String(opt.value) === String(__initialPoolIdFromUrl));
+  if (exists) {
+    poolSel.value = String(__initialPoolIdFromUrl);
+    __initialPoolIdFromUrl = null;
+  }
+}
 
 function formatAdminIdentity(admin) {
   const raw = String(admin?.email || admin?.username || "admin").trim();
@@ -397,6 +438,8 @@ tr.innerHTML = `
 // Loaders
 // -------------------------
 async function loadClients() {
+  applyInitialClientUrlFiltersBeforeLoad();
+
   const err = document.getElementById("error");
   err.style.display = "none";
   err.textContent = "";
@@ -404,7 +447,10 @@ async function loadClients() {
   const uiStatus = document.getElementById("status").value;
   const search = document.getElementById("search").value.trim();
   const planId = document.getElementById("planFilter")?.value || "all";
-  const poolId = document.getElementById("poolFilter")?.value || "all";
+  let poolId = document.getElementById("poolFilter")?.value || "all";
+  if ((poolId === "all" || !poolId) && __initialPoolIdFromUrl) {
+    poolId = __initialPoolIdFromUrl;
+  }
 
   // Always fetch "all" so counters stay correct and "used" can be grouped under Expired.
   const qs = new URLSearchParams();
@@ -419,6 +465,7 @@ async function loadClients() {
 
   const allItems = data.items || [];
   initPlanAndPoolFiltersFromItems(allItems);
+  applyInitialPoolFilterWhenReady();
   const summary = computeSummaryFromItems(allItems);
   renderSummary(summary);
 

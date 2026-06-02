@@ -230,7 +230,12 @@
           const clientWord = live > 1 ? "clients connectés" : "client connecté";
 
           return `
-            <article class="rz-pool-card rz-pool-card-compact ${saturated ? "rz-saturated" : ""}">
+            <article class="rz-pool-card rz-pool-card-compact ${saturated ? "rz-saturated" : ""}"
+              data-pool-id="${esc(pid)}"
+              role="button"
+              tabindex="0"
+              title="Voir les clients connectés de ce pool"
+              style="cursor:pointer;">
               <div class="rz-pool-compact-head">
                 <div>
                   <div class="rz-pool-name">${esc(name)}</div>
@@ -251,6 +256,22 @@
             </article>
           `;
         }).join("");
+
+        container.querySelectorAll("[data-pool-id]").forEach(card => {
+          const goToConnectedClients = () => {
+            const poolId = String(card.getAttribute("data-pool-id") || "").trim();
+            if (!poolId) return;
+            window.location.href = `/admin/clients.html?status=online&pool_id=${encodeURIComponent(poolId)}`;
+          };
+
+          card.addEventListener("click", goToConnectedClients);
+          card.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              goToConnectedClients();
+            }
+          });
+        });
       }
 
       async function load() {
