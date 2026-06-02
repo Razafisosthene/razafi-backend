@@ -125,6 +125,7 @@ let lastItems = [];
 let currentDetailId = null;
 let __initialClientUrlFiltersApplied = false;
 let __initialPoolIdFromUrl = null;
+let __initialClientAutoScrollDone = false;
 
 function readInitialClientUrlFilters() {
   try {
@@ -163,6 +164,38 @@ function applyInitialPoolFilterWhenReady() {
     poolSel.value = String(__initialPoolIdFromUrl);
     __initialPoolIdFromUrl = null;
   }
+}
+
+function shouldAutoScrollAfterInitialUrlFilter() {
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    return !!(params.get("status") || params.get("pool_id"));
+  } catch (_) {
+    return false;
+  }
+}
+
+function scrollToClientListPreviewAfterRedirect() {
+  if (__initialClientAutoScrollDone) return;
+  if (!shouldAutoScrollAfterInitialUrlFilter()) return;
+
+  __initialClientAutoScrollDone = true;
+
+  const doScroll = () => {
+    // Keep the summary counters visible at the top, with the list directly below.
+    const target = document.getElementById("summary") || document.querySelector(".table-wrap");
+    if (!target) return;
+
+    const rect = target.getBoundingClientRect();
+    const currentY = window.pageYOffset || document.documentElement.scrollTop || 0;
+    const y = Math.max(0, currentY + rect.top - 10);
+
+    window.scrollTo({ top: y, behavior: "smooth" });
+  };
+
+  requestAnimationFrame(() => {
+    requestAnimationFrame(doScroll);
+  });
 }
 
 function formatAdminIdentity(admin) {
@@ -471,6 +504,7 @@ async function loadClients() {
 
   const filtered = filterItemsByStatus(allItems, uiStatus);
   renderTable(filtered);
+  scrollToClientListPreviewAfterRedirect();
 }
 
 // ✅ small helper: flash a row green + show Mis à jour ✅ effect + show Mis à jour ✅ effect
