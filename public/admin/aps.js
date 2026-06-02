@@ -37,6 +37,20 @@ function setMessage(el, text, tone = "") {
   if (tone) el.classList.add(tone);
 }
 
+function cleanText(value) {
+  return String(value ?? "").trim();
+}
+
+function poolDisplayName(pool) {
+  const display = cleanText(pool?.display_name || pool?.pool_display_name);
+  if (display) return display;
+
+  const brand = cleanText(pool?.brand_name || pool?.pool_brand_name);
+  const place = cleanText(pool?.name || pool?.pool_name || pool?.pool_place);
+  if (brand && place) return `${brand} – ${place}`;
+  return place || brand || "Pool sans nom";
+}
+
 let poolsCache = [];
 let editingApMac = null;
 let editingCurrentPool = null;
@@ -106,7 +120,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         `<option value="">Sélectionner un pool…</option>` +
         poolsCache.map((p) => {
           const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "—" : p.capacity_max;
-          const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : "Pool sans nom";
+          const label = poolDisplayName(p);
           return `<option value="${esc(p.id)}">${esc(label)} (cap : ${esc(cap)})</option>`;
         }).join("");
       if (!poolsCache.length) {
@@ -116,14 +130,14 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     poolSelect.innerHTML = poolsCache.map((p) => {
       const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "—" : p.capacity_max;
-      const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : "Pool sans nom";
+      const label = poolDisplayName(p);
       return `<option value="${esc(p.id)}">${esc(label)} (cap : ${esc(cap)})</option>`;
     }).join("");
 
     poolFilterEl.innerHTML =
       `<option value="">Tous les pools</option>` +
       poolsCache.map((p) => {
-        const label = (p.name !== null && p.name !== undefined && String(p.name).trim()) ? p.name : "Pool sans nom";
+        const label = poolDisplayName(p);
         return `<option value="${esc(p.id)}">${esc(label)}</option>`;
       }).join("");
 
@@ -194,7 +208,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         (a.tanaza_connected_clients === null || a.tanaza_connected_clients === undefined)
           ? "—"
           : esc(a.tanaza_connected_clients);
-      const poolName = a.pool_name ? esc(a.pool_name) : "—";
+      const poolLabel = cleanText(a.pool_display_name) || cleanText(a.pool_name);
+      const poolName = poolLabel ? esc(poolLabel) : "—";
 
       return `
         <tr>
