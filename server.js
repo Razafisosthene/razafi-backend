@@ -6559,7 +6559,7 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
     if (poolIds.length) {
       const { data: poolRows, error: poolErr } = await supabase
         .from("internet_pools")
-        .select("id,name,capacity_max,system,mikrotik_ip,radius_nas_id")
+        .select("id,name,brand_name,capacity_max,system,mikrotik_ip,radius_nas_id")
         .in("id", poolIds);
 
       if (poolErr) {
@@ -6581,7 +6581,16 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
       return {
         ap_mac: a.ap_mac,
         pool_id: a.pool_id || null,
-        pool_name: pool ? (pool.name ?? null) : null,
+
+        // Backward-compatible: keep old place-only field unchanged.
+        pool_name: pool ? (cleanOptionalText(pool.name, 120) ?? null) : null,
+
+        // New full display fields for Brand + Place migration.
+        pool_display_name: pool ? (buildPoolDisplayName(pool) || cleanOptionalText(pool.name, 120) || null) : null,
+        pool_brand_name: pool ? (cleanOptionalText(pool.brand_name, 120) || null) : null,
+        pool_place: pool ? (cleanOptionalText(pool.name, 120) || null) : null,
+        pool_nas_id: pool ? (cleanOptionalText(pool.radius_nas_id, 120) || null) : null,
+
         is_active: a.is_active !== false,
         // server-side sessions count (existing)
         active_clients: s ? (s.active_clients ?? 0) : 0,
