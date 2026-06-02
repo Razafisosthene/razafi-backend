@@ -6323,7 +6323,51 @@ app.get("/api/admin/plans", requireAdmin, async (req, res) => {
       return res.status(500).json({ error: "db_error" });
     }
 
-    return res.json({ ok: true, plans: data || [], total: count || 0 });
+    const rows = Array.isArray(data) ? data : [];
+
+    // Enrich plans with full pool display name while keeping existing fields intact.
+    // Backward-compatible migration: existing UI can still use pool_name/name,
+    // updated UI can use pool_display_name.
+    const poolIds = Array.from(new Set(
+      rows
+        .map((r) => String(r?.pool_id || "").trim())
+        .filter(Boolean)
+    ));
+
+    let poolMap = {};
+    if (poolIds.length) {
+      const { data: poolRows, error: poolErr } = await supabase
+        .from("internet_pools")
+        .select("id,name,brand_name,radius_nas_id")
+        .in("id", poolIds);
+
+      if (poolErr) {
+        console.error("ADMIN PLANS POOL ENRICH ERROR", poolErr);
+        // Fail-open: do not break Plans if enrichment has a temporary issue.
+        poolMap = {};
+      } else {
+        poolMap = Object.fromEntries(
+          (poolRows || []).map((p) => [String(p?.id || ""), p])
+        );
+      }
+    }
+
+    const enrichedPlans = rows.map((r) => {
+      const pool = poolMap[String(r?.pool_id || "")] || null;
+      const poolName = cleanOptionalText(pool?.name, 120);
+      const poolDisplayName = buildPoolDisplayName(pool) || poolName || null;
+
+      return {
+        ...r,
+        pool_name: poolName,
+        pool_display_name: poolDisplayName,
+        pool_brand_name: cleanOptionalText(pool?.brand_name, 120),
+        pool_place: poolName,
+        pool_nas_id: cleanOptionalText(pool?.radius_nas_id, 120),
+      };
+    });
+
+    return res.json({ ok: true, plans: enrichedPlans, total: count || 0 });
   } catch (e) {
     console.error("ADMIN PLANS LIST EX", e);
     return res.status(500).json({ error: "internal error" });
