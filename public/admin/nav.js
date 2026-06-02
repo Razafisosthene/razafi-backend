@@ -185,10 +185,8 @@
         const elBlocked = $("#rzNavBlocked");
         const elOwnerRevenue = $("#rzNavOwnerRevenue");
         if (elAPs) elAPs.style.display = "none";
-        if (elPools) elPools.style.display = "none";
         if (elAudit) elAudit.style.display = "none";
         if (elUsers) elUsers.style.display = "none";
-        if (elBlocked) elBlocked.style.display = "none";
         if (elOwnerRevenue) elOwnerRevenue.style.display = "none";
       } else {
         // Superadmin only: show Users and Owner Revenue (if present)
