@@ -400,12 +400,7 @@ async function requireAdmin(req, res, next) {
       const allowOwnerClientRename =
         method === "POST" && fullPath === "/api/admin/client-devices/rename";
 
-      // Phase 1A: owners may simulate plan pricing only.
-      // This endpoint does not create, update, delete, sell, or activate plans.
-      const allowOwnerPlanSimulatorSimulate =
-        method === "POST" && fullPath === "/api/admin/plan-simulator/simulate";
-
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate) {
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename) {
         return next();
       }
 
@@ -989,7 +984,7 @@ const corsOptions = {
     console.error("❌ CORS non autorisé pour:", clean);
     return callback(null, false);
   },
-  methods: ["GET", "POST", "PATCH", "OPTIONS"],
+  methods: ["GET", "POST", "PATCH", "PUT", "OPTIONS"],
   credentials: true,
 };
 
@@ -7566,19 +7561,27 @@ app.get("/api/admin/pools/:id/aps", requireAdmin, async (req, res) => {
 
 
 // ------------------------------------------------------------
-// ADMIN: Plan price simulator (Phase 1A - simulate only)
+// ADMIN: Plan price simulator (Phase 1A + Phase 1B)
 // ------------------------------------------------------------
-// Scope:
+// Phase 1A:
 // - Backend calculator only
+// - Simulate only
 // - No plan creation
-// - No DB write
 // - No payment
 // - No voucher generation
+//
+// Phase 1B:
+// - Superadmin can read/update calculator configuration
+// - Settings and pricing references are stored in DB tables:
+//   public.plan_simulator_settings (key, value)
+//   public.plan_simulator_references
 
 const PLAN_SIMULATOR_DEFAULT_SETTINGS = Object.freeze({
   price_tolerance_pct: 20,
   realistic_usage_factor_pct: 70,
   warning_usage_factor_pct: 90,
+  max_visible_data_plans: 10,
+  max_visible_unlimited_plans: 10,
   max_data_gb: 500,
   max_speed_mbps: 20,
   max_duration_days: 30,
@@ -7586,13 +7589,13 @@ const PLAN_SIMULATOR_DEFAULT_SETTINGS = Object.freeze({
 });
 
 const PLAN_SIMULATOR_DEFAULT_REFERENCES = Object.freeze([
-  { key: "unlimited_1h_7m", type: "unlimited", duration_minutes: 60, data_gb: null, speed_mbps: 7, price_ar: 400 },
-  { key: "unlimited_1d_7m", type: "unlimited", duration_minutes: 1440, data_gb: null, speed_mbps: 7, price_ar: 2000 },
-  { key: "unlimited_1d_10m", type: "unlimited", duration_minutes: 1440, data_gb: null, speed_mbps: 10, price_ar: 3000 },
-  { key: "data_2gb_1d_10m", type: "data", duration_minutes: 1440, data_gb: 2, speed_mbps: 10, price_ar: 500 },
-  { key: "data_20gb_7d_10m", type: "data", duration_minutes: 10080, data_gb: 20, speed_mbps: 10, price_ar: 3500 },
-  { key: "unlimited_7d_7m", type: "unlimited", duration_minutes: 10080, data_gb: null, speed_mbps: 7, price_ar: 10000 },
-  { key: "unlimited_7d_10m", type: "unlimited", duration_minutes: 10080, data_gb: null, speed_mbps: 10, price_ar: 15000 },
+  { key: "unlimited_1h_7m", label: "Illimité 1H 7M", type: "unlimited", duration_minutes: 60, data_gb: null, speed_mbps: 7, price_ar: 400, is_active: true, sort_order: 1 },
+  { key: "unlimited_1d_7m", label: "Illimité Jour 7M", type: "unlimited", duration_minutes: 1440, data_gb: null, speed_mbps: 7, price_ar: 2000, is_active: true, sort_order: 2 },
+  { key: "unlimited_1d_10m", label: "Illimité Jour 10M", type: "unlimited", duration_minutes: 1440, data_gb: null, speed_mbps: 10, price_ar: 3000, is_active: true, sort_order: 3 },
+  { key: "data_2go_1d_10m", label: "2 Go Jour 10M", type: "data", duration_minutes: 1440, data_gb: 2, speed_mbps: 10, price_ar: 500, is_active: true, sort_order: 4 },
+  { key: "data_20go_7d_10m", label: "20 Go Semaine 10M", type: "data", duration_minutes: 10080, data_gb: 20, speed_mbps: 10, price_ar: 3500, is_active: true, sort_order: 5 },
+  { key: "unlimited_7d_7m", label: "Illimité Semaine 7M", type: "unlimited", duration_minutes: 10080, data_gb: null, speed_mbps: 7, price_ar: 10000, is_active: true, sort_order: 6 },
+  { key: "unlimited_7d_10m", label: "Illimité Semaine 10M", type: "unlimited", duration_minutes: 10080, data_gb: null, speed_mbps: 10, price_ar: 15000, is_active: true, sort_order: 7 },
 ]);
 
 const PLAN_DUPLICATE_MESSAGE = "Ce forfait existe déjà dans ce pool. Modifiez la durée, les données ou le débit avant de continuer.";
@@ -7689,25 +7692,49 @@ function planSimulatorMaxTheoreticalDataGb(speedMbps, durationMinutes) {
   return (speed * minutes * 60) / 8 / 1000;
 }
 
-function normalizePlanSimulatorSettingsRow(row) {
-  const settings = { ...PLAN_SIMULATOR_DEFAULT_SETTINGS };
-  if (!row || typeof row !== "object") return settings;
-
-  settings.price_tolerance_pct = clampPlanSimulatorNumber(row.price_tolerance_pct, 0, 100, settings.price_tolerance_pct);
-  settings.realistic_usage_factor_pct = clampPlanSimulatorNumber(row.realistic_usage_factor_pct, 10, 100, settings.realistic_usage_factor_pct);
-  settings.warning_usage_factor_pct = clampPlanSimulatorNumber(row.warning_usage_factor_pct, 10, 150, settings.warning_usage_factor_pct);
-  settings.max_data_gb = clampPlanSimulatorNumber(row.max_data_gb, 1, 100000, settings.max_data_gb);
-  settings.max_speed_mbps = clampPlanSimulatorNumber(row.max_speed_mbps, 1, 1000, settings.max_speed_mbps);
-  settings.max_duration_days = clampPlanSimulatorNumber(row.max_duration_days, 1, 3650, settings.max_duration_days);
-
-  if (Array.isArray(row.allowed_speeds_mbps) && row.allowed_speeds_mbps.length) {
-    const speeds = row.allowed_speeds_mbps
+function normalizePlanSimulatorSettingValue(key, value) {
+  if (key === "allowed_speeds_mbps") {
+    const arr = Array.isArray(value) ? value : String(value || "").split(",");
+    const speeds = arr
       .map((x) => Number(x))
       .filter((x) => Number.isFinite(x) && x > 0)
       .map((x) => Math.round(x * 100) / 100);
-    if (speeds.length) settings.allowed_speeds_mbps = speeds;
+    return speeds.length ? Array.from(new Set(speeds)) : PLAN_SIMULATOR_DEFAULT_SETTINGS.allowed_speeds_mbps;
   }
 
+  const defaults = PLAN_SIMULATOR_DEFAULT_SETTINGS;
+  const n = Number(value);
+  const fallback = defaults[key];
+
+  if (key === "price_tolerance_pct") return clampPlanSimulatorNumber(n, 0, 100, fallback);
+  if (key === "realistic_usage_factor_pct") return clampPlanSimulatorNumber(n, 10, 100, fallback);
+  if (key === "warning_usage_factor_pct") return clampPlanSimulatorNumber(n, 10, 150, fallback);
+  if (key === "max_visible_data_plans") return Math.round(clampPlanSimulatorNumber(n, 1, 100, fallback));
+  if (key === "max_visible_unlimited_plans") return Math.round(clampPlanSimulatorNumber(n, 1, 100, fallback));
+  if (key === "max_data_gb") return clampPlanSimulatorNumber(n, 1, 100000, fallback);
+  if (key === "max_speed_mbps") return clampPlanSimulatorNumber(n, 1, 1000, fallback);
+  if (key === "max_duration_days") return clampPlanSimulatorNumber(n, 1, 3650, fallback);
+
+  return value;
+}
+
+function normalizePlanSimulatorSettingsFromKeyValueRows(rows = []) {
+  const settings = { ...PLAN_SIMULATOR_DEFAULT_SETTINGS };
+  for (const row of rows || []) {
+    const key = String(row?.key || "").trim();
+    if (!Object.prototype.hasOwnProperty.call(settings, key)) continue;
+    settings[key] = normalizePlanSimulatorSettingValue(key, row?.value);
+  }
+  return settings;
+}
+
+function normalizePlanSimulatorSettingsObject(obj = {}) {
+  const settings = { ...PLAN_SIMULATOR_DEFAULT_SETTINGS };
+  for (const key of Object.keys(settings)) {
+    if (Object.prototype.hasOwnProperty.call(obj || {}, key)) {
+      settings[key] = normalizePlanSimulatorSettingValue(key, obj[key]);
+    }
+  }
   return settings;
 }
 
@@ -7716,39 +7743,60 @@ function normalizePlanSimulatorReferenceRow(row) {
   const type = normalizePlanSimulatorType(row.type || row.plan_type || row.planType);
   const duration_minutes = normalizePlanSimulatorDurationMinutes(row);
   const speed_mbps = Number(row.speed_mbps ?? row.speedMbps ?? row.speed);
-  const price_ar = Number(row.price_ar ?? row.priceAr ?? row.price);
+  const price_ar = Math.round(Number(row.price_ar ?? row.priceAr ?? row.price));
   const data_gb = type === "data" ? normalizePlanSimulatorDataGb(row, "data") : null;
 
   if (!type || !duration_minutes || !Number.isFinite(speed_mbps) || speed_mbps <= 0 || !Number.isFinite(price_ar) || price_ar <= 0) return null;
   if (type === "data" && (!Number.isFinite(data_gb) || data_gb <= 0)) return null;
 
+  const key = String(row.key || row.plan_key || `${type}_${duration_minutes}_${data_gb || "unlimited"}_${speed_mbps}`).trim();
+  const label = cleanOptionalText(row.label || row.name || suggestPlanSimulatorName({ type, data_gb, duration_minutes, speed_mbps }), 120);
+
   return {
-    key: String(row.key || row.plan_key || row.name || `${type}_${duration_minutes}_${data_gb || "unlimited"}_${speed_mbps}`).trim(),
+    key,
+    label: label || key,
     type,
     duration_minutes,
     data_gb: type === "data" ? data_gb : null,
-    speed_mbps,
+    speed_mbps: Math.round(speed_mbps * 100) / 100,
     price_ar,
+    is_active: row.is_active === undefined ? true : row.is_active === true || String(row.is_active).toLowerCase() === "true",
+    sort_order: Number.isFinite(Number(row.sort_order)) ? Math.round(Number(row.sort_order)) : 0,
+  };
+}
+
+function serializePlanSimulatorReference(row) {
+  const r = normalizePlanSimulatorReferenceRow(row);
+  if (!r) return null;
+  return {
+    key: r.key,
+    label: r.label,
+    type: r.type,
+    duration_minutes: r.duration_minutes,
+    duration_label: planSimulatorDurationLabel(r.duration_minutes),
+    data_gb: r.data_gb,
+    speed_mbps: r.speed_mbps,
+    price_ar: r.price_ar,
+    is_active: r.is_active,
+    sort_order: r.sort_order,
   };
 }
 
 async function getPlanSimulatorConfig() {
-  const settings = { ...PLAN_SIMULATOR_DEFAULT_SETTINGS };
+  let settings = { ...PLAN_SIMULATOR_DEFAULT_SETTINGS };
   let references = PLAN_SIMULATOR_DEFAULT_REFERENCES.map((r) => ({ ...r }));
   const source = { settings: "defaults", references: "defaults" };
 
   if (!supabase) return { settings, references, source };
 
-  // Future-ready optional DB tables. If they do not exist yet, defaults are used safely.
   try {
     const { data, error } = await supabase
       .from("plan_simulator_settings")
-      .select("*")
-      .eq("id", "default")
-      .maybeSingle();
+      .select("key,value")
+      .order("key", { ascending: true });
 
-    if (!error && data) {
-      Object.assign(settings, normalizePlanSimulatorSettingsRow(data));
+    if (!error && Array.isArray(data) && data.length) {
+      settings = normalizePlanSimulatorSettingsFromKeyValueRows(data);
       source.settings = "db";
     }
   } catch (_) {}
@@ -7756,7 +7804,7 @@ async function getPlanSimulatorConfig() {
   try {
     const { data, error } = await supabase
       .from("plan_simulator_references")
-      .select("*")
+      .select("key,label,type,duration_minutes,data_gb,speed_mbps,price_ar,is_active,sort_order")
       .eq("is_active", true)
       .order("sort_order", { ascending: true });
 
@@ -7794,23 +7842,21 @@ function weightedPlanSimulatorReferencePrice({ target, references }) {
     const durationFactor = Math.pow((Number(target.duration_minutes) || 1) / (Number(ref.duration_minutes) || 1), target.type === "unlimited" ? 0.78 : 0.45);
     const speedFactor = Math.pow((Number(target.speed_mbps) || 1) / (Number(ref.speed_mbps) || 1), 0.85);
     const dataFactor = target.type === "data"
-      ? Math.pow((Number(target.data_gb) || 1) / (Number(ref.data_gb) || 1), 0.82)
+      ? Math.pow((Number(target.data_gb) || 1) / (Number(ref.data_gb) || 1), 0.92)
       : 1;
 
-    const estimate = Number(ref.price_ar) * durationFactor * speedFactor * dataFactor;
-    weighted += estimate * weight;
+    const estimated = Number(ref.price_ar) * durationFactor * speedFactor * dataFactor;
+    weighted += estimated * weight;
     weightTotal += weight;
 
     if (distance < nearestDistance) {
       nearestDistance = distance;
-      nearest_reference = ref;
+      nearest_reference = { ...ref, distance: Math.round(distance * 1000) / 1000 };
     }
   }
 
-  if (!weightTotal) return null;
-
   return {
-    price_ar: roundPlanSimulatorPriceAr(weighted / weightTotal),
+    price_ar: weightTotal > 0 ? weighted / weightTotal : null,
     nearest_reference,
   };
 }
@@ -7920,12 +7966,12 @@ function normalizePlanDuplicateDurationMinutes(planLike = {}) {
   return null;
 }
 
-async function findDuplicatePlanTechnical({ system, pool_id, duration_minutes, data_mb, mikrotik_rate_limit, exclude_id = null } = {}) {
+async function findDuplicatePlanTechnical({ system, pool_id, duration_minutes, duration_seconds, duration_hours, data_mb, mikrotik_rate_limit, exclude_id = null } = {}) {
   if (!supabase) return null;
 
   const cleanSystem = String(system || "portal").trim() || "portal";
   const cleanPoolId = pool_id === null || pool_id === undefined ? null : String(pool_id || "").trim();
-  const cleanDurationMinutes = normalizePlanDuplicateDurationMinutes({ duration_minutes });
+  const cleanDurationMinutes = normalizePlanDuplicateDurationMinutes({ duration_minutes, duration_seconds, duration_hours });
   const cleanDataMb = normalizePlanDuplicateDataMb(data_mb);
   const cleanRateLimit = cleanSystem === "mikrotik"
     ? (normalizeMikrotikRateLimit(mikrotik_rate_limit) || null)
@@ -7968,6 +8014,136 @@ async function assertNoDuplicatePlanTechnical(args = {}) {
   throw err;
 }
 
+function publicPlanSimulatorSettings(settings = {}) {
+  return {
+    max_data_gb: settings.max_data_gb,
+    max_speed_mbps: settings.max_speed_mbps,
+    max_duration_days: settings.max_duration_days,
+    max_visible_data_plans: settings.max_visible_data_plans,
+    max_visible_unlimited_plans: settings.max_visible_unlimited_plans,
+    realistic_usage_factor_pct: settings.realistic_usage_factor_pct,
+    warning_usage_factor_pct: settings.warning_usage_factor_pct,
+    price_tolerance_pct: settings.price_tolerance_pct,
+    allowed_speeds_mbps: settings.allowed_speeds_mbps,
+  };
+}
+
+function validatePlanSimulatorConfigPayload(body = {}) {
+  const incomingSettings = body.settings && typeof body.settings === "object" ? body.settings : {};
+  const settings = normalizePlanSimulatorSettingsObject(incomingSettings);
+
+  const refsRaw = Array.isArray(body.references) ? body.references : null;
+  let references = null;
+  if (refsRaw) {
+    references = refsRaw.map(normalizePlanSimulatorReferenceRow).filter(Boolean);
+    if (!references.length) {
+      const err = new Error("references_required");
+      err.status = 400;
+      throw err;
+    }
+
+    const activeRefs = references.filter((r) => r.is_active !== false);
+    const hasData = activeRefs.some((r) => r.type === "data");
+    const hasUnlimited = activeRefs.some((r) => r.type === "unlimited");
+    if (!hasData || !hasUnlimited) {
+      const err = new Error("references_must_include_data_and_unlimited");
+      err.status = 400;
+      throw err;
+    }
+  }
+
+  return { settings, references };
+}
+
+// GET /api/admin/plan-simulator/config
+// Superadmin only. Returns full calculator settings and pricing references.
+app.get("/api/admin/plan-simulator/config", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    const cfg = await getPlanSimulatorConfig();
+    const references = (cfg.references || [])
+      .map(serializePlanSimulatorReference)
+      .filter(Boolean)
+      .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0));
+
+    return res.json({
+      ok: true,
+      settings: publicPlanSimulatorSettings(cfg.settings),
+      references,
+      source: cfg.source,
+    });
+  } catch (e) {
+    console.error("PLAN SIMULATOR CONFIG GET ERROR", e?.message || e);
+    return res.status(500).json({ ok: false, error: "plan_simulator_config_error" });
+  }
+});
+
+// PUT /api/admin/plan-simulator/config
+// Superadmin only. Updates settings and, optionally, the full references list.
+app.put("/api/admin/plan-simulator/config", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ ok: false, error: "supabase_not_configured" });
+
+    const { settings, references } = validatePlanSimulatorConfigPayload(req.body || {});
+    const nowIso = new Date().toISOString();
+    const updatedBy = req.admin?.email || req.admin?.id || null;
+
+    const settingRows = Object.entries(settings).map(([key, value]) => ({
+      key,
+      value,
+      updated_at: nowIso,
+      updated_by: updatedBy,
+    }));
+
+    const { error: settingsErr } = await supabase
+      .from("plan_simulator_settings")
+      .upsert(settingRows, { onConflict: "key" });
+
+    if (settingsErr) {
+      console.error("PLAN SIMULATOR SETTINGS UPSERT ERROR", settingsErr);
+      return res.status(500).json({ ok: false, error: "settings_update_failed", details: settingsErr.message });
+    }
+
+    if (Array.isArray(references)) {
+      const refRows = references.map((r, idx) => ({
+        key: r.key,
+        label: r.label || suggestPlanSimulatorName(r),
+        type: r.type,
+        duration_minutes: r.duration_minutes,
+        data_gb: r.type === "data" ? r.data_gb : null,
+        speed_mbps: r.speed_mbps,
+        price_ar: r.price_ar,
+        is_active: r.is_active !== false,
+        sort_order: Number.isFinite(Number(r.sort_order)) ? Number(r.sort_order) : idx + 1,
+        updated_at: nowIso,
+        updated_by: updatedBy,
+      }));
+
+      const { error: refsErr } = await supabase
+        .from("plan_simulator_references")
+        .upsert(refRows, { onConflict: "key" });
+
+      if (refsErr) {
+        console.error("PLAN SIMULATOR REFERENCES UPSERT ERROR", refsErr);
+        return res.status(500).json({ ok: false, error: "references_update_failed", details: refsErr.message });
+      }
+    }
+
+    const cfg = await getPlanSimulatorConfig();
+    return res.json({
+      ok: true,
+      settings: publicPlanSimulatorSettings(cfg.settings),
+      references: (cfg.references || []).map(serializePlanSimulatorReference).filter(Boolean),
+      source: cfg.source,
+    });
+  } catch (e) {
+    console.error("PLAN SIMULATOR CONFIG PUT ERROR", e?.message || e);
+    return res.status(e?.status || 500).json({
+      ok: false,
+      error: e?.message || "plan_simulator_config_update_error",
+    });
+  }
+});
+
 // POST /api/admin/plan-simulator/simulate
 // Body: { type: "data"|"unlimited", data_gb?, duration_minutes? OR duration_value+duration_unit, speed_mbps, pool_id? }
 app.post("/api/admin/plan-simulator/simulate", requireAdmin, async (req, res) => {
@@ -8001,13 +8177,7 @@ app.post("/api/admin/plan-simulator/simulate", requireAdmin, async (req, res) =>
       pool_id,
     };
 
-    const publicSettings = {
-      max_data_gb: settings.max_data_gb,
-      max_speed_mbps: settings.max_speed_mbps,
-      max_duration_days: settings.max_duration_days,
-      realistic_usage_factor_pct: settings.realistic_usage_factor_pct,
-      price_tolerance_pct: settings.price_tolerance_pct,
-    };
+    const publicSettings = publicPlanSimulatorSettings(settings);
 
     if (validation.status === "blocked") {
       return res.status(400).json({
@@ -8064,7 +8234,6 @@ app.post("/api/admin/plan-simulator/simulate", requireAdmin, async (req, res) =>
     });
   }
 });
-
 
 app.post("/api/admin/plans", requireAdmin, async (req, res) => {
   try {
@@ -8157,10 +8326,12 @@ const payload = {
 
     try {
       await assertNoDuplicatePlanTechnical({
-        system,
-        pool_id: pool_id_norm,
-        duration_minutes: durMin,
-        data_mb,
+        system: payload.system,
+        pool_id: payload.pool_id,
+        duration_minutes: payload.duration_minutes,
+        duration_seconds: payload.duration_seconds,
+        duration_hours: payload.duration_hours,
+        data_mb: payload.data_mb,
         mikrotik_rate_limit: payload.mikrotik_rate_limit,
       });
     } catch (dupErr) {
@@ -8168,10 +8339,12 @@ const payload = {
         return res.status(409).json({
           error: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
           code: "plan_duplicate_technical",
-          duplicate_plan_id: dupErr.duplicate?.id || null,
+          message: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
+          duplicate: dupErr.duplicate || null,
         });
       }
-      throw dupErr;
+      console.error("ADMIN PLANS DUPLICATE CHECK ERROR", dupErr);
+      return res.status(500).json({ error: "db_error" });
     }
 
     const { data, error } = await supabase
@@ -8201,7 +8374,7 @@ app.patch("/api/admin/plans/:id", requireAdmin, async (req, res) => {
 // Load existing plan to enforce invariants (system is immutable)
 const { data: existingPlan, error: existingErr } = await supabase
   .from("plans")
-  .select("id, system, pool_id, mikrotik_rate_limit")
+  .select("id, system, pool_id, duration_hours, duration_minutes, duration_seconds, data_mb, mikrotik_rate_limit")
   .eq("id", id)
   .maybeSingle();
 
@@ -8388,46 +8561,30 @@ if (b.data_mb !== undefined) {
       return res.status(400).json({ error: "no fields to update" });
     }
 
-    const duplicateRelevantFields = new Set(["duration_hours", "duration_minutes", "duration_seconds", "data_mb", "pool_id", "mikrotik_rate_limit"]);
-    const shouldCheckDuplicate = Object.keys(patch).some((k) => duplicateRelevantFields.has(k));
+    const effectiveForDuplicate = {
+      system: existingPlan.system || "portal",
+      pool_id: patch.pool_id !== undefined ? patch.pool_id : existingPlan.pool_id,
+      duration_minutes: patch.duration_minutes !== undefined ? patch.duration_minutes : existingPlan.duration_minutes,
+      duration_seconds: patch.duration_seconds !== undefined ? patch.duration_seconds : existingPlan.duration_seconds,
+      duration_hours: patch.duration_hours !== undefined ? patch.duration_hours : existingPlan.duration_hours,
+      data_mb: patch.data_mb !== undefined ? patch.data_mb : existingPlan.data_mb,
+      mikrotik_rate_limit: patch.mikrotik_rate_limit !== undefined ? patch.mikrotik_rate_limit : existingPlan.mikrotik_rate_limit,
+      exclude_id: id,
+    };
 
-    if (shouldCheckDuplicate) {
-      const { data: currentForDuplicate, error: currentForDuplicateErr } = await supabase
-        .from("plans")
-        .select("id,system,pool_id,duration_minutes,data_mb,mikrotik_rate_limit")
-        .eq("id", id)
-        .maybeSingle();
-
-      if (currentForDuplicateErr) {
-        console.error("ADMIN PLANS PATCH DUPLICATE LOAD ERROR", currentForDuplicateErr);
-        return res.status(500).json({ error: "db_error" });
-      }
-
-      const effectiveSystem = String(existingPlan.system || currentForDuplicate?.system || "portal");
-      const effectivePoolId = patch.pool_id !== undefined ? patch.pool_id : currentForDuplicate?.pool_id;
-      const effectiveDurationMinutes = patch.duration_minutes !== undefined ? patch.duration_minutes : currentForDuplicate?.duration_minutes;
-      const effectiveDataMb = patch.data_mb !== undefined ? patch.data_mb : currentForDuplicate?.data_mb;
-      const effectiveRateLimit = patch.mikrotik_rate_limit !== undefined ? patch.mikrotik_rate_limit : currentForDuplicate?.mikrotik_rate_limit;
-
-      try {
-        await assertNoDuplicatePlanTechnical({
-          system: effectiveSystem,
-          pool_id: effectivePoolId,
-          duration_minutes: effectiveDurationMinutes,
-          data_mb: effectiveDataMb,
-          mikrotik_rate_limit: effectiveRateLimit,
-          exclude_id: id,
+    try {
+      await assertNoDuplicatePlanTechnical(effectiveForDuplicate);
+    } catch (dupErr) {
+      if (dupErr?.status === 409) {
+        return res.status(409).json({
+          error: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
+          code: "plan_duplicate_technical",
+          message: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
+          duplicate: dupErr.duplicate || null,
         });
-      } catch (dupErr) {
-        if (dupErr?.status === 409) {
-          return res.status(409).json({
-            error: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
-            code: "plan_duplicate_technical",
-            duplicate_plan_id: dupErr.duplicate?.id || null,
-          });
-        }
-        throw dupErr;
       }
+      console.error("ADMIN PLANS PATCH DUPLICATE CHECK ERROR", dupErr);
+      return res.status(500).json({ error: "db_error" });
     }
 
     const { data, error } = await supabase
