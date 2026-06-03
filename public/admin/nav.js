@@ -59,6 +59,9 @@
           <a class="rz-item" data-href="/admin/plans.html" href="/admin/plans.html">
             <span class="rz-item-label">Plans</span>
           </a>
+          <a class="rz-item" data-href="/admin/pricing-simulator.html" href="/admin/pricing-simulator.html">
+            <span class="rz-item-label">Simulateur de prix</span>
+          </a>
           <a class="rz-item" data-href="/admin/pools.html" href="/admin/pools.html" id="rzNavPools">
             <span class="rz-item-label">Pools</span>
           </a>

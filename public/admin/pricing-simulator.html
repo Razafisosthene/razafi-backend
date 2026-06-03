@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAZAFI Admin — Simulateur de prix</title>
+  <link rel="stylesheet" href="/admin/admin.css" />
+
+  <style>
+    .rz-simulator-shell{display:flex;flex-direction:column;gap:14px;}
+    .rz-simulator-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+    .rz-simulator-me{white-space:normal;line-height:1.25;}
+    .rz-simulator-me strong{display:block;color:var(--rz-text,#111827);font-weight:900;margin-top:2px;word-break:break-word;}
+    .rz-simulator-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.85fr);gap:14px;align-items:start;}
+    .rz-simulator-panel,.rz-simulator-result,.rz-simulator-info{border-radius:28px;background:rgba(255,255,255,.82);border:1px solid rgba(255,255,255,.9);box-shadow:0 12px 28px rgba(15,23,42,.08);padding:16px;}
+    .rz-simulator-panel h2,.rz-simulator-result h2,.rz-simulator-info h2{margin:0 0 10px;color:#0f172a;font-size:20px;letter-spacing:-.04em;}
+    .rz-simulator-form{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+    .rz-field{display:flex;flex-direction:column;gap:6px;min-width:0;}
+    .rz-field.full{grid-column:1/-1;}
+    .rz-field label{font-size:12px;font-weight:950;color:#64748b;letter-spacing:-.01em;}
+    .rz-field input,.rz-field select{margin:0!important;width:100%;height:48px;border-radius:18px!important;}
+    .rz-type-switch{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+    .rz-type-btn{width:100%;min-height:54px;border-radius:20px!important;background:rgba(248,250,252,.96)!important;color:#0f172a!important;border:1px solid rgba(15,23,42,.08)!important;box-shadow:none!important;font-weight:950!important;}
+    .rz-type-btn.active{background:linear-gradient(180deg,#2382ff 0%,#0d6efd 100%)!important;color:#fff!important;border-color:transparent!important;box-shadow:0 12px 24px rgba(13,110,253,.18)!important;}
+    .rz-simulate-btn{grid-column:1/-1;min-height:52px;border-radius:20px!important;font-weight:950!important;}
+    .rz-small-note{grid-column:1/-1;margin-top:-4px;color:#64748b;font-size:12px;font-weight:750;line-height:1.35;}
+    .rz-result-empty{color:#64748b;font-size:14px;font-weight:800;line-height:1.45;}
+    .rz-result-status{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border-radius:999px;font-size:12px;font-weight:950;border:1px solid rgba(15,23,42,.08);background:rgba(248,250,252,.9);color:#334155;margin-bottom:12px;}
+    .rz-result-status.ok{background:rgba(22,163,74,.12);color:#15803d;border-color:rgba(22,163,74,.22);}
+    .rz-result-status.warning{background:rgba(245,158,11,.14);color:#92400e;border-color:rgba(245,158,11,.25);}
+    .rz-result-status.blocked{background:rgba(239,68,68,.12);color:#b91c1c;border-color:rgba(239,68,68,.25);}
+    .rz-price-big{font-size:42px;line-height:.98;font-weight:950;letter-spacing:-.06em;color:#0d6efd;margin:10px 0 6px;}
+    .rz-plan-name-card{padding:12px;border-radius:20px;background:rgba(248,250,252,.82);border:1px solid rgba(15,23,42,.07);margin-top:10px;}
+    .rz-k{font-size:11px;color:#64748b;font-weight:950;text-transform:uppercase;letter-spacing:.04em;}
+    .rz-v{margin-top:4px;color:#0f172a;font-size:15px;font-weight:950;word-break:break-word;}
+    .rz-range{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;}
+    .rz-message{margin-top:12px;padding:11px 12px;border-radius:18px;background:rgba(248,250,252,.86);border:1px solid rgba(15,23,42,.07);color:#334155;font-size:13px;font-weight:800;line-height:1.35;}
+    .rz-message.blocked{background:rgba(254,242,242,.88);border-color:rgba(239,68,68,.20);color:#991b1b;}
+    .rz-message.warning{background:rgba(255,251,235,.88);border-color:rgba(245,158,11,.24);color:#92400e;}
+    .rz-config-line{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid rgba(15,23,42,.07);font-size:13px;}
+    .rz-config-line:last-child{border-bottom:0;}
+    .rz-config-line span:first-child{color:#64748b;font-weight:850;}
+    .rz-config-line span:last-child{color:#0f172a;font-weight:950;text-align:right;}
+    .rz-ref-list{margin-top:12px;display:flex;flex-direction:column;gap:8px;}
+    .rz-ref-item{display:flex;justify-content:space-between;gap:10px;padding:10px 11px;border-radius:16px;background:rgba(248,250,252,.82);border:1px solid rgba(15,23,42,.07);font-size:13px;}
+    .rz-ref-item strong{color:#0f172a;}
+    .rz-ref-item span{color:#0d6efd;font-weight:950;white-space:nowrap;}
+    .error{text-align:left;}
+    @media (max-width:860px){.rz-simulator-grid{grid-template-columns:1fr;}.rz-simulator-form{grid-template-columns:1fr;}.rz-type-switch{grid-template-columns:1fr 1fr;}.rz-range{grid-template-columns:1fr;}}
+    @media (max-width:520px){.rz-simulator-panel,.rz-simulator-result,.rz-simulator-info{border-radius:24px;padding:14px;}.rz-price-big{font-size:36px;}.rz-type-switch{grid-template-columns:1fr;}}
+  </style>
+</head>
+<body class="rz-admin-shell pricing-simulator-page">
+  <div class="login-container">
+    <div class="card rz-simulator-shell" style="max-width: 1120px; width: 96%;">
+      <div class="topbar rz-simulator-header">
+        <div class="title">
+          <h1 class="rz-hero-title">Simulateur de prix</h1>
+          <div class="rz-hero-subtitle">Calculez un prix recommandé avant de créer un forfait.</div>
+          <div id="me" class="subtitle rz-simulator-me">Vérification de la session…</div>
+        </div>
+
+        <div class="nav" style="display:none;">
+          <a href="/admin/"><button type="button">Dashboard</button></a>
+          <a href="/admin/plans.html"><button type="button">Plans</button></a>
+          <button id="logoutBtn" type="button">Déconnexion</button>
+        </div>
+      </div>
+
+      <div id="error" class="error"></div>
+
+      <div class="rz-simulator-grid">
+        <section class="rz-simulator-panel" aria-labelledby="formTitle">
+          <h2 id="formTitle">Détails du forfait</h2>
+          <form id="simForm" class="rz-simulator-form">
+            <div class="rz-type-switch" role="group" aria-label="Type de forfait">
+              <button id="typeDataBtn" class="rz-type-btn" type="button">Data limitée</button>
+              <button id="typeUnlimitedBtn" class="rz-type-btn active" type="button">Illimité</button>
+            </div>
+
+            <div id="dataField" class="rz-field" style="display:none;">
+              <label for="dataGb">Data (Go)</label>
+              <input id="dataGb" inputmode="decimal" placeholder="Ex : 20" />
+            </div>
+
+            <div class="rz-field">
+              <label for="durationValue">Durée</label>
+              <input id="durationValue" inputmode="decimal" value="1" placeholder="Ex : 7" required />
+            </div>
+
+            <div class="rz-field">
+              <label for="durationUnit">Unité</label>
+              <select id="durationUnit">
+                <option value="hour">heure(s)</option>
+                <option value="day">jour(s)</option>
+                <option value="week">semaine(s)</option>
+                <option value="month">mois</option>
+              </select>
+            </div>
+
+            <div class="rz-field">
+              <label for="speedMbps">Vitesse (Mbps)</label>
+              <input id="speedMbps" inputmode="decimal" value="7" placeholder="Ex : 10" required />
+            </div>
+
+            <div class="rz-small-note">La simulation utilise la base dynamique configurée dans RAZAFI, pas une base hardcodée dans cette page.</div>
+
+            <button id="simulateBtn" class="filter-btn primary rz-simulate-btn" type="submit">Simuler</button>
+          </form>
+        </section>
+
+        <section class="rz-simulator-result" aria-labelledby="resultTitle">
+          <h2 id="resultTitle">Résultat</h2>
+          <div id="resultBox" class="rz-result-empty">Remplissez les champs puis cliquez sur Simuler.</div>
+        </section>
+      </div>
+
+      <section class="rz-simulator-info" aria-labelledby="configTitle">
+        <h2 id="configTitle">Base dynamique utilisée</h2>
+        <div id="configSummary" class="rz-result-empty">Chargement de la configuration…</div>
+        <div id="referencesList" class="rz-ref-list"></div>
+      </section>
+    </div>
+  </div>
+
+  <script src="/admin/nav.js"></script>
+  <script src="./pricing-simulator.js"></script>
+</body>
+</html>
