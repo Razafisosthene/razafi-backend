@@ -400,7 +400,12 @@ async function requireAdmin(req, res, next) {
       const allowOwnerClientRename =
         method === "POST" && fullPath === "/api/admin/client-devices/rename";
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename) {
+      // Phase 1A: owners may simulate plan pricing only.
+      // This endpoint does not create, update, delete, sell, or activate plans.
+      const allowOwnerPlanSimulatorSimulate =
+        method === "POST" && fullPath === "/api/admin/plan-simulator/simulate";
+
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate) {
         return next();
       }
 
@@ -7560,8 +7565,341 @@ app.get("/api/admin/pools/:id/aps", requireAdmin, async (req, res) => {
 
 
 
+// ------------------------------------------------------------
+// ADMIN: Plan price simulator (Phase 1A - simulate only)
+// ------------------------------------------------------------
+// Scope:
+// - Backend calculator only
+// - No plan creation
+// - No DB write
+// - No payment
+// - No voucher generation
+
+const PLAN_SIMULATOR_DEFAULT_SETTINGS = Object.freeze({
+  price_tolerance_pct: 20,
+  realistic_usage_factor_pct: 70,
+  warning_usage_factor_pct: 90,
+  max_data_gb: 500,
+  max_speed_mbps: 20,
+  max_duration_days: 30,
+  allowed_speeds_mbps: [5, 7, 10, 12, 15, 20],
+});
+
+const PLAN_SIMULATOR_DEFAULT_REFERENCES = Object.freeze([
+  { key: "unlimited_1h_7m", type: "unlimited", duration_minutes: 60, data_gb: null, speed_mbps: 7, price_ar: 400 },
+  { key: "unlimited_1d_7m", type: "unlimited", duration_minutes: 1440, data_gb: null, speed_mbps: 7, price_ar: 2000 },
+  { key: "unlimited_1d_10m", type: "unlimited", duration_minutes: 1440, data_gb: null, speed_mbps: 10, price_ar: 3000 },
+  { key: "data_2gb_1d_10m", type: "data", duration_minutes: 1440, data_gb: 2, speed_mbps: 10, price_ar: 500 },
+  { key: "data_20gb_7d_10m", type: "data", duration_minutes: 10080, data_gb: 20, speed_mbps: 10, price_ar: 3500 },
+  { key: "unlimited_7d_7m", type: "unlimited", duration_minutes: 10080, data_gb: null, speed_mbps: 7, price_ar: 10000 },
+  { key: "unlimited_7d_10m", type: "unlimited", duration_minutes: 10080, data_gb: null, speed_mbps: 10, price_ar: 15000 },
+]);
+
 const PLAN_DUPLICATE_MESSAGE = "Ce forfait existe déjà dans ce pool. Modifiez la durée, les données ou le débit avant de continuer.";
 
+function clampPlanSimulatorNumber(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function roundPlanSimulatorPriceAr(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  if (n < 100) return 100;
+  return Math.round(n / 100) * 100;
+}
+
+function normalizePlanSimulatorType(value) {
+  const v = String(value || "").trim().toLowerCase();
+  if (["unlimited", "illimite", "illimité", "infinite", "∞"].includes(v)) return "unlimited";
+  if (["data", "limited", "limite", "limité"].includes(v)) return "data";
+  return null;
+}
+
+function normalizePlanSimulatorDurationMinutes(body = {}) {
+  const direct = Number(body.duration_minutes ?? body.durationMinutes);
+  if (Number.isFinite(direct) && direct > 0) return Math.round(direct);
+
+  const value = Number(body.duration_value ?? body.durationValue ?? body.duration ?? body.time_value ?? body.timeValue);
+  const unit = String(body.duration_unit ?? body.durationUnit ?? body.time_unit ?? body.timeUnit ?? "minutes").trim().toLowerCase();
+  if (!Number.isFinite(value) || value <= 0) return null;
+
+  if (["m", "min", "minute", "minutes"].includes(unit)) return Math.round(value);
+  if (["h", "hour", "hours", "heure", "heures"].includes(unit)) return Math.round(value * 60);
+  if (["d", "day", "days", "jour", "jours", "j"].includes(unit)) return Math.round(value * 1440);
+  if (["w", "week", "weeks", "semaine", "semaines"].includes(unit)) return Math.round(value * 10080);
+  if (["month", "months", "mois"].includes(unit)) return Math.round(value * 43200);
+  return null;
+}
+
+function normalizePlanSimulatorDataGb(body = {}, type = "data") {
+  if (type === "unlimited") return null;
+
+  const gb = Number(body.data_gb ?? body.dataGb ?? body.gb);
+  if (Number.isFinite(gb) && gb > 0) return Math.round(gb * 100) / 100;
+
+  const mb = Number(body.data_mb ?? body.dataMb ?? body.mb);
+  if (Number.isFinite(mb) && mb > 0) return Math.round((mb / 1024) * 100) / 100;
+
+  return null;
+}
+
+function normalizePlanSimulatorSpeedMbps(body = {}) {
+  const speed = Number(body.speed_mbps ?? body.speedMbps ?? body.speed ?? body.mbps);
+  if (!Number.isFinite(speed) || speed <= 0) return null;
+  return Math.round(speed * 100) / 100;
+}
+
+function planSimulatorDurationLabel(durationMinutes) {
+  const m = Number(durationMinutes || 0);
+  if (!Number.isFinite(m) || m <= 0) return "";
+  if (m === 60) return "1H";
+  if (m < 1440 && m % 60 === 0) return `${m / 60}H`;
+  if (m === 1440) return "Jour";
+  if (m === 10080) return "Semaine";
+  if (m === 43200) return "Mois";
+  if (m % 1440 === 0) return `${m / 1440} Jours`;
+  if (m % 60 === 0) return `${m / 60}H`;
+  return `${m}min`;
+}
+
+function suggestPlanSimulatorName({ type, data_gb, duration_minutes, speed_mbps }) {
+  const duration = planSimulatorDurationLabel(duration_minutes);
+  const speed = Number.isFinite(Number(speed_mbps)) ? `${Math.round(Number(speed_mbps))}M` : "";
+
+  if (type === "unlimited") {
+    return ["Illimité", duration, speed].filter(Boolean).join(" ");
+  }
+
+  const gb = Number(data_gb);
+  const dataLabel = Number.isFinite(gb)
+    ? `${gb % 1 === 0 ? gb.toFixed(0) : String(gb)} Go`
+    : "Data";
+
+  return [dataLabel, duration].filter(Boolean).join(" ");
+}
+
+function planSimulatorMaxTheoreticalDataGb(speedMbps, durationMinutes) {
+  const speed = Number(speedMbps);
+  const minutes = Number(durationMinutes);
+  if (!Number.isFinite(speed) || speed <= 0 || !Number.isFinite(minutes) || minutes <= 0) return null;
+
+  // Mbps * seconds / 8 = MB, /1000 = approximate decimal GB.
+  return (speed * minutes * 60) / 8 / 1000;
+}
+
+function normalizePlanSimulatorSettingsRow(row) {
+  const settings = { ...PLAN_SIMULATOR_DEFAULT_SETTINGS };
+  if (!row || typeof row !== "object") return settings;
+
+  settings.price_tolerance_pct = clampPlanSimulatorNumber(row.price_tolerance_pct, 0, 100, settings.price_tolerance_pct);
+  settings.realistic_usage_factor_pct = clampPlanSimulatorNumber(row.realistic_usage_factor_pct, 10, 100, settings.realistic_usage_factor_pct);
+  settings.warning_usage_factor_pct = clampPlanSimulatorNumber(row.warning_usage_factor_pct, 10, 150, settings.warning_usage_factor_pct);
+  settings.max_data_gb = clampPlanSimulatorNumber(row.max_data_gb, 1, 100000, settings.max_data_gb);
+  settings.max_speed_mbps = clampPlanSimulatorNumber(row.max_speed_mbps, 1, 1000, settings.max_speed_mbps);
+  settings.max_duration_days = clampPlanSimulatorNumber(row.max_duration_days, 1, 3650, settings.max_duration_days);
+
+  if (Array.isArray(row.allowed_speeds_mbps) && row.allowed_speeds_mbps.length) {
+    const speeds = row.allowed_speeds_mbps
+      .map((x) => Number(x))
+      .filter((x) => Number.isFinite(x) && x > 0)
+      .map((x) => Math.round(x * 100) / 100);
+    if (speeds.length) settings.allowed_speeds_mbps = speeds;
+  }
+
+  return settings;
+}
+
+function normalizePlanSimulatorReferenceRow(row) {
+  if (!row || typeof row !== "object") return null;
+  const type = normalizePlanSimulatorType(row.type || row.plan_type || row.planType);
+  const duration_minutes = normalizePlanSimulatorDurationMinutes(row);
+  const speed_mbps = Number(row.speed_mbps ?? row.speedMbps ?? row.speed);
+  const price_ar = Number(row.price_ar ?? row.priceAr ?? row.price);
+  const data_gb = type === "data" ? normalizePlanSimulatorDataGb(row, "data") : null;
+
+  if (!type || !duration_minutes || !Number.isFinite(speed_mbps) || speed_mbps <= 0 || !Number.isFinite(price_ar) || price_ar <= 0) return null;
+  if (type === "data" && (!Number.isFinite(data_gb) || data_gb <= 0)) return null;
+
+  return {
+    key: String(row.key || row.plan_key || row.name || `${type}_${duration_minutes}_${data_gb || "unlimited"}_${speed_mbps}`).trim(),
+    type,
+    duration_minutes,
+    data_gb: type === "data" ? data_gb : null,
+    speed_mbps,
+    price_ar,
+  };
+}
+
+async function getPlanSimulatorConfig() {
+  const settings = { ...PLAN_SIMULATOR_DEFAULT_SETTINGS };
+  let references = PLAN_SIMULATOR_DEFAULT_REFERENCES.map((r) => ({ ...r }));
+  const source = { settings: "defaults", references: "defaults" };
+
+  if (!supabase) return { settings, references, source };
+
+  // Future-ready optional DB tables. If they do not exist yet, defaults are used safely.
+  try {
+    const { data, error } = await supabase
+      .from("plan_simulator_settings")
+      .select("*")
+      .eq("id", "default")
+      .maybeSingle();
+
+    if (!error && data) {
+      Object.assign(settings, normalizePlanSimulatorSettingsRow(data));
+      source.settings = "db";
+    }
+  } catch (_) {}
+
+  try {
+    const { data, error } = await supabase
+      .from("plan_simulator_references")
+      .select("*")
+      .eq("is_active", true)
+      .order("sort_order", { ascending: true });
+
+    if (!error && Array.isArray(data) && data.length) {
+      const rows = data.map(normalizePlanSimulatorReferenceRow).filter(Boolean);
+      if (rows.length) {
+        references = rows;
+        source.references = "db";
+      }
+    }
+  } catch (_) {}
+
+  return { settings, references, source };
+}
+
+function weightedPlanSimulatorReferencePrice({ target, references }) {
+  const refs = (references || []).filter((r) => r.type === target.type && Number(r.price_ar) > 0);
+  if (!refs.length) return null;
+
+  let weighted = 0;
+  let weightTotal = 0;
+  let nearest_reference = null;
+  let nearestDistance = Infinity;
+
+  for (const ref of refs) {
+    const durationRatio = Math.log((Number(target.duration_minutes) || 1) / (Number(ref.duration_minutes) || 1));
+    const speedRatio = Math.log((Number(target.speed_mbps) || 1) / (Number(ref.speed_mbps) || 1));
+    const dataRatio = target.type === "data"
+      ? Math.log((Number(target.data_gb) || 1) / (Number(ref.data_gb) || 1))
+      : 0;
+
+    const distance = Math.sqrt(durationRatio ** 2 + (speedRatio ** 2 * 0.6) + dataRatio ** 2);
+    const weight = 1 / Math.max(0.08, distance);
+
+    const durationFactor = Math.pow((Number(target.duration_minutes) || 1) / (Number(ref.duration_minutes) || 1), target.type === "unlimited" ? 0.78 : 0.45);
+    const speedFactor = Math.pow((Number(target.speed_mbps) || 1) / (Number(ref.speed_mbps) || 1), 0.85);
+    const dataFactor = target.type === "data"
+      ? Math.pow((Number(target.data_gb) || 1) / (Number(ref.data_gb) || 1), 0.82)
+      : 1;
+
+    const estimate = Number(ref.price_ar) * durationFactor * speedFactor * dataFactor;
+    weighted += estimate * weight;
+    weightTotal += weight;
+
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearest_reference = ref;
+    }
+  }
+
+  if (!weightTotal) return null;
+
+  return {
+    price_ar: roundPlanSimulatorPriceAr(weighted / weightTotal),
+    nearest_reference,
+  };
+}
+
+function calculateSuggestedPlanPrice({ type, data_gb, duration_minutes, speed_mbps, settings, references }) {
+  const estimate = weightedPlanSimulatorReferencePrice({
+    target: { type, data_gb, duration_minutes, speed_mbps },
+    references,
+  });
+
+  const recommended = roundPlanSimulatorPriceAr(estimate?.price_ar || 0);
+  const tolerancePct = clampPlanSimulatorNumber(settings?.price_tolerance_pct, 0, 100, 20);
+
+  return {
+    recommended_price_ar: recommended,
+    minimum_price_ar: roundPlanSimulatorPriceAr(recommended * (1 - tolerancePct / 100)),
+    maximum_price_ar: roundPlanSimulatorPriceAr(recommended * (1 + tolerancePct / 100)),
+    price_tolerance_pct: tolerancePct,
+    nearest_reference: estimate?.nearest_reference || null,
+  };
+}
+
+function validatePlanSimulatorInput({ type, data_gb, duration_minutes, speed_mbps, settings }) {
+  const errors = [];
+  const warnings = [];
+
+  if (!type) errors.push({ code: "type_required", message: "Type de forfait requis." });
+  if (!duration_minutes) errors.push({ code: "duration_required", message: "Durée requise." });
+  if (!speed_mbps) errors.push({ code: "speed_required", message: "Débit requis." });
+  if (type === "data" && !data_gb) errors.push({ code: "data_required", message: "Volume de données requis pour un forfait Data." });
+
+  if (errors.length) return { status: "blocked", errors, warnings };
+
+  const maxDurationMinutes = Number(settings.max_duration_days || 30) * 1440;
+  if (duration_minutes > maxDurationMinutes) {
+    errors.push({
+      code: "duration_above_limit",
+      message: `Durée trop élevée. Maximum actuel : ${settings.max_duration_days} jours.`,
+    });
+  }
+
+  if (speed_mbps > Number(settings.max_speed_mbps || 20)) {
+    errors.push({
+      code: "speed_above_limit",
+      message: `Débit trop élevé. Maximum actuel : ${settings.max_speed_mbps} Mbps.`,
+    });
+  }
+
+  if (type === "data" && data_gb > Number(settings.max_data_gb || 500)) {
+    errors.push({
+      code: "data_above_limit",
+      message: `Volume de données trop élevé. Maximum actuel : ${settings.max_data_gb} Go.`,
+    });
+  }
+
+  if (type === "data") {
+    const theoreticalGb = planSimulatorMaxTheoreticalDataGb(speed_mbps, duration_minutes);
+    const realisticGb = theoreticalGb === null
+      ? null
+      : theoreticalGb * (Number(settings.realistic_usage_factor_pct || 70) / 100);
+    const warningGb = realisticGb === null
+      ? null
+      : realisticGb * (Number(settings.warning_usage_factor_pct || 90) / 100);
+
+    if (theoreticalGb !== null && data_gb > theoreticalGb * 1.05) {
+      errors.push({
+        code: "unrealistic_usage",
+        message: `Ce forfait n’est pas réaliste : avec ${speed_mbps} Mbps pendant ${planSimulatorDurationLabel(duration_minutes)}, le client ne peut pas utiliser ${data_gb} Go. Augmentez la durée, augmentez le débit, ou réduisez les données.`,
+        max_theoretical_data_gb: Math.round(theoreticalGb * 10) / 10,
+        recommended_realistic_data_gb: realisticGb === null ? null : Math.max(1, Math.round(realisticGb)),
+      });
+    } else if (warningGb !== null && data_gb > warningGb) {
+      warnings.push({
+        code: "high_usage_for_duration",
+        message: `Forfait possible, mais élevé pour cette durée et ce débit. Limite réaliste recommandée : environ ${Math.max(1, Math.round(realisticGb))} Go.`,
+        max_theoretical_data_gb: Math.round(theoreticalGb * 10) / 10,
+        recommended_realistic_data_gb: Math.max(1, Math.round(realisticGb)),
+      });
+    }
+  }
+
+  return {
+    status: errors.length ? "blocked" : (warnings.length ? "warning" : "ok"),
+    errors,
+    warnings,
+  };
+}
+
+// Duplicate protection used by current Plans panel and later simulator creation.
 function normalizePlanDuplicateDataMb(value) {
   if (value === null || value === undefined || value === "") return null;
   const n = Number(value);
@@ -7603,7 +7941,6 @@ async function findDuplicatePlanTechnical({ system, pool_id, duration_minutes, d
     .limit(1);
 
   // RAZAFI rule: duplicates are blocked only inside the same pool.
-  // For MikroTik/System 3 plans, pool_id is required and therefore part of the signature.
   if (cleanPoolId) q = q.eq("pool_id", cleanPoolId);
   else q = q.is("pool_id", null);
 
@@ -7623,12 +7960,111 @@ async function findDuplicatePlanTechnical({ system, pool_id, duration_minutes, d
 async function assertNoDuplicatePlanTechnical(args = {}) {
   const duplicate = await findDuplicatePlanTechnical(args);
   if (!duplicate) return null;
+
   const err = new Error("plan_duplicate_technical");
   err.status = 409;
   err.publicMessage = PLAN_DUPLICATE_MESSAGE;
   err.duplicate = duplicate;
   throw err;
 }
+
+// POST /api/admin/plan-simulator/simulate
+// Body: { type: "data"|"unlimited", data_gb?, duration_minutes? OR duration_value+duration_unit, speed_mbps, pool_id? }
+app.post("/api/admin/plan-simulator/simulate", requireAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const pool_id = String(body.pool_id || body.poolId || "").trim() || null;
+
+    if (pool_id && !requirePoolScopeForAdmin(req, res, pool_id)) return;
+
+    const type = normalizePlanSimulatorType(body.type || body.plan_type || body.planType);
+    const duration_minutes = normalizePlanSimulatorDurationMinutes(body);
+    const data_gb = normalizePlanSimulatorDataGb(body, type);
+    const speed_mbps = normalizePlanSimulatorSpeedMbps(body);
+
+    const { settings, references, source } = await getPlanSimulatorConfig();
+
+    const validation = validatePlanSimulatorInput({
+      type,
+      data_gb,
+      duration_minutes,
+      speed_mbps,
+      settings,
+    });
+
+    const technical = {
+      type,
+      data_gb: type === "data" ? data_gb : null,
+      duration_minutes,
+      duration_label: duration_minutes ? planSimulatorDurationLabel(duration_minutes) : null,
+      speed_mbps,
+      pool_id,
+    };
+
+    const publicSettings = {
+      max_data_gb: settings.max_data_gb,
+      max_speed_mbps: settings.max_speed_mbps,
+      max_duration_days: settings.max_duration_days,
+      realistic_usage_factor_pct: settings.realistic_usage_factor_pct,
+      price_tolerance_pct: settings.price_tolerance_pct,
+    };
+
+    if (validation.status === "blocked") {
+      return res.status(400).json({
+        ok: false,
+        simulation: true,
+        status: "blocked",
+        error: validation.errors?.[0]?.code || "simulation_blocked",
+        message: validation.errors?.[0]?.message || "Simulation bloquée.",
+        errors: validation.errors,
+        warnings: validation.warnings,
+        technical,
+        settings: publicSettings,
+        source,
+      });
+    }
+
+    const pricing = calculateSuggestedPlanPrice({
+      type,
+      data_gb,
+      duration_minutes,
+      speed_mbps,
+      settings,
+      references,
+    });
+
+    const recommended_plan_name = suggestPlanSimulatorName({
+      type,
+      data_gb,
+      duration_minutes,
+      speed_mbps,
+    });
+
+    return res.json({
+      ok: true,
+      simulation: true,
+      status: validation.status,
+      warnings: validation.warnings,
+      recommended_plan_name,
+      recommended_price_ar: pricing.recommended_price_ar,
+      minimum_price_ar: pricing.minimum_price_ar,
+      maximum_price_ar: pricing.maximum_price_ar,
+      price_tolerance_pct: pricing.price_tolerance_pct,
+      technical,
+      nearest_reference: pricing.nearest_reference,
+      settings: publicSettings,
+      source,
+    });
+  } catch (e) {
+    console.error("PLAN SIMULATOR SIMULATE ERROR", e?.message || e);
+    return res.status(500).json({
+      ok: false,
+      error: "plan_simulator_error",
+      message: "Erreur simulateur de prix.",
+    });
+  }
+});
+
 
 app.post("/api/admin/plans", requireAdmin, async (req, res) => {
   try {
@@ -7721,10 +8157,10 @@ const payload = {
 
     try {
       await assertNoDuplicatePlanTechnical({
-        system: payload.system,
-        pool_id: payload.pool_id,
-        duration_minutes: payload.duration_minutes,
-        data_mb: payload.data_mb,
+        system,
+        pool_id: pool_id_norm,
+        duration_minutes: durMin,
+        data_mb,
         mikrotik_rate_limit: payload.mikrotik_rate_limit,
       });
     } catch (dupErr) {
@@ -7732,11 +8168,10 @@ const payload = {
         return res.status(409).json({
           error: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
           code: "plan_duplicate_technical",
-          message: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
+          duplicate_plan_id: dupErr.duplicate?.id || null,
         });
       }
-      console.error("ADMIN PLANS DUPLICATE CHECK ERROR", dupErr);
-      return res.status(500).json({ error: "db_error" });
+      throw dupErr;
     }
 
     const { data, error } = await supabase
@@ -7766,7 +8201,7 @@ app.patch("/api/admin/plans/:id", requireAdmin, async (req, res) => {
 // Load existing plan to enforce invariants (system is immutable)
 const { data: existingPlan, error: existingErr } = await supabase
   .from("plans")
-  .select("id, system, pool_id, duration_hours, duration_minutes, duration_seconds, data_mb, mikrotik_rate_limit")
+  .select("id, system, pool_id, mikrotik_rate_limit")
   .eq("id", id)
   .maybeSingle();
 
@@ -7953,34 +8388,34 @@ if (b.data_mb !== undefined) {
       return res.status(400).json({ error: "no fields to update" });
     }
 
-    const duplicateRelevantFields = new Set([
-      "pool_id",
-      "duration_hours",
-      "duration_minutes",
-      "duration_seconds",
-      "data_mb",
-      "mikrotik_rate_limit",
-    ]);
+    const duplicateRelevantFields = new Set(["duration_hours", "duration_minutes", "duration_seconds", "data_mb", "pool_id", "mikrotik_rate_limit"]);
     const shouldCheckDuplicate = Object.keys(patch).some((k) => duplicateRelevantFields.has(k));
 
     if (shouldCheckDuplicate) {
-      const effectivePlan = {
-        system: existingPlan.system || "portal",
-        pool_id: patch.pool_id !== undefined ? patch.pool_id : existingPlan.pool_id,
-        duration_hours: patch.duration_hours !== undefined ? patch.duration_hours : existingPlan.duration_hours,
-        duration_minutes: patch.duration_minutes !== undefined ? patch.duration_minutes : existingPlan.duration_minutes,
-        duration_seconds: patch.duration_seconds !== undefined ? patch.duration_seconds : existingPlan.duration_seconds,
-        data_mb: patch.data_mb !== undefined ? patch.data_mb : existingPlan.data_mb,
-        mikrotik_rate_limit: patch.mikrotik_rate_limit !== undefined ? patch.mikrotik_rate_limit : existingPlan.mikrotik_rate_limit,
-      };
+      const { data: currentForDuplicate, error: currentForDuplicateErr } = await supabase
+        .from("plans")
+        .select("id,system,pool_id,duration_minutes,data_mb,mikrotik_rate_limit")
+        .eq("id", id)
+        .maybeSingle();
+
+      if (currentForDuplicateErr) {
+        console.error("ADMIN PLANS PATCH DUPLICATE LOAD ERROR", currentForDuplicateErr);
+        return res.status(500).json({ error: "db_error" });
+      }
+
+      const effectiveSystem = String(existingPlan.system || currentForDuplicate?.system || "portal");
+      const effectivePoolId = patch.pool_id !== undefined ? patch.pool_id : currentForDuplicate?.pool_id;
+      const effectiveDurationMinutes = patch.duration_minutes !== undefined ? patch.duration_minutes : currentForDuplicate?.duration_minutes;
+      const effectiveDataMb = patch.data_mb !== undefined ? patch.data_mb : currentForDuplicate?.data_mb;
+      const effectiveRateLimit = patch.mikrotik_rate_limit !== undefined ? patch.mikrotik_rate_limit : currentForDuplicate?.mikrotik_rate_limit;
 
       try {
         await assertNoDuplicatePlanTechnical({
-          system: effectivePlan.system,
-          pool_id: effectivePlan.pool_id,
-          duration_minutes: normalizePlanDuplicateDurationMinutes(effectivePlan),
-          data_mb: effectivePlan.data_mb,
-          mikrotik_rate_limit: effectivePlan.mikrotik_rate_limit,
+          system: effectiveSystem,
+          pool_id: effectivePoolId,
+          duration_minutes: effectiveDurationMinutes,
+          data_mb: effectiveDataMb,
+          mikrotik_rate_limit: effectiveRateLimit,
           exclude_id: id,
         });
       } catch (dupErr) {
@@ -7988,11 +8423,10 @@ if (b.data_mb !== undefined) {
           return res.status(409).json({
             error: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
             code: "plan_duplicate_technical",
-            message: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
+            duplicate_plan_id: dupErr.duplicate?.id || null,
           });
         }
-        console.error("ADMIN PLANS DUPLICATE CHECK ERROR", dupErr);
-        return res.status(500).json({ error: "db_error" });
+        throw dupErr;
       }
     }
 
