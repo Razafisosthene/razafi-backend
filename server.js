@@ -7730,7 +7730,8 @@ const payload = {
     } catch (dupErr) {
       if (dupErr?.status === 409) {
         return res.status(409).json({
-          error: "plan_duplicate_technical",
+          error: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
+          code: "plan_duplicate_technical",
           message: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
         });
       }
@@ -7985,7 +7986,8 @@ if (b.data_mb !== undefined) {
       } catch (dupErr) {
         if (dupErr?.status === 409) {
           return res.status(409).json({
-            error: "plan_duplicate_technical",
+            error: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
+            code: "plan_duplicate_technical",
             message: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
           });
         }
