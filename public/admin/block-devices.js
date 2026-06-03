@@ -151,12 +151,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     try {
       const me = await fetchJSON("/api/admin/me");
       if (meEl) meEl.innerHTML = `Connecté :<strong>${esc(displayAdminName(me))}</strong>`;
+
       const isSuper = !!me?.is_superadmin || String(me?.role || "").toLowerCase() === "superadmin";
-      if (!isSuper) {
-        showMsg("Accès réservé au superadmin.", true);
-        rowsEl.innerHTML = `<tr><td class="rz-empty-state" colspan="7">Accès réservé au superadmin.</td></tr>`;
+      const canManageBlocked = isSuper || me?.permissions?.blocked_manage === true;
+
+      if (!canManageBlocked) {
+        showMsg("Action non autorisée.", true);
+        rowsEl.innerHTML = `<tr><td class="rz-empty-state" colspan="7">Action non autorisée.</td></tr>`;
         return false;
       }
+
       return true;
     } catch {
       window.location.href = "/admin/login.html";

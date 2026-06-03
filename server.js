@@ -387,7 +387,15 @@ async function requireAdmin(req, res, next) {
         (method === "PATCH" && /^\/api\/admin\/free-access-devices\/[^/]+$/.test(fullPath)) ||
         (method === "DELETE" && /^\/api\/admin\/free-access-devices\/[^/]+$/.test(fullPath));
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite) {
+      // Phase 2C: owner can manage blocked devices only inside assigned pools.
+      // Route-level checks below enforce pool scope and sync restrictions.
+      const allowOwnerBlockedDevicesWrite =
+        (method === "POST" && fullPath === "/api/admin/blocked-devices") ||
+        (method === "POST" && fullPath === "/api/admin/blocked-devices/sync") ||
+        (method === "PATCH" && /^\/api\/admin\/blocked-devices\/[^/]+$/.test(fullPath)) ||
+        (method === "DELETE" && /^\/api\/admin\/blocked-devices\/[^/]+$/.test(fullPath));
+
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite) {
         return next();
       }
 
@@ -407,6 +415,8 @@ async function requireAdmin(req, res, next) {
         fullPath === "/api/admin/aps" ||
         fullPath === "/api/admin/free-access-devices" ||
         fullPath === "/api/admin/free-access-devices/usage" ||
+        fullPath === "/api/admin/blocked-devices" ||
+        fullPath === "/api/admin/blocked-devices/usage" ||
         fullPath.startsWith("/api/admin/revenue/") ||
         fullPath.startsWith("/api/owner/");
 
@@ -1512,7 +1522,9 @@ function buildAdminPermissions(admin) {
     // Phase 2B: owners can manage free-access devices in their assigned pools only.
     // The pool free_access_limit remains the business limiter (0 = no active devices).
     free_access_manage: true,
-    blocked_manage: isSuperadmin,
+
+    // Phase 2C: owners can manage blocked devices in their assigned pools only.
+    blocked_manage: true,
 
     // Technical/admin-only areas.
     aps_manage: isSuperadmin,
@@ -3271,7 +3283,7 @@ async function syncBlockedDevicesPool(poolId) {
   };
 }
 // GET /api/admin/blocked-devices
-app.get("/api/admin/blocked-devices", requireAdmin, requireSuperadmin, async (req, res) => {
+app.get("/api/admin/blocked-devices", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
@@ -3293,7 +3305,19 @@ app.get("/api/admin/blocked-devices", requireAdmin, requireSuperadmin, async (re
       `)
       .order("created_at", { ascending: false });
 
-    if (pool_id && pool_id !== "all") q = q.eq("pool_id", pool_id);
+    if (!req.admin?.is_superadmin) {
+      const allowed = getAdminAllowedPoolIds(req);
+      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+
+      if (pool_id && pool_id !== "all") {
+        if (!allowed.includes(pool_id)) return res.status(403).json({ error: "forbidden_pool" });
+        q = q.eq("pool_id", pool_id);
+      } else {
+        q = q.in("pool_id", allowed);
+      }
+    } else if (pool_id && pool_id !== "all") {
+      q = q.eq("pool_id", pool_id);
+    }
 
     const { data, error } = await q;
     if (error) return res.status(500).json({ error: error.message });
@@ -3306,21 +3330,45 @@ app.get("/api/admin/blocked-devices", requireAdmin, requireSuperadmin, async (re
 });
 
 // GET /api/admin/blocked-devices/usage
-app.get("/api/admin/blocked-devices/usage", requireAdmin, requireSuperadmin, async (req, res) => {
+app.get("/api/admin/blocked-devices/usage", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
-    const { data: pools, error: poolsErr } = await supabase
+    const pool_id = String(req.query.pool_id || "").trim();
+
+    let poolsQuery = supabase
       .from("internet_pools")
       .select("id,name,brand_name,radius_nas_id")
       .eq("system", "mikrotik")
       .order("name", { ascending: true });
 
+    let allowed = [];
+    if (!req.admin?.is_superadmin) {
+      allowed = getAdminAllowedPoolIds(req);
+      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+
+      if (pool_id) {
+        if (!allowed.includes(pool_id)) return res.status(403).json({ error: "forbidden_pool" });
+        poolsQuery = poolsQuery.eq("id", pool_id);
+      } else {
+        poolsQuery = poolsQuery.in("id", allowed);
+      }
+    } else if (pool_id) {
+      poolsQuery = poolsQuery.eq("id", pool_id);
+    }
+
+    const { data: pools, error: poolsErr } = await poolsQuery;
+
     if (poolsErr) return res.status(500).json({ error: poolsErr.message });
 
-    const { data: rows, error: rowsErr } = await supabase
+    let rowsQuery = supabase
       .from("blocked_devices")
       .select("pool_id,is_active");
+
+    if (!req.admin?.is_superadmin) rowsQuery = rowsQuery.in("pool_id", allowed);
+    if (req.admin?.is_superadmin && pool_id) rowsQuery = rowsQuery.eq("pool_id", pool_id);
+
+    const { data: rows, error: rowsErr } = await rowsQuery;
 
     if (rowsErr) return res.status(500).json({ error: rowsErr.message });
 
@@ -3357,7 +3405,7 @@ app.get("/api/admin/blocked-devices/usage", requireAdmin, requireSuperadmin, asy
 });
 
 // POST /api/admin/blocked-devices
-app.post("/api/admin/blocked-devices", requireAdmin, requireSuperadmin, async (req, res) => {
+app.post("/api/admin/blocked-devices", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
@@ -3370,6 +3418,7 @@ app.post("/api/admin/blocked-devices", requireAdmin, requireSuperadmin, async (r
     if (!pool_id) return res.status(400).json({ error: "pool_id_required" });
     if (!person_name) return res.status(400).json({ error: "person_name_required" });
     if (!mac_address) return res.status(400).json({ error: "mac_address_invalid" });
+    if (!requirePoolScopeForAdmin(req, res, pool_id)) return;
 
     const { data: pool, error: pErr } = await supabase
       .from("internet_pools")
@@ -3430,7 +3479,7 @@ app.post("/api/admin/blocked-devices", requireAdmin, requireSuperadmin, async (r
 });
 
 // PATCH /api/admin/blocked-devices/:id
-app.patch("/api/admin/blocked-devices/:id", requireAdmin, requireSuperadmin, async (req, res) => {
+app.patch("/api/admin/blocked-devices/:id", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
@@ -3445,6 +3494,7 @@ app.patch("/api/admin/blocked-devices/:id", requireAdmin, requireSuperadmin, asy
 
     if (existingErr) return res.status(500).json({ error: existingErr.message });
     if (!existing) return res.status(404).json({ error: "not_found" });
+    if (!requirePoolScopeForAdmin(req, res, existing.pool_id)) return;
 
     const patch = { updated_at: new Date().toISOString() };
 
@@ -3476,6 +3526,7 @@ app.patch("/api/admin/blocked-devices/:id", requireAdmin, requireSuperadmin, asy
       .from("blocked_devices")
       .update(patch)
       .eq("id", id)
+      .eq("pool_id", existing.pool_id)
       .select(`
         id,
         pool_id,
@@ -3529,7 +3580,7 @@ app.patch("/api/admin/blocked-devices/:id", requireAdmin, requireSuperadmin, asy
 });
 
 // DELETE /api/admin/blocked-devices/:id
-app.delete("/api/admin/blocked-devices/:id", requireAdmin, requireSuperadmin, async (req, res) => {
+app.delete("/api/admin/blocked-devices/:id", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
@@ -3544,6 +3595,7 @@ app.delete("/api/admin/blocked-devices/:id", requireAdmin, requireSuperadmin, as
 
     if (getErr) return res.status(500).json({ error: getErr.message });
     if (!existing) return res.status(404).json({ error: "not_found" });
+    if (!requirePoolScopeForAdmin(req, res, existing.pool_id)) return;
 
     // Safety rule: an active block cannot be deleted directly.
     // Disable it first, then delete. This prevents accidental unblock/delete mistakes.
@@ -3567,7 +3619,8 @@ app.delete("/api/admin/blocked-devices/:id", requireAdmin, requireSuperadmin, as
     const { error } = await supabase
       .from("blocked_devices")
       .delete()
-      .eq("id", id);
+      .eq("id", id)
+      .eq("pool_id", existing.pool_id);
 
     if (error) return res.status(500).json({ error: error.message });
 
@@ -3583,7 +3636,7 @@ app.delete("/api/admin/blocked-devices/:id", requireAdmin, requireSuperadmin, as
 
 // POST /api/admin/blocked-devices/sync
 // Body optional: { pool_id: "..." } ; if omitted, sync all pools that have blocked_devices rows.
-app.post("/api/admin/blocked-devices/sync", requireAdmin, requireSuperadmin, async (req, res) => {
+app.post("/api/admin/blocked-devices/sync", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
@@ -3591,7 +3644,12 @@ app.post("/api/admin/blocked-devices/sync", requireAdmin, requireSuperadmin, asy
 
     let poolIds = [];
 
+    if (!req.admin?.is_superadmin && !pool_id) {
+      return res.status(400).json({ error: "pool_id_required" });
+    }
+
     if (pool_id) {
+      if (!requirePoolScopeForAdmin(req, res, pool_id)) return;
       poolIds = [pool_id];
     } else {
       const { data, error } = await supabase
