@@ -663,8 +663,6 @@ async function openDetail(id) {
           btn.disabled = true;
           btn.textContent = "Enregistrement...";
 
-          if (window.__IS_READONLY) return;
-
           try {
             const out = await fetchJSON("/api/admin/client-devices/rename", {
               method: "POST",

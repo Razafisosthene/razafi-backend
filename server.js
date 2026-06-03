@@ -395,7 +395,12 @@ async function requireAdmin(req, res, next) {
         (method === "PATCH" && /^\/api\/admin\/blocked-devices\/[^/]+$/.test(fullPath)) ||
         (method === "DELETE" && /^\/api\/admin\/blocked-devices\/[^/]+$/.test(fullPath));
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite) {
+      // Phase 2D: owner can rename a client label only. The route below still
+      // verifies that the MAC belongs to one of the owner's assigned pools.
+      const allowOwnerClientRename =
+        method === "POST" && fullPath === "/api/admin/client-devices/rename";
+
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename) {
         return next();
       }
 
@@ -2231,6 +2236,29 @@ app.post("/api/admin/client-devices/rename", requireAdmin, async (req, res) => {
     const client_mac = normalizeMacColon(String(client_mac_raw || "")) || null;
     if (!client_mac) return res.status(400).json({ error: "client_mac_invalid" });
 
+    const clientMacUpper = String(client_mac).toUpperCase();
+
+    // Owner safety: a pool owner may rename only clients that exist in one of
+    // their assigned pools. This is label-only; no voucher/plan/router data changes.
+    if (!req.admin?.is_superadmin) {
+      const allowedPools = Array.isArray(req.admin?.pool_ids) ? req.admin.pool_ids : [];
+      if (!allowedPools.length) return res.status(403).json({ error: "no_pools_assigned" });
+
+      const { data: ownedClient, error: ownedErr } = await supabase
+        .from("vw_voucher_sessions_truth")
+        .select("id")
+        .eq("client_mac", clientMacUpper)
+        .in("pool_id", allowedPools)
+        .limit(1)
+        .maybeSingle();
+
+      if (ownedErr) {
+        console.error("CLIENT RENAME OWNER SCOPE ERROR", ownedErr);
+        return res.status(500).json({ error: "db_error" });
+      }
+      if (!ownedClient?.id) return res.status(403).json({ error: "forbidden_client" });
+    }
+
     const alias = normalizeAlias(req.body?.alias);
 
     if (!alias) {
@@ -2238,13 +2266,13 @@ app.post("/api/admin/client-devices/rename", requireAdmin, async (req, res) => {
       const { error } = await supabase
         .from("client_devices")
         .delete()
-        .eq("client_mac", String(client_mac).toUpperCase());
+        .eq("client_mac", clientMacUpper);
       if (error) return res.status(500).json({ error: error.message });
-      return res.json({ ok: true, client_mac: String(client_mac).toUpperCase(), alias: null });
+      return res.json({ ok: true, client_mac: clientMacUpper, alias: null });
     }
 
     const payload = {
-      client_mac: String(client_mac).toUpperCase(),
+      client_mac: clientMacUpper,
       alias,
       updated_at: new Date().toISOString(),
     };
