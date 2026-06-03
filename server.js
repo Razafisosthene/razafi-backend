@@ -412,7 +412,6 @@ async function requireAdmin(req, res, next) {
         fullPath === "/api/admin/plans" ||
         fullPath === "/api/admin/pools" ||
         fullPath === "/api/admin/pool-live-stats" ||
-        fullPath === "/api/admin/aps" ||
         fullPath === "/api/admin/free-access-devices" ||
         fullPath === "/api/admin/free-access-devices/usage" ||
         fullPath === "/api/admin/blocked-devices" ||
