@@ -7559,6 +7559,77 @@ app.get("/api/admin/pools/:id/aps", requireAdmin, async (req, res) => {
 });
 
 
+
+const PLAN_DUPLICATE_MESSAGE = "Ce forfait existe déjà dans ce pool. Modifiez la durée, les données ou le débit avant de continuer.";
+
+function normalizePlanDuplicateDataMb(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n);
+}
+
+function normalizePlanDuplicateDurationMinutes(planLike = {}) {
+  const minutes = Number(planLike.duration_minutes);
+  if (Number.isFinite(minutes) && minutes > 0) return Math.round(minutes);
+
+  const seconds = Number(planLike.duration_seconds);
+  if (Number.isFinite(seconds) && seconds > 0) return Math.ceil(seconds / 60);
+
+  const hours = Number(planLike.duration_hours);
+  if (Number.isFinite(hours) && hours > 0) return Math.round(hours * 60);
+
+  return null;
+}
+
+async function findDuplicatePlanTechnical({ system, pool_id, duration_minutes, data_mb, mikrotik_rate_limit, exclude_id = null } = {}) {
+  if (!supabase) return null;
+
+  const cleanSystem = String(system || "portal").trim() || "portal";
+  const cleanPoolId = pool_id === null || pool_id === undefined ? null : String(pool_id || "").trim();
+  const cleanDurationMinutes = normalizePlanDuplicateDurationMinutes({ duration_minutes });
+  const cleanDataMb = normalizePlanDuplicateDataMb(data_mb);
+  const cleanRateLimit = cleanSystem === "mikrotik"
+    ? (normalizeMikrotikRateLimit(mikrotik_rate_limit) || null)
+    : null;
+
+  if (!cleanDurationMinutes) return null;
+
+  let q = supabase
+    .from("plans")
+    .select("id,name,pool_id,system,duration_minutes,data_mb,mikrotik_rate_limit")
+    .eq("system", cleanSystem)
+    .eq("duration_minutes", cleanDurationMinutes)
+    .limit(1);
+
+  // RAZAFI rule: duplicates are blocked only inside the same pool.
+  // For MikroTik/System 3 plans, pool_id is required and therefore part of the signature.
+  if (cleanPoolId) q = q.eq("pool_id", cleanPoolId);
+  else q = q.is("pool_id", null);
+
+  if (cleanDataMb === null) q = q.is("data_mb", null);
+  else q = q.eq("data_mb", cleanDataMb);
+
+  if (cleanRateLimit === null) q = q.is("mikrotik_rate_limit", null);
+  else q = q.eq("mikrotik_rate_limit", cleanRateLimit);
+
+  if (exclude_id) q = q.neq("id", String(exclude_id));
+
+  const { data, error } = await q;
+  if (error) throw error;
+  return Array.isArray(data) && data.length ? data[0] : null;
+}
+
+async function assertNoDuplicatePlanTechnical(args = {}) {
+  const duplicate = await findDuplicatePlanTechnical(args);
+  if (!duplicate) return null;
+  const err = new Error("plan_duplicate_technical");
+  err.status = 409;
+  err.publicMessage = PLAN_DUPLICATE_MESSAGE;
+  err.duplicate = duplicate;
+  throw err;
+}
+
 app.post("/api/admin/plans", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
@@ -7648,6 +7719,25 @@ const payload = {
       mikrotik_rate_limit: system === "mikrotik" ? (mikrotik_rate_limit || null) : null,
     };
 
+    try {
+      await assertNoDuplicatePlanTechnical({
+        system: payload.system,
+        pool_id: payload.pool_id,
+        duration_minutes: payload.duration_minutes,
+        data_mb: payload.data_mb,
+        mikrotik_rate_limit: payload.mikrotik_rate_limit,
+      });
+    } catch (dupErr) {
+      if (dupErr?.status === 409) {
+        return res.status(409).json({
+          error: "plan_duplicate_technical",
+          message: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
+        });
+      }
+      console.error("ADMIN PLANS DUPLICATE CHECK ERROR", dupErr);
+      return res.status(500).json({ error: "db_error" });
+    }
+
     const { data, error } = await supabase
       .from("plans")
       .insert(payload)
@@ -7675,7 +7765,7 @@ app.patch("/api/admin/plans/:id", requireAdmin, async (req, res) => {
 // Load existing plan to enforce invariants (system is immutable)
 const { data: existingPlan, error: existingErr } = await supabase
   .from("plans")
-  .select("id, system, pool_id, mikrotik_rate_limit")
+  .select("id, system, pool_id, duration_hours, duration_minutes, duration_seconds, data_mb, mikrotik_rate_limit")
   .eq("id", id)
   .maybeSingle();
 
@@ -7860,6 +7950,48 @@ if (b.data_mb !== undefined) {
 
     if (Object.keys(patch).length === 0) {
       return res.status(400).json({ error: "no fields to update" });
+    }
+
+    const duplicateRelevantFields = new Set([
+      "pool_id",
+      "duration_hours",
+      "duration_minutes",
+      "duration_seconds",
+      "data_mb",
+      "mikrotik_rate_limit",
+    ]);
+    const shouldCheckDuplicate = Object.keys(patch).some((k) => duplicateRelevantFields.has(k));
+
+    if (shouldCheckDuplicate) {
+      const effectivePlan = {
+        system: existingPlan.system || "portal",
+        pool_id: patch.pool_id !== undefined ? patch.pool_id : existingPlan.pool_id,
+        duration_hours: patch.duration_hours !== undefined ? patch.duration_hours : existingPlan.duration_hours,
+        duration_minutes: patch.duration_minutes !== undefined ? patch.duration_minutes : existingPlan.duration_minutes,
+        duration_seconds: patch.duration_seconds !== undefined ? patch.duration_seconds : existingPlan.duration_seconds,
+        data_mb: patch.data_mb !== undefined ? patch.data_mb : existingPlan.data_mb,
+        mikrotik_rate_limit: patch.mikrotik_rate_limit !== undefined ? patch.mikrotik_rate_limit : existingPlan.mikrotik_rate_limit,
+      };
+
+      try {
+        await assertNoDuplicatePlanTechnical({
+          system: effectivePlan.system,
+          pool_id: effectivePlan.pool_id,
+          duration_minutes: normalizePlanDuplicateDurationMinutes(effectivePlan),
+          data_mb: effectivePlan.data_mb,
+          mikrotik_rate_limit: effectivePlan.mikrotik_rate_limit,
+          exclude_id: id,
+        });
+      } catch (dupErr) {
+        if (dupErr?.status === 409) {
+          return res.status(409).json({
+            error: "plan_duplicate_technical",
+            message: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
+          });
+        }
+        console.error("ADMIN PLANS DUPLICATE CHECK ERROR", dupErr);
+        return res.status(500).json({ error: "db_error" });
+      }
     }
 
     const { data, error } = await supabase
