@@ -149,10 +149,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     try {
       const me = await fetchJSON("/api/admin/me");
       if (meEl) meEl.innerHTML = `Connecté :<strong>${esc(displayAdminName(me))}</strong>`;
-      const isSuper = !!me?.is_superadmin || String(me?.role || "").toLowerCase() === "superadmin";
-      if (!isSuper) {
-        showMsg("Accès réservé au superadmin.", true);
-        rowsEl.innerHTML = `<tr><td class="rz-empty-state" colspan="7">Accès réservé au superadmin.</td></tr>`;
+
+      // Phase 2B: Free Access is available to superadmin and owners.
+      // Real security is enforced by the backend: owners are scoped to assigned pools
+      // and each pool still respects free_access_limit.
+      const canManageFreeAccess = me?.permissions?.free_access_manage !== false;
+      if (!canManageFreeAccess) {
+        showMsg("Action non autorisée.", true);
+        rowsEl.innerHTML = `<tr><td class="rz-empty-state" colspan="7">Action non autorisée.</td></tr>`;
         return false;
       }
       return true;

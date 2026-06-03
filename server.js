@@ -379,7 +379,15 @@ async function requireAdmin(req, res, next) {
       // pool ownership and accepts only { is_visible } for non-superadmins.
       const allowOwnerPlanVisibilityPatch = method === "PATCH" && /^\/api\/admin\/plans\/[^/]+$/.test(fullPath);
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch) {
+      // Phase 2B: owner can manage free-access devices only inside assigned pools.
+      // Route-level checks below enforce pool scope and free_access_limit.
+      const allowOwnerFreeAccessWrite =
+        (method === "POST" && fullPath === "/api/admin/free-access-devices") ||
+        (method === "POST" && fullPath === "/api/admin/free-access-devices/sync") ||
+        (method === "PATCH" && /^\/api\/admin\/free-access-devices\/[^/]+$/.test(fullPath)) ||
+        (method === "DELETE" && /^\/api\/admin\/free-access-devices\/[^/]+$/.test(fullPath));
+
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite) {
         return next();
       }
 
@@ -397,6 +405,8 @@ async function requireAdmin(req, res, next) {
         fullPath === "/api/admin/pools" ||
         fullPath === "/api/admin/pool-live-stats" ||
         fullPath === "/api/admin/aps" ||
+        fullPath === "/api/admin/free-access-devices" ||
+        fullPath === "/api/admin/free-access-devices/usage" ||
         fullPath.startsWith("/api/admin/revenue/") ||
         fullPath.startsWith("/api/owner/");
 
@@ -1498,7 +1508,10 @@ function buildAdminPermissions(admin) {
     // Full plan creation/editing remains superadmin-only.
     plans_visibility_manage: true,
     plans_manage: isSuperadmin,
-    free_access_manage: isSuperadmin,
+
+    // Phase 2B: owners can manage free-access devices in their assigned pools only.
+    // The pool free_access_limit remains the business limiter (0 = no active devices).
+    free_access_manage: true,
     blocked_manage: isSuperadmin,
 
     // Technical/admin-only areas.
@@ -2617,8 +2630,35 @@ async function syncFreeAccessPool(poolId) {
   };
 }
 
+function getAdminAllowedPoolIds(req) {
+  return Array.isArray(req?.admin?.pool_ids)
+    ? req.admin.pool_ids.map((x) => String(x || "").trim()).filter(Boolean)
+    : [];
+}
+
+function adminCanAccessPool(req, poolId) {
+  if (req?.admin?.is_superadmin) return true;
+  const pid = String(poolId || "").trim();
+  if (!pid) return false;
+  return getAdminAllowedPoolIds(req).includes(pid);
+}
+
+function requirePoolScopeForAdmin(req, res, poolId) {
+  if (req?.admin?.is_superadmin) return true;
+  const allowed = getAdminAllowedPoolIds(req);
+  if (!allowed.length) {
+    res.status(403).json({ error: "no_pools_assigned" });
+    return false;
+  }
+  if (!adminCanAccessPool(req, poolId)) {
+    res.status(403).json({ error: "forbidden_pool" });
+    return false;
+  }
+  return true;
+}
+
 // GET /api/admin/free-access-devices
-app.get("/api/admin/free-access-devices", requireAdmin, requireSuperadmin, async (req, res) => {
+app.get("/api/admin/free-access-devices", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
@@ -2641,7 +2681,19 @@ app.get("/api/admin/free-access-devices", requireAdmin, requireSuperadmin, async
       `)
       .order("created_at", { ascending: false });
 
-    if (pool_id && pool_id !== "all") q = q.eq("pool_id", pool_id);
+    if (!req.admin?.is_superadmin) {
+      const allowed = getAdminAllowedPoolIds(req);
+      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+
+      if (pool_id && pool_id !== "all") {
+        if (!allowed.includes(pool_id)) return res.status(403).json({ error: "forbidden_pool" });
+        q = q.eq("pool_id", pool_id);
+      } else {
+        q = q.in("pool_id", allowed);
+      }
+    } else if (pool_id && pool_id !== "all") {
+      q = q.eq("pool_id", pool_id);
+    }
 
     const { data, error } = await q;
     if (error) return res.status(500).json({ error: error.message });
@@ -2654,28 +2706,42 @@ app.get("/api/admin/free-access-devices", requireAdmin, requireSuperadmin, async
 });
 
 // GET /api/admin/free-access-devices/usage
-app.get("/api/admin/free-access-devices/usage", requireAdmin, requireSuperadmin, async (req, res) => {
+app.get("/api/admin/free-access-devices/usage", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
     const pool_id = String(req.query.pool_id || "").trim();
     if (pool_id) {
+      if (!requirePoolScopeForAdmin(req, res, pool_id)) return;
       const usage = await getFreeAccessUsageForPool(pool_id);
       return res.json({ ok: true, usage });
     }
 
-    const { data: pools, error: poolsErr } = await supabase
+    let poolsQuery = supabase
       .from("internet_pools")
       .select("id,name,brand_name,radius_nas_id,free_access_limit")
       .eq("system", "mikrotik")
       .order("id", { ascending: true });
 
+    let allowed = [];
+    if (!req.admin?.is_superadmin) {
+      allowed = getAdminAllowedPoolIds(req);
+      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+      poolsQuery = poolsQuery.in("id", allowed);
+    }
+
+    const { data: pools, error: poolsErr } = await poolsQuery;
+
     if (poolsErr) return res.status(500).json({ error: poolsErr.message });
 
-    const { data: rows, error: rowsErr } = await supabase
+    let rowsQuery = supabase
       .from("free_access_devices")
       .select("pool_id")
       .eq("is_active", true);
+
+    if (!req.admin?.is_superadmin) rowsQuery = rowsQuery.in("pool_id", allowed);
+
+    const { data: rows, error: rowsErr } = await rowsQuery;
 
     if (rowsErr) return res.status(500).json({ error: rowsErr.message });
 
@@ -2714,7 +2780,7 @@ app.get("/api/admin/free-access-devices/usage", requireAdmin, requireSuperadmin,
 });
 
 // POST /api/admin/free-access-devices
-app.post("/api/admin/free-access-devices", requireAdmin, requireSuperadmin, async (req, res) => {
+app.post("/api/admin/free-access-devices", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
@@ -2729,6 +2795,7 @@ app.post("/api/admin/free-access-devices", requireAdmin, requireSuperadmin, asyn
     if (!person_name) return res.status(400).json({ error: "person_name_required" });
     if (!device_name) return res.status(400).json({ error: "device_name_required" });
     if (!mac_address) return res.status(400).json({ error: "mac_address_invalid" });
+    if (!requirePoolScopeForAdmin(req, res, pool_id)) return;
 
     const { data: pool, error: pErr } = await supabase
       .from("internet_pools")
@@ -2791,12 +2858,22 @@ app.post("/api/admin/free-access-devices", requireAdmin, requireSuperadmin, asyn
 });
 
 // PATCH /api/admin/free-access-devices/:id
-app.patch("/api/admin/free-access-devices/:id", requireAdmin, requireSuperadmin, async (req, res) => {
+app.patch("/api/admin/free-access-devices/:id", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
     const id = String(req.params.id || "").trim();
     if (!id) return res.status(400).json({ error: "id_required" });
+
+    const { data: existingDevice, error: existingLoadErr } = await supabase
+      .from("free_access_devices")
+      .select("id,pool_id,is_active")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (existingLoadErr) return res.status(500).json({ error: existingLoadErr.message });
+    if (!existingDevice) return res.status(404).json({ error: "not_found" });
+    if (!requirePoolScopeForAdmin(req, res, existingDevice.pool_id)) return;
 
     const patch = { updated_at: new Date().toISOString() };
 
@@ -2827,17 +2904,8 @@ app.patch("/api/admin/free-access-devices/:id", requireAdmin, requireSuperadmin,
     }
 
     if (patch.is_active === true) {
-      const { data: existingForLimit, error: existingErr } = await supabase
-        .from("free_access_devices")
-        .select("id,pool_id,is_active")
-        .eq("id", id)
-        .maybeSingle();
-
-      if (existingErr) return res.status(500).json({ error: existingErr.message });
-      if (!existingForLimit) return res.status(404).json({ error: "not_found" });
-
-      if (existingForLimit.is_active !== true) {
-        const usage = await getFreeAccessUsageForPool(existingForLimit.pool_id);
+      if (existingDevice.is_active !== true) {
+        const usage = await getFreeAccessUsageForPool(existingDevice.pool_id);
         if (usage.limit_reached) {
           return res.status(409).json({
             error: "free_access_limit_reached",
@@ -2852,6 +2920,7 @@ app.patch("/api/admin/free-access-devices/:id", requireAdmin, requireSuperadmin,
       .from("free_access_devices")
       .update(patch)
       .eq("id", id)
+      .eq("pool_id", existingDevice.pool_id)
       .select(`
         id,
         pool_id,
@@ -2883,7 +2952,7 @@ app.patch("/api/admin/free-access-devices/:id", requireAdmin, requireSuperadmin,
 });
 
 // DELETE /api/admin/free-access-devices/:id
-app.delete("/api/admin/free-access-devices/:id", requireAdmin, requireSuperadmin, async (req, res) => {
+app.delete("/api/admin/free-access-devices/:id", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
@@ -2898,6 +2967,7 @@ app.delete("/api/admin/free-access-devices/:id", requireAdmin, requireSuperadmin
 
     if (getErr) return res.status(500).json({ error: getErr.message });
     if (!existing) return res.status(404).json({ error: "not_found" });
+    if (!requirePoolScopeForAdmin(req, res, existing.pool_id)) return;
 
     // Safety rule: an active MAC cannot be deleted directly.
     // Disable it first, then delete. This prevents accidental removal of currently allowed access.
@@ -2911,7 +2981,8 @@ app.delete("/api/admin/free-access-devices/:id", requireAdmin, requireSuperadmin
     const { error } = await supabase
       .from("free_access_devices")
       .delete()
-      .eq("id", id);
+      .eq("id", id)
+      .eq("pool_id", existing.pool_id);
 
     if (error) return res.status(500).json({ error: error.message });
 
@@ -2924,7 +2995,7 @@ app.delete("/api/admin/free-access-devices/:id", requireAdmin, requireSuperadmin
 
 // POST /api/admin/free-access-devices/sync
 // Body optional: { pool_id: "..." } ; if omitted, sync all pools that have free_access_devices rows.
-app.post("/api/admin/free-access-devices/sync", requireAdmin, requireSuperadmin, async (req, res) => {
+app.post("/api/admin/free-access-devices/sync", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
@@ -2932,7 +3003,12 @@ app.post("/api/admin/free-access-devices/sync", requireAdmin, requireSuperadmin,
 
     let poolIds = [];
 
+    if (!req.admin?.is_superadmin && !pool_id) {
+      return res.status(400).json({ error: "pool_id_required" });
+    }
+
     if (pool_id) {
+      if (!requirePoolScopeForAdmin(req, res, pool_id)) return;
       poolIds = [pool_id];
     } else {
       const { data, error } = await supabase
