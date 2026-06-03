@@ -7820,6 +7820,40 @@ async function getPlanSimulatorConfig() {
   return { settings, references, source };
 }
 
+
+function findExactPlanSimulatorReference({ target, references }) {
+  const targetType = normalizePlanSimulatorType(target?.type);
+  const targetDuration = Math.round(Number(target?.duration_minutes || 0));
+  const targetSpeed = Math.round(Number(target?.speed_mbps || 0) * 100) / 100;
+  const targetData = targetType === "data"
+    ? Math.round(Number(target?.data_gb || 0) * 1000) / 1000
+    : null;
+
+  if (!targetType || !targetDuration || !targetSpeed) return null;
+  if (targetType === "data" && !targetData) return null;
+
+  for (const rawRef of references || []) {
+    const ref = normalizePlanSimulatorReferenceRow(rawRef);
+    if (!ref || ref.is_active === false) continue;
+    if (ref.type !== targetType) continue;
+
+    const refDuration = Math.round(Number(ref.duration_minutes || 0));
+    const refSpeed = Math.round(Number(ref.speed_mbps || 0) * 100) / 100;
+
+    if (refDuration !== targetDuration) continue;
+    if (refSpeed !== targetSpeed) continue;
+
+    if (targetType === "data") {
+      const refData = Math.round(Number(ref.data_gb || 0) * 1000) / 1000;
+      if (refData !== targetData) continue;
+    }
+
+    return ref;
+  }
+
+  return null;
+}
+
 function weightedPlanSimulatorReferencePrice({ target, references }) {
   const refs = (references || []).filter((r) => r.type === target.type && Number(r.price_ar) > 0);
   if (!refs.length) return null;
@@ -7862,13 +7896,32 @@ function weightedPlanSimulatorReferencePrice({ target, references }) {
 }
 
 function calculateSuggestedPlanPrice({ type, data_gb, duration_minutes, speed_mbps, settings, references }) {
+  const target = { type, data_gb, duration_minutes, speed_mbps };
+  const tolerancePct = clampPlanSimulatorNumber(settings?.price_tolerance_pct, 0, 100, 20);
+
+  // Exact reference rule:
+  // If the requested technical plan exactly matches a configured pricing reference,
+  // return that reference price directly. This keeps the dynamic base intuitive:
+  // changing "Illimité Jour 10M" from 3000 to 3500 must return 3500, not an interpolated value.
+  const exact_reference = findExactPlanSimulatorReference({ target, references });
+  if (exact_reference) {
+    const recommended = Number(exact_reference.price_ar || 0);
+    return {
+      recommended_price_ar: recommended,
+      minimum_price_ar: roundPlanSimulatorPriceAr(recommended * (1 - tolerancePct / 100)),
+      maximum_price_ar: roundPlanSimulatorPriceAr(recommended * (1 + tolerancePct / 100)),
+      price_tolerance_pct: tolerancePct,
+      nearest_reference: { ...exact_reference, distance: 0, exact_match: true },
+      exact_reference: { ...exact_reference, exact_match: true },
+    };
+  }
+
   const estimate = weightedPlanSimulatorReferencePrice({
-    target: { type, data_gb, duration_minutes, speed_mbps },
+    target,
     references,
   });
 
   const recommended = roundPlanSimulatorPriceAr(estimate?.price_ar || 0);
-  const tolerancePct = clampPlanSimulatorNumber(settings?.price_tolerance_pct, 0, 100, 20);
 
   return {
     recommended_price_ar: recommended,
@@ -7876,6 +7929,7 @@ function calculateSuggestedPlanPrice({ type, data_gb, duration_minutes, speed_mb
     maximum_price_ar: roundPlanSimulatorPriceAr(recommended * (1 + tolerancePct / 100)),
     price_tolerance_pct: tolerancePct,
     nearest_reference: estimate?.nearest_reference || null,
+    exact_reference: null,
   };
 }
 
@@ -8222,6 +8276,7 @@ app.post("/api/admin/plan-simulator/simulate", requireAdmin, async (req, res) =>
       price_tolerance_pct: pricing.price_tolerance_pct,
       technical,
       nearest_reference: pricing.nearest_reference,
+      exact_reference: pricing.exact_reference || null,
       settings: publicSettings,
       source,
     });
