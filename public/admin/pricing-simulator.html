@@ -46,6 +46,25 @@
     .rz-ref-item strong{color:#0f172a;}
     .rz-ref-item span{color:#0d6efd;font-weight:950;white-space:nowrap;}
     .error{text-align:left;}
+
+    .rz-admin-config{margin-top:0;}
+    .rz-admin-config[hidden]{display:none!important;}
+    .rz-config-edit-grid{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:10px;margin-top:12px;}
+    .rz-config-edit-grid .rz-field input{height:46px;}
+    .rz-config-editor-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;}
+    .rz-config-editor-head p{margin:4px 0 0;color:#64748b;font-size:13px;font-weight:750;line-height:1.35;}
+    .rz-config-save-row{display:flex;gap:10px;align-items:center;justify-content:flex-end;margin-top:12px;flex-wrap:wrap;}
+    .rz-config-save-row button{width:auto;min-height:46px;padding:0 16px;border-radius:18px!important;}
+    .rz-editor-status{color:#64748b;font-size:13px;font-weight:850;}
+    .rz-ref-editor-list{display:flex;flex-direction:column;gap:9px;margin-top:12px;}
+    .rz-ref-editor-item{display:grid;grid-template-columns:minmax(180px,1.2fr) minmax(110px,.55fr) minmax(90px,.45fr) minmax(90px,.45fr);gap:10px;align-items:end;padding:12px;border-radius:20px;background:rgba(248,250,252,.82);border:1px solid rgba(15,23,42,.07);}
+    .rz-ref-editor-title{font-weight:950;color:#0f172a;line-height:1.15;}
+    .rz-ref-editor-sub{margin-top:4px;color:#64748b;font-size:12px;font-weight:800;}
+    .rz-ref-editor-item input{height:44px!important;border-radius:16px!important;margin:0!important;}
+    .rz-ref-editor-check{display:flex;align-items:center;gap:8px;height:44px;padding:0 10px;border-radius:16px;background:rgba(255,255,255,.75);border:1px solid rgba(15,23,42,.07);font-size:13px;font-weight:900;color:#334155;}
+    .rz-ref-editor-check input{width:18px!important;height:18px!important;margin:0!important;accent-color:#0d6efd;}
+    @media (max-width:860px){.rz-config-edit-grid{grid-template-columns:1fr 1fr;}.rz-ref-editor-item{grid-template-columns:1fr 1fr;}.rz-ref-editor-item .rz-ref-editor-titlewrap{grid-column:1/-1;}}
+    @media (max-width:520px){.rz-config-edit-grid{grid-template-columns:1fr;}.rz-ref-editor-item{grid-template-columns:1fr;}.rz-config-save-row button{width:100%;}.rz-config-save-row{justify-content:stretch;}}
     @media (max-width:860px){.rz-simulator-grid{grid-template-columns:1fr;}.rz-simulator-form{grid-template-columns:1fr;}.rz-type-switch{grid-template-columns:1fr 1fr;}.rz-range{grid-template-columns:1fr;}}
     @media (max-width:520px){.rz-simulator-panel,.rz-simulator-result,.rz-simulator-info{border-radius:24px;padding:14px;}.rz-price-big{font-size:36px;}.rz-type-switch{grid-template-columns:1fr;}}
   </style>
@@ -120,6 +139,57 @@
         <div id="configSummary" class="rz-result-empty">Chargement de la configuration…</div>
         <div id="referencesList" class="rz-ref-list"></div>
       </section>
+      <section id="configEditor" class="rz-simulator-info rz-admin-config" aria-labelledby="configEditorTitle" hidden>
+        <div class="rz-config-editor-head">
+          <div>
+            <h2 id="configEditorTitle">⚙️ Configuration simulateur</h2>
+            <p>Superadmin uniquement. Les changements sont utilisés immédiatement par le simulateur.</p>
+          </div>
+        </div>
+
+        <form id="configForm">
+          <div class="rz-config-edit-grid">
+            <div class="rz-field">
+              <label for="cfg_price_tolerance_pct">Tolérance prix (%)</label>
+              <input id="cfg_price_tolerance_pct" inputmode="numeric" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_realistic_usage_factor_pct">Facteur réaliste (%)</label>
+              <input id="cfg_realistic_usage_factor_pct" inputmode="numeric" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_max_data_gb">Max data (Go)</label>
+              <input id="cfg_max_data_gb" inputmode="numeric" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_max_speed_mbps">Max débit (Mbps)</label>
+              <input id="cfg_max_speed_mbps" inputmode="numeric" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_max_duration_days">Max durée (jours)</label>
+              <input id="cfg_max_duration_days" inputmode="numeric" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_max_visible_data_plans">Max plans Data visibles</label>
+              <input id="cfg_max_visible_data_plans" inputmode="numeric" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_max_visible_unlimited_plans">Max plans Illimités visibles</label>
+              <input id="cfg_max_visible_unlimited_plans" inputmode="numeric" />
+            </div>
+          </div>
+
+          <div class="rz-small-note" style="margin-top:12px;">Références tarifaires utilisées comme base de calcul.</div>
+          <div id="referencesEditor" class="rz-ref-editor-list"></div>
+
+          <div class="rz-config-save-row">
+            <span id="configSaveStatus" class="rz-editor-status"></span>
+            <button id="reloadConfigBtn" type="button" class="filter-btn">Recharger</button>
+            <button id="saveConfigBtn" type="submit" class="filter-btn primary">Enregistrer la configuration</button>
+          </div>
+        </form>
+      </section>
+
     </div>
   </div>
 
