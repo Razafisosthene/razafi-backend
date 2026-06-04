@@ -20,6 +20,33 @@ function displayAdminName(email) {
   return raw.includes("@") ? raw.split("@")[0] : raw;
 }
 
+function poolDisplayNameFromRow(p) {
+  const direct = String(p?.display_name || p?.pool_display_name || "").trim();
+  if (direct) return direct;
+  const nestedDirect = String(p?.pool?.display_name || p?.pool?.pool_display_name || "").trim();
+  if (nestedDirect) return nestedDirect;
+
+  const place = String(p?.name || p?.pool_name || p?.pool?.name || "").trim();
+  const brand = String(p?.brand_name || p?.pool_brand_name || p?.pool?.brand_name || "").trim();
+  if (brand && place) return `${brand} – ${place}`;
+  return place || brand || String(p?.id || "");
+}
+
+function cleanErrorMessage(err) {
+  const raw = String(err?.message || err || "").trim();
+  const map = {
+    plan_duplicate_technical: "Ce forfait existe déjà dans ce pool. Modifiez la durée, les données ou le débit avant de continuer.",
+    forbidden_pool: "Vous n’avez pas accès à ce pool.",
+    pool_id_required: "Sélectionnez un pool avant de créer le forfait.",
+    final_name_required: "Le nom du forfait est obligatoire.",
+    final_price_invalid: "Le prix final est invalide.",
+    final_price_out_of_range: "Le prix final doit rester dans la plage recommandée.",
+    visible_plan_limit_reached: "Limite de forfaits visibles atteinte. Masquez un forfait dans Plans avant de continuer.",
+    no_pools_assigned: "Aucun pool n’est assigné à ce compte.",
+  };
+  return map[raw] || raw || "Action impossible.";
+}
+
 function formatAr(n) {
   const x = Number(n);
   if (!Number.isFinite(x)) return "—";
@@ -71,6 +98,8 @@ let currentType = "unlimited";
 let simulatorConfig = null;
 let currentAdmin = null;
 let isSuperadminUser = false;
+let simulatorPools = [];
+let lastSimulationData = null;
 
 const SETTING_KEYS = [
   "price_tolerance_pct",
@@ -178,7 +207,50 @@ document.addEventListener("DOMContentLoaded", async () => {
     }).join("");
   }
 
+  function currentSimulationPayload() {
+    const payload = {
+      type: currentType,
+      duration_value: Number(durationValue.value),
+      duration_unit: String(durationUnit.value || "day"),
+      speed_mbps: Number(speedMbps.value),
+    };
+    if (currentType === "data") payload.data_gb = Number(dataGb.value);
+    return payload;
+  }
+
+  function poolOptionsHtml(selected = "") {
+    const opts = (simulatorPools || []).map((p) => {
+      const id = String(p.id || "");
+      const name = poolDisplayNameFromRow(p);
+      return `<option value="${esc(id)}" ${id === selected ? "selected" : ""}>${esc(name)}</option>`;
+    }).join("");
+    return `<option value="">Sélectionner un pool…</option>${opts}`;
+  }
+
+  function bindCreateControls() {
+    const createHiddenBtn = document.getElementById("createHiddenPlanBtn");
+    const createPublishBtn = document.getElementById("createPublishPlanBtn");
+    const goPlansBtn = document.getElementById("goPlansBtn");
+
+    if (createHiddenBtn) {
+      createHiddenBtn.addEventListener("click", async () => {
+        try { await createPlanFromSimulation(false); }
+        catch (err) { showError(cleanErrorMessage(err)); }
+      });
+    }
+    if (createPublishBtn) {
+      createPublishBtn.addEventListener("click", async () => {
+        try { await createPlanFromSimulation(true); }
+        catch (err) { showError(cleanErrorMessage(err)); }
+      });
+    }
+    if (goPlansBtn) {
+      goPlansBtn.addEventListener("click", () => { window.location.href = "/admin/plans.html"; });
+    }
+  }
+
   function renderResult(data) {
+    lastSimulationData = data || null;
     const status = String(data?.status || "ok").toLowerCase();
     const ok = data?.ok !== false && status !== "blocked";
     const tone = status === "blocked" ? "blocked" : (status === "warning" ? "warning" : "ok");
@@ -217,7 +289,32 @@ document.addEventListener("DOMContentLoaded", async () => {
         </div>
       </div>
       ${message ? `<div class="rz-message ${esc(tone)}">${esc(message)}</div>` : ""}
+
+      <div class="rz-create-card">
+        <div class="rz-k">Création du forfait</div>
+        <div class="rz-create-grid">
+          <div class="rz-field full">
+            <label for="finalPlanName">Nom du forfait</label>
+            <input id="finalPlanName" value="${esc(name)}" />
+          </div>
+          <div class="rz-field">
+            <label for="finalPriceAr">Prix final (Ar)</label>
+            <input id="finalPriceAr" inputmode="numeric" value="${esc(Math.round(Number(price) || 0))}" />
+          </div>
+          <div class="rz-field">
+            <label for="finalPoolId">Pool</label>
+            <select id="finalPoolId">${poolOptionsHtml()}</select>
+          </div>
+        </div>
+        <div class="rz-create-note">Le backend revalide la simulation, le prix, le pool, les doublons et les limites avant création.</div>
+        <div id="createStatus" class="rz-editor-status"></div>
+        <div class="rz-create-actions">
+          <button id="createHiddenPlanBtn" type="button" class="filter-btn">Créer ce forfait</button>
+          <button id="createPublishPlanBtn" type="button" class="filter-btn primary">Créer et afficher sur le portail</button>
+        </div>
+      </div>
     `;
+    bindCreateControls();
   }
 
   async function guardSession() {
@@ -233,6 +330,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     renderConfig(simulatorConfig);
     return simulatorConfig;
   }
+  async function loadPools() {
+    const data = await fetchJSON("/api/admin/pools?system=mikrotik&limit=500&offset=0");
+    const items = data.items || data.pools || [];
+    simulatorPools = (items || [])
+      .filter((p) => p && p.id)
+      .map((p) => ({ ...p, display_name: poolDisplayNameFromRow(p) }))
+      .sort((a, b) => String(poolDisplayNameFromRow(a)).localeCompare(String(poolDisplayNameFromRow(b))));
+    return simulatorPools;
+  }
+
 
   function buildConfigPayloadFromEditor() {
     const settings = {};
@@ -268,6 +375,64 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
 
     return { settings, references };
+  }
+
+  async function createPlanFromSimulation(publish) {
+    showError("");
+    const statusEl = document.getElementById("createStatus");
+    const createHiddenBtn = document.getElementById("createHiddenPlanBtn");
+    const createPublishBtn = document.getElementById("createPublishPlanBtn");
+    const finalNameEl = document.getElementById("finalPlanName");
+    const finalPriceEl = document.getElementById("finalPriceAr");
+    const finalPoolEl = document.getElementById("finalPoolId");
+
+    const finalName = String(finalNameEl?.value || "").trim();
+    const finalPrice = Number(finalPriceEl?.value);
+    const poolId = String(finalPoolEl?.value || "").trim();
+
+    if (!lastSimulationData || lastSimulationData.ok === false) throw new Error("Lancez d’abord une simulation valide.");
+    if (!finalName) throw new Error("final_name_required");
+    if (!Number.isFinite(finalPrice) || finalPrice < 0) throw new Error("final_price_invalid");
+    if (!poolId) throw new Error("pool_id_required");
+
+    const payload = {
+      ...currentSimulationPayload(),
+      pool_id: poolId,
+      final_name: finalName,
+      final_price_ar: Math.round(finalPrice),
+      publish: !!publish,
+    };
+
+    if (statusEl) statusEl.textContent = "Création en cours…";
+    setBusy(createHiddenBtn, true, "Création…");
+    setBusy(createPublishBtn, true, "Création…");
+    try {
+      const data = await fetchJSON("/api/admin/plan-simulator/create-plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (statusEl) statusEl.textContent = publish
+        ? "Forfait créé et affiché sur le portail ✅"
+        : "Forfait créé en masqué ✅";
+
+      const createCard = document.querySelector(".rz-create-card");
+      if (createCard) {
+        const existing = createCard.querySelector(".rz-create-success");
+        if (existing) existing.remove();
+        const success = document.createElement("div");
+        success.className = "rz-create-success";
+        success.innerHTML = `✅ Forfait créé : <strong>${esc(data?.plan?.name || finalName)}</strong><br><button id="goPlansBtn" type="button" class="filter-btn" style="margin-top:10px;">Voir dans Plans</button>`;
+        createCard.appendChild(success);
+        const goBtn = document.getElementById("goPlansBtn");
+        if (goBtn) goBtn.addEventListener("click", () => { window.location.href = "/admin/plans.html"; });
+      }
+      return data;
+    } finally {
+      setBusy(createHiddenBtn, false);
+      setBusy(createPublishBtn, false);
+    }
   }
 
   async function saveConfig() {
@@ -326,8 +491,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  typeDataBtn.addEventListener("click", () => { currentType = "data"; applyTypeUI(); });
-  typeUnlimitedBtn.addEventListener("click", () => { currentType = "unlimited"; applyTypeUI(); });
+  typeDataBtn.addEventListener("click", () => { currentType = "data"; lastSimulationData = null; applyTypeUI(); resultBox.innerHTML = `<div class="rz-result-empty">Remplissez les champs puis cliquez sur Simuler.</div>`; });
+  typeUnlimitedBtn.addEventListener("click", () => { currentType = "unlimited"; lastSimulationData = null; applyTypeUI(); resultBox.innerHTML = `<div class="rz-result-empty">Remplissez les champs puis cliquez sur Simuler.</div>`; });
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -368,6 +533,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   try {
     await guardSession();
     applyTypeUI();
+    await loadPools();
     await loadConfig();
   } catch (err) {
     if (String(err?.message || "").includes("Not authenticated")) window.location.href = "/admin/login.html";
