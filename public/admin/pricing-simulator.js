@@ -122,7 +122,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   const durationValue = document.getElementById("durationValue");
   const durationUnit = document.getElementById("durationUnit");
   const speedMbps = document.getElementById("speedMbps");
-  const speedFieldMessage = document.getElementById("speedFieldMessage");
+  const dataGbError = document.getElementById("dataGbError");
+  const durationValueError = document.getElementById("durationValueError");
+  const durationUnitError = document.getElementById("durationUnitError");
+  const speedMbpsError = document.getElementById("speedMbpsError");
   const simulateBtn = document.getElementById("simulateBtn");
   const resultBox = document.getElementById("resultBox");
   const configInfo = document.getElementById("configInfo");
@@ -138,17 +141,51 @@ document.addEventListener("DOMContentLoaded", async () => {
   const reloadConfigBtn = document.getElementById("reloadConfigBtn");
 
   function showError(msg) { if (errorEl) errorEl.textContent = msg || ""; }
-  function showSpeedFieldMessage(msg) {
-    if (!speedFieldMessage) return;
-    const clean = String(msg || "").trim();
-    speedFieldMessage.textContent = clean;
-    speedFieldMessage.classList.toggle("show", !!clean);
-  }
-  function isSpeedLimitMessage(msg) {
-    const raw = String(msg || "").toLowerCase();
-    return raw.includes("débit") || raw.includes("debit") || raw.includes("vitesse") || raw.includes("mbps");
-  }
   function showConfigStatus(msg) { if (configSaveStatus) configSaveStatus.textContent = msg || ""; }
+
+  function clearFieldErrors() {
+    for (const el of [dataGbError, durationValueError, durationUnitError, speedMbpsError]) {
+      if (el) el.textContent = "";
+    }
+  }
+
+  function setFieldError(field, message) {
+    const map = {
+      data: dataGbError,
+      data_gb: dataGbError,
+      duration: durationValueError,
+      duration_value: durationValueError,
+      duration_unit: durationUnitError,
+      speed: speedMbpsError,
+      speed_mbps: speedMbpsError,
+    };
+    const target = map[field] || null;
+    if (target) {
+      target.textContent = message || "Valeur incorrecte.";
+      return true;
+    }
+    return false;
+  }
+
+  function placeValidationError(err) {
+    const raw = String(err?.message || err || "").trim();
+    const lower = raw.toLowerCase();
+    let msg = raw || "Valeur incorrecte.";
+
+    if (lower.includes("débit") || lower.includes("vitesse") || lower.includes("speed") || lower.includes("mbps")) {
+      setFieldError("speed", msg);
+      return true;
+    }
+    if (lower.includes("data") || lower.includes("go") || lower.includes("gb")) {
+      setFieldError("data", msg);
+      return true;
+    }
+    if (lower.includes("durée") || lower.includes("duration") || lower.includes("jour") || lower.includes("heure")) {
+      setFieldError("duration", msg);
+      return true;
+    }
+    return false;
+  }
 
   function applyTypeUI() {
     const isData = currentType === "data";
@@ -255,13 +292,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (createHiddenBtn) {
       createHiddenBtn.addEventListener("click", async () => {
         try { await createPlanFromSimulation(false); }
-        catch (err) { showError(cleanErrorMessage(err)); }
+        catch (err) { const msg = cleanErrorMessage(err); if (!placeValidationError(msg)) showError(msg); }
       });
     }
     if (createPublishBtn) {
       createPublishBtn.addEventListener("click", async () => {
         try { await createPlanFromSimulation(true); }
-        catch (err) { showError(cleanErrorMessage(err)); }
+        catch (err) { const msg = cleanErrorMessage(err); if (!placeValidationError(msg)) showError(msg); }
       });
     }
     if (goPlansBtn) {
@@ -270,6 +307,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function renderResult(data) {
+    clearFieldErrors();
     lastSimulationData = data || null;
     const status = String(data?.status || "ok").toLowerCase();
     const ok = data?.ok !== false && status !== "blocked";
@@ -277,16 +315,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     const label = status === "blocked" ? "Forfait bloqué" : (status === "warning" ? "Attention" : "Simulation OK");
 
     if (!ok || status === "blocked") {
-      const blockedMessage = data?.message || "Ce forfait n’est pas réaliste ou dépasse les limites configurées.";
-      if (isSpeedLimitMessage(blockedMessage)) showSpeedFieldMessage(blockedMessage);
+      placeValidationError(data?.message || "");
       resultBox.innerHTML = `
         <div class="rz-result-status blocked">❌ ${esc(label)}</div>
-        <div class="rz-message blocked">${isSpeedLimitMessage(blockedMessage) ? "Corrigez le débit indiqué dans le formulaire, puis relancez la simulation." : esc(blockedMessage)}</div>
+        <div class="rz-message blocked">${esc(data?.message || "Ce forfait n’est pas réaliste ou dépasse les limites configurées.")}</div>
       `;
       return;
     }
-
-    showSpeedFieldMessage("");
 
     const name = data?.recommended_plan_name || data?.plan_name || "Plan simulé";
     const price = data?.recommended_price_ar ?? data?.price_ar ?? null;
@@ -315,7 +350,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       ${message ? `<div class="rz-message ${esc(tone)}">${esc(message)}</div>` : ""}
 
       <div class="rz-create-card">
-        <div class="rz-create-title">Création du forfait</div>
+        <div class="rz-create-title">🚀 Création du forfait</div>
         <div class="rz-create-grid">
           <div class="rz-field full">
             <label for="finalPlanName">Nom du forfait</label>
@@ -490,13 +525,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   async function simulate() {
     showError("");
-    showSpeedFieldMessage("");
+    clearFieldErrors();
     const duration = Number(durationValue.value);
     const speed = Number(speedMbps.value);
     const unit = String(durationUnit.value || "day");
 
-    if (!Number.isFinite(duration) || duration <= 0) throw new Error("Durée invalide.");
-    if (!Number.isFinite(speed) || speed <= 0) throw new Error("Vitesse invalide.");
+    if (!Number.isFinite(duration) || duration <= 0) { setFieldError("duration", "Durée invalide."); throw new Error("field_error"); }
+    if (!Number.isFinite(speed) || speed <= 0) { setFieldError("speed", "Vitesse invalide."); throw new Error("field_error"); }
 
     const payload = {
       type: currentType,
@@ -507,7 +542,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     if (currentType === "data") {
       const gb = Number(dataGb.value);
-      if (!Number.isFinite(gb) || gb <= 0) throw new Error("Data invalide.");
+      if (!Number.isFinite(gb) || gb <= 0) { setFieldError("data", "Data invalide."); throw new Error("field_error"); }
       payload.data_gb = gb;
     }
 
@@ -525,21 +560,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  typeDataBtn.addEventListener("click", () => { currentType = "data"; lastSimulationData = null; showSpeedFieldMessage(""); applyTypeUI(); resultBox.innerHTML = `<div class="rz-result-empty">Remplissez les champs puis cliquez sur Simuler.</div>`; });
-  typeUnlimitedBtn.addEventListener("click", () => { currentType = "unlimited"; lastSimulationData = null; showSpeedFieldMessage(""); applyTypeUI(); resultBox.innerHTML = `<div class="rz-result-empty">Remplissez les champs puis cliquez sur Simuler.</div>`; });
+  typeDataBtn.addEventListener("click", () => { currentType = "data"; lastSimulationData = null; clearFieldErrors(); applyTypeUI(); resultBox.innerHTML = `<div class="rz-result-empty">Remplissez les champs puis cliquez sur Simuler.</div>`; });
+  typeUnlimitedBtn.addEventListener("click", () => { currentType = "unlimited"; lastSimulationData = null; clearFieldErrors(); applyTypeUI(); resultBox.innerHTML = `<div class="rz-result-empty">Remplissez les champs puis cliquez sur Simuler.</div>`; });
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     try { await simulate(); }
     catch (err) {
-      const msg = err.message || "Action impossible.";
-      if (isSpeedLimitMessage(msg)) {
-        showSpeedFieldMessage(msg);
-        showError("");
-        if (speedMbps) speedMbps.focus();
-      } else {
-        showError(msg);
-      }
+      if (String(err?.message || "") === "field_error") return;
+      if (!placeValidationError(err)) showError(err.message);
     }
   });
 
