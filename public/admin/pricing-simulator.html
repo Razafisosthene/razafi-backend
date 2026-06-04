@@ -25,6 +25,10 @@
     .rz-type-btn{width:100%;min-height:54px;border-radius:20px!important;background:rgba(248,250,252,.96)!important;color:#0f172a!important;border:1px solid rgba(15,23,42,.08)!important;box-shadow:none!important;font-weight:950!important;}
     .rz-type-btn.active{background:linear-gradient(180deg,#2382ff 0%,#0d6efd 100%)!important;color:#fff!important;border-color:transparent!important;box-shadow:0 12px 24px rgba(13,110,253,.18)!important;}
     .rz-simulate-btn{grid-column:1/-1;min-height:52px;border-radius:20px!important;font-weight:950!important;}
+    #dataField{grid-column:1/-1;}
+    .rz-duration-value-field{grid-column:1/2;}
+    .rz-duration-unit-field{grid-column:2/3;}
+    .rz-speed-field{grid-column:1/-1;}
     .rz-small-note{grid-column:1/-1;margin-top:-4px;color:#64748b;font-size:12px;font-weight:750;line-height:1.35;}
     .rz-result-empty{color:#64748b;font-size:14px;font-weight:800;line-height:1.45;}
     .rz-result-status{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border-radius:999px;font-size:12px;font-weight:950;border:1px solid rgba(15,23,42,.08);background:rgba(248,250,252,.9);color:#334155;margin-bottom:12px;}
@@ -190,7 +194,7 @@
         </section>
       </div>
 
-      <details id="configInfo" class="rz-simulator-info rz-mobile-collapsible" aria-labelledby="configTitle" hidden open>
+      <details id="configInfo" class="rz-simulator-info rz-mobile-collapsible" aria-labelledby="configTitle" hidden>
         <summary class="rz-collapse-summary">
           <h2 id="configTitle">Base dynamique utilisée</h2>
           <span class="rz-collapse-icon" aria-hidden="true">▾</span>
@@ -200,7 +204,7 @@
           <div id="referencesList" class="rz-ref-list"></div>
         </div>
       </details>
-      <details id="configEditor" class="rz-simulator-info rz-admin-config rz-mobile-collapsible" aria-labelledby="configEditorTitle" hidden open>
+      <details id="configEditor" class="rz-simulator-info rz-admin-config rz-mobile-collapsible" aria-labelledby="configEditorTitle" hidden>
         <summary class="rz-collapse-summary">
           <h2 id="configEditorTitle">⚙️ Configuration simulateur</h2>
           <span class="rz-collapse-icon" aria-hidden="true">▾</span>
