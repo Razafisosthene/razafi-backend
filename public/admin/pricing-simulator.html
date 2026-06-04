@@ -85,12 +85,13 @@
     .rz-collapse-body{margin-top:10px;}
 
     @media (max-width:520px){
-      .login-container{padding-top:10px!important;}
-      .card.rz-simulator-shell{gap:9px!important;width:98%!important;}
-      .rz-simulator-header{gap:6px!important;margin-bottom:0!important;}
-      .rz-hero-title{margin-bottom:2px!important;}
-      .rz-hero-subtitle{margin-top:2px!important;}
-      .rz-simulator-me{margin-top:4px!important;line-height:1.15!important;}
+      .login-container{padding-top:6px!important;}
+      .card.rz-simulator-shell{gap:7px!important;width:98%!important;}
+      .rz-simulator-header{gap:4px!important;margin-bottom:0!important;padding-bottom:0!important;}
+      .rz-simulator-header .title{margin-bottom:0!important;}
+      .rz-hero-title{margin-bottom:1px!important;}
+      .rz-hero-subtitle{margin-top:1px!important;margin-bottom:0!important;line-height:1.18!important;}
+      .rz-simulator-me{margin-top:3px!important;line-height:1.12!important;}
       .rz-simulator-me strong{margin-top:0!important;}
       #error:empty{display:none!important;}
       .rz-simulator-grid{gap:10px!important;}
@@ -111,6 +112,8 @@
       .rz-mobile-collapsible .rz-collapse-summary{cursor:pointer;}
       .rz-collapse-icon{display:inline-flex;}
       .rz-collapse-body{margin-top:9px;}
+      .rz-mobile-collapsible:not([open]){padding-top:11px!important;padding-bottom:11px!important;}
+      .rz-mobile-collapsible:not([open]) .rz-collapse-body{display:none!important;}
       .rz-config-edit-grid,.rz-ref-editor-list{margin-top:9px;}
     }
     @media (max-width:520px){.rz-create-grid{grid-template-columns:1fr;}.rz-create-grid .full{grid-column:auto;}.rz-create-actions{grid-template-columns:1fr;}}

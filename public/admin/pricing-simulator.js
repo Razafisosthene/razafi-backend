@@ -143,6 +143,41 @@ document.addEventListener("DOMContentLoaded", async () => {
   function showError(msg) { if (errorEl) errorEl.textContent = msg || ""; }
   function showConfigStatus(msg) { if (configSaveStatus) configSaveStatus.textContent = msg || ""; }
 
+  function scrollResultIntoMobileView() {
+    try {
+      if (!window.matchMedia || !window.matchMedia("(max-width: 860px)").matches) return;
+      const formTitle = document.getElementById("formTitle");
+      const resultSection = document.querySelector(".rz-simulator-result");
+      if (!formTitle || !resultSection) return;
+
+      const titleRect = formTitle.getBoundingClientRect();
+      const resultRect = resultSection.getBoundingClientRect();
+      const titleTop = titleRect.top + window.scrollY;
+      const resultTop = resultRect.top + window.scrollY;
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+
+      // Keep “Détails du forfait” visible near the top, while bringing “Résultat” into view.
+      const titleOffset = 10;
+      const minY = Math.max(0, titleTop - titleOffset);
+      const desiredResultY = Math.max(0, resultTop - Math.max(140, Math.round(viewportHeight * 0.34)));
+      const targetY = Math.max(minY, Math.min(desiredResultY, resultTop - 12));
+
+      window.requestAnimationFrame(() => {
+        window.scrollTo({ top: targetY, behavior: "smooth" });
+      });
+    } catch (_) {}
+  }
+
+  function closeMobileConfigSections() {
+    try {
+      if (!window.matchMedia || !window.matchMedia("(max-width: 520px)").matches) return;
+      for (const el of [configInfo, configEditor]) {
+        if (el && el.tagName === "DETAILS") el.removeAttribute("open");
+      }
+    } catch (_) {}
+  }
+
+
   function clearCreateErrors() {
     for (const id of ["finalPlanNameError", "finalPriceArError", "finalPoolIdError", "createError"]) {
       const el = document.getElementById(id);
@@ -607,6 +642,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         body: JSON.stringify(payload),
       });
       renderResult(data);
+      scrollResultIntoMobileView();
     } finally {
       setBusy(simulateBtn, false);
     }
@@ -659,6 +695,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     applyTypeUI();
     await loadPools();
     await loadConfig();
+    closeMobileConfigSections();
   } catch (err) {
     if (String(err?.message || "").includes("Not authenticated")) window.location.href = "/admin/login.html";
     else showError(err.message);
