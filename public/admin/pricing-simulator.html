@@ -19,8 +19,6 @@
     .rz-field.full{grid-column:1/-1;}
     .rz-field label{font-size:12px;font-weight:950;color:#64748b;letter-spacing:-.01em;}
     .rz-field input,.rz-field select{margin:0!important;width:100%;height:48px;border-radius:18px!important;}
-    .rz-field-error{min-height:0;color:#b91c1c;font-size:12px;font-weight:900;line-height:1.3;}
-    .rz-field-error:empty{display:none;}
     .rz-type-switch{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:10px;}
     .rz-type-btn{width:100%;min-height:54px;border-radius:20px!important;background:rgba(248,250,252,.96)!important;color:#0f172a!important;border:1px solid rgba(15,23,42,.08)!important;box-shadow:none!important;font-weight:950!important;}
     .rz-type-btn.active{background:linear-gradient(180deg,#2382ff 0%,#0d6efd 100%)!important;color:#fff!important;border-color:transparent!important;box-shadow:0 12px 24px rgba(13,110,253,.18)!important;}
@@ -66,13 +64,10 @@
     .rz-ref-editor-check{display:flex;align-items:center;gap:8px;height:44px;padding:0 10px;border-radius:16px;background:rgba(255,255,255,.75);border:1px solid rgba(15,23,42,.07);font-size:13px;font-weight:900;color:#334155;}
     .rz-ref-editor-check input{width:18px!important;height:18px!important;margin:0!important;accent-color:#0d6efd;}
 
-    .rz-create-card{margin-top:18px;padding:15px;border-radius:24px;background:linear-gradient(180deg,rgba(239,246,255,.96),rgba(255,255,255,.94));border:1px solid rgba(13,110,253,.22);box-shadow:0 14px 30px rgba(13,110,253,.10);} 
-    .rz-create-title{display:flex;align-items:center;gap:8px;color:#0f172a;font-size:13px;font-weight:950;text-transform:uppercase;letter-spacing:.04em;}
+    .rz-create-card{margin-top:14px;padding:13px;border-radius:22px;background:rgba(248,250,252,.9);border:1px solid rgba(15,23,42,.08);}
     .rz-create-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;}
     .rz-create-grid .full{grid-column:1/-1;}
     .rz-create-note{margin-top:10px;color:#64748b;font-size:12px;font-weight:750;line-height:1.35;}
-    .rz-create-error{display:none;margin-top:10px;padding:10px 11px;border-radius:16px;background:rgba(254,242,242,.92);border:1px solid rgba(239,68,68,.22);color:#991b1b;font-size:13px;font-weight:900;line-height:1.35;}
-    .rz-create-error:not(:empty){display:block;}
     .rz-create-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;}
     .rz-create-actions button{width:100%;min-height:48px;border-radius:18px!important;}
     .rz-create-success{margin-top:12px;padding:12px;border-radius:18px;background:rgba(22,163,74,.10);border:1px solid rgba(22,163,74,.22);color:#15803d;font-size:13px;font-weight:850;line-height:1.35;}
@@ -81,6 +76,60 @@
     @media (max-width:520px){.rz-config-edit-grid{grid-template-columns:1fr;}.rz-ref-editor-item{grid-template-columns:1fr;}.rz-config-save-row button{width:100%;}.rz-config-save-row{justify-content:stretch;}}
     @media (max-width:860px){.rz-simulator-grid{grid-template-columns:1fr;}.rz-simulator-form{grid-template-columns:1fr;}.rz-type-switch{grid-template-columns:1fr 1fr;}.rz-range{grid-template-columns:1fr;}}
     @media (max-width:520px){.rz-simulator-panel,.rz-simulator-result,.rz-simulator-info{border-radius:24px;padding:14px;}.rz-price-big{font-size:36px;}.rz-type-switch{grid-template-columns:1fr;}}
+
+
+    /* ===== MOBILE UX COMPACT PATCH — simulator only ===== */
+    @media (max-width:860px){
+      .pricing-simulator-page .login-container{padding-top:8px!important;}
+      .pricing-simulator-page .rz-simulator-shell{gap:10px!important;}
+      .pricing-simulator-page .rz-simulator-header{gap:6px!important;margin-bottom:0!important;padding-bottom:0!important;}
+      .pricing-simulator-page .rz-hero-title{margin-bottom:2px!important;}
+      .pricing-simulator-page .rz-hero-subtitle{display:none!important;}
+      .pricing-simulator-page .rz-simulator-me{margin-top:2px!important;font-size:12px!important;}
+      .pricing-simulator-page .rz-simulator-me strong{display:inline!important;margin-left:4px!important;margin-top:0!important;}
+      .pricing-simulator-page .rz-simulator-grid{gap:10px!important;}
+      .pricing-simulator-page .rz-simulator-panel,
+      .pricing-simulator-page .rz-simulator-result,
+      .pricing-simulator-page .rz-simulator-info{padding:12px!important;border-radius:22px!important;}
+      .pricing-simulator-page .rz-simulator-panel h2,
+      .pricing-simulator-page .rz-simulator-result h2,
+      .pricing-simulator-page .rz-simulator-info h2{font-size:18px!important;margin-bottom:8px!important;}
+      .pricing-simulator-page .rz-simulator-form{grid-template-columns:1fr 1fr!important;gap:9px!important;}
+      .pricing-simulator-page .rz-type-switch{grid-template-columns:1fr 1fr!important;gap:8px!important;}
+      .pricing-simulator-page .rz-type-btn{min-height:46px!important;border-radius:17px!important;font-size:13px!important;padding:0 8px!important;}
+      .pricing-simulator-page .rz-field{gap:4px!important;}
+      .pricing-simulator-page .rz-field label{font-size:11px!important;line-height:1.1!important;}
+      .pricing-simulator-page .rz-field input,
+      .pricing-simulator-page .rz-field select{height:44px!important;border-radius:16px!important;font-size:14px!important;}
+      .pricing-simulator-page #dataField,
+      .pricing-simulator-page #speedMbps.closest-force-full{grid-column:1/-1!important;}
+      .pricing-simulator-page #dataField{grid-column:1/-1!important;}
+      .pricing-simulator-page #speedMbps{max-width:100%;}
+      .pricing-simulator-page #speedMbpsField,
+      .pricing-simulator-page .rz-speed-field{grid-column:1/-1!important;}
+      .pricing-simulator-page .rz-small-note{display:none!important;}
+      .pricing-simulator-page .rz-simulate-btn{min-height:48px!important;border-radius:18px!important;margin-top:2px!important;}
+      .pricing-simulator-page #configInfo,
+      .pricing-simulator-page #configEditor{max-height:64px;overflow:hidden;position:relative;cursor:pointer;}
+      .pricing-simulator-page #configInfo::after,
+      .pricing-simulator-page #configEditor::after{content:"Toucher pour afficher";display:block;margin-top:2px;color:#64748b;font-size:12px;font-weight:850;}
+      .pricing-simulator-page #configInfo:focus-within,
+      .pricing-simulator-page #configInfo:hover,
+      .pricing-simulator-page #configEditor:focus-within,
+      .pricing-simulator-page #configEditor:hover{max-height:none;overflow:visible;}
+    }
+
+    @media (max-width:520px){
+      .pricing-simulator-page .rz-type-switch{grid-template-columns:1fr 1fr!important;}
+      .pricing-simulator-page .rz-simulator-form{grid-template-columns:1fr 1fr!important;}
+      .pricing-simulator-page .rz-simulator-form > .rz-type-switch,
+      .pricing-simulator-page .rz-simulator-form > #dataField,
+      .pricing-simulator-page .rz-simulator-form > .rz-simulate-btn{grid-column:1/-1!important;}
+      .pricing-simulator-page .rz-simulator-form > .rz-field:nth-of-type(4){grid-column:1/-1!important;}
+      .pricing-simulator-page .rz-create-grid{grid-template-columns:1fr!important;}
+      .pricing-simulator-page .rz-create-actions{grid-template-columns:1fr!important;}
+    }
+
   </style>
 </head>
 <body class="rz-admin-shell pricing-simulator-page">
@@ -114,13 +163,11 @@
             <div id="dataField" class="rz-field" style="display:none;">
               <label for="dataGb">Data (Go)</label>
               <input id="dataGb" inputmode="decimal" placeholder="Ex : 20" />
-              <div id="dataGbError" class="rz-field-error"></div>
             </div>
 
             <div class="rz-field">
               <label for="durationValue">Durée</label>
               <input id="durationValue" inputmode="decimal" value="1" placeholder="Ex : 7" required />
-              <div id="durationValueError" class="rz-field-error"></div>
             </div>
 
             <div class="rz-field">
@@ -131,14 +178,14 @@
                 <option value="week">semaine(s)</option>
                 <option value="month">mois</option>
               </select>
-              <div id="durationUnitError" class="rz-field-error"></div>
             </div>
 
-            <div class="rz-field">
+            <div class="rz-field rz-speed-field">
               <label for="speedMbps">Vitesse (Mbps)</label>
               <input id="speedMbps" inputmode="decimal" value="7" placeholder="Ex : 10" required />
-              <div id="speedMbpsError" class="rz-field-error"></div>
             </div>
+
+            <div class="rz-small-note">La simulation utilise la base dynamique configurée dans RAZAFI, pas une base hardcodée dans cette page.</div>
 
             <button id="simulateBtn" class="filter-btn primary rz-simulate-btn" type="submit">Simuler</button>
           </form>
@@ -159,6 +206,7 @@
         <div class="rz-config-editor-head">
           <div>
             <h2 id="configEditorTitle">⚙️ Configuration simulateur</h2>
+            <p>Superadmin uniquement. Les changements sont utilisés immédiatement par le simulateur.</p>
           </div>
         </div>
 
@@ -193,6 +241,8 @@
               <input id="cfg_max_visible_unlimited_plans" inputmode="numeric" />
             </div>
           </div>
+
+          <div class="rz-small-note" style="margin-top:12px;">Références tarifaires utilisées comme base de calcul.</div>
           <div id="referencesEditor" class="rz-ref-editor-list"></div>
 
           <div class="rz-config-save-row">
