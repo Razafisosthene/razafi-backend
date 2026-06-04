@@ -124,6 +124,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const speedMbps = document.getElementById("speedMbps");
   const simulateBtn = document.getElementById("simulateBtn");
   const resultBox = document.getElementById("resultBox");
+  const configInfo = document.getElementById("configInfo");
   const configSummary = document.getElementById("configSummary");
   const referencesList = document.getElementById("referencesList");
   const logoutBtn = document.getElementById("logoutBtn");
@@ -148,6 +149,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function renderConfig(cfg) {
+    if (!isSuperadminUser) {
+      if (configInfo) configInfo.hidden = true;
+      if (configEditor) configEditor.hidden = true;
+      return;
+    }
+
+    if (configInfo) configInfo.hidden = false;
+
     const settings = cfg?.settings || {};
     const references = Array.isArray(cfg?.references) ? cfg.references : [];
 
@@ -321,11 +330,21 @@ document.addEventListener("DOMContentLoaded", async () => {
     const me = await fetchJSON("/api/admin/me");
     currentAdmin = me || {};
     isSuperadminUser = !!currentAdmin?.is_superadmin || String(currentAdmin?.role || "").toLowerCase() === "superadmin";
+
+    if (configInfo) configInfo.hidden = !isSuperadminUser;
+    if (configEditor) configEditor.hidden = !isSuperadminUser;
+
     meEl.innerHTML = `Connecté :<strong>${esc(displayAdminName(me.email))}</strong>`;
     return me;
   }
 
   async function loadConfig() {
+    if (!isSuperadminUser) {
+      if (configInfo) configInfo.hidden = true;
+      if (configEditor) configEditor.hidden = true;
+      return null;
+    }
+
     simulatorConfig = await fetchJSON("/api/admin/plan-simulator/config");
     renderConfig(simulatorConfig);
     return simulatorConfig;

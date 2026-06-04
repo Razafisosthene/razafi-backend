@@ -400,13 +400,15 @@ async function requireAdmin(req, res, next) {
       const allowOwnerClientRename =
         method === "POST" && fullPath === "/api/admin/client-devices/rename";
 
-      // Phase 3A: owner can create plans only through the controlled price simulator.
-      // Route-level checks re-simulate, enforce pool scope, duplicate protection,
-      // visible-plan limits, and price tolerance.
+      // Phase 3A/3B: owner can use the simulator and create plans only through
+      // controlled endpoints. Route-level checks still re-simulate, enforce pool scope,
+      // duplicate protection, visible-plan limits, and price tolerance.
+      const allowOwnerPlanSimulatorSimulate =
+        method === "POST" && fullPath === "/api/admin/plan-simulator/simulate";
       const allowOwnerPlanSimulatorCreate =
         method === "POST" && fullPath === "/api/admin/plan-simulator/create-plan";
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorCreate) {
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate) {
         return next();
       }
 
