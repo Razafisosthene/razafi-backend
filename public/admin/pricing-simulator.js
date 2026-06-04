@@ -143,6 +143,53 @@ document.addEventListener("DOMContentLoaded", async () => {
   function showError(msg) { if (errorEl) errorEl.textContent = msg || ""; }
   function showConfigStatus(msg) { if (configSaveStatus) configSaveStatus.textContent = msg || ""; }
 
+  function clearCreateErrors() {
+    for (const id of ["finalPlanNameError", "finalPriceArError", "finalPoolIdError", "createError"]) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = "";
+    }
+  }
+
+  function setCreateFieldError(field, message) {
+    const map = {
+      name: "finalPlanNameError",
+      final_name: "finalPlanNameError",
+      price: "finalPriceArError",
+      final_price: "finalPriceArError",
+      final_price_ar: "finalPriceArError",
+      pool: "finalPoolIdError",
+      pool_id: "finalPoolIdError",
+      general: "createError",
+    };
+    const el = document.getElementById(map[field] || "createError");
+    if (el) el.textContent = message || "Action impossible.";
+  }
+
+  function placeCreateError(err) {
+    const raw = String(err?.message || err || "").trim();
+    if (raw === "__create_error_shown__") return true;
+    const msg = cleanErrorMessage(err);
+    const lower = (raw || msg).toLowerCase();
+
+    clearCreateErrors();
+
+    if (lower.includes("pool") || lower.includes("sélectionnez un pool") || lower.includes("forbidden_pool")) {
+      setCreateFieldError("pool", msg);
+      return true;
+    }
+    if (lower.includes("prix") || lower.includes("price") || lower.includes("final_price")) {
+      setCreateFieldError("price", msg);
+      return true;
+    }
+    if (lower.includes("nom") || lower.includes("name") || lower.includes("final_name")) {
+      setCreateFieldError("name", msg);
+      return true;
+    }
+
+    setCreateFieldError("general", msg);
+    return true;
+  }
+
   function clearFieldErrors() {
     for (const el of [dataGbError, durationValueError, durationUnitError, speedMbpsError]) {
       if (el) el.textContent = "";
@@ -292,13 +339,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (createHiddenBtn) {
       createHiddenBtn.addEventListener("click", async () => {
         try { await createPlanFromSimulation(false); }
-        catch (err) { const msg = cleanErrorMessage(err); if (!placeValidationError(msg)) showError(msg); }
+        catch (err) { placeCreateError(err); }
       });
     }
     if (createPublishBtn) {
       createPublishBtn.addEventListener("click", async () => {
         try { await createPlanFromSimulation(true); }
-        catch (err) { const msg = cleanErrorMessage(err); if (!placeValidationError(msg)) showError(msg); }
+        catch (err) { placeCreateError(err); }
       });
     }
     if (goPlansBtn) {
@@ -355,16 +402,20 @@ document.addEventListener("DOMContentLoaded", async () => {
           <div class="rz-field full">
             <label for="finalPlanName">Nom du forfait</label>
             <input id="finalPlanName" value="${esc(name)}" />
+            <div id="finalPlanNameError" class="rz-field-error"></div>
           </div>
           <div class="rz-field">
             <label for="finalPriceAr">Prix final (Ar)</label>
             <input id="finalPriceAr" inputmode="numeric" value="${esc(Math.round(Number(price) || 0))}" />
+            <div id="finalPriceArError" class="rz-field-error"></div>
           </div>
           <div class="rz-field">
             <label for="finalPoolId">Pool</label>
             <select id="finalPoolId">${poolOptionsHtml()}</select>
+            <div id="finalPoolIdError" class="rz-field-error"></div>
           </div>
         </div>
+        <div id="createError" class="rz-create-error"></div>
         <div id="createStatus" class="rz-editor-status"></div>
         <div class="rz-create-actions">
           <button id="createHiddenPlanBtn" type="button" class="filter-btn">Créer ce forfait</button>
@@ -447,6 +498,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   async function createPlanFromSimulation(publish) {
     showError("");
+    clearCreateErrors();
     const statusEl = document.getElementById("createStatus");
     const createHiddenBtn = document.getElementById("createHiddenPlanBtn");
     const createPublishBtn = document.getElementById("createPublishPlanBtn");
@@ -459,9 +511,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     const poolId = String(finalPoolEl?.value || "").trim();
 
     if (!lastSimulationData || lastSimulationData.ok === false) throw new Error("Lancez d’abord une simulation valide.");
-    if (!finalName) throw new Error("final_name_required");
-    if (!Number.isFinite(finalPrice) || finalPrice < 0) throw new Error("final_price_invalid");
-    if (!poolId) throw new Error("pool_id_required");
+    if (!finalName) { setCreateFieldError("name", cleanErrorMessage("final_name_required")); throw new Error("__create_error_shown__"); }
+    if (!Number.isFinite(finalPrice) || finalPrice < 0) { setCreateFieldError("price", cleanErrorMessage("final_price_invalid")); throw new Error("__create_error_shown__"); }
+    if (!poolId) { setCreateFieldError("pool", cleanErrorMessage("pool_id_required")); throw new Error("__create_error_shown__"); }
 
     const payload = {
       ...currentSimulationPayload(),
