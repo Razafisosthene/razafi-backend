@@ -122,6 +122,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const durationValue = document.getElementById("durationValue");
   const durationUnit = document.getElementById("durationUnit");
   const speedMbps = document.getElementById("speedMbps");
+  const speedFieldMessage = document.getElementById("speedFieldMessage");
   const simulateBtn = document.getElementById("simulateBtn");
   const resultBox = document.getElementById("resultBox");
   const configInfo = document.getElementById("configInfo");
@@ -137,6 +138,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   const reloadConfigBtn = document.getElementById("reloadConfigBtn");
 
   function showError(msg) { if (errorEl) errorEl.textContent = msg || ""; }
+  function showSpeedFieldMessage(msg) {
+    if (!speedFieldMessage) return;
+    const clean = String(msg || "").trim();
+    speedFieldMessage.textContent = clean;
+    speedFieldMessage.classList.toggle("show", !!clean);
+  }
+  function isSpeedLimitMessage(msg) {
+    const raw = String(msg || "").toLowerCase();
+    return raw.includes("débit") || raw.includes("debit") || raw.includes("vitesse") || raw.includes("mbps");
+  }
   function showConfigStatus(msg) { if (configSaveStatus) configSaveStatus.textContent = msg || ""; }
 
   function applyTypeUI() {
@@ -266,12 +277,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     const label = status === "blocked" ? "Forfait bloqué" : (status === "warning" ? "Attention" : "Simulation OK");
 
     if (!ok || status === "blocked") {
+      const blockedMessage = data?.message || "Ce forfait n’est pas réaliste ou dépasse les limites configurées.";
+      if (isSpeedLimitMessage(blockedMessage)) showSpeedFieldMessage(blockedMessage);
       resultBox.innerHTML = `
         <div class="rz-result-status blocked">❌ ${esc(label)}</div>
-        <div class="rz-message blocked">${esc(data?.message || "Ce forfait n’est pas réaliste ou dépasse les limites configurées.")}</div>
+        <div class="rz-message blocked">${isSpeedLimitMessage(blockedMessage) ? "Corrigez le débit indiqué dans le formulaire, puis relancez la simulation." : esc(blockedMessage)}</div>
       `;
       return;
     }
+
+    showSpeedFieldMessage("");
 
     const name = data?.recommended_plan_name || data?.plan_name || "Plan simulé";
     const price = data?.recommended_price_ar ?? data?.price_ar ?? null;
@@ -300,7 +315,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       ${message ? `<div class="rz-message ${esc(tone)}">${esc(message)}</div>` : ""}
 
       <div class="rz-create-card">
-        <div class="rz-k">Création du forfait</div>
+        <div class="rz-create-title">Création du forfait</div>
         <div class="rz-create-grid">
           <div class="rz-field full">
             <label for="finalPlanName">Nom du forfait</label>
@@ -315,7 +330,6 @@ document.addEventListener("DOMContentLoaded", async () => {
             <select id="finalPoolId">${poolOptionsHtml()}</select>
           </div>
         </div>
-        <div class="rz-create-note">Le backend revalide la simulation, le prix, le pool, les doublons et les limites avant création.</div>
         <div id="createStatus" class="rz-editor-status"></div>
         <div class="rz-create-actions">
           <button id="createHiddenPlanBtn" type="button" class="filter-btn">Créer ce forfait</button>
@@ -476,6 +490,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   async function simulate() {
     showError("");
+    showSpeedFieldMessage("");
     const duration = Number(durationValue.value);
     const speed = Number(speedMbps.value);
     const unit = String(durationUnit.value || "day");
@@ -510,13 +525,22 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  typeDataBtn.addEventListener("click", () => { currentType = "data"; lastSimulationData = null; applyTypeUI(); resultBox.innerHTML = `<div class="rz-result-empty">Remplissez les champs puis cliquez sur Simuler.</div>`; });
-  typeUnlimitedBtn.addEventListener("click", () => { currentType = "unlimited"; lastSimulationData = null; applyTypeUI(); resultBox.innerHTML = `<div class="rz-result-empty">Remplissez les champs puis cliquez sur Simuler.</div>`; });
+  typeDataBtn.addEventListener("click", () => { currentType = "data"; lastSimulationData = null; showSpeedFieldMessage(""); applyTypeUI(); resultBox.innerHTML = `<div class="rz-result-empty">Remplissez les champs puis cliquez sur Simuler.</div>`; });
+  typeUnlimitedBtn.addEventListener("click", () => { currentType = "unlimited"; lastSimulationData = null; showSpeedFieldMessage(""); applyTypeUI(); resultBox.innerHTML = `<div class="rz-result-empty">Remplissez les champs puis cliquez sur Simuler.</div>`; });
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     try { await simulate(); }
-    catch (err) { showError(err.message); }
+    catch (err) {
+      const msg = err.message || "Action impossible.";
+      if (isSpeedLimitMessage(msg)) {
+        showSpeedFieldMessage(msg);
+        showError("");
+        if (speedMbps) speedMbps.focus();
+      } else {
+        showError(msg);
+      }
+    }
   });
 
   if (configForm) {
