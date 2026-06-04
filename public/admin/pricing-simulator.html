@@ -76,11 +76,48 @@
     .rz-create-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;}
     .rz-create-actions button{width:100%;min-height:48px;border-radius:18px!important;}
     .rz-create-success{margin-top:12px;padding:12px;border-radius:18px;background:rgba(22,163,74,.10);border:1px solid rgba(22,163,74,.22);color:#15803d;font-size:13px;font-weight:850;line-height:1.35;}
+
+    .rz-collapse-summary{display:flex;align-items:center;justify-content:space-between;gap:10px;list-style:none;cursor:default;}
+    .rz-collapse-summary::-webkit-details-marker{display:none;}
+    .rz-collapse-summary h2{margin:0!important;}
+    .rz-collapse-icon{display:none;color:#64748b;font-size:15px;font-weight:950;transition:transform .18s ease;}
+    .rz-mobile-collapsible:not([open]) .rz-collapse-icon{transform:rotate(-90deg);}
+    .rz-collapse-body{margin-top:10px;}
+
+    @media (max-width:520px){
+      .login-container{padding-top:10px!important;}
+      .card.rz-simulator-shell{gap:9px!important;width:98%!important;}
+      .rz-simulator-header{gap:6px!important;margin-bottom:0!important;}
+      .rz-hero-title{margin-bottom:2px!important;}
+      .rz-hero-subtitle{margin-top:2px!important;}
+      .rz-simulator-me{margin-top:4px!important;line-height:1.15!important;}
+      .rz-simulator-me strong{margin-top:0!important;}
+      #error:empty{display:none!important;}
+      .rz-simulator-grid{gap:10px!important;}
+      .rz-simulator-panel,.rz-simulator-result,.rz-simulator-info{border-radius:22px;padding:12px;}
+      .rz-simulator-panel h2,.rz-simulator-result h2,.rz-simulator-info h2{font-size:18px;margin-bottom:8px;}
+      .rz-simulator-form{grid-template-columns:1fr 1fr;gap:9px 10px;}
+      .rz-field{gap:4px;}
+      .rz-field label{font-size:11px;}
+      .rz-field input,.rz-field select{height:42px;border-radius:15px!important;}
+      .rz-type-switch{grid-template-columns:1fr 1fr!important;gap:8px;}
+      .rz-type-btn{min-height:44px;border-radius:16px!important;font-size:13px!important;padding:0 8px!important;}
+      #dataField,.rz-speed-field,.rz-simulate-btn{grid-column:1/-1;}
+      .rz-duration-value-field{grid-column:1/2;}
+      .rz-duration-unit-field{grid-column:2/3;}
+      .rz-speed-field input{height:40px;}
+      .rz-simulate-btn{min-height:46px;border-radius:17px!important;}
+      .rz-field-error{font-size:11px;line-height:1.2;}
+      .rz-mobile-collapsible .rz-collapse-summary{cursor:pointer;}
+      .rz-collapse-icon{display:inline-flex;}
+      .rz-collapse-body{margin-top:9px;}
+      .rz-config-edit-grid,.rz-ref-editor-list{margin-top:9px;}
+    }
     @media (max-width:520px){.rz-create-grid{grid-template-columns:1fr;}.rz-create-grid .full{grid-column:auto;}.rz-create-actions{grid-template-columns:1fr;}}
     @media (max-width:860px){.rz-config-edit-grid{grid-template-columns:1fr 1fr;}.rz-ref-editor-item{grid-template-columns:1fr 1fr;}.rz-ref-editor-item .rz-ref-editor-titlewrap{grid-column:1/-1;}}
     @media (max-width:520px){.rz-config-edit-grid{grid-template-columns:1fr;}.rz-ref-editor-item{grid-template-columns:1fr;}.rz-config-save-row button{width:100%;}.rz-config-save-row{justify-content:stretch;}}
     @media (max-width:860px){.rz-simulator-grid{grid-template-columns:1fr;}.rz-simulator-form{grid-template-columns:1fr;}.rz-type-switch{grid-template-columns:1fr 1fr;}.rz-range{grid-template-columns:1fr;}}
-    @media (max-width:520px){.rz-simulator-panel,.rz-simulator-result,.rz-simulator-info{border-radius:24px;padding:14px;}.rz-price-big{font-size:36px;}.rz-type-switch{grid-template-columns:1fr;}}
+    @media (max-width:520px){.rz-price-big{font-size:36px;}}
   </style>
 </head>
 <body class="rz-admin-shell pricing-simulator-page">
@@ -117,13 +154,13 @@
               <div id="dataGbError" class="rz-field-error"></div>
             </div>
 
-            <div class="rz-field">
+            <div class="rz-field rz-duration-value-field">
               <label for="durationValue">Durée</label>
               <input id="durationValue" inputmode="decimal" value="1" placeholder="Ex : 7" required />
               <div id="durationValueError" class="rz-field-error"></div>
             </div>
 
-            <div class="rz-field">
+            <div class="rz-field rz-duration-unit-field">
               <label for="durationUnit">Unité</label>
               <select id="durationUnit">
                 <option value="hour">heure(s)</option>
@@ -134,7 +171,7 @@
               <div id="durationUnitError" class="rz-field-error"></div>
             </div>
 
-            <div class="rz-field">
+            <div class="rz-field rz-speed-field">
               <label for="speedMbps">Vitesse (Mbps)</label>
               <input id="speedMbps" inputmode="decimal" value="7" placeholder="Ex : 10" required />
               <div id="speedMbpsError" class="rz-field-error"></div>
@@ -150,19 +187,23 @@
         </section>
       </div>
 
-      <section id="configInfo" class="rz-simulator-info" aria-labelledby="configTitle" hidden>
-        <h2 id="configTitle">Base dynamique utilisée</h2>
-        <div id="configSummary" class="rz-result-empty">Chargement de la configuration…</div>
-        <div id="referencesList" class="rz-ref-list"></div>
-      </section>
-      <section id="configEditor" class="rz-simulator-info rz-admin-config" aria-labelledby="configEditorTitle" hidden>
-        <div class="rz-config-editor-head">
-          <div>
-            <h2 id="configEditorTitle">⚙️ Configuration simulateur</h2>
-          </div>
+      <details id="configInfo" class="rz-simulator-info rz-mobile-collapsible" aria-labelledby="configTitle" hidden open>
+        <summary class="rz-collapse-summary">
+          <h2 id="configTitle">Base dynamique utilisée</h2>
+          <span class="rz-collapse-icon" aria-hidden="true">▾</span>
+        </summary>
+        <div class="rz-collapse-body">
+          <div id="configSummary" class="rz-result-empty">Chargement de la configuration…</div>
+          <div id="referencesList" class="rz-ref-list"></div>
         </div>
+      </details>
+      <details id="configEditor" class="rz-simulator-info rz-admin-config rz-mobile-collapsible" aria-labelledby="configEditorTitle" hidden open>
+        <summary class="rz-collapse-summary">
+          <h2 id="configEditorTitle">⚙️ Configuration simulateur</h2>
+          <span class="rz-collapse-icon" aria-hidden="true">▾</span>
+        </summary>
 
-        <form id="configForm">
+        <form id="configForm" class="rz-collapse-body">
           <div class="rz-config-edit-grid">
             <div class="rz-field">
               <label for="cfg_price_tolerance_pct">Tolérance prix (%)</label>
@@ -201,7 +242,7 @@
             <button id="saveConfigBtn" type="submit" class="filter-btn primary">Enregistrer la configuration</button>
           </div>
         </form>
-      </section>
+      </details>
 
     </div>
   </div>
