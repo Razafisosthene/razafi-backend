@@ -400,7 +400,13 @@ async function requireAdmin(req, res, next) {
       const allowOwnerClientRename =
         method === "POST" && fullPath === "/api/admin/client-devices/rename";
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename) {
+      // Phase 3A: owner can create plans only through the controlled price simulator.
+      // Route-level checks re-simulate, enforce pool scope, duplicate protection,
+      // visible-plan limits, and price tolerance.
+      const allowOwnerPlanSimulatorCreate =
+        method === "POST" && fullPath === "/api/admin/plan-simulator/create-plan";
+
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorCreate) {
         return next();
       }
 
@@ -8194,6 +8200,251 @@ app.put("/api/admin/plan-simulator/config", requireAdmin, requireSuperadmin, asy
     return res.status(e?.status || 500).json({
       ok: false,
       error: e?.message || "plan_simulator_config_update_error",
+    });
+  }
+});
+
+
+function normalizePlanSimulatorFinalName(value, fallback = "") {
+  const s = String(value || fallback || "")
+    .replace(/[\r\n\t]/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return s ? s.slice(0, 80) : "";
+}
+
+function planSimulatorRateLimitFromSpeed(speedMbps) {
+  const n = Number(speedMbps);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const rounded = Math.round(n * 100) / 100;
+  const txt = Number.isInteger(rounded) ? String(Math.trunc(rounded)) : String(rounded).replace(/\.0+$/, "");
+  return `${txt}M/${txt}M`;
+}
+
+async function getVisiblePlanCountForSimulator({ pool_id, type }) {
+  const cleanPoolId = String(pool_id || "").trim();
+  const cleanType = normalizePlanSimulatorType(type);
+  if (!supabase || !cleanPoolId || !cleanType) return 0;
+
+  let q = supabase
+    .from("plans")
+    .select("id", { count: "exact", head: true })
+    .eq("system", "mikrotik")
+    .eq("pool_id", cleanPoolId)
+    .eq("is_visible", true)
+    .eq("is_active", true);
+
+  if (cleanType === "unlimited") q = q.is("data_mb", null);
+  else q = q.not("data_mb", "is", null);
+
+  const { count, error } = await q;
+  if (error) throw error;
+  return Number(count || 0);
+}
+
+async function assertSimulatorVisiblePlanLimit({ pool_id, type, settings, is_visible }) {
+  if (!is_visible) return null;
+
+  const cleanType = normalizePlanSimulatorType(type);
+  const limit = cleanType === "unlimited"
+    ? Number(settings?.max_visible_unlimited_plans || 10)
+    : Number(settings?.max_visible_data_plans || 10);
+
+  if (!Number.isFinite(limit) || limit <= 0) return null;
+
+  const used = await getVisiblePlanCountForSimulator({ pool_id, type: cleanType });
+  if (used < limit) return { used, limit, remaining: Math.max(0, limit - used) };
+
+  const label = cleanType === "unlimited" ? "illimités" : "Data";
+  const err = new Error("visible_plan_limit_reached");
+  err.status = 409;
+  err.code = cleanType === "unlimited" ? "visible_unlimited_plan_limit_reached" : "visible_data_plan_limit_reached";
+  err.publicMessage = `Limite atteinte : ${used}/${limit} plans ${label} visibles dans ce pool. Masquez des plans dans admin avant de continuer.`;
+  err.usage = { used, limit, remaining: 0, type: cleanType };
+  throw err;
+}
+
+function normalizeSimulatorCreateVisibility(body = {}) {
+  // Default action creates a hidden plan. Only create_and_publish makes it visible.
+  const action = String(body.action || body.create_action || "create_hidden").trim().toLowerCase();
+  if (body.is_visible !== undefined) return toBool(body.is_visible) === true;
+  if (body.visible !== undefined) return toBool(body.visible) === true;
+  return action === "create_and_publish" || action === "publish" || action === "create_visible";
+}
+
+// POST /api/admin/plan-simulator/create-plan
+// Controlled plan creation from the simulator only.
+// Body: { type, data_gb?, duration_minutes? OR duration_value+duration_unit, speed_mbps, pool_id, final_price_ar?, final_name?, action? }
+app.post("/api/admin/plan-simulator/create-plan", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ ok: false, error: "supabase_not_configured" });
+
+    const body = req.body || {};
+    const pool_id = String(body.pool_id || body.poolId || "").trim();
+    if (!pool_id) return res.status(400).json({ ok: false, error: "pool_id_required", message: "Pool requis." });
+    if (!requirePoolScopeForAdmin(req, res, pool_id)) return;
+
+    const type = normalizePlanSimulatorType(body.type || body.plan_type || body.planType);
+    const duration_minutes = normalizePlanSimulatorDurationMinutes(body);
+    const data_gb = normalizePlanSimulatorDataGb(body, type);
+    const speed_mbps = normalizePlanSimulatorSpeedMbps(body);
+
+    const { settings, references, source } = await getPlanSimulatorConfig();
+    const validation = validatePlanSimulatorInput({
+      type,
+      data_gb,
+      duration_minutes,
+      speed_mbps,
+      settings,
+    });
+
+    const technical = {
+      type,
+      data_gb: type === "data" ? data_gb : null,
+      duration_minutes,
+      duration_label: duration_minutes ? planSimulatorDurationLabel(duration_minutes) : null,
+      speed_mbps,
+      pool_id,
+    };
+
+    if (validation.status === "blocked") {
+      return res.status(400).json({
+        ok: false,
+        error: validation.errors?.[0]?.code || "simulation_blocked",
+        message: validation.errors?.[0]?.message || "Simulation bloquée.",
+        status: "blocked",
+        errors: validation.errors,
+        warnings: validation.warnings,
+        technical,
+        settings: publicPlanSimulatorSettings(settings),
+        source,
+      });
+    }
+
+    const pricing = calculateSuggestedPlanPrice({
+      type,
+      data_gb,
+      duration_minutes,
+      speed_mbps,
+      settings,
+      references,
+    });
+
+    const suggestedName = suggestPlanSimulatorName({ type, data_gb, duration_minutes, speed_mbps });
+    const name = normalizePlanSimulatorFinalName(body.final_name || body.name || body.plan_name, suggestedName);
+    if (!name) return res.status(400).json({ ok: false, error: "name_required", message: "Nom du forfait requis." });
+
+    const rawFinalPrice = body.final_price_ar ?? body.price_ar ?? body.recommended_price_ar;
+    const finalPrice = rawFinalPrice === undefined || rawFinalPrice === null || String(rawFinalPrice).trim() === ""
+      ? Number(pricing.recommended_price_ar)
+      : Math.round(Number(rawFinalPrice));
+
+    if (!Number.isFinite(finalPrice) || finalPrice < 0) {
+      return res.status(400).json({ ok: false, error: "price_ar_invalid", message: "Prix invalide." });
+    }
+
+    const minPrice = Number(pricing.minimum_price_ar || 0);
+    const maxPrice = Number(pricing.maximum_price_ar || 0);
+    if (Number.isFinite(minPrice) && Number.isFinite(maxPrice) && maxPrice > 0) {
+      if (finalPrice < minPrice || finalPrice > maxPrice) {
+        return res.status(400).json({
+          ok: false,
+          error: "price_out_of_recommended_range",
+          message: `Prix hors plage recommandée (${minPrice.toLocaleString()} Ar à ${maxPrice.toLocaleString()} Ar).`,
+          recommended_price_ar: pricing.recommended_price_ar,
+          minimum_price_ar: minPrice,
+          maximum_price_ar: maxPrice,
+        });
+      }
+    }
+
+    const is_visible = normalizeSimulatorCreateVisibility(body);
+    await assertSimulatorVisiblePlanLimit({ pool_id, type, settings, is_visible });
+
+    const data_mb = type === "data" ? Math.round(Number(data_gb || 0) * 1024) : null;
+    const mikrotik_rate_limit = planSimulatorRateLimitFromSpeed(speed_mbps);
+    if (!mikrotik_rate_limit) {
+      return res.status(400).json({ ok: false, error: "speed_invalid", message: "Débit invalide." });
+    }
+
+    const duration_seconds = Math.max(60, Math.round(Number(duration_minutes) * 60));
+    const duration_hours = Math.max(1, Math.ceil(Number(duration_minutes) / 60));
+
+    const payload = {
+      name,
+      price_ar: finalPrice,
+      duration_hours,
+      duration_minutes,
+      duration_seconds,
+      system: "mikrotik",
+      pool_id,
+      data_mb,
+      max_devices: 1,
+      is_active: true,
+      is_visible,
+      sort_order: 0,
+      auto_hide_when_limit_reached: false,
+      sales_limit: null,
+      mikrotik_rate_limit,
+    };
+
+    try {
+      await assertNoDuplicatePlanTechnical({
+        system: payload.system,
+        pool_id: payload.pool_id,
+        duration_minutes: payload.duration_minutes,
+        data_mb: payload.data_mb,
+        mikrotik_rate_limit: payload.mikrotik_rate_limit,
+      });
+    } catch (dupErr) {
+      if (dupErr?.status === 409) {
+        return res.status(409).json({
+          ok: false,
+          error: "plan_duplicate_technical",
+          code: "plan_duplicate_technical",
+          message: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
+          duplicate: dupErr.duplicate || null,
+        });
+      }
+      throw dupErr;
+    }
+
+    const { data: created, error: createErr } = await supabase
+      .from("plans")
+      .insert(payload)
+      .select("*")
+      .single();
+
+    if (createErr) {
+      console.error("PLAN SIMULATOR CREATE PLAN DB ERROR", createErr);
+      return res.status(500).json({ ok: false, error: "plan_create_failed", message: "Création du forfait impossible." });
+    }
+
+    return res.json({
+      ok: true,
+      created: true,
+      plan: created,
+      plan_id: created?.id || null,
+      status: validation.status,
+      warnings: validation.warnings,
+      recommended_plan_name: suggestedName,
+      recommended_price_ar: pricing.recommended_price_ar,
+      final_plan_name: name,
+      final_price_ar: finalPrice,
+      is_visible,
+      technical,
+      nearest_reference: pricing.nearest_reference || null,
+      exact_reference: pricing.exact_reference || null,
+      settings: publicPlanSimulatorSettings(settings),
+      source,
+    });
+  } catch (e) {
+    console.error("PLAN SIMULATOR CREATE PLAN ERROR", e?.message || e);
+    return res.status(e?.status || 500).json({
+      ok: false,
+      error: e?.code || e?.message || "plan_simulator_create_error",
+      message: e?.publicMessage || "Erreur création forfait depuis simulateur.",
+      usage: e?.usage || undefined,
     });
   }
 });
