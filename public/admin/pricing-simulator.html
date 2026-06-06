@@ -70,6 +70,18 @@
     .rz-ref-editor-check{display:flex;align-items:center;gap:8px;height:44px;padding:0 10px;border-radius:16px;background:rgba(255,255,255,.75);border:1px solid rgba(15,23,42,.07);font-size:13px;font-weight:900;color:#334155;}
     .rz-ref-editor-check input{width:18px!important;height:18px!important;margin:0!important;accent-color:#0d6efd;}
 
+    .rz-assistant-card{margin-top:14px;padding:14px;border-radius:22px;background:rgba(248,250,252,.88);border:1px solid rgba(15,23,42,.08);}
+    .rz-assistant-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px;}
+    .rz-assistant-title{font-size:13px;font-weight:950;text-transform:uppercase;letter-spacing:.04em;color:#0f172a;}
+    .rz-assistant-confidence{display:inline-flex;align-items:center;padding:6px 9px;border-radius:999px;background:rgba(13,110,253,.10);color:#0d6efd;font-size:12px;font-weight:950;}
+    .rz-assistant-list{display:flex;flex-direction:column;gap:8px;}
+    .rz-assistant-item{padding:10px 11px;border-radius:17px;border:1px solid rgba(15,23,42,.07);background:rgba(255,255,255,.78);font-size:13px;line-height:1.35;color:#334155;font-weight:800;}
+    .rz-assistant-item strong{display:block;color:#0f172a;font-size:13px;margin-bottom:3px;}
+    .rz-assistant-item.opportunity{background:rgba(22,163,74,.08);border-color:rgba(22,163,74,.18);}
+    .rz-assistant-item.observation{background:rgba(245,158,11,.09);border-color:rgba(245,158,11,.20);}
+    .rz-assistant-item.suggestion{background:rgba(13,110,253,.08);border-color:rgba(13,110,253,.18);}
+    .rz-assistant-item.protection{background:rgba(254,242,242,.92);border-color:rgba(239,68,68,.22);color:#991b1b;}
+
     .rz-create-card{margin-top:18px;padding:15px;border-radius:24px;background:linear-gradient(180deg,rgba(239,246,255,.96),rgba(255,255,255,.94));border:1px solid rgba(13,110,253,.22);box-shadow:0 14px 30px rgba(13,110,253,.10);} 
     .rz-create-title{display:flex;align-items:center;gap:8px;color:#0f172a;font-size:13px;font-weight:950;text-transform:uppercase;letter-spacing:.04em;}
     .rz-create-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;}
@@ -150,6 +162,14 @@
         <section class="rz-simulator-panel" aria-labelledby="formTitle">
           <h2 id="formTitle">Détails du forfait</h2>
           <form id="simForm" class="rz-simulator-form">
+            <div class="rz-field full">
+              <label for="simPoolId">WiFi concerné</label>
+              <select id="simPoolId" required>
+                <option value="">Chargement des WiFi…</option>
+              </select>
+              <div id="simPoolIdError" class="rz-field-error"></div>
+            </div>
+
             <div class="rz-type-switch" role="group" aria-label="Type de forfait">
               <button id="typeDataBtn" class="rz-type-btn" type="button">Data limitée</button>
               <button id="typeUnlimitedBtn" class="rz-type-btn active" type="button">Illimité</button>
@@ -239,6 +259,14 @@
             <div class="rz-field">
               <label for="cfg_max_visible_unlimited_plans">Max plans Illimités visibles</label>
               <input id="cfg_max_visible_unlimited_plans" inputmode="numeric" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_minimum_price_ar">Prix minimum accepté (Ar)</label>
+              <input id="cfg_minimum_price_ar" inputmode="numeric" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_max_total_plans">Max forfaits total</label>
+              <input id="cfg_max_total_plans" inputmode="numeric" />
             </div>
           </div>
           <div id="referencesEditor" class="rz-ref-editor-list"></div>

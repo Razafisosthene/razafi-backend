@@ -7590,6 +7590,8 @@ const PLAN_SIMULATOR_DEFAULT_SETTINGS = Object.freeze({
   warning_usage_factor_pct: 90,
   max_visible_data_plans: 10,
   max_visible_unlimited_plans: 10,
+  minimum_price_ar: 400,
+  max_total_plans: 30,
   max_data_gb: 500,
   max_speed_mbps: 20,
   max_duration_days: 30,
@@ -7719,6 +7721,8 @@ function normalizePlanSimulatorSettingValue(key, value) {
   if (key === "warning_usage_factor_pct") return clampPlanSimulatorNumber(n, 10, 150, fallback);
   if (key === "max_visible_data_plans") return Math.round(clampPlanSimulatorNumber(n, 1, 100, fallback));
   if (key === "max_visible_unlimited_plans") return Math.round(clampPlanSimulatorNumber(n, 1, 100, fallback));
+  if (key === "minimum_price_ar") return Math.round(clampPlanSimulatorNumber(n, 0, 1000000, fallback));
+  if (key === "max_total_plans") return Math.round(clampPlanSimulatorNumber(n, 1, 10000, fallback));
   if (key === "max_data_gb") return clampPlanSimulatorNumber(n, 1, 100000, fallback);
   if (key === "max_speed_mbps") return clampPlanSimulatorNumber(n, 1, 1000, fallback);
   if (key === "max_duration_days") return clampPlanSimulatorNumber(n, 1, 3650, fallback);
@@ -7906,6 +7910,7 @@ function weightedPlanSimulatorReferencePrice({ target, references }) {
 function calculateSuggestedPlanPrice({ type, data_gb, duration_minutes, speed_mbps, settings, references }) {
   const target = { type, data_gb, duration_minutes, speed_mbps };
   const tolerancePct = clampPlanSimulatorNumber(settings?.price_tolerance_pct, 0, 100, 20);
+  const minimumAcceptedPriceAr = Math.max(0, Math.round(Number(settings?.minimum_price_ar ?? 400) || 400));
 
   // Exact reference rule:
   // If the requested technical plan exactly matches a configured pricing reference,
@@ -7913,11 +7918,11 @@ function calculateSuggestedPlanPrice({ type, data_gb, duration_minutes, speed_mb
   // changing "Illimité Jour 10M" from 3000 to 3500 must return 3500, not an interpolated value.
   const exact_reference = findExactPlanSimulatorReference({ target, references });
   if (exact_reference) {
-    const recommended = Number(exact_reference.price_ar || 0);
+    const recommended = Math.max(minimumAcceptedPriceAr, Number(exact_reference.price_ar || 0));
     return {
       recommended_price_ar: recommended,
-      minimum_price_ar: roundPlanSimulatorPriceAr(recommended * (1 - tolerancePct / 100)),
-      maximum_price_ar: roundPlanSimulatorPriceAr(recommended * (1 + tolerancePct / 100)),
+      minimum_price_ar: Math.max(minimumAcceptedPriceAr, roundPlanSimulatorPriceAr(recommended * (1 - tolerancePct / 100))),
+      maximum_price_ar: Math.max(minimumAcceptedPriceAr, roundPlanSimulatorPriceAr(recommended * (1 + tolerancePct / 100))),
       price_tolerance_pct: tolerancePct,
       nearest_reference: { ...exact_reference, distance: 0, exact_match: true },
       exact_reference: { ...exact_reference, exact_match: true },
@@ -7929,12 +7934,12 @@ function calculateSuggestedPlanPrice({ type, data_gb, duration_minutes, speed_mb
     references,
   });
 
-  const recommended = roundPlanSimulatorPriceAr(estimate?.price_ar || 0);
+  const recommended = Math.max(minimumAcceptedPriceAr, roundPlanSimulatorPriceAr(estimate?.price_ar || 0));
 
   return {
     recommended_price_ar: recommended,
-    minimum_price_ar: roundPlanSimulatorPriceAr(recommended * (1 - tolerancePct / 100)),
-    maximum_price_ar: roundPlanSimulatorPriceAr(recommended * (1 + tolerancePct / 100)),
+    minimum_price_ar: Math.max(minimumAcceptedPriceAr, roundPlanSimulatorPriceAr(recommended * (1 - tolerancePct / 100))),
+    maximum_price_ar: Math.max(minimumAcceptedPriceAr, roundPlanSimulatorPriceAr(recommended * (1 + tolerancePct / 100))),
     price_tolerance_pct: tolerancePct,
     nearest_reference: estimate?.nearest_reference || null,
     exact_reference: null,
@@ -8083,6 +8088,8 @@ function publicPlanSimulatorSettings(settings = {}) {
     max_duration_days: settings.max_duration_days,
     max_visible_data_plans: settings.max_visible_data_plans,
     max_visible_unlimited_plans: settings.max_visible_unlimited_plans,
+    minimum_price_ar: settings.minimum_price_ar,
+    max_total_plans: settings.max_total_plans,
     realistic_usage_factor_pct: settings.realistic_usage_factor_pct,
     warning_usage_factor_pct: settings.warning_usage_factor_pct,
     price_tolerance_pct: settings.price_tolerance_pct,
@@ -8266,6 +8273,171 @@ async function assertSimulatorVisiblePlanLimit({ pool_id, type, settings, is_vis
   throw err;
 }
 
+async function getTotalPlanCountForSimulator({ pool_id }) {
+  const cleanPoolId = String(pool_id || "").trim();
+  if (!supabase || !cleanPoolId) return 0;
+
+  const { count, error } = await supabase
+    .from("plans")
+    .select("id", { count: "exact", head: true })
+    .eq("system", "mikrotik")
+    .eq("pool_id", cleanPoolId)
+    .eq("is_active", true);
+
+  if (error) throw error;
+  return Number(count || 0);
+}
+
+async function assertSimulatorTotalPlanLimit({ pool_id, settings }) {
+  const limit = Number(settings?.max_total_plans || 30);
+  if (!Number.isFinite(limit) || limit <= 0) return null;
+
+  const used = await getTotalPlanCountForSimulator({ pool_id });
+  if (used < limit) return { used, limit, remaining: Math.max(0, limit - used) };
+
+  const err = new Error("max_total_plans_reached");
+  err.status = 409;
+  err.code = "max_total_plans_reached";
+  err.publicMessage = `Création impossible : ce WiFi contient déjà ${used} forfaits. La limite actuelle est de ${limit} forfaits.`;
+  err.usage = { used, limit, remaining: 0 };
+  throw err;
+}
+
+function parseSimulatorRateLimitMbps(rateLimit) {
+  const raw = String(rateLimit || "").trim();
+  const m = raw.match(/([0-9]+(?:\.[0-9]+)?)\s*M/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function monthsSinceDate(value) {
+  const t = value ? new Date(value).getTime() : NaN;
+  if (!Number.isFinite(t)) return null;
+  return Math.max(0, Math.floor((Date.now() - t) / (30 * 24 * 60 * 60 * 1000)));
+}
+
+function planSimilarityForAssistant(plan = {}, target = {}) {
+  const planDuration = normalizePlanDuplicateDurationMinutes(plan);
+  const targetDuration = Number(target.duration_minutes || 0);
+  if (!planDuration || !targetDuration) return false;
+
+  const planDataMb = normalizePlanDuplicateDataMb(plan.data_mb);
+  const targetDataMb = target.type === "data" ? Math.round(Number(target.data_gb || 0) * 1024) : null;
+  const sameType = target.type === "unlimited" ? planDataMb === null : planDataMb !== null;
+  if (!sameType) return false;
+
+  const planSpeed = parseSimulatorRateLimitMbps(plan.mikrotik_rate_limit);
+  const targetSpeed = Number(target.speed_mbps || 0);
+  const speedClose = !planSpeed || !targetSpeed ? true : Math.abs(planSpeed - targetSpeed) <= 1;
+  const durationClose = Math.abs(planDuration - targetDuration) <= Math.max(30, targetDuration * 0.2);
+
+  let dataClose = true;
+  if (target.type === "data") {
+    dataClose = planDataMb !== null && targetDataMb > 0 && Math.abs(planDataMb - targetDataMb) <= Math.max(512, targetDataMb * 0.25);
+  }
+
+  return speedClose && durationClose && dataClose;
+}
+
+async function buildPlanSimulatorAssistant({ pool_id, technical, pricing, settings }) {
+  const cleanPoolId = String(pool_id || "").trim();
+  const assistant = {
+    title: "Assistant RAZAFI",
+    confidence: "Moyenne",
+    messages: [],
+    stats: null,
+  };
+
+  if (!supabase || !cleanPoolId) {
+    assistant.confidence = "Faible";
+    assistant.messages.push({ type: "observation", title: "🟡 Observation", message: "Sélectionnez un WiFi pour obtenir une analyse plus précise." });
+    return assistant;
+  }
+
+  try {
+    const [{ data: pool }, { data: plans, error }] = await Promise.all([
+      supabase.from("internet_pools").select("id,name,brand_name").eq("id", cleanPoolId).maybeSingle(),
+      supabase.from("plans").select("id,name,price_ar,duration_minutes,duration_seconds,duration_hours,data_mb,is_visible,is_active,created_at,updated_at,mikrotik_rate_limit").eq("system", "mikrotik").eq("pool_id", cleanPoolId).eq("is_active", true).order("created_at", { ascending: false }),
+    ]);
+
+    if (error) throw error;
+
+    const rows = Array.isArray(plans) ? plans : [];
+    const visible = rows.filter((p) => p.is_visible === true);
+    const hidden = rows.filter((p) => p.is_visible !== true);
+    const typeRows = rows.filter((p) => technical?.type === "unlimited" ? p.data_mb === null : p.data_mb !== null);
+    const hiddenSimilar = hidden.filter((p) => planSimilarityForAssistant(p, technical));
+    const similar = rows.filter((p) => planSimilarityForAssistant(p, technical));
+    const price = Number(pricing?.recommended_price_ar || 0);
+    const tolerance = Math.max(100, price * 0.25);
+    const priceRangeMatches = rows.filter((p) => Math.abs(Number(p.price_ar || 0) - price) <= tolerance);
+    const limitTotal = Number(settings?.max_total_plans || 30);
+    const poolDisplayName = buildPoolDisplayName(pool) || cleanOptionalText(pool?.name, 120) || "ce WiFi";
+
+    assistant.stats = {
+      total_plans: rows.length,
+      visible_plans: visible.length,
+      hidden_plans: hidden.length,
+      similar_plans: similar.length,
+      similar_hidden_plans: hiddenSimilar.length,
+      price_range_matches: priceRangeMatches.length,
+      max_total_plans: Number.isFinite(limitTotal) ? limitTotal : null,
+      wifi_name: poolDisplayName,
+    };
+
+    if (hiddenSimilar.length) {
+      const p = hiddenSimilar[0];
+      const months = monthsSinceDate(p.updated_at || p.created_at);
+      let ageLine = "";
+      if (months !== null && months >= 6) ageLine = ` Dernière modification : il y a ${months} mois. Vérifiez qu'il est toujours adapté avant de le réactiver.`;
+      assistant.messages.push({
+        type: "suggestion",
+        title: "🔵 Suggestion",
+        message: `Un forfait similaire masqué existe déjà${poolDisplayName ? ` sur ${poolDisplayName}` : ""} : ${p.name}. Vous pouvez simplement le réactiver.${ageLine}`,
+      });
+    }
+
+    if (priceRangeMatches.length >= 2) {
+      assistant.messages.push({
+        type: "observation",
+        title: "🟡 Observation",
+        message: "Plusieurs offres similaires existent déjà dans cette gamme de prix.",
+      });
+    } else if (rows.length > 0) {
+      assistant.messages.push({
+        type: "opportunity",
+        title: "🟢 Opportunité",
+        message: "Cette offre complète une gamme de prix peu représentée.",
+      });
+    } else {
+      assistant.messages.push({
+        type: "opportunity",
+        title: "🟢 Opportunité",
+        message: "Cette offre peut aider à construire la première gamme de forfaits pour ce WiFi.",
+      });
+    }
+
+    if (Number.isFinite(limitTotal) && rows.length >= Math.max(0, limitTotal - 3)) {
+      assistant.messages.push({
+        type: "observation",
+        title: "🟡 Observation",
+        message: `Ce WiFi contient déjà ${rows.length}/${limitTotal} forfaits. Un nettoyage peut bientôt être utile.`,
+      });
+    }
+
+    assistant.confidence = rows.length >= 3 ? "Élevée" : (rows.length >= 1 ? "Moyenne" : "Faible");
+    if (hiddenSimilar.length) assistant.confidence = "Élevée";
+
+    return assistant;
+  } catch (e) {
+    console.error("PLAN SIMULATOR ASSISTANT ERROR", e?.message || e);
+    assistant.confidence = "Faible";
+    assistant.messages.push({ type: "observation", title: "🟡 Observation", message: "Analyse intelligente indisponible pour le moment. La simulation de prix reste utilisable." });
+    return assistant;
+  }
+}
+
 function normalizeSimulatorCreateVisibility(body = {}) {
   // Default action creates a hidden plan. Only create_and_publish makes it visible.
   const action = String(body.action || body.create_action || "create_hidden").trim().toLowerCase();
@@ -8361,6 +8533,7 @@ app.post("/api/admin/plan-simulator/create-plan", requireAdmin, async (req, res)
     }
 
     const is_visible = normalizeSimulatorCreateVisibility(body);
+    await assertSimulatorTotalPlanLimit({ pool_id, settings });
     await assertSimulatorVisiblePlanLimit({ pool_id, type, settings, is_visible });
 
     const data_mb = type === "data" ? Math.round(Number(data_gb || 0) * 1024) : null;
@@ -8411,6 +8584,13 @@ app.post("/api/admin/plan-simulator/create-plan", requireAdmin, async (req, res)
       throw dupErr;
     }
 
+    const assistant = await buildPlanSimulatorAssistant({
+      pool_id,
+      technical,
+      pricing,
+      settings,
+    });
+
     const { data: created, error: createErr } = await supabase
       .from("plans")
       .insert(payload)
@@ -8437,6 +8617,9 @@ app.post("/api/admin/plan-simulator/create-plan", requireAdmin, async (req, res)
       technical,
       nearest_reference: pricing.nearest_reference || null,
       exact_reference: pricing.exact_reference || null,
+      assistant,
+      assistant_confidence: assistant?.confidence || null,
+      assistant_messages: assistant?.messages || [],
       settings: publicPlanSimulatorSettings(settings),
       source,
     });
@@ -8457,6 +8640,10 @@ app.post("/api/admin/plan-simulator/simulate", requireAdmin, async (req, res) =>
   try {
     const body = req.body || {};
     const pool_id = String(body.pool_id || body.poolId || "").trim() || null;
+
+    if (!pool_id) {
+      return res.status(400).json({ ok: false, error: "pool_id_required", message: "Sélectionnez un WiFi avant de simuler." });
+    }
 
     if (pool_id && !requirePoolScopeForAdmin(req, res, pool_id)) return;
 
@@ -8517,6 +8704,13 @@ app.post("/api/admin/plan-simulator/simulate", requireAdmin, async (req, res) =>
       speed_mbps,
     });
 
+    const assistant = await buildPlanSimulatorAssistant({
+      pool_id,
+      technical,
+      pricing,
+      settings,
+    });
+
     return res.json({
       ok: true,
       simulation: true,
@@ -8530,6 +8724,9 @@ app.post("/api/admin/plan-simulator/simulate", requireAdmin, async (req, res) =>
       technical,
       nearest_reference: pricing.nearest_reference,
       exact_reference: pricing.exact_reference || null,
+      assistant,
+      assistant_confidence: assistant?.confidence || null,
+      assistant_messages: assistant?.messages || [],
       settings: publicSettings,
       source,
     });

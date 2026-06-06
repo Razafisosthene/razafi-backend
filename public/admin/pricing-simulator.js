@@ -42,6 +42,7 @@ function cleanErrorMessage(err) {
     final_price_invalid: "Le prix final est invalide.",
     final_price_out_of_range: "Le prix final doit rester dans la plage recommandée.",
     visible_plan_limit_reached: "Limite de forfaits visibles atteinte. Masquez un forfait dans Plans avant de continuer.",
+    max_total_plans_reached: "Limite totale de forfaits atteinte pour ce WiFi.",
     no_pools_assigned: "Aucun pool n’est assigné à ce compte.",
   };
   return map[raw] || raw || "Action impossible.";
@@ -109,6 +110,8 @@ const SETTING_KEYS = [
   "max_duration_days",
   "max_visible_data_plans",
   "max_visible_unlimited_plans",
+  "minimum_price_ar",
+  "max_total_plans",
 ];
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -119,10 +122,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   const typeUnlimitedBtn = document.getElementById("typeUnlimitedBtn");
   const dataField = document.getElementById("dataField");
   const dataGb = document.getElementById("dataGb");
+  const simPoolId = document.getElementById("simPoolId");
   const durationValue = document.getElementById("durationValue");
   const durationUnit = document.getElementById("durationUnit");
   const speedMbps = document.getElementById("speedMbps");
   const dataGbError = document.getElementById("dataGbError");
+  const simPoolIdError = document.getElementById("simPoolIdError");
   const durationValueError = document.getElementById("durationValueError");
   const durationUnitError = document.getElementById("durationUnitError");
   const speedMbpsError = document.getElementById("speedMbpsError");
@@ -226,7 +231,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function clearFieldErrors() {
-    for (const el of [dataGbError, durationValueError, durationUnitError, speedMbpsError]) {
+    for (const el of [dataGbError, simPoolIdError, durationValueError, durationUnitError, speedMbpsError]) {
       if (el) el.textContent = "";
     }
   }
@@ -240,6 +245,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       duration_unit: durationUnitError,
       speed: speedMbpsError,
       speed_mbps: speedMbpsError,
+      pool: simPoolIdError,
+      pool_id: simPoolIdError,
     };
     const target = map[field] || null;
     if (target) {
@@ -254,6 +261,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     const lower = raw.toLowerCase();
     let msg = raw || "Valeur incorrecte.";
 
+    if (lower.includes("wifi") || lower.includes("pool") || lower.includes("forbidden_pool")) {
+      setFieldError("pool", msg);
+      return true;
+    }
     if (lower.includes("débit") || lower.includes("vitesse") || lower.includes("speed") || lower.includes("mbps")) {
       setFieldError("speed", msg);
       return true;
@@ -295,6 +306,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       <div class="rz-config-line"><span>Facteur réaliste</span><span>${esc(formatSetting(settings.realistic_usage_factor_pct, "%"))}</span></div>
       <div class="rz-config-line"><span>Max data</span><span>${esc(formatSetting(settings.max_data_gb, " Go"))}</span></div>
       <div class="rz-config-line"><span>Max débit</span><span>${esc(formatSetting(settings.max_speed_mbps, " Mbps"))}</span></div>
+      <div class="rz-config-line"><span>Prix minimum accepté</span><span>${esc(formatSetting(settings.minimum_price_ar, " Ar"))}</span></div>
+      <div class="rz-config-line"><span>Max forfaits total</span><span>${esc(formatSetting(settings.max_total_plans, ""))}</span></div>
       <div class="rz-config-line"><span>Références actives</span><span>${references.filter(r => r.is_active !== false).length}</span></div>
     `;
 
@@ -349,6 +362,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   function currentSimulationPayload() {
     const payload = {
       type: currentType,
+      pool_id: String(simPoolId?.value || "").trim(),
       duration_value: Number(durationValue.value),
       duration_unit: String(durationUnit.value || "day"),
       speed_mbps: Number(speedMbps.value),
@@ -363,7 +377,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const name = poolDisplayNameFromRow(p);
       return `<option value="${esc(id)}" ${id === selected ? "selected" : ""}>${esc(name)}</option>`;
     }).join("");
-    return `<option value="">Sélectionner un pool…</option>${opts}`;
+    return `<option value="">Sélectionner un WiFi…</option>${opts}`;
   }
 
   function bindCreateControls() {
@@ -386,6 +400,38 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (goPlansBtn) {
       goPlansBtn.addEventListener("click", () => { window.location.href = "/admin/plans.html"; });
     }
+  }
+
+
+  function renderAssistantCard(data) {
+    const assistant = data?.assistant || null;
+    const messages = Array.isArray(assistant?.messages)
+      ? assistant.messages
+      : (Array.isArray(data?.assistant_messages) ? data.assistant_messages : []);
+    if (!messages.length) return "";
+
+    const confidence = assistant?.confidence || data?.assistant_confidence || "Moyenne";
+    const items = messages.map((m) => {
+      const type = String(m?.type || "observation").toLowerCase();
+      const title = m?.title || (type === "opportunity" ? "🟢 Opportunité" : type === "suggestion" ? "🔵 Suggestion" : type === "protection" ? "❌ Protection" : "🟡 Observation");
+      const message = m?.message || String(m || "");
+      return `
+        <div class="rz-assistant-item ${esc(type)}">
+          <strong>${esc(title)}</strong>
+          ${esc(message)}
+        </div>
+      `;
+    }).join("");
+
+    return `
+      <div class="rz-assistant-card">
+        <div class="rz-assistant-head">
+          <div class="rz-assistant-title">💡 Assistant RAZAFI</div>
+          <div class="rz-assistant-confidence">Confiance : ${esc(confidence)}</div>
+        </div>
+        <div class="rz-assistant-list">${items}</div>
+      </div>
+    `;
   }
 
   function renderResult(data) {
@@ -430,6 +476,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         </div>
       </div>
       ${message ? `<div class="rz-message ${esc(tone)}">${esc(message)}</div>` : ""}
+      ${renderAssistantCard(data)}
 
       <div class="rz-create-card">
         <div class="rz-create-title">🚀 Création du forfait</div>
@@ -445,8 +492,8 @@ document.addEventListener("DOMContentLoaded", async () => {
             <div id="finalPriceArError" class="rz-field-error"></div>
           </div>
           <div class="rz-field">
-            <label for="finalPoolId">Pool</label>
-            <select id="finalPoolId">${poolOptionsHtml()}</select>
+            <label for="finalPoolId">WiFi concerné</label>
+            <select id="finalPoolId">${poolOptionsHtml(String(data?.technical?.pool_id || currentSimulationPayload().pool_id || ""))}</select>
             <div id="finalPoolIdError" class="rz-field-error"></div>
           </div>
         </div>
@@ -491,6 +538,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       .filter((p) => p && p.id)
       .map((p) => ({ ...p, display_name: poolDisplayNameFromRow(p) }))
       .sort((a, b) => String(poolDisplayNameFromRow(a)).localeCompare(String(poolDisplayNameFromRow(b))));
+    if (simPoolId) {
+      const previous = String(simPoolId.value || "");
+      simPoolId.innerHTML = poolOptionsHtml(previous);
+      if (!previous && simulatorPools.length === 1) simPoolId.value = String(simulatorPools[0].id || "");
+    }
     return simulatorPools;
   }
 
@@ -613,15 +665,18 @@ document.addEventListener("DOMContentLoaded", async () => {
   async function simulate() {
     showError("");
     clearFieldErrors();
+    const poolId = String(simPoolId?.value || "").trim();
     const duration = Number(durationValue.value);
     const speed = Number(speedMbps.value);
     const unit = String(durationUnit.value || "day");
 
+    if (!poolId) { setFieldError("pool", "Sélectionnez un WiFi avant de simuler."); throw new Error("field_error"); }
     if (!Number.isFinite(duration) || duration <= 0) { setFieldError("duration", "Durée invalide."); throw new Error("field_error"); }
     if (!Number.isFinite(speed) || speed <= 0) { setFieldError("speed", "Vitesse invalide."); throw new Error("field_error"); }
 
     const payload = {
       type: currentType,
+      pool_id: poolId,
       duration_value: duration,
       duration_unit: unit,
       speed_mbps: speed,
