@@ -278,6 +278,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   const modalDeleteBtn = document.getElementById("modalDeleteBtn");
   const modalDuplicateBtn = document.getElementById("modalDuplicateBtn");
   const modalActionNote = document.getElementById("modalActionNote");
+  const duplicateModal = document.getElementById("duplicateModal");
+  const duplicateTitle = document.getElementById("duplicateTitle");
+  const duplicateSub = document.getElementById("duplicateSub");
+  const duplicatePoolList = document.getElementById("duplicatePoolList");
+  const duplicateError = document.getElementById("duplicateError");
+  const duplicateCancelBtn = document.getElementById("duplicateCancelBtn");
+  const duplicateConfirmBtn = document.getElementById("duplicateConfirmBtn");
 
   const f_name = document.getElementById("f_name");
   const f_price_ar = document.getElementById("f_price_ar");
@@ -719,30 +726,87 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (e.key === "Enter") loadPlans().catch(e => showError(e.message));
   });
 
+  function closeDuplicateModal() {
+    if (duplicateModal) duplicateModal.style.display = "none";
+    if (duplicateError) duplicateError.textContent = "";
+    if (duplicatePoolList) duplicatePoolList.innerHTML = "";
+  }
+
   function askDuplicateTargetPoolIds(plan) {
     const targets = getDuplicateTargetPools(plan);
     if (!targets.length) {
       window.alert("Aucun autre pool disponible pour dupliquer ce plan.");
-      return [];
+      return Promise.resolve([]);
     }
 
-    const list = targets.map((p, i) => `${i + 1}. ${p.name}`).join("\n");
-    const answer = window.prompt(
-      `Dupliquer le plan "${plan.name}" vers quel(s) pool(s) ?\n\n${list}\n\nEntrez les numéros séparés par une virgule. Exemple : 1,2`,
-      targets.length === 1 ? "1" : ""
-    );
-    if (answer === null) return [];
+    // Fallback kept for safety if the HTML modal is not present after a partial deploy.
+    if (!duplicateModal || !duplicatePoolList || !duplicateConfirmBtn || !duplicateCancelBtn) {
+      const list = targets.map((p, i) => `${i + 1}. ${p.name}`).join("\n");
+      const answer = window.prompt(
+        `Dupliquer le plan "${plan.name}" vers quel(s) pool(s) ?\n\n${list}\n\nEntrez les numéros séparés par une virgule. Exemple : 1,2`,
+        targets.length === 1 ? "1" : ""
+      );
+      if (answer === null) return Promise.resolve([]);
+      const selected = Array.from(new Set(
+        String(answer || "")
+          .split(/[,;\s]+/)
+          .map((x) => Number.parseInt(x, 10))
+          .filter((n) => Number.isFinite(n) && n >= 1 && n <= targets.length)
+          .map((n) => targets[n - 1].id)
+      ));
+      if (!selected.length) window.alert("Aucun pool valide sélectionné.");
+      return Promise.resolve(selected);
+    }
 
-    const selected = Array.from(new Set(
-      String(answer || "")
-        .split(/[,;\s]+/)
-        .map((x) => Number.parseInt(x, 10))
-        .filter((n) => Number.isFinite(n) && n >= 1 && n <= targets.length)
-        .map((n) => targets[n - 1].id)
-    ));
+    return new Promise((resolve) => {
+      if (duplicateTitle) duplicateTitle.textContent = "Dupliquer le plan";
+      if (duplicateSub) duplicateSub.textContent = `Choisissez le ou les pools où créer une copie de « ${plan.name} ».`;
+      if (duplicateError) duplicateError.textContent = "";
 
-    if (!selected.length) window.alert("Aucun pool valide sélectionné.");
-    return selected;
+      duplicatePoolList.innerHTML = targets.map((p) => `
+        <label class="rz-duplicate-pool-item">
+          <input type="checkbox" value="${esc(p.id)}" />
+          <span>${esc(p.name)}</span>
+        </label>
+      `).join("");
+
+      if (targets.length === 1) {
+        const only = duplicatePoolList.querySelector('input[type="checkbox"]');
+        if (only) only.checked = true;
+      }
+
+      const finish = (value) => {
+        duplicateCancelBtn.onclick = null;
+        duplicateConfirmBtn.onclick = null;
+        duplicateModal.onclick = null;
+        closeDuplicateModal();
+        resolve(value || []);
+      };
+
+      duplicateCancelBtn.onclick = () => finish([]);
+      duplicateConfirmBtn.onclick = () => {
+        const selected = Array.from(duplicatePoolList.querySelectorAll('input[type="checkbox"]:checked'))
+          .map((input) => String(input.value || "").trim())
+          .filter(Boolean);
+
+        const unique = Array.from(new Set(selected));
+        if (!unique.length) {
+          if (duplicateError) duplicateError.textContent = "Sélectionnez au moins un pool.";
+          return;
+        }
+        finish(unique);
+      };
+      duplicateModal.onclick = (e) => {
+        if (e.target === duplicateModal) finish([]);
+      };
+
+      duplicateModal.style.display = "flex";
+      try {
+        duplicateModal.scrollTop = 0;
+        const firstInput = duplicatePoolList.querySelector('input[type="checkbox"]');
+        if (firstInput) firstInput.focus({ preventScroll: true });
+      } catch (_) {}
+    });
   }
 
   async function duplicatePlanById(id, btn) {
@@ -752,7 +816,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
 
-    const targetPoolIds = askDuplicateTargetPoolIds(plan);
+    const targetPoolIds = await askDuplicateTargetPoolIds(plan);
     if (!targetPoolIds.length) return;
 
     const ok = window.confirm(`Dupliquer "${plan.name}" vers ${targetPoolIds.length} pool(s) ?`);

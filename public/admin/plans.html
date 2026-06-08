@@ -74,10 +74,20 @@
     .rz-plans-modal-card select{
       margin-bottom:0;
     }
-    .rz-modal-action-strip{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid rgba(15,23,42,.08);}
-    .rz-modal-action-strip .left-actions,.rz-modal-action-strip .right-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
-    .rz-modal-action-strip button{width:auto;}
+    .rz-modal-action-strip{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-top:14px;padding:12px;border-top:1px solid rgba(15,23,42,.08);border-radius:22px;background:rgba(255,255,255,.70);backdrop-filter:blur(12px);}
+    .rz-modal-action-strip .left-actions,.rz-modal-action-strip .right-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+    .rz-modal-action-strip button{width:auto;min-height:40px;padding:9px 12px;}
     .rz-modal-danger-note{font-size:12px;color:var(--rz-muted,#6b7280);font-weight:700;line-height:1.35;}
+
+    .rz-duplicate-card{border-radius:28px;background:rgba(255,255,255,.92);border:1px solid rgba(255,255,255,.92);box-shadow:0 24px 70px rgba(15,23,42,.20);backdrop-filter:blur(18px);}
+    .rz-duplicate-title{margin:0 0 4px 0;font-size:22px;letter-spacing:-.04em;color:var(--rz-text,#111827);}
+    .rz-duplicate-sub{margin:0 0 14px 0;color:var(--rz-muted,#6b7280);font-size:13px;line-height:1.35;}
+    .rz-duplicate-pool-list{display:grid;gap:10px;margin:12px 0;}
+    .rz-duplicate-pool-item{display:flex;align-items:center;gap:10px;padding:13px 14px;border-radius:18px;background:rgba(248,250,252,.82);border:1px solid rgba(15,23,42,.08);font-weight:900;color:var(--rz-text,#111827);cursor:pointer;}
+    .rz-duplicate-pool-item input{width:20px;height:20px;margin:0;accent-color:#0d6efd;flex:0 0 auto;}
+    .rz-duplicate-pool-item span{min-width:0;word-break:break-word;}
+    .rz-duplicate-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:14px;padding-top:12px;border-top:1px solid rgba(15,23,42,.08);}
+    .rz-duplicate-actions button{width:auto;min-height:42px;}
 
     @media (max-width:980px){.rz-plans-filter-grid{grid-template-columns:1fr 1fr;}.rz-plans-filter-grid .filter-search{grid-column:1/-1;}.rz-plans-filter-grid button{width:100%;}}
     @media (max-width:640px){
@@ -147,10 +157,15 @@
         font-size:15px;
         line-height:1.25;
       }
-      .rz-modal-action-strip{position:sticky;bottom:0;margin:12px -16px -16px;padding:12px 16px 16px;background:rgba(255,255,255,.92);backdrop-filter:blur(14px);border-radius:22px 22px 0 0;box-shadow:0 -10px 26px rgba(15,23,42,.08);}
-      .rz-modal-action-strip .left-actions,.rz-modal-action-strip .right-actions{width:100%;display:grid;grid-template-columns:1fr 1fr;gap:10px;}
-      .rz-modal-action-strip button{width:100%;min-height:48px;}
+      .rz-modal-action-strip{position:static;margin:12px 0 0;padding:12px;background:rgba(255,255,255,.78);backdrop-filter:blur(12px);border-radius:22px;box-shadow:none;}
+      .rz-modal-action-strip .left-actions,.rz-modal-action-strip .right-actions{width:100%;display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+      .rz-modal-action-strip button{width:100%;min-height:44px;padding:9px 10px;}
       .rz-modal-danger-note{display:none;}
+      .rz-duplicate-card{width:calc(100% - 24px)!important;max-width:440px!important;padding:16px!important;border-radius:26px;}
+      .rz-duplicate-title{font-size:21px;}
+      .rz-duplicate-pool-item{min-height:52px;padding:12px 14px;border-radius:18px;}
+      .rz-duplicate-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+      .rz-duplicate-actions button{width:100%;min-height:44px;}
     }
   </style>
 </head>
@@ -322,6 +337,21 @@
       </div>
     </div>
   </div>
+
+  <!-- Modal duplication de plan -->
+  <div id="duplicateModal" class="modal rz-duplicate-modal" style="display:none;">
+    <div class="card modal-card rz-duplicate-card" style="max-width: 460px;">
+      <h2 id="duplicateTitle" class="rz-duplicate-title">Dupliquer le plan</h2>
+      <p id="duplicateSub" class="rz-duplicate-sub">Choisissez le ou les pools où créer une copie.</p>
+      <div id="duplicatePoolList" class="rz-duplicate-pool-list"></div>
+      <div id="duplicateError" class="error" style="margin:8px 0;"></div>
+      <div class="rz-duplicate-actions">
+        <button id="duplicateCancelBtn" type="button" class="filter-btn">Annuler</button>
+        <button id="duplicateConfirmBtn" type="button" class="filter-btn primary">Dupliquer</button>
+      </div>
+    </div>
+  </div>
+
 
   <!-- NEW shared drawer -->
   <script src="/admin/nav.js"></script>
