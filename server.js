@@ -890,6 +890,7 @@ async function requireAdminPage(req, res, next) {
         "/audit.html",
         "/users.html",
         "/settings.html",
+        "/maintenance.html",
       ];
       if (forbidden.includes(p)) {
         return res.redirect("/admin/");
@@ -1549,6 +1550,7 @@ function buildAdminPermissions(admin) {
     audit_view: isSuperadmin,
     settings_manage: isSuperadmin,
     owner_revenue_view: isSuperadmin,
+    maintenance_manage: isSuperadmin,
   };
 }
 
@@ -1562,6 +1564,238 @@ app.get("/api/admin/me", requireAdmin, async (req, res) => {
     permissions: buildAdminPermissions(req.admin),
   });
 });
+
+// ------------------------------------------------------------
+// ADMIN: Maintenance DB (Superadmin only)
+// Safe V1: usage + preview + cleanup for technical tables only.
+// Business tables are intentionally never touched here.
+// ------------------------------------------------------------
+const MAINTENANCE_DB_LIMIT_BYTES = 500 * 1024 * 1024; // Supabase Free database limit reference
+
+const MAINTENANCE_CLEANUP_RULES = {
+  expired_admin_sessions: {
+    label: "Sessions admin expirées",
+    table: "admin_sessions",
+    dateColumn: "expires_at",
+    cutoffDays: 0,
+    cutoffMode: "now",
+  },
+  old_audit_logs_90d: {
+    label: "Audit logs de plus de 90 jours",
+    table: "audit_logs",
+    dateColumn: "created_at",
+    cutoffDays: 90,
+  },
+  old_logs_90d: {
+    label: "Logs système de plus de 90 jours",
+    table: "logs",
+    dateColumn: "created_at",
+    cutoffDays: 90,
+  },
+  old_radius_acct_sessions_30d: {
+    label: "RADIUS accounting de plus de 30 jours",
+    table: "radius_acct_sessions",
+    dateColumn: "updated_at",
+    cutoffDays: 30,
+  },
+};
+
+function maintenanceCutoffIso(rule) {
+  if (rule?.cutoffMode === "now") return new Date().toISOString();
+  const days = Math.max(1, Number(rule?.cutoffDays || 1));
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+async function maintenanceCountRule(rule) {
+  const cutoff = maintenanceCutoffIso(rule);
+  const { count, error } = await supabase
+    .from(rule.table)
+    .select("*", { count: "exact", head: true })
+    .lt(rule.dateColumn, cutoff);
+
+  if (error) throw error;
+  return { cutoff, count: Number(count || 0) };
+}
+
+function maintenancePreviewItem(key, rule, countInfo) {
+  return {
+    key,
+    label: rule.label,
+    table: rule.table,
+    date_column: rule.dateColumn,
+    cutoff_days: rule.cutoffMode === "now" ? null : Number(rule.cutoffDays || 0),
+    cutoff_iso: countInfo.cutoff,
+    count: Number(countInfo.count || 0),
+  };
+}
+
+async function buildMaintenancePreview() {
+  const items = [];
+  for (const [key, rule] of Object.entries(MAINTENANCE_CLEANUP_RULES)) {
+    try {
+      const countInfo = await maintenanceCountRule(rule);
+      items.push(maintenancePreviewItem(key, rule, countInfo));
+    } catch (e) {
+      items.push({
+        key,
+        label: rule.label,
+        table: rule.table,
+        date_column: rule.dateColumn,
+        cutoff_days: rule.cutoffMode === "now" ? null : Number(rule.cutoffDays || 0),
+        cutoff_iso: maintenanceCutoffIso(rule),
+        count: 0,
+        error: e?.message || "count_failed",
+      });
+    }
+  }
+  return items;
+}
+
+app.get("/api/admin/maintenance/usage", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+
+    const { data, error } = await supabase.rpc("get_public_table_sizes");
+    if (error) {
+      console.error("MAINTENANCE USAGE RPC ERROR", error);
+      return res.status(500).json({ error: "maintenance_usage_rpc_missing_or_failed", details: error.message });
+    }
+
+    const tables = (data || []).map((row) => ({
+      table_name: String(row?.table_name || ""),
+      total_bytes: Number(row?.total_bytes || 0),
+      total_size: row?.total_size || null,
+    })).filter((row) => row.table_name);
+
+    const usedBytes = tables.reduce((sum, row) => sum + Number(row.total_bytes || 0), 0);
+    const percent = MAINTENANCE_DB_LIMIT_BYTES > 0 ? (usedBytes / MAINTENANCE_DB_LIMIT_BYTES) * 100 : 0;
+
+    await insertAudit({
+      event_type: "maintenance_usage_view",
+      status: "info",
+      entity_type: "database",
+      actor_type: "admin",
+      actor_id: req.admin?.id || null,
+      message: "Maintenance DB usage viewed",
+      metadata: { used_bytes: usedBytes, table_count: tables.length },
+    });
+
+    return res.json({
+      ok: true,
+      used_bytes: usedBytes,
+      limit_bytes: MAINTENANCE_DB_LIMIT_BYTES,
+      percent,
+      tables,
+    });
+  } catch (e) {
+    console.error("MAINTENANCE USAGE ERROR", e?.message || e);
+    return res.status(500).json({ error: "maintenance_usage_failed" });
+  }
+});
+
+app.get("/api/admin/maintenance/preview", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const items = await buildMaintenancePreview();
+
+    await insertAudit({
+      event_type: "maintenance_preview",
+      status: "info",
+      entity_type: "database",
+      actor_type: "admin",
+      actor_id: req.admin?.id || null,
+      message: "Maintenance DB cleanup preview viewed",
+      metadata: { items },
+    });
+
+    return res.json({ ok: true, items });
+  } catch (e) {
+    console.error("MAINTENANCE PREVIEW ERROR", e?.message || e);
+    return res.status(500).json({ error: "maintenance_preview_failed" });
+  }
+});
+
+app.post("/api/admin/maintenance/cleanup", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+
+    const confirmation = String(req.body?.confirmation || "").trim();
+    if (confirmation !== "NETTOYER") {
+      return res.status(400).json({ error: "confirmation_required" });
+    }
+
+    const requestedKeys = Array.isArray(req.body?.keys)
+      ? req.body.keys.map((k) => String(k || "").trim()).filter(Boolean)
+      : [];
+
+    const validKeys = requestedKeys.filter((key) => Object.prototype.hasOwnProperty.call(MAINTENANCE_CLEANUP_RULES, key));
+    if (!validKeys.length) {
+      return res.status(400).json({ error: "no_valid_cleanup_selection" });
+    }
+
+    const results = [];
+    for (const key of validKeys) {
+      const rule = MAINTENANCE_CLEANUP_RULES[key];
+      const cutoff = maintenanceCutoffIso(rule);
+
+      const { count, error: countErr } = await supabase
+        .from(rule.table)
+        .select("*", { count: "exact", head: true })
+        .lt(rule.dateColumn, cutoff);
+
+      if (countErr) {
+        results.push({ key, label: rule.label, table: rule.table, cutoff_iso: cutoff, deleted: 0, error: countErr.message || "count_failed" });
+        continue;
+      }
+
+      const beforeCount = Number(count || 0);
+      if (beforeCount <= 0) {
+        results.push({ key, label: rule.label, table: rule.table, cutoff_iso: cutoff, deleted: 0 });
+        continue;
+      }
+
+      const { error: delErr } = await supabase
+        .from(rule.table)
+        .delete()
+        .lt(rule.dateColumn, cutoff);
+
+      if (delErr) {
+        results.push({ key, label: rule.label, table: rule.table, cutoff_iso: cutoff, deleted: 0, error: delErr.message || "delete_failed" });
+        continue;
+      }
+
+      results.push({ key, label: rule.label, table: rule.table, cutoff_iso: cutoff, deleted: beforeCount });
+    }
+
+    const totalDeleted = results.reduce((sum, r) => sum + Number(r.deleted || 0), 0);
+    const hasError = results.some((r) => r.error);
+
+    await insertAudit({
+      event_type: "maintenance_cleanup",
+      status: hasError ? "warning" : "success",
+      entity_type: "database",
+      actor_type: "admin",
+      actor_id: req.admin?.id || null,
+      message: `Maintenance DB cleanup deleted ${totalDeleted} rows`,
+      metadata: { requested_keys: requestedKeys, valid_keys: validKeys, results, total_deleted: totalDeleted },
+    });
+
+    try {
+      await insertLog({
+        event_type: "maintenance_cleanup",
+        status: hasError ? "warning" : "success",
+        short_message: `Maintenance DB cleanup deleted ${totalDeleted} rows`,
+        meta: { valid_keys: validKeys, results, total_deleted: totalDeleted },
+      });
+    } catch (_) {}
+
+    return res.json({ ok: !hasError, total_deleted: totalDeleted, results });
+  } catch (e) {
+    console.error("MAINTENANCE CLEANUP ERROR", e?.message || e);
+    return res.status(500).json({ error: "maintenance_cleanup_failed" });
+  }
+});
+
 // ------------------------------------------------------------
 // ADMIN: Users (Superadmin only) + Pool assignments
 // ------------------------------------------------------------

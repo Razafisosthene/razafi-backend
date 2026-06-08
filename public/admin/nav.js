@@ -83,6 +83,9 @@
 <a class="rz-item" data-href="/admin/audit.html" href="/admin/audit.html" id="rzNavAudit">
             <span class="rz-item-label">AUDIT</span>
           </a>
+          <a class="rz-item" data-href="/admin/maintenance.html" href="/admin/maintenance.html" id="rzNavMaintenance">
+            <span class="rz-item-label">Maintenance DB</span>
+          </a>
         </nav>
 
         <div class="rz-drawer-foot">
@@ -187,16 +190,20 @@
         const elUsers = $("#rzNavUsers");
         const elBlocked = $("#rzNavBlocked");
         const elOwnerRevenue = $("#rzNavOwnerRevenue");
+        const elMaintenance = $("#rzNavMaintenance");
         if (elAPs) elAPs.style.display = "none";
         if (elAudit) elAudit.style.display = "none";
         if (elUsers) elUsers.style.display = "none";
         if (elOwnerRevenue) elOwnerRevenue.style.display = "none";
+        if (elMaintenance) elMaintenance.style.display = "none";
       } else {
         // Superadmin only: show Users and Owner Revenue (if present)
         const elUsers = $("#rzNavUsers");
         const elOwnerRevenue = $("#rzNavOwnerRevenue");
+        const elMaintenance = $("#rzNavMaintenance");
         if (elUsers) elUsers.style.display = "";
         if (elOwnerRevenue) elOwnerRevenue.style.display = "";
+        if (elMaintenance) elMaintenance.style.display = "";
       }
 
 // drawer label

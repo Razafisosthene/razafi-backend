@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAZAFI Admin — Maintenance DB</title>
+  <link rel="stylesheet" href="/admin/admin.css" />
+</head>
+<body>
+  <div class="login-container">
+    <div class="card rz-maintenance-shell" style="max-width: 1100px; width: 96%;">
+      <div class="topbar">
+        <div class="title">
+          <h1 class="rz-hero-title">Maintenance DB</h1>
+          <div id="me" class="rz-owner-chip">Vérification de la session...</div>
+          <div class="rz-hero-subtitle">Surveillance et nettoyage sécurisé des données techniques.</div>
+        </div>
+      </div>
+
+      <div id="error" class="error"></div>
+
+      <div class="rz-maintenance-grid">
+        <section class="rz-maintenance-card">
+          <h2 class="rz-maintenance-title">📦 Database usage</h2>
+          <div class="rz-maintenance-muted">Limite de référence Supabase Free : 500 MB.</div>
+          <div id="usageBig" class="rz-db-big">Chargement…</div>
+          <div id="usageSub" class="rz-maintenance-muted"></div>
+          <div class="rz-db-progress-track" aria-label="Utilisation database">
+            <div id="usageBar" class="rz-db-progress-fill"></div>
+          </div>
+          <div class="rz-maintenance-actions">
+            <button type="button" id="refreshUsageBtn" class="filter-btn primary">Actualiser</button>
+          </div>
+        </section>
+
+        <section class="rz-maintenance-card rz-maintenance-danger">
+          <h2 class="rz-maintenance-title">Nettoyage sécurisé</h2>
+          <div class="rz-maintenance-muted">
+            V1 nettoie uniquement les données techniques. Les plans, transactions, vouchers, clients et pools ne sont jamais touchés ici.
+          </div>
+          <div class="rz-maintenance-actions">
+            <button type="button" id="previewBtn" class="filter-btn primary">Prévisualiser</button>
+          </div>
+        </section>
+      </div>
+
+      <section class="rz-maintenance-card">
+        <h2 class="rz-maintenance-title">Prévisualisation du nettoyage</h2>
+        <div class="rz-maintenance-muted">Coche uniquement ce que tu veux nettoyer après la prévisualisation.</div>
+        <div id="previewList"></div>
+      </section>
+
+      <section class="rz-maintenance-card rz-maintenance-danger">
+        <h2 class="rz-maintenance-title">Confirmation</h2>
+        <div class="rz-maintenance-muted">Pour lancer le nettoyage sélectionné, tape exactement : <strong>NETTOYER</strong></div>
+        <input id="confirmInput" type="text" placeholder="Tape NETTOYER" autocomplete="off" />
+        <div class="rz-maintenance-actions">
+          <button type="button" id="cleanupBtn" class="danger">Nettoyer la sélection</button>
+        </div>
+        <div id="result" class="rz-maintenance-result" style="display:none;"></div>
+      </section>
+
+      <section class="rz-maintenance-card">
+        <h2 class="rz-maintenance-title">Tables les plus lourdes</h2>
+        <div class="table-wrap">
+          <table class="rz-maintenance-table">
+            <thead>
+              <tr>
+                <th>Table</th>
+                <th>Taille</th>
+              </tr>
+            </thead>
+            <tbody id="tablesRows">
+              <tr><td colspan="2">Chargement…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script src="/admin/nav.js"></script>
+  <script src="/admin/maintenance.js"></script>
+</body>
+</html>
