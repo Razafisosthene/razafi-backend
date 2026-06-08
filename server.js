@@ -408,7 +408,12 @@ async function requireAdmin(req, res, next) {
       const allowOwnerPlanSimulatorCreate =
         method === "POST" && fullPath === "/api/admin/plan-simulator/create-plan";
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate) {
+      // Phase 3C: owner can duplicate plans only between their own assigned pools.
+      // Route-level checks below enforce source + target pool scope.
+      const allowOwnerPlanDuplicate =
+        method === "POST" && /^\/api\/admin\/plans\/[^/]+\/duplicate$/.test(fullPath);
+
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate) {
         return next();
       }
 
@@ -8866,6 +8871,127 @@ const payload = {
     return res.json({ ok: true, plan: data });
   } catch (e) {
     console.error("ADMIN PLANS CREATE EX", e);
+    return res.status(500).json({ error: "internal error" });
+  }
+});
+
+app.post("/api/admin/plans/:id/duplicate", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const sourceId = String(req.params.id || "").trim();
+    const rawTargets = Array.isArray(req.body?.target_pool_ids)
+      ? req.body.target_pool_ids
+      : (Array.isArray(req.body?.pool_ids) ? req.body.pool_ids : []);
+
+    const targetPoolIds = Array.from(new Set(
+      rawTargets
+        .map((v) => String(v || "").trim())
+        .filter(Boolean)
+    ));
+
+    if (!sourceId) return res.status(400).json({ error: "plan_id_required" });
+    if (!targetPoolIds.length) return res.status(400).json({ error: "target_pool_ids_required" });
+
+    const { data: sourcePlan, error: sourceErr } = await supabase
+      .from("plans")
+      .select("id,name,price_ar,duration_hours,data_mb,max_devices,is_active,is_visible,sort_order,duration_minutes,system,duration_seconds,mikrotik_rate_limit,auto_hide_when_limit_reached,sales_limit,pool_id")
+      .eq("id", sourceId)
+      .maybeSingle();
+
+    if (sourceErr) {
+      console.error("ADMIN PLANS DUPLICATE SOURCE LOAD ERROR", sourceErr);
+      return res.status(500).json({ error: "db_error" });
+    }
+    if (!sourcePlan) return res.status(404).json({ error: "plan_not_found" });
+
+    const sourcePoolId = String(sourcePlan.pool_id || "").trim();
+    if (!sourcePoolId) return res.status(400).json({ error: "source_pool_required" });
+
+    const finalTargetPoolIds = targetPoolIds.filter((pid) => pid && pid !== sourcePoolId);
+    if (!finalTargetPoolIds.length) {
+      return res.status(400).json({ error: "target_pool_must_be_different" });
+    }
+
+    if (!req.admin?.is_superadmin) {
+      const allowedPools = Array.isArray(req.admin?.pool_ids) ? req.admin.pool_ids.map(String) : [];
+      if (!allowedPools.length) return res.status(403).json({ error: "no_pools_assigned" });
+      if (!allowedPools.includes(sourcePoolId)) return res.status(403).json({ error: "forbidden_source_pool" });
+      const forbiddenTarget = finalTargetPoolIds.find((pid) => !allowedPools.includes(pid));
+      if (forbiddenTarget) return res.status(403).json({ error: "forbidden_target_pool" });
+    }
+
+    const { data: targetPools, error: targetPoolsErr } = await supabase
+      .from("internet_pools")
+      .select("id")
+      .in("id", finalTargetPoolIds);
+
+    if (targetPoolsErr) {
+      console.error("ADMIN PLANS DUPLICATE TARGET POOLS ERROR", targetPoolsErr);
+      return res.status(500).json({ error: "db_error" });
+    }
+
+    const existingTargetIds = new Set((targetPools || []).map((p) => String(p.id)));
+    const missingTarget = finalTargetPoolIds.find((pid) => !existingTargetIds.has(pid));
+    if (missingTarget) return res.status(400).json({ error: "target_pool_not_found" });
+
+    for (const targetPoolId of finalTargetPoolIds) {
+      try {
+        await assertNoDuplicatePlanTechnical({
+          system: sourcePlan.system || "mikrotik",
+          pool_id: targetPoolId,
+          duration_minutes: sourcePlan.duration_minutes,
+          duration_seconds: sourcePlan.duration_seconds,
+          duration_hours: sourcePlan.duration_hours,
+          data_mb: sourcePlan.data_mb,
+          mikrotik_rate_limit: sourcePlan.mikrotik_rate_limit,
+        });
+      } catch (dupErr) {
+        if (dupErr?.status === 409) {
+          return res.status(409).json({
+            error: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
+            code: "plan_duplicate_technical",
+            message: dupErr.publicMessage || PLAN_DUPLICATE_MESSAGE,
+            target_pool_id: targetPoolId,
+            duplicate: dupErr.duplicate || null,
+          });
+        }
+        console.error("ADMIN PLANS DUPLICATE CHECK ERROR", dupErr);
+        return res.status(500).json({ error: "db_error" });
+      }
+    }
+
+    const rows = finalTargetPoolIds.map((targetPoolId) => ({
+      name: sourcePlan.name,
+      price_ar: sourcePlan.price_ar,
+      duration_hours: sourcePlan.duration_hours,
+      data_mb: sourcePlan.data_mb,
+      max_devices: sourcePlan.max_devices,
+      is_active: sourcePlan.is_active,
+      is_visible: sourcePlan.is_visible,
+      sort_order: sourcePlan.sort_order,
+      duration_minutes: sourcePlan.duration_minutes,
+      system: sourcePlan.system || "mikrotik",
+      duration_seconds: sourcePlan.duration_seconds,
+      mikrotik_rate_limit: sourcePlan.mikrotik_rate_limit,
+      auto_hide_when_limit_reached: sourcePlan.auto_hide_when_limit_reached,
+      sales_limit: sourcePlan.sales_limit,
+      pool_id: targetPoolId,
+    }));
+
+    const { data: inserted, error: insertErr } = await supabase
+      .from("plans")
+      .insert(rows)
+      .select("*");
+
+    if (insertErr) {
+      console.error("ADMIN PLANS DUPLICATE INSERT ERROR", insertErr);
+      return res.status(500).json({ error: "db_error" });
+    }
+
+    return res.json({ ok: true, plans: inserted || [], count: (inserted || []).length });
+  } catch (e) {
+    console.error("ADMIN PLANS DUPLICATE EX", e);
     return res.status(500).json({ error: "internal error" });
   }
 });

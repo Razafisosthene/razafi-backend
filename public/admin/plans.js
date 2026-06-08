@@ -121,6 +121,14 @@ function isPlanSoftDeleted(plan) {
   return !!(plan && !plan.is_active && !plan.is_visible);
 }
 
+function getDuplicateTargetPools(plan) {
+  const sourcePoolId = String(plan?.pool_id || "").trim();
+  if (!sourcePoolId) return [];
+  return (mikrotikPoolsCache || [])
+    .filter((p) => p && p.id && String(p.id) !== sourcePoolId)
+    .map((p) => ({ id: String(p.id), name: String(p.name || p.id) }));
+}
+
 function renderVisibilityAction(plan) {
   if (!ownerPlanVisibilityOnly || !plan || isPlanSoftDeleted(plan)) {
     return `<span class="rz-row-chevron">Ouvrir ›</span>`;
@@ -128,13 +136,21 @@ function renderVisibilityAction(plan) {
 
   const nextVisible = !plan.is_visible;
   const label = nextVisible ? "Afficher" : "Masquer";
+  const duplicateTargets = getDuplicateTargetPools(plan);
+  const duplicateHtml = duplicateTargets.length
+    ? `<button class="rz-plan-duplicate-btn" type="button" data-plan-duplicate="${esc(plan.id)}" aria-label="Dupliquer ce plan">Dupliquer</button>`
+    : "";
+
   return `
-    <button
-      class="rz-plan-visibility-btn"
-      type="button"
-      data-plan-visible-toggle="${esc(plan.id)}"
-      data-next-visible="${nextVisible ? "1" : "0"}"
-      aria-label="${esc(label)} ce plan sur le portail">${esc(label)}</button>
+    <div class="rz-plan-actions">
+      <button
+        class="rz-plan-visibility-btn"
+        type="button"
+        data-plan-visible-toggle="${esc(plan.id)}"
+        data-next-visible="${nextVisible ? "1" : "0"}"
+        aria-label="${esc(label)} ce plan sur le portail">${esc(label)}</button>
+      ${duplicateHtml}
+    </div>
   `;
 }
 
@@ -260,6 +276,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const saveBtn = document.getElementById("saveBtn");
   const modalToggleBtn = document.getElementById("modalToggleBtn");
   const modalDeleteBtn = document.getElementById("modalDeleteBtn");
+  const modalDuplicateBtn = document.getElementById("modalDuplicateBtn");
   const modalActionNote = document.getElementById("modalActionNote");
 
   const f_name = document.getElementById("f_name");
@@ -385,9 +402,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!modalToggleBtn || !modalDeleteBtn) return;
     const isNew = mode === "new" || !plan;
     const deleted = isPlanSoftDeleted(plan);
+    const canFullManage = !window.__IS_READONLY && !ownerPlanVisibilityOnly;
+    const duplicateTargets = (!isNew && !deleted) ? getDuplicateTargetPools(plan) : [];
 
-    modalToggleBtn.style.display = isNew || deleted ? "none" : "";
-    modalDeleteBtn.style.display = isNew ? "none" : "";
+    modalToggleBtn.style.display = canFullManage && !isNew && !deleted ? "" : "none";
+    modalDeleteBtn.style.display = canFullManage && !isNew ? "" : "none";
+    if (modalDuplicateBtn) modalDuplicateBtn.style.display = duplicateTargets.length ? "" : "none";
 
     if (!isNew && !deleted) {
       modalToggleBtn.textContent = plan.is_active ? "Désactiver" : "Activer";
@@ -522,6 +542,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (poolHint) poolHint.textContent = poolHintDefault;
     if (modalToggleBtn) modalToggleBtn.style.display = "none";
     if (modalDeleteBtn) modalDeleteBtn.style.display = "none";
+    if (modalDuplicateBtn) modalDuplicateBtn.style.display = "none";
     if (modalActionNote) modalActionNote.style.display = "none";
     setFormError("");
   }
@@ -698,6 +719,67 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (e.key === "Enter") loadPlans().catch(e => showError(e.message));
   });
 
+  function askDuplicateTargetPoolIds(plan) {
+    const targets = getDuplicateTargetPools(plan);
+    if (!targets.length) {
+      window.alert("Aucun autre pool disponible pour dupliquer ce plan.");
+      return [];
+    }
+
+    const list = targets.map((p, i) => `${i + 1}. ${p.name}`).join("\n");
+    const answer = window.prompt(
+      `Dupliquer le plan "${plan.name}" vers quel(s) pool(s) ?\n\n${list}\n\nEntrez les numéros séparés par une virgule. Exemple : 1,2`,
+      targets.length === 1 ? "1" : ""
+    );
+    if (answer === null) return [];
+
+    const selected = Array.from(new Set(
+      String(answer || "")
+        .split(/[,;\s]+/)
+        .map((x) => Number.parseInt(x, 10))
+        .filter((n) => Number.isFinite(n) && n >= 1 && n <= targets.length)
+        .map((n) => targets[n - 1].id)
+    ));
+
+    if (!selected.length) window.alert("Aucun pool valide sélectionné.");
+    return selected;
+  }
+
+  async function duplicatePlanById(id, btn) {
+    const plan = lastPlansById[id];
+    if (!plan) {
+      showError("Plan introuvable. Actualisez puis réessayez.");
+      return;
+    }
+
+    const targetPoolIds = askDuplicateTargetPoolIds(plan);
+    if (!targetPoolIds.length) return;
+
+    const ok = window.confirm(`Dupliquer "${plan.name}" vers ${targetPoolIds.length} pool(s) ?`);
+    if (!ok) return;
+
+    setBusy(btn, true, "Duplication…");
+    setFormError("");
+    showError("");
+    try {
+      await fetchJSON(`/api/admin/plans/${encodeURIComponent(id)}/duplicate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target_pool_ids: targetPoolIds }),
+      });
+
+      const snapshot = { id, name: plan.name, pool_id: plan.pool_id };
+      closeModal();
+      await reloadAll();
+      flashPlanRow(snapshot, "Dupliqué ✅");
+    } catch (err) {
+      if (modal && modal.style.display !== "none") setFormError(err.message);
+      else showError(err.message);
+    } finally {
+      setBusy(btn, false);
+    }
+  }
+
   async function togglePlanVisibilityById(id, nextVisible, btn) {
     if (!id || !ownerPlanVisibilityOnly) return;
 
@@ -756,6 +838,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   rowsEl.addEventListener("click", async (e) => {
+    const duplicateBtn = e.target.closest("[data-plan-duplicate]");
+    if (duplicateBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      await duplicatePlanById(duplicateBtn.getAttribute("data-plan-duplicate"), duplicateBtn);
+      return;
+    }
+
     const visibilityBtn = e.target.closest("[data-plan-visible-toggle]");
     if (visibilityBtn) {
       e.preventDefault();
@@ -778,6 +868,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     e.preventDefault();
     await openPlanDetailsById(row.getAttribute("data-plan-id"));
   });
+
+  if (modalDuplicateBtn) {
+    modalDuplicateBtn.addEventListener("click", async () => {
+      if (!editingId) return;
+      await duplicatePlanById(editingId, modalDuplicateBtn);
+    });
+  }
 
   if (modalToggleBtn) {
     modalToggleBtn.addEventListener("click", async () => {
