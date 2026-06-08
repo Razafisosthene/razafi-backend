@@ -80,7 +80,7 @@
           <a class="rz-item" data-href="/admin/users.html" href="/admin/users.html" id="rzNavUsers">
             <span class="rz-item-label">Users</span>
           </a>
-<a class="rz-item" data-href="/admin/audit.html" href="/admin/audit.html" id="rzNavAudit">
+          <a class="rz-item" data-href="/admin/audit.html" href="/admin/audit.html" id="rzNavAudit">
             <span class="rz-item-label">AUDIT</span>
           </a>
           <a class="rz-item" data-href="/admin/maintenance.html" href="/admin/maintenance.html" id="rzNavMaintenance">
@@ -210,9 +210,9 @@
       const meDrawer = $("#rzDrawerMe");
       if (meDrawer) meDrawer.textContent = `Connected as ${email}`;
 
-      // pages that show #me
+      // pages that show #me (support English + French placeholders)
       const meInline = document.getElementById("me");
-      if (meInline && /checking session|loading/i.test(meInline.textContent || "")) {
+      if (meInline && /checking session|loading|vérification de la session|verification de la session/i.test(meInline.textContent || "")) {
         meInline.textContent = email;
       }
 

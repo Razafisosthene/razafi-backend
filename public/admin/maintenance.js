@@ -52,6 +52,19 @@ function setBusy(btn, busy, text) {
   }
 }
 
+async function loadCurrentAdmin() {
+  const meEl = document.getElementById("me");
+  try {
+    const admin = await fetchJSON("/api/admin/me");
+    const email = admin?.email || admin?.username || "admin";
+    if (meEl) meEl.textContent = email;
+    return admin;
+  } catch (e) {
+    if (meEl) meEl.textContent = "Session indisponible";
+    throw e;
+  }
+}
+
 async function loadUsage() {
   const usageBig = document.getElementById("usageBig");
   const usageSub = document.getElementById("usageSub");
@@ -200,6 +213,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   try {
+    await loadCurrentAdmin();
     await loadUsage();
     await loadPreview();
   } catch (e) {
