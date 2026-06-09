@@ -6,14 +6,24 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="stylesheet" href="/admin/admin.css" />
 </head>
-<body>
+<body class="rz-login-page">
 
-  <div class="login-container">
-    <div class="card">
-      <h1>RAZAFI WiFi</h1>
-      <p class="subtitle">Accès administrateur</p>
+  <div class="login-container rz-login-container">
+    <div class="card rz-login-card">
+      <h1 class="rz-login-title">Connexion à RAZAFI</h1>
+      <p class="subtitle rz-login-subtitle">Accès sécurisé à votre espace administrateur</p>
 
-      <form id="loginForm">
+      <div class="rz-login-google-section">
+        <div id="googleSignInButton" class="rz-login-google-button"></div>
+      </div>
+
+      <div class="rz-login-divider" aria-hidden="true">
+        <span></span>
+        <strong>ou</strong>
+        <span></span>
+      </div>
+
+      <form id="loginForm" class="rz-login-form">
         <input
           type="email"
           id="email"
@@ -30,13 +40,17 @@
           autocomplete="current-password"
         />
 
-        <button type="submit">Se connecter</button>
+        <button type="submit" class="rz-login-submit">Se connecter</button>
       </form>
 
-      <div class="subtitle" style="margin:14px 0 10px; font-size:13px;">ou</div>
-      <div id="googleSignInButton" style="display:flex; justify-content:center;"></div>
+      <div id="error" class="error rz-login-error"></div>
 
-      <div id="error" class="error"></div>
+      <div class="rz-login-owner-cta">
+        <div>Vous souhaitez vendre du WiFi avec RAZAFI&nbsp;?</div>
+        <a href="https://wa.me/261340500592" target="_blank" rel="noopener noreferrer">
+          Contacter RAZAFI sur WhatsApp
+        </a>
+      </div>
     </div>
   </div>
 
