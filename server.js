@@ -951,6 +951,9 @@ const USER_LANGUAGE = "FR";
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+// Google Sign-In (admin auth V2 - optional, backward-compatible)
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || ""; // reserved for future OAuth-code flow
 
 const TANAZA_BASE_URL = process.env.TANAZA_BASE_URL || "https://app-graph.tanaza.com/api/v1";
 const TANAZA_API_TOKEN = process.env.TANAZA_API_TOKEN;
@@ -1205,6 +1208,100 @@ if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
 }
 
 // ===============================
+// ADMIN AUTH — SHARED SESSION HELPER
+// ===============================
+async function createAdminSessionCookie(res, admin) {
+  // Housekeeping: delete expired sessions (safe + keeps table small)
+  try {
+    await supabase
+      .from("admin_sessions")
+      .delete()
+      .lt("expires_at", new Date().toISOString());
+  } catch (_) {}
+
+  const token = generateSessionToken();
+  const tokenHash = hashToken(token);
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+  const { error: insErr } = await supabase.from("admin_sessions").insert({
+    admin_user_id: admin.id,
+    session_token_hash: tokenHash,
+    expires_at: expiresAt.toISOString(),
+  });
+
+  if (insErr) {
+    console.error("ADMIN SESSION INSERT ERROR", insErr);
+    throw new Error("session_insert_failed");
+  }
+
+  await supabase
+    .from("admin_users")
+    .update({ last_login_at: new Date().toISOString() })
+    .eq("id", admin.id);
+
+  res.cookie(ADMIN_COOKIE_NAME, token, {
+    ...adminCookieOptions(),
+    expires: expiresAt,
+  });
+}
+
+async function findActiveAdminByEmail(email) {
+  const cleanEmail = String(email || "").trim().toLowerCase();
+  if (!cleanEmail) return { admin: null, error: "email_required" };
+
+  const { data: admin, error } = await supabase
+    .from("admin_users")
+    .select("*")
+    .eq("email", cleanEmail)
+    .maybeSingle();
+
+  if (error || !admin) return { admin: null, error: "not_found" };
+  if (!admin.is_active) return { admin: null, error: "disabled" };
+
+  return { admin, error: null };
+}
+
+async function verifyGoogleIdToken(idToken) {
+  const token = String(idToken || "").trim();
+  if (!token) return { ok: false, error: "google_token_required" };
+  if (!GOOGLE_CLIENT_ID) return { ok: false, error: "google_not_configured" };
+
+  try {
+    const { data } = await axios.get("https://oauth2.googleapis.com/tokeninfo", {
+      params: { id_token: token },
+      timeout: 5000,
+    });
+
+    const aud = String(data?.aud || "").trim();
+    const email = String(data?.email || "").trim().toLowerCase();
+    const emailVerified = data?.email_verified === true || String(data?.email_verified).toLowerCase() === "true";
+    const issuer = String(data?.iss || "").trim();
+    const exp = Number(data?.exp || 0);
+
+    if (aud !== GOOGLE_CLIENT_ID) return { ok: false, error: "google_audience_invalid" };
+    if (issuer !== "accounts.google.com" && issuer !== "https://accounts.google.com") {
+      return { ok: false, error: "google_issuer_invalid" };
+    }
+    if (!email || !emailVerified) return { ok: false, error: "google_email_not_verified" };
+    if (exp && exp * 1000 < Date.now()) return { ok: false, error: "google_token_expired" };
+
+    return { ok: true, email };
+  } catch (err) {
+    console.error("GOOGLE TOKEN VERIFY ERROR", err?.response?.data || err?.message || err);
+    return { ok: false, error: "google_token_invalid" };
+  }
+}
+
+// Public config for the login page. Client ID is not secret.
+app.get("/api/admin/google-config", (req, res) => {
+  return res.json({
+    ok: true,
+    enabled: !!GOOGLE_CLIENT_ID,
+    client_id: GOOGLE_CLIENT_ID || "",
+  });
+});
+
+// ===============================
 // ADMIN AUTH — LOGIN
 // ===============================
 app.post(
@@ -1228,25 +1325,13 @@ console.log(
         return res.status(400).json({ error: "Email et mot de passe requis" });
       }
 
-      // Housekeeping: delete expired sessions (safe + keeps table small)
-      try {
-        await supabase
-          .from("admin_sessions")
-          .delete()
-          .lt("expires_at", new Date().toISOString());
-      } catch (_) {}
+      const { admin, error } = await findActiveAdminByEmail(email);
 
-      const { data: admin, error } = await supabase
-        .from("admin_users")
-        .select("*")
-        .eq("email", email.toLowerCase())
-        .single();
-
-      if (error || !admin) {
+      if (error === "not_found" || !admin) {
         return res.status(401).json({ error: "Identifiants invalides" });
       }
 
-      if (!admin.is_active) {
+      if (error === "disabled") {
         return res.status(403).json({ error: "Compte désactivé" });
       }
 
@@ -1255,35 +1340,49 @@ console.log(
         return res.status(401).json({ error: "Identifiants invalides" });
       }
 
-      const token = generateSessionToken();
-      const tokenHash = hashToken(token);
-
-      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-
-      const { error: insErr } = await supabase.from("admin_sessions").insert({
-        admin_user_id: admin.id,
-        session_token_hash: tokenHash,
-        expires_at: expiresAt.toISOString(),
-      });
-
-      if (insErr) {
-        console.error("ADMIN SESSION INSERT ERROR", insErr);
-        return res.status(500).json({ error: "Erreur serveur" });
-      }
-
-      await supabase
-        .from("admin_users")
-        .update({ last_login_at: new Date().toISOString() })
-        .eq("id", admin.id);
-
-      res.cookie(ADMIN_COOKIE_NAME, token, {
-        ...adminCookieOptions(),
-        expires: expiresAt,
-      });
+      await createAdminSessionCookie(res, admin);
 
       return res.json({ ok: true, email: admin.email });
     } catch (err) {
       console.error("ADMIN LOGIN ERROR", err);
+      return res.status(500).json({ error: "Erreur serveur" });
+    }
+  }
+);
+
+// ===============================
+// ADMIN AUTH — GOOGLE LOGIN (optional, backward-compatible)
+// ===============================
+app.post(
+  "/api/admin/google-login",
+  adminLoginSpeedLimiter,
+  adminLoginLimiter,
+  async (req, res) => {
+    try {
+      if (!ensureSupabase(res)) return;
+
+      const credential = req.body?.credential || req.body?.id_token || req.body?.idToken || "";
+      const verified = await verifyGoogleIdToken(credential);
+
+      if (!verified.ok) {
+        return res.status(401).json({ error: "Connexion Google refusée" });
+      }
+
+      const { admin, error } = await findActiveAdminByEmail(verified.email);
+
+      if (error === "not_found" || !admin) {
+        return res.status(403).json({ error: "Compte non autorisé" });
+      }
+
+      if (error === "disabled") {
+        return res.status(403).json({ error: "Compte désactivé" });
+      }
+
+      await createAdminSessionCookie(res, admin);
+
+      return res.json({ ok: true, email: admin.email });
+    } catch (err) {
+      console.error("ADMIN GOOGLE LOGIN ERROR", err);
       return res.status(500).json({ error: "Erreur serveur" });
     }
   }
