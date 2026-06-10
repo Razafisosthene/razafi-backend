@@ -109,7 +109,7 @@ function openModal(mode, user) {
     modalSub.textContent = "Utilisateur avec accès limité aux pools sélectionnés.";
     emailInput.value = "";
     passwordInput.value = "";
-    passwordInput.placeholder = "6 caractères minimum";
+    passwordInput.placeholder = "Vide = Google uniquement";
     activeToggle.checked = true;
     for (const opt of poolsSelect.options) opt.selected = false;
   } else {
@@ -118,7 +118,7 @@ function openModal(mode, user) {
     modalSub.textContent = user.role === "superadmin" ? "Superadmin" : "Utilisateur avec accès limité aux pools sélectionnés.";
     emailInput.value = user.email || "";
     passwordInput.value = "";
-    passwordInput.placeholder = "Laisser vide pour garder l’actuel";
+    passwordInput.placeholder = "Vide = garder l’actuel";
     activeToggle.checked = user.is_active !== false;
 
     const assigned = new Set((user.pools || []).map(p => String(p.pool_id || p.id || "").trim()).filter(Boolean));
@@ -219,7 +219,7 @@ async function onSave() {
   const is_active = !!activeToggle.checked;
 
   if (!email || !email.includes("@")) return showModalErr("email_invalid");
-  if (!editingId && (!password || password.length < 6)) return showModalErr("password_too_short");
+  if (password && password.length < 6) return showModalErr("password_too_short");
   if (!pool_ids.length) return showModalErr("pool_required");
 
   saveBtn.disabled = true;

@@ -1335,6 +1335,10 @@ console.log(
         return res.status(403).json({ error: "Compte désactivé" });
       }
 
+      if (!admin.password_hash) {
+        return res.status(400).json({ error: "Utilisez Google pour ce compte." });
+      }
+
       const ok = await bcrypt.compare(password, admin.password_hash);
       if (!ok) {
         return res.status(401).json({ error: "Identifiants invalides" });
@@ -1985,7 +1989,7 @@ app.post("/api/admin/users", requireAdmin, requireSuperadmin, async (req, res) =
     const pool_ids = uniqStrings(req.body?.pool_ids || []);
 
     if (!isValidEmail(email)) return res.status(400).json({ error: "email_invalid" });
-    if (!password || password.length < 6) return res.status(400).json({ error: "password_too_short" });
+    if (password && password.length < 6) return res.status(400).json({ error: "password_too_short" });
     if (!pool_ids.length) return res.status(400).json({ error: "pool_required" });
 
     // ensure email unique
@@ -1997,7 +2001,7 @@ app.post("/api/admin/users", requireAdmin, requireSuperadmin, async (req, res) =
 
     if (exists?.id) return res.status(409).json({ error: "email_exists" });
 
-    const password_hash = await bcrypt.hash(password, 10);
+    const password_hash = password ? await bcrypt.hash(password, 10) : null;
 
     const { data: created, error: cerr } = await supabase
       .from("admin_users")
