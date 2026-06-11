@@ -274,7 +274,8 @@ function ensureSupabase(res) {
 // Security remains DB-backed; logout clears this cache and TTL is intentionally short.
 const ADMIN_SESSION_CACHE_TTL_MS = Math.max(5_000, Math.min(300_000, parseInt(process.env.ADMIN_SESSION_CACHE_TTL_MS || "45000", 10) || 45_000));
 const ADMIN_SESSION_CACHE_MAX = Math.max(50, Math.min(5_000, parseInt(process.env.ADMIN_SESSION_CACHE_MAX || "500", 10) || 500));
-const adminSessionCache = new Map();
+const adminSessionCache = new Map();                 // tokenHash  → { admin, cachedAt }
+const adminSessionCacheByUserId = new Map();         // userId     → Set<tokenHash>  (reverse index)
 
 function cloneAdminSession(admin) {
   if (!admin || typeof admin !== "object") return null;
@@ -289,6 +290,11 @@ function getCachedAdminSession(tokenHash) {
   if (!entry) return null;
 
   if (Date.now() - entry.cachedAt > ADMIN_SESSION_CACHE_TTL_MS) {
+    // Expired — remove from both indexes
+    if (entry.admin?.id) {
+      const s = adminSessionCacheByUserId.get(entry.admin.id);
+      if (s) { s.delete(tokenHash); if (!s.size) adminSessionCacheByUserId.delete(entry.admin.id); }
+    }
     adminSessionCache.delete(tokenHash);
     return null;
   }
@@ -298,15 +304,45 @@ function getCachedAdminSession(tokenHash) {
 
 function setCachedAdminSession(tokenHash, admin) {
   if (!tokenHash || !admin) return;
+  // Evict only the single oldest entry (insertion-order) instead of nuking everything,
+  // so a size spike doesn't cause a simultaneous Supabase stampede.
   if (adminSessionCache.size >= ADMIN_SESSION_CACHE_MAX) {
-    adminSessionCache.clear();
+    const oldestKey = adminSessionCache.keys().next().value;
+    if (oldestKey) {
+      const oldEntry = adminSessionCache.get(oldestKey);
+      if (oldEntry?.admin?.id) {
+        const s = adminSessionCacheByUserId.get(oldEntry.admin.id);
+        if (s) { s.delete(oldestKey); if (!s.size) adminSessionCacheByUserId.delete(oldEntry.admin.id); }
+      }
+      adminSessionCache.delete(oldestKey);
+    }
   }
   adminSessionCache.set(tokenHash, { admin: cloneAdminSession(admin), cachedAt: Date.now() });
+  // Register in reverse index so we can evict by userId
+  if (admin.id) {
+    if (!adminSessionCacheByUserId.has(admin.id)) adminSessionCacheByUserId.set(admin.id, new Set());
+    adminSessionCacheByUserId.get(admin.id).add(tokenHash);
+  }
 }
 
 function clearCachedAdminSession(tokenHash) {
   if (!tokenHash) return;
+  const entry = adminSessionCache.get(tokenHash);
+  if (entry?.admin?.id) {
+    const s = adminSessionCacheByUserId.get(entry.admin.id);
+    if (s) { s.delete(tokenHash); if (!s.size) adminSessionCacheByUserId.delete(entry.admin.id); }
+  }
   adminSessionCache.delete(tokenHash);
+}
+
+// Evict ALL cached sessions for a given admin user ID.
+// Call this whenever a user is disabled, deleted, or has their pool assignments changed.
+function clearCachedAdminSessionsByUserId(userId) {
+  if (!userId) return;
+  const hashes = adminSessionCacheByUserId.get(userId);
+  if (!hashes) return;
+  for (const h of hashes) adminSessionCache.delete(h);
+  adminSessionCacheByUserId.delete(userId);
 }
 
 async function loadAdminIdentityForTokenHash(tokenHash) {
@@ -2112,6 +2148,11 @@ app.patch("/api/admin/users/:id", requireAdmin, requireSuperadmin, async (req, r
     if (error) return res.status(500).json({ error: error.message });
     if (!data) return res.status(404).json({ error: "not_found" });
 
+    // Invalidate cache so the change takes effect immediately (no stale 45 s window)
+    if (patch.is_active === false || patch.role !== undefined || patch.email !== undefined) {
+      clearCachedAdminSessionsByUserId(id);
+    }
+
     return res.json({ ok: true, user: data });
   } catch (e) {
     return res.status(500).json({ error: String(e?.message || e) });
@@ -2137,6 +2178,9 @@ app.put("/api/admin/users/:id/pools", requireAdmin, requireSuperadmin, async (re
     const { error: ierr } = await supabase.from("admin_user_pools").insert(rows);
     if (ierr) return res.status(500).json({ error: ierr.message });
 
+    // Invalidate cache so new pool scope takes effect immediately
+    clearCachedAdminSessionsByUserId(id);
+
     return res.json({ ok: true });
   } catch (e) {
     return res.status(500).json({ error: String(e?.message || e) });
@@ -2155,6 +2199,8 @@ app.delete("/api/admin/users/:id", requireAdmin, requireSuperadmin, async (req, 
 
     // revoke sessions
     await supabase.from("admin_sessions").update({ revoked_at: new Date().toISOString() }).eq("admin_user_id", id);
+    // clear in-memory cache for this user immediately
+    clearCachedAdminSessionsByUserId(id);
     // delete assignments
     await supabase.from("admin_user_pools").delete().eq("admin_user_id", id);
     // delete user
