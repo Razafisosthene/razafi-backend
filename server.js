@@ -1483,7 +1483,7 @@ app.post("/api/admin/logout", requireAdmin, async (req, res) => {
 // ===============================
 // ADMIN AUDIT (NEW system only)
 // ===============================
-app.get("/api/admin/audit/event-types", requireAdmin, async (req, res) => {
+app.get("/api/admin/audit/event-types", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
@@ -1511,7 +1511,7 @@ app.get("/api/admin/audit/event-types", requireAdmin, async (req, res) => {
   }
 });
 
-app.get("/api/admin/audit", requireAdmin, async (req, res) => {
+app.get("/api/admin/audit", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
@@ -7914,6 +7914,17 @@ app.get("/api/admin/pools/:id/aps", requireAdmin, async (req, res) => {
 
     if (poolErr) return res.status(400).json({ error: poolErr.message, details: poolErr });
 
+    // Defense-in-depth: if this technical AP route is ever exposed to owners,
+    // still enforce pool ownership at the handler level.
+    if (!req.admin?.is_superadmin) {
+      const allowed = Array.isArray(req.admin?.pool_ids)
+        ? req.admin.pool_ids.map((x) => String(x || "").trim()).filter(Boolean)
+        : [];
+      if (!allowed.includes(id)) {
+        return res.status(403).json({ error: "forbidden_pool" });
+      }
+    }
+
     // APs in this pool
     const { data: aps, error: apErr } = await supabase
       .from("ap_registry")
@@ -11752,6 +11763,91 @@ if (username !== password) {
   return sendReject("bad_credentials", { nas_id, client_mac, ap_mac });
 }
 
+// Guardrail for intentional multi-pool roaming:
+// accept vouchers only on known/enabled RAZAFI routers, then enforce
+// blocked-device rules on the TARGET pool resolved from the incoming NAS.
+let targetPoolId = null;
+
+if (!nas_id) {
+  return sendReject("nas_id_missing", {
+    client_mac,
+    ap_mac,
+    metadata: { reason: "NAS-Identifier not sent by hotspot" }
+  });
+}
+
+const { data: nasRow, error: nasErr } = await supabase
+  .from("mikrotik_routers")
+  .select("nas_id,api_enabled")
+  .eq("nas_id", nas_id)
+  .maybeSingle();
+
+if (nasErr || !nasRow) {
+  return sendReject("unknown_nas", {
+    nas_id,
+    client_mac,
+    ap_mac,
+    metadata: { reason: "NAS not registered in RAZAFI" }
+  });
+}
+
+if (nasRow.api_enabled !== true) {
+  return sendReject("nas_disabled", {
+    nas_id,
+    client_mac,
+    ap_mac,
+    metadata: { reason: "NAS API/router is disabled in RAZAFI" }
+  });
+}
+
+const { data: targetPoolRow, error: targetPoolErr } = await supabase
+  .from("internet_pools")
+  .select("id")
+  .eq("radius_nas_id", nas_id)
+  .maybeSingle();
+
+if (targetPoolErr || !targetPoolRow?.id) {
+  return sendReject("target_pool_not_found", {
+    nas_id,
+    client_mac,
+    ap_mac,
+    metadata: { reason: "NAS is enabled but not linked to an internet pool" }
+  });
+}
+
+targetPoolId = String(targetPoolRow.id || "").trim() || null;
+
+if (client_mac && targetPoolId) {
+  const normalizedMac = String(client_mac).toUpperCase();
+  const { data: blockRow, error: blockErr } = await supabase
+    .from("blocked_devices")
+    .select("id")
+    .eq("pool_id", targetPoolId)
+    .eq("mac_address", normalizedMac)
+    .eq("is_active", true)
+    .maybeSingle();
+
+  if (blockErr) {
+    return sendReject("blocked_device_check_failed", {
+      nas_id,
+      client_mac,
+      ap_mac,
+      pool_id: targetPoolId,
+      metadata: { reason: blockErr.message || "blocked device check failed" }
+    });
+  }
+
+  if (blockRow?.id) {
+    return sendReject("device_blocked_on_target_pool", {
+      nas_id,
+      client_mac,
+      ap_mac,
+      pool_id: targetPoolId,
+      metadata: { block_id: blockRow.id, target_pool_id: targetPoolId }
+    });
+  }
+}
+
 const now = new Date();
 
 // Plan metadata (duration + data quota). Loaded lazily.
@@ -12354,7 +12450,13 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
         expires_at: session.expires_at,
         total_bytes: effectiveTotalBytes,
         selected_rate_limit: replyExtra["reply:Mikrotik-Rate-Limit"] || null,
-        is_bonus_session: isBonusSession
+        is_bonus_session: isBonusSession,
+        target_pool_id: targetPoolId || null,
+        is_cross_pool_roaming: !!(
+          targetPoolId &&
+          session.pool_id &&
+          String(targetPoolId) !== String(session.pool_id)
+        )
       }
     }, replyExtra);
 
