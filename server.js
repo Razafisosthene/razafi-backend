@@ -7002,10 +7002,10 @@ app.get("/api/admin/plans", requireAdmin, async (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.get("/api/admin/tanaza/devices", requireAdmin, async (req, res) => {
-  // Tanaza tokens may not allow listing all devices; this endpoint is intentionally disabled.
-  return res.status(403).json({
-    error: "tanaza_list_not_allowed",
-    message: "This Tanaza token cannot list network devices. Use Import by MAC.",
+  // Legacy/disabled Tanaza list endpoint. Keep specific Tanaza lookup/import routes active.
+  return res.status(410).json({
+    error: "legacy_route_disabled",
+    message: "This disabled Tanaza list endpoint is no longer available. Use Import by MAC.",
   });
 });
 
@@ -10583,6 +10583,15 @@ function toISOStringMG(d) {
 // ===== NEW SYSTEM: Purchase by plan =====
 app.post("/api/new/purchase", async (req, res) => {
   try {
+    await logLegacyUsage(req, "legacy_new_purchase_disabled", {
+      note: "old /api/new/purchase endpoint disabled with 410",
+    });
+    return res.status(410).json({
+      error: "legacy_route_disabled",
+      legacy_key: "legacy_new_purchase",
+      message: "This old purchase endpoint is disabled. Use the System 3 payment flow.",
+    });
+
     if (!req.isNewSystem) {
       return res.status(404).json({ error: "Not found" });
     }
@@ -14055,6 +14064,10 @@ app.get("/api/_debug/pool-live-stats-job", requireAdmin, async (req, res) => {
 // ---------------------------------------------------------------------------
 app.get("/api/new/pool-status", async (req, res) => {
   try {
+    await logLegacyUsage(req, "legacy_new_pool_status", {
+      note: "old /api/new/pool-status capacity endpoint",
+    });
+
     const { ap_mac } = req.query;
 
     if (!ap_mac) {
