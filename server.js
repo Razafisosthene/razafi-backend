@@ -9835,6 +9835,40 @@ async function insertLog({
     console.error("⚠️ Failed to insert log:", e?.message || e);
   }
 }
+// ----------------- Legacy cleanup usage logger (Phase 1: observe only) -----------------
+// Purpose: before deleting old System 1/System 2 routes, record whether they are still used.
+// This helper is best-effort and must never block production flows.
+async function logLegacyUsage(req, legacy_key, extra = {}) {
+  try {
+    const safeQueryKeys = Object.keys(req.query || {}).slice(0, 20);
+    const safeBodyKeys = Object.keys(req.body || {}).slice(0, 20);
+    const meta = {
+      legacy_key: String(legacy_key || "unknown"),
+      method: req.method || null,
+      path: req.path || null,
+      original_url: String(req.originalUrl || "").split("?")[0] || null,
+      query_keys: safeQueryKeys,
+      body_keys: safeBodyKeys,
+      user_agent: String(req.headers?.["user-agent"] || "").slice(0, 180) || null,
+      ip: getCallerIp(req) || null,
+      ...extra,
+    };
+
+    console.warn("[LEGACY_USAGE]", meta);
+
+    if (supabase) {
+      await insertLog({
+        event_type: "legacy_route_usage",
+        status: "info",
+        short_message: `Legacy route used: ${meta.legacy_key}`,
+        meta,
+      });
+    }
+  } catch (e) {
+    console.warn("[LEGACY_USAGE_LOG_FAILED]", e?.message || e);
+  }
+}
+
 
 
 
@@ -10669,6 +10703,7 @@ app.post("/api/new/purchase", async (req, res) => {
 // ===== NEW SYSTEM: Authorize device & start voucher =====
 app.post("/api/new/authorize", async (req, res) => {
   try {
+    await logLegacyUsage(req, "legacy_new_authorize", { note: "old /api/new authorize flow" });
     if (!req.isNewSystem) {
       return res.status(404).json({ error: "Not found" });
     }
@@ -10861,6 +10896,7 @@ const expiresAt = new Date(startedAt.getTime() + minutes * 60 * 1000);
 // ---------------------------------------------------------------------------
 app.get("/api/dernier-code", async (req, res) => {
   try {
+    await logLegacyUsage(req, "legacy_dernier_code", { note: "old dernier-code fallback endpoint" });
     const phone = (req.query.phone || "").trim();
     if (!phone) return res.status(400).json({ error: "phone query param required" });
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
@@ -13725,6 +13761,7 @@ app.get("/api/tx/:requestRef", async (req, res) => {
 // ---------------------------------------------------------------------------
 app.get("/api/history", async (req, res) => {
   try {
+    await logLegacyUsage(req, "legacy_history", { note: "old transaction history endpoint" });
     const phoneRaw = String(req.query.phone || "").trim();
     if (!phoneRaw || phoneRaw.length < 6) return res.status(400).json({ error: "phone required" });
     const limit = Math.min(parseInt(req.query.limit || "10", 10), 50);
