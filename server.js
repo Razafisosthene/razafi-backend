@@ -270,6 +270,123 @@ function ensureSupabase(res) {
   return true;
 }
 
+// Short-lived admin auth cache: reduces repeated Supabase auth lookups during admin page loads.
+// Security remains DB-backed; logout clears this cache and TTL is intentionally short.
+const ADMIN_SESSION_CACHE_TTL_MS = Math.max(5_000, Math.min(300_000, parseInt(process.env.ADMIN_SESSION_CACHE_TTL_MS || "45000", 10) || 45_000));
+const ADMIN_SESSION_CACHE_MAX = Math.max(50, Math.min(5_000, parseInt(process.env.ADMIN_SESSION_CACHE_MAX || "500", 10) || 500));
+const adminSessionCache = new Map();
+
+function cloneAdminSession(admin) {
+  if (!admin || typeof admin !== "object") return null;
+  return {
+    ...admin,
+    pool_ids: Array.isArray(admin.pool_ids) ? [...admin.pool_ids] : [],
+  };
+}
+
+function getCachedAdminSession(tokenHash) {
+  const entry = adminSessionCache.get(tokenHash);
+  if (!entry) return null;
+
+  if (Date.now() - entry.cachedAt > ADMIN_SESSION_CACHE_TTL_MS) {
+    adminSessionCache.delete(tokenHash);
+    return null;
+  }
+
+  return cloneAdminSession(entry.admin);
+}
+
+function setCachedAdminSession(tokenHash, admin) {
+  if (!tokenHash || !admin) return;
+  if (adminSessionCache.size >= ADMIN_SESSION_CACHE_MAX) {
+    adminSessionCache.clear();
+  }
+  adminSessionCache.set(tokenHash, { admin: cloneAdminSession(admin), cachedAt: Date.now() });
+}
+
+function clearCachedAdminSession(tokenHash) {
+  if (!tokenHash) return;
+  adminSessionCache.delete(tokenHash);
+}
+
+async function loadAdminIdentityForTokenHash(tokenHash) {
+  const cachedAdmin = getCachedAdminSession(tokenHash);
+  if (cachedAdmin) return { admin: cachedAdmin, from_cache: true };
+
+  const { data: session, error } = await supabase
+    .from("admin_sessions")
+    .select(
+      `
+      id,
+      expires_at,
+      revoked_at,
+      admin_user_id,
+      admin_users ( id, email, is_active, role )
+    `
+    )
+    .eq("session_token_hash", tokenHash)
+    .single();
+
+  if (error || !session) {
+    clearCachedAdminSession(tokenHash);
+    return { status: 401, error: "Invalid session" };
+  }
+
+  if (session.revoked_at) {
+    clearCachedAdminSession(tokenHash);
+    return { status: 401, error: "Session revoked" };
+  }
+
+  // Expired: best-effort revoke to keep DB clean
+  if (new Date(session.expires_at) < new Date()) {
+    clearCachedAdminSession(tokenHash);
+    try {
+      await supabase
+        .from("admin_sessions")
+        .update({ revoked_at: new Date().toISOString() })
+        .eq("id", session.id);
+    } catch (_) {}
+    return { status: 401, error: "Session expired" };
+  }
+
+  if (!session.admin_users?.is_active) {
+    clearCachedAdminSession(tokenHash);
+    return { status: 403, error: "Admin disabled" };
+  }
+
+  const role = String(session.admin_users?.role || "pool_readonly").trim() || "pool_readonly";
+  const is_superadmin = role === "superadmin";
+
+  let pool_ids = [];
+  if (!is_superadmin) {
+    const { data: rows, error: perr } = await supabase
+      .from("admin_user_pools")
+      .select("pool_id")
+      .eq("admin_user_id", session.admin_users.id);
+
+    if (perr) {
+      console.error("ADMIN POOLS LOAD ERROR", perr);
+      return { status: 500, error: "Auth error" };
+    }
+
+    pool_ids = (rows || [])
+      .map((r) => (r?.pool_id === undefined || r?.pool_id === null ? "" : String(r.pool_id).trim()))
+      .filter(Boolean);
+  }
+
+  const admin = {
+    id: session.admin_users.id,
+    email: session.admin_users.email,
+    session_id: session.id,
+    role,
+    is_superadmin,
+    pool_ids,
+  };
+
+  setCachedAdminSession(tokenHash, admin);
+  return { admin: cloneAdminSession(admin), from_cache: false };
+}
+
 // ===============================
 // REQUIRE ADMIN MIDDLEWARE
 // ===============================
@@ -283,80 +400,14 @@ async function requireAdmin(req, res, next) {
     }
 
     const tokenHash = hashToken(token);
+    const loaded = await loadAdminIdentityForTokenHash(tokenHash);
 
-    const { data: session, error } = await supabase
-      .from("admin_sessions")
-      .select(
-        `
-        id,
-        expires_at,
-        revoked_at,
-        admin_user_id,
-        admin_users ( id, email, is_active, role )
-      `
-      )
-      .eq("session_token_hash", tokenHash)
-      .single();
-
-    if (error || !session) {
-      return res.status(401).json({ error: "Invalid session" });
+    if (!loaded.admin) {
+      return res.status(loaded.status || 500).json({ error: loaded.error || "Auth error" });
     }
 
-    if (session.revoked_at) {
-      return res.status(401).json({ error: "Session revoked" });
-    }
-
-    // Expired: best-effort revoke to keep DB clean
-    if (new Date(session.expires_at) < new Date()) {
-      try {
-        await supabase
-          .from("admin_sessions")
-          .update({ revoked_at: new Date().toISOString() })
-          .eq("id", session.id);
-      } catch (_) {}
-      return res.status(401).json({ error: "Session expired" });
-    }
-
-    if (!session.admin_users?.is_active) {
-      return res.status(403).json({ error: "Admin disabled" });
-    }
-
-    // Role: be fail-open (superadmin) if DB column not deployed yet
-    const role = String(session.admin_users?.role || "pool_readonly").trim() || "pool_readonly";
-    const is_superadmin = role === "superadmin";
-
-    // Load pool assignments for pool_readonly
-    let pool_ids = [];
-    if (!is_superadmin) {
-      const { data: rows, error: perr } = await supabase
-        .from("admin_user_pools")
-        .select("pool_id")
-        .eq("admin_user_id", session.admin_users.id);
-
-      if (perr) {
-        console.error("ADMIN POOLS LOAD ERROR", perr);
-        return res.status(500).json({ error: "Auth error" });
-      }
-
-      pool_ids = (rows || [])
-        .map((r) => (r?.pool_id === undefined || r?.pool_id === null ? "" : String(r.pool_id).trim()))
-        .filter(Boolean);
-
-      // Do not block here when no access pools are assigned.
-      // Some users can be business owners only (internet_pools.owner_admin_user_id)
-      // and still need /api/owner/* dashboard access.
-      // Route-level pool scoping still protects admin data endpoints.
-    }
-
-    // attach admin to request
-    req.admin = {
-      id: session.admin_users.id,
-      email: session.admin_users.email,
-      session_id: session.id,
-      role,
-      is_superadmin,
-      pool_ids,
-    };
+    req.admin = loaded.admin;
+    const is_superadmin = !!req.admin.is_superadmin;
 
     // ---------------------------
     // Server-side permission policy (NO frontend trust)
@@ -834,7 +885,7 @@ async function requireAdminPage(req, res, next) {
 
   try {
     if (!ensureSupabase(res)) return;
-    // reuse the same session check logic as requireAdmin
+
     const token = req.cookies?.[ADMIN_COOKIE_NAME];
     if (!token) {
       const nextUrl = encodeURIComponent(req.originalUrl || "/admin");
@@ -842,46 +893,22 @@ async function requireAdminPage(req, res, next) {
     }
 
     const tokenHash = hashToken(token);
+    const loaded = await loadAdminIdentityForTokenHash(tokenHash);
 
-    const { data: session, error } = await supabase
-      .from("admin_sessions")
-      .select(
-        `
-        id,
-        expires_at,
-        revoked_at,
-        admin_user_id,
-        admin_users ( id, email, is_active, role )
-      `
-      )
-      .eq("session_token_hash", tokenHash)
-      .single();
-
-    if (error || !session || session.revoked_at) {
+    if (!loaded.admin) {
       res.clearCookie(ADMIN_COOKIE_NAME, adminCookieOptions());
+      if (loaded.status === 403 && loaded.error === "Admin disabled") {
+        return res.redirect(`/admin/login.html?reason=disabled`);
+      }
+      if ((loaded.status || 500) >= 500) {
+        return res.status(500).send("Admin auth error");
+      }
       const nextUrl = encodeURIComponent(req.originalUrl || "/admin");
       return res.redirect(`/admin/login.html?next=${nextUrl}`);
     }
 
-    if (new Date(session.expires_at) < new Date()) {
-      try {
-        await supabase
-          .from("admin_sessions")
-          .update({ revoked_at: new Date().toISOString() })
-          .eq("id", session.id);
-      } catch (_) {}
-      res.clearCookie(ADMIN_COOKIE_NAME, adminCookieOptions());
-      const nextUrl = encodeURIComponent(req.originalUrl || "/admin");
-      return res.redirect(`/admin/login.html?next=${nextUrl}`);
-    }
-
-    if (!session.admin_users?.is_active) {
-      res.clearCookie(ADMIN_COOKIE_NAME, adminCookieOptions());
-      return res.redirect(`/admin/login.html?reason=disabled`);
-    }
-
-    const role = String(session.admin_users?.role || "pool_readonly").trim() || "pool_readonly";
-    const is_superadmin = role === "superadmin";
+    req.admin = loaded.admin;
+    const is_superadmin = !!req.admin.is_superadmin;
 
     // Block forbidden admin pages for pool_readonly (server-side)
     if (!is_superadmin) {
@@ -896,14 +923,6 @@ async function requireAdminPage(req, res, next) {
         return res.redirect("/admin/");
       }
     }
-
-    req.admin = {
-      id: session.admin_users.id,
-      email: session.admin_users.email,
-      session_id: session.id,
-      role,
-      is_superadmin,
-    };
 
     return next();
   } catch (e) {
@@ -1211,13 +1230,15 @@ if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
 // ADMIN AUTH — SHARED SESSION HELPER
 // ===============================
 async function createAdminSessionCookie(res, admin) {
-  // Housekeeping: delete expired sessions (safe + keeps table small)
-  try {
-    await supabase
-      .from("admin_sessions")
-      .delete()
-      .lt("expires_at", new Date().toISOString());
-  } catch (_) {}
+  // Housekeeping: delete expired sessions (safe + keeps table small) — fire-and-forget.
+  (async () => {
+    try {
+      await supabase
+        .from("admin_sessions")
+        .delete()
+        .lt("expires_at", new Date().toISOString());
+    } catch (_) {}
+  })();
 
   const token = generateSessionToken();
   const tokenHash = hashToken(token);
@@ -1234,10 +1255,15 @@ async function createAdminSessionCookie(res, admin) {
     throw new Error("session_insert_failed");
   }
 
-  await supabase
-    .from("admin_users")
-    .update({ last_login_at: new Date().toISOString() })
-    .eq("id", admin.id);
+  // Cosmetic login timestamp — do not delay the login response.
+  (async () => {
+    try {
+      await supabase
+        .from("admin_users")
+        .update({ last_login_at: new Date().toISOString() })
+        .eq("id", admin.id);
+    } catch (_) {}
+  })();
 
   res.cookie(ADMIN_COOKIE_NAME, token, {
     ...adminCookieOptions(),
@@ -1397,6 +1423,9 @@ app.post(
 app.post("/api/admin/logout", requireAdmin, async (req, res) => {
   try {
     if (!ensureSupabase(res)) return;
+
+    const token = req.cookies?.[ADMIN_COOKIE_NAME];
+    if (token) clearCachedAdminSession(hashToken(token));
 
     await supabase
       .from("admin_sessions")
