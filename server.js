@@ -322,7 +322,7 @@ async function requireAdmin(req, res, next) {
     }
 
     // Role: be fail-open (superadmin) if DB column not deployed yet
-    const role = String(session.admin_users?.role || "superadmin").trim() || "superadmin";
+    const role = String(session.admin_users?.role || "pool_readonly").trim() || "pool_readonly";
     const is_superadmin = role === "superadmin";
 
     // Load pool assignments for pool_readonly
@@ -514,7 +514,7 @@ const app = express();
 // ---------------------------------------------------------------------------
 // BUILD / DIAGNOSTIC
 // ---------------------------------------------------------------------------
-app.get("/api/_build", (req, res) => {
+app.get("/api/_build", requireAdmin, (req, res) => {
   res.json({
     ok: true,
     git_commit: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null,
@@ -880,7 +880,7 @@ async function requireAdminPage(req, res, next) {
       return res.redirect(`/admin/login.html?reason=disabled`);
     }
 
-    const role = String(session.admin_users?.role || "superadmin").trim() || "superadmin";
+    const role = String(session.admin_users?.role || "pool_readonly").trim() || "pool_readonly";
     const is_superadmin = role === "superadmin";
 
     // Block forbidden admin pages for pool_readonly (server-side)
@@ -11324,8 +11324,9 @@ app.get("/api/hotspot/pending-code", async (req, res) => {
 // ---------------------------------------------------------------------------
 const RADIUS_ALLOWED_IPS = (process.env.RADIUS_ALLOWED_IPS || "159.89.16.34")
   .split(",")
-  .map((s) => s.trim())
+  .map((s) => normalizeIp(s))
   .filter(Boolean);
+const RADIUS_ALLOWED_IP_SET = new Set(RADIUS_ALLOWED_IPS);
 
 const RADIUS_API_SECRET = process.env.RADIUS_API_SECRET || ""; // set this in Render env (recommended)
 // Emergency fallback used only when a plan has no mikrotik_rate_limit set.
@@ -11448,7 +11449,7 @@ function isAllowedRadiusCaller(req) {
   const ips = getCallerIps(req);
   const secret = String(req.headers["x-radius-secret"] || "").trim();
 
-  const ipOk = ips.some((ip) => RADIUS_ALLOWED_IPS.includes(ip));
+  const ipOk = ips.some((ip) => RADIUS_ALLOWED_IP_SET.has(normalizeIp(ip)));
   const secretOk = !!RADIUS_API_SECRET && secret === RADIUS_API_SECRET;
 
   // SECURITY: require BOTH IP allow-list AND header secret when secret is configured.

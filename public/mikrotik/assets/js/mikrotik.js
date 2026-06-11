@@ -2390,6 +2390,14 @@ function saturationLabel(pct) {
       }
     } catch (_) {}
 
+    try {
+  const termsBrandLabel = document.getElementById("termsBrandLabel");
+  if (termsBrandLabel) {
+    const brandName = String(poolContext.brand_name || "").trim() || "RAZAFI";
+    termsBrandLabel.textContent = `J’accepte les règles d’utilisation de ${brandName}`;
+  }
+} catch (_) {}
+
     try { renderOwnerLogo(buildOwnerLogoProxyUrl()); } catch (_) {}
 
     // Network info card: update snapshot values as soon as poolContext is known
