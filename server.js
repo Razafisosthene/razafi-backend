@@ -9730,6 +9730,20 @@ function maskPhone(phone) {
   return s.length >= 7 ? s.slice(0, 3) + "****" + s.slice(-3) : s;
 }
 
+function maskVoucherCode(code) {
+  const s = String(code || "").trim();
+  if (!s) return null;
+  if (s.length <= 8) return "****";
+  return s.slice(0, 6) + "****" + s.slice(-4);
+}
+
+function maskSessionId(id) {
+  const s = String(id || "").trim();
+  if (!s) return null;
+  if (s.length <= 4) return "****";
+  return s.slice(0, 4) + "****";
+}
+
 function truncate(x, max = 2000) {
   const s = typeof x === "string" ? x : JSON.stringify(x);
   return s.length <= max ? s : s.slice(0, max);
@@ -10014,7 +10028,7 @@ async function initiateMvolaPaymentWithRetry({ payload, requestRef, phone, amoun
     const token = await getAccessToken();
     console.info("📤 Initiating MVola payment", {
       requestRef,
-      phone,
+      phone: maskPhone(phone),
       amount,
       correlationId: attemptCorrelationId,
       attempt: attemptNo,
@@ -10193,7 +10207,7 @@ async function pollTransactionStatus({
               pool_id: metaPoolId || null,
               plan_id: metaPlanId || null,
               message: "Voucher session created (pending) after payment",
-              metadata: { voucher_code: String(voucherCode || ""), delivered_at: nowIso },
+              metadata: { voucher_code_masked: maskVoucherCode(voucherCode), delivered_at: nowIso },
             });
 
             await insertLog({
@@ -10202,7 +10216,7 @@ async function pollTransactionStatus({
               event_type: "completed",
               status: "completed",
               masked_phone: maskPhone(tx?.phone || baseMeta.phone || ""),
-              payload: { voucherCode, plan_id: metaPlanId, pool_id: metaPoolId, client_mac: metaClientMac, ap_mac: metaApMac },
+              payload: { voucherCode: maskVoucherCode(voucherCode), plan_id: metaPlanId, pool_id: metaPoolId, client_mac: metaClientMac, ap_mac: metaApMac },
             });
 
             await sendEmailNotification(
@@ -10316,7 +10330,7 @@ async function pollTransactionStatus({
             event_type: "completed",
             status: "completed",
             masked_phone: maskPhone(tx?.phone || baseMeta.phone || ""),
-            payload: { voucherCode },
+            payload: { voucherCode: maskVoucherCode(voucherCode) },
           });
 
           await sendEmailNotification(
@@ -12344,9 +12358,9 @@ app.post("/api/radius/accounting", async (req, res) => {
     console.log("[radius][accounting]", {
       ip: getCallerIp(req),
       statusType,
-      voucherCode: voucherCode || "(missing)",
+      voucherCode: voucherCode ? maskVoucherCode(voucherCode) : "(missing)",
       nasId: nasId || "(missing)",
-      acctSessionId: acctSessionId || "(missing)",
+      acctSessionId: acctSessionId ? maskSessionId(acctSessionId) : "(missing)",
       totalBytes: newTotalBytes.toString(),
     });
 
@@ -12486,7 +12500,7 @@ app.post("/api/radius/accounting", async (req, res) => {
     }
 
     if (!vsRows || !vsRows.length) {
-      console.log("[radius][accounting] no voucher_sessions row found for", voucherCode);
+      console.log("[radius][accounting] no voucher_sessions row found for", maskVoucherCode(voucherCode));
       return res.status(200).json({});
     }
 
@@ -13033,7 +13047,11 @@ app.post("/api/send-payment", async (req, res) => {
   const plan = body.plan;
 
   if (!phone || !plan) {
-    console.warn("⚠️ Mauvais appel /api/send-payment — phone ou plan manquant. body:", body);
+    console.warn("⚠️ Mauvais appel /api/send-payment — phone ou plan manquant.", {
+      body_keys: Object.keys(body || {}),
+      has_phone: !!body?.phone,
+      has_plan: !!body?.plan,
+    });
     return res.status(400).json({
       error: "Champs manquants. Le corps de la requête doit être en JSON avec 'phone' et 'plan'.",
       exemple: { phone: "0340123456", plan: "5000" }
@@ -13589,7 +13607,7 @@ const { error: vsErr } = await supabase
   } catch (err) {
     const mapped = mapMvolaInitiateError(err);
     console.error("❌ MVola a rejeté la requête", {
-      raw: err.response?.data || err?.message || err,
+      raw: truncate(err.response?.data || err?.message || err, 500),
       mapped,
     });
     // NEW system audit: MVola initiate error
@@ -13653,7 +13671,7 @@ const { error: vsErr } = await supabase
       ok: false,
       error: "Erreur lors du paiement MVola",
       message: mapped.userMessage,
-      details: err.response?.data || err.message,
+      details: mapped.type,
     });
   }
 });
