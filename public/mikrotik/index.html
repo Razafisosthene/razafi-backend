@@ -492,8 +492,24 @@
     body.theme-dark .terms-toggle{color:#7cb6ff;}
     body.theme-dark .terms-error{border-color:rgba(255,122,122,.30);background:rgba(255,122,122,.10);color:#ff9d9d;}
 
-    .portal-footer{padding:4px 16px calc(18px + env(safe-area-inset-bottom,0px));text-align:center;}
-    .muted{color:var(--ios-muted)!important;}
+    .portal-footer{
+  padding:4px 16px calc(18px + env(safe-area-inset-bottom,0px));
+  text-align:center;
+}
+
+.portal-footer a{
+  color:inherit;
+  font-weight:700;
+  text-decoration:none;
+}
+
+.portal-footer a:hover{
+  text-decoration:underline;
+}
+
+.muted{
+  color:var(--ios-muted)!important;
+}
 
     @keyframes razafiFadeUp{
       from{opacity:0;transform:translateY(8px);}
@@ -707,7 +723,10 @@
   <!-- ================= FOOTER ================= -->
   <footer class="portal-footer">
     <p class="muted small">
-      Portail sécurisé • Powered by RAZAFI
+      Portail sécurisé • Powered by
+<a href="https://www.razafistore.com/" target="_blank" rel="noopener">
+  RAZAFI
+</a>
     </p>
   </footer>
 
