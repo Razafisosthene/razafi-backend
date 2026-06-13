@@ -2600,7 +2600,7 @@ function saturationLabel(pct) {
           <div class="phone-hint muted small"></div>
 
           <button class="primary-btn pay-btn" disabled>
-            Payer avec MVola
+            Continuer
           </button>
 
           <button class="secondary-btn cancel-btn">
@@ -2613,7 +2613,7 @@ function saturationLabel(pct) {
               <h6>Confirmer le paiement</h6>
               <div class="pay-summary"></div>
               <div class="pay-confirm-actions">
-                <button class="primary-btn confirm-btn">Confirmer</button>
+                <button class="primary-btn confirm-btn">Confirmer le paiement</button>
                 <button class="secondary-btn confirm-cancel-btn">Annuler</button>
               </div>
             </div>
@@ -2794,33 +2794,44 @@ function saturationLabel(pct) {
     const target = input || payment || card;
     if (!target || typeof target.scrollIntoView !== "function") return;
 
+    function keepMvolaInputVisible() {
+      if (!input || typeof input.getBoundingClientRect !== "function") return;
+
+      try {
+        const rect = input.getBoundingClientRect();
+        const vv = window.visualViewport || null;
+        const layoutHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+        let visibleHeight = (vv && vv.height) ? Number(vv.height) : layoutHeight;
+
+        // Some Android captive browsers do not reduce innerHeight when the keyboard opens.
+        // When the MVola input is focused, reserve the lower part of the screen for the keyboard.
+        if (document.activeElement === input && layoutHeight && (!vv || Math.abs(Number(vv.height || 0) - layoutHeight) < 40)) {
+          visibleHeight = Math.min(visibleHeight || layoutHeight, Math.round(layoutHeight * 0.55));
+        }
+
+        const topSafe = 96;
+        const bottomSafe = Math.max(topSafe + 90, (visibleHeight || layoutHeight || 520) - 145);
+
+        // Preferred position: keep the phone field clearly visible near the top of the usable area.
+        if (rect.top < topSafe || rect.bottom > bottomSafe) {
+          window.scrollBy({ top: rect.top - topSafe, behavior: "smooth" });
+        }
+      } catch (_) {}
+    }
+
     window.setTimeout(function () {
       try {
-        // Mobile keyboard UX: target the MVola input itself and keep it around
-        // the visible center. Using "start" can push the input above the
-        // captive-browser header, leaving only Pay/Cancel visible.
+        // Mobile keyboard UX: target the MVola input itself, not only the selected card.
         target.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
       } catch (_) {
         try { target.scrollIntoView(); } catch (_) {}
       }
 
-      // Extra guard for Android/iPhone captive browsers: after scrollIntoView,
-      // verify the input is not hidden behind the top browser bar or keyboard.
-      if (!input || typeof input.getBoundingClientRect !== "function") return;
-      window.setTimeout(function () {
-        try {
-          const rect = input.getBoundingClientRect();
-          const viewportHeight = (window.visualViewport && window.visualViewport.height) || window.innerHeight || document.documentElement.clientHeight || 0;
-          const topSafe = 90;
-          const bottomSafe = Math.max(180, viewportHeight - 170);
-
-          if (rect.top < topSafe) {
-            window.scrollBy({ top: rect.top - topSafe, behavior: "smooth" });
-          } else if (rect.bottom > bottomSafe) {
-            window.scrollBy({ top: rect.bottom - bottomSafe, behavior: "smooth" });
-          }
-        } catch (_) {}
-      }, 120);
+      // Re-check several times because Android/iPhone captive browsers resize the viewport
+      // after the keyboard animation, not immediately after focus().
+      [80, 260, 620].forEach(function (ms) {
+        window.setTimeout(keepMvolaInputVisible, ms);
+      });
     }, Math.max(0, Number(delayMs) || 0));
   }
 
@@ -3112,9 +3123,10 @@ function bindPlanHandlers() {
           scrollPaymentFormIntoView(card, 120);
           if (input) {
             try { input.focus({ preventScroll: true }); } catch (_) { try { input.focus(); } catch (_) {} }
-            // Android/iPhone keyboards resize the visible area after focus, so scroll once more
-            // after the keyboard starts opening. This keeps the MVola field + Pay/Cancel visible.
+            // Android/iPhone keyboards resize the visible area after focus, so scroll again
+            // after the keyboard starts opening. This keeps the MVola number field visible.
             scrollPaymentFormIntoView(card, 420);
+            scrollPaymentFormIntoView(card, 850);
             updatePayButtonState(card);
           }
         });
