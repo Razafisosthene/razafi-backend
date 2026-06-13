@@ -577,7 +577,7 @@
         maxDevices,
         badge: "",
         role: "neutral",
-        cta: "Choisir",
+        cta: "Payer avec MVola",
         isFreeTest: false,
         isRecommended: false,
       };
@@ -660,7 +660,7 @@
     if (recommendedId && meta[recommendedId]) {
       meta[recommendedId].badge = "⭐ RECOMMANDÉ";
       meta[recommendedId].role = "recommended";
-      meta[recommendedId].cta = "Choisir ce plan";
+      meta[recommendedId].cta = "Payer avec MVola";
       meta[recommendedId].isRecommended = true;
     }
 
@@ -2546,7 +2546,7 @@ function saturationLabel(pct) {
     const badgeHtml = uiMeta.badge
       ? `<span class="plan-ux-badge ${uiMeta.isFreeTest ? "badge-free" : "badge-recommended"}">${escapeHtml(uiMeta.badge)}</span>`
       : "";
-    const ctaText = uiMeta.cta || "Choisir";
+    const ctaText = uiMeta.cta || "Payer avec MVola";
     const durationText = formatDuration(durationMinutes);
     const dataText = formatData(dataMb);
     const devicesText = formatDevices(maxDevices);
@@ -2749,9 +2749,9 @@ function saturationLabel(pct) {
   }
 
   function getChooseButtonDefaultLabel(btn) {
-    if (!btn) return "Choisir";
+    if (!btn) return "Payer avec MVola";
     const fromDataset = String(btn.getAttribute("data-default-label") || btn.dataset.defaultLabel || "").trim();
-    return fromDataset || "Choisir";
+    return fromDataset || "Payer avec MVola";
   }
 
   function resetPlanSelectionUi(card) {
