@@ -653,89 +653,40 @@
         inset: 0;
         z-index: 2;
         display: flex;
-        align-items: flex-start;
+        align-items: center;
         justify-content: center;
         padding: 18px;
         border-radius: inherit;
-        background: var(--ios-card, #fff);
-        color: var(--ios-text, #111827);
-        overflow-y: auto;
-        -webkit-overflow-scrolling: touch;
+        background: rgba(255,255,255,.88);
+        -webkit-backdrop-filter: blur(10px);
+        backdrop-filter: blur(10px);
       }
       body.theme-dark .payment-sheet-card .processing-overlay:not(.hidden) {
-        background: #151518;
-        color: #f5f5f7;
+        background: rgba(21,21,24,.88);
       }
       .payment-sheet-card { position: relative; }
       .payment-sheet-card .processing-card {
-        width: 100%;
-        min-height: 210px;
-        box-sizing: border-box;
-        border-radius: 24px;
-        padding: 22px 18px;
-        background: rgba(118,118,128,.08);
-        border: 1px solid rgba(118,118,128,.14);
-        box-shadow: none;
+        border-radius: 22px;
+        padding: 16px;
+        background: var(--ios-card, #fff);
+        border: 1px solid var(--ios-border, rgba(17,24,39,.08));
+        box-shadow: 0 18px 48px rgba(0,0,0,.18);
+        color: var(--ios-text, #111827);
         display: flex;
-        flex-direction: column;
         align-items: center;
-        justify-content: center;
-        text-align: center;
         gap: 12px;
       }
-      body.theme-dark .payment-sheet-card .processing-card {
-        background: rgba(255,255,255,.07);
-        border-color: rgba(255,255,255,.10);
-      }
-      .payment-sheet-card .spinner {
-        width: 38px;
-        height: 38px;
-        border-radius: 999px;
-        border: 4px solid rgba(0,122,255,.18);
-        border-top-color: #007aff;
-        animation: razafiSpin .85s linear infinite;
-        flex: 0 0 auto;
-      }
-      .payment-sheet-card .processing-text {
-        display: block;
-        width: 100%;
-      }
       .payment-sheet-card .processing-title {
-        display: block;
-        color: var(--ios-text, #111827) !important;
-        font-size: clamp(18px, 5vw, 22px);
-        line-height: 1.18;
-        font-weight: 950;
-        letter-spacing: -.035em;
-        margin: 0 0 9px;
+        color: var(--ios-text, #111827);
       }
       .payment-sheet-card .processing-sub {
-        display: block;
-        color: var(--ios-muted, #6b7280) !important;
-        font-size: 14px;
-        line-height: 1.42;
-        font-weight: 750;
-        margin: 0 auto;
-        max-width: 360px;
+        color: var(--ios-muted, #6b7280);
+        opacity: 1;
       }
-      .payment-sheet-card .processing-sub::after {
-        content: "⏳ En attente de confirmation…";
-        display: block;
-        margin: 14px auto 0;
-        padding: 10px 12px;
-        border-radius: 999px;
-        background: rgba(0,122,255,.10);
-        color: #0057d9;
-        font-size: 13px;
-        font-weight: 950;
+      .payment-sheet-card .spinner {
+        border-color: rgba(0,122,255,.18);
+        border-top-color: var(--ios-blue, #007aff);
       }
-      body.theme-dark .payment-sheet-card .processing-title { color: #f5f5f7 !important; }
-      body.theme-dark .payment-sheet-card .processing-sub { color: #c7c7cc !important; }
-      body.theme-dark .payment-sheet-card .processing-sub::after {
-        background: rgba(0,122,255,.20);
-        color: #8ec5ff;
-      }
-      @keyframes razafiSpin { to { transform: rotate(360deg); } }
       .payment-sheet-card .mvola-badge {
         display: flex;
         align-items: center;
