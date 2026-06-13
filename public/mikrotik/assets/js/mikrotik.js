@@ -2813,8 +2813,14 @@ function saturationLabel(pct) {
         const bottomSafe = Math.max(topSafe + 90, (visibleHeight || layoutHeight || 520) - 145);
 
         // Preferred position: keep the phone field clearly visible near the top of the usable area.
+        // Only scroll if the correction is meaningful, to avoid micro-correction loops
+        // that cause the page to visibly bounce up/down.
+        const MIN_SCROLL_DELTA = 20;
         if (rect.top < topSafe || rect.bottom > bottomSafe) {
-          window.scrollBy({ top: rect.top - topSafe, behavior: "smooth" });
+          const delta = rect.top - topSafe;
+          if (Math.abs(delta) > MIN_SCROLL_DELTA) {
+            window.scrollBy({ top: delta, behavior: "smooth" });
+          }
         }
       } catch (_) {}
     }
@@ -3133,17 +3139,19 @@ function bindPlanHandlers() {
       }
 
       if (input) {
-        let lastPaymentScrollAt = 0;
+        let inputScrollDebounceTimer = null;
         input.addEventListener("input", function () {
           if (card.classList.contains("processing")) return;
           updatePayButtonState(card);
 
-          // While the user types, keep the payment actions reachable above the keyboard.
-          const now = Date.now();
-          if (now - lastPaymentScrollAt > 900) {
-            lastPaymentScrollAt = now;
-            scrollPaymentFormIntoView(card, 80);
-          }
+          // Safety net only: if the on-screen keyboard's suggestion bar appears/disappears
+          // while typing and pushes the field out of view, do a single gentle re-check
+          // after the user pauses typing. This avoids the visible bounce caused by
+          // re-scrolling on every keystroke.
+          if (inputScrollDebounceTimer) clearTimeout(inputScrollDebounceTimer);
+          inputScrollDebounceTimer = window.setTimeout(function () {
+            scrollPaymentFormIntoView(card, 0);
+          }, 1500);
         });
       }
 
