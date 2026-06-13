@@ -599,9 +599,9 @@
           if (da !== db) return da - db;
           return a[1].index - b[1].index;
         })[0];
-      m.badge = "🎁 Test gratuit";
+      m.badge = "🆓 Gratuit";
       m.role = "free";
-      m.cta = "Essayer gratuitement";
+      m.cta = "Obtenir l'accès";
       m.isFreeTest = true;
       meta[id] = m;
     }
