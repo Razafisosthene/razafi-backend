@@ -10154,10 +10154,19 @@ async function pollTransactionStatus({
   phone,
   amount,
   plan,
+  timeoutMsOverride = null,
+  maxAttempts = null,
+  skipTimeoutFinalization = false,
+  source = "live_poll",
 }) {
   const start = Date.now();
-  const timeoutMs = 3 * 60 * 1000; // 3 minutes
+  const timeoutMs = Number.isFinite(Number(timeoutMsOverride)) && Number(timeoutMsOverride) > 0
+    ? Number(timeoutMsOverride)
+    : 3 * 60 * 1000; // default: 3 minutes
   const pollScheduleMs = [400, 700, 1000, 1500, 2200, 3000, 4000, 5000, 6000];
+  const maxAttemptCount = Number.isFinite(Number(maxAttempts)) && Number(maxAttempts) > 0
+    ? Math.floor(Number(maxAttempts))
+    : null;
   let attempt = 0;
 
   // Keep payment metadata available across success / failed / timeout / catch blocks.
@@ -10168,7 +10177,7 @@ async function pollTransactionStatus({
   let metaApMac = null;
   let txPhone = phone || null;
 
-  while (Date.now() - start < timeoutMs) {
+  while (Date.now() - start < timeoutMs && (!maxAttemptCount || attempt < maxAttemptCount)) {
     attempt++;
     try {
       const token = await getAccessToken();
@@ -10586,6 +10595,25 @@ async function pollTransactionStatus({
     await waitMs(waitFor);
   }
 
+  // Recovery mode: one-shot status checks must not mark the transaction as timeout
+  // just because MVola is still pending. The scheduled recovery job will retry later.
+  if (skipTimeoutFinalization) {
+    try {
+      await insertLog({
+        request_ref: requestRef,
+        server_correlation_id: serverCorrelationId,
+        event_type: "mvola_recovery_no_final_status",
+        status: "pending",
+        masked_phone: maskPhone(phone),
+        amount,
+        attempt,
+        short_message: "MVola recovery check found no final status; will retry later",
+        meta: { source },
+      });
+    } catch (_) {}
+    return { ok: false, status: "pending", source, attempts: attempt };
+  }
+
   // Timeout reached
   console.error("⏰ Polling timeout for", requestRef, serverCorrelationId);
   try {
@@ -10679,6 +10707,230 @@ function toISOStringMG(d) {
   const md = new Date(d.getTime() + 3 * 3600 * 1000);
   return md.toISOString().replace("Z", "+03:00");
 }
+
+// ---------------------------------------------------------------------------
+// MVola Recovery Patch A
+// ---------------------------------------------------------------------------
+// Purpose: close the Render/redeploy/crash gap where /api/send-payment already
+// returned to the client, but the in-memory background poll died before voucher
+// generation. This job is additive: it does not change MVola initiation, does
+// not change the client portal, and does not touch Orange Money.
+const MVOLA_RECOVERY_ENABLED = String(process.env.MVOLA_RECOVERY_ENABLED || "true").toLowerCase() !== "false";
+const MVOLA_RECOVERY_INTERVAL_MS = Math.max(30_000, Number(process.env.MVOLA_RECOVERY_INTERVAL_MS || 60_000));
+const MVOLA_RECOVERY_STALE_AFTER_MS = Math.max(60_000, Number(process.env.MVOLA_RECOVERY_STALE_AFTER_MS || 4 * 60_000));
+const MVOLA_RECOVERY_MAX_AGE_MS = Math.max(10 * 60_000, Number(process.env.MVOLA_RECOVERY_MAX_AGE_MS || 24 * 60 * 60_000));
+const MVOLA_RECOVERY_BATCH_SIZE = Math.max(1, Math.min(20, Number(process.env.MVOLA_RECOVERY_BATCH_SIZE || 5)));
+
+let mvolaRecoveryRunning = false;
+let mvolaRecoveryIntervalHandle = null;
+
+function normalizeTransactionStatusForRecovery(status) {
+  return String(status || "").trim().toLowerCase();
+}
+
+function shouldRecoverMvolaTransaction(row) {
+  if (!row) return false;
+
+  const provider = String(row.provider || "").trim().toLowerCase();
+  if (provider !== "mvola") return false;
+
+  const status = normalizeTransactionStatusForRecovery(row.status);
+  if (!["initiated", "pending", "timeout"].includes(status)) return false;
+
+  const requestRef = String(row.request_ref || "").trim();
+  const serverCorrelationId = String(row.server_correlation_id || "").trim();
+  if (!requestRef || !serverCorrelationId) return false;
+
+  // If a code/voucher already exists, do not touch it here.
+  // Recovery is only for paid/no-code cases.
+  if (String(row.code || "").trim() || String(row.voucher || "").trim()) return false;
+
+  return true;
+}
+
+async function runMvolaRecoveryOnce({ reason = "interval", maxRows = MVOLA_RECOVERY_BATCH_SIZE } = {}) {
+  if (!MVOLA_RECOVERY_ENABLED) return { ok: true, disabled: true, checked: 0, recovered: 0 };
+  if (!supabase) return { ok: false, error: "supabase_not_configured", checked: 0, recovered: 0 };
+  if (mvolaRecoveryRunning) return { ok: true, skipped: "already_running", checked: 0, recovered: 0 };
+
+  mvolaRecoveryRunning = true;
+
+  const stats = {
+    ok: true,
+    reason,
+    checked: 0,
+    recovered: 0,
+    failed: 0,
+    still_pending: 0,
+    skipped: 0,
+    errors: 0,
+  };
+
+  try {
+    const staleBeforeIso = new Date(Date.now() - MVOLA_RECOVERY_STALE_AFTER_MS).toISOString();
+    const notOlderThanIso = new Date(Date.now() - MVOLA_RECOVERY_MAX_AGE_MS).toISOString();
+
+    const { data: rows, error } = await supabase
+      .from("transactions")
+      .select("id,request_ref,phone,amount,plan,status,server_correlation_id,code,voucher,provider,metadata,created_at,updated_at")
+      .eq("provider", "mvola")
+      .in("status", ["initiated", "pending", "timeout"])
+      .not("server_correlation_id", "is", null)
+      .gte("created_at", notOlderThanIso)
+      .lte("created_at", staleBeforeIso)
+      .order("created_at", { ascending: true })
+      .limit(Math.max(1, Math.min(20, Number(maxRows) || MVOLA_RECOVERY_BATCH_SIZE)));
+
+    if (error) throw error;
+
+    const candidates = (rows || []).filter(shouldRecoverMvolaTransaction);
+    stats.checked = candidates.length;
+    stats.skipped = Math.max(0, (rows || []).length - candidates.length);
+
+    if (!candidates.length) return stats;
+
+    await insertLog({
+      event_type: "mvola_recovery_scan",
+      status: "info",
+      short_message: `MVola recovery scan found ${candidates.length} candidate(s)`,
+      meta: {
+        reason,
+        stale_before: staleBeforeIso,
+        not_older_than: notOlderThanIso,
+        candidate_count: candidates.length,
+      },
+    });
+
+    for (const tx of candidates) {
+      const requestRef = String(tx.request_ref || "").trim();
+      const serverCorrelationId = String(tx.server_correlation_id || "").trim();
+      const beforeStatus = normalizeTransactionStatusForRecovery(tx.status);
+
+      try {
+        await insertAudit({
+          event_type: "mvola_recovery_check",
+          status: "info",
+          entity_type: "transaction",
+          entity_id: tx.id || null,
+          actor_type: "system",
+          actor_id: null,
+          request_ref: requestRef || null,
+          mvola_phone: tx.phone || null,
+          client_mac: tx?.metadata?.client_mac || null,
+          ap_mac: tx?.metadata?.ap_mac || null,
+          pool_id: tx?.metadata?.pool_id || null,
+          plan_id: tx?.metadata?.plan_id || null,
+          message: "MVola recovery status check started",
+          metadata: {
+            reason,
+            before_status: beforeStatus,
+            serverCorrelationId,
+            created_at: tx.created_at || null,
+          },
+        });
+
+        await pollTransactionStatus({
+          serverCorrelationId,
+          requestRef,
+          phone: tx.phone || tx?.metadata?.phone || null,
+          amount: tx.amount ?? null,
+          plan: tx.plan || null,
+          timeoutMsOverride: 20_000,
+          maxAttempts: 1,
+          skipTimeoutFinalization: true,
+          source: "mvola_recovery",
+        });
+
+        const { data: after, error: afterErr } = await supabase
+          .from("transactions")
+          .select("status,code,voucher")
+          .eq("request_ref", requestRef)
+          .maybeSingle();
+
+        if (afterErr) throw afterErr;
+
+        const afterStatus = normalizeTransactionStatusForRecovery(after?.status);
+        const hasVoucher = !!(String(after?.code || "").trim() || String(after?.voucher || "").trim());
+
+        if (afterStatus === "completed" && hasVoucher) stats.recovered++;
+        else if (afterStatus === "failed") stats.failed++;
+        else stats.still_pending++;
+      } catch (e) {
+        stats.errors++;
+        console.error("[MVOLA RECOVERY] candidate failed", { requestRef, error: e?.message || e });
+        await insertLog({
+          request_ref: requestRef || null,
+          server_correlation_id: serverCorrelationId || null,
+          event_type: "mvola_recovery_error",
+          status: "error",
+          masked_phone: maskPhone(tx.phone || ""),
+          amount: tx.amount ?? null,
+          short_message: "MVola recovery candidate failed",
+          payload: truncate(e?.message || e, 2000),
+          meta: { reason, before_status: beforeStatus },
+        });
+      }
+    }
+
+    return stats;
+  } catch (e) {
+    stats.ok = false;
+    stats.error = String(e?.message || e);
+    console.error("[MVOLA RECOVERY] scan failed", e?.message || e);
+    await insertLog({
+      event_type: "mvola_recovery_scan_error",
+      status: "error",
+      short_message: "MVola recovery scan failed",
+      payload: truncate(e?.message || e, 2000),
+      meta: { reason },
+    });
+    return stats;
+  } finally {
+    mvolaRecoveryRunning = false;
+  }
+}
+
+function startMvolaRecoveryJob() {
+  if (!MVOLA_RECOVERY_ENABLED) {
+    console.log("[MVOLA RECOVERY] disabled by MVOLA_RECOVERY_ENABLED=false");
+    return;
+  }
+  if (mvolaRecoveryIntervalHandle) return;
+
+  console.log("[MVOLA RECOVERY] enabled", {
+    interval_ms: MVOLA_RECOVERY_INTERVAL_MS,
+    stale_after_ms: MVOLA_RECOVERY_STALE_AFTER_MS,
+    max_age_ms: MVOLA_RECOVERY_MAX_AGE_MS,
+    batch_size: MVOLA_RECOVERY_BATCH_SIZE,
+  });
+
+  // Give the server a few seconds to finish booting before first scan.
+  setTimeout(() => {
+    runMvolaRecoveryOnce({ reason: "startup" }).catch((e) => {
+      console.error("[MVOLA RECOVERY] startup run failed", e?.message || e);
+    });
+  }, 15_000);
+
+  mvolaRecoveryIntervalHandle = setInterval(() => {
+    runMvolaRecoveryOnce({ reason: "interval" }).catch((e) => {
+      console.error("[MVOLA RECOVERY] interval run failed", e?.message || e);
+    });
+  }, MVOLA_RECOVERY_INTERVAL_MS);
+
+  try { mvolaRecoveryIntervalHandle.unref?.(); } catch (_) {}
+}
+
+// Manual superadmin trigger for tests/support. No frontend dependency.
+app.post("/api/admin/payments/recover-mvola", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    const maxRows = Math.max(1, Math.min(20, Number(req.body?.max_rows || req.body?.maxRows || MVOLA_RECOVERY_BATCH_SIZE)));
+    const result = await runMvolaRecoveryOnce({ reason: "manual_admin", maxRows });
+    return res.json(result);
+  } catch (e) {
+    console.error("ADMIN MVOLA RECOVERY ERROR", e?.message || e);
+    return res.status(500).json({ ok: false, error: "mvola_recovery_failed" });
+  }
+});
 
 // ===== NEW SYSTEM: Purchase by plan =====
 app.post("/api/new/purchase", async (req, res) => {
@@ -14675,4 +14927,5 @@ app.listen(PORT, "0.0.0.0", () => {
   const now = new Date().toISOString();
   console.log(`🚀 Server started at ${now} on port ${PORT}`);
   console.log(`[INFO] Endpoint ready: POST /api/send-payment`);
+  startMvolaRecoveryJob();
 });
