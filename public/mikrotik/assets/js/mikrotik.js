@@ -528,6 +528,194 @@
       .plan-card .choose-plan-btn { width: 90%; height: 36px !important; min-height: 36px !important; padding: 0 14px !important; margin: 0 auto !important; background: #1f2937 !important; color: #fff !important; border: 0 !important; box-shadow: 0 6px 14px rgba(17,24,39,.12) !important; font-size: .90rem !important; font-weight: 650 !important; line-height: 1 !important; }
       .plan-card.selected .choose-plan-btn { background: rgba(118,118,128,.16) !important; color: inherit !important; box-shadow: none !important; border: 1px solid rgba(118,118,128,.10) !important; }
       .plan-card .plan-payment { margin-top: 14px; }
+
+      /* RAZAFI Option B — professional mobile payment sheet */
+      body.razafi-payment-sheet-open { overflow: hidden; }
+      .plan-card.payment-sheet-open-card { transform: none !important; overflow: visible !important; }
+      .plan-payment.hidden { display: none !important; }
+      .plan-card.selected .plan-payment:not(.hidden) {
+        position: fixed !important;
+        inset: 0 !important;
+        z-index: 9999 !important;
+        display: flex !important;
+        align-items: flex-end !important;
+        justify-content: center !important;
+        margin: 0 !important;
+        padding: 14px 12px calc(14px + env(safe-area-inset-bottom,0px)) !important;
+        background: rgba(17,24,39,.40) !important;
+        -webkit-backdrop-filter: blur(14px);
+        backdrop-filter: blur(14px);
+        overflow: hidden !important;
+      }
+      body.theme-dark .plan-card.selected .plan-payment:not(.hidden) {
+        background: rgba(0,0,0,.62) !important;
+      }
+      .payment-sheet-card {
+        width: min(100%, 520px);
+        max-height: calc(92vh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        box-sizing: border-box;
+        border-radius: 30px 30px 24px 24px;
+        border: 1px solid var(--ios-border, rgba(17,24,39,.08));
+        background: var(--ios-card, #fff);
+        color: var(--ios-text, #111827);
+        box-shadow: 0 28px 80px rgba(0,0,0,.30);
+        padding: 12px 16px calc(16px + env(safe-area-inset-bottom,0px));
+      }
+      .payment-sheet-handle {
+        width: 44px;
+        height: 5px;
+        border-radius: 999px;
+        background: rgba(118,118,128,.30);
+        margin: 0 auto 12px;
+      }
+      .payment-sheet-card h5 {
+        margin: 0 0 12px;
+        font-size: 1.08rem;
+        font-weight: 950;
+        letter-spacing: -.025em;
+        text-align: center;
+        color: var(--ios-text, #111827);
+      }
+      .payment-sheet-summary,
+      .pay-confirm-inner {
+        border-radius: 20px;
+        border: 1px solid rgba(118,118,128,.12);
+        background: rgba(118,118,128,.08);
+        padding: 12px;
+        margin: 0 0 13px;
+      }
+      body.theme-dark .payment-sheet-summary,
+      body.theme-dark .pay-confirm-inner {
+        background: rgba(255,255,255,.06);
+        border-color: rgba(255,255,255,.08);
+      }
+      .payment-sheet-card .summary-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        line-height: 1.3;
+        font-size: 13px;
+      }
+      .payment-sheet-card .summary-row + .summary-row { margin-top: 8px; }
+      .payment-sheet-card .summary-row span { color: var(--ios-muted, #6b7280); font-weight: 800; }
+      .payment-sheet-card .summary-row strong { text-align: right; font-weight: 950; color: var(--ios-text, #111827); }
+      .payment-sheet-card label {
+        display: block;
+        margin: 8px 2px 7px;
+        font-size: 13px;
+        color: var(--ios-muted, #6b7280);
+        font-weight: 900;
+      }
+      .payment-sheet-card .mvola-input {
+        width: 100%;
+        box-sizing: border-box;
+        min-height: 50px;
+        border-radius: 18px;
+        border: 1px solid rgba(118,118,128,.20);
+        background: rgba(118,118,128,.08);
+        color: var(--ios-text, #111827);
+        padding: 0 14px;
+        font-size: 17px;
+        font-weight: 850;
+        outline: none;
+      }
+      .payment-sheet-card .mvola-input:focus {
+        border-color: rgba(0,122,255,.55);
+        box-shadow: 0 0 0 4px rgba(0,122,255,.12);
+        background: var(--ios-card, #fff);
+      }
+      .payment-sheet-card .phone-hint {
+        min-height: 18px;
+        margin: 8px 2px 10px;
+        line-height: 1.35;
+      }
+      .payment-sheet-card .pay-btn,
+      .payment-sheet-card .cancel-btn,
+      .payment-sheet-card .confirm-btn,
+      .payment-sheet-card .confirm-cancel-btn {
+        width: 100%;
+        min-height: 46px !important;
+        margin: 0 0 9px !important;
+      }
+      .payment-sheet-card .pay-confirm.hidden { display: none !important; }
+      .payment-sheet-card .pay-confirm h6 {
+        margin: 0 0 10px;
+        font-size: 15px;
+        font-weight: 950;
+        color: var(--ios-text, #111827);
+      }
+      .payment-sheet-card .processing-overlay.hidden { display: none !important; }
+      .payment-sheet-card .processing-overlay:not(.hidden) {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 18px;
+        border-radius: inherit;
+        background: rgba(255,255,255,.88);
+        -webkit-backdrop-filter: blur(10px);
+        backdrop-filter: blur(10px);
+      }
+      body.theme-dark .payment-sheet-card .processing-overlay:not(.hidden) {
+        background: rgba(21,21,24,.88);
+      }
+      .payment-sheet-card { position: relative; }
+      .payment-sheet-card .processing-card {
+        border-radius: 22px;
+        padding: 16px;
+        background: var(--ios-card, #fff);
+        border: 1px solid var(--ios-border, rgba(17,24,39,.08));
+        box-shadow: 0 18px 48px rgba(0,0,0,.18);
+      }
+      .payment-sheet-card .mvola-badge {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        margin: 9px 0 6px;
+        padding: 10px 12px;
+        border-radius: 18px;
+        background: rgba(118,118,128,.08);
+      }
+      .payment-sheet-card .mvola-badge img {
+        max-height: 26px;
+        max-width: 110px;
+        object-fit: contain;
+      }
+      .payment-sheet-card .secure-text {
+        font-size: 12px;
+        font-weight: 850;
+        color: var(--ios-muted, #6b7280);
+      }
+      @media (min-width: 700px) {
+        .plan-card.selected .plan-payment:not(.hidden) {
+          align-items: center !important;
+          padding: 24px !important;
+        }
+        .payment-sheet-card {
+          border-radius: 30px;
+          max-height: min(720px, 88vh);
+        }
+      }
+      @media (max-width: 420px) {
+        .payment-sheet-card {
+          max-height: calc(94vh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));
+          padding-left: 15px;
+          padding-right: 15px;
+        }
+      }
+      @media (max-height: 620px) {
+        .payment-sheet-card {
+          max-height: calc(96vh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));
+        }
+        .payment-sheet-card h5 { margin-bottom: 8px; }
+        .payment-sheet-summary { margin-bottom: 9px; padding: 10px; }
+      }
       @media (max-width: 380px) { .plan-price-row { align-items: flex-start; flex-direction: column; gap: 4px; } .plan-price-caption { padding-bottom: 0; } }
     `;
     document.head.appendChild(st);
@@ -2587,57 +2775,65 @@ function saturationLabel(pct) {
         <button class="choose-plan-btn" data-default-label="${escapeHtml(ctaText)}" aria-pressed="false">${escapeHtml(ctaText)}</button>
 
         <div class="plan-payment hidden" aria-live="polite">
-          <h5>Paiement</h5>
+          <div class="payment-sheet-card" role="dialog" aria-modal="true" aria-label="Paiement MVola">
+            <div class="payment-sheet-handle" aria-hidden="true"></div>
+            <h5>Paiement MVola</h5>
 
-          <label>Numéro MVola</label>
-          <input class="mvola-input"
-            type="tel"
-            placeholder="0341234567 ou +26134xxxxxxx"
-            inputmode="numeric"
-            autocomplete="tel"
-          />
+            <div class="payment-sheet-summary" aria-label="Forfait sélectionné">
+              <div class="summary-row"><span>Forfait</span><strong>${escapeHtml(name)}</strong></div>
+              <div class="summary-row"><span>Prix</span><strong>${escapeHtml(price)}</strong></div>
+            </div>
 
-          <div class="phone-hint muted small"></div>
+            <label>Numéro MVola</label>
+            <input class="mvola-input"
+              type="tel"
+              placeholder="0341234567 ou +26134xxxxxxx"
+              inputmode="numeric"
+              autocomplete="tel"
+            />
 
-          <button class="primary-btn pay-btn" disabled>
-            Continuer
-          </button>
+            <div class="phone-hint muted small"></div>
 
-          <button class="secondary-btn cancel-btn">
-            Annuler
-          </button>
+            <button class="primary-btn pay-btn" disabled>
+              Continuer
+            </button>
 
-          <!-- Confirmation inline -->
-          <div class="pay-confirm hidden" role="dialog" aria-label="Confirmation paiement">
-            <div class="pay-confirm-inner">
-              <h6>Confirmer le paiement</h6>
-              <div class="pay-summary"></div>
-              <div class="pay-confirm-actions">
-                <button class="primary-btn confirm-btn">Confirmer le paiement</button>
-                <button class="secondary-btn confirm-cancel-btn">Annuler</button>
+            <button class="secondary-btn cancel-btn">
+              Annuler
+            </button>
+
+            <!-- Confirmation inline -->
+            <div class="pay-confirm hidden" role="dialog" aria-label="Confirmation paiement">
+              <div class="pay-confirm-inner">
+                <h6>Confirmer le paiement</h6>
+                <div class="pay-summary"></div>
+                <div class="pay-confirm-actions">
+                  <button class="primary-btn confirm-btn">Confirmer le paiement</button>
+                  <button class="secondary-btn confirm-cancel-btn">Annuler</button>
+                </div>
               </div>
             </div>
-          </div>
 
-          <!-- Processing overlay (local) -->
-          <div class="processing-overlay hidden" aria-live="assertive">
-            <div class="processing-card">
-              <div class="spinner" aria-hidden="true"></div>
-              <div class="processing-text">
-                <div class="processing-title">📲 Vérifiez votre téléphone MVola</div>
-                <div class="processing-sub">Entrez votre PIN si demandé. Votre code WiFi apparaîtra automatiquement après confirmation.</div>
+            <!-- Processing overlay (local) -->
+            <div class="processing-overlay hidden" aria-live="assertive">
+              <div class="processing-card">
+                <div class="spinner" aria-hidden="true"></div>
+                <div class="processing-text">
+                  <div class="processing-title">📲 Vérifiez votre téléphone MVola</div>
+                  <div class="processing-sub">Entrez votre PIN si demandé. Votre code WiFi apparaîtra automatiquement après confirmation.</div>
+                </div>
               </div>
             </div>
-          </div>
 
-          <div class="mvola-badge">
-            <span class="secure-text">🔒 Paiement sécurisé via</span>
-            <img src="assets/img/mvola.png" alt="MVola">
-          </div>
+            <div class="mvola-badge">
+              <span class="secure-text">🔒 Paiement sécurisé via</span>
+              <img src="assets/img/mvola.png" alt="MVola">
+            </div>
 
-          <p class="muted small">
-            💼 Paiement en espèces possible avec assistance du staff.
-          </p>
+            <p class="muted small">
+              💼 Paiement en espèces possible avec assistance du staff.
+            </p>
+          </div>
         </div>
       </div>
     `;
@@ -2790,54 +2986,36 @@ function saturationLabel(pct) {
   function scrollPaymentFormIntoView(card, delayMs = 220) {
     if (!card) return;
     const payment = card.querySelector(".plan-payment");
+    const sheet = payment ? payment.querySelector(".payment-sheet-card") : null;
     const input = card.querySelector(".mvola-input");
+
+    // Option B: the MVola form is now a fixed payment sheet.
+    // Do not force the whole page to scroll; keep the sheet itself stable.
+    if (payment && !payment.classList.contains("hidden")) {
+      window.setTimeout(function () {
+        try {
+          if (sheet) sheet.scrollTop = 0;
+        } catch (_) {}
+
+        try {
+          if (input && typeof input.focus === "function" && document.activeElement !== input) {
+            input.focus({ preventScroll: true });
+          }
+        } catch (_) {}
+      }, Math.max(0, Number(delayMs) || 0));
+      return;
+    }
+
+    // Legacy fallback if the payment form is ever rendered inline again.
     const target = input || payment || card;
     if (!target || typeof target.scrollIntoView !== "function") return;
 
-    function keepMvolaInputVisible() {
-      if (!input || typeof input.getBoundingClientRect !== "function") return;
-
-      try {
-        const rect = input.getBoundingClientRect();
-        const vv = window.visualViewport || null;
-        const layoutHeight = window.innerHeight || document.documentElement.clientHeight || 0;
-        let visibleHeight = (vv && vv.height) ? Number(vv.height) : layoutHeight;
-
-        // Some Android captive browsers do not reduce innerHeight when the keyboard opens.
-        // When the MVola input is focused, reserve the lower part of the screen for the keyboard.
-        if (document.activeElement === input && layoutHeight && (!vv || Math.abs(Number(vv.height || 0) - layoutHeight) < 40)) {
-          visibleHeight = Math.min(visibleHeight || layoutHeight, Math.round(layoutHeight * 0.55));
-        }
-
-        const topSafe = 96;
-        const bottomSafe = Math.max(topSafe + 90, (visibleHeight || layoutHeight || 520) - 145);
-
-        // Preferred position: keep the phone field clearly visible near the top of the usable area.
-        // Only scroll if the correction is meaningful, to avoid micro-correction loops
-        // that cause the page to visibly bounce up/down.
-        const MIN_SCROLL_DELTA = 20;
-        if (rect.top < topSafe || rect.bottom > bottomSafe) {
-          const delta = rect.top - topSafe;
-          if (Math.abs(delta) > MIN_SCROLL_DELTA) {
-            window.scrollBy({ top: delta, behavior: "smooth" });
-          }
-        }
-      } catch (_) {}
-    }
-
     window.setTimeout(function () {
       try {
-        // Mobile keyboard UX: target the MVola input itself, not only the selected card.
         target.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
       } catch (_) {
         try { target.scrollIntoView(); } catch (_) {}
       }
-
-      // Re-check several times because Android/iPhone captive browsers resize the viewport
-      // after the keyboard animation, not immediately after focus().
-      [80, 260, 620].forEach(function (ms) {
-        window.setTimeout(keepMvolaInputVisible, ms);
-      });
     }, Math.max(0, Number(delayMs) || 0));
   }
 
@@ -2845,9 +3023,11 @@ function saturationLabel(pct) {
     const planCards = getPlanCards();
     planCards.forEach((card) => {
       resetPlanSelectionUi(card);
+      card.classList.remove("payment-sheet-open-card");
       const payment = card.querySelector(".plan-payment");
       if (payment) payment.classList.add("hidden");
     });
+    try { document.body.classList.remove("razafi-payment-sheet-open"); } catch (_) {}
   }
 
   function updateProcessingMessage(card, title, subtitle) {
@@ -3003,9 +3183,11 @@ function saturationLabel(pct) {
     if (!card) return;
 
     resetPlanSelectionUi(card);
+    card.classList.remove("payment-sheet-open-card");
 
     const payment = card.querySelector(".plan-payment");
     if (payment) payment.classList.add("hidden");
+    try { document.body.classList.remove("razafi-payment-sheet-open"); } catch (_) {}
 
     const confirmWrap = card.querySelector(".pay-confirm");
     if (confirmWrap) confirmWrap.classList.add("hidden");
@@ -3068,6 +3250,16 @@ function bindPlanHandlers() {
       const confirmCancelBtn = card.querySelector(".confirm-cancel-btn");
       const confirmBtn = card.querySelector(".confirm-btn");
       const summaryEl = card.querySelector(".pay-summary");
+      const paymentSheet = card.querySelector(".plan-payment");
+
+      if (paymentSheet && paymentSheet.dataset.sheetBackdropBound !== "1") {
+        paymentSheet.dataset.sheetBackdropBound = "1";
+        paymentSheet.addEventListener("click", function (e) {
+          if (e.target !== paymentSheet) return;
+          if (card.classList.contains("processing")) return;
+          resetCardPaymentState(card);
+        });
+      }
 
       card.addEventListener("click", function (e) {
         if (card.classList.contains("selected")) return;
@@ -3125,7 +3317,9 @@ function bindPlanHandlers() {
           closeAllPayments();
           setPlanSelectedUi(card);
           const payment = card.querySelector(".plan-payment");
+          card.classList.add("payment-sheet-open-card");
           if (payment) payment.classList.remove("hidden");
+          try { document.body.classList.add("razafi-payment-sheet-open"); } catch (_) {}
           scrollPaymentFormIntoView(card, 120);
           if (input) {
             try { input.focus({ preventScroll: true }); } catch (_) { try { input.focus(); } catch (_) {} }
@@ -3307,6 +3501,7 @@ function bindPlanHandlers() {
                     durationMinutes: data?.plan?.duration_minutes || null,
                     maxDevices: data?.plan?.max_devices || null,
                   }});
+                  try { resetCardPaymentState(card); } catch (_) {}
                   showToast("⚠️ Achat désactivé : vous avez déjà un code en attente/actif. Utilisez d’abord le code ci-dessous.", "warning", 8000);
                   return;
                 }
@@ -3333,6 +3528,7 @@ function bindPlanHandlers() {
                     code: freeCode,
                     receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices, speed_human: receiptDraft.speed_human, mikrotik_rate_limit: receiptDraft.mikrotik_rate_limit } : null,
                   });
+                  try { resetCardPaymentState(card); } catch (_) {}
                   showToast("🎉 Code gratuit généré ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
                   return;
                 }
@@ -3371,6 +3567,7 @@ function bindPlanHandlers() {
                 code,
                 receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices, speed_human: receiptDraft.speed_human, mikrotik_rate_limit: receiptDraft.mikrotik_rate_limit } : null,
               });
+              try { resetCardPaymentState(card); } catch (_) {}
               showToast("🎉 Code reçu ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
             } catch (e) {
               console.error("[RAZAFI] payment error", e);
