@@ -577,7 +577,7 @@
         maxDevices,
         badge: "",
         role: "neutral",
-        cta: "Choisir",
+        cta: "Payer avec MVola",
         isFreeTest: false,
         isRecommended: false,
       };
@@ -660,7 +660,7 @@
     if (recommendedId && meta[recommendedId]) {
       meta[recommendedId].badge = "⭐ RECOMMANDÉ";
       meta[recommendedId].role = "recommended";
-      meta[recommendedId].cta = "Choisir ce plan";
+      meta[recommendedId].cta = "Payer avec MVola";
       meta[recommendedId].isRecommended = true;
     }
 
@@ -2546,7 +2546,7 @@ function saturationLabel(pct) {
     const badgeHtml = uiMeta.badge
       ? `<span class="plan-ux-badge ${uiMeta.isFreeTest ? "badge-free" : "badge-recommended"}">${escapeHtml(uiMeta.badge)}</span>`
       : "";
-    const ctaText = uiMeta.cta || "Choisir";
+    const ctaText = uiMeta.cta || "Payer avec MVola";
     const durationText = formatDuration(durationMinutes);
     const dataText = formatData(dataMb);
     const devicesText = formatDevices(maxDevices);
@@ -2600,7 +2600,7 @@ function saturationLabel(pct) {
           <div class="phone-hint muted small"></div>
 
           <button class="primary-btn pay-btn" disabled>
-            Payer avec MVola
+            Continuer
           </button>
 
           <button class="secondary-btn cancel-btn">
@@ -2613,7 +2613,7 @@ function saturationLabel(pct) {
               <h6>Confirmer le paiement</h6>
               <div class="pay-summary"></div>
               <div class="pay-confirm-actions">
-                <button class="primary-btn confirm-btn">Confirmer</button>
+                <button class="primary-btn confirm-btn">Confirmer le paiement</button>
                 <button class="secondary-btn confirm-cancel-btn">Annuler</button>
               </div>
             </div>
