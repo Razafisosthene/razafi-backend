@@ -734,6 +734,17 @@
 
   const storedCaptive = readCaptiveContext();
 
+  // -------- Admin portal preview (read-only, token-protected) --------
+  const portalPreviewRequested = String(getQueryParam("preview") || "").trim() === "1";
+  const portalPreviewToken = String(getQueryParam("preview_token") || getQueryParam("token") || "").trim();
+  const portalPreviewState = {
+    requested: portalPreviewRequested,
+    active: false,
+    error: null,
+    pool: null,
+    expiresAt: null,
+  };
+
   const apMacFromQuery = pickLastValidParam(["ap_mac","apMac"], isProbablyMac) || "";
   const clientMacFromQuery = pickLastValidParam(["client_mac","clientMac"], isProbablyMac) || "";
   // -------- Option C (MikroTik external portal) --------
@@ -824,9 +835,15 @@
       const u = new URL(window.location.href);
 
       const keepKeys = new Set(["backend", "backend_url", "api_base", "api"]);
+      if (portalPreviewRequested) {
+        ["preview", "preview_token", "nas_id", "nasId", "nas", "gw", "gateway", "router_ip", "hotspot_ip", "mikrotik_ip"].forEach((k) => keepKeys.add(k));
+      }
+
       const kept = new URLSearchParams();
       for (const k of keepKeys) {
-        const v = u.searchParams.get(k);
+        const vals = u.searchParams.getAll(k);
+        if (!vals || !vals.length) continue;
+        const v = vals[vals.length - 1];
         if (v && String(v).trim()) kept.set(k, v);
       }
 
@@ -1169,6 +1186,8 @@
   }
 
   async function updateConnectedUI({ force = false } = {}) {
+    if (portalPreviewState.active || portalPreviewState.requested) return;
+
     const accessMsg = document.getElementById("accessMsg");
     if (accessMsg && (force || accessMsg.textContent.includes("Vérification"))) {
       accessMsg.textContent = "Vérification de votre accès en cours…";
@@ -1182,6 +1201,134 @@
       const btn = document.getElementById("continueInternetBtn");
       if (btn) btn.remove();
     }
+  }
+
+  function ensurePortalPreviewStyle() {
+    if (document.getElementById("razafi-preview-style")) return;
+    const st = document.createElement("style");
+    st.id = "razafi-preview-style";
+    st.textContent = `
+      .razafi-preview-banner{margin:10px auto 0;padding:10px 13px;border-radius:999px;background:rgba(15,23,42,.08);border:1px solid rgba(15,23,42,.10);color:var(--ios-text,#111827);font-size:13px;font-weight:900;text-align:center;display:inline-flex;align-items:center;justify-content:center;gap:6px;}
+      body.theme-dark .razafi-preview-banner{background:rgba(255,255,255,.10);border-color:rgba(255,255,255,.12);}
+      body.razafi-preview-mode .voucher-panel{display:none!important;}
+      body.razafi-preview-mode #continueInternetBtn{display:none!important;}
+      body.razafi-preview-mode .plan-payment{display:none!important;}
+      body.razafi-preview-mode .choose-plan-btn:disabled{opacity:1!important;background:rgba(118,118,128,.16)!important;color:var(--ios-text,#111827)!important;box-shadow:none!important;border:1px solid rgba(118,118,128,.10)!important;cursor:not-allowed;}
+      body.theme-dark.razafi-preview-mode .choose-plan-btn:disabled{color:#f5f5f7!important;}
+      .razafi-preview-error{margin:12px 0 0;padding:12px 14px;border-radius:18px;background:rgba(220,53,69,.08);border:1px solid rgba(220,53,69,.20);color:#b42318;font-weight:850;line-height:1.35;}
+      body.theme-dark .razafi-preview-error{background:rgba(255,122,122,.10);border-color:rgba(255,122,122,.28);color:#ff9d9d;}
+    `;
+    document.head.appendChild(st);
+  }
+
+  function ensurePortalPreviewBanner(text = "Mode aperçu — Paiement désactivé") {
+    ensurePortalPreviewStyle();
+    const hero = document.querySelector(".portal-hero") || document.querySelector(".status-card") || document.body;
+    let banner = document.getElementById("portalPreviewBanner");
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = "portalPreviewBanner";
+      banner.className = "razafi-preview-banner";
+      banner.setAttribute("aria-live", "polite");
+      if (hero && hero.appendChild) hero.appendChild(banner);
+    }
+    banner.textContent = text;
+    banner.style.display = "inline-flex";
+    return banner;
+  }
+
+  function applyPortalPreviewShell() {
+    ensurePortalPreviewStyle();
+    document.body.classList.add("razafi-preview-mode");
+    ensurePortalPreviewBanner("Mode aperçu — Paiement désactivé");
+
+    const accessMsg = document.getElementById("accessMsg");
+    if (accessMsg) accessMsg.style.display = "none";
+
+    const btn = document.getElementById("continueInternetBtn");
+    if (btn) btn.remove();
+
+    const subtitle = document.querySelector(".section-subtitle-ios");
+    if (subtitle) subtitle.textContent = "Aperçu en lecture seule du portail client.";
+
+    ["voucherDetails", "voucherDetailsToggle", "voucherDetailsTitle", "useVoucherBtn", "copyVoucherBtn", "razafiLastCodeBanner", "bonusLine"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = "none";
+    });
+  }
+
+  function showPortalPreviewError(message) {
+    applyPortalPreviewShell();
+    ensurePortalPreviewBanner("Aperçu non disponible");
+    const card = document.querySelector(".status-card") || document.body;
+    let box = document.getElementById("portalPreviewError");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "portalPreviewError";
+      box.className = "razafi-preview-error";
+      card.appendChild(box);
+    }
+    box.textContent = message || "Aperçu expiré ou non autorisé. Veuillez rouvrir depuis l’admin RAZAFI.";
+
+    const plans = document.querySelector(".plans-shell");
+    if (plans) plans.style.display = "none";
+    const ann = document.getElementById("portalAnnouncementCard");
+    if (ann) ann.style.display = "none";
+    const net = document.getElementById("networkInfoCard");
+    if (net) net.style.display = "none";
+  }
+
+  async function validatePortalPreviewMode() {
+    if (!portalPreviewState.requested) return true;
+
+    applyPortalPreviewShell();
+
+    if (!portalPreviewToken) {
+      portalPreviewState.error = "preview_token_required";
+      showPortalPreviewError("Aperçu non autorisé. Veuillez rouvrir depuis l’admin RAZAFI.");
+      return false;
+    }
+
+    try {
+      const url = apiUrl(`/api/admin/portal-preview/validate?preview_token=${encodeURIComponent(portalPreviewToken)}`);
+      const res = await fetch(url, { method: "GET", credentials: "include" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) throw new Error(data?.error || "preview_forbidden");
+
+      portalPreviewState.active = true;
+      portalPreviewState.pool = data.pool || null;
+      portalPreviewState.expiresAt = data.expires_at || null;
+      ensurePortalPreviewBanner("Mode aperçu — Paiement désactivé");
+      return true;
+    } catch (e) {
+      const msg = String(e?.message || "");
+      portalPreviewState.error = msg || "preview_forbidden";
+      const friendly = msg.includes("expired")
+        ? "Aperçu expiré. Veuillez rouvrir depuis l’admin RAZAFI."
+        : "Aperçu non autorisé. Veuillez rouvrir depuis l’admin RAZAFI.";
+      showPortalPreviewError(friendly);
+      return false;
+    }
+  }
+
+  function applyPortalPreviewModeToPlans() {
+    if (!portalPreviewState.active) return;
+    ensurePortalPreviewStyle();
+    getPlanCards().forEach((card) => {
+      card.classList.add("plan-card-preview");
+      const chooseBtn = card.querySelector(".choose-plan-btn");
+      if (chooseBtn) {
+        chooseBtn.textContent = "Aperçu seulement";
+        chooseBtn.disabled = true;
+        chooseBtn.setAttribute("aria-disabled", "true");
+        chooseBtn.setAttribute("data-default-label", "Aperçu seulement");
+      }
+      const payment = card.querySelector(".plan-payment");
+      if (payment) payment.classList.add("hidden");
+      card.querySelectorAll(".mvola-input,.pay-btn,.confirm-btn,.confirm-cancel-btn,.cancel-btn").forEach((el) => {
+        try { el.disabled = true; } catch (_) {}
+      });
+    });
   }
 
   // -------- Voucher buttons + state --------
@@ -2649,11 +2796,13 @@ function saturationLabel(pct) {
     if (plansLoading) plansLoading.textContent = "Chargement des plans…";
 
     try {
-      const url = (nasId && clientMac)
-        ? `/api/mikrotik/plans?nas_id=${encodeURIComponent(nasId)}&client_mac=${encodeURIComponent(clientMac)}`
-        : (apMac && clientMac)
-          ? `/api/mikrotik/plans?ap_mac=${encodeURIComponent(apMac)}&client_mac=${encodeURIComponent(clientMac)}`
-          : `/api/mikrotik/plans`;
+      const url = (portalPreviewState.active && nasId)
+        ? `/api/mikrotik/plans?nas_id=${encodeURIComponent(nasId)}&preview=1`
+        : (nasId && clientMac)
+          ? `/api/mikrotik/plans?nas_id=${encodeURIComponent(nasId)}&client_mac=${encodeURIComponent(clientMac)}`
+          : (apMac && clientMac)
+            ? `/api/mikrotik/plans?ap_mac=${encodeURIComponent(apMac)}&client_mac=${encodeURIComponent(clientMac)}`
+            : `/api/mikrotik/plans`;
 
       const res = await fetch(apiUrl(url));
 
@@ -2681,6 +2830,12 @@ function saturationLabel(pct) {
 
       bindPlanFilters();
       applyPlanFilter({ resetSelection: false });
+
+      if (portalPreviewState.active) {
+        applyPortalPreviewModeToPlans();
+        bindTermsAcceptanceGuard();
+        return;
+      }
 
       bindPlanHandlers();
       bindTermsAcceptanceGuard();
@@ -3406,27 +3561,42 @@ function bindPlanHandlers() {
   }
 
   // -------- Init --------
-  renderStatus({ hasVoucher: false, voucherCode: "" });
-  bindTermsAcceptanceGuard();
-  loadPlans();
+  async function initPortal() {
+    renderStatus({ hasVoucher: false, voucherCode: "" });
+    bindTermsAcceptanceGuard();
 
-  try {
-    const raw = sessionStorage.getItem("razafi_login_attempt");
-    if (raw) {
-      sessionStorage.removeItem("razafi_login_attempt");
-      updateConnectedUI({ force: true });
-    } else {
-      updateConnectedUI({ force: false });
+    const previewOk = await validatePortalPreviewMode();
+    if (!previewOk) {
+      console.log("[RAZAFI] Portal preview blocked", { nasId, error: portalPreviewState.error });
+      return;
     }
-  } catch (_) {
-    updateConnectedUI({ force: false });
+
+    loadPlans();
+
+    if (!portalPreviewState.active) {
+      try {
+        const raw = sessionStorage.getItem("razafi_login_attempt");
+        if (raw) {
+          sessionStorage.removeItem("razafi_login_attempt");
+          updateConnectedUI({ force: true });
+        } else {
+          updateConnectedUI({ force: false });
+        }
+      } catch (_) {
+        updateConnectedUI({ force: false });
+      }
+    } else {
+      applyPortalPreviewShell();
+    }
+
+    // Network info card (IntersectionObserver reveal + bar animation)
+    initNetworkViewportAnimation();
+
+    fetchPortalContext();
+    if (!portalPreviewState.active) fetchPortalStatus();
+
+    console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac, nasId, preview: portalPreviewState.active });
   }
 
-  // Network info card (IntersectionObserver reveal + bar animation)
-  initNetworkViewportAnimation();
-
-  fetchPortalContext();
-  fetchPortalStatus();
-
-  console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac, nasId });
+  initPortal();
 })();

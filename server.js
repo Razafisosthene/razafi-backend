@@ -255,6 +255,102 @@ function serializePortalAnnouncement(poolRow) {
     message: enabled ? message : "",
   };
 }
+
+
+// ===============================
+// ADMIN PORTAL PREVIEW — signed short-lived links
+// ===============================
+const PORTAL_PREVIEW_TTL_MS = Math.max(
+  5 * 60 * 1000,
+  Math.min(6 * 60 * 60 * 1000, parseInt(process.env.PORTAL_PREVIEW_TTL_MS || "3600000", 10) || 3600000)
+);
+const PORTAL_PREVIEW_BASE_URL = process.env.PORTAL_PREVIEW_BASE_URL || "https://portal.razafistore.com/mikrotik/";
+
+function getPortalPreviewSecret() {
+  return String(
+    process.env.PORTAL_PREVIEW_SECRET ||
+    process.env.ADMIN_PREVIEW_TOKEN_SECRET ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SESSION_SECRET ||
+    "RAZAFI_PORTAL_PREVIEW_DEV_SECRET"
+  );
+}
+
+function b64urlEncode(input) {
+  return Buffer.from(input).toString("base64url");
+}
+
+function b64urlDecode(input) {
+  return Buffer.from(String(input || ""), "base64url").toString("utf8");
+}
+
+function signPortalPreviewPayload(payload) {
+  const body = b64urlEncode(JSON.stringify(payload || {}));
+  const sig = crypto
+    .createHmac("sha256", getPortalPreviewSecret())
+    .update(body)
+    .digest("base64url");
+  return `${body}.${sig}`;
+}
+
+function verifyPortalPreviewToken(token) {
+  const raw = String(token || "").trim();
+  const parts = raw.split(".");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw new Error("preview_token_invalid");
+  }
+
+  const expected = crypto
+    .createHmac("sha256", getPortalPreviewSecret())
+    .update(parts[0])
+    .digest("base64url");
+
+  const gotBuf = Buffer.from(parts[1]);
+  const expBuf = Buffer.from(expected);
+  if (gotBuf.length !== expBuf.length || !crypto.timingSafeEqual(gotBuf, expBuf)) {
+    throw new Error("preview_token_invalid");
+  }
+
+  let payload = null;
+  try {
+    payload = JSON.parse(b64urlDecode(parts[0]));
+  } catch (_) {
+    throw new Error("preview_token_invalid");
+  }
+
+  const exp = Number(payload?.exp || 0);
+  if (!Number.isFinite(exp) || exp <= Date.now()) {
+    throw new Error("preview_token_expired");
+  }
+
+  return payload;
+}
+
+function canAdminAccessPool(admin, poolRow) {
+  if (!admin || !poolRow) return false;
+  if (admin.is_superadmin) return true;
+
+  const poolId = String(poolRow?.id || "").trim();
+  const ownerId = String(poolRow?.owner_admin_user_id || "").trim();
+  const adminId = String(admin?.id || "").trim();
+  const assigned = Array.isArray(admin?.pool_ids) ? admin.pool_ids.map(String) : [];
+
+  return (!!poolId && assigned.includes(poolId)) || (!!ownerId && !!adminId && ownerId === adminId);
+}
+
+function normalizePreviewGatewayIp(value) {
+  const s = String(value || "").trim();
+  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(s) ? s : "192.168.88.1";
+}
+
+function buildPortalPreviewUrl({ nasId, gw, token }) {
+  const u = new URL(PORTAL_PREVIEW_BASE_URL);
+  u.searchParams.set("preview", "1");
+  u.searchParams.set("nas_id", String(nasId || "").trim());
+  u.searchParams.set("gw", normalizePreviewGatewayIp(gw));
+  u.searchParams.set("preview_token", String(token || "").trim());
+  return u.toString();
+}
 const adminCookieOptions = () => ({
   httpOnly: true,
   secure: IS_PROD, // ✅ works in prod HTTPS + local dev HTTP
@@ -500,7 +596,12 @@ async function requireAdmin(req, res, next) {
       const allowOwnerPlanDuplicate =
         method === "POST" && /^\/api\/admin\/plans\/[^/]+\/duplicate$/.test(fullPath);
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate) {
+      // Portal preview: owners may generate a read-only preview link only for their
+      // assigned pools. The route below still enforces pool scope and token signing.
+      const allowOwnerPortalPreviewLink =
+        method === "POST" && /^\/api\/admin\/pools\/[^/]+\/portal-preview-link$/.test(fullPath);
+
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink) {
         return next();
       }
 
@@ -516,6 +617,7 @@ async function requireAdmin(req, res, next) {
         fullPath.startsWith("/api/admin/voucher-sessions/") ||
         fullPath === "/api/admin/plans" ||
         fullPath === "/api/admin/pools" ||
+        fullPath === "/api/admin/portal-preview/validate" ||
         fullPath === "/api/admin/pool-live-stats" ||
         fullPath === "/api/admin/free-access-devices" ||
         fullPath === "/api/admin/free-access-devices/usage" ||
@@ -7511,6 +7613,115 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
   } catch (e) {
     console.error("ADMIN POOLS LIST EX", e);
     return res.status(500).json({ error: "internal error" });
+  }
+});
+
+
+
+// ---------------------------------------------------------------------------
+// ADMIN — Portal preview link (read-only, short-lived)
+// ---------------------------------------------------------------------------
+app.post("/api/admin/pools/:id/portal-preview-link", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const poolId = String(req.params.id || "").trim();
+    if (!poolId) return res.status(400).json({ error: "pool_id_required" });
+
+    const { data: pool, error } = await supabase
+      .from("internet_pools")
+      .select(`id,name,${POOL_BRANDING_SELECT},system,mikrotik_ip,radius_nas_id,owner_admin_user_id`)
+      .eq("id", poolId)
+      .maybeSingle();
+
+    if (error) {
+      console.error("ADMIN PORTAL PREVIEW POOL LOAD ERROR", error);
+      return res.status(500).json({ error: "db_error" });
+    }
+    if (!pool) return res.status(404).json({ error: "pool_not_found" });
+    if (!canAdminAccessPool(req.admin, pool)) return res.status(403).json({ error: "pool_forbidden" });
+
+    if (String(pool.system || "").trim().toLowerCase() !== "mikrotik") {
+      return res.status(409).json({ error: "pool_not_mikrotik" });
+    }
+
+    const nasId = String(pool.radius_nas_id || "").trim();
+    if (!nasId) return res.status(409).json({ error: "nas_id_missing" });
+
+    const gw = normalizePreviewGatewayIp(pool.mikrotik_ip);
+    const now = Date.now();
+    const expiresAtMs = now + PORTAL_PREVIEW_TTL_MS;
+    const token = signPortalPreviewPayload({
+      v: 1,
+      purpose: "portal_preview",
+      pool_id: pool.id,
+      nas_id: nasId,
+      gw,
+      iat: now,
+      exp: expiresAtMs,
+    });
+
+    return res.json({
+      ok: true,
+      url: buildPortalPreviewUrl({ nasId, gw, token }),
+      expires_at: new Date(expiresAtMs).toISOString(),
+      pool: withPoolDisplayName(pool),
+    });
+  } catch (e) {
+    console.error("ADMIN PORTAL PREVIEW LINK EX", e);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
+
+app.get("/api/admin/portal-preview/validate", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const token = String(req.query.preview_token || req.query.token || "").trim();
+    if (!token) return res.status(400).json({ ok: false, error: "preview_token_required" });
+
+    let payload;
+    try {
+      payload = verifyPortalPreviewToken(token);
+    } catch (e) {
+      const msg = String(e?.message || "preview_token_invalid");
+      const status = msg === "preview_token_expired" ? 410 : 403;
+      return res.status(status).json({ ok: false, error: msg });
+    }
+
+    if (payload?.purpose !== "portal_preview" || !payload?.pool_id || !payload?.nas_id) {
+      return res.status(403).json({ ok: false, error: "preview_token_invalid" });
+    }
+
+    const { data: pool, error } = await supabase
+      .from("internet_pools")
+      .select(`id,name,${POOL_BRANDING_SELECT},system,mikrotik_ip,radius_nas_id,owner_admin_user_id`)
+      .eq("id", String(payload.pool_id))
+      .maybeSingle();
+
+    if (error) {
+      console.error("ADMIN PORTAL PREVIEW VALIDATE POOL ERROR", error);
+      return res.status(500).json({ ok: false, error: "db_error" });
+    }
+    if (!pool) return res.status(404).json({ ok: false, error: "pool_not_found" });
+    if (!canAdminAccessPool(req.admin, pool)) return res.status(403).json({ ok: false, error: "pool_forbidden" });
+
+    const currentNas = String(pool.radius_nas_id || "").trim();
+    if (!currentNas || currentNas !== String(payload.nas_id || "").trim()) {
+      return res.status(403).json({ ok: false, error: "nas_id_mismatch" });
+    }
+
+    return res.json({
+      ok: true,
+      pool_id: pool.id,
+      nas_id: currentNas,
+      gw: normalizePreviewGatewayIp(payload.gw || pool.mikrotik_ip),
+      expires_at: new Date(Number(payload.exp)).toISOString(),
+      pool: withPoolDisplayName(pool),
+    });
+  } catch (e) {
+    console.error("ADMIN PORTAL PREVIEW VALIDATE EX", e);
+    return res.status(500).json({ ok: false, error: "internal_error" });
   }
 });
 
