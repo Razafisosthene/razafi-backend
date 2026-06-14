@@ -171,10 +171,12 @@
     const poolId = String(pool?.id || "").trim();
     if (!poolId) return;
 
+    // Keep a real Window reference. Avoid "noopener/noreferrer" here because
+    // some browsers return null and leave an orphan about:blank tab.
     let popup = popupWindow;
     try {
       if (!popup || popup.closed) {
-        popup = window.open("about:blank", "_blank", "noopener,noreferrer");
+        popup = window.open("about:blank", "_blank");
       }
       if (popup && !popup.closed) {
         try { popup.document.title = "RAZAFI Portail"; } catch (_) {}
@@ -185,12 +187,18 @@
       const data = await fetchJSON(`/api/admin/pools/${encodeURIComponent(poolId)}/portal-preview-link`, { method: "POST" });
       const url = data?.url;
       if (!url) throw new Error("preview_url_missing");
-      if (popup && !popup.closed) popup.location.href = url;
-      else window.location.href = url;
+
+      if (popup && !popup.closed) {
+        popup.location.href = url;
+      } else {
+        const opened = window.open(url, "_blank");
+        if (!opened) throw new Error("popup_blocked");
+      }
+
       closePortalPicker();
     } catch (e) {
       try { if (popup && !popup.closed) popup.close(); } catch (_) {}
-      alert("Impossible d’ouvrir l’aperçu du portail. Réessayez.");
+      alert("Impossible d’ouvrir l’aperçu du portail. Vérifiez que les pop-ups ne sont pas bloqués, puis réessayez.");
       console.error("[RAZAFI] portal preview error", e);
     }
   }
@@ -234,7 +242,7 @@
       btn.addEventListener("click", () => {
         const id = btn.getAttribute("data-pool-id") || "";
         const pool = pools.find((p) => String(p.id) === String(id));
-        const popup = window.open("about:blank", "_blank", "noopener,noreferrer");
+        const popup = window.open("about:blank", "_blank");
         openPreviewForPool(pool, popup);
       });
     });
@@ -242,25 +250,21 @@
 
   async function handlePortalPreviewClick() {
     const btn = document.getElementById("rzPortalPreviewBtn");
-    let earlyPopup = null;
-    try { earlyPopup = window.open("about:blank", "_blank", "noopener,noreferrer"); } catch (_) {}
     if (btn) btn.disabled = true;
     try {
       const data = await fetchJSON("/api/admin/pools?system=mikrotik&limit=200");
       const pools = eligiblePreviewPools(data?.pools || []);
       if (!pools.length) {
-        try { if (earlyPopup && !earlyPopup.closed) earlyPopup.close(); } catch (_) {}
         alert("Aucun portail MikroTik disponible pour votre compte.");
         return;
       }
       if (pools.length === 1) {
-        await openPreviewForPool(pools[0], earlyPopup);
+        const popup = window.open("about:blank", "_blank");
+        await openPreviewForPool(pools[0], popup);
         return;
       }
-      try { if (earlyPopup && !earlyPopup.closed) earlyPopup.close(); } catch (_) {}
       showPortalPicker(pools);
     } catch (e) {
-      try { if (earlyPopup && !earlyPopup.closed) earlyPopup.close(); } catch (_) {}
       alert("Impossible de charger vos portails. Réessayez.");
       console.error("[RAZAFI] portal preview pools error", e);
     } finally {
