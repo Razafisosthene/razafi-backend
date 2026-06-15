@@ -735,8 +735,43 @@
   const storedCaptive = readCaptiveContext();
 
   // -------- Admin portal preview (read-only, token-protected) --------
+  const PORTAL_PREVIEW_CTX_KEY = "razafi_portal_preview_ctx_v1";
+
+  function readPortalPreviewContext() {
+    try {
+      const raw = sessionStorage.getItem(PORTAL_PREVIEW_CTX_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function writePortalPreviewContext(patch = {}) {
+    try {
+      const prev = readPortalPreviewContext();
+      const next = {
+        previewToken: String(patch.previewToken ?? prev.previewToken ?? "").trim(),
+        nasId: String(patch.nasId ?? prev.nasId ?? "").trim(),
+        gwIp: String(patch.gwIp ?? prev.gwIp ?? "").trim(),
+        savedAt: Date.now(),
+      };
+      sessionStorage.setItem(PORTAL_PREVIEW_CTX_KEY, JSON.stringify(next));
+      return next;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function clearPortalPreviewContext() {
+    try { sessionStorage.removeItem(PORTAL_PREVIEW_CTX_KEY); } catch (_) {}
+  }
+
+  const storedPortalPreview = readPortalPreviewContext();
   const portalPreviewRequested = String(getQueryParam("preview") || "").trim() === "1";
-  const portalPreviewToken = String(getQueryParam("preview_token") || getQueryParam("token") || "").trim();
+  const portalPreviewTokenFromQuery = String(getQueryParam("preview_token") || getQueryParam("token") || "").trim();
+  const portalPreviewToken = portalPreviewTokenFromQuery || String(storedPortalPreview.previewToken || "").trim();
   const portalPreviewState = {
     requested: portalPreviewRequested,
     active: false,
@@ -775,14 +810,23 @@
 
   const apMac = apMacFromQuery || String(storedCaptive.apMac || "").trim() || (isLocalhost ? "DEV_AP" : "");
   const clientMac = clientMacFromQuery || String(storedCaptive.clientMac || "").trim() || (isLocalhost ? "DEV_CLIENT" : "");
-  const nasId = nasIdFromQuery || String(storedCaptive.nasId || "").trim() || "";
+  const nasId = nasIdFromQuery || String(storedCaptive.nasId || "").trim() || (portalPreviewRequested ? String(storedPortalPreview.nasId || "").trim() : "") || "";
   const loginUrl = loginUrlFromQuery || String(storedCaptive.loginUrl || "").trim() || "";
   const continueUrl = continueUrlFromQuery || String(storedCaptive.continueUrl || "").trim() || "";
   const clientIp = clientIpFromQuery || String(storedCaptive.clientIp || "").trim() || "";
-  const gwIp = gwIpFromQuery || String(storedCaptive.gwIp || "").trim() || "";
+  const gwIp = gwIpFromQuery || String(storedCaptive.gwIp || "").trim() || (portalPreviewRequested ? String(storedPortalPreview.gwIp || "").trim() : "") || "";
 
   // Persist real captive identifiers before URL cleanup so manual refresh keeps working.
   writeCaptiveContext({ apMac, clientMac, nasId, loginUrl, continueUrl, clientIp, gwIp });
+
+  // Persist preview credentials only in this browser tab, then remove them from the visible URL.
+  if (portalPreviewRequested && portalPreviewTokenFromQuery) {
+    writePortalPreviewContext({
+      previewToken: portalPreviewTokenFromQuery,
+      nasId: nasIdFromQuery || nasId,
+      gwIp: gwIpFromQuery || gwIp,
+    });
+  }
 
   
   // ✅ RAZAFI System 3 rule: NEVER trust Tanaza login_url for MikroTik login.
@@ -836,7 +880,9 @@
 
       const keepKeys = new Set(["backend", "backend_url", "api_base", "api"]);
       if (portalPreviewRequested) {
-        ["preview", "preview_token", "nas_id", "nasId", "nas", "gw", "gateway", "router_ip", "hotspot_ip", "mikrotik_ip"].forEach((k) => keepKeys.add(k));
+        // Keep only the public preview marker in the address bar.
+        // Sensitive/verbose preview data (token, nas_id, gw) is already read and stored in sessionStorage.
+        keepKeys.add("preview");
       }
 
       const kept = new URLSearchParams();
@@ -1302,6 +1348,9 @@
       return true;
     } catch (e) {
       const msg = String(e?.message || "");
+      if (msg.includes("expired") || msg.includes("preview_token_required") || msg.includes("preview_forbidden")) {
+        clearPortalPreviewContext();
+      }
       portalPreviewState.error = msg || "preview_forbidden";
       const friendly = msg.includes("expired")
         ? "Aperçu expiré. Veuillez rouvrir depuis l’admin RAZAFI."
