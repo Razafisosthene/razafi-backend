@@ -12097,7 +12097,7 @@ function normalizeIp(ip) {
 
 /**
  * SECURITY PATCH A: collect only trusted/proxy-validated caller IPs.
- * Do NOT trust raw CF-Connecting-IP/X-Forwarded-For/X-Real-IP headers here.
+ * Do NOT trust raw CF-Connecting-IP/X-Forwarded-For/X-Real-IP headers for normal IP auth.
  * Express req.ip already respects app.set("trust proxy", 1).
  */
 function getCallerIps(req) {
@@ -12112,6 +12112,16 @@ function getCallerIps(req) {
   return out.filter(Boolean);
 }
 
+function getFirstForwardedForIp(req) {
+  try {
+    const raw = String(req.headers["x-forwarded-for"] || "").trim();
+    if (!raw) return "";
+    return normalizeIp(raw.split(",")[0]);
+  } catch (_) {
+    return "";
+  }
+}
+
 // Return a single best-effort caller IP (string). Uses the first value from getCallerIps().
 function getCallerIp(req) {
   return (getCallerIps(req)[0] || "");
@@ -12119,20 +12129,35 @@ function getCallerIp(req) {
 
 
 function isAllowedRadiusCaller(req) {
-  const ips = getCallerIps(req);
+  const trustedIps = getCallerIps(req);
+  const forwardedFirstIp = getFirstForwardedForIp(req);
   const secret = String(req.headers["x-radius-secret"] || "").trim();
-
-  const ipOk = ips.some((ip) => RADIUS_ALLOWED_IP_SET.has(normalizeIp(ip)));
   const secretOk = !!RADIUS_API_SECRET && secret === RADIUS_API_SECRET;
 
-  // SECURITY PATCH A: require BOTH IP allow-list AND header secret in production.
+  const trustedIpOk = trustedIps.some((ip) => RADIUS_ALLOWED_IP_SET.has(normalizeIp(ip)));
+
+  // HOTFIX A1: Render/Cloudflare may set req.ip to a Cloudflare edge IP while the
+  // original VPS IP appears as the first X-Forwarded-For entry. XFF is normally
+  // spoofable, so we ONLY use it after the RADIUS shared secret is correct.
+  const forwardedIpOk = !!secretOk && !!forwardedFirstIp && RADIUS_ALLOWED_IP_SET.has(normalizeIp(forwardedFirstIp));
+  const ipOk = trustedIpOk || forwardedIpOk;
+  const ips = forwardedFirstIp
+    ? Array.from(new Set([forwardedFirstIp, ...trustedIps].filter(Boolean)))
+    : trustedIps;
+
+  // SECURITY PATCH A + HOTFIX A1: require BOTH a valid caller IP (trusted req.ip
+  // OR secret-gated first XFF) AND the header secret in production.
   // Non-production keeps IP-only fallback to avoid breaking local tests.
-  const allowed = IS_PROD ? (ipOk && secretOk) : (RADIUS_API_SECRET ? (ipOk && secretOk) : ipOk);
+  const allowed = IS_PROD ? (ipOk && secretOk) : (RADIUS_API_SECRET ? (ipOk && secretOk) : trustedIpOk);
 
   // DEBUG (Render): log the decision without leaking the secret value.
   if (!allowed) {
     console.log("[radius] blocked: caller not allowed", {
       ips,
+      trustedIps,
+      forwardedFirstIp,
+      trustedIpOk,
+      forwardedIpOk,
       ipOk,
       secret_present: !!secret,
       secret_len: secret ? secret.length : 0,
@@ -12143,6 +12168,10 @@ function isAllowedRadiusCaller(req) {
   } else {
     console.log("[radius] caller allowed", {
       ips,
+      trustedIps,
+      forwardedFirstIp,
+      trustedIpOk,
+      forwardedIpOk,
       ipOk,
       secret_present: !!secret,
       secret_len: secret ? secret.length : 0,
