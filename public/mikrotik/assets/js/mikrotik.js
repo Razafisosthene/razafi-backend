@@ -1842,8 +1842,55 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
     } catch (_) {}
   })();
 
-async function pollDernierCode(phone, { timeoutMs = 180000, baselineCode = null } = {}) {
+async function pollDernierCode(phone, { timeoutMs = 180000, baselineCode = null, requestRef = null, clientMac: forcedClientMac = null } = {}) {
   const started = Date.now();
+  const safePhone = String(phone || "").trim();
+  const safeRequestRef = String(requestRef || "").trim();
+  const safeClientMac = String(forcedClientMac || clientMac || "").trim();
+
+  // HOTFIX B1: after Patch A, phone-only /api/dernier-code is intentionally blocked.
+  // For paid MVola delivery, poll by requestRef (unique per payment) so the code appears
+  // immediately after completion without requiring a portal refresh.
+  if (safeRequestRef) {
+    while (Date.now() - started < timeoutMs) {
+      const elapsed = Date.now() - started;
+      const intervalMs = elapsed < 10000 ? 1000 : 3000;
+
+      try {
+        const r = await fetch(apiUrl(`/api/tx/${encodeURIComponent(safeRequestRef)}`), { method: "GET" });
+
+        if (r.status === 404) {
+          // transaction not visible yet
+        } else if (r.ok) {
+          const j = await r.json().catch(() => ({}));
+          const tx = (j && j.transaction && typeof j.transaction === "object") ? j.transaction : j;
+          const status = String(tx?.status || j?.status || "").trim().toLowerCase();
+          const c = String(tx?.voucher || tx?.code || tx?.voucher_code || j?.code || j?.voucher || "").trim();
+
+          if (c && (!baselineCode || c !== String(baselineCode))) {
+            return c;
+          }
+
+          if (["failed", "fail", "cancelled", "canceled", "rejected", "expired"].includes(status)) {
+            throw new Error("payment_failed");
+          }
+        } else {
+          let msg = "Erreur serveur";
+          try { msg = await r.text(); } catch (_) {}
+          throw new Error(msg);
+        }
+      } catch (e) {
+        console.warn("[RAZAFI] pollTransactionCode error", e?.message || e);
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+
+    return null;
+  }
+
+  // Secure fallback only: never call /api/dernier-code by phone alone.
+  if (!safePhone || !safeClientMac) return null;
 
   while (Date.now() - started < timeoutMs) {
     const elapsed = Date.now() - started;
@@ -1852,7 +1899,8 @@ async function pollDernierCode(phone, { timeoutMs = 180000, baselineCode = null 
     const intervalMs = elapsed < 10000 ? 1000 : 3000;
 
     try {
-      const url = `/api/dernier-code?phone=${encodeURIComponent(phone)}`;
+      const params = new URLSearchParams({ phone: safePhone, client_mac: safeClientMac });
+      const url = `/api/dernier-code?${params.toString()}`;
       const r = await fetch(apiUrl(url), { method: "GET" });
 
       if (r.status === 204) {
@@ -3457,14 +3505,10 @@ function bindPlanHandlers() {
                 };
               } catch (_) {}
 
+              // HOTFIX B1: do not call /api/dernier-code by phone alone.
+              // Patch A intentionally blocks phone-only recovery to prevent voucher exposure.
+              // Paid delivery will poll by requestRef after /api/send-payment returns.
               let baselineCode = null;
-              try {
-                const pre = await fetch(apiUrl(`/api/dernier-code?phone=${encodeURIComponent(cleaned)}`), { method: "GET" });
-                if (pre.ok) {
-                  const pj = await pre.json().catch(() => ({}));
-                  if (pj && pj.code) baselineCode = String(pj.code);
-                }
-              } catch (_) {}
 
               const resp = await fetch(apiUrl("/api/send-payment"), {
                 method: "POST",
@@ -3530,7 +3574,18 @@ function bindPlanHandlers() {
               scheduleProcessingWaitMessages(card);
               showToast("📲 Demande MVola envoyée. Vérifiez votre téléphone.", "success", 5200);
 
-              const code = await pollDernierCode(cleaned, { timeoutMs: 180000, intervalMs: 3000, baselineCode });
+              const paymentRequestRef = String(data?.requestRef || data?.request_ref || "").trim();
+              if (!paymentRequestRef) {
+                throw new Error("request_ref_missing");
+              }
+
+              const code = await pollDernierCode(cleaned, {
+                timeoutMs: 180000,
+                intervalMs: 3000,
+                baselineCode,
+                requestRef: paymentRequestRef,
+                clientMac: clientMac || null,
+              });
               if (!code) {
                 clearProcessingWaitMessages(card);
                 updateProcessingMessage(
