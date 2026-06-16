@@ -740,29 +740,9 @@ const limiter = rateLimit({
   max: 200,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req, res) => {
-    // Prefer CF header, then X-Forwarded-For, then req.ip
-    const cf = req.headers["cf-connecting-ip"];
-    if (cf) {
-      // Cloudflare returns IPv4 or IPv6 -> rely on helper for IPv6 safety
-      if (cf.includes(":")) return ipKeyGenerator(req);
-      return cf;
-    }
-
-    const xff = req.headers["x-forwarded-for"];
-    if (xff) {
-      const ipFromXff = xff.split(",")[0].trim();
-      if (ipFromXff.includes(":")) return ipKeyGenerator(req);
-      return ipFromXff;
-    }
-
-    // fallback to req.ip; if IPv6, use helper
-    const ip = req.ip || req.socket?.remoteAddress || "unknown";
-    if (String(ip).includes(":")) {
-      return ipKeyGenerator(req);
-    }
-    return ip;
-  },
+  // SECURITY PATCH A: use Express/Render trusted proxy handling only.
+  // Do not trust raw CF/X-Forwarded-For headers supplied by the client.
+  keyGenerator: (req) => ipKeyGenerator(req),
 });
 
 // Protect API endpoints with the global limiter, but allow static pages (index / bloque) without being counted
@@ -906,15 +886,12 @@ app.use((req, res, next) => {
     }
 
     // 4) Allow specific IPs (healthchecks, whitelisted IPs)
-    const remote =
-      (req.headers["x-forwarded-for"] ||
-        req.ip ||
-        req.socket?.remoteAddress ||
-        "").toString();
+    // SECURITY PATCH A: use Express trusted req.ip, not raw X-Forwarded-For.
+    const remoteFirst = String(req.ip || req.socket?.remoteAddress || "")
+      .replace(/^::ffff:/, "")
+      .trim();
 
-    const remoteFirst = remote.split(",")[0].trim();
-
-    if (extraAllowed.includes(remoteFirst) || extraAllowed.includes(req.ip)) {
+    if (extraAllowed.includes(remoteFirst)) {
       return next();
     }
 
@@ -1193,6 +1170,16 @@ const lightLimiter = rateLimit({
   message: { error: "Trop de requêtes. Patientez un instant." },
 });
 
+// SECURITY PATCH A: stricter limiter for public voucher-recovery endpoints.
+const voucherRecoveryLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 10,
+  message: { error: "Trop de tentatives. Réessayez plus tard." },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req),
+});
+
 // 4) Strict limiter for ADMIN login (anti-bruteforce)
 const adminLoginSpeedLimiter = slowDown({
   windowMs: 15 * 60 * 1000,
@@ -1212,8 +1199,8 @@ const adminLoginLimiter = rateLimit({
 
 // Apply to routes
 app.use("/api/send-payment", speedLimiter, paymentLimiter);
-app.use("/api/dernier-code", lightLimiter);
-app.use("/api/history", lightLimiter);
+app.use("/api/dernier-code", voucherRecoveryLimiter);
+app.use("/api/history", voucherRecoveryLimiter);
 
 // ---------------------------------------------------------------------------
 // SECURE PHONE VALIDATION (MVola Madagascar only)
@@ -3145,8 +3132,10 @@ async function syncFreeAccessPool(poolId) {
       mac_address: normalizeMacColon(String(d.mac_address || "")) || String(d.mac_address || "").trim().toUpperCase(),
     }))
     .filter((d) => d.mac_address);
-  const vpsSyncUrl = process.env.FREE_ACCESS_SYNC_AGENT_URL || "http://159.89.16.34:3001/sync";
-  const vpsSyncSecret = process.env.FREE_ACCESS_SYNC_AGENT_SECRET || "razafi_sync_secret";
+  const vpsSyncUrl = process.env.FREE_ACCESS_SYNC_AGENT_URL || (IS_PROD ? "" : "http://159.89.16.34:3001/sync");
+  const vpsSyncSecret = process.env.FREE_ACCESS_SYNC_AGENT_SECRET || "";
+  if (!vpsSyncUrl) throw new Error("FREE_ACCESS_SYNC_AGENT_URL_required");
+  if (!vpsSyncSecret) throw new Error("FREE_ACCESS_SYNC_AGENT_SECRET_required");
 
   const resp = await fetch(vpsSyncUrl, {
     method: "POST",
@@ -3221,6 +3210,59 @@ function requirePoolScopeForAdmin(req, res, poolId) {
     return false;
   }
   return true;
+}
+
+// SECURITY PATCH A: defense-in-depth helpers for handlers that are currently
+// protected by requireAdmin's default-deny allowlist. These checks prevent a
+// future allowlist change from accidentally opening cross-pool access.
+async function loadPlanForAdminScope(req, res, planId, select = "id,pool_id") {
+  const id = String(planId || "").trim();
+  if (!id) {
+    res.status(400).json({ error: "plan_id_required" });
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("plans")
+    .select(select)
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error) {
+    res.status(500).json({ error: error.message || "db_error" });
+    return null;
+  }
+  if (!data) {
+    res.status(404).json({ error: "plan_not_found" });
+    return null;
+  }
+  if (!requirePoolScopeForAdmin(req, res, data.pool_id)) return null;
+  return data;
+}
+
+async function loadVoucherSessionForAdminScope(req, res, sessionId, select = "id,pool_id,voucher_code") {
+  const id = String(sessionId || "").trim();
+  if (!id) {
+    res.status(400).json({ error: "voucher_session_id_required" });
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("voucher_sessions")
+    .select(select)
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error) {
+    res.status(500).json({ error: error.message || "db_error" });
+    return null;
+  }
+  if (!data) {
+    res.status(404).json({ error: "not_found" });
+    return null;
+  }
+  if (!requirePoolScopeForAdmin(req, res, data.pool_id)) return null;
+  return data;
 }
 
 // GET /api/admin/free-access-devices
@@ -3666,9 +3708,9 @@ async function sendBlockedDeviceAgentCommand(poolId, macAddress, action = "block
   const { pool, router } = await getRouterForPool(cleanPoolId);
   const comment = blockedDeviceComment(pool.id);
 
-  const defaultUrl = mode === "unblock"
+  const defaultUrl = IS_PROD ? "" : (mode === "unblock"
     ? "http://159.89.16.34:3001/unblock-device"
-    : "http://159.89.16.34:3001/block-device";
+    : "http://159.89.16.34:3001/block-device");
 
   const agentUrl = mode === "unblock"
     ? (process.env.BLOCKED_DEVICE_UNBLOCK_AGENT_URL ||
@@ -3683,8 +3725,10 @@ async function sendBlockedDeviceAgentCommand(poolId, macAddress, action = "block
   const agentSecret =
     process.env.BLOCKED_DEVICE_SYNC_AGENT_SECRET ||
     process.env.BLOCKED_DEVICES_SYNC_AGENT_SECRET ||
-    process.env.FREE_ACCESS_SYNC_AGENT_SECRET ||
-    "razafi_sync_secret";
+    "";
+
+  if (!agentUrl) throw new Error("BLOCKED_DEVICE_SYNC_AGENT_URL_required");
+  if (!agentSecret) throw new Error("BLOCKED_DEVICE_SYNC_AGENT_SECRET_required");
 
   const resp = await fetch(agentUrl, {
     method: "POST",
@@ -4458,6 +4502,8 @@ app.get("/api/admin/free-plan-overrides", requireAdmin, async (req, res) => {
     const plan_id = String(req.query.plan_id || "").trim();
     if (!client_mac || !plan_id) return res.status(400).json({ error: "client_mac and plan_id are required" });
 
+    if (!await loadPlanForAdminScope(req, res, plan_id)) return;
+
     const { data, error } = await supabase
       .from("free_plan_overrides")
       .select("client_mac,plan_id,extra_uses,note,updated_at,updated_by")
@@ -4494,6 +4540,8 @@ app.post("/api/admin/free-plan-overrides", requireAdmin, async (req, res) => {
       return res.status(400).json({ error: "extra_uses must be a number between 0 and 1000" });
     }
 
+    if (!await loadPlanForAdminScope(req, res, plan_id)) return;
+
     const row = {
       client_mac,
       plan_id,
@@ -4523,15 +4571,9 @@ app.delete("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => 
     const id = String(req.params.id || "").trim();
     if (!id) return res.status(400).json({ error: "id required" });
 
-    // Fetch voucher_code (optional: for cleanup)
-    const { data: vs, error: e1 } = await supabase
-      .from("voucher_sessions")
-      .select("id, voucher_code")
-      .eq("id", id)
-      .maybeSingle();
-
-    if (e1) return res.status(500).json({ error: e1.message });
-    if (!vs) return res.status(404).json({ error: "not_found" });
+    // Fetch voucher_code + pool_id (optional cleanup + defense-in-depth pool scope)
+    const vs = await loadVoucherSessionForAdminScope(req, res, id, "id,pool_id,voucher_code");
+    if (!vs) return;
 
     const voucher_code = vs.voucher_code;
 
@@ -9878,14 +9920,15 @@ app.post("/api/admin/plans/:id/toggle", requireAdmin, async (req, res) => {
     const id = req.params.id;
     const desired = (req.body && req.body.is_active !== undefined) ? toBool(req.body.is_active) : null;
 
-    // fetch current
+    // fetch current + pool_id (defense-in-depth pool scope)
     const { data: cur, error: curErr } = await supabase
       .from("plans")
-      .select("id,is_active")
+      .select("id,is_active,pool_id")
       .eq("id", id)
       .single();
 
     if (curErr || !cur) return res.status(404).json({ error: "plan not found" });
+    if (!requirePoolScopeForAdmin(req, res, cur.pool_id)) return;
 
     const next = desired ?? !cur.is_active;
 
@@ -11274,6 +11317,12 @@ app.post("/api/new/purchase", async (req, res) => {
 
 // ===== NEW SYSTEM: Authorize device & start voucher =====
 app.post("/api/new/authorize", async (req, res) => {
+  // SECURITY PATCH A: legacy authorize flow is disabled in System 3.
+  // Keep old code below unreachable for minimal-diff rollback if ever needed.
+  return res.status(410).json({
+    error: "legacy_authorize_disabled",
+    message: "Ancien système désactivé. Utilisez le portail RAZAFI System 3."
+  });
   try {
     await logLegacyUsage(req, "legacy_new_authorize", { note: "old /api/new authorize flow" });
     if (!req.isNewSystem) {
@@ -11470,18 +11519,29 @@ app.get("/api/dernier-code", async (req, res) => {
   try {
     await logLegacyUsage(req, "legacy_dernier_code", { note: "old dernier-code fallback endpoint" });
     const phone = (req.query.phone || "").trim();
+    const requestRef = String(req.query.request_ref || req.query.requestRef || "").trim();
+    const clientMacRaw = String(req.query.client_mac || req.query.clientMac || "").trim();
+    const clientMac = normalizeMacColon(clientMacRaw) || clientMacRaw;
     if (!phone) return res.status(400).json({ error: "phone query param required" });
+    if (!requestRef && !clientMac) {
+      return res.status(400).json({ error: "phone_only_recovery_disabled" });
+    }
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
     let code = null;
     let plan = null;
 
     try {
-      const { data: tx, error: txErr } = await supabase
+      let txQuery = supabase
         .from("transactions")
-        .select("voucher, plan, amount, status, created_at")
+        .select("voucher, plan, amount, status, created_at, request_ref, metadata")
         .eq("phone", phone)
-        .not("voucher", "is", null)
+        .not("voucher", "is", null);
+
+      if (requestRef) txQuery = txQuery.eq("request_ref", requestRef);
+      if (clientMac) txQuery = txQuery.eq("metadata->>client_mac", clientMac);
+
+      const { data: tx, error: txErr } = await txQuery
         .order("created_at", { ascending: false })
         .limit(1);
       if (txErr) {
@@ -11494,24 +11554,8 @@ app.get("/api/dernier-code", async (req, res) => {
       console.warn("exception fetching transactions for dernier-code:", e?.message || e);
     }
 
-    if (!code) {
-      try {
-        const { data: vData, error: vErr } = await supabase
-          .from("vouchers")
-          .select("code, plan, assigned_at, assigned_to, valid_until, used")
-          .or(`assigned_to.eq.${phone},reserved_by.eq.${phone}`)
-          .order("assigned_at", { ascending: false })
-          .limit(1);
-        if (vErr) {
-          console.warn("warning fetching vouchers fallback:", vErr);
-        } else if (vData && vData.length) {
-          code = vData[0].code;
-          plan = vData[0].plan || null;
-        }
-      } catch (e) {
-        console.warn("exception fetching vouchers for dernier-code:", e?.message || e);
-      }
-    }
+    // SECURITY PATCH A: do not fall back to the legacy vouchers table by phone alone.
+    // It has no request_ref/client_mac binding and can expose codes by enumerable phone numbers.
 
     if (!code) {
       return res.status(204).send();
@@ -11524,7 +11568,7 @@ app.get("/api/dernier-code", async (req, res) => {
         server_correlation_id: null,
         status: "delivered",
         masked_phone: maskPhone(phone),
-        payload: { delivered_code: truncate(code, 2000), timestamp_madagascar: toISOStringMG(new Date()) },
+        payload: { delivered_code_preview: String(code || "").slice(0, 4) + "****", timestamp_madagascar: toISOStringMG(new Date()) },
       }]);
     } catch (logErr) {
       console.warn("Unable to write delivery log:", logErr?.message || logErr);
@@ -11943,6 +11987,53 @@ const DEFAULT_MIKROTIK_RATE_LIMIT = normalizeMikrotikRateLimit(
   process.env.MIKROTIK_RATE_LIMIT || process.env.FIXED_MIKROTIK_RATE_LIMIT || "10M/10M"
 ) || "10M/10M";
 
+// SECURITY PATCH A: fail fast in production instead of silently running with
+// unsafe defaults/fallbacks. Prepare these Render env vars before deploy.
+function assertProductionSecurityEnv() {
+  if (!IS_PROD) return;
+
+  const missing = [];
+  const required = [
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "RADIUS_API_SECRET",
+    "FREE_ACCESS_SYNC_AGENT_SECRET",
+    "FREE_ACCESS_SYNC_AGENT_URL",
+  ];
+
+  for (const name of required) {
+    if (!String(process.env[name] || "").trim()) missing.push(name);
+  }
+
+  const blockedSecret = String(
+    process.env.BLOCKED_DEVICE_SYNC_AGENT_SECRET ||
+    process.env.BLOCKED_DEVICES_SYNC_AGENT_SECRET ||
+    ""
+  ).trim();
+  if (!blockedSecret) missing.push("BLOCKED_DEVICE_SYNC_AGENT_SECRET");
+
+  const hasBlockedBaseUrl = !!String(process.env.BLOCKED_DEVICE_SYNC_AGENT_BASE_URL || "").trim();
+  const hasBlockedBlockUrl = !!String(
+    process.env.BLOCKED_DEVICE_SYNC_AGENT_URL ||
+    process.env.BLOCKED_DEVICES_SYNC_AGENT_URL ||
+    ""
+  ).trim();
+  const hasBlockedUnblockUrl = !!String(
+    process.env.BLOCKED_DEVICE_UNBLOCK_AGENT_URL ||
+    process.env.BLOCKED_DEVICES_UNBLOCK_AGENT_URL ||
+    ""
+  ).trim();
+  if (!hasBlockedBaseUrl && !(hasBlockedBlockUrl && hasBlockedUnblockUrl)) {
+    missing.push("BLOCKED_DEVICE_SYNC_AGENT_BASE_URL or both BLOCKED_DEVICE_SYNC_AGENT_URL and BLOCKED_DEVICE_UNBLOCK_AGENT_URL");
+  }
+
+  if (missing.length) {
+    throw new Error(`Missing required production env: ${missing.join(", ")}`);
+  }
+}
+
+assertProductionSecurityEnv();
+
 function normalizeMikrotikRateLimit(raw) {
   try {
     const s0 = String(raw || "").trim();
@@ -12005,46 +12096,20 @@ function normalizeIp(ip) {
 }
 
 /**
- * Collect all plausible caller IPs (Cloudflare, proxies, req.ip, socket).
- * IMPORTANT: for proxied deployments, X-Forwarded-For can contain multiple IPs.
+ * SECURITY PATCH A: collect only trusted/proxy-validated caller IPs.
+ * Do NOT trust raw CF-Connecting-IP/X-Forwarded-For/X-Real-IP headers here.
+ * Express req.ip already respects app.set("trust proxy", 1).
  */
 function getCallerIps(req) {
   const out = [];
 
-  // Cloudflare (if zone is proxied)
-  const cf = normalizeIp(req.headers["cf-connecting-ip"]);
-  if (cf) out.push(cf);
-
-  // Render / proxies
-  const xff = req.headers["x-forwarded-for"];
-  if (xff) {
-    for (const part of String(xff).split(",")) {
-      const ip = normalizeIp(part);
-      if (ip) out.push(ip);
-    }
-  }
-
-  // Some proxies set X-Real-IP
-  const xri = normalizeIp(req.headers["x-real-ip"]);
-  if (xri) out.push(xri);
-
-  // Express-calculated IP (respects trust proxy)
   const rip = normalizeIp(req.ip);
   if (rip) out.push(rip);
 
-  // Last resort
   const sock = normalizeIp(req.socket?.remoteAddress);
-  if (sock) out.push(sock);
+  if (sock && sock !== rip) out.push(sock);
 
-  // de-dup while preserving order
-  const uniq = [];
-  const seen = new Set();
-  for (const ip of out) {
-    if (!ip || seen.has(ip)) continue;
-    seen.add(ip);
-    uniq.push(ip);
-  }
-  return uniq;
+  return out.filter(Boolean);
 }
 
 // Return a single best-effort caller IP (string). Uses the first value from getCallerIps().
@@ -12060,9 +12125,9 @@ function isAllowedRadiusCaller(req) {
   const ipOk = ips.some((ip) => RADIUS_ALLOWED_IP_SET.has(normalizeIp(ip)));
   const secretOk = !!RADIUS_API_SECRET && secret === RADIUS_API_SECRET;
 
-  // SECURITY: require BOTH IP allow-list AND header secret when secret is configured.
-  // If secret is not configured, fall back to IP allow-list only.
-  const allowed = RADIUS_API_SECRET ? (ipOk && secretOk) : ipOk;
+  // SECURITY PATCH A: require BOTH IP allow-list AND header secret in production.
+  // Non-production keeps IP-only fallback to avoid breaking local tests.
+  const allowed = IS_PROD ? (ipOk && secretOk) : (RADIUS_API_SECRET ? (ipOk && secretOk) : ipOk);
 
   // DEBUG (Render): log the decision without leaking the secret value.
   if (!allowed) {
@@ -13509,6 +13574,8 @@ app.get("/api/admin/voucher-bonus-overrides", requireAdmin, async (req, res) => 
     const voucher_session_id = String(req.query.voucher_session_id || "").trim();
     if (!voucher_session_id) return res.status(400).json({ error: "voucher_session_id is required" });
 
+    if (!await loadVoucherSessionForAdminScope(req, res, voucher_session_id, "id,pool_id")) return;
+
     const item = await getVoucherBonusOverride({ voucher_session_id });
     return res.json({
       item: {
@@ -13539,6 +13606,8 @@ app.post("/api/admin/voucher-bonus-overrides", requireAdmin, async (req, res) =>
     if (!voucher_session_id) {
       return res.status(400).json({ error: "voucher_session_id is required" });
     }
+
+    if (!await loadVoucherSessionForAdminScope(req, res, voucher_session_id, "id,pool_id")) return;
 
     // Bonus policy (System 3): allow bonus ONLY when voucher is expired or used (never pending/active)
     try {
@@ -14430,17 +14499,28 @@ app.get("/api/history", async (req, res) => {
   try {
     await logLegacyUsage(req, "legacy_history", { note: "old transaction history endpoint" });
     const phoneRaw = String(req.query.phone || "").trim();
+    const requestRef = String(req.query.request_ref || req.query.requestRef || "").trim();
+    const clientMacRaw = String(req.query.client_mac || req.query.clientMac || "").trim();
+    const clientMac = normalizeMacColon(clientMacRaw) || clientMacRaw;
     if (!phoneRaw || phoneRaw.length < 6) return res.status(400).json({ error: "phone required" });
+    if (!requestRef && !clientMac) {
+      return res.status(400).json({ error: "phone_only_history_disabled" });
+    }
     const limit = Math.min(parseInt(req.query.limit || "10", 10), 50);
 
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-    const { data, error } = await supabase
+    let historyQuery = supabase
       .from("transactions")
-      .select("id, created_at, plan, voucher, status")
+      .select("id, created_at, plan, voucher, status, request_ref, metadata")
       .eq("phone", phoneRaw)
       .eq("status", "completed")
-      .not("voucher", "is", null)
+      .not("voucher", "is", null);
+
+    if (requestRef) historyQuery = historyQuery.eq("request_ref", requestRef);
+    if (clientMac) historyQuery = historyQuery.eq("metadata->>client_mac", clientMac);
+
+    const { data, error } = await historyQuery
       .order("created_at", { ascending: false })
       .limit(limit);
 
