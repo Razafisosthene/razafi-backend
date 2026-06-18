@@ -1,4 +1,4 @@
-// RAZAFI Backend - server_SECURITY_PATCH_B_HOTFIX_MVOLA_REF_SHORT Edition
+// RAZAFI Backend - All APs, per-plan MikroTik speed Edition
 // ---------------------------------------------------------------------------
 
 import express from "express";
@@ -23,6 +23,16 @@ dotenv.config();
 // helper: hash session token
 function hashToken(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+// SECURITY PATCH C: constant-time shared-secret comparison.
+// Behavior is identical to `a === b` for the caller (same true/false result),
+// only the comparison itself is timing-safe.
+function safeEqual(a, b) {
+  const ab = Buffer.from(String(a ?? ""));
+  const bb = Buffer.from(String(b ?? ""));
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
 }
 
 // helper: generate random session token
@@ -12045,6 +12055,30 @@ function assertProductionSecurityEnv() {
   if (missing.length) {
     throw new Error(`Missing required production env: ${missing.join(", ")}`);
   }
+
+  // SECURITY PATCH C: warn-only checks. These never throw, so they cannot break
+  // an already-working production deploy. They exist purely to surface silent
+  // config gaps in the Render logs.
+  try {
+    const urlsToCheck = [
+      ["FREE_ACCESS_SYNC_AGENT_URL", process.env.FREE_ACCESS_SYNC_AGENT_URL],
+      ["BLOCKED_DEVICE_SYNC_AGENT_URL", process.env.BLOCKED_DEVICE_SYNC_AGENT_URL || process.env.BLOCKED_DEVICES_SYNC_AGENT_URL],
+      ["BLOCKED_DEVICE_UNBLOCK_AGENT_URL", process.env.BLOCKED_DEVICE_UNBLOCK_AGENT_URL || process.env.BLOCKED_DEVICES_UNBLOCK_AGENT_URL],
+      ["BLOCKED_DEVICE_SYNC_AGENT_BASE_URL", process.env.BLOCKED_DEVICE_SYNC_AGENT_BASE_URL],
+    ];
+    for (const [name, val] of urlsToCheck) {
+      const v = String(val || "").trim();
+      if (v && !/^https:\/\//i.test(v)) {
+        console.warn(`[SECURITY WARNING] ${name} is not https:// — router credentials are sent in the body of this call. Verify this is intentional.`);
+      }
+    }
+  } catch (_) {}
+
+  try {
+    if (!String(process.env.PORTAL_PREVIEW_SECRET || "").trim()) {
+      console.warn("[SECURITY WARNING] PORTAL_PREVIEW_SECRET is not set — portal preview tokens fall back to ADMIN_PREVIEW_TOKEN_SECRET / SUPABASE_SERVICE_ROLE_KEY / SESSION_SECRET / a hardcoded dev value. Set PORTAL_PREVIEW_SECRET explicitly when convenient.");
+    }
+  } catch (_) {}
 }
 
 assertProductionSecurityEnv();
@@ -12147,7 +12181,7 @@ function isAllowedRadiusCaller(req) {
   const trustedIps = getCallerIps(req);
   const forwardedFirstIp = getFirstForwardedForIp(req);
   const secret = String(req.headers["x-radius-secret"] || "").trim();
-  const secretOk = !!RADIUS_API_SECRET && secret === RADIUS_API_SECRET;
+  const secretOk = !!RADIUS_API_SECRET && safeEqual(secret, RADIUS_API_SECRET);
 
   const trustedIpOk = trustedIps.some((ip) => RADIUS_ALLOWED_IP_SET.has(normalizeIp(ip)));
 
@@ -13994,13 +14028,46 @@ try {
   if (supabase && plan_id_from_client) {
     const { data: pRow, error: pErr } = await supabase
       .from("plans")
-      .select("id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices")
+      .select("id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices,pool_id,system,is_active,is_visible")
       .eq("id", plan_id_from_client)
       .maybeSingle();
     if (!pErr && pRow) planRowFromDb = pRow;
   }
 } catch (_) {
   planRowFromDb = null;
+}
+
+// SECURITY PATCH C: System 3 (nas_id present) must fail closed before MVola if the
+// plan_id supplied by the client cannot be clearly validated against the resolved pool.
+// Scope: this check ONLY applies when nas_id is present (System 3 / MikroTik production
+// purchases). Legacy/portal flows without nas_id are completely unaffected.
+if (nas_id) {
+  if (!plan_id_from_client) {
+    return res.status(400).json({ ok: false, error: "plan_id_required_for_nas_id", nas_id });
+  }
+  if (!planRowFromDb) {
+    return res.status(404).json({ ok: false, error: "plan_not_found", plan_id: plan_id_from_client });
+  }
+  if (!pool_id || String(planRowFromDb.pool_id || "") !== String(pool_id)) {
+    return res.status(400).json({
+      ok: false,
+      error: "plan_pool_mismatch",
+      plan_id: plan_id_from_client,
+      pool_id: pool_id || null,
+    });
+  }
+  if (planRowFromDb.system && String(planRowFromDb.system).toLowerCase() !== "mikrotik") {
+    return res.status(400).json({ ok: false, error: "plan_wrong_system", plan_id: plan_id_from_client });
+  }
+  if (planRowFromDb.is_active === false) {
+    return res.status(409).json({ ok: false, error: "plan_inactive", plan_id: plan_id_from_client });
+  }
+  if (planRowFromDb.is_visible === false) {
+    return res.status(409).json({ ok: false, error: "plan_not_visible", plan_id: plan_id_from_client });
+  }
+  if (planRowFromDb.price_ar === undefined || planRowFromDb.price_ar === null || !Number.isFinite(Number(planRowFromDb.price_ar))) {
+    return res.status(500).json({ ok: false, error: "plan_price_unavailable", plan_id: plan_id_from_client });
+  }
 }
 
 
