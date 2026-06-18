@@ -1023,6 +1023,7 @@
 
       const selectors = [
         ".plans-shell",
+        "#durationFilterBar",
         "#portalAnnouncementCard",
         "#networkInfoCard",
         "section.card.faq",
