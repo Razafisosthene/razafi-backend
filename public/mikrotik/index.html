@@ -329,83 +329,6 @@
       color:#111827;
       box-shadow:none;
     }
-
-    /* RAZAFI Duration Filter – Telegram-style floating bottom bar */
-    .duration-filter-shell{
-      position:fixed;
-      left:50%;
-      bottom:calc(12px + env(safe-area-inset-bottom,0px));
-      transform:translateX(-50%);
-      z-index:80;
-      width:min(94vw, 520px);
-      display:none;
-      pointer-events:none;
-    }
-    body.razafi-duration-filter-visible .duration-filter-shell{
-      display:block;
-    }
-    .duration-filter-bar{
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      gap:7px;
-      padding:8px;
-      border-radius:999px;
-      background:rgba(255,255,255,.82);
-      border:1px solid var(--ios-border);
-      box-shadow:0 18px 42px rgba(15,23,42,.16);
-      backdrop-filter:blur(18px);
-      -webkit-backdrop-filter:blur(18px);
-      pointer-events:auto;
-      overflow-x:auto;
-      -webkit-overflow-scrolling:touch;
-      scrollbar-width:none;
-    }
-    .duration-filter-bar::-webkit-scrollbar{display:none;}
-    .duration-filter-btn{
-      flex:1 1 0;
-      min-width:0;
-      border:0;
-      border-radius:999px;
-      min-height:36px;
-      padding:0 10px;
-      background:transparent;
-      color:#374151;
-      font-size:13px;
-      font-weight:900;
-      letter-spacing:-.01em;
-      cursor:pointer;
-      -webkit-tap-highlight-color:transparent;
-      transition:transform .12s ease, background .16s ease, color .16s ease, box-shadow .16s ease;
-      white-space:nowrap;
-    }
-    .duration-filter-btn:active{transform:scale(.96);}
-    .duration-filter-btn.active{
-      background:#1f2937;
-      color:#fff;
-      box-shadow:0 7px 16px rgba(17,24,39,.14);
-    }
-    body.theme-dark .duration-filter-bar{
-      background:rgba(21,21,24,.82);
-      border-color:rgba(255,255,255,.10);
-      box-shadow:0 18px 46px rgba(0,0,0,.42);
-    }
-    body.theme-dark .duration-filter-btn{
-      color:#d1d5db;
-    }
-    body.theme-dark .duration-filter-btn.active{
-      background:#f5f5f7;
-      color:#111827;
-      box-shadow:none;
-    }
-    body.razafi-duration-filter-visible .portal-container{
-      padding-bottom:calc(98px + env(safe-area-inset-bottom,0px));
-    }
-    @media (max-width:360px){
-      .duration-filter-bar{gap:5px;padding:7px;}
-      .duration-filter-btn{font-size:12px;min-height:34px;padding:0 8px;}
-    }
-
     @media (max-width:360px){
       .plans-heading-row{gap:8px;}
       .plan-filter-btn{min-height:32px;padding:0 12px;font-size:13px;}
@@ -587,6 +510,77 @@
 .muted{
   color:var(--ios-muted)!important;
 }
+
+    /* ── Duration filter bar (Telegram-inspired, fixed bottom) ── */
+    #durationFilterBar{
+      position:fixed;
+      bottom:0;
+      left:0;right:0;
+      z-index:120;
+      display:flex;
+      justify-content:center;
+      padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));
+      pointer-events:none;
+    }
+    #durationFilterBar.hidden{display:none!important;}
+    .duration-filter-inner{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      padding:8px 12px;
+      border-radius:999px;
+      background:rgba(255,255,255,.82);
+      border:1px solid rgba(17,24,39,.09);
+      box-shadow:0 8px 28px rgba(15,23,42,.14),0 2px 8px rgba(15,23,42,.06);
+      backdrop-filter:blur(18px);
+      -webkit-backdrop-filter:blur(18px);
+      overflow-x:auto;
+      -webkit-overflow-scrolling:touch;
+      scrollbar-width:none;
+      pointer-events:auto;
+      max-width:calc(100vw - 32px);
+    }
+    .duration-filter-inner::-webkit-scrollbar{display:none;}
+    body.theme-dark .duration-filter-inner{
+      background:rgba(21,21,24,.88);
+      border-color:rgba(255,255,255,.12);
+      box-shadow:0 8px 32px rgba(0,0,0,.44),0 2px 10px rgba(0,0,0,.28);
+    }
+    .dur-filter-btn{
+      flex:0 0 auto;
+      border:0;
+      border-radius:999px;
+      min-height:34px;
+      padding:0 15px;
+      background:rgba(118,118,128,.12);
+      color:#374151;
+      font-size:14px;
+      font-weight:850;
+      letter-spacing:-.01em;
+      cursor:pointer;
+      -webkit-tap-highlight-color:transparent;
+      transition:transform .12s ease,background .16s ease,color .16s ease,box-shadow .16s ease;
+      white-space:nowrap;
+    }
+    .dur-filter-btn:active{transform:scale(.97);}
+    .dur-filter-btn.active{
+      background:#1f2937;
+      color:#fff;
+      box-shadow:0 7px 16px rgba(17,24,39,.12);
+    }
+    body.theme-dark .dur-filter-btn{
+      background:rgba(255,255,255,.10);
+      color:#d1d5db;
+    }
+    body.theme-dark .dur-filter-btn.active{
+      background:#f5f5f7;
+      color:#111827;
+      box-shadow:none;
+    }
+    /* Bottom spacing so last plan card is never hidden behind the bar */
+    body.dur-bar-visible .portal-footer{
+      padding-bottom:calc(70px + env(safe-area-inset-bottom,0px));
+    }
 
     @keyframes razafiFadeUp{
       from{opacity:0;transform:translateY(8px);}
@@ -797,17 +791,6 @@
 
   </main>
 
-  <!-- ========= FILTRE DURÉE (bas flottant, affiché seulement si utile) ========= -->
-  <nav id="durationFiltersShell" class="duration-filter-shell" aria-label="Filtrer les forfaits par durée">
-    <div id="durationFilters" class="duration-filter-bar" role="tablist">
-      <button type="button" class="duration-filter-btn active" data-duration-filter="all" aria-pressed="true">Tous</button>
-      <button type="button" class="duration-filter-btn" data-duration-filter="1h" aria-pressed="false">1H</button>
-      <button type="button" class="duration-filter-btn" data-duration-filter="1d" aria-pressed="false">1J</button>
-      <button type="button" class="duration-filter-btn" data-duration-filter="7d" aria-pressed="false">7J</button>
-      <button type="button" class="duration-filter-btn" data-duration-filter="30d" aria-pressed="false">30J</button>
-    </div>
-  </nav>
-
   <!-- ================= FOOTER ================= -->
   <footer class="portal-footer">
     <p class="muted small">
@@ -817,6 +800,17 @@
 </a>
     </p>
   </footer>
+
+  <!-- ================= DURATION FILTER BAR ================= -->
+  <div id="durationFilterBar" class="hidden" role="tablist" aria-label="Filtrer par durée">
+    <div class="duration-filter-inner">
+      <button type="button" class="dur-filter-btn active" data-dur-filter="all" aria-pressed="true">Tous</button>
+      <button type="button" class="dur-filter-btn" data-dur-filter="1H"  aria-pressed="false">1H</button>
+      <button type="button" class="dur-filter-btn" data-dur-filter="1J"  aria-pressed="false">1J</button>
+      <button type="button" class="dur-filter-btn" data-dur-filter="7J"  aria-pressed="false">7J</button>
+      <button type="button" class="dur-filter-btn" data-dur-filter="30J" aria-pressed="false">30J</button>
+    </div>
+  </div>
 
   <!-- ================= JS ================= -->
   <!-- 🔑 Identity (nas_id / ap_mac) is handled ONLY in mikrotik.js -->

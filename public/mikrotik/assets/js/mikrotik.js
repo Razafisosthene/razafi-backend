@@ -2334,10 +2334,94 @@ function submitToLoginUrl(code, ev) {
   const plansGrid = $("plansGrid");
   const plansLoading = $("plansLoading");
   const planFilters = $("planFilters");
-  const durationFiltersShell = $("durationFiltersShell");
-  const durationFilters = $("durationFilters");
   let activePlanFilter = "all";
-  let activeDurationFilter = "all";
+  let activeDurationFilter = "all"; // NEW: duration filter state
+
+  // -------- Duration bucket helper --------
+  // Maps plan duration_minutes → UI bucket: "1H" | "1J" | "7J" | "30J"
+  function getDurationBucket(minutes) {
+    const m = Number(minutes) || 0;
+    if (m <= 60)       return "1H";
+    if (m <= 1440)     return "1J";  // > 1h and <= 1 day
+    if (m <= 7 * 1440) return "7J";  // > 1 day and <= 7 days
+    return "30J";                     // > 7 days
+  }
+
+  // -------- Sync dynamic filter visibility --------
+  function syncDynamicFilters() {
+    const cards = Array.from($all(".plan-card"));
+    if (!cards.length) return;
+
+    // --- Top filter (type): hide tabs with no matching plans ---
+    const hasUnlimited = cards.some((c) => c.getAttribute("data-plan-unlimited") === "1");
+    const hasData      = cards.some((c) => c.getAttribute("data-plan-unlimited") === "0");
+
+    if (planFilters) {
+      planFilters.querySelectorAll(".plan-filter-btn").forEach(function (btn) {
+        const f = String(btn.getAttribute("data-plan-filter") || "");
+        if (f === "all")      { btn.style.display = ""; return; }
+        if (f === "unlimited") btn.style.display = hasUnlimited ? "" : "none";
+        if (f === "data")      btn.style.display = hasData      ? "" : "none";
+      });
+    }
+
+    // --- Bottom duration filter bar ---
+    var durationBar = document.getElementById("durationFilterBar");
+    if (!durationBar) return;
+
+    // Collect all duration buckets present
+    var buckets = new Set();
+    cards.forEach(function (c) {
+      var m = Number(c.getAttribute("data-plan-duration") || 0);
+      buckets.add(getDurationBucket(m));
+    });
+
+    // Only one bucket → hide bar (no value in filtering)
+    if (buckets.size <= 1) {
+      durationBar.classList.add("hidden");
+      document.body.classList.remove("dur-bar-visible");
+      activeDurationFilter = "all";
+      updateDurationFilterButtons();
+      return;
+    }
+
+    // Show only buttons for buckets that exist
+    durationBar.querySelectorAll(".dur-filter-btn").forEach(function (btn) {
+      var f = String(btn.getAttribute("data-dur-filter") || "");
+      if (f === "all") { btn.style.display = ""; return; }
+      btn.style.display = buckets.has(f) ? "" : "none";
+    });
+
+    durationBar.classList.remove("hidden");
+    document.body.classList.add("dur-bar-visible");
+  }
+
+  function updateDurationFilterButtons() {
+    var durationBar = document.getElementById("durationFilterBar");
+    if (!durationBar) return;
+    durationBar.querySelectorAll(".dur-filter-btn").forEach(function (btn) {
+      var isActive = String(btn.getAttribute("data-dur-filter") || "all") === activeDurationFilter;
+      btn.classList.toggle("active", isActive);
+      btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
+  }
+
+  function bindDurationFilters() {
+    var durationBar = document.getElementById("durationFilterBar");
+    if (!durationBar || durationBar.dataset.bound === "1") return;
+    durationBar.dataset.bound = "1";
+
+    durationBar.querySelectorAll(".dur-filter-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var next = String(btn.getAttribute("data-dur-filter") || "all").trim() || "all";
+        if (next === activeDurationFilter) return;
+        activeDurationFilter = next;
+        applyPlanFilter({ resetSelection: true });
+      });
+    });
+
+    updateDurationFilterButtons();
+  }
 
   // -------- Pool context (AP -> Pool) --------
   let poolContext = { pool_name: null, display_name: null, brand_name: null, branding_logo_url: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
@@ -2948,6 +3032,8 @@ function saturationLabel(pct) {
       plansGrid.innerHTML = plans.map((plan, index) => planCardHTML(plan, planUiMeta[getPlanIdentity(plan, index)] || {})).join("");
 
       bindPlanFilters();
+      syncDynamicFilters();
+      bindDurationFilters();
       applyPlanFilter({ resetSelection: false });
 
       if (portalPreviewState.active) {
@@ -2976,95 +3062,50 @@ function saturationLabel(pct) {
     return String(card.getAttribute("data-plan-unlimited") || "") === "1" ? "unlimited" : "data";
   }
 
-  function getPlanDurationFilter(card) {
-    const minutes = Math.max(0, Math.trunc(Number(card?.getAttribute("data-plan-duration") || 0) || 0));
-    if (minutes <= 60) return "1h";
-    if (minutes <= 24 * 60) return "1d";
-    if (minutes <= 7 * 24 * 60) return "7d";
-    return "30d";
-  }
-
-  function setFilterButtonVisible(btn, visible) {
-    if (!btn) return;
-    btn.hidden = !visible;
-    btn.style.display = visible ? "" : "none";
-  }
-
-  function syncDynamicPlanFilters() {
-    const cards = Array.from(getPlanCards());
-
-    const availableTypes = new Set();
-    const availableDurations = new Set();
-
-    cards.forEach((card) => {
-      availableTypes.add(getPlanFilterType(card));
-      availableDurations.add(getPlanDurationFilter(card));
-    });
-
-    // Top filter: keep "Tous" always, hide Data/Illimité if not present in this pool.
-    if (planFilters) {
-      planFilters.querySelectorAll(".plan-filter-btn").forEach((btn) => {
-        const value = String(btn.getAttribute("data-plan-filter") || "all");
-        setFilterButtonVisible(btn, value === "all" || availableTypes.has(value));
-      });
-
-      if (activePlanFilter !== "all" && !availableTypes.has(activePlanFilter)) {
-        activePlanFilter = "all";
-      }
-    }
-
-    // Bottom duration filter: show only if more than one duration category exists.
-    const shouldShowDurationBar = availableDurations.size > 1;
-    if (durationFiltersShell) {
-      durationFiltersShell.classList.toggle("hidden", !shouldShowDurationBar);
-      durationFiltersShell.style.display = shouldShowDurationBar ? "" : "none";
-    }
-    try {
-      document.body.classList.toggle("razafi-duration-filter-visible", !!shouldShowDurationBar);
-    } catch (_) {}
-
-    if (durationFilters) {
-      durationFilters.querySelectorAll(".duration-filter-btn").forEach((btn) => {
-        const value = String(btn.getAttribute("data-duration-filter") || "all");
-        setFilterButtonVisible(btn, shouldShowDurationBar && (value === "all" || availableDurations.has(value)));
-      });
-
-      if (!shouldShowDurationBar || (activeDurationFilter !== "all" && !availableDurations.has(activeDurationFilter))) {
-        activeDurationFilter = "all";
-      }
-    }
-  }
-
   function updatePlanFilterButtons() {
-    if (planFilters) {
-      planFilters.querySelectorAll(".plan-filter-btn").forEach((btn) => {
-        const isActive = String(btn.getAttribute("data-plan-filter") || "all") === activePlanFilter;
-        btn.classList.toggle("active", isActive);
-        btn.setAttribute("aria-pressed", isActive ? "true" : "false");
-      });
-    }
-
-    if (durationFilters) {
-      durationFilters.querySelectorAll(".duration-filter-btn").forEach((btn) => {
-        const isActive = String(btn.getAttribute("data-duration-filter") || "all") === activeDurationFilter;
-        btn.classList.toggle("active", isActive);
-        btn.setAttribute("aria-pressed", isActive ? "true" : "false");
-      });
-    }
+    if (!planFilters) return;
+    planFilters.querySelectorAll(".plan-filter-btn").forEach((btn) => {
+      const isActive = String(btn.getAttribute("data-plan-filter") || "all") === activePlanFilter;
+      btn.classList.toggle("active", isActive);
+      btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
   }
 
   function applyPlanFilter({ resetSelection = false } = {}) {
-    syncDynamicPlanFilters();
-
     const typeFilter = String(activePlanFilter || "all");
-    const durationFilter = String(activeDurationFilter || "all");
+    const durFilter  = String(activeDurationFilter || "all");
 
-    getPlanCards().forEach((card) => {
-      const type = getPlanFilterType(card);
-      const duration = getPlanDurationFilter(card);
-      const typeMatches = typeFilter === "all" || type === typeFilter;
-      const durationMatches = durationFilter === "all" || duration === durationFilter;
-      const shouldShow = typeMatches && durationMatches;
+    // Safety: if the combined filter would produce zero visible cards,
+    // automatically reset the filter(s) that are too restrictive.
+    function countVisible(tf, df) {
+      return Array.from(getPlanCards()).filter(function (c) {
+        const typeOk = tf === "all" || getPlanFilterType(c) === tf;
+        const durOk  = df === "all" || getDurationBucket(Number(c.getAttribute("data-plan-duration") || 0)) === df;
+        return typeOk && durOk;
+      }).length;
+    }
+
+    let resolvedType = typeFilter;
+    let resolvedDur  = durFilter;
+
+    if (countVisible(resolvedType, resolvedDur) === 0) {
+      // Try resetting duration filter first
+      if (resolvedDur !== "all" && countVisible(resolvedType, "all") > 0) {
+        activeDurationFilter = "all";
+        resolvedDur = "all";
+        updateDurationFilterButtons();
+      }
+      // Then try resetting type filter
+      if (countVisible(resolvedType, resolvedDur) === 0 && resolvedType !== "all") {
+        activePlanFilter = "all";
+        resolvedType = "all";
+      }
+    }
+
+    getPlanCards().forEach(function (card) {
+      const typeOk = resolvedType === "all" || getPlanFilterType(card) === resolvedType;
+      const durOk  = resolvedDur  === "all" || getDurationBucket(Number(card.getAttribute("data-plan-duration") || 0)) === resolvedDur;
+      const shouldShow = typeOk && durOk;
 
       card.classList.toggle("hidden-by-filter", !shouldShow);
       card.style.display = shouldShow ? "" : "none";
@@ -3079,38 +3120,22 @@ function saturationLabel(pct) {
     }
 
     updatePlanFilterButtons();
+    updateDurationFilterButtons();
   }
 
   function bindPlanFilters() {
-    if (planFilters && planFilters.dataset.bound !== "1") {
-      planFilters.dataset.bound = "1";
+    if (!planFilters || planFilters.dataset.bound === "1") return;
+    planFilters.dataset.bound = "1";
 
-      planFilters.querySelectorAll(".plan-filter-btn").forEach((btn) => {
-        btn.addEventListener("click", function () {
-          if (btn.hidden || btn.style.display === "none") return;
-          const nextFilter = String(btn.getAttribute("data-plan-filter") || "all").trim() || "all";
-          if (nextFilter === activePlanFilter) return;
-          activePlanFilter = nextFilter;
-          applyPlanFilter({ resetSelection: true });
-        });
+    planFilters.querySelectorAll(".plan-filter-btn").forEach((btn) => {
+      btn.addEventListener("click", function () {
+        const nextFilter = String(btn.getAttribute("data-plan-filter") || "all").trim() || "all";
+        if (nextFilter === activePlanFilter) return;
+        activePlanFilter = nextFilter;
+        applyPlanFilter({ resetSelection: true });
       });
-    }
+    });
 
-    if (durationFilters && durationFilters.dataset.bound !== "1") {
-      durationFilters.dataset.bound = "1";
-
-      durationFilters.querySelectorAll(".duration-filter-btn").forEach((btn) => {
-        btn.addEventListener("click", function () {
-          if (btn.hidden || btn.style.display === "none") return;
-          const nextFilter = String(btn.getAttribute("data-duration-filter") || "all").trim() || "all";
-          if (nextFilter === activeDurationFilter) return;
-          activeDurationFilter = nextFilter;
-          applyPlanFilter({ resetSelection: true });
-        });
-      });
-    }
-
-    syncDynamicPlanFilters();
     updatePlanFilterButtons();
   }
 
