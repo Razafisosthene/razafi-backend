@@ -14096,7 +14096,7 @@ try {
   
 
 
-  const requestRef = `RAZAFI_${Date.now()}_${crypto.randomBytes(16).toString("hex")}`;
+  const requestRef = `RAZAFI_${crypto.randomBytes(6).toString("hex").toUpperCase()}`;
   const txId = crypto.randomUUID();
 
 
