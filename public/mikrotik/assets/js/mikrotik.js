@@ -41,6 +41,21 @@
     }
   }
 
+  // SECURITY PATCH B: prevent captive-portal phishing via ?backend=evil.com.
+  // Only allow explicit override to the official RAZAFI backend.
+  const BACKEND_ALLOWLIST = new Set([
+    "https://razafi-backend.onrender.com",
+  ]);
+
+  function isAllowedBackendOrigin(origin) {
+    try {
+      const clean = String(origin || "").trim().replace(/\/$/, "");
+      return BACKEND_ALLOWLIST.has(clean);
+    } catch (_) {
+      return false;
+    }
+  }
+
   const API_BASE = (function () {
     const override =
       normalizeBaseUrl(getQueryParam("backend")) ||
@@ -52,6 +67,10 @@
       const host = String(window.location.hostname || "");
       if (!override && /(^|\.)razafistore\.com$/i.test(host)) return "";
     } catch {}
+    if (override && !isAllowedBackendOrigin(override)) {
+      console.warn("[RAZAFI] backend override rejected");
+      return DEFAULT_BACKEND_BASE;
+    }
     return override || DEFAULT_BACKEND_BASE;
   })();
 
@@ -878,7 +897,7 @@
 
       const u = new URL(window.location.href);
 
-      const keepKeys = new Set(["backend", "backend_url", "api_base", "api"]);
+      const keepKeys = new Set();
       if (portalPreviewRequested) {
         // Keep only the public preview marker in the address bar.
         // Sensitive/verbose preview data (token, nas_id, gw) is already read and stored in sessionStorage.

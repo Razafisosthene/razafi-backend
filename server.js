@@ -1180,6 +1180,19 @@ const voucherRecoveryLimiter = rateLimit({
   keyGenerator: (req) => ipKeyGenerator(req),
 });
 
+// SECURITY PATCH B: limiter dedicated to /api/tx polling.
+// Keep it higher than voucherRecoveryLimiter because the portal polls /api/tx
+// while waiting for MVola confirmation and voucher delivery.
+const txStatusLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 90,
+  message: { error: "Trop de requêtes. Réessayez plus tard." },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) =>
+    `${ipKeyGenerator(req)}:${String(req.params?.requestRef || "").slice(0, 100)}`,
+});
+
 // 4) Strict limiter for ADMIN login (anti-bruteforce)
 const adminLoginSpeedLimiter = slowDown({
   windowMs: 15 * 60 * 1000,
@@ -1201,6 +1214,7 @@ const adminLoginLimiter = rateLimit({
 app.use("/api/send-payment", speedLimiter, paymentLimiter);
 app.use("/api/dernier-code", voucherRecoveryLimiter);
 app.use("/api/history", voucherRecoveryLimiter);
+app.use("/api/voucher/activate", voucherRecoveryLimiter);
 
 // ---------------------------------------------------------------------------
 // SECURE PHONE VALIDATION (MVola Madagascar only)
@@ -11997,6 +12011,7 @@ function assertProductionSecurityEnv() {
     "SUPABASE_URL",
     "SUPABASE_SERVICE_ROLE_KEY",
     "RADIUS_API_SECRET",
+    "RADIUS_ALLOWED_IPS",
     "FREE_ACCESS_SYNC_AGENT_SECRET",
     "FREE_ACCESS_SYNC_AGENT_URL",
   ];
@@ -14081,7 +14096,7 @@ try {
   
 
 
-  const requestRef = `RAZAFI_${Date.now()}`;
+  const requestRef = `RAZAFI_${Date.now()}_${crypto.randomBytes(16).toString("hex")}`;
   const txId = crypto.randomUUID();
 
 
@@ -14421,7 +14436,7 @@ const { error: vsErr } = await supabase
 // ---------------------------------------------------------------------------
 // ENDPOINT: fetch transaction details by requestRef
 // ---------------------------------------------------------------------------
-app.get("/api/tx/:requestRef", async (req, res) => {
+app.get("/api/tx/:requestRef", txStatusLimiter, async (req, res) => {
   const requestRef = req.params.requestRef;
   if (!requestRef) return res.status(400).json({ error: "requestRef required" });
 
