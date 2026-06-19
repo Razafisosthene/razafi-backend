@@ -2335,8 +2335,10 @@ function submitToLoginUrl(code, ev) {
   const plansGrid = $("plansGrid");
   const plansLoading = $("plansLoading");
   const planFilters = $("planFilters");
+  const planPriceSortBtn = $("planPriceSortBtn");
   let activePlanFilter = "all";
   let activeDurationFilter = "all"; // NEW: duration filter state
+  let activePriceSortDir = "asc"; // asc = moins cher → plus cher
 
   // -------- Duration bucket helper --------
   // Maps plan duration_minutes → UI bucket: "1H" | "1J" | "7J" | "30J"
@@ -3033,6 +3035,7 @@ function saturationLabel(pct) {
       plansGrid.innerHTML = plans.map((plan, index) => planCardHTML(plan, planUiMeta[getPlanIdentity(plan, index)] || {})).join("");
 
       bindPlanFilters();
+      bindPriceSortButton();
       syncDynamicFilters();
       bindDurationFilters();
       applyPlanFilter({ resetSelection: false });
@@ -3056,6 +3059,53 @@ function saturationLabel(pct) {
   // -------- Plan selection & payment integration --------
   function getPlanCards() {
     return $all(".plan-card");
+  }
+
+  function getPlanCardPrice(card) {
+    const raw = card ? (card.getAttribute("data-plan-price") || card.dataset.planPrice || "0") : "0";
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function updatePriceSortButton() {
+    if (!planPriceSortBtn) return;
+    const asc = activePriceSortDir !== "desc";
+    planPriceSortBtn.textContent = asc ? "Prix ↑" : "Prix ↓";
+    planPriceSortBtn.setAttribute("data-sort-dir", asc ? "asc" : "desc");
+    planPriceSortBtn.setAttribute("aria-label", asc
+      ? "Trier par prix, du moins cher au plus cher"
+      : "Trier par prix, du plus cher au moins cher");
+  }
+
+  function sortPlanCardsByPrice() {
+    if (!plansGrid) return;
+    const cards = Array.from(getPlanCards());
+    if (cards.length <= 1) {
+      updatePriceSortButton();
+      return;
+    }
+
+    const dir = activePriceSortDir === "desc" ? -1 : 1;
+    cards
+      .map(function (card, index) { return { card, index, price: getPlanCardPrice(card) }; })
+      .sort(function (a, b) {
+        if (a.price !== b.price) return (a.price - b.price) * dir;
+        return a.index - b.index;
+      })
+      .forEach(function (item) { plansGrid.appendChild(item.card); });
+
+    updatePriceSortButton();
+  }
+
+  function bindPriceSortButton() {
+    if (!planPriceSortBtn || planPriceSortBtn.dataset.bound === "1") return;
+    planPriceSortBtn.dataset.bound = "1";
+    planPriceSortBtn.addEventListener("click", function () {
+      activePriceSortDir = activePriceSortDir === "asc" ? "desc" : "asc";
+      sortPlanCardsByPrice();
+      applyPlanFilter({ resetSelection: true });
+    });
+    updatePriceSortButton();
   }
 
   function getPlanFilterType(card) {
@@ -3088,6 +3138,8 @@ function saturationLabel(pct) {
 
     let resolvedType = typeFilter;
     let resolvedDur  = durFilter;
+
+    sortPlanCardsByPrice();
 
     if (countVisible(resolvedType, resolvedDur) === 0) {
       // Try resetting duration filter first
@@ -3356,13 +3408,31 @@ function saturationLabel(pct) {
       error.style.display = "block";
     }
 
+    const cb = document.getElementById("acceptTermsCheckbox");
     const card = document.querySelector(".terms-card");
-    if (card && typeof card.scrollIntoView === "function") {
+    const target = card || cb;
+
+    if (target && typeof target.scrollIntoView === "function") {
       try {
-        card.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
       } catch (_) {
-        try { card.scrollIntoView(); } catch (_) {}
+        try { target.scrollIntoView(); } catch (_) {}
       }
+    }
+
+    if (cb && typeof cb.focus === "function") {
+      window.setTimeout(function () {
+        try { cb.focus({ preventScroll: true }); } catch (_) { try { cb.focus(); } catch (__) {} }
+      }, 320);
+    }
+
+    if (card) {
+      try {
+        card.classList.remove("razafi-flash");
+        void card.offsetWidth;
+        card.classList.add("razafi-flash");
+        window.setTimeout(function () { card.classList.remove("razafi-flash"); }, 1400);
+      } catch (_) {}
     }
   }
 
