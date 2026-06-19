@@ -2335,10 +2335,9 @@ function submitToLoginUrl(code, ev) {
   const plansGrid = $("plansGrid");
   const plansLoading = $("plansLoading");
   const planFilters = $("planFilters");
-  const planPriceSortBtn = $("planPriceSortBtn");
   let activePlanFilter = "all";
   let activeDurationFilter = "all"; // NEW: duration filter state
-  let activePriceSortDir = "asc"; // asc = moins cher → plus cher
+  let activePriceSortOrder = "asc"; // NEW: "asc" = Prix↑ (low→high), "desc" = Prix↓ (high→low)
 
   // -------- Duration bucket helper --------
   // Maps plan duration_minutes → UI bucket: "1H" | "1J" | "7J" | "30J"
@@ -2424,6 +2423,42 @@ function submitToLoginUrl(code, ev) {
     });
 
     updateDurationFilterButtons();
+  }
+
+  // -------- Price sort --------
+  function updatePriceSortButton() {
+    var btn = document.getElementById("priceSortBtn");
+    if (!btn) return;
+    btn.textContent = activePriceSortOrder === "asc" ? "Prix ↑" : "Prix ↓";
+  }
+
+  function applyPriceSort() {
+    if (!plansGrid) return;
+    var cards = Array.from(plansGrid.querySelectorAll(".plan-card"));
+    if (cards.length < 2) return;
+
+    cards.sort(function (a, b) {
+      var pa = Number(a.getAttribute("data-plan-price") || 0);
+      var pb = Number(b.getAttribute("data-plan-price") || 0);
+      return activePriceSortOrder === "asc" ? pa - pb : pb - pa;
+    });
+
+    // Re-append in sorted order; hidden-by-filter cards keep their display:none
+    cards.forEach(function (card) { plansGrid.appendChild(card); });
+  }
+
+  function bindPriceSortButton() {
+    var btn = document.getElementById("priceSortBtn");
+    if (!btn || btn.dataset.sortBound === "1") return;
+    btn.dataset.sortBound = "1";
+
+    btn.addEventListener("click", function () {
+      activePriceSortOrder = activePriceSortOrder === "asc" ? "desc" : "asc";
+      updatePriceSortButton();
+      applyPriceSort();
+    });
+
+    updatePriceSortButton();
   }
 
   // -------- Pool context (AP -> Pool) --------
@@ -3035,9 +3070,9 @@ function saturationLabel(pct) {
       plansGrid.innerHTML = plans.map((plan, index) => planCardHTML(plan, planUiMeta[getPlanIdentity(plan, index)] || {})).join("");
 
       bindPlanFilters();
-      bindPriceSortButton();
       syncDynamicFilters();
       bindDurationFilters();
+      bindPriceSortButton();
       applyPlanFilter({ resetSelection: false });
 
       if (portalPreviewState.active) {
@@ -3059,53 +3094,6 @@ function saturationLabel(pct) {
   // -------- Plan selection & payment integration --------
   function getPlanCards() {
     return $all(".plan-card");
-  }
-
-  function getPlanCardPrice(card) {
-    const raw = card ? (card.getAttribute("data-plan-price") || card.dataset.planPrice || "0") : "0";
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : 0;
-  }
-
-  function updatePriceSortButton() {
-    if (!planPriceSortBtn) return;
-    const asc = activePriceSortDir !== "desc";
-    planPriceSortBtn.textContent = asc ? "Prix ↑" : "Prix ↓";
-    planPriceSortBtn.setAttribute("data-sort-dir", asc ? "asc" : "desc");
-    planPriceSortBtn.setAttribute("aria-label", asc
-      ? "Trier par prix, du moins cher au plus cher"
-      : "Trier par prix, du plus cher au moins cher");
-  }
-
-  function sortPlanCardsByPrice() {
-    if (!plansGrid) return;
-    const cards = Array.from(getPlanCards());
-    if (cards.length <= 1) {
-      updatePriceSortButton();
-      return;
-    }
-
-    const dir = activePriceSortDir === "desc" ? -1 : 1;
-    cards
-      .map(function (card, index) { return { card, index, price: getPlanCardPrice(card) }; })
-      .sort(function (a, b) {
-        if (a.price !== b.price) return (a.price - b.price) * dir;
-        return a.index - b.index;
-      })
-      .forEach(function (item) { plansGrid.appendChild(item.card); });
-
-    updatePriceSortButton();
-  }
-
-  function bindPriceSortButton() {
-    if (!planPriceSortBtn || planPriceSortBtn.dataset.bound === "1") return;
-    planPriceSortBtn.dataset.bound = "1";
-    planPriceSortBtn.addEventListener("click", function () {
-      activePriceSortDir = activePriceSortDir === "asc" ? "desc" : "asc";
-      sortPlanCardsByPrice();
-      applyPlanFilter({ resetSelection: true });
-    });
-    updatePriceSortButton();
   }
 
   function getPlanFilterType(card) {
@@ -3138,8 +3126,6 @@ function saturationLabel(pct) {
 
     let resolvedType = typeFilter;
     let resolvedDur  = durFilter;
-
-    sortPlanCardsByPrice();
 
     if (countVisible(resolvedType, resolvedDur) === 0) {
       // Try resetting duration filter first
@@ -3174,6 +3160,7 @@ function saturationLabel(pct) {
 
     updatePlanFilterButtons();
     updateDurationFilterButtons();
+    try { applyPriceSort(); } catch (_) {}
   }
 
   function bindPlanFilters() {
@@ -3408,31 +3395,17 @@ function saturationLabel(pct) {
       error.style.display = "block";
     }
 
-    const cb = document.getElementById("acceptTermsCheckbox");
+    // Scroll to the terms card first, then refine to the error element
     const card = document.querySelector(".terms-card");
-    const target = card || cb;
-
+    const target = error || card;
     if (target && typeof target.scrollIntoView === "function") {
-      try {
-        target.scrollIntoView({ behavior: "smooth", block: "center" });
-      } catch (_) {
-        try { target.scrollIntoView(); } catch (_) {}
-      }
-    }
-
-    if (cb && typeof cb.focus === "function") {
       window.setTimeout(function () {
-        try { cb.focus({ preventScroll: true }); } catch (_) { try { cb.focus(); } catch (__) {} }
-      }, 320);
-    }
-
-    if (card) {
-      try {
-        card.classList.remove("razafi-flash");
-        void card.offsetWidth;
-        card.classList.add("razafi-flash");
-        window.setTimeout(function () { card.classList.remove("razafi-flash"); }, 1400);
-      } catch (_) {}
+        try {
+          target.scrollIntoView({ behavior: "smooth", block: "center" });
+        } catch (_) {
+          try { target.scrollIntoView(); } catch (_) {}
+        }
+      }, 60);
     }
   }
 

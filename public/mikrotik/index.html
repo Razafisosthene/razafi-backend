@@ -329,34 +329,30 @@
       color:#111827;
       box-shadow:none;
     }
-    .plan-sort-btn{
-      flex:0 0 auto;
-      border:1px solid rgba(17,24,39,.08);
-      border-radius:999px;
-      min-height:34px;
-      padding:0 13px;
-      background:rgba(255,255,255,.76);
-      color:#1f2937;
-      font-size:14px;
-      font-weight:900;
-      letter-spacing:-.01em;
-      cursor:pointer;
-      white-space:nowrap;
-      -webkit-tap-highlight-color:transparent;
-      box-shadow:0 7px 16px rgba(17,24,39,.07);
-      transition:transform .12s ease, background .16s ease, color .16s ease, box-shadow .16s ease;
-    }
-    .plan-sort-btn:active{transform:scale(.97);}
-    body.theme-dark .plan-sort-btn{
-      background:rgba(255,255,255,.09);
-      color:#f5f5f7;
-      border-color:rgba(255,255,255,.10);
-      box-shadow:none;
-    }
     @media (max-width:360px){
       .plans-heading-row{gap:8px;}
       .plan-filter-btn{min-height:32px;padding:0 12px;font-size:13px;}
     }
+
+    /* Price sort button */
+    #priceSortBtn{
+      flex:0 0 auto;
+      border:0;
+      border-radius:999px;
+      min-height:34px;
+      padding:0 14px;
+      background:rgba(118,118,128,.12);
+      color:#374151;
+      font-size:13px;
+      font-weight:850;
+      letter-spacing:-.01em;
+      cursor:pointer;
+      -webkit-tap-highlight-color:transparent;
+      transition:transform .12s ease,background .16s ease,color .16s ease;
+      white-space:nowrap;
+    }
+    #priceSortBtn:active{transform:scale(.97);}
+    body.theme-dark #priceSortBtn{background:rgba(255,255,255,.09);color:#d1d5db;}
 
     .plans-grid{gap:14px!important;}
 
@@ -488,7 +484,8 @@
     }
 
     .portal-announcement{margin-top:18px!important;padding:14px 15px!important;animation:razafiFadeUp .38s ease both;}
-    #networkInfoCard,.faq,.terms-card{margin-top:18px!important;animation:razafiFadeUp .38s ease both;}
+    #networkInfoCard{display:none!important;}
+    .faq,.terms-card{margin-top:18px!important;animation:razafiFadeUp .38s ease both;}
     .network-card{padding:16px!important;}
     .network-title{font-weight:900;letter-spacing:-.02em;}
     .network-speed-value{
@@ -503,22 +500,7 @@
     .network-bar{border-radius:999px!important;overflow:hidden;}
     .network-bar-fill{border-radius:999px!important;}
 
-    .support-card{padding:10px 14px!important;}
-    .support-compact{
-      margin:0;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      gap:6px;
-      color:var(--ios-text);
-      font-size:13px;
-      line-height:1.25;
-      text-align:center;
-      white-space:nowrap;
-    }
-    .support-compact strong{font-weight:900;}
-
-    .terms-card{padding:12px 14px!important;}
+    .terms-card{padding:16px!important;}
     .terms-check{display:flex;align-items:flex-start;gap:10px;cursor:pointer;margin-top:6px;line-height:1.45;}
     .terms-check input{margin-top:3px;flex:0 0 auto;accent-color:var(--ios-blue);}
     .terms-toggle{margin-top:10px;padding:0;background:none;border:none;color:var(--ios-blue);font-weight:800;cursor:pointer;}
@@ -740,11 +722,13 @@
       <div class="plans-heading-row">
         <h3 class="section-title-ios">Plans</h3>
 
+        <button type="button" id="priceSortBtn" aria-label="Trier par prix" title="Trier par prix">Prix ↑</button>
+      </div>
+      <div style="margin:0 0 6px;">
         <div id="planFilters" class="plan-filters" role="tablist" aria-label="Filtrer les forfaits">
           <button type="button" class="plan-filter-btn active" data-plan-filter="all" aria-pressed="true">Tous</button>
           <button type="button" class="plan-filter-btn" data-plan-filter="data" aria-pressed="false">Data</button>
           <button type="button" class="plan-filter-btn" data-plan-filter="unlimited" aria-pressed="false">Illimité</button>
-          <button type="button" id="planPriceSortBtn" class="plan-sort-btn" data-sort-dir="asc" aria-label="Trier par prix, du moins cher au plus cher">Prix ↑</button>
         </div>
       </div>
       <p class="section-subtitle-ios">Choisissez votre forfait et confirmez avec MVola.</p>
@@ -763,15 +747,43 @@
       </div>
     </section>
 
-    <!-- ========= ÉTAT DU RÉSEAU supprimé volontairement pour simplifier le portail ========= -->
+    <!-- ========= ÉTAT DU RÉSEAU (Pool saturation + débit) ========= -->
+    <section id="networkInfoCard" class="card network-card io-reveal" aria-live="polite">
+      <div class="network-head">
+        <div class="network-title">🌐 État du réseau – <span id="netPoolName">—</span></div>
+      </div>
+
+      <div class="network-bar-wrap" role="img" aria-label="Saturation du réseau">
+        <div class="network-bar">
+          <div id="netBarFill" class="network-bar-fill level-low" style="width:0%"></div>
+        </div>
+        <div class="network-bar-meta">
+          <span id="netPercent" class="network-percent">—%</span>
+          <span id="netStatusText" class="network-status muted">—</span>
+        </div>
+      </div>
+
+      <div id="netCapacityWrap" class="muted small hidden" style="display:none;">
+        Occupation : <strong id="netCapacityText">—</strong>
+      </div>
+
+      <div class="network-divider"></div>
+
+      <div class="network-speed">
+        <div class="network-title">🚀 Vitesse</div>
+        <div id="netSpeed" class="network-speed-value">Selon votre forfait</div>
+      </div>
+    </section>
 
     <!-- ========= ASSISTANCE ========= -->
-    <section class="card faq support-card">
-      <p class="support-compact">🛟 <strong>Assistance :</strong> <strong id="supportPhone">038 75 005 92</strong></p>
+    <section class="card faq">
+      <p style="margin:0;font-size:14px;font-weight:800;">🛟 Assistance : <strong id="supportPhone">038 75 005 92</strong></p>
     </section>
 
     <!-- ========= RÈGLES D’UTILISATION ========= -->
-    <section class="card terms-card" aria-label="Règles d’utilisation">
+    <section class="card terms-card" aria-labelledby="termsTitle">
+      <span id="termsTitle" style="display:none;">Règles d'utilisation</span>
+
       <label class="terms-check" for="acceptTermsCheckbox">
         <input type="checkbox" id="acceptTermsCheckbox">
         <span id="termsBrandLabel">J’accepte les règles d’utilisation de RAZAFI</span>
