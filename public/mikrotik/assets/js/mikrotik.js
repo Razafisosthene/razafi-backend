@@ -280,10 +280,14 @@
       banner = document.createElement("div");
       banner.id = "razafiLastCodeBanner";
       banner.className = "razafi-banner";
-      // insert after the success message if possible
-      const msg = document.getElementById("hasVoucherMsg");
-      if (msg && msg.parentElement === wrap) msg.insertAdjacentElement("afterend", banner);
-      else wrap.insertAdjacentElement("afterbegin", banner);
+      // Insert after the toggle button so order is: toggle → banner → copyBtn → details
+      const toggle = document.getElementById("voucherDetailsToggle");
+      if (toggle && toggle.parentElement === wrap) toggle.insertAdjacentElement("afterend", banner);
+      else {
+        const msg = document.getElementById("hasVoucherMsg");
+        if (msg && msg.parentElement === wrap) msg.insertAdjacentElement("afterend", banner);
+        else wrap.insertAdjacentElement("afterbegin", banner);
+      }
     }
     return banner;
   }
@@ -297,12 +301,18 @@
       banner.style.display = "none";
       return;
     }
-    banner.style.display = "";
+
     const when = last.ts ? formatLocalTime(last.ts) : "";
     banner.innerHTML = `
       <div><strong>Dernier code généré :</strong> <span style="letter-spacing:1px;">${escapeHtml(last.code)}</span> ${when ? `<span class="small">(${escapeHtml(when)})</span>` : ""}</div>
     `;
 
+    // Do not override display:none when the collapsible area is collapsed
+    const toggle = document.getElementById("voucherDetailsToggle");
+    const isCollapsed = toggle && toggle.style.display !== "none" && toggle.getAttribute("aria-expanded") !== "true";
+    if (!isCollapsed) {
+      banner.style.display = "";
+    }
 }
 
   function friendlyErrorMessage(err) {
@@ -997,6 +1007,11 @@
     voucherDetailsToggle.textContent = open
       ? "Masquer votre dernière consommation"
       : "Voir votre dernière consommation";
+
+    // Banner and copy button are part of the collapsible area
+    var banner = document.getElementById("razafiLastCodeBanner");
+    if (banner) banner.style.display = open ? "" : "none";
+    if (copyBtn) copyBtn.style.display = open ? "" : "none";
   }
 
   function bindVoucherDetailsToggle() {
@@ -1048,13 +1063,23 @@
     const hasCode = !!String(code || "").trim();
     const isFinished = (s === "used" || s === "expired") && !canUse;
 
-    // RAZAFI UX:
-    // - if the code can be used, the main action must stay immediately visible
-    // - copy is useful only for a finished/previous consumption, mainly for support/reclamation
+    // copyBtn is now outside .voucher-actions, inside the collapsible area.
+    // It starts hidden; setVoucherDetailsOpen(true) reveals it alongside the details.
     if (copyBtn) {
       copyBtn.disabled = !hasCode;
-      copyBtn.style.display = (isFinished && hasCode) ? "" : "none";
+      copyBtn.style.display = "none"; // always start hidden; toggle controls it
     }
+
+    // Hide the redundant "Votre dernière consommation" heading when finished
+    // (the toggle button label already communicates this)
+    var hasVoucherMsgEl = document.getElementById("hasVoucherMsg");
+    if (hasVoucherMsgEl) {
+      hasVoucherMsgEl.style.display = isFinished ? "none" : "";
+    }
+
+    // Keep banner hidden until toggle opens — setVoucherDetailsOpen handles it
+    var banner = document.getElementById("razafiLastCodeBanner");
+    if (banner) banner.style.display = isFinished ? "none" : "";
 
     if (voucherDetailsTitle) {
       voucherDetailsTitle.classList.toggle("hidden", isFinished || !hasCode);
