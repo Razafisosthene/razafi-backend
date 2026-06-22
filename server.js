@@ -709,22 +709,90 @@ function cleanAssistantMessage(raw) {
   return s.slice(0, ASSISTANT_MAX_MESSAGE_LEN);
 }
 
+// RAZAFI technical words that are used in all three languages.
+// Stripped only for secondary single-word scoring — never before
+// phrase matching, so "no code", "payment done", etc. remain intact.
+const RAZAFI_NEUTRAL_WORDS = [
+  "forfait", "portail", "bouton", "code", "paiement",
+  "router", "access point", "capteur", "mvola",
+];
+
 function detectAssistantLang(msg) {
-  const s = String(msg || "").toLowerCase();
-  const mgTokens = [
+  // Step 1 — Normalize
+  const s = String(msg || "").toLowerCase().trim();
+
+  // Step 2 — Strong English PHRASES
+  // Checked on the original normalized message (before neutral-word
+  // stripping) so that "no code", "how to pay", "payment done", etc.
+  // are never broken apart.
+  const enPhrases = [
+    "do you speak english", "can you speak english", "speak english",
+    "how to pay", "how to connect", "how to use",
+    "i paid", "i want", "i have", "i need",
+    "help me", "show me", "tell me",
+    "payment done", "no code", "not working",
+    "my internet", "my plan", "my network", "is slow",
+    "already have", "get started",
+    "can i", "can you", "do you",
+  ];
+  const enPhraseHit = enPhrases.some(p => s.includes(p));
+
+  // Step 3 — Strong Malagasy PHRASES
+  // Also checked on the original normalized message.
+  const mgPhrases = [
+    "manao ahoana", "tsy misy", "tsy tonga", "tsy nahazo",
+    "nandoa aho", "code tsy", "vola lasa", "fa tsy",
+    "eto amin", "rehefa avy", "mijanona", "azafady",
+  ];
+  const mgPhraseHit = mgPhrases.some(p => s.includes(p));
+
+  // Unambiguous phrase signal — return early without secondary scoring
+  if (mgPhraseHit && !enPhraseHit) return "mg";
+  if (enPhraseHit && !mgPhraseHit) return "en";
+
+  // Step 4 — Strip RAZAFI-neutral words for secondary single-word scoring
+  let stripped = s;
+  for (const w of RAZAFI_NEUTRAL_WORDS) {
+    stripped = stripped.split(w).join(" ");
+  }
+  stripped = stripped.replace(/\s+/g, " ").trim();
+
+  // Step 5 — Word-boundary helper (V2.1: no lookbehind/lookahead)
+  // Uses (^|[^a-z]) and ($|[^a-z]) so "hi" does not match inside
+  // "historique", "acheter", "cherche", etc.
+  // Compatible with all Node.js versions deployed on Render.
+  function hasWord(text, word) {
+    const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp("(^|[^a-z])" + escaped + "($|[^a-z])", "i");
+    return re.test(text);
+  }
+
+  // Single-word Malagasy tokens (word-boundary matched on stripped text)
+  const mgWords = [
     "inona", "ahoana", "aho", "efa", "ohatrinona", "misy", "hanomboka",
-    "tsy", "ny", "lany", "nahazo", "nampiasaina", "nandoa", "farany",
-    "aiza", "fanampiana", "manan", "izany", "azafady", "tsara", "voalohany",
+    "tsy", "lany", "nahazo", "nampiasaina", "nandoa", "farany",
+    "aiza", "fanampiana", "izany", "tsara", "voalohany",
+    "raha", "rehefa", "veloma", "misaotra",
   ];
-  const enTokens = [
-    "what", "how", "i have", "i want", "can i", "does", "is there",
-    "help", "show", "which", "please", "thank", "my network", "my plan",
-    "already have", "get started", "not working",
+
+  // Single-word English tokens (word-boundary matched on stripped text)
+  // Note: "ok" intentionally excluded — neutral across FR/MG/EN in Madagascar.
+  const enWords = [
+    "hello", "hi", "english", "yes", "thanks", "sorry",
+    "how", "what", "why", "when", "where", "which", "who",
+    "please", "thank", "does",
   ];
-  const mgHits = mgTokens.filter(t => s.includes(t)).length;
-  const enHits = enTokens.filter(t => s.includes(t)).length;
-  if (mgHits >= 2 || (mgHits >= 1 && enHits === 0)) return "mg";
-  if (enHits >= 2 && mgHits === 0) return "en";
+
+  const mgWordHits = mgWords.filter(w => hasWord(stripped, w)).length;
+  const enWordHits = enWords.filter(w => hasWord(stripped, w)).length;
+
+  // Malagasy: 2+ word hits, OR 1 unambiguous word with no English signal
+  if (mgWordHits >= 2 || (mgWordHits >= 1 && enWordHits === 0)) return "mg";
+
+  // English: 1+ word hit with no Malagasy signal
+  if (enWordHits >= 1 && mgWordHits === 0) return "en";
+
+  // Step 6 — Default: French
   return "fr";
 }
 
