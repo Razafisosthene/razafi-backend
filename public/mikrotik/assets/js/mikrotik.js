@@ -4023,20 +4023,9 @@ function bindPlanHandlers() {
     ]);
 
     // ---- Quick chip definitions ----
-    var QUICK_CHIPS = [
-      { label: "Choisir un forfait",          msg: "Quel forfait choisir ?" },
-      { label: "Comment payer ?",             msg: "Comment payer ?" },
-      { label: "Paiement en attente",         msg: "Mon paiement est en attente" },
-      { label: "Je n'ai pas reçu mon code",   msg: "J'ai payé mais je n'ai pas reçu mon code" },
-      { label: "Utiliser mon code",           msg: "Comment utiliser mon code ?" },
-      { label: "Bonus",                       msg: "Comment utiliser mon bonus ?" },
-      { label: "Support",                     msg: "Comment contacter le support ?" },
-    ];
-
     // ---- State ----
-    var isOpen   = false;
+    var isOpen    = false;
     var isLoading = false;
-    var chipsHidden = false;
 
     // ---- Build DOM ----
 
@@ -4045,42 +4034,29 @@ function bindPlanHandlers() {
     backdrop.id = "rzAssistBackdrop";
     document.body.appendChild(backdrop);
 
-    // ---- Open-count helpers (localStorage, counts real user opens only) ----
-    var RZ_COUNT_KEY = "razafiAssistantOpenCount";
+    // ---- Timed-collapse helpers (no localStorage, no persistence) ----
+    var _rzCollapseTimer = null;
 
-    function getAssistantOpenCount() {
-      try {
-        var v = parseInt(localStorage.getItem(RZ_COUNT_KEY), 10);
-        return isNaN(v) || v < 0 ? 0 : v;
-      } catch (_) { return 0; }
-    }
-
-    function incrementAssistantOpenCount() {
-      try {
-        var next = getAssistantOpenCount() + 1;
-        localStorage.setItem(RZ_COUNT_KEY, String(next));
-        return next;
-      } catch (_) { return 0; }
-    }
-
-    // mode: "full" (0-2 opens) | "icon" (3-9) | "mini" (10+)
-    function resolveButtonMode(count) {
-      if (count >= 10) return "mini";
-      if (count >= 3)  return "icon";
-      return "full";
-    }
-
-    function applyAssistantButtonMode(btn, mode) {
-      btn.classList.remove("rz-assist-mode-full", "rz-assist-mode-icon", "rz-assist-mode-mini");
-      btn.classList.add("rz-assist-mode-" + mode);
-      // Always keep aria-label for accessibility
+    function setButtonFull() {
+      btn.classList.remove("rz-assist-mode-icon");
+      btn.classList.add("rz-assist-mode-full");
       btn.setAttribute("aria-label", "Assistant RAZAFI");
-      if (mode === "full") {
-        btn.textContent = "💬 Assistant";
-      } else {
-        // icon and mini: emoji only, aria-label preserved above
-        btn.textContent = "💬";
-      }
+      btn.textContent = "💬 Aide";
+    }
+
+    function setButtonIcon() {
+      btn.classList.remove("rz-assist-mode-full");
+      btn.classList.add("rz-assist-mode-icon");
+      btn.setAttribute("aria-label", "Assistant RAZAFI");
+      btn.textContent = "💬";
+    }
+
+    // Schedule collapse to icon after 5s; cancels any pending timer first.
+    function scheduleCollapse() {
+      try { clearTimeout(_rzCollapseTimer); } catch (_) {}
+      _rzCollapseTimer = setTimeout(function () {
+        if (!isOpen) setButtonIcon();
+      }, 5000);
     }
 
     // Toggle button
@@ -4090,8 +4066,9 @@ function bindPlanHandlers() {
     btn.setAttribute("aria-label", "Assistant RAZAFI");
     btn.setAttribute("aria-expanded", "false");
     btn.setAttribute("aria-controls", "rzAssistPanel");
-    // Apply correct mode before first render (does NOT increment count)
-    applyAssistantButtonMode(btn, resolveButtonMode(getAssistantOpenCount()));
+    // Start in full mode, collapse after 5s
+    setButtonFull();
+    scheduleCollapse();
     document.body.appendChild(btn);
 
     // Panel
@@ -4111,7 +4088,7 @@ function bindPlanHandlers() {
     titleEl.textContent = "💡 Assistant RAZAFI";
     var subEl = document.createElement("div");
     subEl.className = "rz-assist-sub";
-    subEl.textContent = "Je peux vous aider à utiliser ce portail.";
+    subEl.textContent = "Comment puis-je vous aider ?";
     headText.appendChild(titleEl);
     headText.appendChild(subEl);
 
@@ -4131,21 +4108,6 @@ function bindPlanHandlers() {
     body.setAttribute("aria-live", "polite");
     body.setAttribute("aria-atomic", "false");
     panel.appendChild(body);
-
-    // Quick chips
-    var chipsRow = document.createElement("div");
-    chipsRow.className = "rz-assist-chips";
-    QUICK_CHIPS.forEach(function (c) {
-      var chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "rz-assist-chip";
-      chip.textContent = c.label;
-      chip.addEventListener("click", function () {
-        sendMessage(c.msg);
-      });
-      chipsRow.appendChild(chip);
-    });
-    panel.appendChild(chipsRow);
 
     // Input row
     var inputRow = document.createElement("div");
@@ -4179,11 +4141,10 @@ function bindPlanHandlers() {
       panel.classList.add("rz-open");
       backdrop.classList.add("rz-open");
       btn.setAttribute("aria-expanded", "true");
-      // Increment real-user open count and re-apply mode
-      try {
-        var newCount = incrementAssistantOpenCount();
-        applyAssistantButtonMode(btn, resolveButtonMode(newCount));
-      } catch (_) {}
+      // Cancel any pending collapse while panel is open
+      try { clearTimeout(_rzCollapseTimer); } catch (_) {}
+      // Keep button in full mode while open
+      setButtonFull();
       try { input.focus(); } catch (_) {}
     }
 
@@ -4192,8 +4153,9 @@ function bindPlanHandlers() {
       panel.classList.remove("rz-open");
       backdrop.classList.remove("rz-open");
       btn.setAttribute("aria-expanded", "false");
-      // Re-apply mode on close so button reflects current count
-      try { applyAssistantButtonMode(btn, resolveButtonMode(getAssistantOpenCount())); } catch (_) {}
+      // Show full label on close, then collapse to icon after 5s
+      setButtonFull();
+      scheduleCollapse();
       try { input.blur(); } catch (_) {}
     }
 
@@ -4214,13 +4176,6 @@ function bindPlanHandlers() {
 
     function removeMsg(el) {
       try { if (el && el.parentNode === body) body.removeChild(el); } catch (_) {}
-    }
-
-    function hideChips() {
-      if (!chipsHidden) {
-        chipsHidden = true;
-        chipsRow.style.display = "none";
-      }
     }
 
     // Render safe backend buttons below an assistant bubble
@@ -4274,9 +4229,6 @@ function bindPlanHandlers() {
     function sendMessage(text) {
       var msg = String(text || "").trim();
       if (!msg || isLoading) return;
-
-      // Suppress chips after first message
-      hideChips();
 
       // User bubble
       appendMsg(msg, "user");
