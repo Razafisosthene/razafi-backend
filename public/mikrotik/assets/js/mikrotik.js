@@ -4045,6 +4045,44 @@ function bindPlanHandlers() {
     backdrop.id = "rzAssistBackdrop";
     document.body.appendChild(backdrop);
 
+    // ---- Open-count helpers (localStorage, counts real user opens only) ----
+    var RZ_COUNT_KEY = "razafiAssistantOpenCount";
+
+    function getAssistantOpenCount() {
+      try {
+        var v = parseInt(localStorage.getItem(RZ_COUNT_KEY), 10);
+        return isNaN(v) || v < 0 ? 0 : v;
+      } catch (_) { return 0; }
+    }
+
+    function incrementAssistantOpenCount() {
+      try {
+        var next = getAssistantOpenCount() + 1;
+        localStorage.setItem(RZ_COUNT_KEY, String(next));
+        return next;
+      } catch (_) { return 0; }
+    }
+
+    // mode: "full" (0-2 opens) | "icon" (3-9) | "mini" (10+)
+    function resolveButtonMode(count) {
+      if (count >= 10) return "mini";
+      if (count >= 3)  return "icon";
+      return "full";
+    }
+
+    function applyAssistantButtonMode(btn, mode) {
+      btn.classList.remove("rz-assist-mode-full", "rz-assist-mode-icon", "rz-assist-mode-mini");
+      btn.classList.add("rz-assist-mode-" + mode);
+      // Always keep aria-label for accessibility
+      btn.setAttribute("aria-label", "Assistant RAZAFI");
+      if (mode === "full") {
+        btn.textContent = "💬 Assistant";
+      } else {
+        // icon and mini: emoji only, aria-label preserved above
+        btn.textContent = "💬";
+      }
+    }
+
     // Toggle button
     var btn = document.createElement("button");
     btn.id = "rzAssistBtn";
@@ -4052,7 +4090,8 @@ function bindPlanHandlers() {
     btn.setAttribute("aria-label", "Assistant RAZAFI");
     btn.setAttribute("aria-expanded", "false");
     btn.setAttribute("aria-controls", "rzAssistPanel");
-    btn.textContent = "💬 Assistant";
+    // Apply correct mode before first render (does NOT increment count)
+    applyAssistantButtonMode(btn, resolveButtonMode(getAssistantOpenCount()));
     document.body.appendChild(btn);
 
     // Panel
@@ -4140,6 +4179,11 @@ function bindPlanHandlers() {
       panel.classList.add("rz-open");
       backdrop.classList.add("rz-open");
       btn.setAttribute("aria-expanded", "true");
+      // Increment real-user open count and re-apply mode
+      try {
+        var newCount = incrementAssistantOpenCount();
+        applyAssistantButtonMode(btn, resolveButtonMode(newCount));
+      } catch (_) {}
       try { input.focus(); } catch (_) {}
     }
 
@@ -4148,6 +4192,8 @@ function bindPlanHandlers() {
       panel.classList.remove("rz-open");
       backdrop.classList.remove("rz-open");
       btn.setAttribute("aria-expanded", "false");
+      // Re-apply mode on close so button reflects current count
+      try { applyAssistantButtonMode(btn, resolveButtonMode(getAssistantOpenCount())); } catch (_) {}
       try { input.blur(); } catch (_) {}
     }
 

@@ -950,6 +950,7 @@ body.theme-dark .portal-announcement-icon {
    ============================================================ */
 
 /* ---- Floating toggle button ---- */
+/* ---- Base button (shared across all modes) ---- */
 #rzAssistBtn {
   position: fixed;
   right: 16px;
@@ -957,34 +958,81 @@ body.theme-dark .portal-announcement-icon {
   z-index: 150;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
-  padding: 0 18px;
-  height: 44px;
   border-radius: 999px;
   border: none;
   background: #1f2937;
   color: #f5f5f7;
-  font-size: 14px;
-  font-weight: 800;
-  letter-spacing: -.01em;
   cursor: pointer;
-  box-shadow: 0 8px 24px rgba(15,23,42,.28), 0 2px 6px rgba(15,23,42,.14);
-  transition: transform .14s ease, box-shadow .16s ease, bottom .2s ease;
   -webkit-tap-highlight-color: transparent;
   user-select: none;
   -webkit-user-select: none;
+  transition: transform .14s ease, box-shadow .16s ease,
+              bottom .22s ease, opacity .2s ease,
+              width .18s ease, height .18s ease, padding .18s ease;
 }
 #rzAssistBtn:active {
   transform: scale(.96);
 }
-/* Lift button when duration filter bar is visible */
+/* Lift button when duration filter bar is visible —
+   extra height (92px) avoids covering the footer text */
 body.dur-bar-visible #rzAssistBtn {
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 72px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 92px);
 }
 body.theme-dark #rzAssistBtn {
   background: #f5f5f7;
   color: #111827;
+}
+
+/* ---- Mode: full (0–2 opens) ---- */
+#rzAssistBtn.rz-assist-mode-full {
+  padding: 0 18px;
+  height: 44px;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: -.01em;
+  opacity: 1;
+  box-shadow: 0 8px 24px rgba(15,23,42,.28), 0 2px 6px rgba(15,23,42,.14);
+}
+body.theme-dark #rzAssistBtn.rz-assist-mode-full {
   box-shadow: 0 8px 28px rgba(0,0,0,.44);
+}
+
+/* ---- Mode: icon (3–9 opens) ---- */
+#rzAssistBtn.rz-assist-mode-icon {
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: 0;
+  opacity: 1;
+  box-shadow: 0 8px 24px rgba(15,23,42,.24), 0 2px 6px rgba(15,23,42,.12);
+}
+body.theme-dark #rzAssistBtn.rz-assist-mode-icon {
+  box-shadow: 0 8px 28px rgba(0,0,0,.40);
+}
+
+/* ---- Mode: mini (10+ opens) ---- */
+#rzAssistBtn.rz-assist-mode-mini {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  font-size: 20px;
+  font-weight: 400;
+  letter-spacing: 0;
+  opacity: 0.68;
+  box-shadow: 0 4px 12px rgba(15,23,42,.16), 0 1px 4px rgba(15,23,42,.08);
+}
+body.theme-dark #rzAssistBtn.rz-assist-mode-mini {
+  box-shadow: 0 4px 14px rgba(0,0,0,.32);
+}
+/* Mini becomes fully visible on interaction */
+#rzAssistBtn.rz-assist-mode-mini:hover,
+#rzAssistBtn.rz-assist-mode-mini:focus-visible,
+#rzAssistBtn.rz-assist-mode-mini:active {
+  opacity: 1;
 }
 
 /* ---- Backdrop ---- */
