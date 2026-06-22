@@ -940,3 +940,356 @@ body.theme-dark .portal-announcement-icon {
   display: none !important;
 }
 
+
+
+/* ============================================================
+   RAZAFI PORTAL ASSISTANT — Widget V1
+   z-index 150: above duration-filter-bar (120), below toasts (9999).
+   Mobile-first bottom sheet. Safe-area aware. Dark-mode compatible.
+   No payment/voucher/bonus logic. Read-only UI.
+   ============================================================ */
+
+/* ---- Floating toggle button ---- */
+#rzAssistBtn {
+  position: fixed;
+  right: 16px;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
+  z-index: 150;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 18px;
+  height: 44px;
+  border-radius: 999px;
+  border: none;
+  background: #1f2937;
+  color: #f5f5f7;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: -.01em;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(15,23,42,.28), 0 2px 6px rgba(15,23,42,.14);
+  transition: transform .14s ease, box-shadow .16s ease, bottom .2s ease;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+}
+#rzAssistBtn:active {
+  transform: scale(.96);
+}
+/* Lift button when duration filter bar is visible */
+body.dur-bar-visible #rzAssistBtn {
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 72px);
+}
+body.theme-dark #rzAssistBtn {
+  background: #f5f5f7;
+  color: #111827;
+  box-shadow: 0 8px 28px rgba(0,0,0,.44);
+}
+
+/* ---- Backdrop ---- */
+#rzAssistBackdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 149;
+  background: rgba(0,0,0,.28);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  animation: rzAssistFadeIn .18s ease both;
+}
+#rzAssistBackdrop.rz-open {
+  display: block;
+}
+
+/* ---- Panel (bottom sheet) ---- */
+#rzAssistPanel {
+  position: fixed;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%) translateY(100%);
+  z-index: 150;
+  width: min(100vw, 440px);
+  max-height: 72vh;
+  border-radius: 24px 24px 0 0;
+  border: 1px solid rgba(17,24,39,.09);
+  border-bottom: none;
+  background: #ffffff;
+  box-shadow: 0 -12px 48px rgba(15,23,42,.14), 0 -2px 8px rgba(15,23,42,.06);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: transform .26s cubic-bezier(.32,.72,0,1);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+#rzAssistPanel.rz-open {
+  transform: translateX(-50%) translateY(0);
+}
+body.theme-dark #rzAssistPanel {
+  background: #1a1d23;
+  border-color: rgba(255,255,255,.10);
+  box-shadow: 0 -12px 52px rgba(0,0,0,.52);
+}
+
+/* ---- Panel header ---- */
+.rz-assist-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid rgba(17,24,39,.07);
+  flex: 0 0 auto;
+}
+body.theme-dark .rz-assist-head {
+  border-bottom-color: rgba(255,255,255,.08);
+}
+.rz-assist-title {
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: -.02em;
+  color: #111827;
+}
+body.theme-dark .rz-assist-title {
+  color: #f5f5f7;
+}
+.rz-assist-sub {
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+  margin-top: 2px;
+}
+body.theme-dark .rz-assist-sub {
+  color: #9ca3af;
+}
+.rz-assist-close {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: none;
+  background: rgba(118,118,128,.12);
+  color: #374151;
+  font-size: 18px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex: 0 0 auto;
+  -webkit-tap-highlight-color: transparent;
+  transition: background .14s ease;
+}
+.rz-assist-close:active {
+  background: rgba(118,118,128,.22);
+}
+body.theme-dark .rz-assist-close {
+  background: rgba(255,255,255,.10);
+  color: #e5e7eb;
+}
+
+/* ---- Messages scroll area ---- */
+.rz-assist-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 14px 16px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  scroll-behavior: smooth;
+}
+.rz-assist-body::-webkit-scrollbar { display: none; }
+
+/* ---- Chips row (quick actions) ---- */
+.rz-assist-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 16px 10px;
+  flex: 0 0 auto;
+}
+.rz-assist-chip {
+  flex: 0 0 auto;
+  padding: 7px 13px;
+  border-radius: 999px;
+  border: 1px solid rgba(17,24,39,.10);
+  background: rgba(118,118,128,.08);
+  color: #374151;
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: -.01em;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background .13s ease, transform .12s ease;
+  white-space: nowrap;
+}
+.rz-assist-chip:active {
+  transform: scale(.96);
+  background: rgba(118,118,128,.18);
+}
+body.theme-dark .rz-assist-chip {
+  border-color: rgba(255,255,255,.12);
+  background: rgba(255,255,255,.08);
+  color: #d1d5db;
+}
+
+/* ---- Bubble messages ---- */
+.rz-msg {
+  max-width: 88%;
+  padding: 10px 13px;
+  border-radius: 18px;
+  font-size: 14px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.rz-msg-user {
+  align-self: flex-end;
+  background: #1f2937;
+  color: #f5f5f7;
+  border-bottom-right-radius: 5px;
+}
+body.theme-dark .rz-msg-user {
+  background: #f5f5f7;
+  color: #111827;
+}
+.rz-msg-assistant {
+  align-self: flex-start;
+  background: rgba(118,118,128,.10);
+  color: #111827;
+  border-bottom-left-radius: 5px;
+}
+body.theme-dark .rz-msg-assistant {
+  background: rgba(255,255,255,.09);
+  color: #e5e7eb;
+}
+.rz-msg-thinking {
+  align-self: flex-start;
+  color: #9ca3af;
+  font-size: 13px;
+  font-style: italic;
+  padding: 6px 4px;
+  background: none;
+}
+
+/* ---- Backend response chips (navigation/link buttons from KB) ---- */
+.rz-resp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 8px;
+}
+.rz-resp-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(0,122,255,.28);
+  background: rgba(0,122,255,.07);
+  color: #007aff;
+  font-size: 13px;
+  font-weight: 750;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  text-decoration: none;
+  transition: background .13s ease;
+}
+.rz-resp-chip:active {
+  background: rgba(0,122,255,.14);
+}
+body.theme-dark .rz-resp-chip {
+  border-color: rgba(100,170,255,.30);
+  background: rgba(100,170,255,.09);
+  color: #7cb6ff;
+}
+
+/* ---- Input row ---- */
+.rz-assist-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid rgba(17,24,39,.07);
+  flex: 0 0 auto;
+}
+body.theme-dark .rz-assist-input-row {
+  border-top-color: rgba(255,255,255,.08);
+}
+#rzAssistInput {
+  flex: 1;
+  height: 40px;
+  border-radius: 999px;
+  border: 1px solid rgba(17,24,39,.12);
+  background: rgba(118,118,128,.07);
+  color: #111827;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 0 14px;
+  outline: none;
+  -webkit-appearance: none;
+}
+#rzAssistInput::placeholder {
+  color: #9ca3af;
+}
+#rzAssistInput:focus {
+  border-color: rgba(0,122,255,.42);
+  background: #fff;
+}
+body.theme-dark #rzAssistInput {
+  border-color: rgba(255,255,255,.12);
+  background: rgba(255,255,255,.07);
+  color: #f5f5f7;
+}
+body.theme-dark #rzAssistInput:focus {
+  border-color: rgba(100,170,255,.45);
+  background: rgba(255,255,255,.10);
+}
+#rzAssistSend {
+  flex: 0 0 auto;
+  height: 40px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: none;
+  background: #1f2937;
+  color: #f5f5f7;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: opacity .14s ease, transform .12s ease;
+}
+#rzAssistSend:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+#rzAssistSend:not(:disabled):active {
+  transform: scale(.96);
+}
+body.theme-dark #rzAssistSend {
+  background: #f5f5f7;
+  color: #111827;
+}
+
+/* ---- Fade-in for backdrop ---- */
+@keyframes rzAssistFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ---- Reduced motion ---- */
+@media (prefers-reduced-motion: reduce) {
+  #rzAssistBtn,
+  #rzAssistPanel,
+  #rzAssistBackdrop,
+  .rz-assist-chip,
+  .rz-resp-chip,
+  #rzAssistSend {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* ---- Ensure toasts stay above panel ---- */
+#toastContainer { z-index: 9999 !important; }
+
+/* ============================================================
+   END RAZAFI PORTAL ASSISTANT — Widget V1
+   ============================================================ */

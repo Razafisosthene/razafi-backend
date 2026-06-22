@@ -4003,6 +4003,344 @@ function bindPlanHandlers() {
   // END RAZAFI ASSISTANT — BRIDGE INFRASTRUCTURE
   // ============================================================
 
+
+  // ============================================================
+  // RAZAFI PORTAL ASSISTANT — Widget V1
+  // Floating button + bottom-sheet panel.
+  // No payment/voucher/bonus actions. textContent only for answers.
+  // Suppressed in preview mode. Defers to payment-in-progress flag.
+  // ============================================================
+
+  function initAssistantWidget() {
+    // Guard: do not render in admin preview mode
+    if (window.razafiAssistantIsPreviewMode && window.razafiAssistantIsPreviewMode()) return;
+
+    // ---- Allowed origins for backend-supplied link buttons ----
+    var ALLOWED_LINK_ORIGINS = new Set([
+      "https://razafistore.com",
+      "https://www.razafistore.com",
+      "https://portal.razafistore.com",
+    ]);
+
+    // ---- Quick chip definitions ----
+    var QUICK_CHIPS = [
+      { label: "Choisir un forfait",          msg: "Quel forfait choisir ?" },
+      { label: "Comment payer ?",             msg: "Comment payer ?" },
+      { label: "Paiement en attente",         msg: "Mon paiement est en attente" },
+      { label: "Je n'ai pas reçu mon code",   msg: "J'ai payé mais je n'ai pas reçu mon code" },
+      { label: "Utiliser mon code",           msg: "Comment utiliser mon code ?" },
+      { label: "Bonus",                       msg: "Comment utiliser mon bonus ?" },
+      { label: "Support",                     msg: "Comment contacter le support ?" },
+    ];
+
+    // ---- State ----
+    var isOpen   = false;
+    var isLoading = false;
+    var chipsHidden = false;
+
+    // ---- Build DOM ----
+
+    // Backdrop
+    var backdrop = document.createElement("div");
+    backdrop.id = "rzAssistBackdrop";
+    document.body.appendChild(backdrop);
+
+    // Toggle button
+    var btn = document.createElement("button");
+    btn.id = "rzAssistBtn";
+    btn.type = "button";
+    btn.setAttribute("aria-label", "Assistant RAZAFI");
+    btn.setAttribute("aria-expanded", "false");
+    btn.setAttribute("aria-controls", "rzAssistPanel");
+    btn.textContent = "💬 Assistant";
+    document.body.appendChild(btn);
+
+    // Panel
+    var panel = document.createElement("div");
+    panel.id = "rzAssistPanel";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", "Assistant RAZAFI");
+    panel.setAttribute("aria-modal", "true");
+
+    // Panel header
+    var head = document.createElement("div");
+    head.className = "rz-assist-head";
+
+    var headText = document.createElement("div");
+    var titleEl = document.createElement("div");
+    titleEl.className = "rz-assist-title";
+    titleEl.textContent = "💡 Assistant RAZAFI";
+    var subEl = document.createElement("div");
+    subEl.className = "rz-assist-sub";
+    subEl.textContent = "Je peux vous aider à utiliser ce portail.";
+    headText.appendChild(titleEl);
+    headText.appendChild(subEl);
+
+    var closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "rz-assist-close";
+    closeBtn.setAttribute("aria-label", "Fermer l'assistant");
+    closeBtn.textContent = "×";
+
+    head.appendChild(headText);
+    head.appendChild(closeBtn);
+    panel.appendChild(head);
+
+    // Messages body
+    var body = document.createElement("div");
+    body.className = "rz-assist-body";
+    body.setAttribute("aria-live", "polite");
+    body.setAttribute("aria-atomic", "false");
+    panel.appendChild(body);
+
+    // Quick chips
+    var chipsRow = document.createElement("div");
+    chipsRow.className = "rz-assist-chips";
+    QUICK_CHIPS.forEach(function (c) {
+      var chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "rz-assist-chip";
+      chip.textContent = c.label;
+      chip.addEventListener("click", function () {
+        sendMessage(c.msg);
+      });
+      chipsRow.appendChild(chip);
+    });
+    panel.appendChild(chipsRow);
+
+    // Input row
+    var inputRow = document.createElement("div");
+    inputRow.className = "rz-assist-input-row";
+
+    var input = document.createElement("input");
+    input.type = "text";
+    input.id = "rzAssistInput";
+    input.placeholder = "Écrivez votre question…";
+    input.setAttribute("maxlength", "400");
+    input.setAttribute("autocomplete", "off");
+    input.setAttribute("autocorrect", "off");
+    input.setAttribute("spellcheck", "false");
+
+    var sendBtn = document.createElement("button");
+    sendBtn.type = "button";
+    sendBtn.id = "rzAssistSend";
+    sendBtn.textContent = "Envoyer";
+    sendBtn.disabled = true;
+
+    inputRow.appendChild(input);
+    inputRow.appendChild(sendBtn);
+    panel.appendChild(inputRow);
+
+    document.body.appendChild(panel);
+
+    // ---- Helpers ----
+
+    function openPanel() {
+      isOpen = true;
+      panel.classList.add("rz-open");
+      backdrop.classList.add("rz-open");
+      btn.setAttribute("aria-expanded", "true");
+      try { input.focus(); } catch (_) {}
+    }
+
+    function closePanel() {
+      isOpen = false;
+      panel.classList.remove("rz-open");
+      backdrop.classList.remove("rz-open");
+      btn.setAttribute("aria-expanded", "false");
+      try { input.blur(); } catch (_) {}
+    }
+
+    function scrollBodyToBottom() {
+      try { body.scrollTop = body.scrollHeight; } catch (_) {}
+    }
+
+    function appendMsg(text, kind) {
+      // kind: "user" | "assistant" | "thinking"
+      var bubble = document.createElement("div");
+      bubble.className = "rz-msg rz-msg-" + kind;
+      // textContent ONLY — never innerHTML for user/assistant messages
+      bubble.textContent = String(text || "");
+      body.appendChild(bubble);
+      scrollBodyToBottom();
+      return bubble;
+    }
+
+    function removeMsg(el) {
+      try { if (el && el.parentNode === body) body.removeChild(el); } catch (_) {}
+    }
+
+    function hideChips() {
+      if (!chipsHidden) {
+        chipsHidden = true;
+        chipsRow.style.display = "none";
+      }
+    }
+
+    // Render safe backend buttons below an assistant bubble
+    function appendResponseChips(buttons, afterEl) {
+      if (!Array.isArray(buttons) || !buttons.length) return;
+
+      var chipsWrap = document.createElement("div");
+      chipsWrap.className = "rz-resp-chips";
+
+      buttons.forEach(function (b) {
+        if (!b || typeof b !== "object") return;
+        var label  = String(b.label  || "").trim().slice(0, 80);
+        var type   = String(b.type   || "").trim().toLowerCase();
+        var target = String(b.target || "").trim();
+        if (!label) return;
+
+        // Only render navigation and safe link buttons
+        if (type === "link" && target) {
+          // Validate origin against allow-list
+          try {
+            var origin = new URL(target).origin;
+            if (!ALLOWED_LINK_ORIGINS.has(origin)) return; // drop unsafe links
+          } catch (_) { return; }
+
+          var a = document.createElement("a");
+          a.className = "rz-resp-chip";
+          a.href = target;
+          a.target = "_blank";
+          a.rel = "noopener noreferrer";
+          a.textContent = label;
+          chipsWrap.appendChild(a);
+
+        } else if (type === "navigation" || type === "action" || type === "contact" || type === "description") {
+          // Metadata chip — display only, no action (V1 scope)
+          var span = document.createElement("span");
+          span.className = "rz-resp-chip";
+          span.style.cursor = "default";
+          span.setAttribute("aria-label", label);
+          span.textContent = label;
+          chipsWrap.appendChild(span);
+        }
+      });
+
+      if (chipsWrap.children.length && afterEl && afterEl.parentNode === body) {
+        afterEl.parentNode.insertBefore(chipsWrap, afterEl.nextSibling);
+        scrollBodyToBottom();
+      }
+    }
+
+    // ---- Send a message ----
+    function sendMessage(text) {
+      var msg = String(text || "").trim();
+      if (!msg || isLoading) return;
+
+      // Suppress chips after first message
+      hideChips();
+
+      // User bubble
+      appendMsg(msg, "user");
+      input.value = "";
+      sendBtn.disabled = true;
+
+      // Payment guard — do not call backend while MVola is processing
+      if (window.razafiPaymentInProgress) {
+        appendMsg(
+          "Votre paiement MVola est en cours. Merci de patienter jusqu’à la confirmation.",
+          "assistant"
+        );
+        return;
+      }
+
+      // Thinking indicator
+      var thinkingBubble = appendMsg("…", "thinking");
+      isLoading = true;
+      sendBtn.disabled = true;
+
+      // Gather live data (lazy, called at send time)
+      var liveData = {};
+      try {
+        if (window.razafiAssistantLiveData) {
+          liveData = window.razafiAssistantLiveData() || {};
+        }
+      } catch (_) {}
+
+      // Call backend
+      fetch(apiUrl("/api/assistant/chat"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "omit",
+        body: JSON.stringify({
+          context: "portal_user",
+          message: msg,
+          live_data: liveData,
+          page_path: (function () {
+            try { return String(window.location.pathname || "").slice(0, 200); } catch (_) { return null; }
+          })(),
+        }),
+      })
+        .then(function (res) {
+          return res.json().catch(function () { return {}; });
+        })
+        .then(function (data) {
+          removeMsg(thinkingBubble);
+          isLoading = false;
+
+          var answer = String(
+            (data && data.answer) ? data.answer :
+            (data && !data.ok && data.error) ? "Désolé, une erreur est survenue. Réessayez." :
+            "Désolé, je n’ai pas pu répondre. Réessayez."
+          );
+
+          var bubble = appendMsg(answer, "assistant");
+
+          // Render safe KB buttons if present
+          if (data && Array.isArray(data.buttons) && data.buttons.length) {
+            appendResponseChips(data.buttons, bubble);
+          }
+        })
+        .catch(function () {
+          removeMsg(thinkingBubble);
+          isLoading = false;
+          appendMsg(
+            "Connexion instable. Vérifiez votre réseau et réessayez.",
+            "assistant"
+          );
+        })
+        .finally(function () {
+          isLoading = false;
+          // Re-enable send only if input has text
+          sendBtn.disabled = !input.value.trim();
+        });
+    }
+
+    // ---- Event listeners ----
+    btn.addEventListener("click", function () {
+      if (isOpen) closePanel(); else openPanel();
+    });
+
+    closeBtn.addEventListener("click", closePanel);
+    backdrop.addEventListener("click", closePanel);
+
+    input.addEventListener("input", function () {
+      sendBtn.disabled = !input.value.trim();
+    });
+
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && !e.shiftKey && !sendBtn.disabled) {
+        e.preventDefault();
+        sendMessage(input.value);
+      }
+    });
+
+    sendBtn.addEventListener("click", function () {
+      sendMessage(input.value);
+    });
+
+    // Close on Escape
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && isOpen) closePanel();
+    });
+  }
+
+  // ============================================================
+  // END RAZAFI PORTAL ASSISTANT — Widget V1
+  // ============================================================
+
   // -------- Init --------
   async function initPortal() {
     renderStatus({ hasVoucher: false, voucherCode: "" });
@@ -4037,6 +4375,9 @@ function bindPlanHandlers() {
 
     fetchPortalContext();
     if (!portalPreviewState.active) fetchPortalStatus();
+
+    // Initialize Portal Assistant Widget (after portal data is loaded)
+    try { initAssistantWidget(); } catch (_) {}
 
     console.log("[RAZAFI] Portal v2 loaded", { apMac, clientMac, nasId, preview: portalPreviewState.active });
   }
