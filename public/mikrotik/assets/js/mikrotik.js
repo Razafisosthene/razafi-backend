@@ -1631,6 +1631,9 @@ const hasBonus =
 const hasUsableBonus = !!(sess && sess.has_usable_bonus === true);
 const bonusModeActive = !!(sess && sess.bonus_mode_active === true);
 
+// Assistant bridge: keep module-level tracker in sync (no bonus code exposed).
+try { _rzAssistLastUsableBonus = hasUsableBonus; } catch (_) {}
+
 // Bonus badges (optional elements in index.html)
 try {
   const bMain = document.getElementById("bonusBadgeMain");
@@ -2490,6 +2493,11 @@ function submitToLoginUrl(code, ev) {
   let poolContext = { pool_name: null, display_name: null, brand_name: null, branding_logo_url: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
   let poolIsFull = false;
 
+  // ---- Assistant bridge state (infrastructure only, no UI) ----
+  // Tracks last known usable-bonus state across applyPortalStatus() calls.
+  // Updated inside applyPortalStatus() — never exposes bonus code or voucher.
+  let _rzAssistLastUsableBonus = false;
+
   // -------- Portal announcement (per pool, controlled from admin) --------
   const ANNOUNCEMENT_TYPES = {
     important: { title: "Information importante", icon: "⚠️" },
@@ -3320,6 +3328,8 @@ function saturationLabel(pct) {
   }
 
   function setProcessing(card, isProcessing) {
+    // Assistant bridge: keep payment-in-progress flag in sync (no card/code data exposed).
+    try { window.razafiPaymentInProgress = !!isProcessing; } catch (_) {}
     if (!isProcessing) clearProcessingWaitMessages(card);
     card.classList.toggle("processing", !!isProcessing);
     const overlay = card.querySelector(".processing-overlay");
@@ -3871,6 +3881,127 @@ function bindPlanHandlers() {
     if (savedTheme === "dark") applyTheme("dark", false);
     else applyTheme("light", false);
   }
+
+
+  // ============================================================
+  // RAZAFI ASSISTANT — BRIDGE INFRASTRUCTURE (Portal Patch A)
+  // Invisible infrastructure for Portal Assistant Widget V1.
+  // No UI, no backend calls, no sensitive data exposed.
+  // All functions are lazy: they compute data when called, not at page load.
+  // ============================================================
+
+  // Payment-in-progress flag (updated by setProcessing above).
+  // Initialized false; the assistant widget reads this before opening its panel.
+  window.razafiPaymentInProgress = false;
+
+  // Preview mode helper: returns true when the portal is in admin read-only preview.
+  // Safe to call at any time; reads only a body CSS class.
+  window.razafiAssistantIsPreviewMode = function () {
+    try { return document.body.classList.contains("razafi-preview-mode"); } catch (_) { return false; }
+  };
+
+  // Live-data bridge: assembles a safe, sanitized snapshot for the assistant.
+  // Called lazily at the moment the user sends a message — never at page load.
+  // NEVER returns: voucher code, client MAC, AP MAC, NAS-ID, phone, transaction refs, router info.
+  window.razafiAssistantLiveData = function () {
+    try {
+      // ---- visible_plans: read from plan card DOM attributes only ----
+      var visiblePlans = [];
+      try {
+        document.querySelectorAll(".plan-card:not(.hidden-by-filter)").forEach(function (c) {
+          var isUnlimited = c.getAttribute("data-plan-unlimited") === "1";
+          var rawData = c.getAttribute("data-plan-data");
+          visiblePlans.push({
+            name:             c.getAttribute("data-plan-name") || null,
+            price_ar:         Number(c.getAttribute("data-plan-price") || 0),
+            duration_minutes: Number(c.getAttribute("data-plan-duration") || 0),
+            unlimited:        isUnlimited,
+            data_mb:          isUnlimited ? null : (rawData !== null && rawData !== "" ? Number(rawData) : null),
+            speed_label:      c.getAttribute("data-plan-speed") || null,
+          });
+        });
+      } catch (_) {}
+
+      // ---- recommended_plan: name of the card with role=recommended, or null ----
+      var recommendedPlan = null;
+      try {
+        var recCard = document.querySelector(".plan-card.plan-role-recommended");
+        if (recCard) recommendedPlan = recCard.getAttribute("data-plan-name") || null;
+      } catch (_) {}
+
+      // ---- status: module-level portalTruthStatus (never exposes code) ----
+      var status = "none";
+      try { status = String(portalTruthStatus || "none"); } catch (_) {}
+
+      // ---- has_usable_bonus: module-level tracker updated by applyPortalStatus ----
+      var hasUsableBonusSafe = false;
+      try { hasUsableBonusSafe = !!_rzAssistLastUsableBonus; } catch (_) {}
+
+      // ---- network: poolContext safe fields only ----
+      var poolPct    = null;
+      var isFull     = false;
+      var activeClients = null;
+      var capacityMax   = null;
+      try {
+        poolPct       = (poolContext.pool_percent === null || poolContext.pool_percent === undefined) ? null : Number(poolContext.pool_percent);
+        isFull        = !!poolIsFull;
+        activeClients = (poolContext.active_clients === null || poolContext.active_clients === undefined) ? null : Number(poolContext.active_clients);
+        capacityMax   = (poolContext.capacity_max  === null || poolContext.capacity_max  === undefined) ? null : Number(poolContext.capacity_max);
+      } catch (_) {}
+
+      // ---- contact_phone: read from visible DOM element, never hardcoded ----
+      var contactPhone = null;
+      try {
+        var phoneEl = document.getElementById("supportPhone");
+        if (phoneEl) {
+          var t = String(phoneEl.textContent || "").trim();
+          if (t) contactPhone = t;
+        }
+      } catch (_) {}
+
+      // ---- available_payment_methods: static for Patch A ----
+      var paymentMethods = ["MVola"];
+
+      return {
+        visible_plans:              visiblePlans,
+        recommended_plan:           recommendedPlan,
+        status:                     status,
+        has_usable_bonus:           hasUsableBonusSafe,
+        pool_percent:               poolPct,
+        is_full:                    isFull,
+        active_clients:             activeClients,
+        capacity_max:               capacityMax,
+        contact_phone:              contactPhone,
+        available_payment_methods:  paymentMethods,
+      };
+    } catch (_) {
+      // Fail-safe: always return a valid object so the assistant can proceed
+      return {
+        visible_plans: [], recommended_plan: null, status: "none",
+        has_usable_bonus: false, pool_percent: null, is_full: false,
+        active_clients: null, capacity_max: null, contact_phone: null,
+        available_payment_methods: ["MVola"],
+      };
+    }
+  };
+
+  // Debug helper: safe aggregate for development inspection.
+  // Contains no sensitive data; wraps the public bridge functions only.
+  window.razafiAssistantDebug = function () {
+    try {
+      return {
+        preview:             window.razafiAssistantIsPreviewMode(),
+        payment_in_progress: !!window.razafiPaymentInProgress,
+        live_data:           window.razafiAssistantLiveData(),
+      };
+    } catch (_) {
+      return { error: "debug_unavailable" };
+    }
+  };
+
+  // ============================================================
+  // END RAZAFI ASSISTANT — BRIDGE INFRASTRUCTURE
+  // ============================================================
 
   // -------- Init --------
   async function initPortal() {
