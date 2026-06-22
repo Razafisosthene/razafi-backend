@@ -611,7 +611,12 @@ async function requireAdmin(req, res, next) {
       const allowOwnerPortalPreviewLink =
         method === "POST" && /^\/api\/admin\/pools\/[^/]+\/portal-preview-link$/.test(fullPath);
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink) {
+      // Assistant chat: pool owners may call the assistant endpoint.
+      // The route itself enforces context=admin_owner and never modifies owner data.
+      const allowOwnerAssistantChat =
+        method === "POST" && fullPath === "/api/admin/assistant/chat";
+
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat) {
         return next();
       }
 
@@ -652,6 +657,287 @@ function requireSuperadmin(req, res, next) {
   if (!req.admin?.is_superadmin) return res.status(403).json({ error: "superadmin_only" });
   return next();
 }
+
+// ===============================
+// RAZAFI ASSISTANT — PATCH A
+// Rule-based, no paid AI, no external API calls.
+// Brain #1: assistant_knowledge + assistant_logs (Supabase).
+// Uses ONLY real schema columns — see inline comments.
+// ===============================
+
+const ASSISTANT_PUBLIC_CONTEXTS = new Set(["portal_user", "platform_prospect"]);
+const ASSISTANT_ADMIN_CONTEXTS = new Set(["admin_owner"]);
+const ASSISTANT_MAX_MESSAGE_LEN = 500;
+
+// Keys that must NEVER appear in live_data or live_data_keys responses.
+const ASSISTANT_FORBIDDEN_LIVE_KEYS = new Set([
+  "voucher_code", "client_mac", "request_ref", "transaction_id",
+  "radius_nas_id", "mikrotik_ip", "router_credentials", "admin_session",
+  "supabase_key", "platform_share_pct", "platform_total_ar",
+  "mvola_phone", "ap_mac",
+]);
+
+// Safe live_data_keys per context.
+const ASSISTANT_ALLOWED_LIVE_KEYS = {
+  portal_user: new Set([
+    "visible_plans", "recommended_plan", "status", "has_usable_bonus",
+    "pool_percent", "is_full", "active_clients", "capacity_max",
+    "contact_phone", "available_payment_methods",
+  ]),
+  admin_owner: new Set([
+    "plans", "revenue", "clients", "pools", "pool_percent",
+    "active_clients", "capacity_max", "free_access", "blocked_devices", "simulator",
+  ]),
+  platform_prospect: new Set(), // live_data ignored for prospects
+};
+
+// Allowed button types in KB responses.
+const ASSISTANT_ALLOWED_BUTTON_TYPES = new Set([
+  "navigation", "link", "contact", "action", "description",
+]);
+
+// Mutation keywords forbidden in button target/action values.
+const ASSISTANT_MUTATION_KEYWORDS = [
+  "delete", "create", "patch", "put", "modify", "edit", "block", "hide",
+];
+
+function cleanAssistantMessage(raw) {
+  const s = String(raw || "")
+    .replace(/[\r\n\t]/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return s.slice(0, ASSISTANT_MAX_MESSAGE_LEN);
+}
+
+function detectAssistantLang(msg) {
+  const s = String(msg || "").toLowerCase();
+  const mgTokens = [
+    "inona", "ahoana", "aho", "efa", "ohatrinona", "misy", "hanomboka",
+    "tsy", "ny", "lany", "nahazo", "nampiasaina", "nandoa", "farany",
+    "aiza", "fanampiana", "manan", "izany", "azafady", "tsara", "voalohany",
+  ];
+  const enTokens = [
+    "what", "how", "i have", "i want", "can i", "does", "is there",
+    "help", "show", "which", "please", "thank", "my network", "my plan",
+    "already have", "get started", "not working",
+  ];
+  const mgHits = mgTokens.filter(t => s.includes(t)).length;
+  const enHits = enTokens.filter(t => s.includes(t)).length;
+  if (mgHits >= 2 || (mgHits >= 1 && enHits === 0)) return "mg";
+  if (enHits >= 2 && mgHits === 0) return "en";
+  return "fr";
+}
+
+function normalizeAssistantContext(raw) {
+  const s = String(raw || "").trim().toLowerCase();
+  if (ASSISTANT_PUBLIC_CONTEXTS.has(s) || ASSISTANT_ADMIN_CONTEXTS.has(s)) return s;
+  return null;
+}
+
+function sanitizeAssistantLiveData(liveData, context) {
+  if (!liveData || typeof liveData !== "object") return {};
+  const allowed = ASSISTANT_ALLOWED_LIVE_KEYS[context] || new Set();
+  const safe = {};
+  for (const [k, v] of Object.entries(liveData)) {
+    const key = String(k || "");
+    if (ASSISTANT_FORBIDDEN_LIVE_KEYS.has(key)) continue;
+    if (!allowed.has(key)) continue;
+    safe[key] = v;
+  }
+  return safe;
+}
+
+async function loadAssistantKnowledge(context) {
+  if (!supabase) return [];
+  try {
+    // Uses only real assistant_knowledge columns.
+    const { data, error } = await supabase
+      .from("assistant_knowledge")
+      .select(
+        "context,intent_key,category,trigger_keywords,answer_fr,answer_mg,answer_en," +
+        "requires_live_data,live_data_keys,buttons,escalation_rule,safety_rule,is_active"
+      )
+      .eq("is_active", true)
+      .in("context", [context, "universal"]);
+
+    if (error) {
+      console.error("[ASSISTANT KB LOAD ERROR]", error?.message || error);
+      return [];
+    }
+    return Array.isArray(data) ? data : [];
+  } catch (e) {
+    console.error("[ASSISTANT KB LOAD EX]", e?.message || e);
+    return [];
+  }
+}
+
+function scoreAssistantIntent(row, message) {
+  const msg = String(message || "").toLowerCase();
+  const raw = row?.trigger_keywords;
+  let keywords = [];
+  if (Array.isArray(raw)) {
+    keywords = raw;
+  } else if (typeof raw === "string" && raw.trim()) {
+    keywords = raw.split(",").map(s => s.trim()).filter(Boolean);
+  }
+  if (!keywords.length) return 0;
+
+  let score = 0;
+  for (const kw of keywords) {
+    const k = String(kw || "").toLowerCase().trim();
+    if (!k) continue;
+    if (msg.includes(k)) {
+      score += 1 + Math.floor(k.length / 4);
+    }
+  }
+  return score;
+}
+
+function pickAssistantIntent(rows, message) {
+  if (!rows || !rows.length) return null;
+  let best = null;
+  let bestScore = 0;
+  for (const row of rows) {
+    const score = scoreAssistantIntent(row, message);
+    if (score > bestScore) {
+      bestScore = score;
+      best = row;
+    }
+  }
+  // No keyword matched — look for a generic fallback intent in universal rows
+  if (!best || bestScore === 0) {
+    const fallback = rows.find(r =>
+      String(r?.intent_key || "").toLowerCase().includes("unclear") ||
+      String(r?.intent_key || "").toLowerCase().includes("fallback")
+    );
+    return fallback || null;
+  }
+  return best;
+}
+
+function selectAssistantAnswer(row, lang) {
+  if (!row) return null;
+  const l = String(lang || "fr").toLowerCase();
+  if (l === "mg" && row.answer_mg) return String(row.answer_mg);
+  if (l === "en" && row.answer_en) return String(row.answer_en);
+  return row.answer_fr ? String(row.answer_fr) : null;
+}
+
+function sanitizeAssistantButtons(raw, context) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .slice(0, 6)
+    .map(b => {
+      if (!b || typeof b !== "object") return null;
+      const label = String(b.label || "").trim().slice(0, 80);
+      const type = String(b.type || "").trim().toLowerCase();
+      const target = String(b.target || "").trim().slice(0, 200);
+      const mode = String(b.mode || "").trim().slice(0, 40);
+
+      if (!label) return null;
+
+      // Validate button type
+      if (type && !ASSISTANT_ALLOWED_BUTTON_TYPES.has(type)) return null;
+
+      // Block mutation-like targets
+      const targetLower = target.toLowerCase();
+      if (ASSISTANT_MUTATION_KEYWORDS.some(k => targetLower.includes(k))) return null;
+
+      const out = { label };
+      if (type) out.type = type;
+      if (target) out.target = target;
+      if (mode) out.mode = mode;
+      return out;
+    })
+    .filter(Boolean);
+}
+
+function sanitizeAssistantLiveDataKeys(raw, context) {
+  if (!Array.isArray(raw)) return [];
+  const allowed = ASSISTANT_ALLOWED_LIVE_KEYS[context] || new Set();
+  return raw
+    .map(k => String(k || "").trim())
+    .filter(k => k && allowed.has(k) && !ASSISTANT_FORBIDDEN_LIVE_KEYS.has(k));
+}
+
+async function logAssistantInteraction({ context, intent_key, lang, escalated, pool_id, page_path }) {
+  // Uses only real assistant_logs columns.
+  // Never logs raw message, IP, MAC, token, or any PII.
+  if (!supabase) return;
+  try {
+    const payload = {
+      context: String(context || ""),
+      intent_key: intent_key ? String(intent_key).slice(0, 120) : null,
+      lang_detected: String(lang || "fr").slice(0, 10),
+      escalated: !!escalated,
+      pool_id: pool_id ? String(pool_id).slice(0, 64) : null,
+      page_path: page_path ? String(page_path).slice(0, 200) : null,
+    };
+    // Fire-and-forget: log failure must never block the response.
+    supabase.from("assistant_logs").insert(payload).then(() => {}).catch(() => {});
+  } catch (_) {}
+}
+
+async function handleAssistantChat({ context, rawMessage, liveData, pool_id, page_path }) {
+  const message = cleanAssistantMessage(rawMessage);
+  const lang = detectAssistantLang(message);
+
+  // Load KB rows for this context + universal rows
+  const rows = await loadAssistantKnowledge(context);
+
+  // Pick best matching intent
+  const intent = pickAssistantIntent(rows, message);
+
+  // Select answer in detected language
+  const answer = selectAssistantAnswer(intent, lang);
+
+  // Sanitize buttons from KB row
+  const buttons = intent?.buttons
+    ? sanitizeAssistantButtons(intent.buttons, context)
+    : [];
+
+  // Sanitize live_data_keys from KB row
+  const rawLiveKeys = intent?.live_data_keys;
+  const live_data_keys = Array.isArray(rawLiveKeys)
+    ? sanitizeAssistantLiveDataKeys(rawLiveKeys, context)
+    : [];
+
+  // Detect escalation from KB escalation_rule field
+  const escalated = !!(intent?.escalation_rule &&
+    String(intent.escalation_rule).trim().length > 0);
+
+  // Log anonymously (fire-and-forget, real columns only)
+  await logAssistantInteraction({
+    context,
+    intent_key: intent?.intent_key || null,
+    lang,
+    escalated,
+    pool_id: pool_id || null,
+    page_path: page_path || null,
+  });
+
+  // Generic fallback answers when nothing matched
+  const fallbackAnswer =
+    lang === "mg"
+      ? "Azafady, tsy azoko tsara ny fanontanianao. Azafady avereno."
+      : lang === "en"
+        ? "I'm not sure I understood your question. Could you rephrase it?"
+        : "Je n'ai pas bien compris votre question. Pourriez-vous reformuler ?";
+
+  return {
+    ok: true,
+    context,
+    intent_key: intent?.intent_key || null,
+    lang,
+    answer: answer || fallbackAnswer,
+    buttons,
+    requires_live_data: !!(intent?.requires_live_data),
+    live_data_keys,
+  };
+}
+// ===============================
+// END RAZAFI ASSISTANT — PATCH A
+// ===============================
 
 // ===============================
 // ADMIN: CLIENT DEVICE ALIASES (Starlink-like rename)
@@ -1220,8 +1506,68 @@ const adminLoginLimiter = rateLimit({
   keyGenerator: (req) => ipKeyGenerator(req), // IPv6-safe
 });
 
+// 5) Light limiter for assistant endpoints (public + admin)
+const assistantLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 30,
+  message: { error: "Trop de requêtes. Patientez un instant." },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req),
+});
+
 // Apply to routes
 app.use("/api/send-payment", speedLimiter, paymentLimiter);
+
+// ===============================
+// RAZAFI ASSISTANT — PUBLIC ENDPOINT
+// POST /api/assistant/chat
+// Allowed contexts: portal_user, platform_prospect
+// No auth required. KB-based only. No external AI.
+// ===============================
+app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+
+    const rawContext = normalizeAssistantContext(req.body?.context);
+
+    if (!rawContext || !ASSISTANT_PUBLIC_CONTEXTS.has(rawContext)) {
+      return res.status(400).json({
+        ok: false,
+        error: "invalid_context",
+        message: "Contexte invalide. Utilisez portal_user ou platform_prospect.",
+      });
+    }
+
+    const rawMessage = String(req.body?.message || "").trim();
+    if (!rawMessage) {
+      return res.status(400).json({ ok: false, error: "message_required" });
+    }
+
+    // platform_prospect: ignore live_data entirely per spec
+    const liveData = rawContext === "platform_prospect"
+      ? {}
+      : sanitizeAssistantLiveData(req.body?.live_data || {}, rawContext);
+
+    // Optional anonymous context hints (never PII)
+    const pool_id = null; // Public endpoint: never log pool_id (avoids UUID issues, keeps logs anonymous)
+    const page_path = String(req.body?.page_path || "").trim().slice(0, 200) || null;
+
+    const result = await handleAssistantChat({
+      context: rawContext,
+      rawMessage,
+      liveData,
+      pool_id,
+      page_path,
+    });
+
+    return res.json(result);
+  } catch (e) {
+    console.error("[ASSISTANT PUBLIC CHAT ERROR]", e?.message || e);
+    return res.status(500).json({ ok: false, error: "assistant_error" });
+  }
+});
+
 app.use("/api/dernier-code", voucherRecoveryLimiter);
 app.use("/api/history", voucherRecoveryLimiter);
 app.use("/api/voucher/activate", voucherRecoveryLimiter);
@@ -1844,6 +2190,51 @@ app.get("/api/admin/me", requireAdmin, async (req, res) => {
     pool_ids: Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [],
     permissions: buildAdminPermissions(req.admin),
   });
+});
+
+// ===============================
+// RAZAFI ASSISTANT — ADMIN ENDPOINT
+// POST /api/admin/assistant/chat
+// Context: admin_owner only.
+// Protected by requireAdmin. Accessible to pool_readonly via allowOwnerAssistantChat.
+// Never modifies owner data. Never exposes forbidden fields.
+// ===============================
+app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+
+    const rawContext = normalizeAssistantContext(req.body?.context);
+
+    if (!rawContext || !ASSISTANT_ADMIN_CONTEXTS.has(rawContext)) {
+      return res.status(400).json({
+        ok: false,
+        error: "invalid_context",
+        message: "Contexte invalide. Utilisez admin_owner pour cet endpoint.",
+      });
+    }
+
+    const rawMessage = String(req.body?.message || "").trim();
+    if (!rawMessage) {
+      return res.status(400).json({ ok: false, error: "message_required" });
+    }
+
+    const liveData = sanitizeAssistantLiveData(req.body?.live_data || {}, rawContext);
+
+    const page_path = String(req.body?.page_path || "").trim().slice(0, 200) || null;
+
+    const result = await handleAssistantChat({
+      context: rawContext,
+      rawMessage,
+      liveData,
+      pool_id: null, // admin_owner context: no per-user pool_id needed in logs
+      page_path,
+    });
+
+    return res.json(result);
+  } catch (e) {
+    console.error("[ASSISTANT ADMIN CHAT ERROR]", e?.message || e);
+    return res.status(500).json({ ok: false, error: "assistant_error" });
+  }
 });
 
 // ------------------------------------------------------------
