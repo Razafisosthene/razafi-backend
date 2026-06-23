@@ -974,13 +974,86 @@ function detectDynamicIntentFromMessage(msg, context) {
     // Network status
     if (
       s.includes("réseau") || s.includes("reseaux") || s.includes("réseau") ||
-      s.includes("chargé") || s.includes("charge") || s.includes("saturé") ||
+      s.includes("chargé") || s.includes("réseau chargé") ||
       s.includes("plein") || s.includes("lent") || s.includes("network") ||
       s.includes("slow") || s.includes("tambajotra") || s.includes("feno") ||
-      s.includes("vitesse") || s.includes("connexion") || s.includes("internet")
+      s.includes("vitesse") ||
+      (s.includes("connexion") && (s.includes("lent") || s.includes("chargé") || s.includes("saturé") || s.includes("mauvais") || s.includes("problème"))) ||
+      (s.includes("internet") && (s.includes("lent") || s.includes("chargé") || s.includes("saturé") || s.includes("problème") || s.includes("marche pas")))
     ) return "network_status";
 
-    // Plan list
+    // Phase 3: Plan advisor — specific use cases checked BEFORE plan_list
+    // Order: live_match > video > work > download > cheap > day > social > general > plan_list
+
+    // Live match / live streaming (checked first — "regarder" + "match" is unambiguous)
+    if (
+      s.includes("match") || s.includes("football") || s.includes("foot") ||
+      s.includes("sport") || s.includes("ballon") || s.includes("champion") ||
+      s.includes("coupe du monde") || s.includes("laliga") || s.includes("ligue 1") ||
+      s.includes("premier league") || s.includes("baolina") ||
+      (s.includes("direct") && (s.includes("regarder") || s.includes("live"))) ||
+      (s.includes("live") && s.includes("regarder"))
+    ) return "portal_plan_advice_live_match";
+
+    // Video streaming (TikTok, YouTube, séries — but not "live match" already caught above)
+    if (
+      s.includes("tiktok") || s.includes("youtube") || s.includes("vidéo") ||
+      s.includes("video") || s.includes("série") || s.includes("film") ||
+      s.includes("streaming") || s.includes("netflix") || s.includes("disney") ||
+      s.includes("regarder") || s.includes("stream")
+    ) return "portal_plan_advice_video";
+
+    // Work / Zoom / professional calls
+    if (
+      s.includes("travailler") || s.includes("travail") || s.includes("zoom") ||
+      s.includes("google meet") || s.includes("meet") || s.includes("teams") ||
+      s.includes("visio") || s.includes("visioconférence") || s.includes("réunion") ||
+      s.includes("bureau") || s.includes("work") || s.includes("professional") ||
+      s.includes("miasa") || s.includes("formation") || s.includes("cours")
+    ) return "portal_plan_advice_work";
+
+    // Download / large files / updates
+    if (
+      s.includes("télécharger") || s.includes("telecharger") || s.includes("download") ||
+      s.includes("fichier") || s.includes("gros fichier") || s.includes("beaucoup de data") ||
+      s.includes("mise à jour") || s.includes("update") || s.includes("backup") ||
+      s.includes("drive") || s.includes("envoyer") || s.includes("manidina")
+    ) return "portal_plan_advice_download";
+
+    // Cheapest / budget
+    if (
+      s.includes("pas cher") || s.includes("moins cher") || s.includes("économique") ||
+      s.includes("budget") || s.includes("cheap") || s.includes("économiser") ||
+      s.includes("le moins") || s.includes("prix bas") || s.includes("moins coûteux") ||
+      s.includes("santionina") || s.includes("mora ") || s.includes(" mora")
+    ) return "portal_plan_advice_cheap";
+
+    // All-day / daily plan
+    if (
+      s.includes("toute la journée") || s.includes("tout la journée") ||
+      s.includes("journée") || s.includes("journalier") || s.includes("daily") ||
+      s.includes("24h") || s.includes("24 h") || s.includes("toute la nuit") ||
+      s.includes("andro") || s.includes("isan'andro")
+    ) return "portal_plan_advice_day";
+
+    // Social media / messaging (WhatsApp, Facebook etc)
+    if (
+      s.includes("whatsapp") || s.includes("facebook") || s.includes("messenger") ||
+      s.includes("instagram") || s.includes("snapchat") || s.includes("viber") ||
+      s.includes("telegram") || s.includes("twitter") || s.includes("x.com") ||
+      s.includes("réseaux sociaux") || s.includes("réseau social") ||
+      s.includes("social") || s.includes("mitantara") || s.includes("chat")
+    ) return "portal_plan_advice_social";
+
+    // General plan advice (vague "how to choose" — after all specific cases)
+    if (
+      s.includes("choisir") || s.includes("conseille") || s.includes("recommande") ||
+      s.includes("quel forfait") || s.includes("lequel") || s.includes("meilleur forfait") ||
+      s.includes("quel plan") || s.includes("pour moi") || s.includes("good plan") ||
+      s.includes("best plan") || s.includes("tsara") || s.includes("comment utiliser")
+    ) return "portal_plan_advice_general";
+
+    // Plan list — basic count/list for generic plan queries
     if (
       s.includes("forfait") || s.includes("plan") || s.includes("offre") ||
       s.includes("prix") || s.includes("tarif") || s.includes("combien") ||
@@ -1146,6 +1219,215 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData) {
       `${count} forfait(s) disponible(s) en ce moment.${recPart}`,
       `Misy anjara ${count} azo alaina ankehitriny.${recPart}`,
       `${count} plan(s) available right now.${recPart}`
+    );
+  }
+
+  // ---- Phase 3: Portal Plan Advisor ----
+  // Pure helpers — no I/O, no async, no write actions.
+
+  // Format Ariary with non-breaking spaces (matches server-side fmtAr convention)
+  function fmtArP(n) {
+    if (n === null || n === undefined) return "— Ar";
+    const x = Number(n);
+    if (!Number.isFinite(x)) return "— Ar";
+    return `${Math.round(x).toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0Ar`;
+  }
+
+  // Human-readable duration string
+  function formatDuration(minutes) {
+    const m = Number(minutes);
+    if (!m || !Number.isFinite(m)) return null;
+    const h = Math.floor(m / 60);
+    const rem = m % 60;
+    if (h >= 24) {
+      const d = Math.floor(h / 24);
+      const rh = h % 24;
+      if (lang === "mg") return rh > 0 ? `${d}j\u00A0${rh}h` : `${d}\u00A0andro`;
+      if (lang === "en") return rh > 0 ? `${d}d\u00A0${rh}h` : `${d}\u00A0day${d > 1 ? "s" : ""}`;
+      return rh > 0 ? `${d}j\u00A0${rh}h` : `${d}\u00A0jour${d > 1 ? "s" : ""}`;
+    }
+    if (h > 0 && rem > 0) return `${h}h${rem}`;
+    if (h > 0) return `${h}h`;
+    return `${rem}\u00A0min`;
+  }
+
+  // One-line plan summary: "Name — price — duration — data"
+  function formatPlanLine(plan) {
+    if (!plan || !plan.name) return null;
+    const price = Number(plan.price_ar) > 0
+      ? fmtArP(plan.price_ar)
+      : t("gratuit", "maimaim-poana", "free");
+    const dur   = formatDuration(plan.duration_minutes);
+    const data  = plan.unlimited
+      ? t("illimité", "tsy voafetra", "unlimited")
+      : (plan.data_mb ? ((Math.round(plan.data_mb / 102.4) / 10).toFixed(1).replace(".", ",") + "\u00A0Go") : null);
+    return [plan.name, price, dur, data].filter(Boolean).join("\u00A0— ");
+  }
+
+  // Network warning for video/match when pool is loaded
+  function networkWarning() {
+    const pct = Number(ld.pool_percent);
+    if (!Number.isFinite(pct) || pct < 76) return "";
+    if (pct >= 91) return t(
+      " Le réseau est saturé en ce moment, la connexion peut être plus lente.",
+      " Feno ny tambajotra, mety ho miadana ny fikajiana.",
+      " The network is saturated right now — speed may be reduced."
+    );
+    return t(
+      " Le réseau est occupé en ce moment, la connexion peut être plus lente.",
+      " Maro ny mpampiasa amin'izao fotoana izao.",
+      " The network is busy right now — speed may be reduced."
+    );
+  }
+
+  // Rank plans by criteria — returns best plan or null
+  function findBestPlan(plans, criteria) {
+    if (!Array.isArray(plans) || !plans.length) return null;
+    const paid = plans.filter(p => Number(p.price_ar) > 0);
+    const pool = paid.length ? paid : plans; // use free only if no paid options
+
+    if (criteria === "cheapest") {
+      return pool.reduce((best, p) => Number(p.price_ar) < Number(best.price_ar) ? p : best);
+    }
+    if (criteria === "high_data") {
+      // Unlimited plans rank highest; among unlimited pick first in array (sort order)
+      const unlimited = pool.filter(p => p.unlimited || p.ui_role === "unlimited");
+      if (unlimited.length) return unlimited[0];
+      const withData = pool.filter(p => p.data_mb !== null && p.data_mb !== undefined);
+      if (!withData.length) return pool[0];
+      return withData.reduce((best, p) => Number(p.data_mb) > Number(best.data_mb) ? p : best);
+    }
+    if (criteria === "unlimited_first") {
+      const unlimited = pool.filter(p => p.unlimited || p.ui_role === "unlimited");
+      if (unlimited.length) return unlimited[0];
+      // Fall back to highest data plan
+      const withData = pool.filter(p => p.data_mb !== null && p.data_mb !== undefined);
+      if (!withData.length) return pool[0];
+      return withData.reduce((best, p) => Number(p.data_mb) > Number(best.data_mb) ? p : best);
+    }
+    if (criteria === "daily") {
+      // Prefer 22h–26h duration bracket; then 12h–48h; then cheapest paid
+      const narrow = pool.filter(p => p.duration_minutes >= 22 * 60 && p.duration_minutes <= 26 * 60);
+      if (narrow.length) return narrow.reduce((b, p) => Number(p.price_ar) < Number(b.price_ar) ? p : b);
+      const broad  = pool.filter(p => p.duration_minutes >= 12 * 60 && p.duration_minutes <= 48 * 60);
+      if (broad.length)  return broad.reduce((b, p) => Number(p.price_ar) < Number(b.price_ar) ? p : b);
+      return pool.reduce((b, p) => Number(p.price_ar) < Number(b.price_ar) ? p : b);
+    }
+    if (criteria === "stable_work") {
+      // Prefer duration >= 60 min; fallback cheapest paid
+      const good = pool.filter(p => p.unlimited || p.duration_minutes >= 60);
+      if (good.length) return good.reduce((b, p) => Number(p.price_ar) < Number(b.price_ar) ? p : b);
+      return pool.reduce((b, p) => Number(p.price_ar) < Number(b.price_ar) ? p : b);
+    }
+    return pool[0]; // default: first in sorted order
+  }
+
+  // Shared: get visible plans, return null if none
+  const vp = Array.isArray(ld.visible_plans) ? ld.visible_plans.filter(p => p && p.name) : [];
+
+  if (intent_key === "portal_plan_advice_general") {
+    if (!vp.length) return null;
+    const unlimitedCount = vp.filter(p => p.unlimited).length;
+    const dataCount      = vp.filter(p => !p.unlimited && p.data_mb).length;
+    const summary = unlimitedCount > 0 && dataCount > 0
+      ? t(`${vp.length} forfait(s) disponibles dont ${unlimitedCount} illimité(s)`,
+          `Anjara ${vp.length} azo alaina, ${unlimitedCount} tsy voafetra`,
+          `${vp.length} plan(s) available including ${unlimitedCount} unlimited`)
+      : unlimitedCount > 0
+        ? t(`${vp.length} forfait(s) disponibles (illimités)`,
+            `Anjara ${vp.length} tsy voafetra`,
+            `${vp.length} unlimited plan(s) available`)
+        : t(`${vp.length} forfait(s) disponibles`,
+            `Anjara ${vp.length} azo alaina`,
+            `${vp.length} plan(s) available`);
+    return t(
+      `Dites-moi surtout ce que vous voulez faire : WhatsApp/Facebook, TikTok/YouTube, travail/Zoom, match en direct, ou téléchargement. Je vous aiderai à choisir. (${summary} ici.)`,
+      `Lazao ahy ny tianao hatao : WhatsApp/Facebook, TikTok/YouTube, asa/Zoom, baolina mivantana, na fampidirana. Hanampy anao aho. (${summary} eto.)`,
+      `Tell me what you want to do: WhatsApp/Facebook, TikTok/YouTube, work/Zoom, live match, or download. I'll help you choose. (${summary} here.)`
+    );
+  }
+
+  if (intent_key === "portal_plan_advice_social") {
+    if (!vp.length) return null;
+    const best = findBestPlan(vp, "cheapest");
+    if (!best) return null;
+    const line = formatPlanLine(best);
+    return t(
+      `Pour WhatsApp, Facebook ou les réseaux sociaux, un petit forfait suffit souvent. Ici, je vous conseille : ${line}.`,
+      `Ho an'ny WhatsApp, Facebook ary ny tambajotra sosialy, ampy ny anjara kely. Eto, toroheviko : ${line}.`,
+      `For WhatsApp, Facebook or social media, a small plan is usually enough. Here, I recommend: ${line}.`
+    );
+  }
+
+  if (intent_key === "portal_plan_advice_video") {
+    if (!vp.length) return null;
+    const best = findBestPlan(vp, "high_data");
+    if (!best) return null;
+    const line = formatPlanLine(best);
+    return t(
+      `Pour TikTok ou YouTube, choisissez plutôt un forfait avec beaucoup de data ou illimité. Ici, je vous conseille : ${line}.${networkWarning()}`,
+      `Ho an'ny TikTok na YouTube, safidio ny anjara misy data betsaka na tsy voafetra. Eto, toroheviko : ${line}.${networkWarning()}`,
+      `For TikTok or YouTube, prefer a plan with lots of data or unlimited. Here, I recommend: ${line}.${networkWarning()}`
+    );
+  }
+
+  if (intent_key === "portal_plan_advice_live_match") {
+    if (!vp.length) return null;
+    const best = findBestPlan(vp, "unlimited_first");
+    if (!best) return null;
+    const line = formatPlanLine(best);
+    return t(
+      `Pour regarder un match ou une vidéo en direct, choisissez plutôt un forfait illimité ou avec beaucoup de data. Ici, je vous conseille : ${line}.${networkWarning()}`,
+      `Raha hijery baolina na video mivantana, safidio ny anjara tsy voafetra na misy data betsaka. Eto, toroheviko : ${line}.${networkWarning()}`,
+      `For watching a match or live video, prefer an unlimited or high-data plan. Here, I recommend: ${line}.${networkWarning()}`
+    );
+  }
+
+  if (intent_key === "portal_plan_advice_work") {
+    if (!vp.length) return null;
+    const best = findBestPlan(vp, "stable_work");
+    if (!best) return null;
+    const line = formatPlanLine(best);
+    return t(
+      `Pour travailler ou faire une réunion en ligne (Zoom, Meet…), choisissez un forfait assez long et stable. Ici, je vous conseille : ${line}.`,
+      `Ho an'ny asa na fivoriana amin'ny internet (Zoom, Meet…), safidio ny anjara maharitra sy tsara. Eto, toroheviko : ${line}.`,
+      `For work or an online meeting (Zoom, Meet…), choose a plan that's long enough and stable. Here, I recommend: ${line}.`
+    );
+  }
+
+  if (intent_key === "portal_plan_advice_download") {
+    if (!vp.length) return null;
+    const best = findBestPlan(vp, "high_data");
+    if (!best) return null;
+    const line = formatPlanLine(best);
+    return t(
+      `Pour télécharger des fichiers ou mettre à jour des applications, choisissez un forfait avec beaucoup de data ou illimité. Ici, je vous conseille : ${line}.`,
+      `Hamindra rakitra na hamerina ny apps, safidio ny anjara misy data betsaka na tsy voafetra. Eto, toroheviko : ${line}.`,
+      `For downloading files or updating apps, choose a high-data or unlimited plan. Here, I recommend: ${line}.`
+    );
+  }
+
+  if (intent_key === "portal_plan_advice_cheap") {
+    if (!vp.length) return null;
+    const best = findBestPlan(vp, "cheapest");
+    if (!best) return null;
+    const line = formatPlanLine(best);
+    return t(
+      `Le forfait le moins cher disponible ici est : ${line}.`,
+      `Ny anjara mora indrindra eto : ${line}.`,
+      `The cheapest plan available here is: ${line}.`
+    );
+  }
+
+  if (intent_key === "portal_plan_advice_day") {
+    if (!vp.length) return null;
+    const best = findBestPlan(vp, "daily");
+    if (!best) return null;
+    const line = formatPlanLine(best);
+    return t(
+      `Pour toute la journée, le forfait le plus adapté ici est : ${line}.`,
+      `Ho an'ny andro manontolo, ny anjara mety indrindra eto : ${line}.`,
+      `For all day long, the most suitable plan here is: ${line}.`
     );
   }
 
@@ -1494,19 +1776,38 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
   // (2) Message keyword pattern fallback when KB intent_key doesn't match
   const DYNAMIC_INTENT_KEYS = new Set([
     "pool_name", "payment_method", "network_status", "plan_list",
+    // Phase 3: portal plan advisor
+    "portal_plan_advice_general", "portal_plan_advice_social",
+    "portal_plan_advice_video", "portal_plan_advice_live_match",
+    "portal_plan_advice_work", "portal_plan_advice_download",
+    "portal_plan_advice_cheap", "portal_plan_advice_day",
+    // Phase 2: admin BI
     "admin_current_page", "admin_dashboard",
-    // Phase 2
     "admin_best_selling_plan", "admin_best_revenue_plan",
     "admin_visible_hidden_plans", "admin_plan_pricing_advice",
     "admin_plan_to_show_hide", "admin_create_plan_advice",
   ]);
 
   let resolvedIntent = null;
-  if (intentKey && DYNAMIC_INTENT_KEYS.has(intentKey)) {
+
+  // For portal_user: run message detection first.
+  // If it returns a Phase 3 advisor intent (portal_plan_advice_*), that wins over
+  // any KB intent_key — this prevents generic KB entries like "plan_list" from
+  // swallowing advisor questions such as "quel forfait choisir ?" or "je veux TikTok".
+  const detectedIntent = detectDynamicIntentFromMessage(message, context);
+
+  if (
+    context === "portal_user" &&
+    detectedIntent &&
+    String(detectedIntent).startsWith("portal_plan_advice_")
+  ) {
+    resolvedIntent = detectedIntent;
+  } else if (intentKey && DYNAMIC_INTENT_KEYS.has(intentKey)) {
+    // KB intent_key is a recognized dynamic key — use it (all other contexts + portal non-advisor)
     resolvedIntent = intentKey;
   } else {
-    // Keyword fallback: detect from message text
-    resolvedIntent = detectDynamicIntentFromMessage(message, context);
+    // Keyword fallback: use message-detected intent
+    resolvedIntent = detectedIntent;
   }
 
   if (!resolvedIntent) return null;

@@ -3918,6 +3918,7 @@ function bindPlanHandlers() {
             unlimited:        isUnlimited,
             data_mb:          isUnlimited ? null : (rawData !== null && rawData !== "" ? Number(rawData) : null),
             speed_label:      c.getAttribute("data-plan-speed") || null,
+            ui_role:          c.getAttribute("data-plan-ui-role") || "neutral",
           });
         });
       } catch (_) {}
