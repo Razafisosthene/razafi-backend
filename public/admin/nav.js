@@ -418,6 +418,43 @@
     }
   }
 
+  // ============================================================
+  // RAZAFI ADMIN ASSISTANT — Phase 2B: Cross-page session memory
+  // Uses sessionStorage (tab-scoped, cleared on tab close).
+  // Only stores safe bridge outputs — never raw API data.
+  // ============================================================
+
+  const RAZAFI_MEMORY_KEY = "razafi_admin_assistant_memory_v1";
+  const MEMORY_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+  function readAssistantMemory() {
+    try {
+      const raw = sessionStorage.getItem(RAZAFI_MEMORY_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.version !== 1) return null;
+      return parsed;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeAssistantMemory(memory) {
+    try {
+      sessionStorage.setItem(RAZAFI_MEMORY_KEY, JSON.stringify(memory));
+    } catch (_) {}
+  }
+
+  function isMemoryFresh(isoTimestamp) {
+    if (!isoTimestamp) return false;
+    try {
+      const age = Date.now() - new Date(isoTimestamp).getTime();
+      return age >= 0 && age < MEMORY_TTL_MS;
+    } catch (_) {
+      return false;
+    }
+  }
+
   function collectAdminAssistantLiveData() {
     // detectAdminPanel() is the source of truth for panel — not the page bridge,
     // which may reflect a previous load if the page bridge wasn't refreshed yet.
@@ -428,8 +465,60 @@
         pageData = window.razafiAdminPageData() || {};
       }
     } catch (_) {}
-    // Merge: spread pageData first, then override panel with live pathname result
-    return Object.assign({}, pageData, { panel });
+
+    // Merge panel from pathname (source of truth) into pageData
+    const currentData = Object.assign({}, pageData, { panel });
+
+    // --- Phase 2B: session memory ---
+    const now = new Date().toISOString();
+    let memory = readAssistantMemory() || { version: 1, updated_at: now };
+
+    // Store current page snapshot into memory.
+    // Only store when data is substantive (bridge produced real data, not just { panel }).
+    if (panel === "plans" && currentData.plans_summary) {
+      memory.plans = Object.assign({}, currentData, { updated_at: now });
+      memory.updated_at = now;
+      writeAssistantMemory(memory);
+    } else if (panel === "revenue" && currentData.revenue_summary) {
+      memory.revenue = Object.assign({}, currentData, { updated_at: now });
+      memory.updated_at = now;
+      writeAssistantMemory(memory);
+    }
+
+    // Build combined live_data.
+    // Current page data wins on any conflict — memory only fills in missing fields.
+    // Inject only named safe fields — never spread raw memory objects.
+    const combined = Object.assign({}, currentData);
+
+    // Inject remembered Plans data when not on Plans page
+    if (panel !== "plans" && memory.plans && isMemoryFresh(memory.plans.updated_at)) {
+      const mp = memory.plans;
+      if (mp.plans_summary && !combined.plans_summary)
+        combined.plans_summary = mp.plans_summary;
+      if (Array.isArray(mp.plans) && !combined.plans)
+        combined.plans = mp.plans;
+      if (mp.selected_pool_name && !combined.selected_pool_name)
+        combined.selected_pool_name = mp.selected_pool_name;
+      if (mp.owner_visibility_only !== undefined && combined.owner_visibility_only === undefined)
+        combined.owner_visibility_only = mp.owner_visibility_only;
+    }
+
+    // Inject remembered Revenue data when not on Revenue page
+    if (panel !== "revenue" && memory.revenue && isMemoryFresh(memory.revenue.updated_at)) {
+      const mr = memory.revenue;
+      if (mr.revenue_summary && !combined.revenue_summary)
+        combined.revenue_summary = mr.revenue_summary;
+      if (Array.isArray(mr.by_plan) && !combined.by_plan)
+        combined.by_plan = mr.by_plan;
+      if (Array.isArray(mr.by_pool) && !combined.by_pool)
+        combined.by_pool = mr.by_pool;
+      if (mr.best_selling_plan && !combined.best_selling_plan)
+        combined.best_selling_plan = mr.best_selling_plan;
+      if (mr.best_revenue_plan && !combined.best_revenue_plan)
+        combined.best_revenue_plan = mr.best_revenue_plan;
+    }
+
+    return combined;
   }
 
   function initAdminAssistantWidget() {
