@@ -187,6 +187,10 @@ let txOffset = 0;
 let txLimit = 200;
 let lastTxItems = [];
 let lastPayoutItems = [];
+// V2 Phase 2 — safe in-memory captures for assistant (no forbidden fields)
+let lastRevenueTotals = null;
+let lastRevenueByPlan = [];
+let lastRevenueByPool = [];
 let currentTab = "tx";
 const selectedTxIds = new Set();
 
@@ -588,6 +592,15 @@ async function loadTotals() {
       it.total_owner_share_ar
     );
 
+    // V2 Phase 2 — safe capture for assistant (owner_total_ar already shown in Revenue UI)
+    lastRevenueTotals = {
+      total_amount_ar:   Number(it.total_amount_ar   ?? 0),
+      paid_transactions: Number(it.paid_transactions ?? 0),
+      last_paid_at:      it.last_paid_at || null,
+      owner_total_ar:    ownerTotal != null ? ownerTotal : 0,
+    };
+    updateRevenueAssistantBridge();
+
     if (ownerTotal != null) {
       setOwnerShareTotal(ownerTotal);
     } else {
@@ -608,6 +621,16 @@ async function loadByPlan() {
     const params = buildCommonParams();
     const r = await fetchJSON("/api/admin/revenue/by-plan?" + params.toString());
     const items = r.items || [];
+
+    // V2 Phase 2 — safe capture: plan_name + aggregates only, no phone/voucher/MAC/txid
+    lastRevenueByPlan = items.map(it => ({
+      plan_name:         String(it.plan_name || "—").trim(),
+      paid_transactions: Number(it.paid_transactions ?? 0),
+      total_amount_ar:   Number(it.total_amount_ar   ?? 0),
+      last_paid_at:      it.last_paid_at || null,
+    }));
+    updateRevenueAssistantBridge();
+
     if (!items.length) {
       body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Aucune donnée.</td></tr>`;
       return;
@@ -632,6 +655,16 @@ async function loadByPool() {
     const params = buildCommonParams();
     const r = await fetchJSON("/api/admin/revenue/by-pool?" + params.toString());
     const items = r.items || [];
+
+    // V2 Phase 2 — safe capture: pool display name + aggregates only
+    lastRevenueByPool = items.map(it => ({
+      pool_name:         poolDisplayName(it),
+      paid_transactions: Number(it.paid_transactions ?? 0),
+      total_amount_ar:   Number(it.total_amount_ar   ?? 0),
+      last_paid_at:      it.last_paid_at || null,
+    }));
+    updateRevenueAssistantBridge();
+
     if (!items.length) {
       body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Aucune donnée.</td></tr>`;
       return;
@@ -647,6 +680,38 @@ async function loadByPool() {
   } catch (e) {
     body.innerHTML = `<tr><td colspan="4" style="padding:12px; color:#c0392b;">${esc(e.message)}</td></tr>`;
   }
+}
+
+// V2 Phase 2 — Revenue assistant page data bridge.
+// Called after each of loadTotals, loadByPlan, loadByPool to keep bridge fresh.
+// Never exposes raw transaction data, mvola_phone, voucher_code, client_mac,
+// ap_mac, request_ref, transaction_id, platform_amount_ar, platform_share_pct,
+// owner_share_pct, or receipt_number.
+function updateRevenueAssistantBridge() {
+  window.razafiAdminPageData = function () {
+    try {
+      const byPlanSorted = (lastRevenueByPlan || [])
+        .slice()
+        .sort((a, b) => Number(b.paid_transactions) - Number(a.paid_transactions));
+
+      const byRevSorted = (lastRevenueByPlan || [])
+        .slice()
+        .sort((a, b) => Number(b.total_amount_ar) - Number(a.total_amount_ar));
+
+      return {
+        panel:             "revenue",
+        revenue_summary:   lastRevenueTotals || null,
+        by_plan:           byPlanSorted,
+        by_pool:           (lastRevenueByPool || [])
+                             .slice()
+                             .sort((a, b) => Number(b.total_amount_ar) - Number(a.total_amount_ar)),
+        best_selling_plan: byPlanSorted.length ? byPlanSorted[0].plan_name : null,
+        best_revenue_plan: byRevSorted.length  ? byRevSorted[0].plan_name  : null,
+      };
+    } catch (_) {
+      return { panel: "revenue" };
+    }
+  };
 }
 
 async function loadTransactions() {

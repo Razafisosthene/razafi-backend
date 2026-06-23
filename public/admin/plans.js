@@ -608,6 +608,77 @@ document.addEventListener("DOMContentLoaded", async () => {
       const plans = data.plans || [];
       lastPlansById = Object.fromEntries((plans || []).map(p => [p.id, p]));
 
+      // V2 Phase 2 — Assistant page data bridge.
+      // Called lazily by nav.js collectAdminAssistantLiveData() when the widget is opened.
+      // Uses ALL loaded plans (not the filtered view), so hidden plans are also visible to the coach.
+      // Never exposes: id, pool_id, mikrotik_rate_limit raw string, NAS ID, MikroTik IP,
+      // platform share, voucher codes, client MAC, or transaction IDs.
+      window.razafiAdminPageData = function () {
+        try {
+          const allPlans = Object.values(lastPlansById || {});
+
+          // Resolve selected pool display name from mikrotikPoolsCache (no internal ID exposed)
+          const rawPoolId = (poolFilter && poolFilter.value) ? String(poolFilter.value).trim() : null;
+          const selectedPoolName = rawPoolId
+            ? (function () {
+                const match = (mikrotikPoolsCache || []).find(p => String(p.id || "") === rawPoolId);
+                return match ? String(match.name || match.id || "").trim() || null : null;
+              })()
+            : null;
+
+          const isVisible  = p => !!p.is_visible && !!p.is_active;
+          const isHidden   = p => !p.is_visible && !!p.is_active;
+          const isInactive = p => !p.is_active;
+          const isUnlimited = p => p.data_mb === null || p.data_mb === undefined;
+
+          const safePlan = (p) => ({
+            name:                         String(p.name || "").trim(),
+            pool_name:                    poolDisplayNameFromRow(p) || null,
+            price_ar:                     Number(p.price_ar) || 0,
+            duration_minutes:             (p.duration_minutes !== null && p.duration_minutes !== undefined)
+                                            ? Number(p.duration_minutes)
+                                            : (p.duration_hours ? Number(p.duration_hours) * 60 : null),
+            duration_label:               formatDurationFromPlan(p),
+            data_mb:                      isUnlimited(p) ? null : Number(p.data_mb),
+            unlimited:                    isUnlimited(p),
+            speed_label:                  formatMikrotikRateLimitDisplay(p.mikrotik_rate_limit),
+            is_visible:                   !!p.is_visible,
+            is_active:                    !!p.is_active,
+            auto_hide_when_limit_reached: !!p.auto_hide_when_limit_reached,
+            sales_limit:                  p.sales_limit ?? null,
+            sort_order:                   p.sort_order ?? 0,
+          });
+
+          const visiblePlans  = allPlans.filter(isVisible);
+          const hiddenPlans   = allPlans.filter(isHidden);
+          const inactivePlans = allPlans.filter(isInactive);
+          const paidPlans     = allPlans.filter(p => Number(p.price_ar) > 0);
+          const freePlans     = allPlans.filter(p => !Number(p.price_ar));
+          const unlimitedAll  = allPlans.filter(isUnlimited);
+          const dataLimited   = allPlans.filter(p => !isUnlimited(p));
+
+          return {
+            panel:               "plans",
+            selected_pool_name:  selectedPoolName,
+            is_readonly:         !!window.__IS_READONLY,
+            owner_visibility_only: !!window.__OWNER_PLAN_VISIBILITY_ONLY,
+            plans_summary: {
+              total:        allPlans.length,
+              visible:      visiblePlans.length,
+              hidden:       hiddenPlans.length,
+              inactive:     inactivePlans.length,
+              free:         freePlans.length,
+              paid:         paidPlans.length,
+              unlimited:    unlimitedAll.length,
+              data_limited: dataLimited.length,
+            },
+            plans: allPlans.map(safePlan),
+          };
+        } catch (_) {
+          return { panel: "plans" };
+        }
+      };
+
       let filtered = (plans || []).slice();
       const isDeleted = (p) => !p.is_active && !p.is_visible;
 

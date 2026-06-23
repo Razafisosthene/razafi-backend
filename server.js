@@ -689,8 +689,18 @@ const ASSISTANT_ALLOWED_LIVE_KEYS = {
   admin_owner: new Set([
     "plans", "revenue", "clients", "pools", "pool_percent",
     "active_clients", "capacity_max", "free_access", "blocked_devices", "simulator",
-    // V2: current admin panel name (e.g. "dashboard", "plans", "clients")
+    // V2 Phase 1: current admin panel name
     "panel",
+    // V2 Phase 2: plans business intelligence
+    "plans_summary",          // { total, visible, hidden, inactive, free, paid, unlimited, data_limited }
+    "selected_pool_name",     // string — display name only, no internal ID
+    "owner_visibility_only",  // boolean — whether owner can only manage visibility
+    // V2 Phase 2: revenue business intelligence
+    "revenue_summary",        // { total_amount_ar, paid_transactions, last_paid_at, owner_total_ar }
+    "by_plan",                // [{ plan_name, paid_transactions, total_amount_ar, last_paid_at }]
+    "by_pool",                // [{ pool_name, paid_transactions, total_amount_ar, last_paid_at }]
+    "best_selling_plan",      // string — plan name only
+    "best_revenue_plan",      // string — plan name only
   ]),
   platform_prospect: new Set(), // live_data ignored for prospects
 };
@@ -993,6 +1003,65 @@ function detectDynamicIntentFromMessage(msg, context) {
       s.includes("clients connectés") || s.includes("clients connectes") ||
       s.includes("vue ensemble") || s.includes("overview") || s.includes("ny pool")
     ) return "admin_dashboard";
+
+    // Best selling plan
+    if (
+      s.includes("marche le mieux") || s.includes("se vend le mieux") ||
+      s.includes("le plus vendu") || s.includes("best selling") ||
+      s.includes("plan populaire") || s.includes("forfait populaire") ||
+      s.includes("plus de ventes") || s.includes("combien de ventes") ||
+      s.includes("why not selling") || s.includes("ne vends pas") ||
+      s.includes("peu de ventes") || s.includes("pas beaucoup") ||
+      s.includes("vente faible") || s.includes("varotra")
+    ) return "admin_best_selling_plan";
+
+    // Best revenue plan
+    if (
+      s.includes("rapporte le plus") || s.includes("plus de revenus") ||
+      s.includes("best revenue") || s.includes("meilleur chiffre") ||
+      s.includes("génère le plus") || s.includes("le plus rentable") ||
+      s.includes("plus rentable")
+    ) return "admin_best_revenue_plan";
+
+    // Visible / hidden plan summary
+    if (
+      s.includes("plans visibles") || s.includes("plans cachés") ||
+      s.includes("forfaits visibles") || s.includes("forfaits cachés") ||
+      s.includes("masqués") || s.includes("hidden plans") ||
+      s.includes("visible plans") || s.includes("combien de plans") ||
+      s.includes("combien de forfaits") || s.includes("quels forfaits") ||
+      s.includes("quels plans")
+    ) return "admin_visible_hidden_plans";
+
+    // Show/hide advice and too many plans
+    if (
+      s.includes("dois afficher") || s.includes("dois cacher") ||
+      s.includes("dois masquer") || s.includes("afficher quel") ||
+      s.includes("cacher quel") || s.includes("montrer quel") ||
+      s.includes("show plan") || s.includes("hide plan") ||
+      s.includes("trop de plans") || s.includes("trop de forfaits") ||
+      s.includes("trop d'offres") || s.includes("too many") ||
+      s.includes("réduire") || s.includes("simplifier")
+    ) return "admin_plan_to_show_hide";
+
+    // Pricing advice
+    if (
+      s.includes("prix sont bons") || s.includes("mes prix") ||
+      s.includes("trop cher") || s.includes("pas cher") ||
+      s.includes("prix correct") || s.includes("pricing") ||
+      s.includes("price advice") || s.includes("ohatrinona") ||
+      s.includes("vidiny") || s.includes("tarif")
+    ) return "admin_plan_pricing_advice";
+
+    // Create plan advice
+    if (
+      s.includes("quel forfait") || s.includes("quel plan") ||
+      s.includes("créer un forfait") || s.includes("créer un plan") ||
+      s.includes("nouveau forfait") || s.includes("nouveau plan") ||
+      s.includes("faut créer") || s.includes("dois créer") ||
+      s.includes("create plan") || s.includes("what plan") ||
+      s.includes("anjara vaovao") || s.includes("forfait illimité")
+    ) return "admin_create_plan_advice";
   }
 
   return null;
@@ -1147,6 +1216,234 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     );
   }
 
+  // ---- Phase 2: Plans + Revenue BI ----
+
+  // Helper: format Ariary amount
+  function fmtAr(n) {
+    const x = Number(n || 0);
+    return Number.isFinite(x) ? `${x.toLocaleString("fr-FR")} Ar` : "— Ar";
+  }
+
+  // Helper: no revenue data guidance
+  function needsRevenue() {
+    return t(
+      "Données de revenus non disponibles. Ouvrez la page Revenus et actualisez.",
+      "Tsy misy angon-drakitra Revenue. Hisokatra ny pejy Revenue.",
+      "Revenue data not available. Open the Revenue page and refresh."
+    );
+  }
+
+  // Helper: no plans data guidance
+  function needsPlans() {
+    return t(
+      "Ouvrez la page Plans pour que l'assistant puisse analyser vos forfaits.",
+      "Hisokatra ny pejy Plans vohon'ny assistant.",
+      "Open the Plans page so the assistant can analyse your plans."
+    );
+  }
+
+  if (intent_key === "admin_best_selling_plan") {
+    const byPlan = Array.isArray(ld.by_plan) ? ld.by_plan : [];
+    if (!byPlan.length) return needsRevenue();
+    const sorted = byPlan.slice().sort((a, b) => Number(b.paid_transactions) - Number(a.paid_transactions));
+    const best = sorted[0];
+    const noSales = sorted.filter(p => Number(p.paid_transactions) === 0);
+    const noSalesLine = noSales.length
+      ? t(
+          ` ${noSales.length} forfait(s) sans aucune vente : ${noSales.slice(0, 3).map(p => p.plan_name).join(", ")}.`,
+          ` Forfait ${noSales.length} tsy misy varotra : ${noSales.slice(0, 3).map(p => p.plan_name).join(", ")}.`,
+          ` ${noSales.length} plan(s) with zero sales: ${noSales.slice(0, 3).map(p => p.plan_name).join(", ")}.`
+        )
+      : "";
+    return t(
+      `Le forfait le plus vendu est : ${best.plan_name} (${best.paid_transactions} vente(s)).${noSalesLine}`,
+      `Ny anjara amidy indrindra : ${best.plan_name} (${best.paid_transactions} varotra).${noSalesLine}`,
+      `The best-selling plan is: ${best.plan_name} (${best.paid_transactions} sale(s)).${noSalesLine}`
+    );
+  }
+
+  if (intent_key === "admin_best_revenue_plan") {
+    const byPlan = Array.isArray(ld.by_plan) ? ld.by_plan : [];
+    if (!byPlan.length) return needsRevenue();
+    const sorted = byPlan.slice().sort((a, b) => Number(b.total_amount_ar) - Number(a.total_amount_ar));
+    const best = sorted[0];
+    return t(
+      `Le forfait qui génère le plus de revenus est : ${best.plan_name} (${fmtAr(best.total_amount_ar)}).`,
+      `Ny anjara mitondra vola indrindra : ${best.plan_name} (${fmtAr(best.total_amount_ar)}).`,
+      `The highest-revenue plan is: ${best.plan_name} (${fmtAr(best.total_amount_ar)}).`
+    );
+  }
+
+  if (intent_key === "admin_visible_hidden_plans") {
+    const summary = ld.plans_summary;
+    const plans   = Array.isArray(ld.plans) ? ld.plans : [];
+    if (!summary && !plans.length) return needsPlans();
+    const s2 = summary || {};
+    const vCount  = s2.visible  ?? plans.filter(p => p.is_visible && p.is_active).length;
+    const hCount  = s2.hidden   ?? plans.filter(p => !p.is_visible && p.is_active).length;
+    const tCount  = s2.total    ?? plans.length;
+    const poolCtx = ld.selected_pool_name
+      ? t(` sur ${ld.selected_pool_name}`, ` amin'ny ${ld.selected_pool_name}`, ` on ${ld.selected_pool_name}`)
+      : "";
+    return t(
+      `${tCount} forfait(s) au total${poolCtx} : ${vCount} visible(s), ${hCount} caché(s).`,
+      `Forfait ${tCount} rehetra${poolCtx} : ${vCount} hita, ${hCount} nafenina.`,
+      `${tCount} plan(s) total${poolCtx}: ${vCount} visible, ${hCount} hidden.`
+    );
+  }
+
+  if (intent_key === "admin_plan_pricing_advice") {
+    const plans = Array.isArray(ld.plans)
+      ? ld.plans.filter(p => p.is_visible && p.is_active && Number(p.price_ar) > 0)
+      : [];
+    if (!plans.length) return needsPlans();
+    const prices = plans.map(p => Number(p.price_ar)).sort((a, b) => a - b);
+    const minPrice = prices[0];
+    const maxPrice = prices[prices.length - 1];
+    // Detect same-duration plans (potential duplicates/confusion)
+    const byDuration = {};
+    plans.forEach(p => {
+      const key = String(p.duration_minutes || "0");
+      if (!byDuration[key]) byDuration[key] = [];
+      byDuration[key].push(p);
+    });
+    const dupCount = Object.values(byDuration).filter(g => g.length >= 2).length;
+    const dupLine = dupCount > 0
+      ? t(
+          ` Attention : ${dupCount} durée(s) avec plusieurs forfaits — cela peut confondre vos clients.`,
+          ` Sary : durée ${dupCount} misy forfait maromaro — mety hampikorontana ny mpanjifa.`,
+          ` Note: ${dupCount} duration(s) with multiple plans — this may confuse customers.`
+        )
+      : "";
+    return t(
+      `Vos prix visibles vont de ${minPrice.toLocaleString("fr-FR")} Ar à ${maxPrice.toLocaleString("fr-FR")} Ar (${plans.length} forfait(s)).${dupLine}`,
+      `Ny vidinao dia manomboka ${minPrice.toLocaleString("fr-FR")} Ar hatramin'ny ${maxPrice.toLocaleString("fr-FR")} Ar (forfait ${plans.length}).${dupLine}`,
+      `Your visible prices range from ${minPrice.toLocaleString("fr-FR")} Ar to ${maxPrice.toLocaleString("fr-FR")} Ar (${plans.length} plan(s)).${dupLine}`
+    );
+  }
+
+  if (intent_key === "admin_plan_to_show_hide") {
+    const plans  = Array.isArray(ld.plans) ? ld.plans : [];
+    const summary = ld.plans_summary;
+    if (!plans.length && !summary) return needsPlans();
+    const visible = plans.filter(p => p.is_visible && p.is_active);
+    const hidden  = plans.filter(p => !p.is_visible && p.is_active);
+    const byPlan  = Array.isArray(ld.by_plan) ? ld.by_plan : [];
+    const lines   = [];
+
+    // Too many visible plans
+    if (visible.length > 8) {
+      lines.push(t(
+        `Vous avez ${visible.length} forfaits visibles — c'est beaucoup. En afficher 4 à 6 améliore souvent les ventes.`,
+        `Forfait hita ${visible.length} — betsaka loatra. Ny 4 hatramin'ny 6 no tsara indrindra.`,
+        `You have ${visible.length} visible plans — that's a lot. Showing 4–6 often improves sales.`
+      ));
+    }
+
+    // Hidden plan matching best seller duration
+    if (hidden.length > 0 && byPlan.length > 0) {
+      const topSeller = byPlan.slice().sort((a, b) => Number(b.paid_transactions) - Number(a.paid_transactions))[0];
+      const candidate = hidden.find(p =>
+        topSeller && String(p.duration_minutes) === String(topSeller.duration_minutes)
+      );
+      if (candidate) {
+        lines.push(t(
+          `Le forfait masqué "${candidate.name}" a la même durée que votre meilleur vendeur. Envisagez de l'afficher.`,
+          `Ny forfait nafenina "${candidate.name}" dia mitovy faharetana amin'ny tsara indrindra. Asehoy azy.`,
+          `The hidden plan "${candidate.name}" matches your best seller's duration. Consider showing it.`
+        ));
+      } else if (hidden.length > 0) {
+        lines.push(t(
+          `Vous avez ${hidden.length} forfait(s) masqué(s). Ouvrez aussi Revenus pour savoir lesquels valent la peine d'être réaffichés.`,
+          `Forfait nafenina ${hidden.length}. Jereo koa ny Revenue mba hahafahana misafidy.`,
+          `You have ${hidden.length} hidden plan(s). Open Revenue to see which ones are worth showing again.`
+        ));
+      }
+    } else if (hidden.length > 0) {
+      lines.push(t(
+        `Vous avez ${hidden.length} forfait(s) masqué(s). Ouvrez aussi Revenus pour savoir lesquels valent la peine d'être réaffichés.`,
+        `Forfait nafenina ${hidden.length}. Jereo koa ny Revenue mba hahafahana misafidy.`,
+        `You have ${hidden.length} hidden plan(s). Open Revenue to see which ones are worth showing again.`
+      ));
+    }
+
+    // No unlimited plan visible
+    const hasUnlimited = visible.some(p => p.unlimited === true || p.data_mb === null);
+    if (!hasUnlimited && visible.length > 0) {
+      lines.push(t(
+        "Aucun forfait illimité visible. Envisagez d'en afficher un pour attirer les clients longue durée.",
+        "Tsy misy forfait tsy voafetra hita. Asehoy iray mba hisitraka mpanjifa maharitra.",
+        "No unlimited plan is visible. Consider showing one to attract long-stay customers."
+      ));
+    }
+
+    if (!lines.length) {
+      return t(
+        "Votre configuration de plans semble équilibrée.",
+        "Tsara ny fanombanana ny plans.",
+        "Your plan configuration looks balanced."
+      );
+    }
+    return lines.join(" ");
+  }
+
+  if (intent_key === "admin_create_plan_advice") {
+    const plans  = Array.isArray(ld.plans) ? ld.plans : [];
+    const byPlan = Array.isArray(ld.by_plan) ? ld.by_plan : [];
+    if (!plans.length) return needsPlans();
+    const visible = plans.filter(p => p.is_visible && p.is_active);
+    const lines   = [];
+
+    // No entry-level plan (< 1000 Ar visible paid)
+    const ENTRY_THRESHOLD = 1000;
+    const hasEntry = visible.some(p => Number(p.price_ar) > 0 && Number(p.price_ar) < ENTRY_THRESHOLD);
+    if (!hasEntry && visible.length > 0) {
+      lines.push(t(
+        `Pas de forfait d'entrée visible (moins de ${ENTRY_THRESHOLD.toLocaleString("fr-FR")} Ar). Un petit forfait 30 min ou 1h peut attirer de nouveaux clients.`,
+        `Tsy misy forfait mora hita (latsaky ny ${ENTRY_THRESHOLD.toLocaleString("fr-FR")} Ar). Ny forfait kely 30 min/1h dia mety hahasanitra mpanjifa vaovao.`,
+        `No entry-level plan visible (under ${ENTRY_THRESHOLD.toLocaleString("fr-FR")} Ar). A short 30-min or 1h plan can attract new customers.`
+      ));
+    }
+
+    // No unlimited plan visible
+    const hasUnlimited = visible.some(p => p.unlimited === true || p.data_mb === null);
+    if (!hasUnlimited) {
+      lines.push(t(
+        "Aucun forfait illimité visible. Si votre réseau le permet, un forfait illimité journalier ou hebdomadaire peut booster les ventes.",
+        "Tsy misy forfait tsy voafetra. Raha manome ny tambajotra, ny forfait tsy voafetra isan'andro na isan-kerinandro dia mety hanamora ny varotra.",
+        "No unlimited plan visible. If your network allows it, a daily or weekly unlimited plan can boost sales."
+      ));
+    }
+
+    // Best-seller variation suggestion (only when revenue data available)
+    if (byPlan.length > 0) {
+      const topSeller = byPlan.slice().sort((a, b) => Number(b.paid_transactions) - Number(a.paid_transactions))[0];
+      if (Number(topSeller.paid_transactions) > 0) {
+        lines.push(t(
+          `Votre forfait le plus populaire est "${topSeller.plan_name}". Une variation légèrement différente (plus de données ou durée plus courte) peut élargir votre clientèle.`,
+          `Ny forfait malaza indrindra : "${topSeller.plan_name}". Ny fanamboarana kopia kely hafa dia mety hampitombo ny mpanjifa.`,
+          `Your most popular plan is "${topSeller.plan_name}". A slightly different variation (more data or shorter duration) could expand your customer base.`
+        ));
+      }
+    } else {
+      // No revenue data — guide cross-page
+      lines.push(t(
+        "Ouvrez aussi la page Revenus pour que l'assistant puisse voir quel forfait se vend le mieux et proposer des améliorations ciblées.",
+        "Hisokatra koa ny pejy Revenue mba hahafahana manao torolalana tsara kokoa.",
+        "Also open the Revenue page so the assistant can see which plan sells best and suggest targeted improvements."
+      ));
+    }
+
+    if (!lines.length) {
+      return t(
+        "Vos plans semblent déjà bien configurés.",
+        "Tsara ny configuration-nao.",
+        "Your plans seem well-configured already."
+      );
+    }
+    return lines.join(" ");
+  }
+
   return null;
 }
 
@@ -1160,6 +1457,10 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
   const DYNAMIC_INTENT_KEYS = new Set([
     "pool_name", "payment_method", "network_status", "plan_list",
     "admin_current_page", "admin_dashboard",
+    // Phase 2
+    "admin_best_selling_plan", "admin_best_revenue_plan",
+    "admin_visible_hidden_plans", "admin_plan_pricing_advice",
+    "admin_plan_to_show_hide", "admin_create_plan_advice",
   ]);
 
   let resolvedIntent = null;
