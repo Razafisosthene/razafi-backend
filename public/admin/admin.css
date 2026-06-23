@@ -4066,3 +4066,42 @@ body.rz-admin-shell .rz-aa-send:not(:disabled):active {
     font-size: 13px !important;
   }
 }
+
+/* ============================================================
+   RAZAFI ADMIN ASSISTANT WIDGET — V2 Z-INDEX FIX
+   Problem: .rz-bottom-nav has z-index:99999 !important (line ~1876)
+   which covers the panel's input row when the panel is open.
+
+   Fix: raise panel and backdrop z-index ONLY when panel is open
+   (.rz-open class is added by nav.js openPanel()).
+
+   Z-index ladder (ascending):
+     page content          1–1000
+     sticky bars           20–25
+     bottom-nav            99999  (!important, hardcoded)
+     backdrop.rz-open      100000 (dims bottom-nav correctly)
+     portal-picker         100001
+     panel.rz-open         100002 (input row now above bottom-nav)
+     drawer overlay        2147482000  (drawer always wins)
+     drawer                2147482500  (drawer always wins)
+
+   When drawer opens: existing rule drops panel/backdrop to z-index:1
+   so the drawer correctly overlays everything.
+   ============================================================ */
+
+/* Open panel must be above bottom-nav (99999 !important) */
+.rz-aa-panel.rz-open {
+  z-index: 100002 !important;
+}
+
+/* Backdrop when open: above bottom-nav so it dims it, below panel */
+.rz-aa-backdrop.rz-open {
+  z-index: 100000 !important;
+}
+
+/* FAB: hide it under the open backdrop so it doesn't float above the panel */
+/* (FAB is at 9996, backdrop.rz-open is 100000 — FAB is already hidden.
+   This rule is a no-op safety net in case a future rule raises FAB z-index.) */
+body:has(.rz-aa-panel.rz-open) .rz-aa-fab {
+  z-index: 100 !important;
+}
