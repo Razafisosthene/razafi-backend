@@ -300,6 +300,35 @@
 
           render(pools, liveStatsByPool);
 
+          // V2 Assistant page data bridge — safe summary only.
+          // Called lazily by nav.js collectAdminAssistantLiveData() when user opens the widget.
+          // Never exposes NAS IDs, MikroTik IPs, internal pool IDs, or platform share data.
+          window.razafiAdminPageData = function () {
+            try {
+              const selectedPoolId = String(poolFilterEl?.value || "").trim() || null;
+              const poolSummaries = (pools || []).map(function (p) {
+                const pid = String(p.id || "");
+                const stats = liveStatsByPool[pid] || null;
+                return {
+                  name:           poolDisplayName(p),
+                  active_clients: stats ? toNum(stats.active_clients, 0) : null,
+                  capacity_max:   (stats && stats.capacity_max !== null && stats.capacity_max !== undefined)
+                                    ? stats.capacity_max : null,
+                  percent:        stats ? stats.percent : null,
+                  is_saturated:   stats ? !!stats.is_saturated : false,
+                };
+              });
+              return {
+                panel:         "dashboard",
+                pool_count:    (pools || []).length,
+                selected_pool: selectedPoolId,
+                pools:         poolSummaries,
+              };
+            } catch (_) {
+              return { panel: "dashboard" };
+            }
+          };
+
           if (statusEl) statusEl.textContent = `Chargé : ${poolCountLabel(pools?.length || 0)}.`;
         } catch (e) {
           if (statusEl) statusEl.textContent = "";

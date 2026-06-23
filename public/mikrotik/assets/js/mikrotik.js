@@ -3962,6 +3962,17 @@ function bindPlanHandlers() {
       // ---- available_payment_methods: static for Patch A ----
       var paymentMethods = ["MVola"];
 
+      // ---- pool identity: display name and brand (display-only, never NAS/MAC/IP) ----
+      var poolName = null;
+      var displayName = null;
+      var brandName = null;
+      try {
+        poolName    = (poolContext.pool_name    && String(poolContext.pool_name).trim())    || null;
+        displayName = (poolContext.display_name && String(poolContext.display_name).trim()) || null;
+        brandName   = (poolContext.brand_name   && String(poolContext.brand_name).trim())   || null;
+      } catch (_) {}
+      var poolLabel = displayName || poolName || brandName || null;
+
       return {
         visible_plans:              visiblePlans,
         recommended_plan:           recommendedPlan,
@@ -3973,6 +3984,10 @@ function bindPlanHandlers() {
         capacity_max:               capacityMax,
         contact_phone:              contactPhone,
         available_payment_methods:  paymentMethods,
+        pool_name:                  poolName,
+        display_name:               displayName,
+        brand_name:                 brandName,
+        pool_label:                 poolLabel,
       };
     } catch (_) {
       // Fail-safe: always return a valid object so the assistant can proceed
@@ -3981,6 +3996,7 @@ function bindPlanHandlers() {
         has_usable_bonus: false, pool_percent: null, is_full: false,
         active_clients: null, capacity_max: null, contact_phone: null,
         available_payment_methods: ["MVola"],
+        pool_name: null, display_name: null, brand_name: null, pool_label: null,
       };
     }
   };

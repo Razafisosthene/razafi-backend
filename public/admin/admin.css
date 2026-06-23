@@ -3606,3 +3606,274 @@ body.rz-login-page .error{
     padding-bottom:calc(16px + env(safe-area-inset-bottom));
   }
 }
+
+/* ============================================================
+   RAZAFI ADMIN ASSISTANT WIDGET — V2
+   Light Apple/iPhone style matching RAZAFI admin design language.
+   Uses existing CSS custom properties (--rz-*).
+   Z-index budget:
+     backdrop: 9994
+     FAB:      9996  (below bottom nav ~99999, above page content)
+     Panel:    9995  (above content, below FAB and nav)
+   When drawer is open all assistant elements drop to z-index:1.
+   ============================================================ */
+
+/* FAB — floating action button, bottom-right */
+.rz-aa-fab {
+  position: fixed;
+  bottom: calc(88px + 14px);  /* bottom nav height ~88px + gap */
+  right: 14px;
+  z-index: 9996;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 9px 16px 9px 12px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.90);
+  border: 1px solid rgba(17,24,39,.10);
+  box-shadow: 0 8px 22px rgba(15,23,42,.14), 0 2px 6px rgba(15,23,42,.07);
+  color: var(--rz-text);
+  font-size: 14px;
+  font-weight: 850;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: box-shadow 0.15s, transform 0.12s, background 0.12s;
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+.rz-aa-fab:active,
+.rz-aa-fab.rz-active {
+  background: rgba(255,255,255,.98);
+  box-shadow: 0 12px 32px rgba(13,110,253,.15), 0 2px 6px rgba(15,23,42,.07);
+  transform: scale(0.97);
+}
+.rz-aa-fab-label {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+/* Backdrop */
+.rz-aa-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 9994;
+  background: rgba(15,23,42,.18);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+.rz-aa-backdrop.rz-open {
+  display: block;
+}
+
+/* Panel — bottom-sheet, slides up */
+.rz-aa-panel {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%) translateY(105%);
+  bottom: 0;
+  width: min(480px, 100vw);
+  max-height: 62vh;
+  z-index: 9995;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  background: rgba(255,255,255,.96);
+  border: 1px solid rgba(17,24,39,.09);
+  border-radius: 26px 26px 0 0;
+  box-shadow: 0 -8px 40px rgba(15,23,42,.12), 0 -2px 8px rgba(15,23,42,.06);
+  -webkit-backdrop-filter: blur(22px) saturate(1.2);
+  backdrop-filter: blur(22px) saturate(1.2);
+
+  transition: transform 0.30s cubic-bezier(.32,1,.28,1);
+}
+.rz-aa-panel.rz-open {
+  transform: translateX(-50%) translateY(0);
+}
+
+/* Panel header */
+.rz-aa-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid rgba(17,24,39,.07);
+  flex-shrink: 0;
+}
+.rz-aa-title {
+  font-size: 15px;
+  font-weight: 900;
+  color: var(--rz-text);
+  letter-spacing: -0.02em;
+}
+.rz-aa-sub {
+  font-size: 12px;
+  color: var(--rz-muted);
+  margin-top: 2px;
+}
+.rz-aa-close {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(17,24,39,.07);
+  border: none;
+  color: var(--rz-muted);
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+  line-height: 1;
+  transition: background 0.12s;
+}
+.rz-aa-close:active {
+  background: rgba(17,24,39,.14);
+}
+
+/* Messages area */
+.rz-aa-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Message bubbles */
+.rz-aa-msg {
+  padding: 9px 13px;
+  border-radius: 18px;
+  font-size: 14px;
+  line-height: 1.45;
+  max-width: 88%;
+  word-break: break-word;
+  color: var(--rz-text);
+}
+.rz-aa-msg-assistant {
+  background: rgba(13,110,253,.08);
+  border: 1px solid rgba(13,110,253,.12);
+  border-bottom-left-radius: 6px;
+  align-self: flex-start;
+}
+.rz-aa-msg-user {
+  background: var(--rz-text);
+  color: #ffffff;
+  border-bottom-right-radius: 6px;
+  align-self: flex-end;
+}
+.rz-aa-msg-thinking {
+  background: rgba(17,24,39,.06);
+  border: 1px solid rgba(17,24,39,.08);
+  color: var(--rz-muted);
+  font-style: italic;
+  align-self: flex-start;
+  border-bottom-left-radius: 6px;
+}
+
+/* Response chips (KB buttons, display-only) */
+.rz-aa-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 14px 6px;
+  align-self: flex-start;
+}
+.rz-aa-chip {
+  display: inline-block;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(13,110,253,.20);
+  background: rgba(13,110,253,.07);
+  color: var(--rz-blue);
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* Input row */
+.rz-aa-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid rgba(17,24,39,.07);
+  flex-shrink: 0;
+}
+.rz-aa-input {
+  flex: 1;
+  background: rgba(17,24,39,.05);
+  border: 1px solid rgba(17,24,39,.10);
+  border-radius: 20px;
+  color: var(--rz-text);
+  font-size: 14px;
+  padding: 9px 14px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  -webkit-appearance: none;
+}
+.rz-aa-input::placeholder {
+  color: var(--rz-muted);
+  opacity: 0.7;
+}
+.rz-aa-input:focus {
+  border-color: rgba(13,110,253,.45);
+  box-shadow: 0 0 0 4px rgba(13,110,253,.10);
+}
+.rz-aa-send {
+  flex-shrink: 0;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--rz-blue), #2563eb);
+  border: none;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 850;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.12s;
+  white-space: nowrap;
+}
+.rz-aa-send:disabled {
+  background: rgba(17,24,39,.10);
+  color: var(--rz-muted);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+.rz-aa-send:not(:disabled):active {
+  transform: scale(0.95);
+}
+
+/* When drawer is open, push everything behind it */
+body.rz-drawer-open .rz-aa-panel,
+body.rz-drawer-open .rz-aa-fab,
+body.rz-drawer-open .rz-aa-backdrop {
+  z-index: 1 !important;
+}
+
+/* Safe area support for iPhone home bar */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .rz-aa-fab {
+    bottom: calc(88px + 14px + env(safe-area-inset-bottom));
+  }
+}
+
+@media (max-width: 420px) {
+  .rz-aa-fab {
+    right: 10px;
+    padding: 8px 13px 8px 10px;
+    font-size: 13px;
+  }
+  .rz-aa-panel {
+    border-radius: 22px 22px 0 0;
+    max-height: 68vh;
+  }
+  .rz-aa-msg {
+    font-size: 13.5px;
+  }
+}

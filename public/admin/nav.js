@@ -388,7 +388,271 @@
 
     bindEvents();
     ensureSessionAndFillUI();
+    // V2: initialize admin assistant widget (read-only, advise-only, no write actions)
+    try { initAdminAssistantWidget(); } catch (_) {}
   }
+
+  // ============================================================
+  // RAZAFI ADMIN ASSISTANT — V2 Widget
+  // Read-only business assistant. No create / update / delete.
+  // Calls POST /api/admin/assistant/chat with live page context.
+  // Supports: current panel detection, dashboard pool summary.
+  // ============================================================
+
+  function detectAdminPanel() {
+    try {
+      const p = window.location.pathname || "";
+      if (p === "/admin/" || p === "/admin/index.html" || p === "/admin") return "dashboard";
+      if (p.includes("/clients"))           return "clients";
+      if (p.includes("/plans"))             return "plans";
+      if (p.includes("/pricing-simulator")) return "simulator";
+      if (p.includes("/revenue"))           return "revenue";
+      if (p.includes("/pools"))             return "pools";
+      if (p.includes("/free-access"))       return "free_access";
+      if (p.includes("/block-devices"))     return "blocked_devices";
+      if (p.includes("/users"))             return "users";
+      if (p.includes("/audit"))             return "audit";
+      return "unknown";
+    } catch (_) {
+      return "unknown";
+    }
+  }
+
+  function collectAdminAssistantLiveData() {
+    // detectAdminPanel() is the source of truth for panel — not the page bridge,
+    // which may reflect a previous load if the page bridge wasn't refreshed yet.
+    const panel = detectAdminPanel();
+    let pageData = {};
+    try {
+      if (typeof window.razafiAdminPageData === "function") {
+        pageData = window.razafiAdminPageData() || {};
+      }
+    } catch (_) {}
+    // Merge: spread pageData first, then override panel with live pathname result
+    return Object.assign({}, pageData, { panel });
+  }
+
+  function initAdminAssistantWidget() {
+    // Avoid double-inject
+    if (document.getElementById("rzAdminAssistFab")) return;
+
+    // ---- FAB (floating action button) ----
+    const fab = document.createElement("button");
+    fab.id = "rzAdminAssistFab";
+    fab.className = "rz-aa-fab";
+    fab.type = "button";
+    fab.setAttribute("aria-label", "Assistant RAZAFI");
+    fab.setAttribute("aria-expanded", "false");
+    fab.setAttribute("aria-controls", "rzAdminAssistPanel");
+    fab.innerHTML = "💡 <span class=\"rz-aa-fab-label\">Aide</span>";
+    document.body.appendChild(fab);
+
+    // ---- Panel (bottom-sheet) ----
+    const panel = document.createElement("div");
+    panel.id = "rzAdminAssistPanel";
+    panel.className = "rz-aa-panel";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", "Assistant RAZAFI");
+    panel.setAttribute("aria-modal", "true");
+    panel.setAttribute("aria-hidden", "true");
+
+    // Header
+    const head = document.createElement("div");
+    head.className = "rz-aa-head";
+    const headLeft = document.createElement("div");
+    const titleEl = document.createElement("div");
+    titleEl.className = "rz-aa-title";
+    titleEl.textContent = "💡 Assistant RAZAFI";
+    const subEl = document.createElement("div");
+    subEl.className = "rz-aa-sub";
+    subEl.textContent = "Comment puis-je vous aider ?";
+    headLeft.appendChild(titleEl);
+    headLeft.appendChild(subEl);
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "rz-aa-close";
+    closeBtn.setAttribute("aria-label", "Fermer l'assistant");
+    closeBtn.textContent = "×";
+    head.appendChild(headLeft);
+    head.appendChild(closeBtn);
+    panel.appendChild(head);
+
+    // Messages body
+    const body = document.createElement("div");
+    body.className = "rz-aa-body";
+    body.setAttribute("aria-live", "polite");
+    body.setAttribute("aria-atomic", "false");
+    panel.appendChild(body);
+
+    // Input row
+    const inputRow = document.createElement("div");
+    inputRow.className = "rz-aa-input-row";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = "rzAdminAssistInput";
+    input.className = "rz-aa-input";
+    input.placeholder = "Écrivez votre question…";
+    input.setAttribute("maxlength", "400");
+    input.setAttribute("autocomplete", "off");
+    input.setAttribute("autocorrect", "off");
+    input.setAttribute("spellcheck", "false");
+    const sendBtn = document.createElement("button");
+    sendBtn.type = "button";
+    sendBtn.id = "rzAdminAssistSend";
+    sendBtn.className = "rz-aa-send";
+    sendBtn.textContent = "Envoyer";
+    sendBtn.disabled = true;
+    inputRow.appendChild(input);
+    inputRow.appendChild(sendBtn);
+    panel.appendChild(inputRow);
+
+    document.body.appendChild(panel);
+
+    // ---- Backdrop ----
+    const backdrop = document.createElement("div");
+    backdrop.id = "rzAdminAssistBackdrop";
+    backdrop.className = "rz-aa-backdrop";
+    document.body.appendChild(backdrop);
+
+    // ---- State ----
+    let isOpen = false;
+    let isLoading = false;
+
+    // ---- Helpers ----
+    function openPanel() {
+      isOpen = true;
+      panel.classList.add("rz-open");
+      panel.setAttribute("aria-hidden", "false");
+      backdrop.classList.add("rz-open");
+      fab.setAttribute("aria-expanded", "true");
+      fab.classList.add("rz-active");
+      try { input.focus(); } catch (_) {}
+    }
+
+    function closePanel() {
+      isOpen = false;
+      panel.classList.remove("rz-open");
+      panel.setAttribute("aria-hidden", "true");
+      backdrop.classList.remove("rz-open");
+      fab.setAttribute("aria-expanded", "false");
+      fab.classList.remove("rz-active");
+    }
+
+    function scrollToBottom() {
+      try { body.scrollTop = body.scrollHeight; } catch (_) {}
+    }
+
+    function appendMsg(text, kind) {
+      const bubble = document.createElement("div");
+      bubble.className = "rz-aa-msg rz-aa-msg-" + (kind || "assistant");
+      // textContent only — never innerHTML for user/assistant messages
+      bubble.textContent = String(text || "");
+      body.appendChild(bubble);
+      scrollToBottom();
+      return bubble;
+    }
+
+    function removeMsg(el) {
+      try { if (el && el.parentNode === body) body.removeChild(el); } catch (_) {}
+    }
+
+    function appendChips(buttons, afterEl) {
+      if (!Array.isArray(buttons) || !buttons.length) return;
+      const wrap = document.createElement("div");
+      wrap.className = "rz-aa-chips";
+      buttons.forEach(function (b) {
+        if (!b || !b.label) return;
+        const chip = document.createElement("span");
+        chip.className = "rz-aa-chip";
+        chip.textContent = String(b.label || "").trim().slice(0, 60);
+        // Chips are display-only (navigation/description type); no click action in V1
+        chip.setAttribute("aria-label", chip.textContent);
+        wrap.appendChild(chip);
+      });
+      if (wrap.children.length && afterEl && afterEl.parentNode === body) {
+        afterEl.parentNode.insertBefore(wrap, afterEl.nextSibling);
+        scrollToBottom();
+      }
+    }
+
+    function sendMessage(text) {
+      const msg = String(text || "").trim();
+      if (!msg || isLoading) return;
+
+      appendMsg(msg, "user");
+      input.value = "";
+      sendBtn.disabled = true;
+
+      const thinkingBubble = appendMsg("…", "thinking");
+      isLoading = true;
+
+      const liveData = collectAdminAssistantLiveData();
+
+      fetch("/api/admin/assistant/chat", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          context:   "admin_owner",
+          message:   msg,
+          live_data: liveData,
+          page_path: (function () {
+            try { return String(window.location.pathname || "").slice(0, 200); } catch (_) { return null; }
+          })(),
+        }),
+      })
+        .then(function (res) { return res.json().catch(function () { return {}; }); })
+        .then(function (data) {
+          removeMsg(thinkingBubble);
+          isLoading = false;
+          const answer = String(
+            (data && data.answer) ? data.answer :
+            (data && !data.ok && data.error) ? "Désolé, une erreur est survenue. Réessayez." :
+            "Désolé, je n'ai pas pu répondre. Réessayez."
+          );
+          const bubble = appendMsg(answer, "assistant");
+          if (data && Array.isArray(data.buttons) && data.buttons.length) {
+            appendChips(data.buttons, bubble);
+          }
+        })
+        .catch(function () {
+          removeMsg(thinkingBubble);
+          isLoading = false;
+          appendMsg("Connexion instable. Vérifiez votre réseau et réessayez.", "assistant");
+        })
+        .finally(function () {
+          isLoading = false;
+          sendBtn.disabled = !input.value.trim();
+        });
+    }
+
+    // ---- Events ----
+    fab.addEventListener("click", function () {
+      if (isOpen) closePanel(); else openPanel();
+    });
+    closeBtn.addEventListener("click", closePanel);
+    backdrop.addEventListener("click", closePanel);
+
+    input.addEventListener("input", function () {
+      sendBtn.disabled = !input.value.trim();
+    });
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && !e.shiftKey && !sendBtn.disabled) {
+        e.preventDefault();
+        sendMessage(input.value);
+      }
+    });
+    sendBtn.addEventListener("click", function () {
+      sendMessage(input.value);
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && isOpen) closePanel();
+    });
+  }
+
+  // ============================================================
+  // END RAZAFI ADMIN ASSISTANT — V2 Widget
+  // ============================================================
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", inject);

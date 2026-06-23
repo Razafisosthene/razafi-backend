@@ -683,10 +683,14 @@ const ASSISTANT_ALLOWED_LIVE_KEYS = {
     "visible_plans", "recommended_plan", "status", "has_usable_bonus",
     "pool_percent", "is_full", "active_clients", "capacity_max",
     "contact_phone", "available_payment_methods",
+    // V2: pool identity (display-only, never NAS/MAC/IP)
+    "pool_name", "display_name", "brand_name", "pool_label",
   ]),
   admin_owner: new Set([
     "plans", "revenue", "clients", "pools", "pool_percent",
     "active_clients", "capacity_max", "free_access", "blocked_devices", "simulator",
+    // V2: current admin panel name (e.g. "dashboard", "plans", "clients")
+    "panel",
   ]),
   platform_prospect: new Set(), // live_data ignored for prospects
 };
@@ -928,6 +932,270 @@ function sanitizeAssistantLiveDataKeys(raw, context) {
     .filter(k => k && allowed.has(k) && !ASSISTANT_FORBIDDEN_LIVE_KEYS.has(k));
 }
 
+// ===============================
+// RAZAFI ASSISTANT — V2 DYNAMIC LAYER
+// Pure functions: no DB, no async, no external API, no write actions.
+// Priority chain in handleAssistantChat: dynamicAnswer || kbAnswer || fallback
+// Triggered by: (1) KB intent_key match OR (2) message keyword pattern match.
+// Falls back to null when live_data is absent → caller uses KB/fallback unchanged.
+// ===============================
+
+// Detect which dynamic intent applies to a message, as a fallback when KB intent_key
+// does not match a known dynamic key. Keyword patterns are checked against the normalized
+// (lowercased, trimmed) message.
+function detectDynamicIntentFromMessage(msg, context) {
+  const s = String(msg || "").toLowerCase().trim();
+
+  if (context === "portal_user") {
+    // WiFi / pool name
+    if (
+      s.includes("nom du wifi") || s.includes("nom wifi") || s.includes("s'appelle") ||
+      s.includes("quel wifi") || s.includes("which wifi") || s.includes("wifi name") ||
+      s.includes("wifi ity") || s.includes("anarana") || s.includes("c'est quoi ce wifi")
+    ) return "pool_name";
+
+    // Payment method
+    if (
+      s.includes("payer") || s.includes("paiement") || s.includes("mvola") ||
+      s.includes("payment") || s.includes("pay") || s.includes("fandoavana") ||
+      s.includes("argent") || s.includes("acheter") || s.includes("achète")
+    ) return "payment_method";
+
+    // Network status
+    if (
+      s.includes("réseau") || s.includes("reseaux") || s.includes("réseau") ||
+      s.includes("chargé") || s.includes("charge") || s.includes("saturé") ||
+      s.includes("plein") || s.includes("lent") || s.includes("network") ||
+      s.includes("slow") || s.includes("tambajotra") || s.includes("feno") ||
+      s.includes("vitesse") || s.includes("connexion") || s.includes("internet")
+    ) return "network_status";
+
+    // Plan list
+    if (
+      s.includes("forfait") || s.includes("plan") || s.includes("offre") ||
+      s.includes("prix") || s.includes("tarif") || s.includes("combien") ||
+      s.includes("available") || s.includes("anjara") || s.includes("ohatrinona")
+    ) return "plan_list";
+  }
+
+  if (context === "admin_owner") {
+    // Current admin page
+    if (
+      s.includes("où suis-je") || s.includes("ou suis-je") || s.includes("quelle page") ||
+      s.includes("current page") || s.includes("page actuelle") || s.includes("quel onglet") ||
+      s.includes("where am i") || s.includes("inona ity pejy")
+    ) return "admin_current_page";
+
+    // Dashboard summary
+    if (
+      s.includes("résumé") || s.includes("resume") || s.includes("dashboard") ||
+      s.includes("tableau de bord") || s.includes("pool saturé") ||
+      s.includes("clients connectés") || s.includes("clients connectes") ||
+      s.includes("vue ensemble") || s.includes("overview") || s.includes("ny pool")
+    ) return "admin_dashboard";
+  }
+
+  return null;
+}
+
+// Build a dynamic answer for portal_user context.
+// Returns a string answer or null (caller falls through to KB/fallback).
+function buildPortalDynamicAnswer(intent_key, lang, liveData) {
+  const ld = liveData || {};
+
+  // Tri-lingual helper: (French, Malagasy, English)
+  function t(fr, mg, en) {
+    return lang === "mg" ? mg : lang === "en" ? en : fr;
+  }
+
+  // Best available pool label
+  function poolLabel() {
+    return String(
+      ld.display_name || ld.pool_label || ld.pool_name || ld.brand_name || ""
+    ).trim();
+  }
+
+  // Network saturation phrase from pool_percent
+  function networkPhrase(pct) {
+    const p = Number(pct);
+    if (!Number.isFinite(p)) return null;
+    if (p >= 91) return t("Le réseau est saturé en ce moment.", "Feno tanteraka ny tambajotra.", "The network is currently saturated.");
+    if (p >= 76) return t("Le réseau est chargé.", "Maro ny mpampiasa ny tambajotra.", "The network is heavily loaded.");
+    if (p >= 51) return t("Le réseau est occupé.", "Betsaka ny mpampiasa.", "The network is busy.");
+    if (p >= 26) return t("Le réseau est stable.", "Tsara ny tambajotra.", "The network is stable.");
+    return t("Le réseau est fluide.", "Tsara be ny tambajotra.", "The network is running smoothly.");
+  }
+
+  if (intent_key === "pool_name") {
+    const name = poolLabel();
+    if (!name) return null;
+    return t(
+      `Vous êtes connecté au WiFi : ${name}.`,
+      `Mifandray amin'ny WiFi : ${name} ianao.`,
+      `You are connected to the WiFi: ${name}.`
+    );
+  }
+
+  if (intent_key === "payment_method") {
+    const methods = Array.isArray(ld.available_payment_methods)
+      ? ld.available_payment_methods.filter(Boolean)
+      : [];
+    if (!methods.length) return null;
+    const list = methods.join(", ");
+    const name = poolLabel();
+    const where = name
+      ? t(`Sur ${name}`, `Eto ${name}`, `At ${name}`)
+      : t("Ici", "Eto", "Here");
+    return t(
+      `${where}, le paiement se fait via : ${list}.`,
+      `${where}, ny fandoavam-bola dia amin'ny : ${list}.`,
+      `${where}, payment is done via: ${list}.`
+    );
+  }
+
+  if (intent_key === "network_status") {
+    const pct = ld.pool_percent;
+    const phrase = networkPhrase(pct);
+    if (!phrase) return null;
+    const active = ld.active_clients;
+    const cap = ld.capacity_max;
+    const counts = (Number.isFinite(Number(active)) && Number.isFinite(Number(cap)) && Number(cap) > 0)
+      ? t(` (${active}/${cap} clients connectés)`, ` (${active}/${cap} mpampiasa)`, ` (${active}/${cap} clients connected)`)
+      : "";
+    return phrase + counts;
+  }
+
+  if (intent_key === "plan_list") {
+    const plans = Array.isArray(ld.visible_plans) ? ld.visible_plans : [];
+    if (!plans.length) return null;
+    const count = plans.length;
+    const rec = ld.recommended_plan ? String(ld.recommended_plan).trim() : null;
+    const recPart = rec
+      ? t(` Le forfait recommandé est : ${rec}.`, ` Ny anjara tsara indrindra : ${rec}.`, ` The recommended plan is: ${rec}.`)
+      : "";
+    return t(
+      `${count} forfait(s) disponible(s) en ce moment.${recPart}`,
+      `Misy anjara ${count} azo alaina ankehitriny.${recPart}`,
+      `${count} plan(s) available right now.${recPart}`
+    );
+  }
+
+  return null;
+}
+
+// Build a dynamic answer for admin_owner context.
+// Returns a string answer or null.
+function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
+  const ld = liveData || {};
+
+  function t(fr, mg, en) {
+    return lang === "mg" ? mg : lang === "en" ? en : fr;
+  }
+
+  function panelLabel(panel) {
+    const map = {
+      dashboard:       t("Tableau de bord", "Firaketana", "Dashboard"),
+      clients:         t("Clients", "Mpanjifa", "Clients"),
+      plans:           t("Plans / Forfaits", "Anjara WiFi", "Plans"),
+      revenue:         t("Revenue", "Vola miditra", "Revenue"),
+      pools:           t("Pools WiFi", "Toerana WiFi", "WiFi Pools"),
+      simulator:       t("Simulateur de prix", "Kajy vidiny", "Pricing Simulator"),
+      free_access:     t("Accès gratuit", "Fidirana maimaim-poana", "Free Access"),
+      blocked_devices: t("Appareils bloqués", "Fitaovana voatana", "Blocked Devices"),
+      users:           t("Utilisateurs admin", "Mpampiasa admin", "Admin Users"),
+      audit:           t("Audit / Journaux", "Fanaraha-maso", "Audit Logs"),
+      unknown:         t("une page admin", "pejy admin", "an admin page"),
+    };
+    return map[String(panel || "unknown")] || map["unknown"];
+  }
+
+  if (intent_key === "admin_current_page") {
+    const panel = String(ld.panel || "").trim();
+    if (!panel || panel === "unknown") return null;
+    const label = panelLabel(panel);
+    return t(
+      `Vous êtes actuellement sur la page : ${label}.`,
+      `Eto amin'ny pejy ${label} ianao.`,
+      `You are currently on the page: ${label}.`
+    );
+  }
+
+  if (intent_key === "admin_dashboard") {
+    const pools = Array.isArray(ld.pools) ? ld.pools : [];
+    if (!pools.length) {
+      // Panel is dashboard but pools not loaded yet
+      const panel = String(ld.panel || "").trim();
+      if (panel === "dashboard") {
+        return t(
+          "Vous êtes sur le tableau de bord. Les données des pools ne sont pas encore chargées.",
+          "Eo amin'ny dashboard ianao. Mbola tsy nomena ny angon-drakitra.",
+          "You are on the dashboard. Pool data is not loaded yet."
+        );
+      }
+      return null;
+    }
+    const total = pools.length;
+    const saturated = pools.filter(p => p.is_saturated || (Number(p.percent) >= 90)).length;
+    const totalClients = pools.reduce((s, p) => s + (Number(p.active_clients) || 0), 0);
+    const satLine = saturated > 0
+      ? t(` ${saturated} pool(s) saturé(s).`, ` Pool ${saturated} feno.`, ` ${saturated} pool(s) saturated.`)
+      : t(" Aucun pool saturé.", " Tsy misy pool feno.", " No pool is saturated.");
+    return t(
+      `Tableau de bord : ${total} pool(s) actif(s), ${totalClients} client(s) connectés.${satLine}`,
+      `Dashboard : pool ${total}, mpanjifa ${totalClients} mifandray.${satLine}`,
+      `Dashboard: ${total} active pool(s), ${totalClients} client(s) connected.${satLine}`
+    );
+  }
+
+  return null;
+}
+
+// Main dynamic router. Called from handleAssistantChat after KB intent selection.
+// Returns a string answer or null.
+// When null: caller uses KB answer (or fallback). No silent data invention.
+function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData, kbAnswer) {
+  // Determine which dynamic intent to try:
+  // (1) KB intent_key if it's a recognized dynamic intent
+  // (2) Message keyword pattern fallback when KB intent_key doesn't match
+  const DYNAMIC_INTENT_KEYS = new Set([
+    "pool_name", "payment_method", "network_status", "plan_list",
+    "admin_current_page", "admin_dashboard",
+  ]);
+
+  let resolvedIntent = null;
+  if (intentKey && DYNAMIC_INTENT_KEYS.has(intentKey)) {
+    resolvedIntent = intentKey;
+  } else {
+    // Keyword fallback: detect from message text
+    resolvedIntent = detectDynamicIntentFromMessage(message, context);
+  }
+
+  if (!resolvedIntent) return null;
+
+  let dynamicAnswer = null;
+
+  if (context === "portal_user") {
+    dynamicAnswer = buildPortalDynamicAnswer(resolvedIntent, lang, liveData);
+  } else if (context === "admin_owner") {
+    dynamicAnswer = buildAdminOwnerDynamicAnswer(resolvedIntent, lang, liveData);
+  }
+  // platform_prospect: no dynamic answers in Phase 1 — always KB/fallback
+
+  if (!dynamicAnswer) return null;
+
+  // When both dynamic and KB answers exist, return dynamic first + KB as context.
+  // The KB answer may contain useful contact info or navigation chips.
+  if (kbAnswer && kbAnswer !== dynamicAnswer) {
+    return `${dynamicAnswer}\n\n${kbAnswer}`;
+  }
+
+  return dynamicAnswer;
+}
+
+// ===============================
+// END RAZAFI ASSISTANT — V2 DYNAMIC LAYER
+// ===============================
+
 async function logAssistantInteraction({ context, intent_key, lang, escalated, pool_id, page_path }) {
   // Uses only real assistant_logs columns.
   // Never logs raw message, IP, MAC, token, or any PII.
@@ -992,15 +1260,28 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
         ? "I'm not sure I understood your question. Could you rephrase it?"
         : "Je n'ai pas bien compris votre question. Pourriez-vous reformuler ?";
 
+  // V2 Dynamic answer layer: builds live-data-driven answers for known intents.
+  // Dual trigger: KB intent_key match OR message keyword pattern (see detectDynamicIntentFromMessage).
+  // Returns null when live_data is absent or intent is not recognized → falls through to KB/fallback.
+  const dynamicAnswer = buildDynamicAssistantAnswer(
+    context,
+    intent?.intent_key || null,
+    message,
+    lang,
+    liveData,   // already sanitized by sanitizeAssistantLiveData() upstream
+    answer      // KB answer passed as optional context suffix
+  );
+
   return {
     ok: true,
     context,
     intent_key: intent?.intent_key || null,
     lang,
-    answer: answer || fallbackAnswer,
+    answer: dynamicAnswer || answer || fallbackAnswer,
     buttons,
     requires_live_data: !!(intent?.requires_live_data),
     live_data_keys,
+    dynamic: !!dynamicAnswer,
   };
 }
 // ===============================
