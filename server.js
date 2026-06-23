@@ -1247,6 +1247,14 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     if (!byPlan.length) return needsRevenue();
     const sorted = byPlan.slice().sort((a, b) => Number(b.paid_transactions) - Number(a.paid_transactions));
     const best = sorted[0];
+    // Honest answer when all plans have zero sales
+    if (Number(best.paid_transactions) <= 0) {
+      return t(
+        "Aucun forfait n'a encore de vente sur les données chargées. Impossible d'identifier un meilleur vendeur pour le moment.",
+        "Tsy misy anjara misy varotra mbola amin'ireo angon-drakitra nentina. Tsy azo fantarina ny tsara indrindra amin'izao fotoana izao.",
+        "No plan has any sales yet in the loaded data. Unable to identify a best seller at this time."
+      );
+    }
     const noSales = sorted.filter(p => Number(p.paid_transactions) === 0);
     const noSalesLine = noSales.length
       ? t(
@@ -1267,6 +1275,14 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     if (!byPlan.length) return needsRevenue();
     const sorted = byPlan.slice().sort((a, b) => Number(b.total_amount_ar) - Number(a.total_amount_ar));
     const best = sorted[0];
+    // Honest answer when all plans have zero revenue
+    if (Number(best.total_amount_ar) <= 0) {
+      return t(
+        "Aucun forfait n'a encore généré de revenu sur les données chargées. Impossible d'identifier le forfait le plus rentable pour le moment.",
+        "Tsy misy anjara namorona vola mbola amin'ireo angon-drakitra nentina. Tsy azo fantarina ny anjara tsara indrindra amin'izao fotoana izao.",
+        "No plan has generated any revenue yet in the loaded data. Unable to identify the most profitable plan at this time."
+      );
+    }
     return t(
       `Le forfait qui génère le plus de revenus est : ${best.plan_name} (${fmtAr(best.total_amount_ar)}).`,
       `Ny anjara mitondra vola indrindra : ${best.plan_name} (${fmtAr(best.total_amount_ar)}).`,
