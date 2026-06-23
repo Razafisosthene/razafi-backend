@@ -1281,30 +1281,84 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData) {
   }
 
   // Rank plans by criteria — returns best plan or null
+  // ---- Plan classification helpers ----
+  function isVeryShortPlan(plan) {
+    const m = Number(plan?.duration_minutes || 0);
+    return m > 0 && m < 30;
+  }
+
+  function isShortPlan(plan) {
+    const m = Number(plan?.duration_minutes || 0);
+    return m > 0 && m < 60;
+  }
+
+  function isTestLikePlan(plan) {
+    const name = String(plan?.name || "").toLowerCase();
+    const role = String(plan?.ui_role || "").toLowerCase();
+    return (
+      name.includes("test") ||
+      name.includes("essai") ||
+      name.includes("gratuit") ||
+      name.includes("maintenance") ||
+      role.includes("test") ||
+      role.includes("free")
+    );
+  }
+
+  // Exclude very-short/test-like plans when better alternatives exist.
+  // Returns the filtered pool, or falls back to the original pool if filtering leaves nothing.
+  function excludeShortTestIfPossible(pool, minDuration) {
+    const min = minDuration || 30;
+    const better = pool.filter(p => !isVeryShortPlan(p) && !isTestLikePlan(p) && Number(p.duration_minutes) >= min);
+    return better.length ? better : pool;
+  }
+
   function findBestPlan(plans, criteria) {
     if (!Array.isArray(plans) || !plans.length) return null;
     const paid = plans.filter(p => Number(p.price_ar) > 0);
     const pool = paid.length ? paid : plans; // use free only if no paid options
 
     if (criteria === "cheapest") {
+      // Cheapest: no duration filter — caller decides whether to add a test-plan note
       return pool.reduce((best, p) => Number(p.price_ar) < Number(best.price_ar) ? p : best);
     }
+
+    if (criteria === "cheapest_social") {
+      // Social: cheapest paid with duration >= 30 min; fallback any cheapest paid
+      const useful = pool.filter(p => Number(p.duration_minutes) >= 30 && !isVeryShortPlan(p));
+      const from   = useful.length ? useful : pool;
+      return from.reduce((best, p) => Number(p.price_ar) < Number(best.price_ar) ? p : best);
+    }
+
     if (criteria === "high_data") {
-      // Unlimited plans rank highest; among unlimited pick first in array (sort order)
-      const unlimited = pool.filter(p => p.unlimited || p.ui_role === "unlimited");
+      // Heavy use (video, download): exclude very-short/test plans if alternatives exist.
+      // Prefer unlimited ≥60 min, then highest data ≥60 min, then ≥30 min, then any.
+      const usable = excludeShortTestIfPossible(pool, 60);
+      const unlimited60 = usable.filter(p => (p.unlimited || p.ui_role === "unlimited") && Number(p.duration_minutes) >= 60);
+      if (unlimited60.length) return unlimited60[0];
+      const unlimited = usable.filter(p => p.unlimited || p.ui_role === "unlimited");
       if (unlimited.length) return unlimited[0];
-      const withData = pool.filter(p => p.data_mb !== null && p.data_mb !== undefined);
-      if (!withData.length) return pool[0];
-      return withData.reduce((best, p) => Number(p.data_mb) > Number(best.data_mb) ? p : best);
+      const withData60 = usable.filter(p => p.data_mb !== null && p.data_mb !== undefined && Number(p.duration_minutes) >= 60);
+      if (withData60.length) return withData60.reduce((best, p) => Number(p.data_mb) > Number(best.data_mb) ? p : best);
+      const withData30 = usable.filter(p => p.data_mb !== null && p.data_mb !== undefined && Number(p.duration_minutes) >= 30);
+      if (withData30.length) return withData30.reduce((best, p) => Number(p.data_mb) > Number(best.data_mb) ? p : best);
+      if (!usable.length) return pool[0];
+      return usable[0];
     }
+
     if (criteria === "unlimited_first") {
-      const unlimited = pool.filter(p => p.unlimited || p.ui_role === "unlimited");
+      // Live/match: prefer unlimited ≥60 min; fallback highest data ≥60 min; avoid test/short.
+      const usable = excludeShortTestIfPossible(pool, 60);
+      const unlimited60 = usable.filter(p => (p.unlimited || p.ui_role === "unlimited") && Number(p.duration_minutes) >= 60);
+      if (unlimited60.length) return unlimited60[0];
+      const unlimited = usable.filter(p => p.unlimited || p.ui_role === "unlimited");
       if (unlimited.length) return unlimited[0];
-      // Fall back to highest data plan
-      const withData = pool.filter(p => p.data_mb !== null && p.data_mb !== undefined);
-      if (!withData.length) return pool[0];
-      return withData.reduce((best, p) => Number(p.data_mb) > Number(best.data_mb) ? p : best);
+      const withData = usable.filter(p => p.data_mb !== null && p.data_mb !== undefined);
+      if (withData.length) return withData.reduce((best, p) => Number(p.data_mb) > Number(best.data_mb) ? p : best);
+      if (!usable.length) return pool[0];
+      return usable[0];
     }
+
     if (criteria === "daily") {
       // Prefer 22h–26h duration bracket; then 12h–48h; then cheapest paid
       const narrow = pool.filter(p => p.duration_minutes >= 22 * 60 && p.duration_minutes <= 26 * 60);
@@ -1313,12 +1367,16 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData) {
       if (broad.length)  return broad.reduce((b, p) => Number(p.price_ar) < Number(b.price_ar) ? p : b);
       return pool.reduce((b, p) => Number(p.price_ar) < Number(b.price_ar) ? p : b);
     }
+
     if (criteria === "stable_work") {
-      // Prefer duration >= 60 min; fallback cheapest paid
-      const good = pool.filter(p => p.unlimited || p.duration_minutes >= 60);
+      // Work: prefer ≥60 min, avoid very-short/test when alternatives exist; fallback cheapest paid
+      const usable = excludeShortTestIfPossible(pool, 60);
+      const good = usable.filter(p => p.unlimited || Number(p.duration_minutes) >= 60);
       if (good.length) return good.reduce((b, p) => Number(p.price_ar) < Number(b.price_ar) ? p : b);
+      if (usable.length) return usable.reduce((b, p) => Number(p.price_ar) < Number(b.price_ar) ? p : b);
       return pool.reduce((b, p) => Number(p.price_ar) < Number(b.price_ar) ? p : b);
     }
+
     return pool[0]; // default: first in sorted order
   }
 
@@ -1349,7 +1407,7 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData) {
 
   if (intent_key === "portal_plan_advice_social") {
     if (!vp.length) return null;
-    const best = findBestPlan(vp, "cheapest");
+    const best = findBestPlan(vp, "cheapest_social");
     if (!best) return null;
     const line = formatPlanLine(best);
     return t(
@@ -1412,10 +1470,18 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData) {
     const best = findBestPlan(vp, "cheapest");
     if (!best) return null;
     const line = formatPlanLine(best);
+    // If cheapest plan is very short or test-like, say so honestly
+    const testNote = (isVeryShortPlan(best) || isTestLikePlan(best))
+      ? t(
+          " C'est surtout utile pour un petit test rapide.",
+          " Azo ampiasaina ho fitsapana fohy ihany izany.",
+          " This is mainly useful for a quick test."
+        )
+      : "";
     return t(
-      `Le forfait le moins cher disponible ici est : ${line}.`,
-      `Ny anjara mora indrindra eto : ${line}.`,
-      `The cheapest plan available here is: ${line}.`
+      `Le forfait le moins cher disponible ici est : ${line}.${testNote}`,
+      `Ny anjara mora indrindra eto : ${line}.${testNote}`,
+      `The cheapest plan available here is: ${line}.${testNote}`
     );
   }
 
