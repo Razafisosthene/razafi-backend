@@ -1247,14 +1247,32 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     if (!byPlan.length) return needsRevenue();
     const sorted = byPlan.slice().sort((a, b) => Number(b.paid_transactions) - Number(a.paid_transactions));
     const best = sorted[0];
-    // Honest answer when all plans have zero sales
-    if (Number(best.paid_transactions) <= 0) {
+    const bestTx  = Number(best.paid_transactions);
+    const bestAr  = Number(best.total_amount_ar);
+
+    // Case 1: all paid_transactions = 0 AND all total_amount_ar = 0 → truly no data yet
+    const anyRevenue = byPlan.some(p => Number(p.total_amount_ar) > 0);
+    if (bestTx <= 0 && !anyRevenue) {
       return t(
         "Aucun forfait n'a encore de vente sur les données chargées. Impossible d'identifier un meilleur vendeur pour le moment.",
         "Tsy misy anjara misy varotra mbola amin'ireo angon-drakitra nentina. Tsy azo fantarina ny tsara indrindra amin'izao fotoana izao.",
         "No plan has any sales yet in the loaded data. Unable to identify a best seller at this time."
       );
     }
+
+    // Case 2: paid_transactions = 0 but revenue exists → view counts activations, not payments.
+    // Use revenue ranking as fallback signal and say so honestly.
+    if (bestTx <= 0 && anyRevenue) {
+      const byRevenue = byPlan.slice().sort((a, b) => Number(b.total_amount_ar) - Number(a.total_amount_ar));
+      const topByRevenue = byRevenue[0];
+      return t(
+        `Le nombre de ventes par forfait n'est pas disponible, mais le forfait qui génère le plus de revenus est : ${topByRevenue.plan_name} (${fmtAr(topByRevenue.total_amount_ar)}).`,
+        `Tsy azo fantarina ny isan'ny varotra, fa ny anjara mitondra vola indrindra : ${topByRevenue.plan_name} (${fmtAr(topByRevenue.total_amount_ar)}).`,
+        `Sales count per plan is not available, but the plan generating the most revenue is: ${topByRevenue.plan_name} (${fmtAr(topByRevenue.total_amount_ar)}).`
+      );
+    }
+
+    // Case 3: real transaction count available → normal answer
     const noSales = sorted.filter(p => Number(p.paid_transactions) === 0);
     const noSalesLine = noSales.length
       ? t(
@@ -1264,9 +1282,9 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
         )
       : "";
     return t(
-      `Le forfait le plus vendu est : ${best.plan_name} (${best.paid_transactions} vente(s)).${noSalesLine}`,
-      `Ny anjara amidy indrindra : ${best.plan_name} (${best.paid_transactions} varotra).${noSalesLine}`,
-      `The best-selling plan is: ${best.plan_name} (${best.paid_transactions} sale(s)).${noSalesLine}`
+      `Le forfait le plus vendu est : ${best.plan_name} (${bestTx} vente(s)).${noSalesLine}`,
+      `Ny anjara amidy indrindra : ${best.plan_name} (${bestTx} varotra).${noSalesLine}`,
+      `The best-selling plan is: ${best.plan_name} (${bestTx} sale(s)).${noSalesLine}`
     );
   }
 
