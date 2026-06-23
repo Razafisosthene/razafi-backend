@@ -3877,3 +3877,192 @@ body.rz-drawer-open .rz-aa-backdrop {
     font-size: 13.5px;
   }
 }
+
+/* ============================================================
+   RAZAFI ADMIN ASSISTANT WIDGET — V2 HOTFIX
+   Fixes global button { width:100% } and body.rz-admin-shell
+   button rules bleeding into .rz-aa-fab and inner buttons.
+   All rules use !important to win the specificity war cleanly.
+   Append-only — no existing rules modified.
+   ============================================================ */
+
+/* ---- FAB: force compact pill shape, override global button rules ---- */
+.rz-aa-fab,
+body.rz-admin-shell .rz-aa-fab {
+  /* Override global button { width:100% } and rz-admin-shell button rules */
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: max-content !important;
+
+  /* Restore pill geometry (global button resets border-radius to 10px) */
+  border-radius: 999px !important;
+
+  /* Restore compact sizing */
+  padding: 9px 16px 9px 12px !important;
+  height: auto !important;
+  min-height: 0 !important;
+
+  /* Light Apple frosted style — override global button { background:#0d6efd } */
+  background: rgba(255,255,255,.92) !important;
+  color: var(--rz-text) !important;
+  border: 1px solid rgba(17,24,39,.10) !important;
+  box-shadow: 0 8px 22px rgba(15,23,42,.14), 0 2px 6px rgba(15,23,42,.07) !important;
+  -webkit-backdrop-filter: blur(14px) !important;
+  backdrop-filter: blur(14px) !important;
+
+  /* Positioning — fixed, above bottom nav */
+  position: fixed !important;
+  bottom: calc(88px + 14px) !important;
+  right: 14px !important;
+  left: auto !important;
+  top: auto !important;
+  z-index: 9996 !important;
+
+  /* Layout */
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 5px !important;
+
+  /* Typography */
+  font-size: 14px !important;
+  font-weight: 850 !important;
+  letter-spacing: 0 !important;
+  text-align: left !important;
+  white-space: nowrap !important;
+  line-height: 1.2 !important;
+
+  /* Behavior */
+  cursor: pointer !important;
+  transition: box-shadow 0.15s, transform 0.12s, background 0.12s !important;
+
+  /* Prevent hover state from global button:hover { background:#0b5ed7 } */
+  text-decoration: none !important;
+}
+
+.rz-aa-fab:hover,
+body.rz-admin-shell .rz-aa-fab:hover {
+  background: rgba(255,255,255,.98) !important;
+  box-shadow: 0 12px 32px rgba(13,110,253,.12), 0 2px 6px rgba(15,23,42,.07) !important;
+}
+
+.rz-aa-fab:active,
+.rz-aa-fab.rz-active,
+body.rz-admin-shell .rz-aa-fab:active,
+body.rz-admin-shell .rz-aa-fab.rz-active {
+  background: rgba(255,255,255,.98) !important;
+  box-shadow: 0 12px 32px rgba(13,110,253,.15), 0 2px 6px rgba(15,23,42,.07) !important;
+  transform: scale(0.97) !important;
+}
+
+/* ---- Backdrop: only blur/dim when panel is actually open ---- */
+/* Reset backdrop-filter on the hidden state so it never bleeds through */
+.rz-aa-backdrop {
+  display: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background: transparent !important;
+}
+.rz-aa-backdrop.rz-open {
+  display: block !important;
+  backdrop-filter: blur(2px) !important;
+  -webkit-backdrop-filter: blur(2px) !important;
+  background: rgba(15,23,42,.18) !important;
+}
+
+/* ---- Inner buttons: prevent global button rules from breaking the panel ---- */
+
+/* Close button — small circle, not full-width */
+.rz-aa-close,
+body.rz-admin-shell .rz-aa-close {
+  width: 28px !important;
+  min-width: 0 !important;
+  max-width: 28px !important;
+  height: 28px !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  background: rgba(17,24,39,.07) !important;
+  border: none !important;
+  color: var(--rz-muted) !important;
+  box-shadow: none !important;
+  font-size: 18px !important;
+  font-weight: 400 !important;
+  line-height: 1 !important;
+  flex-shrink: 0 !important;
+  cursor: pointer !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+.rz-aa-close:hover,
+body.rz-admin-shell .rz-aa-close:hover {
+  background: rgba(17,24,39,.13) !important;
+}
+.rz-aa-close:active,
+body.rz-admin-shell .rz-aa-close:active {
+  background: rgba(17,24,39,.18) !important;
+}
+
+/* Send button — compact pill, right side of input row */
+.rz-aa-send,
+body.rz-admin-shell .rz-aa-send {
+  flex-shrink: 0 !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: max-content !important;
+  height: 36px !important;
+  min-height: 0 !important;
+  padding: 0 14px !important;
+  border-radius: 999px !important;
+  background: linear-gradient(135deg, var(--rz-blue), #2563eb) !important;
+  border: none !important;
+  color: #fff !important;
+  font-size: 13px !important;
+  font-weight: 850 !important;
+  box-shadow: none !important;
+  cursor: pointer !important;
+  white-space: nowrap !important;
+  transition: opacity 0.15s, transform 0.12s !important;
+}
+.rz-aa-send:disabled,
+body.rz-admin-shell .rz-aa-send:disabled {
+  background: rgba(17,24,39,.10) !important;
+  color: var(--rz-muted) !important;
+  cursor: not-allowed !important;
+  opacity: 0.7 !important;
+  box-shadow: none !important;
+}
+.rz-aa-send:not(:disabled):hover,
+body.rz-admin-shell .rz-aa-send:not(:disabled):hover {
+  background: linear-gradient(135deg, #0b5ed7, #1d4ed8) !important;
+}
+.rz-aa-send:not(:disabled):active,
+body.rz-admin-shell .rz-aa-send:not(:disabled):active {
+  transform: scale(0.95) !important;
+}
+
+/* ---- Panel: not affected by global button rules but reinforce key props ---- */
+.rz-aa-panel {
+  /* Ensure the panel itself is never touched by button or body rules */
+  width: min(480px, 100vw) !important;
+  background: rgba(255,255,255,.97) !important;
+}
+
+/* ---- Safe-area and mobile overrides ---- */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .rz-aa-fab,
+  body.rz-admin-shell .rz-aa-fab {
+    bottom: calc(88px + 14px + env(safe-area-inset-bottom)) !important;
+  }
+}
+
+@media (max-width: 420px) {
+  .rz-aa-fab,
+  body.rz-admin-shell .rz-aa-fab {
+    right: 10px !important;
+    bottom: calc(80px + 10px) !important;
+    padding: 8px 13px 8px 10px !important;
+    font-size: 13px !important;
+  }
+}
