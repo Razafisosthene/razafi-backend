@@ -1223,8 +1223,9 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     if (n === null || n === undefined) return "— Ar";
     const x = Number(n);
     if (!Number.isFinite(x)) return "— Ar";
-    // fr-FR uses narrow no-break space (\u202f) as thousands separator — replace with normal space
-    return `${Math.round(x).toLocaleString("fr-FR").replace(/\u202f/g, " ")} Ar`;
+    // Use non-breaking spaces (\u00A0) so the browser never wraps inside an amount.
+    // fr-FR may produce narrow no-break space (\u202f) or regular space — normalise both.
+    return `${Math.round(x).toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0Ar`;
   }
 
   // Helper: no revenue data guidance
@@ -1353,9 +1354,9 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
         )
       : "";
     return t(
-      `Vos prix visibles vont de ${minPrice.toLocaleString("fr-FR").replace(/\u202f/g, " ")} Ar à ${maxPrice.toLocaleString("fr-FR").replace(/\u202f/g, " ")} Ar (${plans.length} forfait(s)).${dupLine}`,
-      `Ny vidinao dia manomboka ${minPrice.toLocaleString("fr-FR").replace(/\u202f/g, " ")} Ar hatramin'ny ${maxPrice.toLocaleString("fr-FR").replace(/\u202f/g, " ")} Ar (forfait ${plans.length}).${dupLine}`,
-      `Your visible prices range from ${minPrice.toLocaleString("fr-FR").replace(/\u202f/g, " ")} Ar to ${maxPrice.toLocaleString("fr-FR").replace(/\u202f/g, " ")} Ar (${plans.length} plan(s)).${dupLine}`
+      `Vos prix visibles vont de ${minPrice.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0Ar à ${maxPrice.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0Ar (${plans.length} forfait(s)).${dupLine}`,
+      `Ny vidinao dia manomboka ${minPrice.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0Ar hatramin'ny ${maxPrice.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0Ar (forfait ${plans.length}).${dupLine}`,
+      `Your visible prices range from ${minPrice.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0Ar to ${maxPrice.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0Ar (${plans.length} plan(s)).${dupLine}`
     );
   }
 
@@ -1436,9 +1437,9 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     const hasEntry = visible.some(p => Number(p.price_ar) > 0 && Number(p.price_ar) < ENTRY_THRESHOLD);
     if (!hasEntry && visible.length > 0) {
       lines.push(t(
-        `Pas de forfait d'entrée visible (moins de ${ENTRY_THRESHOLD.toLocaleString("fr-FR").replace(/\u202f/g, " ")} Ar). Un petit forfait 30 min ou 1h peut attirer de nouveaux clients.`,
-        `Tsy misy forfait mora hita (latsaky ny ${ENTRY_THRESHOLD.toLocaleString("fr-FR").replace(/\u202f/g, " ")} Ar). Ny forfait kely 30 min/1h dia mety hahasanitra mpanjifa vaovao.`,
-        `No entry-level plan visible (under ${ENTRY_THRESHOLD.toLocaleString("fr-FR").replace(/\u202f/g, " ")} Ar). A short 30-min or 1h plan can attract new customers.`
+        `Pas de forfait d'entrée visible (moins de ${ENTRY_THRESHOLD.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0Ar). Un petit forfait 30 min ou 1h peut attirer de nouveaux clients.`,
+        `Tsy misy forfait mora hita (latsaky ny ${ENTRY_THRESHOLD.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0Ar). Ny forfait kely 30 min/1h dia mety hahasanitra mpanjifa vaovao.`,
+        `No entry-level plan visible (under ${ENTRY_THRESHOLD.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0Ar). A short 30-min or 1h plan can attract new customers.`
       ));
     }
 
