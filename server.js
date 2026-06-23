@@ -983,7 +983,7 @@ function detectDynamicIntentFromMessage(msg, context) {
     ) return "network_status";
 
     // Phase 3: Plan advisor — specific use cases checked BEFORE plan_list
-    // Order: live_match > video > work > download > cheap > day > social > general > plan_list
+    // Order: live_match > video > work > download > cheap > day > social > browsing > general > plan_list
 
     // Live match / live streaming (checked first — "regarder" + "match" is unambiguous)
     if (
@@ -1017,7 +1017,7 @@ function detectDynamicIntentFromMessage(msg, context) {
       s.includes("télécharger") || s.includes("telecharger") || s.includes("download") ||
       s.includes("fichier") || s.includes("gros fichier") || s.includes("beaucoup de data") ||
       s.includes("mise à jour") || s.includes("update") || s.includes("backup") ||
-      s.includes("drive") || s.includes("envoyer") || s.includes("manidina")
+      s.includes("drive") || s.includes("manidina")
     ) return "portal_plan_advice_download";
 
     // Cheapest / budget
@@ -1045,7 +1045,18 @@ function detectDynamicIntentFromMessage(msg, context) {
       s.includes("social") || s.includes("mitantara") || s.includes("chat")
     ) return "portal_plan_advice_social";
 
-    // General plan advice (vague "how to choose" — after all specific cases)
+    // Light browsing / Google / email — before general so "quel forfait pour Google ?" hits here first
+    if (
+      s.includes("google") || s.includes("navigation") || s.includes("naviguer") ||
+      s.includes("site web") || s.includes("website") || s.includes("browser") ||
+      s.includes("surf") || s.includes("internet simple") || s.includes("actualité") ||
+      s.includes("actualites") || s.includes("mail") || s.includes("email") ||
+      s.includes("gmail") || s.includes("outlook") || s.includes("recherche") ||
+      s.includes("chercher") || s.includes("wiki") || s.includes("wikipedia") ||
+      s.includes("taratasy") // Malagasy "letter/document"
+    ) return "portal_plan_advice_browsing";
+
+    // General plan advice (vague "how to choose" — after all specific cases including browsing)
     if (
       s.includes("choisir") || s.includes("conseille") || s.includes("recommande") ||
       s.includes("quel forfait") || s.includes("lequel") || s.includes("meilleur forfait") ||
@@ -1142,7 +1153,7 @@ function detectDynamicIntentFromMessage(msg, context) {
 
 // Build a dynamic answer for portal_user context.
 // Returns a string answer or null (caller falls through to KB/fallback).
-function buildPortalDynamicAnswer(intent_key, lang, liveData) {
+function buildPortalDynamicAnswer(intent_key, lang, liveData, message) {
   const ld = liveData || {};
 
   // Tri-lingual helper: (French, Malagasy, English)
@@ -1346,6 +1357,25 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData) {
       return usable[0];
     }
 
+    if (criteria === "high_data_long") {
+      // Long-form video (Netflix, films, series).
+      // Unlimited always beats data-limited. Within each type, longer duration preferred.
+      // Tiers: unlimited ≥120min > unlimited ≥60min > unlimited any > data ≥120min > data ≥60min > any.
+      const usable = excludeShortTestIfPossible(pool, 60);
+      const unlimited120 = usable.filter(p => (p.unlimited || p.ui_role === "unlimited") && Number(p.duration_minutes) >= 120);
+      if (unlimited120.length) return unlimited120[0];
+      const unlimited60 = usable.filter(p => (p.unlimited || p.ui_role === "unlimited") && Number(p.duration_minutes) >= 60);
+      if (unlimited60.length) return unlimited60[0];
+      const unlimitedAny = usable.filter(p => p.unlimited || p.ui_role === "unlimited");
+      if (unlimitedAny.length) return unlimitedAny[0];
+      const data120 = usable.filter(p => p.data_mb !== null && p.data_mb !== undefined && Number(p.duration_minutes) >= 120);
+      if (data120.length) return data120.reduce((best, p) => Number(p.data_mb) > Number(best.data_mb) ? p : best);
+      const data60 = usable.filter(p => p.data_mb !== null && p.data_mb !== undefined && Number(p.duration_minutes) >= 60);
+      if (data60.length) return data60.reduce((best, p) => Number(p.data_mb) > Number(best.data_mb) ? p : best);
+      if (!usable.length) return pool[0];
+      return usable[0];
+    }
+
     if (criteria === "unlimited_first") {
       // Live/match: prefer unlimited ≥60 min; fallback highest data ≥60 min; avoid test/short.
       const usable = excludeShortTestIfPossible(pool, 60);
@@ -1419,25 +1449,53 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData) {
 
   if (intent_key === "portal_plan_advice_video") {
     if (!vp.length) return null;
-    const best = findBestPlan(vp, "high_data");
+    // Detect if message is specifically about long-form content (Netflix, films, series)
+    // vs short-video (TikTok, YouTube shorts) — use the stored message variable
+    const msgLow = String(message || "").toLowerCase();
+    const isLongForm = msgLow.includes("netflix") || msgLow.includes("film") ||
+      msgLow.includes("série") || msgLow.includes("serie") || msgLow.includes("movie") ||
+      msgLow.includes("disney") || msgLow.includes("amazon") || msgLow.includes("canal");
+    const best = findBestPlan(vp, isLongForm ? "high_data_long" : "high_data");
     if (!best) return null;
     const line = formatPlanLine(best);
+    const videoLabel = isLongForm
+      ? t("Netflix ou une série", "Netflix na serie", "Netflix or a series")
+      : t("TikTok ou YouTube", "TikTok na YouTube", "TikTok or YouTube");
     return t(
-      `Pour TikTok ou YouTube, choisissez plutôt un forfait avec beaucoup de data ou illimité. Ici, je vous conseille : ${line}.${networkWarning()}`,
-      `Ho an'ny TikTok na YouTube, safidio ny anjara misy data betsaka na tsy voafetra. Eto, toroheviko : ${line}.${networkWarning()}`,
-      `For TikTok or YouTube, prefer a plan with lots of data or unlimited. Here, I recommend: ${line}.${networkWarning()}`
+      `Pour ${videoLabel}, choisissez plutôt un forfait avec beaucoup de data ou illimité. Ici, je vous conseille : ${line}.${networkWarning()}`,
+      `Ho an'ny ${videoLabel}, safidio ny anjara misy data betsaka na tsy voafetra. Eto, toroheviko : ${line}.${networkWarning()}`,
+      `For ${videoLabel}, prefer a plan with lots of data or unlimited. Here, I recommend: ${line}.${networkWarning()}`
     );
   }
 
   if (intent_key === "portal_plan_advice_live_match") {
     if (!vp.length) return null;
-    const best = findBestPlan(vp, "unlimited_first");
+    // Sport-specific plan priority: prefer plans whose name or ui_role contains sport keywords
+    const sportKeywords = ["foot", "football", "match", "sport", "live", "pass foot", "pass live", "ballon"];
+    const sportPlan = vp.find(p => {
+      const n = String(p.name || "").toLowerCase();
+      const r = String(p.ui_role || "").toLowerCase();
+      return sportKeywords.some(k => n.includes(k) || r.includes(k));
+    });
+    const best = sportPlan || findBestPlan(vp, "unlimited_first");
     if (!best) return null;
     const line = formatPlanLine(best);
     return t(
       `Pour regarder un match ou une vidéo en direct, choisissez plutôt un forfait illimité ou avec beaucoup de data. Ici, je vous conseille : ${line}.${networkWarning()}`,
       `Raha hijery baolina na video mivantana, safidio ny anjara tsy voafetra na misy data betsaka. Eto, toroheviko : ${line}.${networkWarning()}`,
       `For watching a match or live video, prefer an unlimited or high-data plan. Here, I recommend: ${line}.${networkWarning()}`
+    );
+  }
+
+  if (intent_key === "portal_plan_advice_browsing") {
+    if (!vp.length) return null;
+    const best = findBestPlan(vp, "cheapest_social"); // light browsing = cheapest useful >=30min
+    if (!best) return null;
+    const line = formatPlanLine(best);
+    return t(
+      `Pour Google, les recherches ou la navigation simple, un petit forfait suffit souvent. Ici, je vous conseille : ${line}.`,
+      `Ho an'ny Google, ny fikarohana na ny navigasiona fotsiny, ampy ny anjara kely. Eto, toroheviko : ${line}.`,
+      `For Google, searching or simple browsing, a small plan is usually enough. Here, I recommend: ${line}.`
     );
   }
 
@@ -1847,6 +1905,7 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
     "portal_plan_advice_video", "portal_plan_advice_live_match",
     "portal_plan_advice_work", "portal_plan_advice_download",
     "portal_plan_advice_cheap", "portal_plan_advice_day",
+    "portal_plan_advice_browsing",
     // Phase 2: admin BI
     "admin_current_page", "admin_dashboard",
     "admin_best_selling_plan", "admin_best_revenue_plan",
@@ -1881,7 +1940,7 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
   let dynamicAnswer = null;
 
   if (context === "portal_user") {
-    dynamicAnswer = buildPortalDynamicAnswer(resolvedIntent, lang, liveData);
+    dynamicAnswer = buildPortalDynamicAnswer(resolvedIntent, lang, liveData, message);
   } else if (context === "admin_owner") {
     dynamicAnswer = buildAdminOwnerDynamicAnswer(resolvedIntent, lang, liveData);
   }
