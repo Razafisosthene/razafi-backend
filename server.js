@@ -1183,12 +1183,8 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
 
   if (!dynamicAnswer) return null;
 
-  // When both dynamic and KB answers exist, return dynamic first + KB as context.
-  // The KB answer may contain useful contact info or navigation chips.
-  if (kbAnswer && kbAnswer !== dynamicAnswer) {
-    return `${dynamicAnswer}\n\n${kbAnswer}`;
-  }
-
+  // Phase 1 rule: dynamic answer is returned alone.
+  // Never append KB fallback or unclear answers to a dynamic answer.
   return dynamicAnswer;
 }
 
