@@ -3026,8 +3026,8 @@ function buildPlatformProspectDynamicAnswer(intent_key, lang, message) {
 
     case "platform_compatibility":
       return t(
-        "Oui, RAZAFI peut fonctionner avec une connexion Starlink ou fibre. Le système fonctionne mieux avec un routeur compatible pour contrôler l'accès WiFi, et vos points d'accès peuvent être utilisés s'ils sont configurés correctement en mode AP/bridge. RAZAFI peut vous aider à vérifier votre matériel.",
-        "Yes, RAZAFI can work with a Starlink or fibre connection. The system works best with a compatible router to control WiFi access, and your access points can be used if they are correctly configured in AP/bridge mode. RAZAFI can help you check your equipment."
+        "Oui, RAZAFI peut fonctionner avec une connexion Starlink ou fibre. Pour démarrer, nous recommandons le MikroTik hAP ax². Il est adapté aux petits et moyens points WiFi. Pour un site plus grand, RAZAFI peut conseiller un modèle plus puissant selon le nombre d'utilisateurs. Vos points d'accès peuvent aussi être utilisés s'ils sont configurés correctement en mode AP/bridge.",
+        "Yes, RAZAFI can work with Starlink or fibre. To get started, we recommend the MikroTik hAP ax². It is suitable for small and medium WiFi spots. For a larger site, RAZAFI can recommend a more powerful model based on the number of users. Your access points can also be used if they are correctly configured in AP/bridge mode."
       );
 
     case "platform_pricing":
@@ -3158,7 +3158,60 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   // Phase 4 UX polish: when a dynamic answer is returned, suppress KB buttons and
   // live_data_keys inherited from an unrelated KB match. Dynamic answers are
   // self-contained; KB navigation chips are not meaningful context for them.
-  const finalAnswer = dynamicAnswer || answer || fallbackAnswer;
+  const canonicalAnswer = dynamicAnswer || answer || fallbackAnswer;
+
+  // ---------------------------------------------------------------------------
+  // PATCH B — Optional AI enhancement layer
+  // Runs only when ASSISTANT_AI_ENABLED=true.
+  // Falls back to canonicalAnswer silently on timeout / safety block / any error.
+  // Never bypasses sanitizeAssistantLiveData() — liveData is already sanitized here.
+  // ---------------------------------------------------------------------------
+  let finalAnswer = canonicalAnswer;
+  let aiUsed = false;
+
+  if (isAssistantAiEnabled()) {
+    try {
+      const pageHint = buildAssistantPageHint(context, page_path, liveData);
+
+      const aiRaw = await generateRazafiGroundedAiAnswer({
+        context,
+        pageHint,
+        lang,
+        rawMessage: message,
+        knowledgeRows: rows,
+        liveData,           // already sanitized upstream — never raw req.body.live_data
+        canonicalAnswer,
+      });
+
+      const aiSafe = validateRazafiAiAnswer({
+        answer: aiRaw,
+        context,
+        liveData,
+        canonicalAnswer,
+      });
+
+      if (aiSafe) {
+        finalAnswer = aiRaw;
+        aiUsed = true;
+        // Minimal safe log — no live_data, no full answer
+        console.info("[AI ASSISTANT]", { context, pageHint, ai_enabled: true, result: "success" });
+      } else {
+        console.info("[AI ASSISTANT]", { context, ai_enabled: true, result: "blocked" });
+      }
+    } catch (aiErr) {
+      const isTimeout = aiErr?.name === "AbortError" || String(aiErr?.message || "").includes("abort");
+      console.info("[AI ASSISTANT]", {
+        context,
+        ai_enabled: true,
+        result: isTimeout ? "timeout" : "error",
+        code: String(aiErr?.message || "unknown").slice(0, 80),
+      });
+      // finalAnswer remains canonicalAnswer — no re-throw
+    }
+  }
+  // ---------------------------------------------------------------------------
+  // END PATCH B
+  // ---------------------------------------------------------------------------
 
   return {
     ok: true,
@@ -3166,14 +3219,396 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     intent_key: intent?.intent_key || null,
     lang,
     answer: finalAnswer,
+    // When AI is used, keep existing safe buttons from canonical result (they are already validated)
     buttons: dynamicAnswer ? [] : buttons,
     requires_live_data: dynamicAnswer ? false : !!(intent?.requires_live_data),
     live_data_keys: dynamicAnswer ? [] : live_data_keys,
     dynamic: !!dynamicAnswer,
+    ai_enhanced: aiUsed,
   };
 }
 // ===============================
 // END RAZAFI ASSISTANT — PATCH A
+// ===============================
+
+// ===============================
+// RAZAFI GROUNDED AI ASSISTANT — PATCH B
+// Optional AI layer on top of existing rule-based assistant.
+// Disabled by default: ASSISTANT_AI_ENABLED=false.
+// All 3 contexts: portal_user, admin_owner, platform_prospect.
+// Never bypasses sanitizeAssistantLiveData(). Never mutates data.
+// ===============================
+
+// ---------------------------------------------------------------------------
+// Environment helpers
+// ---------------------------------------------------------------------------
+function isAssistantAiEnabled() {
+  return String(process.env.ASSISTANT_AI_ENABLED || "false").trim().toLowerCase() === "true";
+}
+
+function getAssistantAiProvider() {
+  const v = String(process.env.ASSISTANT_AI_PROVIDER || "").trim().toLowerCase();
+  if (v === "openai" || v === "anthropic") return v;
+  // If AI is enabled but provider is not explicitly set to a known value, fail loudly
+  // so operators are never silently routed to an unintended provider.
+  if (isAssistantAiEnabled()) {
+    throw new Error(
+      "ASSISTANT_AI_PROVIDER must be set explicitly to 'openai' or 'anthropic' when ASSISTANT_AI_ENABLED=true"
+    );
+  }
+  // AI is disabled — return empty string; never used
+  return "";
+}
+
+function getAssistantAiModel() {
+  const m = String(process.env.ASSISTANT_AI_MODEL || "").trim();
+  if (m) return m;
+  // Sensible defaults per provider
+  const provider = getAssistantAiProvider();
+  if (provider === "openai") return "gpt-4o-mini";
+  if (provider === "anthropic") return "claude-sonnet-4-6";
+  return "";
+}
+
+function getAssistantAiTimeoutMs() {
+  const t = parseInt(process.env.ASSISTANT_AI_TIMEOUT_MS || "5000", 10);
+  return Number.isFinite(t) && t > 0 ? t : 5000;
+}
+
+function getAssistantAiMaxInputChars() {
+  const n = parseInt(process.env.ASSISTANT_AI_MAX_INPUT_CHARS || "4000", 10);
+  return Number.isFinite(n) && n > 0 ? n : 4000;
+}
+
+function getAssistantAiMaxOutputChars() {
+  const n = parseInt(process.env.ASSISTANT_AI_MAX_OUTPUT_CHARS || "1200", 10);
+  return Number.isFinite(n) && n > 0 ? n : 1200;
+}
+
+function getAssistantAiApiKey() {
+  return String(process.env.ASSISTANT_AI_API_KEY || "").trim();
+}
+
+// ---------------------------------------------------------------------------
+// Page hint derivation (server-side, no frontend rewrite needed)
+// ---------------------------------------------------------------------------
+function buildAssistantPageHint(context, page_path, liveData) {
+  const path = String(page_path || "").toLowerCase();
+
+  if (context === "admin_owner") {
+    const panel = String(liveData?.panel || "").toLowerCase();
+    if (panel === "clients"         || path.includes("clients"))         return "clients";
+    if (panel === "plans"           || path.includes("plans"))           return "plans";
+    if (panel === "revenue"         || path.includes("revenue"))         return "revenue";
+    if (panel === "pools"           || path.includes("pools"))           return "pools";
+    if (panel === "pricing_simulator" || path.includes("simulator"))     return "pricing_simulator";
+    if (panel === "free_access"     || path.includes("free_access") || path.includes("free-access")) return "free_access";
+    if (panel === "blocked_devices" || path.includes("blocked"))         return "blocked_devices";
+    if (panel === "dashboard"       || path === "/admin" || path === "/admin/" || path.includes("dashboard")) return "dashboard";
+    return "dashboard";
+  }
+
+  if (context === "portal_user") {
+    if (path.includes("last_consumption") || path.includes("derniere") || path.includes("consommation")) return "last_consumption";
+    if (path.includes("code"))       return "code_ready_screen";
+    if (path.includes("payment") || path.includes("paiement")) return "payment_screen";
+    if (path.includes("connected") || path.includes("connecte")) return "connected_screen";
+    return "portal_home";
+  }
+
+  if (context === "platform_prospect") {
+    return "platform_home";
+  }
+
+  return "unknown";
+}
+
+// ---------------------------------------------------------------------------
+// Forbidden-term safety filter (configurable and conservative)
+// ---------------------------------------------------------------------------
+const ASSISTANT_AI_FORBIDDEN_TERMS = [
+  // Secrets / infra
+  "supabase_key", "supabase key", "api_key", "api key", "secret",
+  "env var", "environment variable", "process.env",
+  "radius_nas", "nas_id", "mikrotik_ip", "router_credentials",
+  "ap_mac", "mvola_phone", "platform_share_pct", "platform_total_ar",
+  // Internal architecture
+  "supabase", "render.com", "node_modules", "express", "server.js",
+  "handleassistantchat", "buildportaldynamic", "loadassistantknowledge",
+  // Raw payment/transaction refs (keep general fraud-proof)
+  "request_ref", "transaction_id", "payment_ref", "mvola ref",
+  "client_mac", "voucher_code",
+  // Invented admin actions (see extra check in validateRazafiAiAnswer)
+];
+
+// ---------------------------------------------------------------------------
+// Prompt builder
+// ---------------------------------------------------------------------------
+function buildGroundedAssistantPrompt({
+  context,
+  pageHint,
+  lang,
+  rawMessage,
+  knowledgeRows,
+  liveData,
+  canonicalAnswer,
+}) {
+  const maxInput = getAssistantAiMaxInputChars();
+
+  // Build compact RAZAFI knowledge section (approved KB rows only)
+  let knowledgeBlock = "";
+  if (Array.isArray(knowledgeRows) && knowledgeRows.length > 0) {
+    const kbLines = knowledgeRows
+      .slice(0, 12)
+      .map(r => {
+        const key = r?.intent_key || "";
+        const fr  = r?.answer_fr  || "";
+        const mg  = r?.answer_mg  || "";
+        const en  = r?.answer_en  || "";
+        return `[${key}] FR: ${fr.slice(0, 200)} | MG: ${mg.slice(0, 120)} | EN: ${en.slice(0, 120)}`;
+      })
+      .join("\n");
+    knowledgeBlock = `\n\nAPPROVED RAZAFI KNOWLEDGE:\n${kbLines}`;
+  }
+
+  // Build compact live data section (already sanitized upstream)
+  let liveBlock = "";
+  if (liveData && typeof liveData === "object" && Object.keys(liveData).length > 0) {
+    // Stringify only what is needed; never include forbidden keys (belt-and-suspenders)
+    const safeLive = {};
+    const forbidden = ASSISTANT_FORBIDDEN_LIVE_KEYS;
+    for (const [k, v] of Object.entries(liveData)) {
+      if (!forbidden.has(k)) safeLive[k] = v;
+    }
+    liveBlock = `\n\nSANITIZED LIVE DATA:\n${JSON.stringify(safeLive, null, 2).slice(0, 800)}`;
+  }
+
+  // Canonical rule-based answer (existing system result — AI should improve this, not ignore it)
+  const canonicalBlock = canonicalAnswer
+    ? `\n\nEXISTING RULE-BASED ANSWER (improve this, do not contradict it unless wrong):\n${String(canonicalAnswer).slice(0, 400)}`
+    : "";
+
+  // Context-specific behavioral rules
+  const contextRules = {
+    portal_user: [
+      "You are helping a WiFi end-user on a captive portal (page: " + pageHint + ").",
+      "Focus only on: forfait, paiement, code, dernière consommation, connexion, assistance, network status.",
+      "NEVER invent a voucher code. NEVER claim payment is successful unless backend confirmed it.",
+      "If user mentions: ela be, tsy tonga code, mbola tsy nahazo, efa nandoa fa code tsy nivoaka — follow the payment/code help protocol.",
+      "Payment/code protocol: apologize → confirmation may be pending → check MVola → use 'Dernière consommation' → contact assistance.",
+      "NEVER expose: voucher_code, client_mac, request_ref, transaction_id, phone number used for payment, router data, internal IDs.",
+    ],
+    admin_owner: [
+      "You are helping a WiFi network owner in their admin dashboard (page: " + pageHint + ").",
+      "Give useful business advice: plan creation, pricing, sales analysis, dashboard interpretation, network status.",
+      "NEVER say 'I changed it', 'I created it', 'I deleted it', 'I updated it' unless a confirmed system action endpoint was called.",
+      "Prefer: 'Je vous conseille…', 'Vous pouvez…', 'D'après les données visibles…'",
+      "NEVER expose secrets, infrastructure details, internal IDs, or platform revenue share data.",
+    ],
+    platform_prospect: [
+      "You are helping a business prospect evaluating the RAZAFI platform (page: " + pageHint + ").",
+      "Use public-friendly wording only. Explain what RAZAFI is, who it is for, how it works, benefits.",
+      "Hardware recommendation: MikroTik hAP ax² for small/medium spots. Larger sites can use more powerful models.",
+      "NEVER expose any private live data, internal architecture, or configuration details.",
+      "NEVER mention private IDs, backend details, payment secrets, or voucher mechanics.",
+    ],
+  };
+
+  const rules = (contextRules[context] || []).join("\n- ");
+
+  const systemPrompt = [
+    "You are RAZAFI Assistant — a professional, friendly, multilingual WiFi platform assistant.",
+    "Answer naturally in the user's language: Malagasy (mg), French (fr), English (en), or mixed Malagasy/French.",
+    "Be clear, professional, helpful, and concise. Do not write more than needed.",
+    "Use ONLY the provided RAZAFI knowledge and sanitized live data below. Do not invent missing data.",
+    "If live data is unavailable for a question, say it clearly and give general guidance only.",
+    "NEVER reveal: internal technical architecture, backend details, database details, private IDs,",
+    "raw payment references, secrets, env vars, infrastructure details, logs, or internal implementation.",
+    "NEVER invent payment success. NEVER generate or invent voucher codes.",
+    "NEVER claim an admin action was completed unless a confirmed existing system action actually completed it.",
+    "",
+    "Context-specific rules:",
+    "- " + rules,
+    "",
+    "Context: " + context,
+    "Page hint: " + pageHint,
+    "Detected user language: " + lang,
+  ].join("\n");
+
+  const userContent = [
+    "User message: " + String(rawMessage).slice(0, 500),
+    knowledgeBlock,
+    liveBlock,
+    canonicalBlock,
+  ].join("").slice(0, maxInput);
+
+  return { systemPrompt, userContent };
+}
+
+// ---------------------------------------------------------------------------
+// AI call — supports OpenAI and Anthropic APIs via fetch (no extra dependency)
+// ---------------------------------------------------------------------------
+async function generateRazafiGroundedAiAnswer({
+  context,
+  pageHint,
+  lang,
+  rawMessage,
+  knowledgeRows,
+  liveData,
+  canonicalAnswer,
+}) {
+  const provider = getAssistantAiProvider();
+  const model    = getAssistantAiModel();
+  const apiKey   = getAssistantAiApiKey();
+  const timeoutMs = getAssistantAiTimeoutMs();
+  const maxOutputChars = getAssistantAiMaxOutputChars();
+
+  if (!apiKey) throw new Error("ASSISTANT_AI_API_KEY not set");
+  if (!model)  throw new Error("ASSISTANT_AI_MODEL not set");
+
+  const { systemPrompt, userContent } = buildGroundedAssistantPrompt({
+    context, pageHint, lang, rawMessage, knowledgeRows, liveData, canonicalAnswer,
+  });
+
+  // Max tokens ≈ maxOutputChars / 3.5 (conservative)
+  const maxTokens = Math.min(500, Math.ceil(maxOutputChars / 3.5));
+
+  // Abort controller for timeout
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    let rawText = null;
+
+    if (provider === "openai") {
+      const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + apiKey,
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: maxTokens,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user",   content: userContent  },
+          ],
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data?.error?.message || "openai_error");
+      rawText = data?.choices?.[0]?.message?.content || null;
+
+    } else if (provider === "anthropic") {
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: maxTokens,
+          system: systemPrompt,
+          messages: [
+            { role: "user", content: userContent },
+          ],
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data?.error?.message || "anthropic_error");
+      rawText = data?.content?.[0]?.text || null;
+
+    } else {
+      throw new Error("Unknown ASSISTANT_AI_PROVIDER: " + provider);
+    }
+
+    if (!rawText || typeof rawText !== "string") throw new Error("ai_empty_response");
+    return rawText.trim().slice(0, maxOutputChars);
+
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Safety validator — blocks unsafe AI answers; returns canonical fallback
+// ---------------------------------------------------------------------------
+function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer }) {
+  if (!answer || typeof answer !== "string" || !answer.trim()) return false;
+
+  const lower = answer.toLowerCase();
+
+  // 1. Forbidden internal/secret terms
+  for (const term of ASSISTANT_AI_FORBIDDEN_TERMS) {
+    if (lower.includes(term.toLowerCase())) {
+      console.warn("[AI SAFETY BLOCK] forbidden term:", term, "context:", context);
+      return false;
+    }
+  }
+
+  // 2. Invented payment success (portal_user)
+  if (context === "portal_user") {
+    const paymentSuccessPhrases = [
+      "paiement réussi", "payment successful", "payment success",
+      "paiement confirmé", "payment confirmed", "fandraisana vola vita",
+      "votre paiement a été", "your payment was", "payment was successful",
+    ];
+    for (const phrase of paymentSuccessPhrases) {
+      if (lower.includes(phrase)) {
+        console.warn("[AI SAFETY BLOCK] invented payment success, context:", context);
+        return false;
+      }
+    }
+  }
+
+  // 3. Admin action claimed completed (admin_owner)
+  if (context === "admin_owner") {
+    const completedActionPhrases = [
+      "j'ai créé", "j'ai supprimé", "j'ai modifié", "j'ai mis à jour",
+      "j'ai activé", "j'ai désactivé", "j'ai changé",
+      "i created", "i deleted", "i updated", "i modified", "i changed",
+      "i have created", "i have deleted", "i have updated",
+      "le forfait a été créé", "le forfait a été supprimé",
+      "the plan was created", "the plan was deleted",
+    ];
+    for (const phrase of completedActionPhrases) {
+      if (lower.includes(phrase)) {
+        console.warn("[AI SAFETY BLOCK] invented admin action, context:", context);
+        return false;
+      }
+    }
+  }
+
+  // 4. Cross-context data leakage — admin/portal data in platform_prospect answer
+  if (context === "platform_prospect") {
+    const privateLeakTerms = [
+      "pool_id", "client_mac", "voucher_code", "request_ref",
+      "transaction_id", "mvola_phone", "radius", "nas_id",
+    ];
+    for (const term of privateLeakTerms) {
+      if (lower.includes(term)) {
+        console.warn("[AI SAFETY BLOCK] private data leak to prospect, term:", term);
+        return false;
+      }
+    }
+  }
+
+  // 5. Length sanity
+  if (answer.trim().length < 8) {
+    console.warn("[AI SAFETY BLOCK] answer too short");
+    return false;
+  }
+
+  return true;
+}
+
+// ===============================
+// END RAZAFI GROUNDED AI ASSISTANT — PATCH B
 // ===============================
 
 // ===============================
