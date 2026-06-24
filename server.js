@@ -1227,6 +1227,100 @@ function detectDynamicIntentFromMessage(msg, context) {
     ) return "admin_create_plan_advice";
   }
 
+  // ===============================
+  // Phase 5: platform_prospect dynamic intent detection
+  // Order: internal_security > pricing > revenue > compatibility > not_technician > owner_start > intro
+  // ===============================
+  if (context === "platform_prospect") {
+
+    // platform_internal_security — must be first to catch infrastructure probes
+    if (
+      s.includes("supabase") || s.includes("render") ||
+      s.includes("freeeradius") || s.includes("freeradius") ||
+      s.includes("wireguard") || s.includes("wire guard") ||
+      s.includes("radius secret") || s.includes("secret radius") ||
+      s.includes("api secret") || s.includes("api key") ||
+      s.includes("nas id") || s.includes("nas-id") ||
+      s.includes("database") || s.includes("base de données") ||
+      s.includes("schéma") || s.includes("schema") ||
+      s.includes("token") || s.includes("clé privée") ||
+      s.includes("private key") || s.includes("mot de passe mikrotik") ||
+      s.includes("mikrotik password") || s.includes("internal ip") ||
+      s.includes("ip interne") || s.includes("admin session") ||
+      s.includes("route interne") || s.includes("endpoint interne")
+    ) return "platform_internal_security";
+
+    // platform_pricing
+    if (
+      s.includes("combien ça coûte") || s.includes("combien ca coute") ||
+      s.includes("combien coûte") || s.includes("combien coute") ||
+      s.includes("prix") || s.includes("tarif") || s.includes("abonnement") ||
+      s.includes("commission") || s.includes("conditions") ||
+      s.includes("frais") || s.includes("cost") || s.includes("price") ||
+      s.includes("pricing") || s.includes("how much")
+    ) return "platform_pricing";
+
+    // platform_revenue
+    if (
+      s.includes("gagner de l'argent") || s.includes("gagner argent") ||
+      s.includes("revenu") || s.includes("revenus") ||
+      s.includes("mes ventes") || s.includes("les ventes") ||
+      s.includes("argent directement") ||
+      s.includes("reçois l'argent") || s.includes("recevoir l'argent") ||
+      s.includes("part propriétaire") || s.includes("reversement") ||
+      s.includes("owner revenue") || s.includes("income") ||
+      s.includes("earn money") || s.includes("paid directly") ||
+      (s.includes("argent") && !s.includes("payer")) ||
+      (s.includes("money") && !s.includes("mobile money"))
+    ) return "platform_revenue";
+
+    // platform_compatibility
+    if (
+      s.includes("starlink") || s.includes("fibre") || s.includes("fiber") ||
+      s.includes("routeur") || s.includes("router") || s.includes("mikrotik") ||
+      s.includes("access point") || s.includes("point d'accès") ||
+      s.includes("points d'accès") || s.includes("mes propres équipements") ||
+      s.includes("mon matériel") || s.includes("compatible") ||
+      s.includes("compatibilité") || s.includes("bridge") ||
+      s.includes("pont") || s.includes("ssid") ||
+      (s.includes("ap") && (s.includes("utiliser") || s.includes("mes") || s.includes("propre") || s.includes("mode")))
+    ) return "platform_compatibility";
+
+    // platform_not_technician
+    if (
+      s.includes("pas technicien") || s.includes("ne suis pas technicien") ||
+      s.includes("je ne suis pas technicien") ||
+      s.includes("not technical") || s.includes("not technician") ||
+      s.includes("facile") || s.includes("difficile") ||
+      s.includes("je ne sais pas configurer") ||
+      s.includes("automatique") || s.includes("automatic") ||
+      s.includes("simple") || s.includes("technicien") ||
+      (s.includes("configuration") && !s.includes("pool"))
+    ) return "platform_not_technician";
+
+    // platform_owner_start
+    if (
+      s.includes("devenir propriétaire") || s.includes("je veux commencer") ||
+      s.includes("commencer") || s.includes("démarrer") || s.includes("demarrer") ||
+      s.includes("je veux une démo") || s.includes("je veux une demo") ||
+      s.includes("demo") || s.includes("démo") ||
+      s.includes("contact") || s.includes("whatsapp") ||
+      s.includes("ouvrir un pool") || s.includes("créer un pool") ||
+      s.includes("lancer mon wifi") || s.includes("get started") ||
+      s.includes("become owner") || s.includes("start")
+    ) return "platform_owner_start";
+
+    // platform_intro — broadest, must be last
+    if (
+      s.includes("c'est quoi razafi") || s.includes("c est quoi razafi") ||
+      s.includes("qu'est-ce que razafi") || s.includes("qu est ce que razafi") ||
+      s.includes("comment ça marche") || s.includes("comment ca marche") ||
+      s.includes("fonctionnement") || s.includes("razafi") ||
+      s.includes("plateforme") || s.includes("platform") ||
+      s.includes("what is razafi") || s.includes("how does it work")
+    ) return "platform_intro";
+  }
+
   return null;
 }
 
@@ -2743,6 +2837,10 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
     "admin_business_coach", "admin_improve_sales",
     "admin_keep_hide_plans", "admin_create_next_plan",
     "admin_low_sales_reason",
+    // Phase 5: platform prospect
+    "platform_internal_security",
+    "platform_intro", "platform_owner_start", "platform_revenue",
+    "platform_compatibility", "platform_pricing", "platform_not_technician",
   ]);
 
   let resolvedIntent = null;
@@ -2758,6 +2856,14 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
     detectedIntent &&
     String(detectedIntent).startsWith("portal_plan_advice_")
   ) {
+    resolvedIntent = detectedIntent;
+  } else if (
+    context === "platform_prospect" &&
+    detectedIntent &&
+    String(detectedIntent).startsWith("platform_")
+  ) {
+    // Phase 5: for platform_prospect, message detection always wins over KB intent_key
+    // to ensure commercial answers are not swallowed by generic KB entries.
     resolvedIntent = detectedIntent;
   } else if (intentKey && DYNAMIC_INTENT_KEYS.has(intentKey)) {
     // KB intent_key is a recognized dynamic key — use it (all other contexts + portal non-advisor)
@@ -2775,8 +2881,10 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
     dynamicAnswer = buildPortalDynamicAnswer(resolvedIntent, lang, liveData, message);
   } else if (context === "admin_owner") {
     dynamicAnswer = buildAdminOwnerDynamicAnswer(resolvedIntent, lang, liveData);
+  } else if (context === "platform_prospect") {
+    // Phase 5: deterministic commercial answers for platform prospects
+    dynamicAnswer = buildPlatformProspectDynamicAnswer(resolvedIntent, lang, message);
   }
-  // platform_prospect: no dynamic answers in Phase 1 — always KB/fallback
 
   if (!dynamicAnswer) return null;
 
@@ -2784,6 +2892,69 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
   // Never append KB fallback or unclear answers to a dynamic answer.
   return dynamicAnswer;
 }
+
+// ===============================
+// Phase 5: PLATFORM PROSPECT DYNAMIC ANSWERS
+// Short, warm, commercial. French primary. No live_data used.
+// Never expose internal infrastructure. Never promise revenue.
+// ===============================
+function buildPlatformProspectDynamicAnswer(intent_key, lang, message) {
+  // Tri-lingual helper (French primary, Malagasy/English simple fallback)
+  function t(fr, en) {
+    return lang === "en" ? en : fr;
+  }
+
+  switch (intent_key) {
+
+    case "platform_internal_security":
+      return t(
+        "La partie technique est configurée par RAZAFI. Pour le propriétaire et les clients, l'objectif est de garder une expérience simple et sécurisée, sans exposer les détails internes.",
+        "The technical side is managed by RAZAFI. For owners and clients, the goal is to keep the experience simple and secure — internal details are not exposed."
+      );
+
+    case "platform_intro":
+      return t(
+        "RAZAFI est une plateforme qui transforme votre connexion Internet en service WiFi payant automatisé. Vos clients choisissent un forfait, paient depuis leur téléphone, reçoivent un code, puis se connectent. Vous suivez les ventes, les clients et vos pools depuis votre tableau de bord.",
+        "RAZAFI is a platform that turns your Internet connection into an automated paid WiFi service. Clients choose a plan, pay from their phone, receive a code, and connect. You track sales, clients, and your pools from your dashboard."
+      );
+
+    case "platform_owner_start":
+      return t(
+        "Pour démarrer avec RAZAFI, le plus simple est de nous contacter directement. Nous vous guidons pour vérifier votre connexion, votre matériel, vos pools et la mise en service. Vous pouvez demander une démo ou une proposition adaptée à votre projet.",
+        "To get started with RAZAFI, the simplest step is to contact us directly. We guide you through verifying your connection, equipment, pools, and setup. You can request a demo or a proposal tailored to your project."
+      );
+
+    case "platform_revenue":
+      return t(
+        "RAZAFI vous permet de suivre vos ventes et votre part des revenus depuis votre tableau de bord. Les conditions de partage et de reversement dépendent de votre installation et sont définies avec RAZAFI. Pour les détails exacts, demandez une proposition adaptée à votre projet.",
+        "RAZAFI lets you track your sales and your revenue share from your dashboard. Revenue sharing and payout terms depend on your setup and are agreed with RAZAFI. For exact details, request a proposal tailored to your project."
+      );
+
+    case "platform_compatibility":
+      return t(
+        "Oui, RAZAFI peut fonctionner avec une connexion Starlink ou fibre. Le système fonctionne mieux avec un routeur compatible pour contrôler l'accès WiFi, et vos points d'accès peuvent être utilisés s'ils sont configurés correctement en mode AP/bridge. RAZAFI peut vous aider à vérifier votre matériel.",
+        "Yes, RAZAFI can work with a Starlink or fibre connection. The system works best with a compatible router to control WiFi access, and your access points can be used if they are correctly configured in AP/bridge mode. RAZAFI can help you check your equipment."
+      );
+
+    case "platform_pricing":
+      return t(
+        "Le coût dépend de votre installation, du nombre de pools, du matériel et du niveau d'accompagnement souhaité. Le plus simple est de contacter RAZAFI pour recevoir une proposition adaptée à votre situation.",
+        "The cost depends on your setup, number of pools, equipment, and the level of support you need. The simplest step is to contact RAZAFI for a proposal tailored to your situation."
+      );
+
+    case "platform_not_technician":
+      return t(
+        "Ce n'est pas un problème. L'objectif de RAZAFI est justement de rendre la vente WiFi simple : le client paie, reçoit son code et se connecte automatiquement. RAZAFI peut vous accompagner pour la configuration, et vous gardez une interface claire pour suivre votre activité.",
+        "That is not a problem. RAZAFI is designed to make WiFi selling simple: the client pays, receives a code, and connects automatically. RAZAFI can guide you through the setup, and you keep a clear interface to monitor your activity."
+      );
+
+    default:
+      return null;
+  }
+}
+// ===============================
+// END Phase 5: PLATFORM PROSPECT DYNAMIC ANSWERS
+// ===============================
 
 // ===============================
 // END RAZAFI ASSISTANT — V2 DYNAMIC LAYER
