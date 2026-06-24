@@ -1076,6 +1076,25 @@ function detectDynamicIntentFromMessage(msg, context) {
       s.includes("prix") || s.includes("tarif") || s.includes("combien") ||
       s.includes("available") || s.includes("anjara") || s.includes("ohatrinona")
     ) return "plan_list";
+
+    // Phase 5C-A: portal_platform_interest — LAST in portal_user branch
+    // Catches portal clients who are curious about the RAZAFI platform as a business.
+    // Must be after all plan/payment/network/advisor checks.
+    if (
+      s.includes("c'est quoi razafi") || s.includes("c est quoi razafi") ||
+      s.includes("qu'est-ce que razafi") || s.includes("qu est ce que razafi") ||
+      s.includes("application razafi") || s.includes("plateforme razafi") ||
+      s.includes("je veux cette application") || s.includes("je veux aussi cette application") ||
+      s.includes("je veux aussi vendre wifi") || s.includes("je veux vendre wifi") ||
+      s.includes("vendre mon wifi") || s.includes("vendre le wifi") || s.includes("vendre wifi") ||
+      s.includes("gagner avec mon wifi") ||
+      s.includes("devenir propriétaire") || s.includes("proprietaire razafi") ||
+      s.includes("comment avoir cette plateforme") ||
+      s.includes("comment créer un wifi payant") || s.includes("comment creer un wifi payant") ||
+      s.includes("wifi payant") ||
+      s.includes("starlink vendre wifi") || s.includes("fibre vendre wifi") ||
+      s.includes("business wifi")
+    ) return "portal_platform_interest";
   }
 
   if (context === "admin_owner") {
@@ -1228,14 +1247,16 @@ function detectDynamicIntentFromMessage(msg, context) {
   }
 
   // ===============================
-  // Phase 5: platform_prospect dynamic intent detection
-  // Order: internal_security > pricing > revenue > compatibility > not_technician > owner_start > intro
+  // Phase 5 / Phase 5C-A: platform_prospect dynamic intent detection
+  // Order: internal_security > owner_dashboard > pricing > revenue > compatibility >
+  //        client_portal > multi_pool > demo > not_technician > owner_start > intro
   // ===============================
   if (context === "platform_prospect") {
 
     // platform_internal_security — must be first to catch infrastructure probes
+    // Note: "render" replaced with "render.com" to avoid false-positives with French "rendre".
     if (
-      s.includes("supabase") || s.includes("render") ||
+      s.includes("supabase") || s.includes("render.com") ||
       s.includes("freeeradius") || s.includes("freeradius") ||
       s.includes("wireguard") || s.includes("wire guard") ||
       s.includes("radius secret") || s.includes("secret radius") ||
@@ -1247,8 +1268,28 @@ function detectDynamicIntentFromMessage(msg, context) {
       s.includes("private key") || s.includes("mot de passe mikrotik") ||
       s.includes("mikrotik password") || s.includes("internal ip") ||
       s.includes("ip interne") || s.includes("admin session") ||
-      s.includes("route interne") || s.includes("endpoint interne")
+      s.includes("route interne") || s.includes("endpoint interne") ||
+      // Phase 5C-A: additional sensitive identifiers
+      s.includes("pool uuid") || s.includes("pool_uuid") ||
+      s.includes("pool id") || s.includes("pool_id") ||
+      s.includes("client mac") || s.includes("client_mac") ||
+      s.includes("mac address") || s.includes("adresse mac") ||
+      s.includes("voucher code") || s.includes("code voucher") ||
+      s.includes("request_ref") || s.includes("transaction_id") ||
+      s.includes("transaction id")
     ) return "platform_internal_security";
+
+    // platform_owner_dashboard — before platform_revenue to capture "voir les revenus dans le dashboard"
+    // (prospect asking about the dashboard feature, not about revenue-sharing conditions)
+    if (
+      s.includes("espace propriétaire") || s.includes("espace proprietaire") ||
+      s.includes("dashboard") || s.includes("tableau de bord") ||
+      s.includes("admin panel") || s.includes("owner dashboard") ||
+      s.includes("suivre les ventes") || s.includes("voir les clients") ||
+      s.includes("gérer les forfaits") || s.includes("gerer les forfaits") ||
+      (s.includes("voir les revenus") && (s.includes("dashboard") || s.includes("admin") || s.includes("tableau"))) ||
+      (s.includes("admin") && (s.includes("espace") || s.includes("panel") || s.includes("voir") || s.includes("accès")))
+    ) return "platform_owner_dashboard";
 
     // platform_pricing
     if (
@@ -1286,6 +1327,34 @@ function detectDynamicIntentFromMessage(msg, context) {
       (s.includes("ap") && (s.includes("utiliser") || s.includes("mes") || s.includes("propre") || s.includes("mode")))
     ) return "platform_compatibility";
 
+    // platform_client_portal — Phase 5C-A
+    if (
+      s.includes("portail client") || s.includes("côté client") || s.includes("cote client") ||
+      s.includes("client reçoit un code") || s.includes("client recoit un code") ||
+      s.includes("client reçoit") || s.includes("client recoit") ||
+      s.includes("recevoir un code") || s.includes("comment le client se connecte") ||
+      s.includes("choisir forfait") || s.includes("payer code") || s.includes("payer puis code") ||
+      s.includes("captive portal") || s.includes("portal client") || s.includes("client portal")
+    ) return "platform_client_portal";
+
+    // platform_multi_pool — Phase 5C-A
+    if (
+      s.includes("plusieurs pools") || s.includes("plusieurs lieux") ||
+      s.includes("multi pool") || s.includes("multi-pool") || s.includes("multipool") ||
+      s.includes("plusieurs quartiers") || s.includes("plusieurs sites") ||
+      s.includes("plusieurs routeurs") || s.includes("plusieurs zones") ||
+      s.includes("plusieurs points d'accès") || s.includes("plusieurs points d'acces")
+    ) return "platform_multi_pool";
+
+    // platform_demo — Phase 5C-A (before platform_owner_start which also catches "demo")
+    if (
+      s.includes("voir demo") || s.includes("voir la démo") || s.includes("voir la demo") ||
+      s.includes("tester") || s.includes("test plateforme") ||
+      s.includes("exemple portail") || s.includes("exemple admin") ||
+      s.includes("présentation") || s.includes("presentation") ||
+      s.includes("démo") || s.includes("demo")
+    ) return "platform_demo";
+
     // platform_not_technician
     if (
       s.includes("pas technicien") || s.includes("ne suis pas technicien") ||
@@ -1298,12 +1367,11 @@ function detectDynamicIntentFromMessage(msg, context) {
       (s.includes("configuration") && !s.includes("pool"))
     ) return "platform_not_technician";
 
-    // platform_owner_start
+    // platform_owner_start — "demo"/"démo" now handled above by platform_demo
     if (
       s.includes("devenir propriétaire") || s.includes("je veux commencer") ||
       s.includes("commencer") || s.includes("démarrer") || s.includes("demarrer") ||
       s.includes("je veux une démo") || s.includes("je veux une demo") ||
-      s.includes("demo") || s.includes("démo") ||
       s.includes("contact") || s.includes("whatsapp") ||
       s.includes("ouvrir un pool") || s.includes("créer un pool") ||
       s.includes("lancer mon wifi") || s.includes("get started") ||
@@ -1743,6 +1811,17 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData, message) {
       `Pour toute la journée, le forfait le plus adapté ici est : ${line}.`,
       `Ho an'ny andro manontolo, ny anjara mety indrindra eto : ${line}.`,
       `For all day long, the most suitable plan here is: ${line}.`
+    );
+  }
+
+  // Phase 5C-A: portal_platform_interest
+  // Portal user curious about RAZAFI as a business platform.
+  // Short answer + link. Does not use live_data.
+  if (intent_key === "portal_platform_interest") {
+    return t(
+      "RAZAFI est une plateforme qui permet de vendre un accès WiFi automatiquement. Le client choisit un forfait, paie depuis son téléphone, reçoit un code puis se connecte. Si vous avez une connexion Starlink ou fibre et souhaitez proposer un WiFi payant, vous pouvez découvrir la plateforme ici : https://razafistore.com",
+      "RAZAFI est une plateforme qui permet de vendre un accès WiFi automatiquement. Le client choisit un forfait, paie depuis son téléphone, reçoit un code puis se connecte. Si vous avez une connexion Starlink ou fibre et souhaitez proposer un WiFi payant, vous pouvez découvrir la plateforme ici : https://razafistore.com",
+      "RAZAFI is a platform that helps you sell WiFi access automatically. The client chooses a plan, pays from their phone, receives a code, and connects. If you have Starlink or fibre and want to offer paid WiFi, you can discover the platform here: https://razafistore.com"
     );
   }
 
@@ -2841,20 +2920,27 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
     "platform_internal_security",
     "platform_intro", "platform_owner_start", "platform_revenue",
     "platform_compatibility", "platform_pricing", "platform_not_technician",
+    // Phase 5C-A: cross-context awareness
+    "portal_platform_interest",
+    "platform_client_portal", "platform_owner_dashboard",
+    "platform_multi_pool", "platform_demo",
   ]);
 
   let resolvedIntent = null;
 
   // For portal_user: run message detection first.
-  // If it returns a Phase 3 advisor intent (portal_plan_advice_*), that wins over
-  // any KB intent_key — this prevents generic KB entries like "plan_list" from
-  // swallowing advisor questions such as "quel forfait choisir ?" or "je veux TikTok".
+  // Phase 3: portal_plan_advice_* intents win over KB intent_key.
+  // Phase 5C-A: portal_platform_interest also wins over KB intent_key.
+  // This prevents generic KB entries from swallowing cross-context questions.
   const detectedIntent = detectDynamicIntentFromMessage(message, context);
 
   if (
     context === "portal_user" &&
     detectedIntent &&
-    String(detectedIntent).startsWith("portal_plan_advice_")
+    (
+      String(detectedIntent).startsWith("portal_plan_advice_") ||
+      detectedIntent === "portal_platform_interest"
+    )
   ) {
     resolvedIntent = detectedIntent;
   } else if (
@@ -2946,6 +3032,31 @@ function buildPlatformProspectDynamicAnswer(intent_key, lang, message) {
       return t(
         "Ce n'est pas un problème. L'objectif de RAZAFI est justement de rendre la vente WiFi simple : le client paie, reçoit son code et se connecte automatiquement. RAZAFI peut vous accompagner pour la configuration, et vous gardez une interface claire pour suivre votre activité.",
         "That is not a problem. RAZAFI is designed to make WiFi selling simple: the client pays, receives a code, and connects automatically. RAZAFI can guide you through the setup, and you keep a clear interface to monitor your activity."
+      );
+
+    // Phase 5C-A: cross-context awareness — prospect asking about client/owner features
+    case "platform_client_portal":
+      return t(
+        "Côté client, le portail RAZAFI permet de choisir un forfait, payer depuis le téléphone, recevoir un code, puis se connecter au WiFi. L'objectif est de rendre l'achat simple, rapide et automatique.",
+        "On the client side, the RAZAFI portal lets users choose a plan, pay from their phone, receive a code, and connect to WiFi. The goal is to make purchasing simple, fast, and automatic."
+      );
+
+    case "platform_owner_dashboard":
+      return t(
+        "Côté propriétaire, l'espace RAZAFI permet de suivre les ventes, les clients, les forfaits et les pools WiFi depuis un tableau de bord clair. Le propriétaire peut suivre son activité sans utiliser une interface technique compliquée.",
+        "On the owner side, the RAZAFI space lets owners track sales, clients, plans, and WiFi pools from a clear dashboard. The owner can follow activity without using a complicated technical interface."
+      );
+
+    case "platform_multi_pool":
+      return t(
+        "Oui, RAZAFI peut gérer plusieurs pools ou lieux. C'est utile si vous avez plusieurs zones WiFi, plusieurs quartiers ou plusieurs points d'accès à suivre depuis une même plateforme.",
+        "Yes, RAZAFI can manage multiple pools or locations. This is useful if you have several WiFi zones, neighborhoods, or access points to monitor from one platform."
+      );
+
+    case "platform_demo":
+      return t(
+        "Vous pouvez demander une démo pour voir le portail client et l'espace propriétaire. Le plus simple est de visiter https://razafistore.com ou de contacter RAZAFI pour une présentation adaptée à votre projet.",
+        "You can request a demo to see the client portal and owner space. The simplest option is to visit https://razafistore.com or contact RAZAFI for a presentation adapted to your project."
       );
 
     default:
