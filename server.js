@@ -1080,17 +1080,25 @@ function detectDynamicIntentFromMessage(msg, context) {
     // Phase 5C-A: portal_platform_interest — LAST in portal_user branch
     // Catches portal clients who are curious about the RAZAFI platform as a business.
     // Must be after all plan/payment/network/advisor checks.
+    // Both straight ' (U+0027) and curly ' (U+2019) apostrophe variants are included
+    // because mobile keyboards and browsers send either form.
     if (
-      s.includes("c'est quoi razafi") || s.includes("c est quoi razafi") ||
-      s.includes("qu'est-ce que razafi") || s.includes("qu est ce que razafi") ||
+      // "c'est quoi razafi" — straight and curly apostrophe, both word orders
+      s.includes("c'est quoi razafi") || s.includes("c\u2019est quoi razafi") ||
+      s.includes("c est quoi razafi") || s.includes("c quoi razafi") ||
+      s.includes("razafi c'est quoi") || s.includes("razafi c\u2019est quoi") ||
+      s.includes("razafi c est quoi") || s.includes("razafi c quoi") ||
+      // "qu'est-ce que razafi" — straight and curly apostrophe
+      s.includes("qu'est-ce que razafi") || s.includes("qu\u2019est-ce que razafi") ||
+      s.includes("qu est ce que razafi") ||
       s.includes("application razafi") || s.includes("plateforme razafi") ||
       s.includes("je veux cette application") || s.includes("je veux aussi cette application") ||
       s.includes("je veux aussi vendre wifi") || s.includes("je veux vendre wifi") ||
       s.includes("vendre mon wifi") || s.includes("vendre le wifi") || s.includes("vendre wifi") ||
       s.includes("gagner avec mon wifi") ||
-      s.includes("devenir propriétaire") || s.includes("proprietaire razafi") ||
+      s.includes("devenir propri\u00e9taire") || s.includes("proprietaire razafi") ||
       s.includes("comment avoir cette plateforme") ||
-      s.includes("comment créer un wifi payant") || s.includes("comment creer un wifi payant") ||
+      s.includes("comment cr\u00e9er un wifi payant") || s.includes("comment creer un wifi payant") ||
       s.includes("wifi payant") ||
       s.includes("starlink vendre wifi") || s.includes("fibre vendre wifi") ||
       s.includes("business wifi")
