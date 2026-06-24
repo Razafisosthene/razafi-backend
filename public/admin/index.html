@@ -318,11 +318,22 @@
                   is_saturated:   stats ? !!stats.is_saturated : false,
                 };
               });
+              // Resolve selected pool display name from poolSummaries (no UUID exposed)
+              const selectedPoolDisplayName = selectedPoolId
+                ? (function () {
+                    const p = (pools || []).find(function (p) { return String(p.id || "") === selectedPoolId; });
+                    if (!p) return null;
+                    return poolDisplayName(p) || null;
+                  })()
+                : null;
+
               return {
-                panel:         "dashboard",
-                pool_count:    (pools || []).length,
-                selected_pool: selectedPoolId,
-                pools:         poolSummaries,
+                panel:              "dashboard",
+                analysis_scope:     selectedPoolDisplayName ? "single_pool" : "all_pools",
+                selected_pool_name: selectedPoolDisplayName || null,
+                pool_count:         (pools || []).length,
+                // Note: raw selected_pool UUID intentionally not included — display name only
+                pools:              poolSummaries,
               };
             } catch (_) {
               return { panel: "dashboard" };

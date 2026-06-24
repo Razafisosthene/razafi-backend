@@ -701,6 +701,12 @@ const ASSISTANT_ALLOWED_LIVE_KEYS = {
     "by_pool",                // [{ pool_name, paid_transactions, total_amount_ar, last_paid_at }]
     "best_selling_plan",      // string — plan name only
     "best_revenue_plan",      // string — plan name only
+    // V2 Phase 4B: pool-aware scope metadata (display names only, never UUIDs)
+    "analysis_scope",              // "single_pool" | "all_pools" | "unknown"
+    "plans_analysis_scope",        // remembered plans page scope
+    "plans_selected_pool_name",    // remembered plans page pool display name
+    "revenue_analysis_scope",      // remembered revenue page scope (always "all_pools")
+    "revenue_selected_pool_name",  // always null (revenue has no pool filter)
   ]),
   platform_prospect: new Set(), // live_data ignored for prospects
 };
@@ -1980,12 +1986,12 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
   }
 
   // ============================================================
-  // Phase 4: Business Coach intents
+  // Phase 4: Business Coach intents (Phase 4B: pool-aware scope)
   // Pure helpers — no DB, no async, no writes.
   // All helpers are local to this block.
   // ============================================================
 
-  // --- local helpers ---
+  // --- local data helpers ---
 
   function getPlans()        { return Array.isArray(ld.plans)   ? ld.plans   : []; }
   function getRevenueByPlan(){ return Array.isArray(ld.by_plan) ? ld.by_plan : []; }
@@ -2070,9 +2076,130 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     return names.join(", ");
   }
 
-  // pushLimited: push a line only if we haven't hit the max
   function pushLimited(lines, line, max) {
     if (lines.length < (max || 4)) lines.push(line);
+  }
+
+  // --- Phase 4B: scope helpers ---
+
+  function normalizeScope(v) {
+    const s = String(v || "").trim();
+    return s === "single_pool" || s === "all_pools" ? s : "unknown";
+  }
+
+  function getSelectedPoolName() {
+    return String(
+      ld.selected_pool_name ||
+      ld.plans_selected_pool_name ||
+      ld.revenue_selected_pool_name ||
+      ""
+    ).trim() || null;
+  }
+
+  function getAnalysisScope() {
+    const panel = String(ld.panel || "").trim();
+
+    const explicit = normalizeScope(ld.analysis_scope);
+    const plansScope = normalizeScope(
+      ld.plans_analysis_scope ||
+      (panel === "plans" ? ld.analysis_scope : "")
+    );
+    const revenueScope = normalizeScope(ld.revenue_analysis_scope);
+
+    // If we have plan data and that plan data is single-pool, business advice
+    // should be labelled for that pool even if Revenue (current page) is global.
+    // This prevents Revenue's current analysis_scope from overriding remembered
+    // single-pool Plans data.
+    if (hasPlansData() && plansScope === "single_pool") return "single_pool";
+
+    // Dashboard current page may be single-pool without plans data
+    if (panel === "dashboard" && explicit === "single_pool") return "single_pool";
+
+    if (explicit === "all_pools") return "all_pools";
+    if (plansScope === "all_pools" || revenueScope === "all_pools") return "all_pools";
+
+    if (getSelectedPoolName()) return "single_pool";
+    return "unknown";
+  }
+
+  function hasMixedScopeData() {
+    // True ONLY when real Plans data exists AND that data is single-pool AND Revenue is global.
+    // Dashboard single_pool without plans data must NOT trigger the mixed-scope warning.
+    const panel = String(ld.panel || "").trim();
+
+    const currentPlansScope = panel === "plans"
+      ? normalizeScope(ld.analysis_scope)
+      : "unknown";
+
+    const plansScope   = normalizeScope(ld.plans_analysis_scope || currentPlansScope);
+    const revenueScope = normalizeScope(ld.revenue_analysis_scope);
+
+    return (
+      hasPlansData() &&
+      plansScope === "single_pool" &&
+      hasRevenueData() &&
+      (revenueScope === "all_pools" || revenueScope === "unknown")
+    );
+  }
+
+  function scopePrefix() {
+    const scope = getAnalysisScope();
+    const name  = getSelectedPoolName();
+    if (scope === "single_pool" && name) {
+      return t(
+        `Analyse pour ${name} :`,
+        `Fanadihadiana ho an'ny ${name} :`,
+        `Analysis for ${name}:`
+      );
+    }
+    if (scope === "all_pools") {
+      return t(
+        "Analyse globale sur tous les pools :",
+        "Fanadihadiana ankapobe amin'ny pool rehetra :",
+        "Global analysis across all pools:"
+      );
+    }
+    return t(
+      "Analyse avec les données disponibles :",
+      "Fanadihadiana amin'ny angon-drakitra misy :",
+      "Analysis with available data:"
+    );
+  }
+
+  function mixedScopeWarningLine() {
+    if (!hasMixedScopeData()) return null;
+    const name = getSelectedPoolName();
+    return t(
+      `Attention : les forfaits affichés concernent ${name || "un pool spécifique"}, mais les revenus disponibles sont globaux. Je peux donner une tendance, pas une conclusion précise par pool.`,
+      `Fanamarihana : ny forfait hita dia momba ${name || "pool iray"}, fa ny Revenue misy dia ankapobe. Afaka manome fironana aho fa tsy fanapahan-kevitra tena marina isaky ny pool.`,
+      `Note: the visible plans are for ${name || "one pool"}, but the available revenue data is global. I can give a trend, not a precise per-pool conclusion.`
+    );
+  }
+
+  function globalCautionLine() {
+    // Used in all-pools mode — Revenue has no pool filter, so only mention Plans
+    return t(
+      "Pour une décision précise, sélectionnez un pool dans Plans puis reposez la question.",
+      "Ho an'ny fanapahan-kevitra marina kokoa, safidio pool iray ao amin'ny Plans dia avereno ny fanontaniana.",
+      "For a precise decision, select one pool in Plans and ask again."
+    );
+  }
+
+  // Label for revenue/seller mentions in mixed-scope context
+  function revLabel(label) {
+    return hasMixedScopeData() ? label + t(" (global)", " (ankapobe)", " (global)") : label;
+  }
+
+  // Assemble final answer from parts: header + optional warning + body + optional caution
+  function assembleScopedAnswer(bodyLines, maxBody) {
+    const header  = scopePrefix();
+    const warning = mixedScopeWarningLine();
+    const scope   = getAnalysisScope();
+    // Only add global caution when we actually have plans data to act on
+    const caution = (scope === "all_pools" && hasPlansData()) ? globalCautionLine() : null;
+
+    const numbered = bodyLines.slice(0, maxBody || 4).map((l, i) => `${i + 1}. ${l}`).join("\n");
+    return [header, warning, numbered || null, caution].filter(Boolean).join("\n");
   }
 
   // ---- admin_business_coach ----
@@ -2085,9 +2212,10 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
       );
     }
 
-    const lines = [];
+    const lines   = [];
     const visible = getVisiblePlans();
     const vCount  = visible.length;
+    const scope   = getAnalysisScope();
 
     // Signal 1: too many or too few visible plans
     if (vCount > 8) {
@@ -2117,9 +2245,9 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     const bestRevName = findBestRevenueName();
     if (bestRevName) {
       pushLimited(lines, t(
-        `Gardez le forfait "${bestRevName}" visible — c'est celui qui rapporte le plus.`,
-        `Asehoy foana ny forfait "${bestRevName}" — izy no mitondra vola indrindra.`,
-        `Keep the plan "${bestRevName}" visible — it generates the most revenue.`
+        `Gardez le forfait "${bestRevName}" visible — c'est celui qui rapporte le plus${hasMixedScopeData() ? " (au niveau global)" : ""}.`,
+        `Asehoy foana ny forfait "${bestRevName}" — izy no mitondra vola indrindra${hasMixedScopeData() ? " (ankapobe)" : ""}.`,
+        `Keep the plan "${bestRevName}" visible — it generates the most revenue${hasMixedScopeData() ? " (globally)" : ""}.`
       ), 4);
     } else if (!hasRevenueData() && hasPlansData()) {
       pushLimited(lines, t(
@@ -2143,9 +2271,9 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
       const zeros = plansWithNoRevenue();
       if (zeros.length > 0) {
         pushLimited(lines, t(
-          `${zeros.length} forfait(s) visible(s) sans aucune vente : ${fmtPlanNameList(zeros, 3)}. Envisagez de les cacher ou de les reformuler.`,
-          `Forfait hita ${zeros.length} tsy misy varotra : ${fmtPlanNameList(zeros, 3)}. Ambenana na ovana.`,
-          `${zeros.length} visible plan(s) with zero sales: ${fmtPlanNameList(zeros, 3)}. Consider hiding or reworking them.`
+          `${zeros.length} forfait(s) visible(s) sans aucune vente${hasMixedScopeData() ? " (données globales)" : ""} : ${fmtPlanNameList(zeros, 3)}. Envisagez de les cacher ou de les reformuler.`,
+          `Forfait hita ${zeros.length} tsy misy varotra${hasMixedScopeData() ? " (angon-drakitra ankapobe)" : ""} : ${fmtPlanNameList(zeros, 3)}. Ambenana na ovana.`,
+          `${zeros.length} visible plan(s) with zero sales${hasMixedScopeData() ? " (global data)" : ""}: ${fmtPlanNameList(zeros, 3)}. Consider hiding or reworking them.`
         ), 4);
       }
     }
@@ -2159,24 +2287,39 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
       ), 4);
     }
 
+    // Signal 7 (global mode only): top pool from by_pool
+    if (scope === "all_pools") {
+      const byPool = Array.isArray(ld.by_pool) ? ld.by_pool : [];
+      const topPool = byPool.length ? byPool.slice().sort((a, b) => Number(b.total_amount_ar) - Number(a.total_amount_ar))[0] : null;
+      if (topPool && Number(topPool.total_amount_ar) > 0 && topPool.pool_name) {
+        pushLimited(lines, t(
+          `Pool qui rapporte le plus : ${topPool.pool_name}.`,
+          `Pool mitondra vola indrindra : ${topPool.pool_name}.`,
+          `Top revenue pool: ${topPool.pool_name}.`
+        ), 4);
+      }
+    }
+
     if (!lines.length) {
-      return t(
+      const header  = scopePrefix();
+      const warning = mixedScopeWarningLine();
+      const fallback = t(
         "Votre configuration semble équilibrée. Ouvrez Plans et Revenus régulièrement pour surveiller les tendances.",
         "Tsara ny fanombanana-nao. Jereo ny Plans sy Revenue matetika mba hanaraha-maso ny fandrosoan'ny varotra.",
         "Your setup looks balanced. Open Plans and Revenue regularly to monitor trends."
       );
+      return [header, warning, fallback].filter(Boolean).join("\n");
     }
 
-    const intro = t("Voici mes priorités :", "Ireto ny laharam-pahamehana :", "Here are my priorities:");
-    const numbered = lines.map((l, i) => `${i + 1}. ${l}`).join("\n");
-    return `${intro}\n${numbered}`;
+    return assembleScopedAnswer(lines, 4);
   }
 
   // ---- admin_improve_sales ----
   if (intent_key === "admin_improve_sales") {
-    const lines = [];
+    const lines   = [];
     const visible = getVisiblePlans();
     const vCount  = visible.length;
+    const scope   = getAnalysisScope();
 
     // Too many visible plans
     if (vCount > 8) {
@@ -2190,17 +2333,18 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     // Best seller / best revenue → keep and highlight
     const bestSeller  = findBestSellerName();
     const bestRevenue = findBestRevenueName();
+    const revSuffix   = hasMixedScopeData() ? t(" (revenu global)", " (vola ankapobe)", " (global revenue)") : "";
     if (bestRevenue) {
       lines.push(t(
-        `Mettez en avant votre meilleur forfait : "${bestRevenue}". Assurez-vous qu'il est visible et bien positionné.`,
-        `Asehoy sy ampahafantaro ny forfait tsara indrindra : "${bestRevenue}". Atodiho eny aloha ny lisitra.`,
-        `Highlight your best-earning plan: "${bestRevenue}". Make sure it's visible and well-positioned.`
+        `Mettez en avant votre meilleur forfait${revSuffix} : "${bestRevenue}". Assurez-vous qu'il est visible et bien positionné.`,
+        `Asehoy sy ampahafantaro ny forfait tsara indrindra${revSuffix} : "${bestRevenue}". Atodiho eny aloha ny lisitra.`,
+        `Highlight your best-earning plan${revSuffix}: "${bestRevenue}". Make sure it's visible and well-positioned.`
       ));
     } else if (bestSeller) {
       lines.push(t(
-        `Votre forfait le plus vendu est "${bestSeller}". Gardez-le visible et envisagez de le mettre en avant.`,
-        `Ny forfait amidy indrindra dia "${bestSeller}". Asehoy foana sy ampahafantaro.`,
-        `Your best-selling plan is "${bestSeller}". Keep it visible and consider highlighting it.`
+        `Votre forfait le plus vendu${revSuffix} est "${bestSeller}". Gardez-le visible et envisagez de le mettre en avant.`,
+        `Ny forfait amidy indrindra${revSuffix} dia "${bestSeller}". Asehoy foana sy ampahafantaro.`,
+        `Your best-selling plan${revSuffix} is "${bestSeller}". Keep it visible and consider highlighting it.`
       ));
     }
 
@@ -2240,48 +2384,64 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
       ));
     }
 
+    // Global: top pool
+    if (scope === "all_pools") {
+      const byPool  = Array.isArray(ld.by_pool) ? ld.by_pool : [];
+      const topPool = byPool.length ? byPool.slice().sort((a, b) => Number(b.total_amount_ar) - Number(a.total_amount_ar))[0] : null;
+      if (topPool && Number(topPool.total_amount_ar) > 0 && topPool.pool_name) {
+        lines.push(t(
+          `Pool le plus rentable : ${topPool.pool_name}. Priorisez l'optimisation de ce pool en premier.`,
+          `Pool mahomby indrindra : ${topPool.pool_name}. Atsaharo voalohany ny fanatsarana io pool io.`,
+          `Most profitable pool: ${topPool.pool_name}. Prioritise optimising this pool first.`
+        ));
+      }
+    }
+
     if (!lines.length) {
       if (!hasPlansData()) return needsPlans();
-      return t(
+      const header  = scopePrefix();
+      const warning = mixedScopeWarningLine();
+      const fallback = t(
         "Votre configuration semble déjà orientée ventes. Ouvrez Revenus régulièrement pour vérifier les tendances.",
         "Tsara ny fanombanana-nao. Jereo ny Revenue matetika.",
         "Your setup already looks sales-oriented. Open Revenue regularly to check trends."
       );
+      return [header, warning, fallback].filter(Boolean).join("\n");
     }
 
-    const intro = t("Pour améliorer vos ventes :", "Hanatsara ny varotra-nao :", "To improve your sales:");
-    const numbered = lines.map((l, i) => `${i + 1}. ${l}`).join("\n");
-    return `${intro}\n${numbered}`;
+    const header  = scopePrefix();
+    const warning = mixedScopeWarningLine();
+    const scope2  = getAnalysisScope();
+    const caution = (scope2 === "all_pools" && hasPlansData()) ? globalCautionLine() : null;
+    const intro   = t("Pour améliorer vos ventes :", "Hanatsara ny varotra-nao :", "To improve your sales:");
+    const body    = lines.map((l, i) => `${i + 1}. ${l}`).join("\n");
+    return [header, warning, intro + "\n" + body, caution].filter(Boolean).join("\n");
   }
 
   // ---- admin_keep_hide_plans ----
   if (intent_key === "admin_keep_hide_plans") {
     if (!hasPlansData()) return needsPlans();
 
-    const visible    = getVisiblePlans();
-    const bestRev    = findBestRevenueName();
-    const bestSell   = findBestSellerName();
-    const entryPlan  = findEntryPlan();
+    const visible   = getVisiblePlans();
+    const bestRev   = findBestRevenueName();
+    const bestSell  = findBestSellerName();
+    const entryPlan = findEntryPlan();
+    const scope     = getAnalysisScope();
+    const mixed     = hasMixedScopeData();
+    const revSuffix = mixed ? t(" — meilleur revenu global", " — vola ankapobe tsara indrindra", " — best global revenue") : t(" — meilleur revenu", " — vola miditra tsara indrindra", " — best revenue");
+    const sellSuffix = mixed ? t(" — le plus vendu (global)", " — amidy indrindra (ankapobe)", " — best seller (global)") : t(" — le plus vendu", " — amidy indrindra", " — best seller");
 
     const keepLines = [];
-    const hideLines = [];
+    const reviewLines = [];
 
     // Keep: best revenue
     if (bestRev) {
-      keepLines.push(t(
-        `"${bestRev}" — meilleur revenu`,
-        `"${bestRev}" — vola miditra tsara indrindra`,
-        `"${bestRev}" — best revenue`
-      ));
+      keepLines.push(`"${bestRev}"${revSuffix}`);
     }
 
     // Keep: best seller (if different from best revenue)
     if (bestSell && bestSell !== bestRev) {
-      keepLines.push(t(
-        `"${bestSell}" — le plus vendu`,
-        `"${bestSell}" — amidy indrindra`,
-        `"${bestSell}" — best seller`
-      ));
+      keepLines.push(`"${bestSell}"${sellSuffix}`);
     }
 
     // Keep: entry plan
@@ -2294,8 +2454,7 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     }
 
     // Keep: daily plan — same 22h–26h window as hasDailyPlan()
-    // If the daily plan is already listed under another role (bestRev / bestSell / entry),
-    // annotate that existing line rather than skipping the "journalier" label entirely.
+    // If already listed under another role, annotate; otherwise add new line
     const dailyPlan = visible.find(p => {
       const m = Number(p.duration_minutes);
       return Number.isFinite(m) && m >= 22 * 60 && m <= 26 * 60;
@@ -2304,7 +2463,6 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
       const dailyTag = t(" + journalier", " + isan'andro", " + daily");
       const alreadyListed = [bestRev, bestSell, entryPlan?.name].filter(Boolean);
       if (alreadyListed.includes(dailyPlan.name)) {
-        // Append the daily tag to the existing keep line that names this plan
         for (let i = 0; i < keepLines.length; i++) {
           if (keepLines[i].includes(`"${dailyPlan.name}"`)) {
             keepLines[i] = keepLines[i] + dailyTag;
@@ -2312,7 +2470,6 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
           }
         }
       } else {
-        // Plan not yet listed — add a dedicated daily keep line
         keepLines.push(t(
           `"${dailyPlan.name}" — forfait journalier`,
           `"${dailyPlan.name}" — forfait isan'andro`,
@@ -2321,17 +2478,28 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
       }
     }
 
-    // Hide: visible plans with zero revenue (only if revenue data exists)
+    // Review/hide: visible plans with zero revenue (only if revenue data exists)
     if (hasRevenueData()) {
       const zeros = plansWithNoRevenue();
       const safeKeepNames = new Set([bestRev, bestSell, entryPlan?.name, dailyPlan?.name].filter(Boolean));
-      const hideable = zeros.filter(p => !safeKeepNames.has(p.name));
-      if (hideable.length > 0) {
-        hideLines.push(t(
-          `${hideable.length} forfait(s) sans vente ni revenu : ${fmtPlanNameList(hideable, 3)}. À cacher ou reformuler.`,
-          `Forfait ${hideable.length} tsy misy varotra : ${fmtPlanNameList(hideable, 3)}. Ambenana na ovana.`,
-          `${hideable.length} plan(s) with no sales or revenue: ${fmtPlanNameList(hideable, 3)}. Consider hiding or reworking.`
-        ));
+      const reviewable = zeros.filter(p => !safeKeepNames.has(p.name));
+      if (reviewable.length > 0) {
+        if (scope === "all_pools") {
+          // Global mode: cautious wording — a plan may work in some pools
+          reviewLines.push(t(
+            `${reviewable.length} forfait(s) sans vente ni revenu (données globales) : ${fmtPlanNameList(reviewable, 3)}. À revoir globalement — vérifiez le pool concerné avant de cacher.`,
+            `Forfait ${reviewable.length} tsy misy varotra (angon-drakitra ankapobe) : ${fmtPlanNameList(reviewable, 3)}. Jereo ankapobe — tsiarovana ny pool voakasik'izany.`,
+            `${reviewable.length} plan(s) with no sales or revenue (global data): ${fmtPlanNameList(reviewable, 3)}. Review globally — check the relevant pool before hiding.`
+          ));
+        } else {
+          // Single-pool or mixed: still note if mixed
+          const revNote = mixed ? t(" (données globales)", " (angon-drakitra ankapobe)", " (global data)") : "";
+          reviewLines.push(t(
+            `${reviewable.length} forfait(s) sans vente ni revenu${revNote} : ${fmtPlanNameList(reviewable, 3)}. À cacher ou reformuler.`,
+            `Forfait ${reviewable.length} tsy misy varotra${revNote} : ${fmtPlanNameList(reviewable, 3)}. Ambenana na ovana.`,
+            `${reviewable.length} plan(s) with no sales or revenue${revNote}: ${fmtPlanNameList(reviewable, 3)}. Consider hiding or reworking.`
+          ));
+        }
       }
     } else {
       // Revenue missing — honest caution
@@ -2346,29 +2514,36 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     if (keepLines.length) {
       parts.push(t("Garder visibles :", "Asehoy foana :", "Keep visible:") + "\n" + keepLines.map(l => `• ${l}`).join("\n"));
     }
-    if (hideLines.length) {
-      parts.push(t("À revoir / cacher :", "Jereo / ambenana :", "Review / hide:") + "\n" + hideLines.map(l => `• ${l}`).join("\n"));
+    if (reviewLines.length) {
+      const reviewHeader = scope === "all_pools"
+        ? t("À revoir globalement :", "Jereo ankapobe :", "Review globally:")
+        : t("À revoir / cacher :", "Jereo / ambenana :", "Review / hide:");
+      parts.push(reviewHeader + "\n" + reviewLines.map(l => `• ${l}`).join("\n"));
     }
 
     if (!parts.length) {
-      return t(
+      const header  = scopePrefix();
+      const warning = mixedScopeWarningLine();
+      const fallback = t(
         "Votre sélection de forfaits visibles semble déjà bonne. Ouvrez Revenus pour confirmer.",
         "Tsara ny forfait hita-nao. Hisokatra ny Revenue mba hanamafisana.",
         "Your visible plan selection already looks good. Open Revenue to confirm."
       );
+      return [header, warning, fallback].filter(Boolean).join("\n");
     }
 
-    return parts.join("\n\n");
+    const header  = scopePrefix();
+    const warning = mixedScopeWarningLine();
+    const caution = scope === "all_pools" ? globalCautionLine() : null;
+    return [header, warning, parts.join("\n\n"), caution].filter(Boolean).join("\n");
   }
 
   // ---- admin_create_next_plan ----
-  // Routes through the same logic as admin_create_plan_advice with pool occupancy extension.
   if (intent_key === "admin_create_next_plan") {
     if (!hasPlansData()) return needsPlans();
 
     const visible = getVisiblePlans();
     const lines   = [];
-    const ENTRY_MAX = 1000;
 
     // No entry plan
     if (!hasEntryPlan() && visible.length > 0) {
@@ -2404,14 +2579,15 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
       ));
     }
 
-    // Best-seller variation (only if revenue data)
+    // Best-seller variation (only if revenue data; note global if mixed)
     if (hasRevenueData()) {
       const best = findBestSellerName() || findBestRevenueName();
       if (best) {
+        const globalNote = hasMixedScopeData() ? t(" (données globales)", " (angon-drakitra ankapobe)", " (global data)") : "";
         lines.push(t(
-          `Votre forfait le plus populaire est "${best}". Une variation légèrement différente (plus de données ou durée plus courte) peut élargir votre clientèle.`,
-          `Ny forfait malaza indrindra dia "${best}". Ny kopia kely hafa dia mety hampitombo ny mpanjifa.`,
-          `Your most popular plan is "${best}". A slightly different variation (more data or shorter duration) could expand your customer base.`
+          `Votre forfait le plus populaire${globalNote} est "${best}". Une variation légèrement différente (plus de données ou durée plus courte) peut élargir votre clientèle.`,
+          `Ny forfait malaza indrindra${globalNote} dia "${best}". Ny kopia kely hafa dia mety hampitombo ny mpanjifa.`,
+          `Your most popular plan${globalNote} is "${best}". A slightly different variation (more data or shorter duration) could expand your customer base.`
         ));
       }
     } else {
@@ -2423,20 +2599,28 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     }
 
     if (!lines.length) {
-      return t(
+      const header  = scopePrefix();
+      const warning = mixedScopeWarningLine();
+      const fallback = t(
         "Vos plans semblent déjà couvrir les besoins essentiels. Ouvrez Revenus pour identifier les opportunités.",
         "Tsara ny plans-nao. Hisokatra ny Revenue mba hahafahana mahita tombony vaovao.",
         "Your plans already seem to cover the essentials. Open Revenue to spot opportunities."
       );
+      return [header, warning, fallback].filter(Boolean).join("\n");
     }
 
-    const intro = t("Suggestions pour votre prochain forfait :", "Tolo-kevitra momba ny forfait manaraka :", "Suggestions for your next plan:");
-    return `${intro}\n${lines.map((l, i) => `${i + 1}. ${l}`).join("\n")}`;
+    const header  = scopePrefix();
+    const warning = mixedScopeWarningLine();
+    const caution2 = (getAnalysisScope() === "all_pools" && hasPlansData()) ? globalCautionLine() : null;
+    const intro   = t("Suggestions pour votre prochain forfait :", "Tolo-kevitra momba ny forfait manaraka :", "Suggestions for your next plan:");
+    const body    = lines.map((l, i) => `${i + 1}. ${l}`).join("\n");
+    return [header, warning, intro + "\n" + body, caution2].filter(Boolean).join("\n");
   }
 
   // ---- admin_low_sales_reason ----
   if (intent_key === "admin_low_sales_reason") {
     const reasons = [];
+    const scope   = getAnalysisScope();
 
     // Too many visible plans
     const vCount = getVisiblePlans().length;
@@ -2481,7 +2665,6 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
         ));
       }
     } else if (hasPlansData()) {
-      // Revenue data missing
       reasons.push(t(
         "Données de ventes non disponibles. Ouvrez la page Revenus pour diagnostiquer précisément.",
         "Tsy misy angon-drakitra varotra. Hisokatra ny pejy Revenue mba hahafahana manao diagnose.",
@@ -2498,17 +2681,39 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
       ));
     }
 
+    // Global: identify worst pool if by_pool available
+    if (scope === "all_pools") {
+      const byPool = Array.isArray(ld.by_pool) ? ld.by_pool : [];
+      if (byPool.length >= 2) {
+        const sorted   = byPool.slice().sort((a, b) => Number(a.total_amount_ar) - Number(b.total_amount_ar));
+        const worstPool = sorted[0];
+        if (Number(worstPool.total_amount_ar) === 0 && worstPool.pool_name) {
+          reasons.push(t(
+            `Pool sans revenu enregistré : ${worstPool.pool_name}. Inspectez ce pool en priorité.`,
+            `Pool tsy misy vola voarakitra : ${worstPool.pool_name}. Jereo voalohany io pool io.`,
+            `Pool with no recorded revenue: ${worstPool.pool_name}. Inspect this pool first.`
+          ));
+        }
+      }
+    }
+
     if (!reasons.length) {
       if (!hasPlansData()) return needsPlans();
-      return t(
+      const header  = scopePrefix();
+      const warning = mixedScopeWarningLine();
+      const fallback = t(
         "Je ne vois pas de signal évident dans les données disponibles. Ouvrez Plans et Revenus pour une analyse complète.",
         "Tsy hitako ny antony mazava amin'ireo angon-drakitra misy. Hisokatra ny Plans sy Revenue.",
         "I don't see an obvious signal in the available data. Open Plans and Revenue for a full analysis."
       );
+      return [header, warning, fallback].filter(Boolean).join("\n");
     }
 
-    const intro = t("Raisons probables des faibles ventes :", "Antony mety mahatonga ny fahalemen'ny varotra :", "Likely reasons for low sales:");
-    return `${intro}\n${reasons.map((r, i) => `${i + 1}. ${r}`).join("\n")}`;
+    const header  = scopePrefix();
+    const warning = mixedScopeWarningLine();
+    const intro   = t("Raisons probables des faibles ventes :", "Antony mety mahatonga ny fahalemen'ny varotra :", "Likely reasons for low sales:");
+    const body    = reasons.map((r, i) => `${i + 1}. ${r}`).join("\n");
+    return [header, warning, intro + "\n" + body].filter(Boolean).join("\n");
   }
 
   return null;

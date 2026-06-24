@@ -475,12 +475,22 @@
 
     // Store current page snapshot into memory.
     // Only store when data is substantive (bridge produced real data, not just { panel }).
+    // Phase 4B: also preserve analysis_scope and selected_pool_name so cross-page
+    // scope detection works correctly.
     if (panel === "plans" && currentData.plans_summary) {
-      memory.plans = Object.assign({}, currentData, { updated_at: now });
+      memory.plans = Object.assign({}, currentData, {
+        updated_at: now,
+        analysis_scope:    currentData.analysis_scope    || "unknown",
+        selected_pool_name: currentData.selected_pool_name || null,
+      });
       memory.updated_at = now;
       writeAssistantMemory(memory);
     } else if (panel === "revenue" && currentData.revenue_summary) {
-      memory.revenue = Object.assign({}, currentData, { updated_at: now });
+      memory.revenue = Object.assign({}, currentData, {
+        updated_at: now,
+        analysis_scope:    "all_pools",  // Revenue has no pool filter — always global
+        selected_pool_name: null,         // never inherit Plans pool name into revenue memory
+      });
       memory.updated_at = now;
       writeAssistantMemory(memory);
     }
@@ -501,6 +511,11 @@
         combined.selected_pool_name = mp.selected_pool_name;
       if (mp.owner_visibility_only !== undefined && combined.owner_visibility_only === undefined)
         combined.owner_visibility_only = mp.owner_visibility_only;
+      // Phase 4B: inject scope metadata for mixed-scope detection in server.js
+      if (!combined.plans_analysis_scope)
+        combined.plans_analysis_scope = mp.analysis_scope || "unknown";
+      if (combined.plans_selected_pool_name === undefined)
+        combined.plans_selected_pool_name = mp.selected_pool_name || null;
     }
 
     // Inject remembered Revenue data when not on Revenue page
@@ -516,6 +531,11 @@
         combined.best_selling_plan = mr.best_selling_plan;
       if (mr.best_revenue_plan && !combined.best_revenue_plan)
         combined.best_revenue_plan = mr.best_revenue_plan;
+      // Phase 4B: inject revenue scope metadata (always all_pools)
+      if (!combined.revenue_analysis_scope)
+        combined.revenue_analysis_scope = mr.analysis_scope || "all_pools";
+      if (combined.revenue_selected_pool_name === undefined)
+        combined.revenue_selected_pool_name = mr.selected_pool_name || null;
     }
 
     return combined;

@@ -659,7 +659,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
           return {
             panel:               "plans",
-            selected_pool_name:  selectedPoolName,
+            analysis_scope:      selectedPoolName ? "single_pool" : "all_pools",
+            selected_pool_name:  selectedPoolName || null,
             is_readonly:         !!window.__IS_READONLY,
             owner_visibility_only: !!window.__OWNER_PLAN_VISIBILITY_ONLY,
             plans_summary: {

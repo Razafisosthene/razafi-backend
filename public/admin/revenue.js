@@ -700,6 +700,8 @@ function updateRevenueAssistantBridge() {
 
       return {
         panel:             "revenue",
+        analysis_scope:    "all_pools",   // Revenue has no pool filter — data is always global
+        selected_pool_name: null,          // explicit null — prevents stale Plans pool name from leaking in
         revenue_summary:   lastRevenueTotals || null,
         by_plan:           byPlanSorted,
         by_pool:           (lastRevenueByPool || [])
