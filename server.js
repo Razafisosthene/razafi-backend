@@ -1324,6 +1324,20 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData, message) {
     return better.length ? better : pool;
   }
 
+  // Identify sport/event-specific plans (e.g. PASS FOOT, PASS LIVE) — used to avoid
+  // recommending them for general video content when non-sport alternatives exist.
+  function isSportLikePlan(plan) {
+    const name = String(plan?.name || "").toLowerCase();
+    const role = String(plan?.ui_role || "").toLowerCase();
+    return (
+      name.includes("foot") || name.includes("football") ||
+      name.includes("match") || name.includes("sport") ||
+      name.includes("pass foot") || name.includes("pass live") ||
+      role.includes("foot") || role.includes("match") ||
+      role.includes("sport") || role.includes("live")
+    );
+  }
+
   function findBestPlan(plans, criteria) {
     if (!Array.isArray(plans) || !plans.length) return null;
     const paid = plans.filter(p => Number(p.price_ar) > 0);
@@ -1360,8 +1374,12 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData, message) {
     if (criteria === "high_data_long") {
       // Long-form video (Netflix, films, series).
       // Unlimited always beats data-limited. Within each type, longer duration preferred.
+      // Sport/event plans are excluded when non-sport alternatives exist.
       // Tiers: unlimited ≥120min > unlimited ≥60min > unlimited any > data ≥120min > data ≥60min > any.
-      const usable = excludeShortTestIfPossible(pool, 60);
+      let usable = excludeShortTestIfPossible(pool, 60);
+      // Prefer non-sport plans for general video content; only fall back to sport plans if no alternative
+      const nonSport = usable.filter(p => !isSportLikePlan(p));
+      if (nonSport.length) usable = nonSport;
       const unlimited120 = usable.filter(p => (p.unlimited || p.ui_role === "unlimited") && Number(p.duration_minutes) >= 120);
       if (unlimited120.length) return unlimited120[0];
       const unlimited60 = usable.filter(p => (p.unlimited || p.ui_role === "unlimited") && Number(p.duration_minutes) >= 60);
