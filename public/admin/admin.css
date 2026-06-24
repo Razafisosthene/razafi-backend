@@ -3759,6 +3759,7 @@ body.rz-login-page .error{
   border: 1px solid rgba(13,110,253,.12);
   border-bottom-left-radius: 6px;
   align-self: flex-start;
+  white-space: pre-line; /* render \n as line breaks in multi-line dynamic answers */
 }
 .rz-aa-msg-user {
   background: var(--rz-text);

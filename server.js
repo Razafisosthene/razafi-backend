@@ -2660,15 +2660,20 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     answer      // KB answer passed as optional context suffix
   );
 
+  // Phase 4 UX polish: when a dynamic answer is returned, suppress KB buttons and
+  // live_data_keys inherited from an unrelated KB match. Dynamic answers are
+  // self-contained; KB navigation chips are not meaningful context for them.
+  const finalAnswer = dynamicAnswer || answer || fallbackAnswer;
+
   return {
     ok: true,
     context,
     intent_key: intent?.intent_key || null,
     lang,
-    answer: dynamicAnswer || answer || fallbackAnswer,
-    buttons,
-    requires_live_data: !!(intent?.requires_live_data),
-    live_data_keys,
+    answer: finalAnswer,
+    buttons: dynamicAnswer ? [] : buttons,
+    requires_live_data: dynamicAnswer ? false : !!(intent?.requires_live_data),
+    live_data_keys: dynamicAnswer ? [] : live_data_keys,
     dynamic: !!dynamicAnswer,
   };
 }
