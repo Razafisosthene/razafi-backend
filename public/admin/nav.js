@@ -305,6 +305,7 @@
         // Phase 2B-C (v2): clear assistant session memory and pool cache on logout
         // so the next admin who logs in starts with a clean state.
         try { sessionStorage.removeItem(RAZAFI_MEMORY_KEY); } catch (_) {}
+        try { sessionStorage.removeItem(RAZAFI_ADMIN_ASSISTANT_CID_KEY); } catch (_) {}
         _rzAccessiblePoolNames = null;
         _rzAccessiblePoolCount = null;
         _rzAccessiblePoolAdmin = null;
@@ -441,6 +442,26 @@
   // ============================================================
 
   const RAZAFI_MEMORY_KEY = "razafi_admin_assistant_memory_v1";
+  // Patch F.2: conversation_id persistence for admin assistant
+  const RAZAFI_ADMIN_ASSISTANT_CID_KEY = "razafi_admin_assistant_conversation_id_v1";
+
+  function readAssistantConversationId(key) {
+    try {
+      var v = sessionStorage.getItem(key);
+      return /^ast_[0-9a-f]{24}$/.test(String(v || "")) ? v : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeAssistantConversationId(key, value) {
+    try {
+      var v = String(value || "").trim();
+      if (/^ast_[0-9a-f]{24}$/.test(v)) {
+        sessionStorage.setItem(key, v);
+      }
+    } catch (_) {}
+  }
   const MEMORY_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
   function readAssistantMemory() {
@@ -846,12 +867,17 @@
             page_path: (function () {
               try { return String(window.location.pathname || "").slice(0, 200); } catch (_) { return null; }
             })(),
+            conversation_id: readAssistantConversationId(RAZAFI_ADMIN_ASSISTANT_CID_KEY),
           }),
         })
           .then(function (res) { return res.json().catch(function () { return {}; }); })
           .then(function (data) {
             removeMsg(thinkingBubble);
             isLoading = false;
+            // Patch F.2: persist conversation_id for multi-turn memory
+            if (data && data.conversation_id) {
+              writeAssistantConversationId(RAZAFI_ADMIN_ASSISTANT_CID_KEY, data.conversation_id);
+            }
             const answer = String(
               (data && data.answer) ? data.answer :
               (data && !data.ok && data.error) ? "Désolé, une erreur est survenue. Réessayez." :

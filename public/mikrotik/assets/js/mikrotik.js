@@ -8,6 +8,31 @@
   // -------- Madagascar Timezone helpers --------
   const MG_TZ = "Indian/Antananarivo";
 
+  // ============================================================
+  // RAZAFI ASSISTANT — Patch F.2: conversation_id persistence
+  // Uses sessionStorage (tab-scoped). Never stores PII.
+  // ============================================================
+  var RAZAFI_PORTAL_ASSISTANT_CID_KEY = "razafi_portal_assistant_conversation_id_v1";
+
+  function readAssistantConversationId(key) {
+    try {
+      var v = sessionStorage.getItem(key);
+      return /^ast_[0-9a-f]{24}$/.test(String(v || "")) ? v : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeAssistantConversationId(key, value) {
+    try {
+      var v = String(value || "").trim();
+      if (/^ast_[0-9a-f]{24}$/.test(v)) {
+        sessionStorage.setItem(key, v);
+      }
+    } catch (_) {}
+  }
+  // ============================================================
+
   // Current truth status from /api/portal/status (used to drive small UX copy)
   let portalTruthStatus = "none";
 
@@ -4365,6 +4390,7 @@ function bindPlanHandlers() {
       } catch (_) {}
 
       // Call backend
+      var assistantConversationId = readAssistantConversationId(RAZAFI_PORTAL_ASSISTANT_CID_KEY);
       fetch(apiUrl("/api/assistant/chat"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -4376,6 +4402,7 @@ function bindPlanHandlers() {
           page_path: (function () {
             try { return String(window.location.pathname || "").slice(0, 200); } catch (_) { return null; }
           })(),
+          conversation_id: assistantConversationId,
         }),
       })
         .then(function (res) {
@@ -4384,6 +4411,11 @@ function bindPlanHandlers() {
         .then(function (data) {
           removeMsg(thinkingBubble);
           isLoading = false;
+
+          // Patch F.2: persist conversation_id for multi-turn memory
+          if (data && data.conversation_id) {
+            writeAssistantConversationId(RAZAFI_PORTAL_ASSISTANT_CID_KEY, data.conversation_id);
+          }
 
           var answer = String(
             (data && data.answer) ? data.answer :

@@ -658,6 +658,435 @@ function requireSuperadmin(req, res, next) {
   return next();
 }
 
+
+// ===============================
+// RAZAFI ASSISTANT — PATCH F: MULTI-TURN MEMORY + PAYMENT DIAGNOSTIC
+// Ephemeral in-memory conversation threads. Never persisted to DB.
+// ===============================
+
+// ── Thread store configuration ────────────────────────────────────────────
+const ASSISTANT_THREAD_TTL_MS = Math.max(
+  5 * 60 * 1000,
+  Math.min(60 * 60 * 1000, parseInt(process.env.ASSISTANT_THREAD_TTL_MS || "1200000", 10) || 1200000)
+);
+const ASSISTANT_THREAD_MAX_TURNS = Math.max(
+  4, Math.min(20, parseInt(process.env.ASSISTANT_THREAD_MAX_TURNS || "10", 10) || 10)
+);
+const ASSISTANT_THREAD_MAX = Math.max(
+  100, Math.min(10000, parseInt(process.env.ASSISTANT_THREAD_MAX || "2000", 10) || 2000)
+);
+
+const assistantThreads = new Map();
+
+// Patterns that look like PINs — 4-6 digit sequences not part of a phone/amount
+const ASSISTANT_PIN_PATTERN = /^\s*\d{4,6}\s*$/;
+// Patterns used for signal extraction
+const ASSISTANT_PHONE_PATTERN = /(^|[^\d])((?:\+?2613[2-9]\d{7})|(?:03[2-9]\d{7}))(?!\d)/;
+const ASSISTANT_AMOUNT_PATTERN = /\b(\d[\d\s]*)\s*(?:ar|ariary)\b/i;
+const ASSISTANT_TIME_HINT_PATTERN = /\b(\d{1,2})h(?:\d{2})?\b|\b(hier|aujourd'hui|tantôt|avy hatreo|omaly|androany)\b/i;
+const ASSISTANT_REF_PATTERN = /\b([A-Z0-9]{8,20})\b/;
+
+function generateAssistantConversationId() {
+  return "ast_" + crypto.randomBytes(12).toString("hex");
+}
+
+function normalizeAssistantConversationId(raw) {
+  const s = String(raw || "").trim();
+  if (/^ast_[0-9a-f]{24}$/.test(s)) return s;
+  return null;
+}
+
+function getAssistantThread({ conversationId, context, scopeKey }) {
+  const now = Date.now();
+  const existing = conversationId ? assistantThreads.get(conversationId) : null;
+  if (existing) {
+    // Validate context and scope match — prevent cross-context injection
+    if (existing.context !== context) return null;
+    if (scopeKey && existing.scope_key !== scopeKey) return null;
+    if (now - existing.updated_at > ASSISTANT_THREAD_TTL_MS) {
+      assistantThreads.delete(conversationId);
+      return null;
+    }
+    return existing;
+  }
+  return null;
+}
+
+function createAssistantThread({ conversationId, context, scopeKey, lang }) {
+  const now = Date.now();
+  const thread = {
+    id: conversationId,
+    context,
+    scope_key: scopeKey || null,
+    created_at: now,
+    updated_at: now,
+    lang,
+    last_intent_key: null,
+    current_topic: null,
+    pending_issue_type: null,
+    pending_fields: [],
+    slots: {},
+    turns: [],
+  };
+  // Evict oldest if at cap
+  if (assistantThreads.size >= ASSISTANT_THREAD_MAX) {
+    let oldestKey = null, oldestTime = Infinity;
+    for (const [k, v] of assistantThreads) {
+      if (v.updated_at < oldestTime) { oldestTime = v.updated_at; oldestKey = k; }
+    }
+    if (oldestKey) assistantThreads.delete(oldestKey);
+  }
+  assistantThreads.set(conversationId, thread);
+  return thread;
+}
+
+function looksLikePin(msg) {
+  return ASSISTANT_PIN_PATTERN.test(String(msg || ""));
+}
+
+function maskPhone(phone) {
+  const s = String(phone || "");
+  if (s.length < 7) return "***";
+  return s.slice(0, 3) + "****" + s.slice(-3);
+}
+
+function extractAssistantFollowUpSignals(message, context, thread) {
+  const s = String(message || "").toLowerCase().trim();
+  const signals = {};
+
+  // Phone
+  const phoneMatch = String(message).match(ASSISTANT_PHONE_PATTERN);
+  if (phoneMatch) signals.phone = normalizePhone(phoneMatch[2]);
+
+  // Ariary amount
+  const amountMatch = s.match(ASSISTANT_AMOUNT_PATTERN);
+  if (amountMatch) signals.amount_ar = parseInt(amountMatch[1].replace(/\s/g, ""), 10);
+
+  // Time hint
+  const timeMatch = s.match(ASSISTANT_TIME_HINT_PATTERN);
+  if (timeMatch) signals.time_hint = (timeMatch[1] || timeMatch[2] || "").trim();
+
+  // Transaction reference (alphanumeric 8-20 chars, uppercase-ish, not a phone)
+  if (!phoneMatch) {
+    const refMatch = String(message).match(ASSISTANT_REF_PATTERN);
+    if (refMatch && !/^\d+$/.test(refMatch[1])) signals.transaction_ref = refMatch[1];
+  }
+
+  // Provider
+  if (s.includes("mvola")) signals.provider = "mvola";
+  else if (s.includes("orange money") || s.includes("orange")) signals.provider = "orange";
+  else if (s.includes("airtel")) signals.provider = "airtel";
+
+  // Yes/No
+  if (/\b(oui|yes|voky|eny|ok)\b/.test(s)) signals.affirmative = true;
+  if (/\b(non|no|tsia)\b/.test(s)) signals.negative = true;
+
+  // Topic hints
+  if (/tiktok|facebook|youtube|instagram|streaming/.test(s)) signals.plan_use = s.match(/tiktok|facebook|youtube|instagram|streaming/)[0];
+  if (/1\s*h(eure)?|1jour|1\s*day/.test(s)) signals.plan_duration = "1h_or_1j";
+  if (/7\s*j(our)?|semaine|hafanadiny/.test(s)) signals.plan_duration = "7j";
+  if (/mois|month|volana/.test(s)) signals.plan_duration = "monthly";
+
+  // Admin fragments
+  if (context === "admin_owner") {
+    if (/cache|hide|masquer/.test(s)) signals.admin_intent = "hide_plan";
+    if (/revenue|revenu|vola/.test(s)) signals.admin_intent = "revenue";
+    if (/client/.test(s)) signals.admin_intent = "clients";
+    if (/forfait|plan/.test(s)) signals.admin_intent = "plans";
+  }
+
+  // Prospect fragments
+  if (context === "platform_prospect") {
+    if (/demo|démonstration/.test(s)) signals.prospect_intent = "demo";
+    if (/prix|combien|cost|price/.test(s)) signals.prospect_intent = "pricing";
+    if (/starlink|fibre|satellite/.test(s)) signals.prospect_intent = "connectivity";
+    if (/commencer|start|démarrer/.test(s)) signals.prospect_intent = "get_started";
+    if (/contact|whatsapp/.test(s)) signals.prospect_intent = "contact";
+  }
+
+  return signals;
+}
+
+function updateAssistantThread({ thread, userMessage, assistantAnswer, lang, intentKey, topic, slots }) {
+  if (!thread) return;
+  const now = Date.now();
+  thread.updated_at = now;
+  if (lang) thread.lang = lang;
+  if (intentKey) thread.last_intent_key = intentKey;
+  if (topic) thread.current_topic = topic;
+
+  // Merge new slots (never store PIN)
+  if (slots && typeof slots === "object") {
+    for (const [k, v] of Object.entries(slots)) {
+      if (k === "pin" || k === "password") continue;
+      thread.slots[k] = v;
+    }
+  }
+
+  // Update pending fields: remove any that are now in slots
+  if (thread.pending_fields && thread.pending_fields.length) {
+    thread.pending_fields = thread.pending_fields.filter(f => !(f in thread.slots));
+  }
+
+  // Store sanitized turn only when there is actual content (Fix 6: skip empty turns)
+  const rawUser = String(userMessage || "").trim();
+  const rawAsst = String(assistantAnswer || "").trim();
+  if (rawUser || rawAsst) {
+    // Mask any phone numbers in stored text (Fix 2)
+    let safeUser = rawUser.slice(0, 300);
+    if (looksLikePin(safeUser)) {
+      safeUser = "[PIN-LIKE — NOT STORED]";
+    } else {
+      safeUser = safeUser.replace(ASSISTANT_PHONE_PATTERN, (m, prefix, phone) =>
+        (prefix || "") + maskPhone(normalizePhone(phone))
+      );
+    }
+    const safeAsst = rawAsst.slice(0, 400);
+    thread.turns.push({ role: "user", text: safeUser, at: now });
+    thread.turns.push({ role: "assistant", text: safeAsst, at: now });
+  }
+
+  // Keep only the last N turns
+  const maxTurns = ASSISTANT_THREAD_MAX_TURNS * 2; // pairs
+  if (thread.turns.length > maxTurns) {
+    thread.turns = thread.turns.slice(-maxTurns);
+  }
+}
+
+function buildSafeConversationContext(thread) {
+  if (!thread || !thread.turns || thread.turns.length < 2) return null;
+
+  const recentTurns = thread.turns.slice(-6); // last 3 pairs max
+  const lastUserTurn = [...thread.turns].reverse().find(t => t.role === "user");
+  const lastMsg = lastUserTurn ? lastUserTurn.text : "";
+  const isFragment = lastMsg.length < 40 && !lastMsg.includes("?") && !lastMsg.includes(".");
+
+  const safeSlots = {};
+  for (const [k, v] of Object.entries(thread.slots || {})) {
+    if (k === "phone" && v) safeSlots.phone_masked = maskPhone(v);
+    else if (k === "transaction_ref" || k === "request_ref") continue; // never expose ref in context
+    else safeSlots[k] = v;
+  }
+
+  return {
+    current_topic: thread.current_topic || null,
+    pending_issue_type: thread.pending_issue_type || null,
+    pending_fields: thread.pending_fields || [],
+    collected_slots: safeSlots,
+    last_user_message_was_fragment: isFragment,
+    recent_turns: recentTurns.map(t => ({ role: t.role, text: t.text.slice(0, 200) })),
+  };
+}
+
+function cleanupAssistantThreads() {
+  const now = Date.now();
+  let removed = 0;
+  for (const [k, v] of assistantThreads) {
+    if (now - v.updated_at > ASSISTANT_THREAD_TTL_MS) {
+      assistantThreads.delete(k);
+      removed++;
+    }
+  }
+  if (removed > 0) console.info(`[ASSISTANT THREADS] Cleaned up ${removed} expired thread(s).`);
+}
+// Periodic cleanup every 15 minutes
+setInterval(cleanupAssistantThreads, 15 * 60 * 1000).unref();
+
+// ── Payment diagnostic ────────────────────────────────────────────────────
+async function buildAssistantDiagnosticContext({ context, message, liveData, thread }) {
+  // Only run for portal_user payment issues
+  if (context !== "portal_user") return null;
+  const isComplaint = isPaymentComplaintMessage(message);
+  const isPendingIssue = thread?.pending_issue_type === "payment_no_code";
+  if (!isComplaint && !isPendingIssue) return null;
+  if (!supabase) return null;
+
+  const contactPhone = String(liveData?.contact_phone || DEFAULT_SUPPORT_PHONE || "").trim();
+
+  // Collect signals from current message + stored slots
+  const signals = extractAssistantFollowUpSignals(message, context, thread);
+  const slots = { ...(thread?.slots || {}), ...signals };
+
+  // PIN check: if this message looks like a PIN, do not use it
+  if (looksLikePin(message)) {
+    return {
+      type: "payment",
+      status: "pin_warning",
+      diagnosis_code: "pin_detected",
+      user_action: "do_not_send_pin",
+      missing_fields: [],
+      contact_phone: contactPhone,
+      pin_warning: true,
+    };
+  }
+
+  const phone = slots.phone ? normalizePhone(String(slots.phone)) : null;
+  const amount = slots.amount_ar ? parseInt(slots.amount_ar, 10) : null;
+  const provider = slots.provider || null;
+
+  // Not enough to query
+  if (!phone) {
+    return {
+      type: "payment",
+      status: "not_enough_info",
+      diagnosis_code: "missing_payment_details",
+      missing_fields: ["phone_number", ...(amount ? [] : ["amount_ar"]), "time_hint"],
+      user_action: "provide_missing_details",
+      contact_phone: contactPhone,
+    };
+  }
+
+  try {
+    const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+
+    // Fix 5: if user provided a transaction reference, try exact match first (do not expose ref to AI/user)
+    let rows = [];
+    if (slots.transaction_ref) {
+      const { data: refRows, error: refErr } = await supabase
+        .from("transactions")
+        .select("id,request_ref,phone,amount,plan,status,provider,code,voucher,created_at,updated_at")
+        .eq("request_ref", String(slots.transaction_ref).trim())
+        .limit(1);
+      if (!refErr && refRows?.length) {
+        rows = refRows;
+      }
+    }
+
+    // If no ref match, fall back to phone query
+    if (!rows.length) {
+      let q = supabase
+        .from("transactions")
+        .select("id,request_ref,phone,amount,plan,status,provider,code,voucher,created_at,updated_at")
+        .eq("phone", phone)
+        .gte("created_at", cutoff)
+        .order("created_at", { ascending: false })
+        .limit(10);
+      if (provider) q = q.eq("provider", provider);
+      const { data: txRows, error } = await q;
+      if (error) throw error;
+      rows = txRows || [];
+    }
+
+    if (rows.length === 0) {
+      return {
+        type: "payment",
+        status: "checked",
+        diagnosis_code: "payment_not_found",
+        payment_status: "not_found",
+        voucher_status: "unknown",
+        responsibility: "unknown",
+        should_apologize: false,
+        user_action: "provide_missing_details",
+        missing_fields: ["transaction_reference", "time_hint"],
+        contact_phone: contactPhone,
+      };
+    }
+
+    // Best match: prefer amount match, then most recent
+    let best = rows[0];
+    if (amount && rows.length > 1) {
+      const amountMatch = rows.find(r => Math.abs(Number(r.amount) - amount) < 10);
+      if (amountMatch) best = amountMatch;
+    }
+
+    if (rows.length > 1 && !amount) {
+      return {
+        type: "payment",
+        status: "checked",
+        diagnosis_code: "multiple_possible_matches",
+        payment_status: "unknown",
+        voucher_status: "unknown",
+        responsibility: "unknown",
+        should_apologize: false,
+        user_action: "provide_missing_details",
+        missing_fields: ["amount_ar", "time_hint"],
+        contact_phone: contactPhone,
+      };
+    }
+
+    const txStatus = String(best.status || "").toLowerCase();
+    const hasCode = !!(best.code || best.voucher);
+    const timeAgo = (() => {
+      try {
+        const diff = Math.floor((Date.now() - new Date(best.created_at).getTime()) / 60000);
+        if (diff < 2) return "il y a quelques instants";
+        if (diff < 60) return `il y a environ ${diff} min`;
+        const h = Math.floor(diff / 60);
+        return `il y a environ ${h}h`;
+      } catch (_) { return null; }
+    })();
+
+    // Map status to diagnosis
+    let diagnosis_code, payment_status, voucher_status, responsibility, should_apologize, user_action;
+
+    if (txStatus === "completed" || txStatus === "paid" || txStatus === "success") {
+      payment_status = "completed";
+      if (hasCode) {
+        diagnosis_code = "payment_received_code_exists";
+        voucher_status = "ready";
+        responsibility = "none";
+        should_apologize = false;
+        user_action = "use_code_button";
+      } else {
+        diagnosis_code = "payment_received_code_missing";
+        voucher_status = "not_generated";
+        responsibility = "razafi_possible";
+        should_apologize = true;
+        user_action = "contact_support";
+      }
+    } else if (txStatus === "pending" || txStatus === "initiated") {
+      diagnosis_code = "payment_pending";
+      payment_status = "pending";
+      voucher_status = "unknown";
+      responsibility = "waiting_provider_confirmation";
+      should_apologize = false;
+      user_action = "wait";
+    } else if (txStatus === "failed" || txStatus === "timeout" || txStatus === "cancelled") {
+      diagnosis_code = "payment_not_confirmed";
+      payment_status = txStatus === "failed" ? "failed" : "timeout";
+      voucher_status = "unknown";
+      responsibility = "provider_confirmation_not_received";
+      should_apologize = false;
+      user_action = "send_reference_to_support";
+    } else {
+      diagnosis_code = "payment_status_unknown";
+      payment_status = "unknown";
+      voucher_status = "unknown";
+      responsibility = "unknown";
+      should_apologize = false;
+      user_action = "contact_support";
+    }
+
+    return {
+      type: "payment",
+      status: "checked",
+      diagnosis_code,
+      payment_status,
+      voucher_status,
+      amount_match: amount ? Math.abs(Number(best.amount) - amount) < 10 : null,
+      time_ago: timeAgo,
+      provider: String(best.provider || provider || "unknown").toLowerCase(),
+      responsibility,
+      should_apologize,
+      user_action,
+      missing_fields: [],
+      contact_phone: contactPhone,
+    };
+
+  } catch (diagErr) {
+    console.warn("[ASSISTANT DIAG ERROR]", String(diagErr?.message || diagErr).slice(0, 80));
+    return {
+      type: "payment",
+      status: "error",
+      diagnosis_code: "diagnostic_unavailable",
+      user_action: "contact_support",
+      missing_fields: [],
+      contact_phone: contactPhone,
+    };
+  }
+}
+
+// ── END PATCH F SUPPORT FUNCTIONS ────────────────────────────────────────
 // ===============================
 // RAZAFI ASSISTANT — PATCH A
 // Rule-based, no paid AI, no external API calls.
@@ -3771,9 +4200,73 @@ async function logAssistantInteraction({ context, intent_key, lang, escalated, p
   } catch (_) {}
 }
 
-async function handleAssistantChat({ context, rawMessage, liveData, pool_id, page_path }) {
+async function handleAssistantChat({ context, rawMessage, liveData, pool_id, page_path, conversationId, scopeKey }) {
   const message = cleanAssistantMessage(rawMessage);
   const lang = detectAssistantLang(message);
+
+  // ── Patch F: thread / conversation memory ───────────────────────────────
+  const safeConvId = normalizeAssistantConversationId(conversationId) || generateAssistantConversationId();
+  let thread = getAssistantThread({ conversationId: safeConvId, context, scopeKey });
+  if (!thread) thread = createAssistantThread({ conversationId: safeConvId, context, scopeKey, lang });
+
+  // Extract follow-up signals from current message and merge into slots
+  const followUpSignals = extractAssistantFollowUpSignals(message, context, thread);
+  if (Object.keys(followUpSignals).length) {
+    updateAssistantThread({ thread, userMessage: "", assistantAnswer: "", lang, slots: followUpSignals });
+  }
+
+  // Build safe conversation context for AI prompt
+  const conversationContext = buildSafeConversationContext(thread);
+
+  // ── Patch F: payment diagnostic (portal_user only) ──────────────────────
+  let diagnosticResult = null;
+  if (context === "portal_user" && (isPaymentComplaintMessage(message) || thread?.pending_issue_type === "payment_no_code")) {
+    // PIN check: warn user but don't proceed with diagnostic
+    if (looksLikePin(message)) {
+      const pinLang = lang;
+      const pinWarn = pinLang === "mg"
+        ? "Aza mandefa PIN ato amin'ny conversation. Ny PIN dia tsy ilain'ny RAZAFI."
+        : pinLang === "en"
+          ? "Please do not send your PIN here. RAZAFI never needs your PIN."
+          : "Merci de ne pas envoyer votre PIN ici. RAZAFI n'a jamais besoin de votre PIN.";
+      // Log interaction then return early
+      await logAssistantInteraction({ context, intent_key: "pin_warning", lang, escalated: false, pool_id: pool_id || null, page_path: page_path || null });
+      return {
+        ok: true, context, intent_key: "pin_warning", lang,
+        answer: pinWarn, buttons: [], requires_live_data: false, live_data_keys: [],
+        dynamic: false, ai_enhanced: false,
+        conversation_id: safeConvId, memory_active: true,
+        diagnostic: { type: "payment", status: "pin_warning", diagnosis_code: "pin_detected", user_action: "do_not_send_pin", missing_fields: [] },
+      };
+    }
+    diagnosticResult = await buildAssistantDiagnosticContext({ context, message, liveData, thread });
+    // Mark pending issue for future turns
+    if (diagnosticResult && !thread.pending_issue_type) {
+      thread.pending_issue_type = "payment_no_code";
+    }
+    // If diagnostic found missing fields, update thread
+    if (diagnosticResult?.missing_fields?.length) {
+      thread.pending_fields = diagnosticResult.missing_fields;
+    } else if (diagnosticResult?.status === "checked") {
+      thread.pending_fields = [];
+      thread.pending_issue_type = null; // resolved
+    }
+    // Merge diagnostic safe fields into liveData for AI and fallback
+    if (diagnosticResult?.status === "checked") {
+      if (diagnosticResult.payment_status && diagnosticResult.payment_status !== "unknown") {
+        liveData = { ...liveData, latest_payment_status: diagnosticResult.payment_status };
+      }
+      if (diagnosticResult.voucher_status && diagnosticResult.voucher_status !== "unknown") {
+        liveData = { ...liveData, latest_voucher_status: diagnosticResult.voucher_status };
+      }
+      if (diagnosticResult.time_ago) liveData = { ...liveData, latest_payment_time_ago: diagnosticResult.time_ago };
+      if (diagnosticResult.provider && diagnosticResult.provider !== "unknown") {
+        liveData = { ...liveData, latest_payment_provider: diagnosticResult.provider };
+      }
+    }
+    // Update current_topic
+    thread.current_topic = "payment_issue";
+  }
 
   // Load KB rows for this context + universal rows
   const rows = await loadAssistantKnowledge(context);
@@ -3861,6 +4354,8 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
         knowledgeRows: rows,
         liveData,
         canonicalAnswer,
+        conversationContext,
+        diagnosticResult,
       });
 
       const aiSafe = validateRazafiAiAnswer({
@@ -3868,6 +4363,7 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
         context,
         liveData,
         canonicalAnswer,
+        diagnosticResult,
       });
 
       if (aiSafe) {
@@ -3888,15 +4384,38 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     }
   }
 
-  // Patch D Fix 1: payment complaint safety net.
-  // If AI was not used (disabled, timed out, or blocked) and the message is a payment complaint,
-  // replace finalAnswer with the deterministic payment diagnosis — never leave a generic FAQ answer.
-  if (messageIsPaymentComplaint && context === "portal_user" && !aiUsed) {
+  // Patch D Fix 1 + F.1 Fix 3: deterministic fallback safety net.
+  // Priority: diagnostic result > complaint fallback.
+  // If AI was not used and diagnostic result exists (covers follow-up messages too), use it.
+  // Otherwise if message is a raw payment complaint, use the complaint fallback.
+  if (context === "portal_user" && diagnosticResult && !aiUsed) {
+    finalAnswer = buildPaymentDiagnosticFallbackAnswer(lang, diagnosticResult, liveData);
+  } else if (messageIsPaymentComplaint && context === "portal_user" && !aiUsed) {
     finalAnswer = buildPaymentComplaintFallbackAnswer(lang, liveData);
   }
   // ---------------------------------------------------------------------------
   // END PATCH B+C+D+E
   // ---------------------------------------------------------------------------
+
+  // Patch F: update thread with final turn
+  updateAssistantThread({
+    thread,
+    userMessage: message,
+    assistantAnswer: finalAnswer,
+    lang,
+    intentKey: intent?.intent_key || null,
+    topic: thread.current_topic,
+    slots: {},
+  });
+
+  // Safe diagnostic metadata (never includes PII or internal refs)
+  const safeDiagnostic = diagnosticResult ? {
+    type: diagnosticResult.type,
+    status: diagnosticResult.status,
+    diagnosis_code: diagnosticResult.diagnosis_code,
+    user_action: diagnosticResult.user_action,
+    missing_fields: diagnosticResult.missing_fields || [],
+  } : null;
 
   return {
     ok: true,
@@ -3904,12 +4423,14 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     intent_key: intent?.intent_key || null,
     lang,
     answer: finalAnswer,
-    // When AI is used, keep existing safe buttons from canonical result (they are already validated)
     buttons: dynamicAnswer ? [] : buttons,
     requires_live_data: dynamicAnswer ? false : !!(intent?.requires_live_data),
     live_data_keys: dynamicAnswer ? [] : live_data_keys,
     dynamic: !!dynamicAnswer,
     ai_enhanced: aiUsed,
+    conversation_id: safeConvId,
+    memory_active: true,
+    ...(safeDiagnostic ? { diagnostic: safeDiagnostic } : {}),
   };
 }
 // ===============================
@@ -4119,6 +4640,120 @@ SAFETY RULES:
 `;
 
 // ---------------------------------------------------------------------------
+// Patch F.1 Fix 3: deterministic fallback driven by diagnostic result.
+// Used when AI is disabled/blocked/timeout AND a diagnosticResult exists.
+// Covers follow-up messages (phone, amount, time) that are not raw complaints.
+// ---------------------------------------------------------------------------
+function buildPaymentDiagnosticFallbackAnswer(lang, diagnosticResult, liveData) {
+  const l = String(lang || "fr").toLowerCase();
+  const dc = String(diagnosticResult?.diagnosis_code || "").toLowerCase();
+  const phone = String(liveData?.contact_phone || diagnosticResult?.contact_phone || DEFAULT_SUPPORT_PHONE || "").trim();
+  const missing = Array.isArray(diagnosticResult?.missing_fields) ? diagnosticResult.missing_fields : [];
+
+  function t(mg, fr, en) {
+    if (l === "mg") return mg;
+    if (l === "en") return en;
+    return fr;
+  }
+
+  const contactSuffix = phone
+    ? t(` Mifandraisa amin'ny assistance: ${phone}.`, ` Contactez l'assistance au ${phone}.`, ` Contact support at ${phone}.`)
+    : t(" Mifandraisa amin'ny assistance RAZAFI.", " Contactez l'assistance RAZAFI.", " Please contact RAZAFI support.");
+
+  // PIN warning
+  if (dc === "pin_detected") {
+    return t(
+      "Aza mandefa PIN ato amin'ny conversation. Ny PIN dia tsy ilain'ny RAZAFI.",
+      "Merci de ne pas envoyer votre PIN ici. RAZAFI n'a jamais besoin de votre PIN.",
+      "Please do not send your PIN here. RAZAFI never needs your PIN."
+    );
+  }
+
+  // Payment confirmed + code ready
+  if (dc === "payment_received_code_exists") {
+    return t(
+      "Voamarina ny paiement-nao ary efa vonona ny code. Tsindrio ny bouton \"Utiliser ce code\" eo amin'ny portail.",
+      "Votre paiement est confirmé et votre code est prêt. Appuyez sur \"Utiliser ce code\" sur le portail.",
+      "Your payment is confirmed and your code is ready. Tap \"Use this code\" on the portal."
+    );
+  }
+
+  // Payment confirmed but code missing — RAZAFI side issue, apologize
+  if (dc === "payment_received_code_missing") {
+    return t(
+      "Azafady, toa voaray ny paiement, fa tsy nivoaka tsara ny code côté RAZAFI. Mifandraisa amin'ny assistance miaraka amin'ny nomerao nampiasaina sy ny ora nandoavana. Aza mandefa PIN." + contactSuffix,
+      "Désolé, le paiement semble bien reçu, mais le code n'a pas été généré correctement côté RAZAFI. Contactez l'assistance avec le numéro utilisé et l'heure du paiement. N'envoyez jamais votre PIN." + contactSuffix,
+      "Sorry, your payment appears received but the code was not generated correctly on RAZAFI's side. Contact support with the number used and payment time. Never share your PIN." + contactSuffix
+    );
+  }
+
+  // Payment pending
+  if (dc === "payment_pending") {
+    return t(
+      "Mbola miandry confirmation MVola ny paiement. Aza mamerina paiement aloha sao misy double paiement. Andraso kely azafady.",
+      "Votre paiement est encore en attente de confirmation. Ne payez pas à nouveau pour éviter un double paiement. Patientez quelques instants.",
+      "Your payment is still waiting for confirmation. Please do not pay again to avoid a double charge. Wait a moment."
+    );
+  }
+
+  // Payment not confirmed / failed / timeout
+  if (dc === "payment_not_confirmed") {
+    return t(
+      "Tsy nahazo confirmation paiement ny RAZAFI. Raha nihena ny solde MVola-nao, alefaso amin'ny assistance ny SMS na référence transaction. Aza mandefa PIN." + contactSuffix,
+      "RAZAFI n'a pas reçu la confirmation de ce paiement. Si votre solde a été débité, envoyez le SMS ou la référence de transaction à l'assistance. N'envoyez jamais votre PIN." + contactSuffix,
+      "RAZAFI did not receive payment confirmation. If your balance was debited, send the SMS or transaction reference to support. Never share your PIN." + contactSuffix
+    );
+  }
+
+  // No transaction found
+  if (dc === "payment_not_found") {
+    return t(
+      "Tsy hita ny transaction eo amin'ny système RAZAFI. Alefaso amin'ny assistance ny SMS na référence transaction, ny ora nandoavana, ary ny nomerao nampiasaina. Aza mandefa PIN." + contactSuffix,
+      "Aucune transaction correspondante trouvée dans le système RAZAFI. Envoyez à l'assistance le SMS ou la référence, l'heure du paiement, et le numéro utilisé. N'envoyez jamais votre PIN." + contactSuffix,
+      "No matching transaction found in RAZAFI. Send the support team your SMS or reference, payment time, and number used. Never share your PIN." + contactSuffix
+    );
+  }
+
+  // Multiple matches — need more details
+  if (dc === "multiple_possible_matches") {
+    const ask = missing.length
+      ? t(`Precizao: ${missing.join(", ")}.`, `Précisez : ${missing.join(", ")}.`, `Please provide: ${missing.join(", ")}.`)
+      : t("Precizao ny montant sy ny ora.", "Précisez le montant et l'heure.", "Please specify the amount and time.");
+    return t(
+      "Misy transaction maromaro mifanitsy. " + ask,
+      "Plusieurs transactions possibles trouvées. " + ask,
+      "Multiple matching transactions found. " + ask
+    );
+  }
+
+  // Missing payment details — ask only for what's missing
+  if (dc === "missing_payment_details") {
+    const fieldLabels = {
+      phone_number: t("nomerao nampiasaina", "le numéro utilisé", "the number used"),
+      amount_ar:    t("montant nandoavanao", "le montant envoyé", "the amount sent"),
+      time_hint:    t("ny ora teo ho eo", "l'heure approximative", "the approximate time"),
+      transaction_reference: t("référence transaction raha misy", "la référence de transaction si disponible", "the transaction reference if available"),
+    };
+    const askParts = missing.map(f => fieldLabels[f] || f);
+    const askStr = askParts.length
+      ? t(`Lazao aminay: ${askParts.join(", ")}.`, `Merci de préciser : ${askParts.join(", ")}.`, `Please share: ${askParts.join(", ")}.`)
+      : t("Lazao aminay ny details momba ny paiement.", "Merci de préciser les détails du paiement.", "Please share the payment details.");
+    return t(
+      "Mba hanampy anao tsara, " + askStr + " Aza mandefa PIN.",
+      "Pour mieux vous aider, " + askStr + " N'envoyez jamais votre PIN.",
+      "To help you better, " + askStr + " Never share your PIN."
+    );
+  }
+
+  // Generic diagnostic fallback
+  return t(
+    "Tsy afaka manampy amin'izao fotoana izao. Mifandraisa amin'ny assistance." + contactSuffix,
+    "Je ne peux pas traiter cette demande pour le moment. Contactez l'assistance." + contactSuffix,
+    "I cannot process this request right now. Please contact support." + contactSuffix
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Patch D Fix 1: Deterministic payment complaint fallback
 // Used when AI is disabled, times out, or is blocked by the safety validator.
 // Implements the same 5-branch diagnosis logic as the AI prompt, in all 3 languages.
@@ -4205,6 +4840,8 @@ function buildGroundedAssistantPrompt({
   knowledgeRows,
   liveData,
   canonicalAnswer,
+  conversationContext,
+  diagnosticResult,
 }) {
   const maxInput = getAssistantAiMaxInputChars();
 
@@ -4314,12 +4951,59 @@ function buildGroundedAssistantPrompt({
     "",
     "## RULES",
     "- " + contextRules,
+    "",
+    "## MULTI-TURN RULE",
+    "If CONVERSATION CONTEXT is present and last_user_message_was_fragment=true, interpret the user message as a follow-up to the current topic. Do not say the message is incomplete or ask them to rephrase unless the fragment truly cannot be linked to any prior topic.",
+    "If SAFE DIAGNOSTIC RESULT is present, use it as ground truth. Do not invent payment/voucher status.",
+    "If diagnosis_code = pin_detected: warn user not to share PIN, do not use the number sent.",
+    "If should_apologize = true: apologize clearly for the RAZAFI-side issue in the user's language.",
   ].join("\n");
 
   // ── USER CONTENT ──────────────────────────────────────────────────────────
+  // ── SECTION: CONVERSATION CONTEXT ──────────────────────────────────────
+  let conversationSection = "";
+  if (conversationContext && (
+    conversationContext.current_topic ||
+    conversationContext.pending_fields?.length ||
+    conversationContext.recent_turns?.length >= 2
+  )) {
+    const ctxLines = [];
+    if (conversationContext.current_topic) ctxLines.push(`current_topic: ${conversationContext.current_topic}`);
+    if (conversationContext.pending_issue_type) ctxLines.push(`pending_issue: ${conversationContext.pending_issue_type}`);
+    if (conversationContext.pending_fields?.length) ctxLines.push(`missing_fields: ${conversationContext.pending_fields.join(", ")}`);
+    if (conversationContext.last_user_message_was_fragment) ctxLines.push("last_user_message_was_fragment: true — interpret using conversation context, do not say incomplete");
+    const slots = conversationContext.collected_slots || {};
+    if (Object.keys(slots).length) ctxLines.push(`collected: ${Object.entries(slots).map(([k,v]) => `${k}=${v}`).join(", ")}`);
+    if (conversationContext.recent_turns?.length >= 2) {
+      const turnLines = conversationContext.recent_turns.map(t => `${t.role}: ${t.text.slice(0, 150)}`).join("\n");
+      ctxLines.push(`recent_turns:\n${turnLines}`);
+    }
+    conversationSection = `\n\n## CONVERSATION CONTEXT\n${ctxLines.join("\n")}`;
+  }
+
+  // ── SECTION: SAFE DIAGNOSTIC RESULT ─────────────────────────────────────
+  let diagnosticSection = "";
+  if (diagnosticResult && diagnosticResult.status !== "error") {
+    const dLines = [];
+    if (diagnosticResult.diagnosis_code) dLines.push(`diagnosis_code: ${diagnosticResult.diagnosis_code}`);
+    if (diagnosticResult.payment_status) dLines.push(`payment_status: ${diagnosticResult.payment_status}`);
+    if (diagnosticResult.voucher_status) dLines.push(`voucher_status: ${diagnosticResult.voucher_status}`);
+    if (diagnosticResult.responsibility) dLines.push(`responsibility: ${diagnosticResult.responsibility}`);
+    if (diagnosticResult.should_apologize) dLines.push("should_apologize: true — apologize clearly for RAZAFI-side issue");
+    if (diagnosticResult.user_action) dLines.push(`user_action: ${diagnosticResult.user_action}`);
+    if (diagnosticResult.time_ago) dLines.push(`time_ago: ${diagnosticResult.time_ago}`);
+    if (diagnosticResult.provider && diagnosticResult.provider !== "unknown") dLines.push(`provider: ${diagnosticResult.provider}`);
+    if (diagnosticResult.missing_fields?.length) dLines.push(`still_missing: ${diagnosticResult.missing_fields.join(", ")}`);
+    if (diagnosticResult.contact_phone) dLines.push(`contact_phone: ${diagnosticResult.contact_phone}`);
+    if (diagnosticResult.pin_warning) dLines.push("PIN DETECTED IN MESSAGE — warn user not to share PIN, do not use the number");
+    diagnosticSection = `\n\n## SAFE DIAGNOSTIC RESULT\n${dLines.join("\n")}`;
+  }
+
   const userContent = [
     "## USER MESSAGE",
     String(rawMessage).slice(0, 500),
+    conversationSection,
+    diagnosticSection,
     paymentSection,
     liveSection,
     groundingSection,
@@ -4340,6 +5024,8 @@ async function generateRazafiGroundedAiAnswer({
   knowledgeRows,
   liveData,
   canonicalAnswer,
+  conversationContext,
+  diagnosticResult,
 }) {
   const provider = getAssistantAiProvider();
   const model    = getAssistantAiModel();
@@ -4352,6 +5038,7 @@ async function generateRazafiGroundedAiAnswer({
 
   const { systemPrompt, userContent } = buildGroundedAssistantPrompt({
     context, pageHint, lang, rawMessage, knowledgeRows, liveData, canonicalAnswer,
+    conversationContext, diagnosticResult,
   });
 
   // Max tokens ≈ maxOutputChars / 3.5 (conservative)
@@ -4422,7 +5109,7 @@ async function generateRazafiGroundedAiAnswer({
 // ---------------------------------------------------------------------------
 // Safety validator — blocks unsafe AI answers; returns canonical fallback
 // ---------------------------------------------------------------------------
-function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer }) {
+function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer, diagnosticResult }) {
   if (!answer || typeof answer !== "string" || !answer.trim()) return false;
 
   const lower = answer.toLowerCase();
@@ -4436,12 +5123,18 @@ function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer }) 
   }
 
   // 2. Invented payment / code claims (portal_user)
-  // Patch D Fix 2: only block these phrases when live context does NOT confirm them.
-  // If latest_payment_status === "completed", allowing "paiement confirmé" is correct behavior.
-  // If latest_voucher_status === "ready", allowing "code prêt / code ready" is correct behavior.
+  // Patch D Fix 2 + F.1 Fix 4: accept confirmation from liveData OR diagnosticResult.
   if (context === "portal_user") {
-    const paymentIsConfirmed = String(liveData?.latest_payment_status || "").toLowerCase() === "completed";
-    const voucherIsReady     = String(liveData?.latest_voucher_status  || "").toLowerCase() === "ready";
+    const paymentIsConfirmed =
+      String(liveData?.latest_payment_status || "").toLowerCase() === "completed" ||
+      String(diagnosticResult?.payment_status || "").toLowerCase() === "completed";
+    const voucherIsReady =
+      String(liveData?.latest_voucher_status || "").toLowerCase() === "ready" ||
+      String(diagnosticResult?.voucher_status || "").toLowerCase() === "ready";
+    // Apology for RAZAFI-side issue is only valid when diagnostic supports it
+    const apologyPermitted =
+      diagnosticResult?.should_apologize === true ||
+      diagnosticResult?.responsibility === "razafi_possible";
 
     // Block invented payment-success claims ONLY when backend has not confirmed payment
     if (!paymentIsConfirmed) {
@@ -4495,6 +5188,21 @@ function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer }) 
       if (lower.includes(phrase)) {
         console.warn("[AI SAFETY BLOCK] invented refund, context:", context);
         return false;
+      }
+    }
+
+    // Fix 4: block RAZAFI-fault apologies unless diagnostic supports them
+    if (!apologyPermitted) {
+      const razafiFaultPhrases = [
+        "erreur de notre côté", "erreur côté razafi", "problème côté razafi",
+        "razafi a fait une erreur", "razafi-side issue", "issue on razafi",
+        "fahadisoana tao amin'ny razafi", "côté razafi",
+      ];
+      for (const phrase of razafiFaultPhrases) {
+        if (lower.includes(phrase)) {
+          console.warn("[AI SAFETY BLOCK] invented RAZAFI fault without diagnostic support, context:", context);
+          return false;
+        }
       }
     }
   }
@@ -5158,12 +5866,17 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
     const pool_id = null; // Public endpoint: never log pool_id (avoids UUID issues, keeps logs anonymous)
     const page_path = String(req.body?.page_path || "").trim().slice(0, 200) || null;
 
+    const rawConvId = String(req.body?.conversation_id || "").trim();
+    const conversationId = normalizeAssistantConversationId(rawConvId) || null;
+
     const result = await handleAssistantChat({
       context: rawContext,
       rawMessage,
       liveData,
       pool_id,
       page_path,
+      conversationId,
+      scopeKey: null, // public endpoint: no per-user scope
     });
 
     return res.json(result);
@@ -5827,12 +6540,19 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
 
     const page_path = String(req.body?.page_path || "").trim().slice(0, 200) || null;
 
+    const rawConvId = String(req.body?.conversation_id || "").trim();
+    const conversationId = normalizeAssistantConversationId(rawConvId) || null;
+    // Scope admin threads by admin user ID so one admin's thread never leaks to another
+    const adminScopeKey = req.admin?.id ? "admin_" + String(req.admin.id).slice(0, 16) : null;
+
     const result = await handleAssistantChat({
       context: rawContext,
       rawMessage,
       liveData,
-      pool_id: null, // admin_owner context: no per-user pool_id needed in logs
+      pool_id: null,
       page_path,
+      conversationId,
+      scopeKey: adminScopeKey,
     });
 
     return res.json(result);
@@ -14186,12 +14906,6 @@ async function resolvePoolEmailLabel(poolId) {
 // ---------------------------------------------------------------------------
 // HELPERS
 // ---------------------------------------------------------------------------
-function maskPhone(phone) {
-  if (!phone) return null;
-  const s = String(phone);
-  return s.length >= 7 ? s.slice(0, 3) + "****" + s.slice(-3) : s;
-}
-
 function maskVoucherCode(code) {
   const s = String(code || "").trim();
   if (!s) return null;
