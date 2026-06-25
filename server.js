@@ -3835,19 +3835,19 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   const canonicalAnswer = dynamicAnswer || answer || fallbackAnswer;
 
   // ---------------------------------------------------------------------------
-  // PATCH B+C+D — Conversational AI layer
-  // Payment complaints always attempt AI first (transaction-aware diagnosis).
-  // For all other messages: AI runs only when !dynamicAnswer.
+  // PATCH B+C+D+E — Conversational AI layer
+  // Patch E: AI now runs for ALL valid assistant messages when ASSISTANT_AI_ENABLED=true.
+  // canonicalAnswer (KB + dynamic) is passed as grounding context to the AI.
   // Falls back to canonicalAnswer silently on timeout / safety block / any error.
-  // Patch D Fix 1: if AI was not used and message is a payment complaint,
-  // override finalAnswer with deterministic payment complaint fallback —
-  // never fall through to a generic FAQ/MVola description.
+  // Payment complaint safety net (Patch D) preserved: if AI fails on a payment complaint,
+  // buildPaymentComplaintFallbackAnswer() is used — never a generic FAQ answer.
   // ---------------------------------------------------------------------------
   let finalAnswer = canonicalAnswer;
   let aiUsed = false;
 
   const messageIsPaymentComplaint = isPaymentComplaintMessage(message);
-  const shouldRunAi = isAssistantAiEnabled() && (messageIsPaymentComplaint || !dynamicAnswer);
+  // Patch E: run AI for every valid message when enabled, not only payment complaints / no-dynamic cases.
+  const shouldRunAi = isAssistantAiEnabled() && !!message;
 
   if (shouldRunAi) {
     try {
@@ -3895,7 +3895,7 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     finalAnswer = buildPaymentComplaintFallbackAnswer(lang, liveData);
   }
   // ---------------------------------------------------------------------------
-  // END PATCH B+C+D
+  // END PATCH B+C+D+E
   // ---------------------------------------------------------------------------
 
   return {
@@ -4195,7 +4195,7 @@ function buildPaymentComplaintFallbackAnswer(lang, liveData) {
 }
 
 // ---------------------------------------------------------------------------
-// Prompt builder
+// Prompt builder — Patch E: structured sections, natural-human-first tone
 // ---------------------------------------------------------------------------
 function buildGroundedAssistantPrompt({
   context,
@@ -4208,11 +4208,11 @@ function buildGroundedAssistantPrompt({
 }) {
   const maxInput = getAssistantAiMaxInputChars();
 
-  // Patch C: detect payment complaint so we can inject diagnosis protocol
+  // Detect payment complaint — used to inject diagnosis protocol and suppress canonical hint
   const isPaymentComplaint = context === "portal_user" && isPaymentComplaintMessage(rawMessage);
 
-  // Build compact RAZAFI knowledge section (approved KB rows only)
-  let knowledgeBlock = "";
+  // ── SECTION: RELEVANT KNOWLEDGE ──────────────────────────────────────────
+  let knowledgeSection = "";
   if (Array.isArray(knowledgeRows) && knowledgeRows.length > 0) {
     const kbLines = knowledgeRows
       .slice(0, 12)
@@ -4224,101 +4224,106 @@ function buildGroundedAssistantPrompt({
         return `[${key}] FR: ${fr.slice(0, 200)} | MG: ${mg.slice(0, 120)} | EN: ${en.slice(0, 120)}`;
       })
       .join("\n");
-    knowledgeBlock = `\n\nAPPROVED RAZAFI KNOWLEDGE:\n${kbLines}`;
+    knowledgeSection = `\n\n## RELEVANT KNOWLEDGE\n${kbLines}`;
   }
 
-  // Build compact live data section (already sanitized upstream)
-  let liveBlock = "";
+  // ── SECTION: SAFE LIVE DATA ───────────────────────────────────────────────
+  let liveSection = "";
   if (liveData && typeof liveData === "object" && Object.keys(liveData).length > 0) {
-    // Stringify only what is needed; never include forbidden keys (belt-and-suspenders)
     const safeLive = {};
-    const forbidden = ASSISTANT_FORBIDDEN_LIVE_KEYS;
     for (const [k, v] of Object.entries(liveData)) {
-      if (!forbidden.has(k)) safeLive[k] = v;
+      if (!ASSISTANT_FORBIDDEN_LIVE_KEYS.has(k)) safeLive[k] = v;
     }
-    liveBlock = `\n\nSANITIZED LIVE DATA:\n${JSON.stringify(safeLive, null, 2).slice(0, 800)}`;
+    if (Object.keys(safeLive).length > 0) {
+      liveSection = `\n\n## SAFE LIVE DATA\n${JSON.stringify(safeLive, null, 2).slice(0, 800)}`;
+    }
   }
 
-  // Patch C: payment context block (only for portal_user payment complaints)
-  const paymentContextBlock = isPaymentComplaint
-    ? `\n\n${buildPaymentContextBlock(liveData)}`
+  // ── SECTION: PAYMENT CONTEXT (portal_user payment complaints only) ────────
+  const paymentSection = isPaymentComplaint
+    ? `\n\n## PAYMENT CONTEXT\n${buildPaymentContextBlock(liveData)}`
     : "";
 
-  // Canonical rule-based answer — only include as soft hint when AI is purely improving style.
-  // For payment complaints the AI must reason from payment context, not just reword a generic FAQ answer.
-  const canonicalBlock = (canonicalAnswer && !isPaymentComplaint)
-    ? `\n\nEXISTING RULE-BASED ANSWER (improve this, do not contradict it unless wrong):\n${String(canonicalAnswer).slice(0, 400)}`
+  // ── SECTION: DETERMINISTIC GROUNDING ANSWER ───────────────────────────────
+  // Passed to AI as grounding reference — AI should use this as factual base,
+  // rewrite it naturally, and not contradict it unless it is clearly wrong.
+  // Not passed for payment complaints: AI must reason from PAYMENT CONTEXT, not from a generic FAQ answer.
+  const groundingSection = (canonicalAnswer && !isPaymentComplaint)
+    ? `\n\n## DETERMINISTIC GROUNDING ANSWER\nUse this as factual grounding. Rewrite it naturally in the user's language. Do not copy it word-for-word. Do not contradict it unless it is clearly wrong.\n${String(canonicalAnswer).slice(0, 500)}`
     : "";
 
-  // Context-specific behavioral rules
-  const contextRules = {
-    portal_user: [
-      "You are helping a WiFi end-user on a captive portal (page: " + pageHint + ").",
-      "Act like a calm, helpful human support agent — not a FAQ bot. Understand the user's real issue, their tone, and give a practical next step.",
-      "Internally consider: user language, user tone (normal/confused/worried/angry/urgent), topic (payment/code/connection/plan/portal/support), and likely situation. Do NOT expose this classification in your answer.",
-      "Focus only on: forfait, paiement, code, dernière consommation, connexion, assistance, network status.",
-      "NEVER invent a voucher code. NEVER claim payment is successful unless payment_status = 'completed' in PAYMENT CONTEXT.",
-      "NEVER expose: voucher_code, client_mac, request_ref, transaction_id, phone number used for payment, router data, internal IDs.",
-      "BUDGET: if user gives a specific Ariary amount, compare with visible_plans. Never invent a plan. If no plan fits the budget, say so clearly and name the closest higher option.",
-      "MONTHLY/WEEKLY: if user asks for a monthly or weekly plan, check visible_plans durations. Monthly >= 28 days (40320 min). Weekly = 5-10 days (7200-14400 min). If none found, say so clearly using the pool/brand name.",
-      "CAPTEUR/REPEATER: give direct practical placement advice (height, window, orientation, avoid thick walls and metal). Use the pool/SSID name from live_data if available. Do not say 'contact assistance' as first response for hardware placement questions.",
-      "PERSONALIZATION: always use display_name or pool_name from live_data when available. Say 'Sur [Name]...' and never lowercase the name.",
-      "RAZAFI APP: if user asks about the RAZAFI app or how to download it, explain there is no app to download — the portal works directly from the browser after connecting to the WiFi.",
-      "MULTILINGUAL: answer in the same language the user is writing in. French → French. Malagasy → Malagasy. English → English. Mixed Malagasy/French → mirror the mix.",
-      ...(isPaymentComplaint ? [PAYMENT_DIAGNOSIS_RULES] : []),
-    ],
-    admin_owner: [
-      "You are helping a WiFi network owner in their admin dashboard (page: " + pageHint + ").",
-      "Act like a helpful business advisor — not a FAQ bot. Understand what the owner is actually trying to achieve.",
-      "Give useful business advice: plan creation, pricing, sales analysis, dashboard interpretation, network status.",
-      "NEVER say 'I changed it', 'I created it', 'I deleted it', 'I updated it' unless a confirmed system action endpoint was called.",
-      "Prefer: 'Je vous conseille…', 'Vous pouvez…', 'D'après les données visibles…'",
-      "NEVER expose secrets, infrastructure details, internal IDs, or platform revenue share data.",
-      "MULTILINGUAL: answer in the same language the admin is writing in. French → French. Malagasy → Malagasy. English → English.",
-    ],
-    platform_prospect: [
-      "You are helping a business prospect evaluating the RAZAFI platform (page: " + pageHint + ").",
-      "Act like a friendly sales advisor — answer naturally, not like a FAQ.",
-      "Use public-friendly wording only. Explain what RAZAFI is, who it is for, how it works, benefits.",
-      "Hardware recommendation: MikroTik hAP ax² for small/medium spots. Larger sites can use more powerful models.",
-      "NEVER expose any private live data, internal architecture, or configuration details.",
-      "NEVER mention private IDs, backend details, payment secrets, or voucher mechanics.",
-      "ESPACE PROPRIETAIRE: this is the admin login panel for existing pool owners only. NEVER present it as a contact method or a way for prospects to reach RAZAFI. For prospect contact, direct them to WhatsApp or the website.",
-      "MULTILINGUAL: answer in the same language the prospect is writing in. French → French. Malagasy → Malagasy. English → English. For other languages on simple platform questions, answer briefly in that language if possible.",
-    ],
+  // ── CONTEXT-SPECIFIC RULES ────────────────────────────────────────────────
+  const portalUserRules = [
+    "Answer in 1 to 4 short sentences. Prefer 2 sentences for simple questions.",
+    "Use simple words understandable by a non-technical user.",
+    "Do not use Markdown formatting, bullet points, bold, tables, or numbered lists.",
+    "Start directly with the answer. No greetings, no 'Bien sûr !', no title.",
+    "Use display_name or pool_name from SAFE LIVE DATA when available. Say 'Sur [Name]...' and keep the name exactly.",
+    "BUDGET: if user gives an Ariary amount, compare with visible_plans. Never invent a plan.",
+    "PLAN DURATION: monthly = 28+ days (40320+ min). Weekly = 5–10 days. State clearly if none found.",
+    "RAZAFI APP: no app to download — portal works directly from the browser.",
+    "PAYMENT SAFETY: never say payment is confirmed unless latest_payment_status = 'completed'. Never say code is ready unless latest_voucher_status = 'ready'. Never accuse MVola/Orange/Airtel. Never ask for PIN. Never promise refund.",
+    ...(isPaymentComplaint ? ["PAYMENT COMPLAINT ACTIVE — follow PAYMENT CONTEXT and PAYMENT COMPLAINT PROTOCOL strictly.", PAYMENT_DIAGNOSIS_RULES] : []),
+  ].join("\n- ");
+
+  const adminOwnerRules = [
+    "You are advising a WiFi network owner in their admin dashboard.",
+    "Act like a knowledgeable business advisor. Be practical, grounded, and honest.",
+    "Short bullets are acceptable here when listing multiple options or steps, but keep it concise.",
+    "Use 'Je vous conseille…', 'Vous pouvez…', 'D'après les données visibles…' — never say 'I created/deleted/changed' anything.",
+    "Do not suggest actions that require platform-level access the owner does not have.",
+    "Do not expose secrets, internal IDs, platform revenue share figures, or infrastructure details.",
+  ].join("\n- ");
+
+  const prospectRules = [
+    "You are presenting the RAZAFI platform to a business prospect.",
+    "Be warm, commercial, and clear. Explain RAZAFI as a WiFi monetization platform for hotspot owners.",
+    "Invite to demo or contact when useful.",
+    "Hardware: MikroTik hAP ax² for small/medium sites. Larger sites may use more powerful models.",
+    "NEVER direct a prospect to 'Espace propriétaire' as a contact method — that is only for existing owners.",
+    "For prospect contact: mention the website, WhatsApp, or demo request.",
+    "Do not expose private data, internal IDs, backend details, or voucher mechanics.",
+  ].join("\n- ");
+
+  const contextRulesMap = {
+    portal_user:       portalUserRules,
+    admin_owner:       adminOwnerRules,
+    platform_prospect: prospectRules,
   };
+  const contextRules = contextRulesMap[context] || "";
 
-  const rules = (contextRules[context] || []).join("\n- ");
-
+  // ── SYSTEM PROMPT ─────────────────────────────────────────────────────────
   const systemPrompt = [
-    "You are RAZAFI Assistant — a professional, friendly, multilingual WiFi support assistant.",
-    "You are conversational-first: understand the user's real situation, detect their tone (calm/confused/worried/angry/urgent), and give a grounded, practical answer.",
-    "Answer naturally in the user's language: Malagasy (mg), French (fr), English (en), or mixed Malagasy/French.",
-    "Be calm, human, easy to understand for non-technical users. Do not write more than needed.",
-    "Use plain text only. Do not use Markdown titles, bold text, bullet points, numbered lists, tables, or code blocks.",
-    "Answer in 2 to 4 short sentences maximum.",
-    "Start directly with the answer. Do not add a title or greeting.",
-    "Use ONLY the provided RAZAFI knowledge and sanitized live data below. Do not invent missing data.",
-    "If live data is unavailable for a question, say it clearly and give general guidance only.",
-    "NEVER reveal: internal technical architecture, backend details, database details, private IDs,",
-    "raw payment references, secrets, env vars, infrastructure details, logs, or internal implementation.",
-    "NEVER invent payment success. NEVER generate or invent voucher codes.",
-    "NEVER claim an admin action was completed unless a confirmed existing system action actually completed it.",
+    "## ROLE",
+    "You are RAZAFI Assistant — a friendly, multilingual WiFi support assistant.",
+    "You write like a calm, helpful human, not like a FAQ bot or a template engine.",
+    "You adapt your tone and language to the user: Malagasy if they write Malagasy, French if French, English if English.",
+    "You ground every answer in the provided data. You never invent facts.",
+    "You never expose secrets, internal IDs, payment references, router credentials, or infrastructure details.",
+    "You never perform or pretend to perform admin, payment, or router actions.",
     "",
-    "Context-specific rules:",
-    "- " + rules,
+    "## FORMAT",
+    "Plain text only. No Markdown titles, bold, bullet points (except admin_owner when useful), tables, or code blocks.",
+    "Answer length: portal_user = 1–4 short sentences. admin_owner = concise, may use short bullets. platform_prospect = 2–5 warm sentences.",
+    "Start directly with the answer. No greeting, no 'Bien sûr !', no preamble.",
     "",
-    "Context: " + context,
-    "Page hint: " + pageHint,
-    "Detected user language: " + lang,
+    "## CONTEXT",
+    "context: " + context,
+    "page: " + pageHint,
+    "language: " + lang,
+    "",
+    "## RULES",
+    "- " + contextRules,
   ].join("\n");
 
+  // ── USER CONTENT ──────────────────────────────────────────────────────────
   const userContent = [
-    "User message: " + String(rawMessage).slice(0, 500),
-    paymentContextBlock,
-    knowledgeBlock,
-    liveBlock,
-    canonicalBlock,
+    "## USER MESSAGE",
+    String(rawMessage).slice(0, 500),
+    paymentSection,
+    liveSection,
+    groundingSection,
+    knowledgeSection,
   ].join("").slice(0, maxInput);
 
   return { systemPrompt, userContent };
