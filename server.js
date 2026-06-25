@@ -2772,9 +2772,16 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
         )
       : null;
 
+    // Phase 2B-D: when a pool is selected in Plans (single_pool scope), do not open
+    // with the strong "Attention" warning — the user already did what was asked.
+    // Show a light note at the bottom instead.  Keep the strong warning only for the
+    // truly ambiguous all-pools case (no pool selected, global revenue).
+    const scope_cp   = getAnalysisScope();
+    const poolIsSelected = (scope_cp === "single_pool") && !!getSelectedPoolName();
     const header  = scopePrefix();
-    const warning = mixedScopeWarningLine();
-    const caution = (getAnalysisScope() === "all_pools" && hasPlansData()) ? globalCautionLine() : null;
+    const warning = poolIsSelected ? null : mixedScopeWarningLine();
+    const softNote = poolIsSelected ? softMixedScopeNote() : null;
+    const caution = (scope_cp === "all_pools" && hasPlansData()) ? globalCautionLine() : null;
 
     if (!ideas.length) {
       const fallback = t(
@@ -2782,12 +2789,12 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
         "Tsara ny anjara-nao. Hisokatra ny Revenue mba hahafahana mahita tombony vaovao.",
         "Your plans already cover the essentials. Open Revenue to spot opportunities."
       );
-      return [header, warning, fallback, noRevNote, caution].filter(Boolean).join("\n");
+      return [header, warning, fallback, noRevNote, softNote, caution].filter(Boolean).join("\n");
     }
 
     const intro = t("Je vous conseille de tester :", "Toroheviko andramana :", "I recommend testing:");
     const body  = ideas.map((l, i) => `${i + 1}. ${l}`).join("\n");
-    return [header, warning, saturatedNote, intro + "\n" + body, noRevNote, caution].filter(Boolean).join("\n");
+    return [header, warning, saturatedNote, intro + "\n" + body, noRevNote, softNote, caution].filter(Boolean).join("\n");
   }
   // Pure helpers — no DB, no async, no writes.
   // All helpers are local to this block.
@@ -3035,6 +3042,19 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     );
   }
 
+  // Phase 2B-D: Soft mixed-scope note — used instead of mixedScopeWarningLine()
+  // when a pool IS selected in Plans (scope === "single_pool" but revenue is global).
+  // Placed at the BOTTOM of the answer, not at the top, so the pool-specific advice
+  // comes first and the user is not blocked before reading the suggestion.
+  function softMixedScopeNote() {
+    if (!hasMixedScopeData()) return null;
+    return t(
+      "Note : les revenus utilisés sont une tendance globale, mais la suggestion tient compte des forfaits affichés pour ce pool.",
+      "Fanamarihana : ny vola ampiasaina dia fironana ankapobe, fa ny torohevitra dia mifototra amin'ny anjara hita amin'ity pool ity.",
+      "Note: revenue data reflects a global trend, but the suggestion takes into account the plans shown for this pool."
+    );
+  }
+
   function globalCautionLine() {
     // Phase 2B-C: suppress "sélectionnez un pool" when owner has only one accessible pool —
     // they cannot select a different one and the message would be misleading.
@@ -3261,22 +3281,29 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     if (!lines.length) {
       if (!hasPlansData()) return needsPlans();
       const header  = scopePrefix();
-      const warning = mixedScopeWarningLine();
+      // Phase 2B-D: no strong warning when pool is selected
+      const scope_is = getAnalysisScope();
+      const poolSel_is = (scope_is === "single_pool") && !!getSelectedPoolName();
+      const warning = poolSel_is ? null : mixedScopeWarningLine();
+      const softNote = poolSel_is ? softMixedScopeNote() : null;
       const fallback = t(
         "Votre configuration semble déjà orientée ventes. Ouvrez Revenus régulièrement pour vérifier les tendances.",
         "Tsara ny fanombanana-nao. Jereo ny Revenue matetika.",
         "Your setup already looks sales-oriented. Open Revenue regularly to check trends."
       );
-      return [header, warning, fallback].filter(Boolean).join("\n");
+      return [header, warning, fallback, softNote].filter(Boolean).join("\n");
     }
 
     const header  = scopePrefix();
-    const warning = mixedScopeWarningLine();
+    // Phase 2B-D: no strong warning when pool is selected
     const scope2  = getAnalysisScope();
+    const poolSel2 = (scope2 === "single_pool") && !!getSelectedPoolName();
+    const warning = poolSel2 ? null : mixedScopeWarningLine();
+    const softNote2 = poolSel2 ? softMixedScopeNote() : null;
     const caution = (scope2 === "all_pools" && hasPlansData()) ? globalCautionLine() : null;
     const intro   = t("Pour améliorer vos ventes :", "Hanatsara ny varotra-nao :", "To improve your sales:");
     const body    = lines.map((l, i) => `${i + 1}. ${l}`).join("\n");
-    return [header, warning, intro + "\n" + body, caution].filter(Boolean).join("\n");
+    return [header, warning, intro + "\n" + body, softNote2, caution].filter(Boolean).join("\n");
   }
 
   // ---- admin_keep_hide_plans ----
