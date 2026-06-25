@@ -626,6 +626,11 @@ document.addEventListener("DOMContentLoaded", async () => {
               })()
             : null;
 
+          // Phase 2B-E: expose pool ID for pre-fetch in nav.js assistant send.
+          // This is used internally only — nav.js deletes it before sending to the assistant.
+          // The server sanitizer also blocks it as a second safety layer.
+          const selectedPoolId = rawPoolId || null;
+
           const isVisible  = p => !!p.is_visible && !!p.is_active;
           const isHidden   = p => !p.is_visible && !!p.is_active;
           const isInactive = p => !p.is_active;
@@ -661,6 +666,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             panel:               "plans",
             analysis_scope:      selectedPoolName ? "single_pool" : "all_pools",
             selected_pool_name:  selectedPoolName || null,
+            selected_pool_id:    selectedPoolId,   // Phase 2B-E: used by nav.js pre-fetch; deleted before assistant send
             is_readonly:         !!window.__IS_READONLY,
             owner_visibility_only: !!window.__OWNER_PLAN_VISIBILITY_ONLY,
             plans_summary: {

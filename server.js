@@ -6667,6 +6667,23 @@ function serializeFreeAccessDevice(row) {
   };
 }
 
+// Phase 2B-E: dedicated safe mapper for revenue/by-plan rows.
+// Preserves plan-revenue fields; never exposes pool_nas_id, pool_id UUID,
+// device MAC, voucher codes, or transaction internals.
+function serializeRevenueByPlan(row) {
+  if (!row || typeof row !== "object") return row;
+  return {
+    plan_name:        row.plan_name        ?? null,
+    paid_transactions: row.paid_transactions ?? 0,
+    total_amount_ar:  row.total_amount_ar  ?? 0,
+    last_paid_at:     row.last_paid_at     ?? null,
+    // safe extras that some RPC versions return
+    owner_total_ar:   row.owner_total_ar   ?? undefined,
+    pool_name:        row.pool_name        ?? undefined,
+    pool_display_name: row.pool_display_name ?? undefined,
+  };
+}
+
 function serializeBlockedDevice(row) {
   const pool = row?.pool && typeof row.pool === "object" ? row.pool : null;
   const poolDisplayName = pool ? (buildPoolDisplayName(pool) || pool?.name || null) : null;
@@ -9659,21 +9676,73 @@ app.post("/api/admin/revenue/payouts/:id/cancel", requireAdmin, requireSuperadmi
   }
 });
 
+// -----------------------------------------------------------------------
+// Phase 2B-E: Pool-filtered revenue helpers
+// Used by /by-plan and /totals to support optional pool_id query param.
+// Security: superadmin may request any pool; pool_readonly may only request
+// pools inside their own req.admin.pool_ids list.
+// -----------------------------------------------------------------------
+function getRequestedPoolId(req) {
+  return String(req.query.pool_id || "").trim() || null;
+}
+
+async function assertAdminCanReadPool(req, poolId) {
+  if (!poolId) return null;
+  if (req.admin?.is_superadmin) return poolId;
+
+  const allowed = Array.isArray(req.admin.pool_ids)
+    ? req.admin.pool_ids.map(String)
+    : [];
+
+  if (!allowed.includes(String(poolId))) {
+    const err = new Error("pool_forbidden");
+    err.httpStatus = 403;
+    throw err;
+  }
+
+  return poolId;
+}
+
 // GET /api/admin/revenue/by-plan
 // Reads ONLY from: public.v_revenue_paid_by_plan (paid only truth, all-time)
 app.get("/api/admin/revenue/by-plan", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-    // Superadmin: keep existing view
+    // Phase 2B-E: optional pool_id for assistant filtered fetch
+    const requestedPoolId = getRequestedPoolId(req);
+    let validatedPoolId = null;
+    try {
+      validatedPoolId = await assertAdminCanReadPool(req, requestedPoolId);
+    } catch (e) {
+      if (e.httpStatus === 403) return res.status(403).json({ error: "pool_forbidden" });
+      throw e;
+    }
+
+    // Superadmin: keep existing view (or filter to single pool if requested)
     if (req.admin?.is_superadmin) {
+      if (validatedPoolId) {
+        // Superadmin requested a specific pool — use scoped RPC with that pool only
+        const from = normalizeDateInput(req.query.from);
+        const to = normalizeDateInput(req.query.to);
+        const search = String(req.query.search || "").trim() || null;
+        const { data, error } = await supabase
+          .rpc("fn_revenue_paid_by_plan_scoped", {
+            p_from: from || null,
+            p_to: to || null,
+            p_search: search,
+            p_pool_ids: [validatedPoolId],
+          });
+        if (error) return res.status(500).json({ error: error.message });
+        return res.json({ items: (data || []).map(serializeRevenueByPlan) });
+      }
       const { data, error } = await supabase
         .from("v_revenue_paid_by_plan")
         .select("*")
         .order("total_amount_ar", { ascending: false });
 
       if (error) return res.status(500).json({ error: error.message });
-      return res.json({ items: (data || []).map(serializeFreeAccessDevice) });
+      return res.json({ items: (data || []).map(serializeRevenueByPlan) });
     }
 
     // pool_readonly: use scoped RPC (server-side)
@@ -9684,16 +9753,19 @@ app.get("/api/admin/revenue/by-plan", requireAdmin, async (req, res) => {
     const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
     if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
 
+    // If a specific pool was requested and validated, narrow to just that pool
+    const poolIdsForQuery = validatedPoolId ? [validatedPoolId] : allowed;
+
     const { data, error } = await supabase
       .rpc("fn_revenue_paid_by_plan_scoped", {
         p_from: from || null,
         p_to: to || null,
         p_search: search,
-        p_pool_ids: allowed,
+        p_pool_ids: poolIdsForQuery,
       });
 
     if (error) return res.status(500).json({ error: error.message });
-    return res.json({ items: (data || []).map(serializeFreeAccessDevice) });
+    return res.json({ items: (data || []).map(serializeRevenueByPlan) });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
@@ -9761,12 +9833,42 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
+    // Phase 2B-E: optional pool_id for assistant filtered fetch
+    const requestedPoolId = getRequestedPoolId(req);
+    let validatedPoolId = null;
+    try {
+      validatedPoolId = await assertAdminCanReadPool(req, requestedPoolId);
+    } catch (e) {
+      if (e.httpStatus === 403) return res.status(403).json({ error: "pool_forbidden" });
+      throw e;
+    }
+
     const from = normalizeDateInput(req.query.from);
     const to = normalizeDateInput(req.query.to);
     const search = String(req.query.search || "").trim() || null;
 
-    // Superadmin: keep existing fast RPC
+    // Superadmin: keep existing fast RPC (or filter by pool if requested)
     if (req.admin?.is_superadmin) {
+      if (validatedPoolId) {
+        // Filter totals for one pool via by-pool RPC
+        const { data: rows, error: berr } = await supabase
+          .rpc("fn_revenue_paid_by_pool_filtered", {
+            p_from: from || null,
+            p_to: to || null,
+            p_search: search,
+          });
+        if (berr) return res.status(500).json({ error: berr.message });
+        const poolRows = (rows || []).filter(r => String(r?.pool_id || "").trim() === validatedPoolId);
+        const item = poolRows.reduce(
+          (acc, r) => {
+            acc.paid_transactions += Number(r?.paid_transactions ?? 0) || 0;
+            acc.total_amount_ar   += Number(r?.total_amount_ar   ?? 0) || 0;
+            return acc;
+          },
+          { paid_transactions: 0, total_amount_ar: 0 }
+        );
+        return res.json({ item });
+      }
       const { data, error } = await supabase
         .rpc("fn_revenue_paid_totals_filtered", {
           p_from: from || null,
@@ -9793,13 +9895,13 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
 
     if (berr) return res.status(500).json({ error: berr.message });
 
-    const items = (rows || []).filter((r) => allowed.includes(String(r?.pool_id || "").trim()));
+    // If a specific pool was validated, filter to just that one; otherwise all allowed
+    const filterIds = validatedPoolId ? [validatedPoolId] : allowed;
+    const items = (rows || []).filter((r) => filterIds.includes(String(r?.pool_id || "").trim()));
     const item = items.reduce(
       (acc, r) => {
-        const t = Number(r?.paid_transactions ?? 0) || 0;
-        const a = Number(r?.total_amount_ar ?? 0) || 0;
-        acc.paid_transactions += t;
-        acc.total_amount_ar += a;
+        acc.paid_transactions += Number(r?.paid_transactions ?? 0) || 0;
+        acc.total_amount_ar   += Number(r?.total_amount_ar   ?? 0) || 0;
         return acc;
       },
       { paid_transactions: 0, total_amount_ar: 0 }

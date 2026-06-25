@@ -566,6 +566,7 @@
         updated_at: now,
         analysis_scope:    currentData.analysis_scope    || "unknown",
         selected_pool_name: currentData.selected_pool_name || null,
+        selected_pool_id:  undefined,  // Phase 2B-E: never persist pool UUID in session memory
       });
       memory.updated_at = now;
       writeAssistantMemory(memory);
@@ -798,42 +799,113 @@
 
       const liveData = collectAdminAssistantLiveData();
 
-      fetch("/api/admin/assistant/chat", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          context:   "admin_owner",
-          message:   msg,
-          live_data: liveData,
-          page_path: (function () {
-            try { return String(window.location.pathname || "").slice(0, 200); } catch (_) { return null; }
-          })(),
-        }),
-      })
-        .then(function (res) { return res.json().catch(function () { return {}; }); })
-        .then(function (data) {
-          removeMsg(thinkingBubble);
-          isLoading = false;
-          const answer = String(
-            (data && data.answer) ? data.answer :
-            (data && !data.ok && data.error) ? "Désolé, une erreur est survenue. Réessayez." :
-            "Désolé, je n'ai pas pu répondre. Réessayez."
-          );
-          const bubble = appendMsg(answer, "assistant");
-          if (data && Array.isArray(data.buttons) && data.buttons.length) {
-            appendChips(data.buttons, bubble);
+      // Phase 2B-E: if Plans page has a specific pool selected, fetch pool-filtered
+      // revenue data before sending the assistant request. This ensures
+      // revenue_analysis_scope arrives as "single_pool" so hasMixedScopeData()
+      // returns false and the "Note: tendance globale" note is suppressed.
+      const _p2bePanel     = String(liveData.panel || "");
+      const _p2beScope     = String(liveData.analysis_scope || liveData.plans_analysis_scope || "");
+      const _p2bePoolId    = String(liveData.selected_pool_id || "").trim();
+      const _p2bePoolName  = String(liveData.selected_pool_name || liveData.plans_selected_pool_name || "").trim() || null;
+      const _p2beNeedsFilter = (_p2bePanel === "plans") && (_p2beScope === "single_pool") && !!_p2bePoolId;
+
+      // Always delete pool ID before sending — it must never reach the assistant endpoint.
+      // The server sanitizer also blocks it, but we are explicit here.
+      delete liveData.selected_pool_id;
+
+      function _p2beDeriveFromItems(items) {
+        if (!Array.isArray(items) || !items.length) return {};
+        const bestSelling = items.reduce(function (a, b) {
+          return Number(b.paid_transactions || 0) > Number(a.paid_transactions || 0) ? b : a;
+        }).plan_name || null;
+        const bestRevenue = items.reduce(function (a, b) {
+          return Number(b.total_amount_ar || 0) > Number(a.total_amount_ar || 0) ? b : a;
+        }).plan_name || null;
+        return { bestSelling, bestRevenue };
+      }
+
+      function _p2beMergeFilteredRevenue(byPlanItems, totalsItem) {
+        liveData.by_plan                    = byPlanItems;
+        liveData.revenue_summary            = totalsItem;
+        liveData.revenue_analysis_scope     = "single_pool";
+        liveData.revenue_selected_pool_name = _p2bePoolName;
+        const derived = _p2beDeriveFromItems(byPlanItems);
+        if (derived.bestSelling) liveData.best_selling_plan = derived.bestSelling;
+        if (derived.bestRevenue) liveData.best_revenue_plan  = derived.bestRevenue;
+      }
+
+      function _p2beSendAssistant() {
+        fetch("/api/admin/assistant/chat", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            context:   "admin_owner",
+            message:   msg,
+            live_data: liveData,
+            page_path: (function () {
+              try { return String(window.location.pathname || "").slice(0, 200); } catch (_) { return null; }
+            })(),
+          }),
+        })
+          .then(function (res) { return res.json().catch(function () { return {}; }); })
+          .then(function (data) {
+            removeMsg(thinkingBubble);
+            isLoading = false;
+            const answer = String(
+              (data && data.answer) ? data.answer :
+              (data && !data.ok && data.error) ? "Désolé, une erreur est survenue. Réessayez." :
+              "Désolé, je n'ai pas pu répondre. Réessayez."
+            );
+            const bubble = appendMsg(answer, "assistant");
+            if (data && Array.isArray(data.buttons) && data.buttons.length) {
+              appendChips(data.buttons, bubble);
+            }
+          })
+          .catch(function () {
+            removeMsg(thinkingBubble);
+            isLoading = false;
+            appendMsg("Connexion instable. Vérifiez votre réseau et réessayez.", "assistant");
+          })
+          .finally(function () {
+            isLoading = false;
+            sendBtn.disabled = !input.value.trim();
+          });
+      }
+
+      if (_p2beNeedsFilter) {
+        // Pre-fetch pool-filtered revenue for this specific pool, then send.
+        Promise.all([
+          fetch("/api/admin/revenue/by-plan?pool_id=" + encodeURIComponent(_p2bePoolId), { credentials: "include" })
+            .then(function (r) { return r.ok ? r.json().catch(function () { return null; }) : null; })
+            .catch(function () { return null; }),
+          fetch("/api/admin/revenue/totals?pool_id=" + encodeURIComponent(_p2bePoolId), { credentials: "include" })
+            .then(function (r) { return r.ok ? r.json().catch(function () { return null; }) : null; })
+            .catch(function () { return null; }),
+        ]).then(function (results) {
+          try {
+            const rpJson  = results[0];
+            const totJson = results[1];
+            if (rpJson && totJson) {
+              const filteredItems = Array.isArray(rpJson.items) ? rpJson.items : [];
+              const totItem       = (totJson.item && typeof totJson.item === "object")
+                ? totJson.item
+                : { paid_transactions: 0, total_amount_ar: 0 };
+              _p2beMergeFilteredRevenue(filteredItems, totItem);
+            }
+            // If fetch failed silently: liveData keeps existing global revenue.
+            // Soft "tendance globale" note may appear — that is the correct fallback.
+          } catch (_) {
+            // Safety: any unexpected error leaves liveData unchanged.
           }
-        })
-        .catch(function () {
-          removeMsg(thinkingBubble);
-          isLoading = false;
-          appendMsg("Connexion instable. Vérifiez votre réseau et réessayez.", "assistant");
-        })
-        .finally(function () {
-          isLoading = false;
-          sendBtn.disabled = !input.value.trim();
+          _p2beSendAssistant();
+        }).catch(function () {
+          // Pre-fetch itself crashed — send with existing liveData (no crash for user).
+          _p2beSendAssistant();
         });
+      } else {
+        _p2beSendAssistant();
+      }
     }
 
     // ---- Events ----
