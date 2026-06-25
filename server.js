@@ -13456,6 +13456,137 @@ function mvolaHeaders(token, correlationId) {
 // MVola polling, logging, and main payment endpoints
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// [MVOLA LOG HELPERS]
+// Sanitize and log MVola status responses safely (no secrets).
+// ---------------------------------------------------------------------------
+
+const MVOLA_SENSITIVE_KEYS = new Set([
+  "authorization", "access_token", "token", "password", "secret",
+  "client_secret", "pin", "clientsecret", "accesstoken",
+]);
+
+// Keys whose string values are phone/MSISDN numbers that must be masked.
+const MVOLA_PHONE_KEYS = new Set([
+  "phone", "msisdn", "customermsisdn", "subscribermsisdn",
+  "useraccountidentifier", "mobilenumber", "phonenumber",
+]);
+
+// Matches Madagascar MSISDNs: 261XXXXXXXX (international) or 03XXXXXXXX (local).
+// Used to mask phone-like strings that appear in arbitrary value positions.
+const MVOLA_MSISDN_RE = /\b(261\d{9}|0[34]\d{8})\b/g;
+
+/**
+ * Mask a phone/MSISDN string using the same format as maskPhone():
+ * keeps first 3 + last 3 chars, replaces the middle with ****.
+ * Falls back gracefully if the value is not a plain string.
+ */
+function maskPhoneValue(v) {
+  if (v === null || v === undefined) return v;
+  const s = String(v);
+  return s.length >= 7 ? s.slice(0, 3) + "****" + s.slice(-3) : "***";
+}
+
+/**
+ * Mask any Madagascar-format MSISDN embedded in an arbitrary string
+ * (e.g. "msisdn;2613XXXXXXXX" in UserAccountIdentifier).
+ */
+function maskMsisdnInString(s) {
+  if (typeof s !== "string") return s;
+  return s.replace(MVOLA_MSISDN_RE, (m) => maskPhoneValue(m));
+}
+
+/**
+ * Returns a deep copy of payload with:
+ *   - token/secret/pin keys fully redacted
+ *   - phone/MSISDN keys masked via maskPhoneValue()
+ *   - { key: "msisdn", value: "261..." } party-list patterns masked
+ *   - embedded MSISDNs in string values masked
+ *   - arrays handled recursively
+ * Safe to console.log or store in logs.
+ */
+function sanitizeMvolaLogPayload(payload) {
+  if (payload === null || payload === undefined) return payload;
+
+  // Recurse into arrays
+  if (Array.isArray(payload)) {
+    return payload.map((item) => sanitizeMvolaLogPayload(item));
+  }
+
+  if (typeof payload !== "object") {
+    // Plain string — mask any embedded MSISDNs
+    return maskMsisdnInString(payload);
+  }
+
+  const out = {};
+  for (const [k, v] of Object.entries(payload)) {
+    const kl = String(k).toLowerCase();
+
+    if (MVOLA_SENSITIVE_KEYS.has(kl)) {
+      // Full redaction for auth/secret material
+      out[k] = "[REDACTED]";
+
+    } else if (MVOLA_PHONE_KEYS.has(kl)) {
+      // Mask phone/MSISDN values
+      out[k] = maskPhoneValue(v);
+
+    } else if (
+      // Handle MVola party-list pattern: { key: "msisdn", value: "261XXXXXXXXX" }
+      kl === "key" &&
+      typeof v === "string" &&
+      MVOLA_PHONE_KEYS.has(v.toLowerCase()) &&
+      "value" in payload
+    ) {
+      // This object IS the { key: "msisdn", value: "..." } pattern — handled at parent level
+      out[k] = v;
+
+    } else if (
+      kl === "value" &&
+      "key" in payload &&
+      typeof payload.key === "string" &&
+      MVOLA_PHONE_KEYS.has(payload.key.toLowerCase())
+    ) {
+      // Mask the value side of the { key: "msisdn", value: "..." } pattern
+      out[k] = maskPhoneValue(v);
+
+    } else if (v && typeof v === "object") {
+      // Recurse into objects and arrays
+      out[k] = sanitizeMvolaLogPayload(v);
+
+    } else if (typeof v === "string") {
+      // Mask any embedded MSISDN in plain string values
+      out[k] = maskMsisdnInString(v);
+
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+/**
+ * Build a safe structured log context for a MVola status check.
+ * Never includes tokens, full phones, or secrets.
+ */
+function mvolaStatusLogContext({ requestRef, serverCorrelationId, attempt, httpStatus, durationMs }) {
+  return {
+    requestRef: requestRef || null,
+    serverCorrelationId: serverCorrelationId || null,
+    attempt: attempt ?? null,
+    httpStatus: httpStatus ?? null,
+    durationMs: durationMs ?? null,
+  };
+}
+
+/**
+ * Safe scalar: mask any embedded MSISDN in a string field before logging.
+ * Non-string values (numbers, null, undefined) are returned as-is.
+ * Prevents phone leakage through errorMessage / description / reason etc.
+ */
+function safeMvolaScalar(v) {
+  return typeof v === "string" ? maskMsisdnInString(v) : (v ?? null);
+}
+
 // ----------------- Logging helper (writes to supabase.logs) -----------------
 async function insertLog({
   request_ref = null,
@@ -13735,15 +13866,43 @@ async function pollTransactionStatus({
     try {
       const token = await getAccessToken();
       const statusUrl = `${MVOLA_BASE}/mvola/mm/transactions/type/merchantpay/1.0.0/status/${serverCorrelationId}`;
+      const statusCheckStart = Date.now();
       const statusResp = await axios.get(statusUrl, {
         headers: mvolaHeaders(token, crypto.randomUUID()),
         timeout: 10000,
       });
+      const statusCheckDurationMs = Date.now() - statusCheckStart;
       const sdata = statusResp.data || {};
+
+      // ── [MVOLA STATUS][RAW] ──────────────────────────────────────────────
+      console.info("[MVOLA STATUS][RAW]", {
+        ...mvolaStatusLogContext({ requestRef, serverCorrelationId, attempt, httpStatus: statusResp.status, durationMs: statusCheckDurationMs }),
+        rawBody: sanitizeMvolaLogPayload(sdata),
+      });
+
       const statusRaw = (sdata.status || sdata.transactionStatus || "").toString().toLowerCase();
 
+      // ── [MVOLA STATUS][PARSED] ───────────────────────────────────────────
+      console.info("[MVOLA STATUS][PARSED]", {
+        ...mvolaStatusLogContext({ requestRef, serverCorrelationId, attempt, httpStatus: statusResp.status, durationMs: statusCheckDurationMs }),
+        statusRaw,
+        transactionStatus: safeMvolaScalar(sdata.transactionStatus),
+        status: safeMvolaScalar(sdata.status),
+        errorCode: safeMvolaScalar(sdata.errorCode ?? sdata.error_code),
+        errorMessage: safeMvolaScalar(sdata.errorMessage ?? sdata.error_message),
+        reason: safeMvolaScalar(sdata.reason),
+        message: safeMvolaScalar(sdata.message),
+        description: safeMvolaScalar(sdata.description),
+        correlationId: safeMvolaScalar(sdata.correlationId ?? sdata.serverCorrelationId),
+      });
+
       if (statusRaw === "completed" || statusRaw === "success") {
-        console.info("🔔 MVola status completed for", requestRef, serverCorrelationId);
+        // ── [MVOLA STATUS][COMPLETED] ──────────────────────────────────────
+        console.info("[MVOLA STATUS][COMPLETED]", {
+          ...mvolaStatusLogContext({ requestRef, serverCorrelationId, attempt, httpStatus: statusResp.status, durationMs: statusCheckDurationMs }),
+          statusRaw,
+          message: "MVola confirmed payment completed — proceeding to voucher generation",
+        });
 
                 try {
           if (!supabase) throw new Error("Supabase not configured");
@@ -14041,12 +14200,31 @@ async function pollTransactionStatus({
 	      }
 
 	      if (statusRaw === "failed" || statusRaw === "rejected" || statusRaw === "declined") {
-        console.warn("MVola reports failed for", requestRef, serverCorrelationId);
+        // ── [MVOLA STATUS][FAILED DETAILS] ────────────────────────────────
+        // This case means MVola accepted the initiate request (PIN popup expected)
+        // but then returned a terminal failure — most likely the customer did NOT
+        // confirm the PIN popup, or the popup was never delivered.
+        console.warn("[MVOLA STATUS][FAILED DETAILS]", {
+          ...mvolaStatusLogContext({ requestRef, serverCorrelationId, attempt, httpStatus: statusResp.status, durationMs: statusCheckDurationMs }),
+          statusRaw,
+          transactionStatus: safeMvolaScalar(sdata.transactionStatus),
+          status: safeMvolaScalar(sdata.status),
+          errorCode: safeMvolaScalar(sdata.errorCode ?? sdata.error_code),
+          errorMessage: safeMvolaScalar(sdata.errorMessage ?? sdata.error_message),
+          reason: safeMvolaScalar(sdata.reason),
+          message: safeMvolaScalar(sdata.message),
+          description: safeMvolaScalar(sdata.description),
+          correlationId: safeMvolaScalar(sdata.correlationId ?? sdata.serverCorrelationId),
+          diagnosis: "MVola accepted initiate (PIN popup expected) but provider returned terminal failure. " +
+            "Possible causes: customer did not receive PIN popup; customer dismissed PIN; " +
+            "account balance insufficient; MSISDN not enrolled; MVola internal rejection.",
+          sanitizedRawBody: sanitizeMvolaLogPayload(sdata),
+        });
         try {
           if (supabase) {
             await supabase
               .from("transactions")
-              .update({ status: "failed", metadata: { mvolaResponse: truncate(sdata, 2000), updated_at_local: toISOStringMG(new Date()) } })
+              .update({ status: "failed", metadata: { mvolaResponse: truncate(sanitizeMvolaLogPayload(sdata), 2000), updated_at_local: toISOStringMG(new Date()) } })
               .eq("request_ref", requestRef);
 
         // NEW system audit: MVola failed/rejected/declined
@@ -14089,7 +14267,7 @@ async function pollTransactionStatus({
           pool_id: metaPoolId || null,
           plan_id: metaPlanId || null,
           message: "MVola payment failed",
-          metadata: { mvola_status: statusRaw, response: truncate(sdata, 2000), serverCorrelationId },
+          metadata: { mvola_status: statusRaw, response: truncate(sanitizeMvolaLogPayload(sdata), 2000), serverCorrelationId },
         });
           }
         } catch (e) {
@@ -14105,7 +14283,7 @@ async function pollTransactionStatus({
           amount,
           attempt,
           short_message: "Paiement échoué selon MVola",
-          payload: sdata,
+          payload: sanitizeMvolaLogPayload(sdata),
         });
 
         const emailBody = buildReadablePaymentEmail({
@@ -14119,7 +14297,7 @@ async function pollTransactionStatus({
           serverCorrelationId,
           timestamp: toISOStringMG(new Date()),
           extraLines: [
-            `• Réponse MVola: ${truncate(sdata, 2000)}`,
+            `• Réponse MVola: ${truncate(sanitizeMvolaLogPayload(sdata), 2000)}`,
           ],
         });
 
@@ -14127,9 +14305,32 @@ async function pollTransactionStatus({
         return;
       }
 
-      // otherwise pending -> continue
+      // [MVOLA STATUS][PENDING] — not completed/failed yet, keep polling
+      console.debug("[MVOLA STATUS][PENDING]", {
+        ...mvolaStatusLogContext({ requestRef, serverCorrelationId, attempt, httpStatus: statusResp.status, durationMs: statusCheckDurationMs }),
+        statusRaw: statusRaw || "(empty)",
+        note: "Status not yet final — continuing to poll",
+      });
+
     } catch (err) {
-      console.error("Poll attempt error", err?.response?.data || err?.message || err);
+      const httpStatus = err?.response?.status ?? null;
+      const responseBody = err?.response?.data ?? null;
+      const isTimeout = err?.code === "ECONNABORTED" || err?.message?.includes("timeout");
+      const isNetworkErr = err?.code === "ENOTFOUND" || err?.code === "ECONNREFUSED" || err?.code === "ECONNRESET";
+
+      // ── [MVOLA STATUS][POLL ERROR] ─────────────────────────────────────
+      console.error("[MVOLA STATUS][POLL ERROR]", {
+        requestRef: requestRef || null,
+        serverCorrelationId: serverCorrelationId || null,
+        attempt,
+        httpStatus,
+        errorMessage: err?.message || String(err),
+        errorCode: err?.code ?? null,
+        isTimeout,
+        isNetworkError: isNetworkErr,
+        responseBody: responseBody ? sanitizeMvolaLogPayload(responseBody) : null,
+        note: "HTTP/network error during MVola status poll — will retry",
+      });
       await insertLog({
         request_ref: requestRef,
         server_correlation_id: serverCorrelationId,
@@ -14139,7 +14340,10 @@ async function pollTransactionStatus({
         amount,
         attempt,
         short_message: "Erreur lors du polling MVola",
-        payload: truncate(err?.response?.data || err?.message || err, 2000),
+        payload: truncate(
+          sanitizeMvolaLogPayload(err?.response?.data || err?.message || err),
+          2000
+        ),
       });
       // continue to retry
     }
