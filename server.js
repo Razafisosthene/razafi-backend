@@ -4153,7 +4153,7 @@ function buildPaymentComplaintFallbackAnswer(lang, liveData) {
   // Branch 1: payment completed + voucher ready
   if (ps === "completed" && vs === "ready") {
     return t(
-      "Voafaritra ny fandoavana, ary voarindra ny code. Tsindrio ny bokotra 'Hampiasana ny code' na jereo ny 'Dernière consommation' raha toa ka efa nahazo code ianao taloha.",
+      "Voamarina ny paiement-nao ary efa vonona ny code. Tsindrio ny bouton \"Utiliser ce code\" raha hita eo amin'ny portail, na ampiasao ilay code raha efa naseho.",
       "Votre paiement est bien confirmé et votre code est prêt. Appuyez sur le bouton pour utiliser votre code, ou consultez 'Dernière consommation' si vous avez déjà reçu un code.",
       "Your payment is confirmed and your code is ready. Tap the button to use your code, or check 'Last Consumption' if you already received one."
     );
@@ -4162,7 +4162,7 @@ function buildPaymentComplaintFallbackAnswer(lang, liveData) {
   // Branch 2: payment completed but voucher not generated
   if (ps === "completed" && vs === "not_generated") {
     return t(
-      "Voafaritra ny fandoavana, nefa mbola tsy nivoaka ny code. Ilaina ny fanamarinan'ny fanampiana mba hanaovana izany." + contactSuffix,
+      "Voamarina ny paiement-nao, fa mbola tsy hita ny code. Alefaso amin'ny assistance ny nomerao nampiasaina, montant nandoavanao, ora, ary référence transaction raha misy. Aza mandefa PIN." + contactSuffix,
       "Votre paiement semble confirmé mais le code n'a pas pu être généré automatiquement. L'assistance doit vérifier." + contactSuffix,
       "Your payment appears confirmed but the code was not generated automatically. Support needs to verify." + contactSuffix
     );
@@ -4171,7 +4171,7 @@ function buildPaymentComplaintFallbackAnswer(lang, liveData) {
   // Branch 3: payment pending
   if (ps === "pending") {
     return t(
-      "Mbola andrasana ny fanamarinan'ny MVola. Aza mandoa indray izao mba tsy hisian'ny fandoavana roa. Andraso kely.",
+      "Mbola miandry confirmation MVola ny paiement. Aza mamerina paiement aloha sao misy double paiement. Andraso kely azafady.",
       "Votre paiement est encore en attente de confirmation. Ne payez pas à nouveau pour éviter un double paiement. Patientez quelques instants.",
       "Your payment is still waiting for confirmation. Please do not pay again yet to avoid a double charge. Wait a moment."
     );
@@ -4180,7 +4180,7 @@ function buildPaymentComplaintFallbackAnswer(lang, liveData) {
   // Branch 4: payment failed or timed out
   if (ps === "failed" || ps === "timeout") {
     return t(
-      "Tsy nahazo confirmation paiement ny RAZAFI. Raha nihena ny solde MVola-nao, alefaso amin'ny assistance ny SMS na référence transaction." + contactSuffix,
+      "Tsy nahazo confirmation paiement ny RAZAFI. Raha nihena ny solde MVola-nao, alefaso amin'ny assistance ny SMS na référence transaction. Aza mandefa PIN." + contactSuffix,
       "RAZAFI n'a pas reçu la confirmation de ce paiement. Si votre solde a été débité, veuillez envoyer le SMS ou la référence de transaction à l'assistance." + contactSuffix,
       "RAZAFI did not receive confirmation of this payment. If your balance was debited, please send the SMS or transaction reference to support." + contactSuffix
     );
@@ -4188,7 +4188,7 @@ function buildPaymentComplaintFallbackAnswer(lang, liveData) {
 
   // Branch 5: not found or unknown — ask for minimum details
   return t(
-    "Tsy hita ny paiement farany tao amin'ny rafitra. Mba hanampy anao, lazao aminay: ny nomerao nampiasaina, ny habetsahan'ny vola nalefa, ny andro sy ora, ary ny SMS na référence transaction raha misy. Tsy ilaina ny PIN.",
+    "Tsy mbola mahita paiement farany ato amin'ny système RAZAFI aho. Tsy afaka milaza aho hoe nalain'ny MVola ny vola raha tsy voamarina ny transaction. Raha nihena ny solde MVola-nao nefa tsy nahazo code ianao, alefaso amin'ny assistance ny nomerao nampiasaina, montant nandoavanao, ora, ary référence transaction raha misy. Aza mandefa PIN.",
     "Je ne trouve pas de paiement récent dans le système. Pour vous aider, merci de préciser : le numéro utilisé, le montant envoyé, la date et l'heure, et la référence de transaction si disponible. Ne communiquez pas votre PIN.",
     "No recent payment found in the system. To help you, please share: the number you used, the amount sent, the date and time, and the transaction reference if available. Never share your PIN."
   );
