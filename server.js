@@ -711,6 +711,10 @@ const ASSISTANT_ALLOWED_LIVE_KEYS = {
     "plans_selected_pool_name",    // remembered plans page pool display name
     "revenue_analysis_scope",      // remembered revenue page scope (always "all_pools")
     "revenue_selected_pool_name",  // always null (revenue has no pool filter)
+    // Phase 2B-C: single-pool owner scope correction (display names only, never UUIDs/NAS)
+    "accessible_pool_count",       // integer — how many pools this admin/owner can access
+    "accessible_pool_names",       // string[] — display names of accessible pools (no IDs)
+    "owner_single_pool_name",      // string — set only when accessible_pool_count === 1
   ]),
   platform_prospect: new Set(), // live_data ignored for prospects
 };
@@ -2878,20 +2882,72 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     if (lines.length < (max || 4)) lines.push(line);
   }
 
-  // --- Phase 4B: scope helpers ---
+  // --- Phase 4B: scope helpers (Phase 2B-C: single-pool owner correction) ---
 
   function normalizeScope(v) {
     const s = String(v || "").trim();
     return s === "single_pool" || s === "all_pools" ? s : "unknown";
   }
 
+  // Phase 2B-C (v2): getAccessiblePoolNames — explicit nav.js fields only.
+  // Sources 3 (ld.pools) and 4 (ld.by_pool) removed — those are page-data summaries,
+  // not authoritative accessible-pool lists. A superadmin with revenue data for one
+  // pool would previously collapse to single_pool incorrectly.
+  function getAccessiblePoolNames() {
+    const names = new Set();
+
+    // Source 1 — explicit list from nav.js authoritative fetch
+    if (Array.isArray(ld.accessible_pool_names)) {
+      ld.accessible_pool_names.forEach(n => {
+        const s = String(n || "").trim();
+        if (s) names.add(s);
+      });
+    }
+
+    // Source 2 — single-pool shortcut from nav.js (set only when count === 1)
+    const single = String(ld.owner_single_pool_name || "").trim();
+    if (single) names.add(single);
+
+    return Array.from(names);
+  }
+
+  // Phase 2B-C (v2): getSingleAccessiblePoolName — authoritative count required.
+  // Does NOT collapse to single_pool when accessible_pool_count is missing or > 1.
+  // Does NOT infer from ld.by_pool, ld.pools, or revenue rows.
+  function getSingleAccessiblePoolName() {
+    // accessible_pool_count must be explicitly present and exactly 1
+    const explicitCount = Number(ld.accessible_pool_count);
+    if (!Number.isFinite(explicitCount)) return null;
+    if (explicitCount !== 1) return null;
+
+    // Prefer the nav.js shortcut field
+    const single = String(ld.owner_single_pool_name || "").trim();
+    if (single) return single;
+
+    // Fall back to the names list (should also have length 1 given count === 1)
+    const names = Array.isArray(ld.accessible_pool_names)
+      ? ld.accessible_pool_names.map(n => String(n || "").trim()).filter(Boolean)
+      : [];
+    return names.length === 1 ? names[0] : null;
+  }
+
+  // True when the owner/admin has access to exactly one pool.
+  function isSingleAccessiblePoolOwnerScope() {
+    return getSingleAccessiblePoolName() !== null;
+  }
+
   function getSelectedPoolName() {
-    return String(
+    // Explicit selected pool name always wins
+    const explicit = String(
       ld.selected_pool_name ||
       ld.plans_selected_pool_name ||
       ld.revenue_selected_pool_name ||
       ""
-    ).trim() || null;
+    ).trim();
+    if (explicit) return explicit;
+
+    // Phase 2B-C: if owner has only one accessible pool, that pool IS the selection
+    return getSingleAccessiblePoolName();
   }
 
   function getAnalysisScope() {
@@ -2906,12 +2962,15 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
 
     // If we have plan data and that plan data is single-pool, business advice
     // should be labelled for that pool even if Revenue (current page) is global.
-    // This prevents Revenue's current analysis_scope from overriding remembered
-    // single-pool Plans data.
     if (hasPlansData() && plansScope === "single_pool") return "single_pool";
 
     // Dashboard current page may be single-pool without plans data
     if (panel === "dashboard" && explicit === "single_pool") return "single_pool";
+
+    // Phase 2B-C: all_pools collapses to single_pool when owner has only one pool.
+    // This applies before checking explicit/plans/revenue scopes so that a
+    // one-pool owner never sees "Analyse globale sur tous les pools".
+    if (isSingleAccessiblePoolOwnerScope()) return "single_pool";
 
     if (explicit === "all_pools") return "all_pools";
     if (plansScope === "all_pools" || revenueScope === "all_pools") return "all_pools";
@@ -2922,7 +2981,9 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
 
   function hasMixedScopeData() {
     // True ONLY when real Plans data exists AND that data is single-pool AND Revenue is global.
-    // Dashboard single_pool without plans data must NOT trigger the mixed-scope warning.
+    // Phase 2B-C: a one-pool owner's "global" revenue IS their pool — not mixed.
+    if (isSingleAccessiblePoolOwnerScope()) return false;
+
     const panel = String(ld.panel || "").trim();
 
     const currentPlansScope = panel === "plans"
@@ -2975,7 +3036,9 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
   }
 
   function globalCautionLine() {
-    // Used in all-pools mode — Revenue has no pool filter, so only mention Plans
+    // Phase 2B-C: suppress "sélectionnez un pool" when owner has only one accessible pool —
+    // they cannot select a different one and the message would be misleading.
+    if (isSingleAccessiblePoolOwnerScope()) return null;
     return t(
       "Pour une décision précise, sélectionnez un pool dans Plans puis reposez la question.",
       "Ho an'ny fanapahan-kevitra marina kokoa, safidio pool iray ao amin'ny Plans dia avereno ny fanontaniana.",

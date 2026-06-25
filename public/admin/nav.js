@@ -302,6 +302,12 @@
       try {
         await fetch("/api/admin/logout", { method: "POST", credentials: "include" });
       } finally {
+        // Phase 2B-C (v2): clear assistant session memory and pool cache on logout
+        // so the next admin who logs in starts with a clean state.
+        try { sessionStorage.removeItem(RAZAFI_MEMORY_KEY); } catch (_) {}
+        _rzAccessiblePoolNames = null;
+        _rzAccessiblePoolCount = null;
+        _rzAccessiblePoolAdmin = null;
         window.location.href = "/admin/login.html";
       }
     });
@@ -311,6 +317,9 @@
     try {
       const admin = await fetchJSON("/api/admin/me");
       const email = admin?.email || admin?.username || "admin";
+      // Phase 2B-C (v2): derive a stable identity string for pool cache invalidation.
+      // Use email if available, fall back to id, then username. Never expose internally.
+      const adminIdentity = String(admin?.email || admin?.id || admin?.username || "").trim() || null;
 
       const isSuper = !!admin?.is_superadmin || String(admin?.role || "").toLowerCase() === "superadmin";
 
@@ -349,6 +358,13 @@
       }
 
       setActiveLink();
+
+      // Phase 2B-C (v2): fetch authoritative accessible pool list for this admin.
+      // Fire-and-forget — failure is silent and does not block UI or navigation.
+      if (adminIdentity) {
+        fetchAndCacheAccessiblePools(adminIdentity).catch(function () {});
+      }
+
       return true;
     } catch (e) {
       window.location.href = "/admin/login.html";
@@ -455,6 +471,74 @@
     }
   }
 
+  // ============================================================
+  // Phase 2B-C (v2): Authoritative accessible-pool cache.
+  // Fetched once per page load from /api/admin/pools (already auth-protected).
+  // Stores only safe display names — no IDs, no NAS, no MAC, no router IP.
+  // Tied to the current admin identity so it auto-invalidates on user change.
+  // ============================================================
+
+  // Module-level cache — populated once by fetchAndCacheAccessiblePools().
+  // null = not yet fetched.  [] = fetched, admin has no pools.
+  let _rzAccessiblePoolNames = null;   // string[] | null — unique safe display names
+  let _rzAccessiblePoolCount = null;   // number | null — authoritative raw accessible pool count
+  let _rzAccessiblePoolAdmin = null;   // email/id of the admin the cache belongs to
+
+  // Safe display name from a pool object.
+  // Intentionally does NOT fall back to radius_nas_id or internal IDs.
+  function safeAccessiblePoolName(p) {
+    const displayName = String(p?.display_name || "").trim();
+    if (displayName) return displayName;
+    const brand = String(p?.brand_name || "").trim();
+    const place = String(p?.name || "").trim();
+    if (brand && place) return brand + " \u2013 " + place;
+    return place || null;
+  }
+
+  // Fetch the authoritative pool list for the current admin and cache it.
+  // adminIdentity: the email/id returned by /api/admin/me — used for cache invalidation.
+  // Fire-and-forget errors: if the fetch fails, the cache stays null and server.js
+  // falls back to existing scope detection (no regression).
+  async function fetchAndCacheAccessiblePools(adminIdentity) {
+    try {
+      // If we already have a valid cache for this admin, skip the fetch
+      if (_rzAccessiblePoolAdmin === adminIdentity && _rzAccessiblePoolNames !== null) return;
+
+      // Cache is for a different admin (user switch in same tab) — clear session memory too
+      if (_rzAccessiblePoolAdmin !== null && _rzAccessiblePoolAdmin !== adminIdentity) {
+        try {
+          const mem = readAssistantMemory();
+          if (mem) {
+            delete mem.accessible_pools;
+            writeAssistantMemory(mem);
+          }
+        } catch (_) {}
+        _rzAccessiblePoolNames = null;
+        _rzAccessiblePoolCount = null;
+      }
+
+      const data = await fetchJSON("/api/admin/pools?system=mikrotik&limit=200");
+      const raw = Array.isArray(data?.pools) ? data.pools : [];
+
+      // Authoritative raw count — based on actual pool count, not de-duplicated names.
+      // Two pools with the same display name would still be counted as 2.
+      _rzAccessiblePoolCount = raw.length;
+
+      // Extract safe display names only — never IDs, NAS IDs, MACs, or router IPs
+      const nameSet = new Set();
+      raw.forEach(function (p) {
+        const n = safeAccessiblePoolName(p);
+        if (n) nameSet.add(n);
+      });
+
+      _rzAccessiblePoolNames = Array.from(nameSet);
+      _rzAccessiblePoolAdmin = adminIdentity;
+    } catch (_) {
+      // Fetch failed (network error, auth error, etc.) — leave cache as null
+      // Server.js will use existing fallback scope detection without the authoritative count
+    }
+  }
+
   function collectAdminAssistantLiveData() {
     // detectAdminPanel() is the source of truth for panel — not the page bridge,
     // which may reflect a previous load if the page bridge wasn't refreshed yet.
@@ -538,9 +622,26 @@
         combined.revenue_selected_pool_name = mr.selected_pool_name || null;
     }
 
+    // Phase 2B-C (v2): Inject authoritative accessible pool metadata.
+    // accessible_pool_count uses the raw pool count (_rzAccessiblePoolCount), not the
+    // de-duplicated display-name Set length. Two pools with the same display name
+    // still count as 2 — preventing false single-pool collapse.
+    // Not injected at all when the authoritative fetch has not yet succeeded.
+    if (_rzAccessiblePoolCount !== null) {
+      combined.accessible_pool_count  = _rzAccessiblePoolCount;
+      combined.accessible_pool_names  = Array.isArray(_rzAccessiblePoolNames)
+        ? _rzAccessiblePoolNames.slice()
+        : [];
+      combined.owner_single_pool_name =
+        _rzAccessiblePoolCount === 1 &&
+        Array.isArray(_rzAccessiblePoolNames) &&
+        _rzAccessiblePoolNames.length === 1
+          ? _rzAccessiblePoolNames[0]
+          : null;
+    }
+
     return combined;
   }
-
   function initAdminAssistantWidget() {
     // Avoid double-inject
     if (document.getElementById("rzAdminAssistFab")) return;
