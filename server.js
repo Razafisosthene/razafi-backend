@@ -689,6 +689,12 @@ const ASSISTANT_ALLOWED_LIVE_KEYS = {
     "all_plans",       // all public active plans for current pool (full list, pre-filter)
     "current_filter",  // active filter label, e.g. "Tous" | "Data" | "Illimité" | "1H" | "1J" | "7J" | "Prix"
     "plan_counts",     // { total, visible, data, unlimited, duration_1h, duration_1j, duration_7j }
+    // Patch C: payment/transaction diagnosis context (safe, no secrets)
+    "latest_payment_status",   // "completed" | "pending" | "failed" | "timeout" | "not_found" — latest tx status
+    "latest_payment_amount",   // number (Ariary) — amount of latest transaction, if known
+    "latest_payment_provider", // "mvola" | "orange" | "airtel" — provider of latest transaction
+    "latest_voucher_status",   // "ready" | "used" | "not_generated" | "unknown" — voucher state tied to latest payment
+    "latest_payment_time_ago", // human-readable string e.g. "il y a 3 min" — safe approximate time, never raw timestamp
   ]),
   admin_owner: new Set([
     "plans", "revenue", "clients", "pools", "pool_percent",
@@ -771,6 +777,9 @@ function detectAssistantLang(msg) {
     "manao ahoana", "tsy misy", "tsy tonga", "tsy nahazo",
     "nandoa aho", "code tsy", "vola lasa", "fa tsy",
     "eto amin", "rehefa avy", "mijanona", "azafady",
+    // Patch C: payment complaint phrases
+    "mangalatra vola", "sao dia", "tsy nahazo code", "efa nandoa",
+    "vola lasa fa", "nalefa ny vola", "lany ny vola",
   ];
   const mgPhraseHit = mgPhrases.some(p => s.includes(p));
 
@@ -3826,16 +3835,19 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   const canonicalAnswer = dynamicAnswer || answer || fallbackAnswer;
 
   // ---------------------------------------------------------------------------
-  // PATCH B — Optional AI enhancement layer
-  // Runs only when ASSISTANT_AI_ENABLED=true AND no deterministic dynamicAnswer exists.
-  // Dynamic live-data answers are authoritative — AI must not override them.
+  // PATCH B+C+D — Conversational AI layer
+  // Payment complaints always attempt AI first (transaction-aware diagnosis).
+  // For all other messages: AI runs only when !dynamicAnswer.
   // Falls back to canonicalAnswer silently on timeout / safety block / any error.
-  // Never bypasses sanitizeAssistantLiveData() — liveData is already sanitized here.
+  // Patch D Fix 1: if AI was not used and message is a payment complaint,
+  // override finalAnswer with deterministic payment complaint fallback —
+  // never fall through to a generic FAQ/MVola description.
   // ---------------------------------------------------------------------------
   let finalAnswer = canonicalAnswer;
   let aiUsed = false;
 
-  const shouldRunAi = isAssistantAiEnabled() && !dynamicAnswer;
+  const messageIsPaymentComplaint = isPaymentComplaintMessage(message);
+  const shouldRunAi = isAssistantAiEnabled() && (messageIsPaymentComplaint || !dynamicAnswer);
 
   if (shouldRunAi) {
     try {
@@ -3847,7 +3859,7 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
         lang,
         rawMessage: message,
         knowledgeRows: rows,
-        liveData,           // already sanitized upstream — never raw req.body.live_data
+        liveData,
         canonicalAnswer,
       });
 
@@ -3861,7 +3873,6 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
       if (aiSafe) {
         finalAnswer = aiRaw;
         aiUsed = true;
-        // Minimal safe log — no live_data, no full answer
         console.info("[AI ASSISTANT]", { context, pageHint, ai_enabled: true, result: "success" });
       } else {
         console.info("[AI ASSISTANT]", { context, ai_enabled: true, result: "blocked" });
@@ -3874,11 +3885,17 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
         result: isTimeout ? "timeout" : "error",
         code: String(aiErr?.message || "unknown").slice(0, 80),
       });
-      // finalAnswer remains canonicalAnswer — no re-throw
     }
   }
+
+  // Patch D Fix 1: payment complaint safety net.
+  // If AI was not used (disabled, timed out, or blocked) and the message is a payment complaint,
+  // replace finalAnswer with the deterministic payment diagnosis — never leave a generic FAQ answer.
+  if (messageIsPaymentComplaint && context === "portal_user" && !aiUsed) {
+    finalAnswer = buildPaymentComplaintFallbackAnswer(lang, liveData);
+  }
   // ---------------------------------------------------------------------------
-  // END PATCH B
+  // END PATCH B+C+D
   // ---------------------------------------------------------------------------
 
   return {
@@ -4010,6 +4027,174 @@ const ASSISTANT_AI_FORBIDDEN_TERMS = [
 ];
 
 // ---------------------------------------------------------------------------
+// Patch C: Payment-complaint detector
+// Returns true when the user message is about a payment problem/dispute.
+// Used to select the appropriate AI system prompt branch.
+// ---------------------------------------------------------------------------
+function isPaymentComplaintMessage(msg) {
+  const s = String(msg || "").toLowerCase();
+
+  // Strong signals — unambiguous on their own; always a payment complaint.
+  const strongSignals = [
+    // Malagasy
+    "mangalatra vola", "vola lasa", "tsy nahazo code", "efa nandoa",
+    "nalefa ny vola", "lany ny vola", "tsy tonga ny code",
+    "nandoa fa tsy", "vola lasa fa",
+    // French
+    "argent débité", "argent disparu", "argent perdu",
+    "payé mais", "pas reçu de code", "paiement mais pas",
+    "débité mais", "argent parti", "pris l'argent", "pris mon argent",
+    "j'ai payé",
+    // English
+    "stole money", "money gone", "money lost", "paid but no code",
+    "paid but didn't receive", "charged but no", "debited but no",
+    "took my money", "money taken",
+  ];
+  if (strongSignals.some(sig => s.includes(sig))) return true;
+
+  // Broad signals — ambiguous alone; only a payment complaint when a payment anchor is also present.
+  const broadSignals = ["sao dia", "voleur", "a volé", "scam", "arnaque", "pas de code", "sans code", "no code"];
+  const paymentAnchors = [
+    "mvola", "orange money", "airtel money",
+    "vola", "argent", "paiement", "payé", "paid",
+    "code", "solde", "débité",
+  ];
+  if (broadSignals.some(sig => s.includes(sig))) {
+    return paymentAnchors.some(anchor => s.includes(anchor));
+  }
+
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Patch C: Build compact payment context block for AI prompt.
+// Uses safe fields supplied by the frontend via sanitized live_data.
+// This is Phase 1: provided safe payment context — not a full server-side DB audit.
+// A future patch (Option B) may derive these fields server-side from existing
+// payment/voucher lookup functions. For now, the frontend is responsible for
+// supplying latest_payment_status, latest_voucher_status, etc. before calling the assistant.
+// Only safe fields — never voucher_code, transaction_id, phone, PIN, MAC, NAS, IP, secrets.
+// ---------------------------------------------------------------------------
+function buildPaymentContextBlock(liveData) {
+  if (!liveData || typeof liveData !== "object") return "";
+  const ps = liveData.latest_payment_status;
+  const vs = liveData.latest_voucher_status;
+  const amt = liveData.latest_payment_amount;
+  const prov = liveData.latest_payment_provider;
+  const ago = liveData.latest_payment_time_ago;
+
+  if (!ps) return "PAYMENT CONTEXT: no recent transaction found in system.";
+
+  const lines = [`PAYMENT CONTEXT:`];
+  lines.push(`  payment_status: ${ps}`);
+  if (vs)   lines.push(`  voucher_status: ${vs}`);
+  if (amt)  lines.push(`  amount: ${amt} Ar`);
+  if (prov) lines.push(`  provider: ${prov}`);
+  if (ago)  lines.push(`  time_ago: ${ago}`);
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Patch C: Payment diagnosis instructions injected into system prompt
+// ---------------------------------------------------------------------------
+const PAYMENT_DIAGNOSIS_RULES = `
+PAYMENT COMPLAINT PROTOCOL — follow this strictly:
+- If payment_status = "completed" AND voucher_status = "ready":
+  Tell user payment is confirmed and guide them to use their code/button. Be reassuring.
+- If payment_status = "completed" AND voucher_status = "not_generated":
+  Tell user payment seems confirmed but code generation needs support verification. Give contact_phone.
+- If payment_status = "pending":
+  Tell user the transaction is still being confirmed. Advise NOT to pay again yet to avoid double charge.
+- If payment_status = "failed" OR "timeout":
+  Tell user RAZAFI did not receive payment confirmation. If their balance was debited, ask them to send the SMS/transaction reference to assistance. Give contact_phone.
+- If payment_status = "not_found" OR no payment context:
+  Do NOT invent. Empathize, then ask user for: the number used, amount, approximate time, and transaction reference if available.
+SAFETY RULES:
+- NEVER say the provider (MVola/Orange/Airtel) stole or took money.
+- NEVER say "payment confirmed" unless payment_status explicitly says "completed".
+- NEVER say "code ready" unless voucher_status explicitly says "ready".
+- NEVER promise a refund unless you have confirmed refund workflow data.
+- NEVER ask for PIN or password.
+- NEVER invent a transaction reference or voucher code.
+`;
+
+// ---------------------------------------------------------------------------
+// Patch D Fix 1: Deterministic payment complaint fallback
+// Used when AI is disabled, times out, or is blocked by the safety validator.
+// Implements the same 5-branch diagnosis logic as the AI prompt, in all 3 languages.
+// NEVER exposes voucher_code, request_ref, transaction_id, phone, MAC, NAS, IP, secrets.
+// NEVER accuses provider. NEVER promises refund. NEVER asks for PIN.
+// ---------------------------------------------------------------------------
+function buildPaymentComplaintFallbackAnswer(lang, liveData) {
+  const l = String(lang || "fr").toLowerCase();
+  const ps = String(liveData?.latest_payment_status || "").trim().toLowerCase();
+  const vs = String(liveData?.latest_voucher_status  || "").trim().toLowerCase();
+  const phone = String(liveData?.contact_phone || "").trim();
+
+  // Helper: pick text by lang
+  function t(mg, fr, en) {
+    if (l === "mg") return mg;
+    if (l === "en") return en;
+    return fr;
+  }
+
+  const contactSuffix = phone
+    ? t(
+        ` Mifandraisa amin'ny fanampiana: ${phone}.`,
+        ` Contactez l'assistance au ${phone}.`,
+        ` Contact support at ${phone}.`
+      )
+    : t(
+        " Mifandraisa amin'ny fanampiana RAZAFI.",
+        " Contactez l'assistance RAZAFI.",
+        " Please contact RAZAFI support."
+      );
+
+  // Branch 1: payment completed + voucher ready
+  if (ps === "completed" && vs === "ready") {
+    return t(
+      "Voafaritra ny fandoavana, ary voarindra ny code. Tsindrio ny bokotra 'Hampiasana ny code' na jereo ny 'Dernière consommation' raha toa ka efa nahazo code ianao taloha.",
+      "Votre paiement est bien confirmé et votre code est prêt. Appuyez sur le bouton pour utiliser votre code, ou consultez 'Dernière consommation' si vous avez déjà reçu un code.",
+      "Your payment is confirmed and your code is ready. Tap the button to use your code, or check 'Last Consumption' if you already received one."
+    );
+  }
+
+  // Branch 2: payment completed but voucher not generated
+  if (ps === "completed" && vs === "not_generated") {
+    return t(
+      "Voafaritra ny fandoavana, nefa mbola tsy nivoaka ny code. Ilaina ny fanamarinan'ny fanampiana mba hanaovana izany." + contactSuffix,
+      "Votre paiement semble confirmé mais le code n'a pas pu être généré automatiquement. L'assistance doit vérifier." + contactSuffix,
+      "Your payment appears confirmed but the code was not generated automatically. Support needs to verify." + contactSuffix
+    );
+  }
+
+  // Branch 3: payment pending
+  if (ps === "pending") {
+    return t(
+      "Mbola andrasana ny fanamarinan'ny MVola. Aza mandoa indray izao mba tsy hisian'ny fandoavana roa. Andraso kely.",
+      "Votre paiement est encore en attente de confirmation. Ne payez pas à nouveau pour éviter un double paiement. Patientez quelques instants.",
+      "Your payment is still waiting for confirmation. Please do not pay again yet to avoid a double charge. Wait a moment."
+    );
+  }
+
+  // Branch 4: payment failed or timed out
+  if (ps === "failed" || ps === "timeout") {
+    return t(
+      "Tsy nahazo confirmation paiement ny RAZAFI. Raha nihena ny solde MVola-nao, alefaso amin'ny assistance ny SMS na référence transaction." + contactSuffix,
+      "RAZAFI n'a pas reçu la confirmation de ce paiement. Si votre solde a été débité, veuillez envoyer le SMS ou la référence de transaction à l'assistance." + contactSuffix,
+      "RAZAFI did not receive confirmation of this payment. If your balance was debited, please send the SMS or transaction reference to support." + contactSuffix
+    );
+  }
+
+  // Branch 5: not found or unknown — ask for minimum details
+  return t(
+    "Tsy hita ny paiement farany tao amin'ny rafitra. Mba hanampy anao, lazao aminay: ny nomerao nampiasaina, ny habetsahan'ny vola nalefa, ny andro sy ora, ary ny SMS na référence transaction raha misy. Tsy ilaina ny PIN.",
+    "Je ne trouve pas de paiement récent dans le système. Pour vous aider, merci de préciser : le numéro utilisé, le montant envoyé, la date et l'heure, et la référence de transaction si disponible. Ne communiquez pas votre PIN.",
+    "No recent payment found in the system. To help you, please share: the number you used, the amount sent, the date and time, and the transaction reference if available. Never share your PIN."
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Prompt builder
 // ---------------------------------------------------------------------------
 function buildGroundedAssistantPrompt({
@@ -4022,6 +4207,9 @@ function buildGroundedAssistantPrompt({
   canonicalAnswer,
 }) {
   const maxInput = getAssistantAiMaxInputChars();
+
+  // Patch C: detect payment complaint so we can inject diagnosis protocol
+  const isPaymentComplaint = context === "portal_user" && isPaymentComplaintMessage(rawMessage);
 
   // Build compact RAZAFI knowledge section (approved KB rows only)
   let knowledgeBlock = "";
@@ -4051,8 +4239,14 @@ function buildGroundedAssistantPrompt({
     liveBlock = `\n\nSANITIZED LIVE DATA:\n${JSON.stringify(safeLive, null, 2).slice(0, 800)}`;
   }
 
-  // Canonical rule-based answer (existing system result — AI should improve this, not ignore it)
-  const canonicalBlock = canonicalAnswer
+  // Patch C: payment context block (only for portal_user payment complaints)
+  const paymentContextBlock = isPaymentComplaint
+    ? `\n\n${buildPaymentContextBlock(liveData)}`
+    : "";
+
+  // Canonical rule-based answer — only include as soft hint when AI is purely improving style.
+  // For payment complaints the AI must reason from payment context, not just reword a generic FAQ answer.
+  const canonicalBlock = (canonicalAnswer && !isPaymentComplaint)
     ? `\n\nEXISTING RULE-BASED ANSWER (improve this, do not contradict it unless wrong):\n${String(canonicalAnswer).slice(0, 400)}`
     : "";
 
@@ -4060,20 +4254,22 @@ function buildGroundedAssistantPrompt({
   const contextRules = {
     portal_user: [
       "You are helping a WiFi end-user on a captive portal (page: " + pageHint + ").",
+      "Act like a calm, helpful human support agent — not a FAQ bot. Understand the user's real issue, their tone, and give a practical next step.",
+      "Internally consider: user language, user tone (normal/confused/worried/angry/urgent), topic (payment/code/connection/plan/portal/support), and likely situation. Do NOT expose this classification in your answer.",
       "Focus only on: forfait, paiement, code, dernière consommation, connexion, assistance, network status.",
-      "NEVER invent a voucher code. NEVER claim payment is successful unless backend confirmed it.",
-      "If user mentions: ela be, tsy tonga code, mbola tsy nahazo, efa nandoa fa code tsy nivoaka — follow the payment/code help protocol.",
-      "Payment/code protocol: apologize → confirmation may be pending → check MVola → use 'Dernière consommation' → contact assistance.",
+      "NEVER invent a voucher code. NEVER claim payment is successful unless payment_status = 'completed' in PAYMENT CONTEXT.",
       "NEVER expose: voucher_code, client_mac, request_ref, transaction_id, phone number used for payment, router data, internal IDs.",
       "BUDGET: if user gives a specific Ariary amount, compare with visible_plans. Never invent a plan. If no plan fits the budget, say so clearly and name the closest higher option.",
       "MONTHLY/WEEKLY: if user asks for a monthly or weekly plan, check visible_plans durations. Monthly >= 28 days (40320 min). Weekly = 5-10 days (7200-14400 min). If none found, say so clearly using the pool/brand name.",
       "CAPTEUR/REPEATER: give direct practical placement advice (height, window, orientation, avoid thick walls and metal). Use the pool/SSID name from live_data if available. Do not say 'contact assistance' as first response for hardware placement questions.",
-      "PERSONALIZATION: always use display_name or pool_name from live_data when available. Say 'Sur [Name]...' and never lowercase the name. Do not use generic phrases like 'les offres peuvent varier selon le point WiFi' when real pool data is available.",
+      "PERSONALIZATION: always use display_name or pool_name from live_data when available. Say 'Sur [Name]...' and never lowercase the name.",
       "RAZAFI APP: if user asks about the RAZAFI app or how to download it, explain there is no app to download — the portal works directly from the browser after connecting to the WiFi.",
-      "MULTILINGUAL: answer in the same language the user is writing in. French → French. Malagasy → Malagasy. English → English. Mixed Malagasy/French → mirror the mix. For other languages on simple WiFi/plan questions, answer briefly in that language if possible.",
+      "MULTILINGUAL: answer in the same language the user is writing in. French → French. Malagasy → Malagasy. English → English. Mixed Malagasy/French → mirror the mix.",
+      ...(isPaymentComplaint ? [PAYMENT_DIAGNOSIS_RULES] : []),
     ],
     admin_owner: [
       "You are helping a WiFi network owner in their admin dashboard (page: " + pageHint + ").",
+      "Act like a helpful business advisor — not a FAQ bot. Understand what the owner is actually trying to achieve.",
       "Give useful business advice: plan creation, pricing, sales analysis, dashboard interpretation, network status.",
       "NEVER say 'I changed it', 'I created it', 'I deleted it', 'I updated it' unless a confirmed system action endpoint was called.",
       "Prefer: 'Je vous conseille…', 'Vous pouvez…', 'D'après les données visibles…'",
@@ -4082,6 +4278,7 @@ function buildGroundedAssistantPrompt({
     ],
     platform_prospect: [
       "You are helping a business prospect evaluating the RAZAFI platform (page: " + pageHint + ").",
+      "Act like a friendly sales advisor — answer naturally, not like a FAQ.",
       "Use public-friendly wording only. Explain what RAZAFI is, who it is for, how it works, benefits.",
       "Hardware recommendation: MikroTik hAP ax² for small/medium spots. Larger sites can use more powerful models.",
       "NEVER expose any private live data, internal architecture, or configuration details.",
@@ -4094,12 +4291,13 @@ function buildGroundedAssistantPrompt({
   const rules = (contextRules[context] || []).join("\n- ");
 
   const systemPrompt = [
-    "You are RAZAFI Assistant — a professional, friendly, multilingual WiFi platform assistant.",
+    "You are RAZAFI Assistant — a professional, friendly, multilingual WiFi support assistant.",
+    "You are conversational-first: understand the user's real situation, detect their tone (calm/confused/worried/angry/urgent), and give a grounded, practical answer.",
     "Answer naturally in the user's language: Malagasy (mg), French (fr), English (en), or mixed Malagasy/French.",
-    "Be clear, professional, helpful, and concise. Do not write more than needed.",
+    "Be calm, human, easy to understand for non-technical users. Do not write more than needed.",
     "Use plain text only. Do not use Markdown titles, bold text, bullet points, numbered lists, tables, or code blocks.",
-"Answer in 2 to 4 short sentences maximum.",
-"Start directly with the answer. Do not add a title.",
+    "Answer in 2 to 4 short sentences maximum.",
+    "Start directly with the answer. Do not add a title or greeting.",
     "Use ONLY the provided RAZAFI knowledge and sanitized live data below. Do not invent missing data.",
     "If live data is unavailable for a question, say it clearly and give general guidance only.",
     "NEVER reveal: internal technical architecture, backend details, database details, private IDs,",
@@ -4117,6 +4315,7 @@ function buildGroundedAssistantPrompt({
 
   const userContent = [
     "User message: " + String(rawMessage).slice(0, 500),
+    paymentContextBlock,
     knowledgeBlock,
     liveBlock,
     canonicalBlock,
@@ -4231,16 +4430,65 @@ function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer }) 
     }
   }
 
-  // 2. Invented payment success (portal_user)
+  // 2. Invented payment / code claims (portal_user)
+  // Patch D Fix 2: only block these phrases when live context does NOT confirm them.
+  // If latest_payment_status === "completed", allowing "paiement confirmé" is correct behavior.
+  // If latest_voucher_status === "ready", allowing "code prêt / code ready" is correct behavior.
   if (context === "portal_user") {
-    const paymentSuccessPhrases = [
-      "paiement réussi", "payment successful", "payment success",
-      "paiement confirmé", "payment confirmed", "fandraisana vola vita",
-      "votre paiement a été", "your payment was", "payment was successful",
+    const paymentIsConfirmed = String(liveData?.latest_payment_status || "").toLowerCase() === "completed";
+    const voucherIsReady     = String(liveData?.latest_voucher_status  || "").toLowerCase() === "ready";
+
+    // Block invented payment-success claims ONLY when backend has not confirmed payment
+    if (!paymentIsConfirmed) {
+      const paymentSuccessPhrases = [
+        "paiement réussi", "payment successful", "payment success",
+        "paiement confirmé", "payment confirmed", "fandraisana vola vita",
+        "votre paiement a été", "your payment was", "payment was successful",
+      ];
+      for (const phrase of paymentSuccessPhrases) {
+        if (lower.includes(phrase)) {
+          console.warn("[AI SAFETY BLOCK] invented payment success (not confirmed in context), context:", context);
+          return false;
+        }
+      }
+    }
+
+    // Block invented code-ready claims ONLY when backend has not confirmed voucher
+    if (!voucherIsReady) {
+      const codeReadyPhrases = [
+        "code prêt", "code est prêt", "code disponible", "votre code est",
+        "code ready", "your code is ready", "code is available",
+        "code voarindra", "ahazo code",
+      ];
+      for (const phrase of codeReadyPhrases) {
+        if (lower.includes(phrase)) {
+          console.warn("[AI SAFETY BLOCK] invented code-ready claim (voucher not confirmed), context:", context);
+          return false;
+        }
+      }
+    }
+
+    // Always block operator-theft accusations (never context-dependent)
+    const accusationPhrases = [
+      "mvola a volé", "mvola vole", "mvola prend", "mvola a pris",
+      "mvola mangalatra", "orange a volé", "airtel a volé",
+      "the provider stole", "the operator stole", "mvola stole",
     ];
-    for (const phrase of paymentSuccessPhrases) {
+    for (const phrase of accusationPhrases) {
       if (lower.includes(phrase)) {
-        console.warn("[AI SAFETY BLOCK] invented payment success, context:", context);
+        console.warn("[AI SAFETY BLOCK] invented operator accusation, context:", context);
+        return false;
+      }
+    }
+
+    // Always block invented refund promises
+    const refundPhrases = [
+      "remboursement envoyé", "refund sent", "refunded", "refund processed",
+      "votre argent a été remboursé", "your money has been refunded",
+    ];
+    for (const phrase of refundPhrases) {
+      if (lower.includes(phrase)) {
+        console.warn("[AI SAFETY BLOCK] invented refund, context:", context);
         return false;
       }
     }
