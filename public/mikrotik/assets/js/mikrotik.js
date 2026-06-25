@@ -3905,7 +3905,7 @@ function bindPlanHandlers() {
   // NEVER returns: voucher code, client MAC, AP MAC, NAS-ID, phone, transaction refs, router info.
   window.razafiAssistantLiveData = function () {
     try {
-      // ---- visible_plans: read from plan card DOM attributes only ----
+      // ---- visible_plans: plan cards currently displayed after filter ----
       var visiblePlans = [];
       try {
         document.querySelectorAll(".plan-card:not(.hidden-by-filter)").forEach(function (c) {
@@ -3920,6 +3920,90 @@ function bindPlanHandlers() {
             speed_label:      c.getAttribute("data-plan-speed") || null,
             ui_role:          c.getAttribute("data-plan-ui-role") || "neutral",
           });
+        });
+      } catch (_) {}
+
+      // ---- all_plans: ALL plan cards regardless of active filter (pre-filter full list) ----
+      // Phase 2B-A: used by assistant for total count and filter-independent recommendations.
+      // Never exposes internal IDs, pool UUID, NAS, MAC, phone, or payment refs.
+      var allPlans = [];
+      try {
+        document.querySelectorAll(".plan-card").forEach(function (c) {
+          var isUnlimited = c.getAttribute("data-plan-unlimited") === "1";
+          var rawData = c.getAttribute("data-plan-data");
+          allPlans.push({
+            name:             c.getAttribute("data-plan-name") || null,
+            price_ar:         Number(c.getAttribute("data-plan-price") || 0),
+            duration_minutes: Number(c.getAttribute("data-plan-duration") || 0),
+            unlimited:        isUnlimited,
+            data_mb:          isUnlimited ? null : (rawData !== null && rawData !== "" ? Number(rawData) : null),
+            speed_label:      c.getAttribute("data-plan-speed") || null,
+            ui_role:          c.getAttribute("data-plan-ui-role") || "neutral",
+          });
+        });
+      } catch (_) {}
+
+      // ---- current_filter: active filter label for assistant context ----
+      // Phase 2B-A: combines type filter (Tous/Data/Illimité) and duration filter (Tous/1H/1J/7J/30J).
+      // Returns a human-readable label. Never exposes internal filter IDs.
+      var currentFilter = "Tous";
+      try {
+        var typeLabel = "Tous";
+        var durLabel  = "Tous";
+
+        // Read active type filter from the filter button marked active
+        var planFiltersEl = document.getElementById("planFilters");
+        if (planFiltersEl) {
+          var activeTypeBtn = planFiltersEl.querySelector(".plan-filter-btn.active");
+          if (activeTypeBtn) {
+            var rawType = String(activeTypeBtn.getAttribute("data-plan-filter") || "all").trim();
+            if (rawType === "unlimited") typeLabel = "Illimité";
+            else if (rawType === "data") typeLabel = "Data";
+            // else "all" → "Tous"
+          }
+        }
+
+        // Read active duration filter from the duration bar button marked active
+        var durBarEl = document.getElementById("durationFilterBar");
+        if (durBarEl) {
+          var activeDurBtn = durBarEl.querySelector(".dur-filter-btn.active");
+          if (activeDurBtn) {
+            var rawDur = String(activeDurBtn.getAttribute("data-dur-filter") || "all").trim();
+            if (rawDur === "1H")  durLabel = "1H";
+            else if (rawDur === "1J")  durLabel = "1J";
+            else if (rawDur === "7J")  durLabel = "7J";
+            else if (rawDur === "30J") durLabel = "30J";
+            // else "all" → "Tous"
+          }
+        }
+
+        // Combine: if both are "Tous" → "Tous"; if only one is active → that label;
+        // if both active → concatenate e.g. "Illimité · 1J"
+        if (typeLabel !== "Tous" && durLabel !== "Tous") {
+          currentFilter = typeLabel + " · " + durLabel;
+        } else if (typeLabel !== "Tous") {
+          currentFilter = typeLabel;
+        } else if (durLabel !== "Tous") {
+          currentFilter = durLabel;
+        } else {
+          currentFilter = "Tous";
+        }
+      } catch (_) {}
+
+      // ---- plan_counts: summary counts for the assistant ----
+      // Phase 2B-A: pre-computed so the assistant does not need to iterate allPlans.
+      var planCounts = { total: 0, visible: 0, data: 0, unlimited: 0,
+                         duration_1h: 0, duration_1j: 0, duration_7j: 0 };
+      try {
+        planCounts.total   = allPlans.length;
+        planCounts.visible = visiblePlans.length;
+        allPlans.forEach(function (p) {
+          if (p.unlimited) { planCounts.unlimited++; }
+          else             { planCounts.data++;       }
+          var m = Number(p.duration_minutes) || 0;
+          if (m <= 60)              planCounts.duration_1h++;
+          else if (m <= 1440)       planCounts.duration_1j++;
+          else if (m <= 7 * 1440)   planCounts.duration_7j++;
         });
       } catch (_) {}
 
@@ -3976,6 +4060,9 @@ function bindPlanHandlers() {
 
       return {
         visible_plans:              visiblePlans,
+        all_plans:                  allPlans,
+        current_filter:             currentFilter,
+        plan_counts:                planCounts,
         recommended_plan:           recommendedPlan,
         status:                     status,
         has_usable_bonus:           hasUsableBonusSafe,
@@ -3993,7 +4080,10 @@ function bindPlanHandlers() {
     } catch (_) {
       // Fail-safe: always return a valid object so the assistant can proceed
       return {
-        visible_plans: [], recommended_plan: null, status: "none",
+        visible_plans: [], all_plans: [], current_filter: "Tous",
+        plan_counts: { total: 0, visible: 0, data: 0, unlimited: 0,
+                       duration_1h: 0, duration_1j: 0, duration_7j: 0 },
+        recommended_plan: null, status: "none",
         has_usable_bonus: false, pool_percent: null, is_full: false,
         active_clients: null, capacity_max: null, contact_phone: null,
         available_payment_methods: ["MVola"],
