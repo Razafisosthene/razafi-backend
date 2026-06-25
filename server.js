@@ -1656,8 +1656,16 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData, message) {
   }
 
   // One-line plan summary: "Name — price — duration — data"
+  function formatAssistantPlanName(name) {
+    return String(name || "")
+      .replace(/\b(\d{1,3})\s*M\b/g, "$1 Mbps")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
+
   function formatPlanLine(plan) {
     if (!plan || !plan.name) return null;
+    const planName = formatAssistantPlanName(plan.name);
     const price = Number(plan.price_ar) > 0
       ? fmtArP(plan.price_ar)
       : t("gratuit", "maimaim-poana", "free");
@@ -1665,7 +1673,7 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData, message) {
     const data  = plan.unlimited
       ? t("illimité", "tsy voafetra", "unlimited")
       : (plan.data_mb ? ((Math.round(plan.data_mb / 102.4) / 10).toFixed(1).replace(".", ",") + "\u00A0Go") : null);
-    return [plan.name, price, dur, data].filter(Boolean).join("\u00A0— ");
+    return [planName, price, dur, data].filter(Boolean).join("\u00A0— ");
   }
 
   // Network warning for video/match when pool is loaded
@@ -1859,9 +1867,9 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData, message) {
             `Anjara ${rp.length} azo alaina`,
             `${rp.length} plan(s) available`);
     return t(
-      `Dites-moi surtout ce que vous voulez faire : WhatsApp/Facebook, TikTok/YouTube, travail/Zoom, match en direct, ou téléchargement. Je vous aiderai à choisir. (${summary} ici.)`,
-      `Lazao ahy ny tianao hatao : WhatsApp/Facebook, TikTok/YouTube, asa/Zoom, baolina mivantana, na fampidirana. Hanampy anao aho. (${summary} eto.)`,
-      `Tell me what you want to do: WhatsApp/Facebook, TikTok/YouTube, work/Zoom, live match, or download. I'll help you choose. (${summary} here.)`
+      `Pour bien choisir, dites-moi ce que vous voulez faire : WhatsApp/Facebook, TikTok, travail/Zoom, match en direct ou téléchargement. Je vous proposerai le forfait le plus adapté. (${summary} ici.)`,
+      `Mba hahafahana misafidy tsara, lazao ahy ny tianao hatao : WhatsApp/Facebook, TikTok, asa/Zoom, baolina mivantana, na fampidirana. Hanoro anao ny anjara mety indrindra aho. (${summary} eto.)`,
+      `To choose the right plan, tell me what you want to do: WhatsApp/Facebook, TikTok, work/Zoom, live match, or download. I'll suggest the most suitable plan. (${summary} here.)`
     );
   }
 
@@ -1887,16 +1895,39 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData, message) {
     const isLongForm = msgLow.includes("netflix") || msgLow.includes("film") ||
       msgLow.includes("série") || msgLow.includes("serie") || msgLow.includes("movie") ||
       msgLow.includes("disney") || msgLow.includes("amazon") || msgLow.includes("canal");
+    const wantsTikTok = msgLow.includes("tiktok");
+    const wantsYouTube = msgLow.includes("youtube");
     const best = findBestPlan(rp, isLongForm ? "high_data_long" : "high_data");
     if (!best) return null;
     const line = formatPlanLine(best);
-    const videoLabel = isLongForm
-      ? t("Netflix ou une série", "Netflix na serie", "Netflix or a series")
-      : t("TikTok ou YouTube", "TikTok na YouTube", "TikTok or YouTube");
+    let videoLabel;
+    if (isLongForm) {
+      videoLabel = t("Netflix ou une série", "Netflix na serie", "Netflix or a series");
+    } else if (wantsTikTok && wantsYouTube) {
+      videoLabel = t("TikTok ou YouTube", "TikTok na YouTube", "TikTok or YouTube");
+    } else if (wantsTikTok) {
+      videoLabel = t("TikTok", "TikTok", "TikTok");
+    } else if (wantsYouTube) {
+      videoLabel = t("YouTube", "YouTube", "YouTube");
+    } else {
+      videoLabel = t("les vidéos", "ny video", "videos");
+    }
+    const bestMinutes = Number(best.duration_minutes || 0);
+    const hasLongerAlternative = rp.some(p =>
+      Number(p.price_ar) > 0 &&
+      Number(p.duration_minutes || 0) > bestMinutes
+    );
+    const shortDurationNote = bestMinutes > 0 && bestMinutes <= 60 && hasLongerAlternative
+      ? t(
+          " C'est bien pour regarder rapidement. Si vous voulez rester plus longtemps, choisissez plutôt un forfait plus long.",
+          " Tsara raha hijery vetivety. Raha hijery ela kokoa ianao, mifidiana forfait maharitra kokoa.",
+          " This is good for quick viewing. If you want to stay longer, choose a longer plan instead."
+        )
+      : "";
     return t(
-      `Pour ${videoLabel}, choisissez plutôt un forfait avec beaucoup de data ou illimité. Ici, je vous conseille : ${line}.${networkWarning()}`,
-      `Ho an'ny ${videoLabel}, safidio ny anjara misy data betsaka na tsy voafetra. Eto, toroheviko : ${line}.${networkWarning()}`,
-      `For ${videoLabel}, prefer a plan with lots of data or unlimited. Here, I recommend: ${line}.${networkWarning()}`
+      `Pour ${videoLabel}, je vous conseille plutôt un forfait illimité ou avec beaucoup de data, car les vidéos consomment vite. Ici, le meilleur choix est : ${line}.${shortDurationNote}${networkWarning()}`,
+      `Ho an'ny ${videoLabel}, safidio ny anjara tsy voafetra na misy data betsaka, fa tena lany haingana ny video. Eto, ny tsara indrindra : ${line}.${shortDurationNote}${networkWarning()}`,
+      `For ${videoLabel}, I recommend an unlimited or high-data plan, as videos use data quickly. Here, the best choice is: ${line}.${shortDurationNote}${networkWarning()}`
     );
   }
 
