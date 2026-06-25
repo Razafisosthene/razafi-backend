@@ -2519,96 +2519,272 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     return [header, warning, numbered].filter(Boolean).join("\n");
   }
 
-  if (intent_key === "admin_create_plan_advice") {
+  if (intent_key === "admin_create_plan_advice" || intent_key === "admin_create_next_plan") {
+    // ================================================================
+    // Phase 2B-B: Concrete plan suggestion engine
+    // Shared by both admin_create_plan_advice and admin_create_next_plan.
+    // Produces 1–3 numbered concrete plan ideas with name/duration/data/speed/price/reason.
+    // Pure function — no DB, no writes, no fake actions.
+    // ================================================================
+
     const plans  = Array.isArray(ld.plans) ? ld.plans : [];
     const byPlan = Array.isArray(ld.by_plan) ? ld.by_plan : [];
     if (!plans.length) return needsPlans();
-    const visible = plans.filter(p => p.is_visible && p.is_active);
+
+    const visible    = plans.filter(p => p.is_visible && p.is_active);
     const hasRevData = byPlan.length > 0;
-    const lines   = [];
+    const mixed      = hasMixedScopeData();
+    const saturated  = hasSaturatedPool();
 
-    const mixed = hasMixedScopeData();
-    const globalNote = mixed
-      ? t(" (données globales — tendance, pas conclusion précise par pool)", " (angon-drakitra ankapobe)", " (global data — trend only)")
-      : "";
+    // ---- Helpers ----
 
-    // Gap: No entry-level plan (< 1000 Ar visible paid)
-    const ENTRY_THRESHOLD = 1000;
-    const hasEntry = visible.some(p => Number(p.price_ar) > 0 && Number(p.price_ar) < ENTRY_THRESHOLD);
-    if (!hasEntry && visible.length > 0) {
-      lines.push(t(
-        `Pas de forfait d'entrée visible (moins de 1\u00A0000\u00A0Ar). Testez une offre courte 30 min ou 1h à prix accessible pour attirer les nouveaux clients.`,
-        `Tsy misy forfait mora hita (latsaky ny 1\u00A0000\u00A0Ar). Andramà ny forfait fohy 30 min na 1h mba hahasanitra mpanjifa vaovao.`,
-        `No affordable entry plan visible (under 1\u00A0000\u00A0Ar). Test a short 30-min or 1h plan at a low price to attract new customers.`
-      ));
+    // Round a price to nearest 100 Ar, clamp to >= 100
+    function roundPrice(n) {
+      const r = Math.round(Number(n) / 100) * 100;
+      return Math.max(100, r);
     }
 
-    // Gap: No daily plan
-    const hasDailyVisible = visible.some(p => {
+    // Format data amount in Go for display (e.g. 1024 → "1 Go", 2560 → "2,5 Go")
+    function fmtGo(mb) {
+      if (!mb || !Number.isFinite(Number(mb))) return null;
+      const go = Number(mb) / 1024;
+      if (go >= 10) return String(Math.round(go)) + "\u00A0Go";
+      const v = Math.round(go * 10) / 10;
+      return (Number.isInteger(v) ? String(v) : String(v).replace(".", ",")) + "\u00A0Go";
+    }
+
+    // Extract speed from a plan: prefer speed_human, then parse mikrotik_rate_limit
+    function extractSpeedMbps(plan) {
+      if (!plan) return null;
+      // speed_human like "7 Mbps" or "10 Mbps"
+      const sh = String(plan.speed_human || plan.speed_label || "").trim();
+      if (sh) {
+        const m = sh.match(/([0-9]+(?:\.[0-9]+)?)\s*[Mm]/);
+        if (m) { const n = Number(m[1]); if (Number.isFinite(n) && n > 0) return n; }
+      }
+      // mikrotik_rate_limit like "7M/7M" or "10240K/10240K"
+      const rl = String(plan.mikrotik_rate_limit || "").trim();
+      if (rl) {
+        const first = rl.split("/")[0] || "";
+        const m2 = first.match(/^([0-9]+(?:\.[0-9]+)?)([KMGT])$/i);
+        if (m2) {
+          const n = Number(m2[1]);
+          const unit = m2[2].toUpperCase();
+          if (Number.isFinite(n) && n > 0) {
+            let mbps = n;
+            if (unit === "K") mbps = n / 1024;
+            if (unit === "G") mbps = n * 1024;
+            return mbps;
+          }
+        }
+      }
+      return null;
+    }
+
+    // Derive a modal speed from visible plans (most common Mbps value, rounded)
+    function deriveModalSpeed() {
+      const speeds = visible.map(extractSpeedMbps).filter(n => n !== null && n > 0);
+      if (!speeds.length) return null;
+      const freq = {};
+      speeds.forEach(n => { const k = Math.round(n); freq[k] = (freq[k] || 0) + 1; });
+      const modal = Object.entries(freq).sort((a, b) => b[1] - a[1])[0];
+      return modal ? Number(modal[0]) : null;
+    }
+
+    // Format a speed for display — "7 Mbps" — or null if unknown
+    function fmtSpeed(mbps) {
+      if (!mbps || !Number.isFinite(mbps)) return null;
+      const r = mbps >= 10 ? Math.round(mbps) : Math.round(mbps * 10) / 10;
+      return (Number.isInteger(r) ? String(r) : String(r).replace(".", ",")) + " Mbps";
+    }
+
+    // Build a one-line plan idea string: "Name — dur — data — speed — price"
+    // Any null field is omitted.
+    function planIdeaLine(name, durLabel, dataLabel, speedLabel, priceLabel) {
+      return [name, durLabel, dataLabel, speedLabel, priceLabel].filter(Boolean).join(" — ");
+    }
+
+    // Best revenue/seller plan objects from byPlan, matched back to plan list for data_mb/duration
+    function findBestPlanEntry() {
+      if (!hasRevData) return null;
+      const bySell = byPlan.slice().sort((a, b) => Number(b.paid_transactions) - Number(a.paid_transactions));
+      const byRev  = byPlan.slice().sort((a, b) => Number(b.total_amount_ar) - Number(a.total_amount_ar));
+      const best   = (byRev[0] && Number(byRev[0].total_amount_ar) > 0) ? byRev[0]
+                   : (bySell[0] && Number(bySell[0].paid_transactions) > 0) ? bySell[0]
+                   : null;
+      if (!best) return null;
+      // Try to find matching plan in plans list for structural data
+      const match = plans.find(p => String(p.name || "") === String(best.plan_name || ""));
+      return { rev: best, plan: match || null };
+    }
+
+    // Plan gap flags
+    const hasEntry   = visible.some(p => Number(p.price_ar) > 0 && Number(p.price_ar) < 1000);
+    const hasDaily   = visible.some(p => { const m = Number(p.duration_minutes); return Number.isFinite(m) && m >= 22 * 60 && m <= 26 * 60; });
+    const hasWeekly  = visible.some(p => { const m = Number(p.duration_minutes); return Number.isFinite(m) && m > 1440 && m <= 10 * 1440; });
+    const hasMonthly = visible.some(p => { const m = Number(p.duration_minutes); return Number.isFinite(m) && m > 10 * 1440; });
+    const hasUnlim   = visible.some(p => p.unlimited === true || p.data_mb === null);
+
+    const modalSpeed = deriveModalSpeed();
+    const speedStr   = fmtSpeed(modalSpeed);
+
+    // Cheapest visible paid price as anchor
+    const paidPrices = visible.map(p => Number(p.price_ar)).filter(n => n > 0);
+    const minPrice   = paidPrices.length ? Math.min(...paidPrices) : 0;
+    const maxPrice   = paidPrices.length ? Math.max(...paidPrices) : 0;
+
+    // Daily plans anchor (price + data)
+    const dailyPlans = visible.filter(p => {
       const m = Number(p.duration_minutes);
-      return Number.isFinite(m) && m >= 22 * 60 && m <= 26 * 60;
+      return Number.isFinite(m) && m >= 22 * 60 && m <= 26 * 60 && Number(p.price_ar) > 0;
     });
-    if (!hasDailyVisible) {
-      lines.push(t(
-        "Pas de forfait journalier visible (24h). C'est souvent l'offre la plus populaire dans les hotspots — testez cette offre pendant quelques jours.",
-        "Tsy misy forfait isan'andro hita (24h). Matetika no tsara indrindra amidy — andramà azy mandritra ny andro vitsivitsy.",
-        "No daily plan visible (24h). It is often the most popular in hotspots — test this offer for a few days."
-      ));
-    }
+    const topDailyByData = dailyPlans.slice().sort((a, b) => Number(b.data_mb || 0) - Number(a.data_mb || 0))[0] || null;
+    const topDailyPrice  = topDailyByData ? Number(topDailyByData.price_ar) : 0;
+    const topDailyDataMb = topDailyByData ? Number(topDailyByData.data_mb || 0) : 0;
 
-    // Gap: No weekly/long plan
-    const hasWeeklyVisible = visible.some(p => {
+    // Weekly plans anchor
+    const weeklyPlans = visible.filter(p => {
       const m = Number(p.duration_minutes);
-      return Number.isFinite(m) && m > 1440;
+      return Number.isFinite(m) && m > 1440 && m <= 10 * 1440 && Number(p.price_ar) > 0;
     });
-    if (!hasWeeklyVisible) {
-      lines.push(t(
-        "Pas de forfait hebdomadaire ou mensuel visible. Une offre longue durée fidélise les clients réguliers.",
-        "Tsy misy forfait herinandro na volana hita. Ny anjara maharitra dia mahazo mpanjifa maharitra.",
-        "No weekly or monthly plan visible. A long-duration offer retains regular customers."
-      ));
-    }
+    const topWeeklyByData = weeklyPlans.slice().sort((a, b) => Number(b.data_mb || 0) - Number(a.data_mb || 0))[0] || null;
+    const topWeeklyPrice  = topWeeklyByData ? Number(topWeeklyByData.price_ar) : 0;
+    const topWeeklyDataMb = topWeeklyByData ? Number(topWeeklyByData.data_mb || 0) : 0;
 
-    // Best-seller variation suggestion (only when revenue data available)
-    if (hasRevData) {
-      const topSeller = byPlan.slice().sort((a, b) => Number(b.paid_transactions) - Number(a.paid_transactions))[0];
-      const topRevenue = byPlan.slice().sort((a, b) => Number(b.total_amount_ar) - Number(a.total_amount_ar))[0];
-      const best = (topSeller && Number(topSeller.paid_transactions) > 0) ? topSeller : (topRevenue && Number(topRevenue.total_amount_ar) > 0 ? topRevenue : null);
-      if (best) {
-        lines.push(t(
-          `Votre forfait le plus populaire${globalNote} est "${best.plan_name}". Testez une variation simple avec un peu plus de data ou une durée légèrement différente, à un prix proche de vos offres actuelles.`,
-          `Ny forfait malaza indrindra${globalNote} dia "${best.plan_name}". Andramà ny variant kely misy data betsaka kely kokoa na faharetana hafa, amin'ny vidiny akaiky ny anjara ankehitriny.`,
-          `Your most popular plan${globalNote} is "${best.plan_name}". Test a simple variation with slightly more data or a different duration, at a price close to your current offers.`
+    const bestEntry = findBestPlanEntry();
+    const bestName  = bestEntry ? String(bestEntry.rev.plan_name || "") : null;
+
+    const ideas = []; // max 3 concrete plan ideas
+
+    // ---- Saturated pool warning ----
+    const saturatedNote = saturated
+      ? t(
+          "Comme le réseau semble chargé, évitez pour l'instant les forfaits illimités longue durée. Testez plutôt une offre courte ou data-limitée.",
+          "Satria feno ny tambajotra, alikao ny forfait tsy voafetra maharitra. Andramà ny anjara fohy na voafetra ny data.",
+          "As the network seems loaded, avoid long unlimited plans for now. Test a short or data-limited plan instead."
+        )
+      : null;
+
+    // ---- Idea A: Variation around best-selling/revenue daily plan ----
+    // Suggest "Internet Jour Plus" if daily exists and best plan is daily
+    if (hasDaily && bestName && topDailyByData) {
+      const bestIsDailyLike = (() => {
+        const bp = bestEntry && bestEntry.plan;
+        const bpDur = bp ? Number(bp.duration_minutes) : 0;
+        return Number.isFinite(bpDur) && bpDur >= 22 * 60 && bpDur <= 26 * 60;
+      })();
+      if (bestIsDailyLike || String(bestName).toLowerCase().includes("jour")) {
+        // Suggest +30–50% more data, price +300–700 Ar, rounded to 100
+        const suggestDataMb = topDailyDataMb > 0
+          ? Math.round(topDailyDataMb * 1.5 / 1024) * 1024   // +50% rounded to 1 Go
+          : 3072; // fallback 3 Go
+        const suggestPrice   = topDailyPrice > 0
+          ? roundPrice(topDailyPrice + 400)
+          : roundPrice((minPrice || 1000) + 400);
+        const suggestPriceHi = roundPrice(suggestPrice + 300);
+        const dataLabel = fmtGo(suggestDataMb) || "3\u00A0Go";
+        const priceLabel = `${suggestPrice.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0à\u00A0${suggestPriceHi.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0Ar`;
+        const line = planIdeaLine("Internet Jour Plus", "24h", dataLabel, speedStr, priceLabel);
+        ideas.push(t(
+          `${line}. Variation directe autour de "${bestName}".`,
+          `${line}. Variant mivantana avy amin'ny "${bestName}".`,
+          `${line}. A direct variation around "${bestName}".`
         ));
       }
-    } else {
-      lines.push(t(
-        "Ouvrez la page Revenus pour identifier quel forfait se vend le mieux et créer une variation ciblée. Ces conseils sont basés uniquement sur la structure de vos forfaits.",
-        "Hisokatra ny pejy Revenue mba hahalalana ny anjara tsara indrindra alohan'ny famoronana variant. Ireto torohevitra ireto dia mifototra amin'ny firafitry ny anjara ihany.",
-        "Open the Revenue page to see which plan sells best before creating a variation. These suggestions are based on plan structure only."
+    }
+
+    // ---- Idea B: Entry plan if missing ----
+    if (!hasEntry && ideas.length < 3) {
+      // Derive entry price: 30–50% of cheapest visible paid plan, min 300, max 700
+      const rawEntry = minPrice > 0 ? Math.min(700, Math.max(300, roundPrice(minPrice * 0.4))) : 400;
+      const entryPriceLo = roundPrice(rawEntry);
+      const entryPriceHi = roundPrice(rawEntry + 100);
+      const priceLabel = `${entryPriceLo.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0à\u00A0${entryPriceHi.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0Ar`;
+      const line = planIdeaLine("Mini Découverte", "1h", "1\u00A0Go", speedStr, priceLabel);
+      ideas.push(t(
+        `${line}. Attire les nouveaux clients qui hésitent à dépenser plus.`,
+        `${line}. Hahasanitra mpanjifa vaovao misalasala ny lany vola betsaka.`,
+        `${line}. Attracts new customers who hesitate to spend more.`
       ));
     }
 
-    if (!lines.length) {
-      const header  = scopePrefix();
-      const warning = mixedScopeWarningLine();
-      return [header, warning, t(
-        "Vos forfaits semblent déjà couvrir les besoins essentiels. Ouvrez Revenus pour identifier les opportunités.",
-        "Tsara ny anjara-nao. Hisokatra ny Revenue mba hahafahana mahita tombony vaovao.",
-        "Your plans already seem to cover the essentials. Open Revenue to spot opportunities."
-      )].filter(Boolean).join("\n");
+    // ---- Idea C: Daily plan if missing ----
+    if (!hasDaily && ideas.length < 3) {
+      const refPrice = minPrice > 0 ? roundPrice(minPrice * 2) : 1000;
+      const priceLo  = Math.max(800, refPrice);
+      const priceHi  = roundPrice(priceLo + 500);
+      const priceLabel = `${priceLo.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0à\u00A0${priceHi.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0Ar`;
+      const dataLabel = (hasUnlim && !saturated) ? t("illimité", "tsy voafetra", "unlimited") : "2\u00A0Go";
+      const line = planIdeaLine("Internet Jour", "24h", dataLabel, speedStr, priceLabel);
+      ideas.push(t(
+        `${line}. Souvent le meilleur vendeur dans les hotspots.`,
+        `${line}. Matetika no tsara indrindra amidy any amin'ny hotspot.`,
+        `${line}. Often the best seller in hotspots.`
+      ));
     }
+
+    // ---- Idea D: Weekly plan if missing and not saturated ----
+    if (!hasWeekly && !saturated && ideas.length < 3) {
+      const refPrice = topDailyPrice > 0 ? roundPrice(topDailyPrice * 6) : (maxPrice > 0 ? roundPrice(maxPrice * 2) : 3000);
+      const priceLo  = Math.max(2000, refPrice);
+      const priceHi  = roundPrice(priceLo + 1000);
+      const priceLabel = `${priceLo.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0à\u00A0${priceHi.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0Ar`;
+      const weekDataMb = topWeeklyDataMb > 0 ? Math.round(topWeeklyDataMb * 1.5 / 1024) * 1024 : 10240;
+      const dataLabel = (hasUnlim && !saturated) ? t("illimité", "tsy voafetra", "unlimited") : (fmtGo(weekDataMb) || "10\u00A0Go");
+      const line = planIdeaLine("Semaine Confort", "7 jours", dataLabel, speedStr, priceLabel);
+      ideas.push(t(
+        `${line}. Fidélise les clients réguliers.`,
+        `${line}. Mahazo mpanjifa maharitra.`,
+        `${line}. Retains regular customers.`
+      ));
+    }
+
+    // ---- Idea E: Generic variation around best plan when no specific gap found ----
+    if (!ideas.length && bestName && hasRevData) {
+      const bp        = bestEntry && bestEntry.plan;
+      const bpDataMb  = bp ? Number(bp.data_mb || 0) : 0;
+      const bpPrice   = bp ? Number(bp.price_ar || 0) : 0;
+      const bpDur     = bp ? Number(bp.duration_minutes || 0) : 0;
+      const sugData   = bpDataMb > 0 ? fmtGo(Math.round(bpDataMb * 1.5 / 1024) * 1024) : null;
+      const sugPrice  = bpPrice > 0 ? roundPrice(bpPrice + 400) : null;
+      const durLabel  = bpDur >= 22 * 60 && bpDur <= 26 * 60 ? "24h" : (bpDur > 0 ? null : null);
+      const priceLabel = sugPrice
+        ? `${sugPrice.toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0à\u00A0${roundPrice(sugPrice + 300).toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0").replace(/ /g, "\u00A0")}\u00A0Ar`
+        : null;
+      const line = planIdeaLine(bestName + " Plus", durLabel, sugData, speedStr, priceLabel);
+      ideas.push(t(
+        `${line}. Variation autour de votre forfait le plus populaire${mixed ? " (tendance globale)" : ""}.`,
+        `${line}. Variant avy amin'ny anjara malaza indrindra${mixed ? " (fironana ankapobe)" : ""}.`,
+        `${line}. Variation around your most popular plan${mixed ? " (global trend)" : ""}.`
+      ));
+    }
+
+    // ---- No revenue data fallback ----
+    const noRevNote = !hasRevData
+      ? t(
+          "Ces suggestions sont basées uniquement sur la structure de vos forfaits actuels. Ouvrez la page Revenus pour des recommandations plus précises.",
+          "Ireto torohevitra ireto dia mifototra amin'ny firafitry ny anjara ankehitriny ihany. Hisokatra ny pejy Revenue ho an'ny torolalana tsara kokoa.",
+          "These suggestions are based on plan structure only. Open the Revenue page for more precise recommendations."
+        )
+      : null;
 
     const header  = scopePrefix();
     const warning = mixedScopeWarningLine();
-    const intro   = t("Idées de nouveaux forfaits à tester :", "Hevitra momba ny anjara vaovao tsy maintsy andramana :", "Plan ideas to test:");
-    const body    = lines.map((l, i) => `${i + 1}. ${l}`).join("\n");
     const caution = (getAnalysisScope() === "all_pools" && hasPlansData()) ? globalCautionLine() : null;
-    return [header, warning, intro + "\n" + body, caution].filter(Boolean).join("\n");
-  }
 
-  // ============================================================
-  // Phase 4: Business Coach intents (Phase 4B: pool-aware scope)
+    if (!ideas.length) {
+      const fallback = t(
+        "Vos forfaits semblent déjà couvrir les besoins essentiels. Ouvrez Revenus pour identifier les opportunités.",
+        "Tsara ny anjara-nao. Hisokatra ny Revenue mba hahafahana mahita tombony vaovao.",
+        "Your plans already cover the essentials. Open Revenue to spot opportunities."
+      );
+      return [header, warning, fallback, noRevNote, caution].filter(Boolean).join("\n");
+    }
+
+    const intro = t("Je vous conseille de tester :", "Toroheviko andramana :", "I recommend testing:");
+    const body  = ideas.map((l, i) => `${i + 1}. ${l}`).join("\n");
+    return [header, warning, saturatedNote, intro + "\n" + body, noRevNote, caution].filter(Boolean).join("\n");
+  }
   // Pure helpers — no DB, no async, no writes.
   // All helpers are local to this block.
   // ============================================================
@@ -3158,85 +3334,6 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     const warning = mixedScopeWarningLine();
     const caution = scope === "all_pools" ? globalCautionLine() : null;
     return [header, warning, parts.join("\n\n"), caution].filter(Boolean).join("\n");
-  }
-
-  // ---- admin_create_next_plan ----
-  if (intent_key === "admin_create_next_plan") {
-    if (!hasPlansData()) return needsPlans();
-
-    const visible = getVisiblePlans();
-    const lines   = [];
-
-    // No entry plan
-    if (!hasEntryPlan() && visible.length > 0) {
-      lines.push(t(
-        "Créez un petit forfait d'entrée (30 min ou 1h, moins de 1\u00A0000\u00A0Ar) pour attirer de nouveaux clients.",
-        "Mamorona forfait kely fidirana (30 min na 1h, latsaky ny 1\u00A0000\u00A0Ar) mba hahasanitra mpanjifa vaovao.",
-        "Create a small entry plan (30 min or 1h, under 1\u00A0000\u00A0Ar) to attract new customers."
-      ));
-    }
-
-    // No daily plan
-    if (!hasDailyPlan()) {
-      lines.push(t(
-        "Ajoutez un forfait journalier (24h). C'est souvent le meilleur vendeur dans les hotspots.",
-        "Manampy forfait isan'andro (24h). Izy io no matetika be indrindra amidy any amin'ny hotspot.",
-        "Add a daily plan (24h). It's often the best seller in hotspots."
-      ));
-    }
-
-    // No long/weekly plan
-    if (!hasLongPlan()) {
-      const caution = hasSaturatedPool()
-        ? t(
-            " Attention : votre réseau est saturé, évitez les forfaits illimités longue durée pour l'instant.",
-            " Sary : feno ny tambajotra-nao, alikao ny forfait tsy voafetra maharitra amin'izao fotoana izao.",
-            " Note: your network is saturated, avoid long unlimited plans for now."
-          )
-        : "";
-      lines.push(t(
-        `Envisagez un forfait longue durée (hebdomadaire ou mensuel) pour les clients réguliers.${caution}`,
-        `Eritrereto ny forfait maharitra (herinandro na volana) ho an'ny mpanjifa maharitra.${caution}`,
-        `Consider a long-duration plan (weekly or monthly) for regular customers.${caution}`
-      ));
-    }
-
-    // Best-seller variation (only if revenue data; note global if mixed)
-    if (hasRevenueData()) {
-      const best = findBestSellerName() || findBestRevenueName();
-      if (best) {
-        const globalNote = hasMixedScopeData() ? t(" (données globales)", " (angon-drakitra ankapobe)", " (global data)") : "";
-        lines.push(t(
-          `Votre forfait le plus populaire${globalNote} est "${best}". Une variation légèrement différente (plus de données ou durée plus courte) peut élargir votre clientèle.`,
-          `Ny forfait malaza indrindra${globalNote} dia "${best}". Ny kopia kely hafa dia mety hampitombo ny mpanjifa.`,
-          `Your most popular plan${globalNote} is "${best}". A slightly different variation (more data or shorter duration) could expand your customer base.`
-        ));
-      }
-    } else {
-      lines.push(t(
-        "Ouvrez la page Revenus pour voir quel forfait se vend le mieux avant de créer une variation.",
-        "Hisokatra ny pejy Revenue mba hahalalana ny forfait tsara indrindra alohan'ny famoronana variant.",
-        "Open the Revenue page to see which plan sells best before creating a variation."
-      ));
-    }
-
-    if (!lines.length) {
-      const header  = scopePrefix();
-      const warning = mixedScopeWarningLine();
-      const fallback = t(
-        "Vos plans semblent déjà couvrir les besoins essentiels. Ouvrez Revenus pour identifier les opportunités.",
-        "Tsara ny plans-nao. Hisokatra ny Revenue mba hahafahana mahita tombony vaovao.",
-        "Your plans already seem to cover the essentials. Open Revenue to spot opportunities."
-      );
-      return [header, warning, fallback].filter(Boolean).join("\n");
-    }
-
-    const header  = scopePrefix();
-    const warning = mixedScopeWarningLine();
-    const caution2 = (getAnalysisScope() === "all_pools" && hasPlansData()) ? globalCautionLine() : null;
-    const intro   = t("Suggestions pour votre prochain forfait :", "Tolo-kevitra momba ny forfait manaraka :", "Suggestions for your next plan:");
-    const body    = lines.map((l, i) => `${i + 1}. ${l}`).join("\n");
-    return [header, warning, intro + "\n" + body, caution2].filter(Boolean).join("\n");
   }
 
   // ---- admin_low_sales_reason ----
