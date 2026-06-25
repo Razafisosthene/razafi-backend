@@ -1026,6 +1026,43 @@ function detectDynamicIntentFromMessage(msg, context) {
       s.includes("drive") || s.includes("manidina")
     ) return "portal_plan_advice_download";
 
+    // Phase 2A: Budget with specific Ariary amount — MUST be before portal_plan_advice_cheap
+    // Matches: "2000 Ar", "2 000 Ar", "2000Ar", "2000 ariary", "budget 2000", "avec un budget de 2000 Ar"
+    if (
+      /\b\d[\d\s\u00A0]*\s*(?:[aA][rR]|ariary)\b/.test(s) ||
+      (s.includes("budget") && /\d{3,}/.test(s)) ||
+      s.includes("avec un budget de") || s.includes("pour un budget de") ||
+      (s.includes("moins de ") && /\d/.test(s)) ||
+      (s.includes("jusqu'à ") && /\d/.test(s)) ||
+      (s.includes("jusqu'a ") && /\d/.test(s)) ||
+      (s.includes("lany vola") && /\d/.test(s)) ||
+      (s.includes("vola kely") && /\d/.test(s))
+    ) return "portal_plan_advice_budget";
+
+    // Phase 2A: Monthly / weekly / long-duration offer query
+    if (
+      s.includes("mensuel") || s.includes("mensuelle") || s.includes("par mois") ||
+      s.includes("offre mois") || s.includes("forfait mois") ||
+      s.includes("semaine") || s.includes("hebdomad") || s.includes("par semaine") ||
+      s.includes("monthly") || s.includes("weekly") ||
+      s.includes("isan-jabolana") || s.includes("isan-kerinandro") ||
+      s.includes("30 jour") || s.includes("30j") ||
+      s.includes("7 jour") || s.includes("7j")
+    ) return "portal_plan_advice_duration";
+
+    // Phase 2A: Capteur / WiFi repeater placement advice
+    if (
+      s.includes("capteur") || s.includes("récepteur") || s.includes("recepteur") ||
+      s.includes("répéteur") || s.includes("repeteur") || s.includes("amplificateur") ||
+      s.includes("repeater") || s.includes("antenne") || s.includes("cpe") ||
+      s.includes("partager wifi") || s.includes("capturer signal") ||
+      s.includes("kisy wifi") || s.includes("famatsiana signal") ||
+      (s.includes("wifi") && (
+        s.includes("loin") || s.includes("signal faible") ||
+        s.includes("mahazo signal") || s.includes("tsy mety signal")
+      ))
+    ) return "portal_plan_advice_capteur";
+
     // Cheapest / budget
     if (
       s.includes("pas cher") || s.includes("moins cher") || s.includes("économique") ||
@@ -1819,6 +1856,162 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData, message) {
       `Pour toute la journée, le forfait le plus adapté ici est : ${line}.`,
       `Ho an'ny andro manontolo, ny anjara mety indrindra eto : ${line}.`,
       `For all day long, the most suitable plan here is: ${line}.`
+    );
+  }
+
+  // ---- Phase 2A: Budget comparison against visible_plans ----
+  if (intent_key === "portal_plan_advice_budget") {
+    if (!vp.length) return null;
+
+    // Canonical budget parser — supports:
+    // "2000 Ar", "2 000 Ar", "2000Ar", "2000 ariary", "budget 2000", "avec un budget de 2000 Ar"
+    const msgStr = String(message || "");
+    const budgetMatch = msgStr.match(/(\d[\d\s\u00A0]*)\s*(?:[aA][rR](?:iary)?)/);
+    // fallback: extract first 3+ digit number when "budget" keyword is present but no Ar/ariary
+    const numOnlyMatch = !budgetMatch && /budget/i.test(msgStr)
+      ? msgStr.match(/\b(\d[\d\s\u00A0]{2,})\b/)
+      : null;
+    const rawNum = budgetMatch ? budgetMatch[1] : (numOnlyMatch ? numOnlyMatch[1] : null);
+    const budget = rawNum ? Number(rawNum.replace(/[\s\u00A0]/g, "")) : 0;
+
+    const place = poolLabel();
+    // Keep name case as-is — never toLowerCase on pool/brand/display names
+    const pp = place
+      ? t(`Sur ${place}`, `Eto ${place}`, `At ${place}`)
+      : t("Sur ce portail", "Eto", "Here");
+
+    if (!budget || budget <= 0) {
+      // No valid amount parsed — fall back to cheapest plan
+      const best = findBestPlan(vp, "cheapest");
+      if (!best) return null;
+      return t(
+        `${pp}, le forfait le moins cher est : ${formatPlanLine(best)}.`,
+        `${pp}, ny anjara mora indrindra : ${formatPlanLine(best)}.`,
+        `${pp}, the cheapest plan is: ${formatPlanLine(best)}.`
+      );
+    }
+
+    const affordable = vp.filter(p => Number(p.price_ar) > 0 && Number(p.price_ar) <= budget);
+
+    if (!affordable.length) {
+      const paid = vp.filter(p => Number(p.price_ar) > 0);
+      const closest = paid.length
+        ? paid.reduce((a, b) =>
+            Math.abs(Number(a.price_ar) - budget) <= Math.abs(Number(b.price_ar) - budget) ? a : b
+          )
+        : null;
+      const closestNote = closest
+        ? t(
+            ` Le forfait visible le plus proche est : ${formatPlanLine(closest)}.`,
+            ` Ny anjara akaiky indrindra : ${formatPlanLine(closest)}.`,
+            ` The closest available plan is: ${formatPlanLine(closest)}.`
+          )
+        : "";
+      return t(
+        `${pp}, je ne vois pas de forfait à ${fmtArP(budget)} ou moins pour le moment.${closestNote} Si votre budget est limité à ${fmtArP(budget)}, aucun forfait affiché ne correspond exactement actuellement.`,
+        `${pp}, tsy misy anjara latsaky ny ${fmtArP(budget)} amin'izao fotoana izao.${closestNote}`,
+        `${pp}, I don't see any plan at ${fmtArP(budget)} or less right now.${closestNote}`
+      );
+    }
+
+    // Pick best affordable plan: longest duration wins among plans within budget
+    const best = affordable.reduce((a, b) =>
+      Number(b.duration_minutes) > Number(a.duration_minutes) ? b : a
+    );
+    const extra = affordable.length > 1
+      ? t(
+          ` (${affordable.length} forfaits dans ce budget)`,
+          ` (anjara ${affordable.length} ao anatin'ity teti-bola ity)`,
+          ` (${affordable.length} plans within this budget)`
+        )
+      : "";
+    return t(
+      `${pp}, avec un budget de ${fmtArP(budget)}, je vous conseille : ${formatPlanLine(best)}.${extra}`,
+      `${pp}, raha ${fmtArP(budget)} ny teti-bola, toroheviko : ${formatPlanLine(best)}.${extra}`,
+      `${pp}, with a budget of ${fmtArP(budget)}, I recommend: ${formatPlanLine(best)}.${extra}`
+    );
+  }
+
+  // ---- Phase 2A: Duration-specific offer (monthly, weekly, long) ----
+  if (intent_key === "portal_plan_advice_duration") {
+    if (!vp.length) return null;
+
+    const msgLow = String(message || "").toLowerCase();
+    const isMonthly = /mensuel|par mois|monthly|30\s?jour|30j|isan-jabolana/.test(msgLow);
+    const isWeekly  = /semaine|hebdomad|weekly|7\s?jour|7j|isan-kerinandro/.test(msgLow);
+
+    const place = poolLabel();
+    // Keep name case as-is — never toLowerCase on pool/brand/display names
+    const pp = place
+      ? t(`Sur ${place}`, `Eto ${place}`, `At ${place}`)
+      : t("Sur ce portail", "Eto", "Here");
+
+    if (isMonthly) {
+      const monthly = vp.filter(p => Number(p.duration_minutes) >= 40320); // >= 28 days
+      if (!monthly.length) {
+        return t(
+          `${pp}, je ne vois pas d'offre mensuelle disponible pour le moment.`,
+          `${pp}, tsy misy anjara isan-jabolana hita amin'izao fotoana izao.`,
+          `${pp}, I don't see any monthly plan available right now.`
+        );
+      }
+      const best = monthly.reduce((a, b) => Number(a.price_ar) <= Number(b.price_ar) ? a : b);
+      return t(
+        `Oui, ${pp}, une offre mensuelle est disponible : ${formatPlanLine(best)}.`,
+        `Eny, ${pp}, misy anjara isan-jabolana : ${formatPlanLine(best)}.`,
+        `Yes, ${pp}, a monthly plan is available: ${formatPlanLine(best)}.`
+      );
+    }
+
+    if (isWeekly) {
+      const weekly = vp.filter(p => {
+        const m = Number(p.duration_minutes);
+        return m >= 7200 && m <= 14400; // 5 to 10 days
+      });
+      if (!weekly.length) {
+        return t(
+          `${pp}, je ne vois pas d'offre hebdomadaire disponible pour le moment.`,
+          `${pp}, tsy misy anjara isan-kerinandro hita amin'izao fotoana izao.`,
+          `${pp}, I don't see any weekly plan available right now.`
+        );
+      }
+      const best = weekly.reduce((a, b) => Number(a.price_ar) <= Number(b.price_ar) ? a : b);
+      return t(
+        `Oui, ${pp}, une offre hebdomadaire est disponible : ${formatPlanLine(best)}.`,
+        `Eny, ${pp}, misy anjara isan-kerinandro : ${formatPlanLine(best)}.`,
+        `Yes, ${pp}, a weekly plan is available: ${formatPlanLine(best)}.`
+      );
+    }
+
+    // Generic long-duration (> 24h)
+    const long = vp.filter(p => Number(p.duration_minutes) > 1440);
+    if (!long.length) {
+      return t(
+        `${pp}, les forfaits disponibles sont à courte durée. Je ne vois pas d'offre longue durée pour le moment.`,
+        `${pp}, anjara fohy ny misy amin'izao fotoana izao. Tsy misy anjara maharitra.`,
+        `${pp}, the available plans are short-duration. I don't see any long-duration plan right now.`
+      );
+    }
+    const best = long.reduce((a, b) => Number(b.duration_minutes) > Number(a.duration_minutes) ? b : a);
+    return t(
+      `${pp}, le forfait longue durée disponible est : ${formatPlanLine(best)}.`,
+      `${pp}, ny anjara maharitra misy : ${formatPlanLine(best)}.`,
+      `${pp}, the long-duration plan available is: ${formatPlanLine(best)}.`
+    );
+  }
+
+  // ---- Phase 2A: Capteur / WiFi repeater placement advice ----
+  if (intent_key === "portal_plan_advice_capteur") {
+    const place = poolLabel();
+    // Keep name case as-is — never toLowerCase on pool/brand/display names
+    const ssidRef = place
+      ? t(`le WiFi "${place}"`, `ny WiFi "${place}"`, `the "${place}" WiFi`)
+      : t("ce WiFi", "ity WiFi ity", "this WiFi");
+
+    return t(
+      `Pour utiliser un capteur WiFi avec ${ssidRef} : placez-le en hauteur, près d'une fenêtre ou d'un espace ouvert, orienté vers la source du signal. Évitez les murs épais et les objets métalliques. Testez d'abord le signal avec votre téléphone à l'emplacement choisi. Une fois le signal capté, choisissez un forfait sur le portail et connectez-vous normalement. La vitesse dépend de la qualité du signal reçu.`,
+      `Hampiasana capteur WiFi amin'${ssidRef} : apetraho amin'ny toerana avo, akaikin'ny varavarankely na toerana malalaka, atodiho mankany amin'ny loharanon'ny signal. Aza apetraka ao ambadiky ny rindrina matevina na zavatra metaly. Andramana voalohany ny signal amin'ny finday tamin'ny toerana nokendrena. Rehefa mahazo signal ilay capteur, misafidy forfait amin'ny portail ary mifandray araka ny mahazatra. Miankina amin'ny kalitao'ny signal ny hafainganam-pandefa.`,
+      `To use a WiFi capteur with ${ssidRef}: place it high up, near a window or open area, aimed toward the signal source. Avoid thick walls and metal objects. First test the signal with your phone at the planned spot. Once the capteur receives signal, choose a plan on the portal and connect normally. Speed depends on signal quality at that location.`
     );
   }
 
@@ -2915,6 +3108,10 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
     "portal_plan_advice_work", "portal_plan_advice_download",
     "portal_plan_advice_cheap", "portal_plan_advice_day",
     "portal_plan_advice_browsing",
+    // Phase 2A: new portal intents
+    "portal_plan_advice_budget",
+    "portal_plan_advice_duration",
+    "portal_plan_advice_capteur",
     // Phase 2: admin BI
     "admin_current_page", "admin_dashboard",
     "admin_best_selling_plan", "admin_best_revenue_plan",
@@ -3397,6 +3594,12 @@ function buildGroundedAssistantPrompt({
       "If user mentions: ela be, tsy tonga code, mbola tsy nahazo, efa nandoa fa code tsy nivoaka — follow the payment/code help protocol.",
       "Payment/code protocol: apologize → confirmation may be pending → check MVola → use 'Dernière consommation' → contact assistance.",
       "NEVER expose: voucher_code, client_mac, request_ref, transaction_id, phone number used for payment, router data, internal IDs.",
+      "BUDGET: if user gives a specific Ariary amount, compare with visible_plans. Never invent a plan. If no plan fits the budget, say so clearly and name the closest higher option.",
+      "MONTHLY/WEEKLY: if user asks for a monthly or weekly plan, check visible_plans durations. Monthly >= 28 days (40320 min). Weekly = 5-10 days (7200-14400 min). If none found, say so clearly using the pool/brand name.",
+      "CAPTEUR/REPEATER: give direct practical placement advice (height, window, orientation, avoid thick walls and metal). Use the pool/SSID name from live_data if available. Do not say 'contact assistance' as first response for hardware placement questions.",
+      "PERSONALIZATION: always use display_name or pool_name from live_data when available. Say 'Sur [Name]...' and never lowercase the name. Do not use generic phrases like 'les offres peuvent varier selon le point WiFi' when real pool data is available.",
+      "RAZAFI APP: if user asks about the RAZAFI app or how to download it, explain there is no app to download — the portal works directly from the browser after connecting to the WiFi.",
+      "MULTILINGUAL: answer in the same language the user is writing in. French → French. Malagasy → Malagasy. English → English. Mixed Malagasy/French → mirror the mix. For other languages on simple WiFi/plan questions, answer briefly in that language if possible.",
     ],
     admin_owner: [
       "You are helping a WiFi network owner in their admin dashboard (page: " + pageHint + ").",
@@ -3404,6 +3607,7 @@ function buildGroundedAssistantPrompt({
       "NEVER say 'I changed it', 'I created it', 'I deleted it', 'I updated it' unless a confirmed system action endpoint was called.",
       "Prefer: 'Je vous conseille…', 'Vous pouvez…', 'D'après les données visibles…'",
       "NEVER expose secrets, infrastructure details, internal IDs, or platform revenue share data.",
+      "MULTILINGUAL: answer in the same language the admin is writing in. French → French. Malagasy → Malagasy. English → English.",
     ],
     platform_prospect: [
       "You are helping a business prospect evaluating the RAZAFI platform (page: " + pageHint + ").",
@@ -3411,6 +3615,8 @@ function buildGroundedAssistantPrompt({
       "Hardware recommendation: MikroTik hAP ax² for small/medium spots. Larger sites can use more powerful models.",
       "NEVER expose any private live data, internal architecture, or configuration details.",
       "NEVER mention private IDs, backend details, payment secrets, or voucher mechanics.",
+      "ESPACE PROPRIETAIRE: this is the admin login panel for existing pool owners only. NEVER present it as a contact method or a way for prospects to reach RAZAFI. For prospect contact, direct them to WhatsApp or the website.",
+      "MULTILINGUAL: answer in the same language the prospect is writing in. French → French. Malagasy → Malagasy. English → English. For other languages on simple platform questions, answer briefly in that language if possible.",
     ],
   };
 
