@@ -3359,14 +3359,17 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
 
   // ---------------------------------------------------------------------------
   // PATCH B — Optional AI enhancement layer
-  // Runs only when ASSISTANT_AI_ENABLED=true.
+  // Runs only when ASSISTANT_AI_ENABLED=true AND no deterministic dynamicAnswer exists.
+  // Dynamic live-data answers are authoritative — AI must not override them.
   // Falls back to canonicalAnswer silently on timeout / safety block / any error.
   // Never bypasses sanitizeAssistantLiveData() — liveData is already sanitized here.
   // ---------------------------------------------------------------------------
   let finalAnswer = canonicalAnswer;
   let aiUsed = false;
 
-  if (isAssistantAiEnabled()) {
+  const shouldRunAi = isAssistantAiEnabled() && !dynamicAnswer;
+
+  if (shouldRunAi) {
     try {
       const pageHint = buildAssistantPageHint(context, page_path, liveData);
 
