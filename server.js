@@ -893,6 +893,19 @@ function cleanupAssistantThreads() {
 setInterval(cleanupAssistantThreads, 15 * 60 * 1000).unref();
 
 // ── Payment diagnostic ────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Patch F.3 Fix 1: safe support phone — only trusted sources allowed.
+// Never accepts a phone that came from user-supplied data (slots, transactions).
+// Call sites must pass liveData.contact_phone or DEFAULT_SUPPORT_PHONE only.
+// ---------------------------------------------------------------------------
+function safeAssistantSupportPhone(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  // Allow digits, spaces, +, (, ), -, . only (display-safe phone characters)
+  const cleaned = s.replace(/[^\d+\s().-]/g, "").trim().slice(0, 32);
+  return cleaned || null;
+}
+
 async function buildAssistantDiagnosticContext({ context, message, liveData, thread }) {
   // Only run for portal_user payment issues
   if (context !== "portal_user") return null;
@@ -901,7 +914,8 @@ async function buildAssistantDiagnosticContext({ context, message, liveData, thr
   if (!isComplaint && !isPendingIssue) return null;
   if (!supabase) return null;
 
-  const contactPhone = String(liveData?.contact_phone || DEFAULT_SUPPORT_PHONE || "").trim();
+  // Patch F.3 Fix 2: support phone from trusted sources only — never from user slots or transaction phone.
+  const contactPhone = safeAssistantSupportPhone(liveData?.contact_phone) || DEFAULT_SUPPORT_PHONE;
 
   // Collect signals from current message + stored slots
   const signals = extractAssistantFollowUpSignals(message, context, thread);
@@ -4358,12 +4372,17 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
         diagnosticResult,
       });
 
+      // Patch F.3 Fix 7: build forbidden phone list from thread slots (user payment phone)
+      const forbiddenPhones = [];
+      if (thread?.slots?.phone) forbiddenPhones.push(String(thread.slots.phone).replace(/\s+/g, ""));
+
       const aiSafe = validateRazafiAiAnswer({
         answer: aiRaw,
         context,
         liveData,
         canonicalAnswer,
         diagnosticResult,
+        forbiddenPhones,
       });
 
       if (aiSafe) {
@@ -4647,7 +4666,11 @@ SAFETY RULES:
 function buildPaymentDiagnosticFallbackAnswer(lang, diagnosticResult, liveData) {
   const l = String(lang || "fr").toLowerCase();
   const dc = String(diagnosticResult?.diagnosis_code || "").toLowerCase();
-  const phone = String(liveData?.contact_phone || diagnosticResult?.contact_phone || DEFAULT_SUPPORT_PHONE || "").trim();
+  // Patch F.3 Fix 3: support phone from trusted sources only — never from user/payment phone.
+  const phone =
+    safeAssistantSupportPhone(diagnosticResult?.contact_phone) ||
+    safeAssistantSupportPhone(liveData?.contact_phone) ||
+    DEFAULT_SUPPORT_PHONE;
   const missing = Array.isArray(diagnosticResult?.missing_fields) ? diagnosticResult.missing_fields : [];
 
   function t(mg, fr, en) {
@@ -4764,7 +4787,8 @@ function buildPaymentComplaintFallbackAnswer(lang, liveData) {
   const l = String(lang || "fr").toLowerCase();
   const ps = String(liveData?.latest_payment_status || "").trim().toLowerCase();
   const vs = String(liveData?.latest_voucher_status  || "").trim().toLowerCase();
-  const phone = String(liveData?.contact_phone || "").trim();
+  // Patch F.3 Fix 4: support phone from trusted source only.
+  const phone = safeAssistantSupportPhone(liveData?.contact_phone) || DEFAULT_SUPPORT_PHONE;
 
   // Helper: pick text by lang
   function t(mg, fr, en) {
@@ -4957,6 +4981,9 @@ function buildGroundedAssistantPrompt({
     "If SAFE DIAGNOSTIC RESULT is present, use it as ground truth. Do not invent payment/voucher status.",
     "If diagnosis_code = pin_detected: warn user not to share PIN, do not use the number sent.",
     "If should_apologize = true: apologize clearly for the RAZAFI-side issue in the user's language.",
+    "SUPPORT PHONE RULE: NEVER use the user's payment phone as the support/assistance phone number.",
+    "For support contact, use ONLY the contact_phone from SAFE DIAGNOSTIC RESULT or SAFE LIVE DATA.",
+    "If no trusted support phone is available, say 'contactez l'assistance RAZAFI' without any phone number.",
   ].join("\n");
 
   // ── USER CONTENT ──────────────────────────────────────────────────────────
@@ -4994,7 +5021,9 @@ function buildGroundedAssistantPrompt({
     if (diagnosticResult.time_ago) dLines.push(`time_ago: ${diagnosticResult.time_ago}`);
     if (diagnosticResult.provider && diagnosticResult.provider !== "unknown") dLines.push(`provider: ${diagnosticResult.provider}`);
     if (diagnosticResult.missing_fields?.length) dLines.push(`still_missing: ${diagnosticResult.missing_fields.join(", ")}`);
-    if (diagnosticResult.contact_phone) dLines.push(`contact_phone: ${diagnosticResult.contact_phone}`);
+    // Patch F.3 Fix 5: only inject trusted support phone into prompt — never user/payment phone.
+    const safeContactForPrompt = safeAssistantSupportPhone(diagnosticResult.contact_phone);
+    if (safeContactForPrompt) dLines.push(`contact_phone: ${safeContactForPrompt}`);
     if (diagnosticResult.pin_warning) dLines.push("PIN DETECTED IN MESSAGE — warn user not to share PIN, do not use the number");
     diagnosticSection = `\n\n## SAFE DIAGNOSTIC RESULT\n${dLines.join("\n")}`;
   }
@@ -5109,10 +5138,29 @@ async function generateRazafiGroundedAiAnswer({
 // ---------------------------------------------------------------------------
 // Safety validator — blocks unsafe AI answers; returns canonical fallback
 // ---------------------------------------------------------------------------
-function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer, diagnosticResult }) {
+function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer, diagnosticResult, forbiddenPhones }) {
   if (!answer || typeof answer !== "string" || !answer.trim()) return false;
 
   const lower = answer.toLowerCase();
+
+  // 0. Patch F.3 Fix 6: block user payment phone from appearing as support contact.
+  // forbiddenPhones is an array of full normalized phone numbers collected from user slots.
+  // The trusted support phone (liveData.contact_phone / DEFAULT_SUPPORT_PHONE) is allowed.
+  if (Array.isArray(forbiddenPhones) && forbiddenPhones.length) {
+    const trustedPhone = safeAssistantSupportPhone(liveData?.contact_phone) || DEFAULT_SUPPORT_PHONE || "";
+    for (const fp of forbiddenPhones) {
+      const fpNorm = String(fp || "").replace(/\s+/g, "").trim();
+      if (!fpNorm || fpNorm.length < 7) continue;
+      // Skip if this phone IS the trusted support number
+      if (trustedPhone && trustedPhone.replace(/\s+/g, "") === fpNorm) continue;
+      // Block full phone in answer (digits only, any spacing)
+      const answerDigits = answer.replace(/\s+/g, "");
+      if (answerDigits.includes(fpNorm)) {
+        console.warn("[AI SAFETY BLOCK] user payment phone echoed as support contact");
+        return false;
+      }
+    }
+  }
 
   // 1. Forbidden internal/secret terms
   for (const term of ASSISTANT_AI_FORBIDDEN_TERMS) {
