@@ -5127,6 +5127,16 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   // Payment diagnostic must always win over returning-plan memory.
   // client_mac and pool_id are resolved and discarded inside buildReturningUserPlanContext.
   // They never appear in thread, conversation_state, logs, or the AI prompt.
+
+  // DEBUG G.2: log gate booleans only — no token value, no MAC, no IDs
+  console.info("[G.2 DEBUG]", {
+    context,
+    token_present:     !!historyToken,
+    first_turn:        (thread?.turns?.length || 0) === 0,
+    payment_complaint: isPaymentComplaintMessage(message),
+    pending_payment:   thread?.pending_issue_type === "payment_no_code",
+  });
+
   if (
     context === "portal_user" &&
     historyToken &&
@@ -5136,6 +5146,12 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   ) {
     try {
       const resolved = resolvePortalHistoryToken(historyToken);
+
+      // DEBUG G.2: log resolution result — no token value, no MAC, no IDs
+      console.info("[G.2 DEBUG]", {
+        token_resolved: !!resolved,
+      });
+
       if (resolved) {
         const returningCtx = await buildReturningUserPlanContext({
           clientMac: resolved.client_mac,
@@ -5143,6 +5159,16 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
           // resolved.client_mac and resolved.pool_id are used only inside buildReturningUserPlanContext
           // and discarded immediately — never stored in liveData, thread, or logs
         });
+
+        // DEBUG G.2: log safe derived fields only — no MAC, no IDs
+        console.info("[G.2 DEBUG]", {
+          has_history:              returningCtx?.has_history === true,
+          reason:                   returningCtx?.reason || null,
+          last_plan_present:        !!returningCtx?.last_used_plan_name,
+          suggested_present:        !!returningCtx?.suggested_real_plan_name,
+          last_plan_still_available: returningCtx?.last_plan_still_available === true,
+        });
+
         // Merge safe derived object into liveData — no MAC/pool_id/plan_id here
         liveData = { ...liveData, returning_user_context: returningCtx };
       }
@@ -5364,6 +5390,15 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   // Runs after finalAnswer is fully resolved by AI/fallback chains.
   // Errors are caught; original finalAnswer is always preserved.
   try {
+    // DEBUG G.2.1: log all gate booleans — no PII, no IDs
+    console.info("[G.2.1 DEBUG]", {
+      gate_context:           context === "portal_user",
+      gate_has_history:       liveData?.returning_user_context?.has_history === true,
+      gate_not_payment:       !messageIsPaymentComplaint,
+      gate_no_pending_payment: thread?.pending_issue_type !== "payment_no_code",
+      gate_first_turn:        (thread?.turns?.length || 0) === 0,
+    });
+
     if (
       context === "portal_user" &&
       liveData?.returning_user_context?.has_history === true &&
@@ -5375,6 +5410,12 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
         lang,
         returningUserContext: liveData.returning_user_context,
       });
+
+      // DEBUG G.2.1: log whether intro was built
+      console.info("[G.2.1 DEBUG]", {
+        intro_present: !!intro,
+      });
+
       if (intro) finalAnswer = intro + "\n" + finalAnswer;
     }
   } catch (introErr) {
