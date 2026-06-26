@@ -13,6 +13,7 @@
   // Uses sessionStorage (tab-scoped). Never stores PII.
   // ============================================================
   var RAZAFI_PORTAL_ASSISTANT_CID_KEY = "razafi_portal_assistant_conversation_id_v1";
+  var assistantHistoryToken = null; // G.2: opaque token from /api/mikrotik/plans — closure only, never DOM/storage
 
   function readAssistantConversationId(key) {
     try {
@@ -3117,6 +3118,13 @@ function saturationLabel(pct) {
 
       renderPortalAnnouncement(data.portal_announcement);
 
+      // G.2: save opaque history token from server (closure variable only)
+      // Never stored in localStorage, sessionStorage, DOM, window, or URL.
+      // Cleared after single use when sent to /api/assistant/chat.
+      if (data && data.assistant_history_token) {
+        assistantHistoryToken = data.assistant_history_token;
+      }
+
       const plans = data.plans || [];
       if (!plans.length) {
         plansGrid.innerHTML = `<p class="muted small">Aucun plan disponible pour le moment.</p>`;
@@ -4391,6 +4399,10 @@ function bindPlanHandlers() {
 
       // Call backend
       var assistantConversationId = readAssistantConversationId(RAZAFI_PORTAL_ASSISTANT_CID_KEY);
+      // G.2: copy token and clear closure variable so it is sent exactly once.
+      // Never stored in localStorage/sessionStorage/DOM/window/URL.
+      var tokenToSend = assistantHistoryToken || undefined;
+      assistantHistoryToken = null;
       fetch(apiUrl("/api/assistant/chat"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -4403,6 +4415,7 @@ function bindPlanHandlers() {
             try { return String(window.location.pathname || "").slice(0, 200); } catch (_) { return null; }
           })(),
           conversation_id: assistantConversationId,
+          history_token: tokenToSend, // G.2: opaque; undefined when no token
         }),
       })
         .then(function (res) {
