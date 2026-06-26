@@ -4875,7 +4875,13 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
       // re-enters the diagnostic path without requiring a full complaint message.
     }
     // Merge diagnostic safe fields into liveData for AI and fallback
+    // G.1 Polish: also set diagnostic_status so buildPaymentContextBlock can distinguish
+    // "not checked yet / missing details" from "checked and not found".
+    if (diagnosticResult?.status === "not_enough_info") {
+      liveData = { ...liveData, diagnostic_status: "not_enough_info" };
+    }
     if (diagnosticResult?.status === "checked") {
+      liveData = { ...liveData, diagnostic_status: "checked" };
       if (diagnosticResult.payment_status && diagnosticResult.payment_status !== "unknown") {
         liveData = { ...liveData, latest_payment_status: diagnosticResult.payment_status };
       }
@@ -5268,15 +5274,31 @@ function isPaymentComplaintMessage(msg) {
 // ---------------------------------------------------------------------------
 function buildPaymentContextBlock(liveData) {
   if (!liveData || typeof liveData !== "object") return "";
-  const ps = liveData.latest_payment_status;
-  const vs = liveData.latest_voucher_status;
+  const ps  = liveData.latest_payment_status;
+  const vs  = liveData.latest_voucher_status;
   const amt = liveData.latest_payment_amount;
   const prov = liveData.latest_payment_provider;
-  const ago = liveData.latest_payment_time_ago;
+  const ago  = liveData.latest_payment_time_ago;
 
-  if (!ps) return "PAYMENT CONTEXT: no recent transaction found in system.";
+  // G.1 Polish: distinguish "not checked yet" from "checked and not found".
+  // latest_payment_status is only set in liveData when a real DB lookup ran
+  // (see handleAssistantChat: diagnostic merges into liveData on status==="checked").
+  // If it is absent, the lookup either hasn't run yet or lacked enough details —
+  // both cases require the soft wording, NOT "no recent transaction found".
+  if (!ps) {
+    // latest_payment_status is only set when a real DB lookup ran and returned a result.
+    // If it is absent, details are still missing — emit the soft wording.
+    // True payment_not_found always sets latest_payment_status = "not_found", so
+    // this branch never suppresses a genuine "not found" result.
+    return [
+      "PAYMENT CONTEXT: not enough details yet to check this payment.",
+      "Ask for the number used, amount, approximate time, and reference if available.",
+      "Do not say transaction not found yet. Never ask for PIN.",
+    ].join(" ");
+  }
 
-  const lines = [`PAYMENT CONTEXT:`];
+  // Payment status is present — a real lookup ran. Emit the factual result.
+  const lines = ["PAYMENT CONTEXT:"];
   lines.push(`  payment_status: ${ps}`);
   if (vs)   lines.push(`  voucher_status: ${vs}`);
   if (amt)  lines.push(`  amount: ${amt} Ar`);
@@ -5317,6 +5339,7 @@ SAFETY RULES:
 function buildPaymentDiagnosticFallbackAnswer(lang, diagnosticResult, liveData) {
   const l = String(lang || "fr").toLowerCase();
   const dc = String(diagnosticResult?.diagnosis_code || "").toLowerCase();
+  const st = String(diagnosticResult?.status        || "").toLowerCase();
   // Patch F.3 Fix 3: support phone from trusted sources only — never from user/payment phone.
   const phone =
     safeAssistantSupportPhone(diagnosticResult?.contact_phone) ||
@@ -5333,6 +5356,45 @@ function buildPaymentDiagnosticFallbackAnswer(lang, diagnosticResult, liveData) 
   const contactSuffix = phone
     ? t(` Mifandraisa amin'ny assistance: ${phone}.`, ` Contactez l'assistance au ${phone}.`, ` Contact support at ${phone}.`)
     : t(" Mifandraisa amin'ny assistance RAZAFI.", " Contactez l'assistance RAZAFI.", " Please contact RAZAFI support.");
+
+  // G.1 Polish: top-level guard — if details are still missing, ALWAYS use the soft
+  // "need more details" wording, regardless of diagnosis_code.
+  // This prevents "transaction not found" from being shown before a real lookup ran.
+  // The existing missing_payment_details branch below handles the same case for
+  // diagnosis_code === "missing_payment_details"; this guard catches edge cases
+  // where status === "not_enough_info" regardless of what diagnosis_code was set.
+  // G.1 Polish fix: guard triggers only on explicit not_enough_info status or
+  // missing_payment_details diagnosis — never on missing.length alone, so that
+  // payment_not_found and multiple_possible_matches keep their own correct branches.
+  if (st === "not_enough_info" || dc === "missing_payment_details") {
+    const fieldLabels = {
+      phone_number:          t("nomerao nampiasaina",    "le numéro utilisé",               "the number used"),
+      amount_ar:             t("vola naloa",             "le montant payé",                 "the amount paid"),
+      time_hint:             t("ora nahazoana SMS",      "l'heure approximative",           "the approximate time"),
+      transaction_reference: t("référence raha misy",   "la référence si disponible",      "the reference if available"),
+    };
+    const safeFields = missing.filter(f =>
+      ["phone_number", "amount_ar", "time_hint", "transaction_reference"].includes(f)
+    );
+    const askParts = safeFields.length
+      ? safeFields.map(f => fieldLabels[f] || f)
+      : [
+          fieldLabels.phone_number,
+          fieldLabels.amount_ar,
+          fieldLabels.time_hint,
+          fieldLabels.transaction_reference,
+        ];
+    const askStr = t(
+      `Alefaso azafady: ${askParts.join(", ")}.`,
+      `Envoyez-moi : ${askParts.join(", ")}.`,
+      `Please send: ${askParts.join(", ")}.`
+    );
+    return t(
+      "Mbola mila antsipiriany aho hijerena ny paiement-nao. " + askStr + " Aza mandefa PIN.",
+      "J'ai besoin de quelques détails pour vérifier votre paiement. " + askStr + " N'envoyez jamais votre PIN.",
+      "I need a few details to check your payment. " + askStr + " Never share your PIN."
+    );
+  }
 
   // PIN warning
   if (dc === "pin_detected") {
@@ -5575,7 +5637,12 @@ function buildGroundedAssistantPrompt({
     "PLAN DURATION: monthly = 28+ days (40320+ min). Weekly = 5–10 days. State clearly if none found.",
     "RAZAFI APP: no app to download — portal works directly from the browser.",
     "PAYMENT SAFETY: never say payment is confirmed unless latest_payment_status = 'completed'. Never say code is ready unless latest_voucher_status = 'ready'. Never accuse MVola/Orange/Airtel. Never ask for PIN. Never promise refund.",
-    ...(isPaymentComplaint ? ["PAYMENT COMPLAINT ACTIVE — follow PAYMENT CONTEXT and PAYMENT COMPLAINT PROTOCOL strictly.", PAYMENT_DIAGNOSIS_RULES] : []),
+    ...(isPaymentComplaint ? [
+      "PAYMENT COMPLAINT ACTIVE — follow PAYMENT CONTEXT and PAYMENT COMPLAINT PROTOCOL strictly.",
+      // G.1 Polish: explicit rule to prevent premature "not found" answers
+      "MISSING DETAILS RULE: If PAYMENT CONTEXT says 'not enough details yet', do NOT say the transaction was not found. Do NOT say the payment failed. Ask only for: the number used, the amount paid, the approximate time, and the reference if available. Never ask for PIN.",
+      PAYMENT_DIAGNOSIS_RULES,
+    ] : []),
   ].join("\n- ");
 
   const adminOwnerRules = [
