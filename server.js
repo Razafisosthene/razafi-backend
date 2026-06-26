@@ -1599,65 +1599,6 @@ async function buildReturningUserPlanContext({ clientMac, poolId }) {
     const MAX_HISTORY_AGE_DAYS = 90;
     const cutoff = new Date(Date.now() - MAX_HISTORY_AGE_DAYS * 86400 * 1000).toISOString();
 
-    // ── DEBUG: progressive count queries — no identifiers logged ─────────────
-    // Each step narrows the filter to isolate exactly which condition is failing.
-    try {
-      // Count 1: rows for this MAC (any pool, any status)
-      const { count: c1 } = await supabase
-        .from("vw_voucher_sessions_truth")
-        .select("*", { count: "exact", head: true })
-        .eq("client_mac", clientMac);
-
-      // Count 2: rows for this MAC + pool
-      const { count: c2 } = await supabase
-        .from("vw_voucher_sessions_truth")
-        .select("*", { count: "exact", head: true })
-        .eq("client_mac", clientMac)
-        .eq("pool_id",    poolId);
-
-      // Count 3: same + non-bonus + plan_id present
-      const { count: c3 } = await supabase
-        .from("vw_voucher_sessions_truth")
-        .select("*", { count: "exact", head: true })
-        .eq("client_mac",       clientMac)
-        .eq("pool_id",          poolId)
-        .eq("is_bonus_session", false)
-        .not("plan_id",         "is", null);
-
-      // Count 4: same + within 90-day cutoff
-      const { count: c4 } = await supabase
-        .from("vw_voucher_sessions_truth")
-        .select("*", { count: "exact", head: true })
-        .eq("client_mac",       clientMac)
-        .eq("pool_id",          poolId)
-        .eq("is_bonus_session", false)
-        .not("plan_id",         "is", null)
-        .gte("created_at",      cutoff);
-
-      // Count 5: same + activated_at or started_at present (usable rows)
-      // Supabase does not support OR directly in .not(), so we fetch and count in JS
-      const { data: c5rows } = await supabase
-        .from("vw_voucher_sessions_truth")
-        .select("activated_at, started_at")
-        .eq("client_mac",       clientMac)
-        .eq("pool_id",          poolId)
-        .eq("is_bonus_session", false)
-        .not("plan_id",         "is", null)
-        .gte("created_at",      cutoff);
-      const c5 = (c5rows || []).filter(r => r.activated_at || r.started_at).length;
-
-      console.info("[G.2 DB DEBUG] progressive counts", {
-        c1_mac_any:                  c1 ?? -1,
-        c2_mac_pool:                 c2 ?? -1,
-        c3_mac_pool_nonbonus_planid: c3 ?? -1,
-        c4_mac_pool_nonbonus_cutoff: c4 ?? -1,
-        c5_usable_activated:         c5,
-      });
-    } catch (countErr) {
-      console.warn("[G.2 DB DEBUG] count queries failed (non-fatal):", countErr?.message || countErr);
-    }
-    // ── END DEBUG counts ──────────────────────────────────────────────────────
-
     // ── Query 1: last session for this device on this pool (non-bonus, with plan) ──
     const { data: rows, error: rowsErr } = await supabase
       .from("vw_voucher_sessions_truth")
@@ -1671,28 +1612,15 @@ async function buildReturningUserPlanContext({ clientMac, poolId }) {
       .limit(10);
 
     if (rowsErr) {
-      console.warn("[G.2 DB DEBUG] query 1 error:", rowsErr?.message || rowsErr);
+      console.warn("[G.2 HISTORY LOOKUP ERROR] query 1:", rowsErr?.message || rowsErr);
       return { has_history: false, reason: "rows_error" };
     }
-
-    // DEBUG: log row counts only — no field values, no identifiers
-    console.info("[G.2 DB DEBUG]", {
-      rows_count:       Array.isArray(rows) ? rows.length : 0,
-      rows_with_plan:   (rows || []).filter(r => !!r.plan_id).length,
-      rows_activated:   (rows || []).filter(r => !!r.activated_at).length,
-      rows_started:     (rows || []).filter(r => !!r.started_at).length,
-      rows_delivered:   (rows || []).filter(r => !!r.delivered_at).length,
-    });
 
     if (!rows || rows.length === 0) return { has_history: false, reason: "no_rows" };
 
     // Prefer sessions where the user actually connected (activated or started).
     // delivered_at alone only means the code was generated, not that the user connected.
     const usableRows = (rows || []).filter(r => r.plan_id && (r.activated_at || r.started_at));
-
-    console.info("[G.2 DB DEBUG]", {
-      usable_rows_count: usableRows.length,
-    });
 
     if (!usableRows.length) return { has_history: false, reason: "no_usable_rows" };
 
@@ -1713,14 +1641,10 @@ async function buildReturningUserPlanContext({ clientMac, poolId }) {
       .maybeSingle();
 
     if (planErr) {
-      console.warn("[G.2 DB DEBUG] query 2 error:", planErr?.message || planErr);
+      console.warn("[G.2 HISTORY LOOKUP ERROR] query 2:", planErr?.message || planErr);
       return { has_history: false, reason: "last_plan_not_found" };
     }
-    if (!lastPlan?.name) {
-      console.info("[G.2 DB DEBUG]", { query2_plan_found: false });
-      return { has_history: false, reason: "last_plan_not_found" };
-    }
-    console.info("[G.2 DB DEBUG]", { query2_plan_found: true });
+    if (!lastPlan?.name) return { has_history: false, reason: "last_plan_not_found" };
 
     // ── Query 3: trusted server-side visible active Mikrotik plans for this pool ──
     // This is the ONLY source used for suggested_real_plan_name.
@@ -1736,13 +1660,11 @@ async function buildReturningUserPlanContext({ clientMac, poolId }) {
       .order("price_ar",   { ascending: true });
 
     if (vpErr) {
-      console.warn("[G.2 DB DEBUG] query 3 error:", vpErr?.message || vpErr);
+      console.warn("[G.2 HISTORY LOOKUP ERROR] query 3:", vpErr?.message || vpErr);
       return { has_history: false, reason: "visible_plans_error" };
     }
 
     const trustedPlans = dbVisiblePlans || [];
-    console.info("[G.2 DB DEBUG]", { query3_visible_plans_count: trustedPlans.length });
-
     if (!trustedPlans.length) return { has_history: false, reason: "no_visible_plans" };
 
     // Confirm last plan is still visible and active in the trusted server list
@@ -1769,7 +1691,7 @@ async function buildReturningUserPlanContext({ clientMac, poolId }) {
     };
   } catch (unexpectedErr) {
     // Graceful degradation — never break the assistant flow
-    console.warn("[G.2 DB DEBUG] unexpected error:", unexpectedErr?.message || unexpectedErr);
+    console.warn("[G.2 HISTORY LOOKUP ERROR] unexpected:", unexpectedErr?.message || unexpectedErr);
     return { has_history: false, reason: "unexpected_error" };
   }
 }
@@ -5221,15 +5143,6 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   // client_mac and pool_id are resolved and discarded inside buildReturningUserPlanContext.
   // They never appear in thread, conversation_state, logs, or the AI prompt.
 
-  // DEBUG G.2: log gate booleans only — no token value, no MAC, no IDs
-  console.info("[G.2 DEBUG]", {
-    context,
-    token_present:     !!historyToken,
-    first_turn:        (thread?.turns?.length || 0) === 0,
-    payment_complaint: isPaymentComplaintMessage(message),
-    pending_payment:   thread?.pending_issue_type === "payment_no_code",
-  });
-
   if (
     context === "portal_user" &&
     historyToken &&
@@ -5240,26 +5153,12 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     try {
       const resolved = resolvePortalHistoryToken(historyToken);
 
-      // DEBUG G.2: log resolution result — no token value, no MAC, no IDs
-      console.info("[G.2 DEBUG]", {
-        token_resolved: !!resolved,
-      });
-
       if (resolved) {
         const returningCtx = await buildReturningUserPlanContext({
           clientMac: resolved.client_mac,
           poolId:    resolved.pool_id,
           // resolved.client_mac and resolved.pool_id are used only inside buildReturningUserPlanContext
           // and discarded immediately — never stored in liveData, thread, or logs
-        });
-
-        // DEBUG G.2: log safe derived fields only — no MAC, no IDs
-        console.info("[G.2 DEBUG]", {
-          has_history:              returningCtx?.has_history === true,
-          reason:                   returningCtx?.reason || null,
-          last_plan_present:        !!returningCtx?.last_used_plan_name,
-          suggested_present:        !!returningCtx?.suggested_real_plan_name,
-          last_plan_still_available: returningCtx?.last_plan_still_available === true,
         });
 
         // Merge safe derived object into liveData — no MAC/pool_id/plan_id here
@@ -5483,15 +5382,6 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   // Runs after finalAnswer is fully resolved by AI/fallback chains.
   // Errors are caught; original finalAnswer is always preserved.
   try {
-    // DEBUG G.2.1: log all gate booleans — no PII, no IDs
-    console.info("[G.2.1 DEBUG]", {
-      gate_context:           context === "portal_user",
-      gate_has_history:       liveData?.returning_user_context?.has_history === true,
-      gate_not_payment:       !messageIsPaymentComplaint,
-      gate_no_pending_payment: thread?.pending_issue_type !== "payment_no_code",
-      gate_first_turn:        (thread?.turns?.length || 0) === 0,
-    });
-
     if (
       context === "portal_user" &&
       liveData?.returning_user_context?.has_history === true &&
@@ -5502,11 +5392,6 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
       const intro = buildReturningUserIntro({
         lang,
         returningUserContext: liveData.returning_user_context,
-      });
-
-      // DEBUG G.2.1: log whether intro was built
-      console.info("[G.2.1 DEBUG]", {
-        intro_present: !!intro,
       });
 
       if (intro) finalAnswer = intro + "\n" + finalAnswer;
