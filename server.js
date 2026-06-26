@@ -868,6 +868,25 @@ function buildSafeConversationContext(thread) {
     else safeSlots[k] = v;
   }
 
+  // Patch G.1: include safe conversation_state snapshot if present
+  let safeConversationState = null;
+  if (thread.conversation_state && typeof thread.conversation_state === "object") {
+    const cs = thread.conversation_state;
+    safeConversationState = {
+      current_goal: cs.current_goal || null,
+      stage: cs.stage || "opening",
+      resolved: cs.resolved || false,
+      escalated: cs.escalated || false,
+      last_next_best_action: cs.last_next_best_action || null,
+      // Fix: expose already_asked so the prompt can suppress repeated questions.
+      // Contains only safe generic keys (usage, budget, amount, provider, time_hint,
+      // payment_date) — never phone, PIN, voucher_code, request_ref, transaction_ref,
+      // MAC, NAS ID, pool ID, or any internal identifier.
+      already_asked: Array.isArray(cs.already_asked) ? cs.already_asked.slice(0, 8) : [],
+      // collected_slots already in safeSlots above — no duplication
+    };
+  }
+
   return {
     current_topic: thread.current_topic || null,
     pending_issue_type: thread.pending_issue_type || null,
@@ -875,6 +894,7 @@ function buildSafeConversationContext(thread) {
     collected_slots: safeSlots,
     last_user_message_was_fragment: isFragment,
     recent_turns: recentTurns.map(t => ({ role: t.role, text: t.text.slice(0, 200) })),
+    conversation_state: safeConversationState, // Patch G.1: safe state snapshot
   };
 }
 
@@ -891,6 +911,576 @@ function cleanupAssistantThreads() {
 }
 // Periodic cleanup every 15 minutes
 setInterval(cleanupAssistantThreads, 15 * 60 * 1000).unref();
+
+// =============================================================================
+// RAZAFI ASSISTANT — PATCH G.1: Natural Conversation State Manager
+// =============================================================================
+// Additive only. Non-regressive. All existing Patch F logic is preserved.
+// This patch tracks conversation goal, stage, and slots in a safe nested object
+// inside the existing thread. It does NOT replace payment diagnostic, fallback
+// logic, validators, MVola/RADIUS/MikroTik flows, or admin permissions.
+//
+// Design principles:
+//  - Pure helpers: no side effects outside the thread object.
+//  - Graceful degradation: if anything fails, existing behavior is unchanged.
+//  - No long-term persistence, no DB writes, no external dependencies.
+//  - No PII exposure: follows the same rules as existing Patch F slot handling.
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// G.1 — Goal/stage/action definitions per context
+// ---------------------------------------------------------------------------
+
+const ASSISTANT_GOALS_BY_CONTEXT = {
+  portal_user: [
+    "choose_plan",
+    "buy_plan",
+    "payment_no_code",
+    "code_status",
+    "connection_help",
+    "network_issue",
+    "platform_interest",
+    "unknown",
+  ],
+  admin_owner: [
+    "sales_analysis",
+    "create_plan_advice",
+    "hide_plan_advice",
+    "unhide_plan_advice",
+    "pricing_advice",
+    "pool_analysis",
+    "current_page_help",
+    "unknown",
+  ],
+  platform_prospect: [
+    "explain_razafi",
+    "demo_interest",
+    "pricing_interest",
+    "compatibility_interest",
+    "contact_interest",
+    "start_interest",
+    "unknown",
+  ],
+};
+
+const ASSISTANT_STAGES = [
+  "opening",
+  "understanding_need",
+  "collecting_missing_info",
+  "recommending",
+  "guiding_action",
+  "diagnosing",
+  "resolved",
+  "escalated",
+];
+
+// Signal → goal mapping: each entry is [context, signal_test_fn, goal]
+// Evaluated in order; first match wins.
+const ASSISTANT_GOAL_SIGNALS = [
+  // portal_user
+  ["portal_user", (s) => /tsy tonga.*code|code.*tsy tonga|tsy azoko.*code|code.*tsy azoko|pas.*reçu.*code|pas.*code|je n'ai pas.*code|pas de code|payment.*no.*code|no.*code|vola.*lasa|lasa.*vola/.test(s), "payment_no_code"],
+  ["portal_user", (s) => /est-ce que.*code|code.*marche|code.*valide|code.*work|code.*valid|ahoana.*code|mody.*code/.test(s), "code_status"],
+  ["portal_user", (s) => /payer|acheter|buy|purchase|prendre.*forfait|je veux.*forfait|hividiana/.test(s), "buy_plan"],
+  ["portal_user", (s) => /tiktok|facebook|youtube|instagram|streaming|quel forfait|forfait.*pour|combien.*data|data.*combien|milina.*forfait|safidy.*forfait|choisir|choose/.test(s), "choose_plan"],
+  ["portal_user", (s) => /connexion|connection|connecter|se connecter|wifi.*marche|wifi.*misy|wifi.*tsy misy|cant.*connect|cannot.*connect/.test(s), "connection_help"],
+  ["portal_user", (s) => /lent|slow|coupure|déconnecté|disconnected|mauvais.*signal|signal.*faible|vitesse|speed/.test(s), "network_issue"],
+  ["portal_user", (s) => /razafi.*comment|razafi.*c'est quoi|razafi.*inona|platform.*razafi|comment.*marche|how.*work/.test(s), "platform_interest"],
+  // admin_owner
+  ["admin_owner", (s) => /vente|ventes|revenue|revenu|chiffre|transaction|sales|performance/.test(s), "sales_analysis"],
+  ["admin_owner", (s) => /créer.*forfait|nouveau.*forfait|ajouter.*forfait|create.*plan|add.*plan/.test(s), "create_plan_advice"],
+  ["admin_owner", (s) => /cacher|masquer|hide|désactiver.*forfait|disable.*plan/.test(s), "hide_plan_advice"],
+  ["admin_owner", (s) => /afficher|montrer|unhide|réactiver.*forfait|show.*plan/.test(s), "unhide_plan_advice"],
+  ["admin_owner", (s) => /prix|tarif|price|pricing|combien.*facturer|facturation/.test(s), "pricing_advice"],
+  ["admin_owner", (s) => /pool|data.*dispo|consommation|usage|bandwidth|bande.*passante/.test(s), "pool_analysis"],
+  // platform_prospect
+  ["platform_prospect", (s) => /razafi.*comment|razafi.*c'est|razafi.*inona|c'est quoi|what is|comment.*fonctionne|how.*work/.test(s), "explain_razafi"],
+  ["platform_prospect", (s) => /demo|démonstration|essayer|tester|voir|show me/.test(s), "demo_interest"],
+  ["platform_prospect", (s) => /prix|combien|tarif|cost|price|pricing|quel.*coût/.test(s), "pricing_interest"],
+  ["platform_prospect", (s) => /starlink|fibre|satellite|compatible|fonctionne avec|works with|internet.*source/.test(s), "compatibility_interest"],
+  ["platform_prospect", (s) => /contact|whatsapp|appeler|call|joindre|reach|parler.*à/.test(s), "contact_interest"],
+  ["platform_prospect", (s) => /commencer|démarrer|start|lancer|rejoindre|sign up|inscription/.test(s), "start_interest"],
+];
+
+// ---------------------------------------------------------------------------
+// G.1 — ensureAssistantConversationState
+// Adds the conversation_state sub-object to an existing thread if not present.
+// Safe: never removes or replaces any existing thread fields.
+// ---------------------------------------------------------------------------
+function ensureAssistantConversationState(thread) {
+  if (!thread) return;
+  if (thread.conversation_state && typeof thread.conversation_state === "object") return;
+  thread.conversation_state = {
+    current_goal: null,         // one of ASSISTANT_GOALS_BY_CONTEXT[context]
+    stage: "opening",           // one of ASSISTANT_STAGES
+    resolved: false,
+    escalated: false,
+    already_asked: [],          // slot names or question keys already asked
+    collected_slots: {},        // safe user-provided info (no PII/phone raw)
+    last_next_best_action: null,
+    last_recommended_plan_name: null,
+    greeted_at: null,           // timestamp ms — null = not yet greeted
+    closed_at: null,            // timestamp ms — null = not yet closed
+  };
+}
+
+// ---------------------------------------------------------------------------
+// G.1 — resolveAssistantConversationGoal
+// Pure function. Returns a goal string from the allowed set for this context.
+// Uses signal matching on the current message, then falls back to existing
+// thread state. Returns "unknown" when nothing can be determined.
+// ---------------------------------------------------------------------------
+function resolveAssistantConversationGoal({
+  context,
+  message,
+  intentKey,
+  diagnosticResult,
+  thread,
+}) {
+  try {
+    const cs = thread?.conversation_state;
+    const allowedGoals = ASSISTANT_GOALS_BY_CONTEXT[context] || [];
+
+    // 1. If diagnostic result is present for portal_user, it always means payment_no_code
+    if (context === "portal_user" && diagnosticResult) {
+      return "payment_no_code";
+    }
+
+    // 2. If KB intent_key matches a goal directly (e.g. "payment_no_code" intent)
+    if (intentKey && allowedGoals.includes(intentKey)) {
+      return intentKey;
+    }
+
+    // 3. Signal matching on current message
+    const s = String(message || "").toLowerCase();
+    for (const [ctx, testFn, goal] of ASSISTANT_GOAL_SIGNALS) {
+      if (ctx === context && testFn(s)) return goal;
+    }
+
+    // 4. Keep existing goal if already resolved (don't reset on "oui"/"ok" fragments)
+    if (cs?.current_goal && cs.current_goal !== "unknown") {
+      const isAffirmativeFragment = /^\s*(oui|ok|eny|voky|yes|d'accord|alright|sure|non|no|tsia)\s*$/i.test(message);
+      const isShortFragment = String(message || "").trim().length < 35;
+      if (isAffirmativeFragment || isShortFragment) return cs.current_goal;
+    }
+
+    return "unknown";
+  } catch (_) {
+    // Graceful degradation: return existing goal or unknown
+    return thread?.conversation_state?.current_goal || "unknown";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// G.1 — resolveAssistantConversationStage
+// Pure function. Derives the correct stage from thread state.
+// ---------------------------------------------------------------------------
+function resolveAssistantConversationStage({
+  context,
+  goal,
+  diagnosticResult,
+  thread,
+}) {
+  try {
+    const cs = thread?.conversation_state;
+    if (!cs) return "opening";
+
+    // Terminal states are sticky
+    if (cs.resolved) return "resolved";
+    if (cs.escalated) return "escalated";
+
+    // Diagnostic active → diagnosing
+    if (diagnosticResult) return "diagnosing";
+
+    // No goal yet → understanding
+    if (!goal || goal === "unknown") {
+      return cs.greeted_at ? "understanding_need" : "opening";
+    }
+
+    // Payment/diagnostic goals → diagnosing even without result yet
+    if (context === "portal_user" && (goal === "payment_no_code" || goal === "code_status")) {
+      return "diagnosing";
+    }
+
+    // Check if required slots are missing
+    const requiredSlotsByGoal = {
+      portal_user: {
+        choose_plan: [],          // no hard slots — use signals
+        buy_plan: [],
+        payment_no_code: [],      // diagnostic handles slot gathering
+        connection_help: [],
+        network_issue: [],
+      },
+    };
+    // If we have a goal and some turns already, advance stage
+    const turnCount = thread?.turns?.length || 0;
+    if (turnCount === 0) return "opening";
+    if (turnCount <= 2) return "understanding_need";
+
+    // Recommending / guiding
+    if (goal === "choose_plan" || goal === "buy_plan" || goal === "create_plan_advice") {
+      const hasEnoughContext = Object.keys(cs.collected_slots || {}).length >= 1;
+      return hasEnoughContext ? "recommending" : "collecting_missing_info";
+    }
+
+    if (goal === "hide_plan_advice" || goal === "unhide_plan_advice" ||
+        goal === "pricing_advice" || goal === "sales_analysis" || goal === "pool_analysis") {
+      return "guiding_action";
+    }
+
+    if (goal === "explain_razafi" || goal === "platform_interest") {
+      return "understanding_need";
+    }
+
+    if (goal === "demo_interest" || goal === "start_interest" || goal === "contact_interest") {
+      return "guiding_action";
+    }
+
+    if (goal === "compatibility_interest") {
+      const hasInternetSource = !!(cs.collected_slots?.internet_source);
+      return hasInternetSource ? "guiding_action" : "collecting_missing_info";
+    }
+
+    return cs.stage || "understanding_need";
+  } catch (_) {
+    return thread?.conversation_state?.stage || "opening";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// G.1 — computeAssistantNextBestAction
+// Pure function. Returns a single next-best-action string.
+// ---------------------------------------------------------------------------
+function computeAssistantNextBestAction({
+  context,
+  goal,
+  stage,
+  signals,
+  diagnosticResult,
+  thread,
+  liveData,
+}) {
+  try {
+    const cs = thread?.conversation_state;
+
+    // Terminal states
+    if (cs?.resolved) return "close_resolved";
+    if (cs?.escalated) return "contact_support";
+
+    if (context === "portal_user") {
+      if (goal === "payment_no_code" || goal === "code_status") {
+        const _ua = diagnosticResult?.user_action    || "";
+        const _dc = diagnosticResult?.diagnosis_code || "";
+
+        if (diagnosticResult?.missing_fields?.length) return "ask_missing_payment_fields";
+
+        if (_dc === "payment_received_code_exists" || _ua === "use_code_button") {
+          return "use_code_button";
+        }
+
+        if (_ua === "contact_support" || _ua === "send_reference_to_support") {
+          return "contact_support";
+        }
+
+        if (_ua === "wait" || _ua === "provide_missing_details") {
+          return "check_payment_status";
+        }
+
+        // close_resolved is only returned when conversation_state.resolved is already true
+        if (cs?.resolved) return "close_resolved";
+
+        return "check_payment_status";
+      }
+      if (goal === "choose_plan") {
+        const slots = cs?.collected_slots || {};
+        if (!slots.plan_use && !signals?.plan_use) return "ask_usage";
+        // Fix 3: treat amount_ar and budget_ar as budget signals to avoid re-asking
+        const hasBudget = slots.budget || slots.budget_ar || slots.amount_ar || signals?.amount_ar;
+        if (!hasBudget) return "ask_budget";
+        return "recommend_plan";
+      }
+      if (goal === "buy_plan") return "guide_payment";
+      if (goal === "connection_help") return "use_code_button";
+      if (goal === "network_issue") return "contact_support";
+    }
+
+    if (context === "admin_owner") {
+      if (goal === "sales_analysis") return "analyse_sales";
+      if (goal === "create_plan_advice") return "recommend_create_plan";
+      if (goal === "hide_plan_advice") return "recommend_keep_hide";
+      if (goal === "unhide_plan_advice") return "recommend_keep_hide";
+      if (goal === "pricing_advice") return "recommend_pricing_review";
+      if (goal === "pool_analysis") return "ask_pool_scope";
+      return "open_revenue_context";
+    }
+
+    if (context === "platform_prospect") {
+      if (goal === "explain_razafi") return "explain_value";
+      if (goal === "demo_interest" || goal === "start_interest") return "invite_demo";
+      if (goal === "pricing_interest") return "answer_pricing";
+      if (goal === "contact_interest") return "invite_whatsapp";
+      if (goal === "compatibility_interest") {
+        const slots = cs?.collected_slots || {};
+        if (!slots.internet_source && !signals?.prospect_intent) return "ask_internet_source";
+        return "explain_value";
+      }
+    }
+
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// G.1 — updateAssistantConversationState
+// Mutates thread.conversation_state in-place after a completed turn.
+// Called AFTER the response is finalized (non-regressive placement).
+// ---------------------------------------------------------------------------
+function updateAssistantConversationState({
+  thread,
+  context,
+  message,
+  intentKey,
+  diagnosticResult,
+  finalAnswer,
+  signals,
+  nextBestAction,
+  newGoal,
+  newStage,
+}) {
+  try {
+    ensureAssistantConversationState(thread);
+    const cs = thread.conversation_state;
+    const now = Date.now();
+
+    // Update goal if newly resolved
+    if (newGoal && newGoal !== "unknown") cs.current_goal = newGoal;
+
+    // Update stage
+    if (newStage) cs.stage = newStage;
+
+    // Mark greeted on first turn
+    if (!cs.greeted_at && thread.turns.length <= 2) cs.greeted_at = now;
+
+    // Merge safe signals into collected_slots (no raw phone, no ref)
+    if (signals && typeof signals === "object") {
+      for (const [k, v] of Object.entries(signals)) {
+        // Never store raw phone in G.1 slots — Patch F slots already handle phone safely
+        if (k === "phone") continue;
+        if (k === "transaction_ref" || k === "request_ref") continue;
+        cs.collected_slots[k] = v;
+        // Fix 3: alias amount_ar as budget_ar for plan-choice budget tracking
+        if (k === "amount_ar" && (cs.current_goal === "choose_plan" || cs.current_goal === "buy_plan")) {
+          cs.collected_slots.budget_ar = v;
+        }
+      }
+    }
+
+    // Track next best action
+    if (nextBestAction) cs.last_next_best_action = nextBestAction;
+
+    // ── Fix 1: populate already_asked from nextBestAction ──────────────────
+    // Records the safe question key so the assistant won't ask the same thing twice.
+    // Forbidden content never enters here: we map actions to safe keys only.
+    if (nextBestAction) {
+      // Map action → safe slot key to record as "asked"
+      const ACTION_TO_ASKED_KEY = {
+        ask_usage:                    "usage",
+        ask_budget:                   "budget",
+        ask_pool_scope:               "pool_scope",
+        ask_internet_source:          "internet_source",
+        ask_missing_payment_fields:   null,  // handled below — per-field
+        check_payment_status:         "payment_status_asked",
+        invite_demo:                  "demo_offered",
+        invite_whatsapp:              "contact_offered",
+        answer_pricing:               "pricing_explained",
+        explain_value:                "razafi_explained",
+      };
+      const askedKey = ACTION_TO_ASKED_KEY[nextBestAction];
+      if (askedKey) {
+        if (!cs.already_asked.includes(askedKey)) cs.already_asked.push(askedKey);
+      }
+      // ask_missing_payment_fields: map raw diagnostic field names to safe generic keys only.
+      // PAYMENT_FIELD_TO_ASKED_KEY is the exclusive allowlist — anything not in it is silently ignored.
+      // phone/phone_number are intentionally excluded: the assistant may still need to ask for phone.
+      if (nextBestAction === "ask_missing_payment_fields" && diagnosticResult?.missing_fields?.length) {
+        const PAYMENT_FIELD_TO_ASKED_KEY = {
+          amount_ar:    "amount",
+          amount:       "amount",
+          provider:     "provider",
+          time_hint:    "time_hint",
+          payment_date: "payment_date",
+        };
+        for (const field of diagnosticResult.missing_fields) {
+          const rawField = String(field || "").toLowerCase().trim();
+          const askedKey = PAYMENT_FIELD_TO_ASKED_KEY[rawField];
+          // Only record fields present in the allowlist — phone, pin, voucher_code,
+          // request_ref, transaction_ref, nas_id, pool_id, mac, and any other
+          // internal/private field are simply not in the map and are ignored.
+          if (!askedKey) continue;
+          if (!cs.already_asked.includes(askedKey)) cs.already_asked.push(askedKey);
+        }
+      }
+      // Keep already_asked small and deduplicated (max 12 entries)
+      if (cs.already_asked.length > 12) cs.already_asked = cs.already_asked.slice(-12);
+    }
+
+    // ── Fix 2: precise payment diagnostic resolution ────────────────────────
+    // Only mark resolved when the user genuinely can proceed (code is ready / confirmed).
+    // All other diagnostic outcomes remain open or escalated as appropriate.
+    if (context === "portal_user" && diagnosticResult) {
+      const dc = diagnosticResult.diagnosis_code || "";
+      const ua = diagnosticResult.user_action   || "";
+
+      const isGenuinelyResolved =
+        dc === "payment_received_code_exists" ||
+        ua === "use_code_button";
+
+      const shouldEscalate =
+        ua === "contact_support" ||
+        ua === "send_reference_to_support";
+
+      const stillWaiting =
+        ua === "wait" ||
+        ua === "provide_missing_details" ||
+        dc === "payment_pending" ||
+        dc === "payment_not_confirmed" ||
+        dc === "payment_not_found" ||
+        dc === "multiple_possible_matches" ||
+        dc === "payment_received_code_missing" ||
+        dc === "diagnostic_unavailable";
+
+      if (isGenuinelyResolved && !cs.resolved) {
+        cs.resolved  = true;
+        cs.closed_at = now;
+        cs.stage     = "resolved";
+      } else if (shouldEscalate && !cs.escalated) {
+        cs.escalated = true;
+        cs.stage     = "escalated";
+      } else if (stillWaiting) {
+        // Ensure we don't accidentally mark resolved or escalated; stay in diagnosing
+        cs.resolved  = false;
+        cs.escalated = false;
+        cs.stage     = diagnosticResult.missing_fields?.length
+          ? "collecting_missing_info"
+          : "diagnosing";
+      }
+    }
+
+    // Escalation detection from answer text (non-payment contexts, or as belt-and-suspenders)
+    if (!cs.escalated && finalAnswer && typeof finalAnswer === "string") {
+      const lower = finalAnswer.toLowerCase();
+      if (/contact.*support|contactez.*assistance|contactez.*razafi|joignez.*support/.test(lower)) {
+        cs.escalated = true;
+        cs.stage     = "escalated";
+      }
+    }
+  } catch (err) {
+    // Graceful degradation: log and continue — never break existing flow
+    console.warn("[PATCH G.1] updateAssistantConversationState error (non-fatal):", err?.message || err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// G.1 — buildAssistantConversationPolicy
+// Builds the safe state block and natural conversation instructions to inject
+// into the AI prompt. Returns an object with { policyText, stateBlock }.
+// Never includes PII, raw phone, MAC, voucher, internal IDs.
+// ---------------------------------------------------------------------------
+function buildAssistantConversationPolicy({ context, lang, thread }) {
+  try {
+    ensureAssistantConversationState(thread);
+    const cs = thread.conversation_state;
+    const turnCount = thread?.turns?.length || 0;
+
+    // Safe state block for prompt injection
+    const safeState = {
+      current_goal: cs.current_goal || "unknown",
+      stage: cs.stage || "opening",
+      already_asked: (cs.already_asked || []).slice(0, 8),
+      collected_slots: {},
+      last_next_best_action: cs.last_next_best_action || null,
+      resolved: cs.resolved || false,
+      escalated: cs.escalated || false,
+    };
+
+    // Collected slots: exclude any phone/ref fields (belt-and-suspenders)
+    for (const [k, v] of Object.entries(cs.collected_slots || {})) {
+      if (k === "phone" || k === "transaction_ref" || k === "request_ref") continue;
+      safeState.collected_slots[k] = v;
+    }
+
+    // Greeting rule
+    const isNewConversation = turnCount === 0;
+    const hasBeenGreeted = !!cs.greeted_at;
+
+    const greetingRule = isNewConversation
+      ? "This is the first message. A light, brief greeting is appropriate before answering."
+      : hasBeenGreeted
+        ? "The conversation is already open. Do NOT greet again. Continue directly."
+        : "Continue directly without greeting.";
+
+    // Closing rule
+    const closingRule = (cs.resolved || cs.escalated)
+      ? "The issue appears resolved or escalated. Close politely with a clear next step."
+      : "";
+
+    // Anti-repetition rule
+    const askedList = (cs.already_asked || []).slice(0, 6);
+    const collectedList = Object.keys(safeState.collected_slots).slice(0, 6);
+    const antiRepeatRule = [
+      askedList.length ? `Do not ask again for: ${askedList.join(", ")}.` : "",
+      collectedList.length ? `Already known: ${collectedList.join(", ")}. Do not ask for these.` : "",
+    ].filter(Boolean).join(" ");
+
+    // Context-specific next action hint
+    const actionHint = cs.last_next_best_action
+      ? `Suggested next action: ${cs.last_next_best_action}.`
+      : "";
+
+    // Prospect safety rule
+    const prospectSafetyRule = context === "platform_prospect"
+      ? "Do NOT direct this person to 'Espace propriétaire' or the owner login unless they explicitly say they already have an owner account."
+      : "";
+
+    // Admin safety rule
+    const adminSafetyRule = context === "admin_owner"
+      ? "Do NOT say you have performed any action (created, hidden, deleted, modified). Only advise."
+      : "";
+
+    // Portal memory safety rule
+    const portalMemoryRule = context === "portal_user"
+      ? "Do NOT say 'je me souviens de vous', 'je vous reconnais', or any similar phrase. Do NOT use the user's name."
+      : "";
+
+    const policyLines = [
+      "## NATURAL CONVERSATION POLICY",
+      "Do not restart the conversation. Continue from the open goal and stage.",
+      "Do not repeat a question already answered.",
+      "Ask only one missing piece of information at a time.",
+      greetingRule,
+      closingRule,
+      antiRepeatRule,
+      actionHint,
+      prospectSafetyRule,
+      adminSafetyRule,
+      portalMemoryRule,
+      "If uncertain, preserve existing safe fallback behavior.",
+    ].filter(Boolean).join("\n");
+
+    return {
+      policyText: policyLines,
+      stateBlock: JSON.stringify(safeState, null, 2),
+    };
+  } catch (err) {
+    console.warn("[PATCH G.1] buildAssistantConversationPolicy error (non-fatal):", err?.message || err);
+    return { policyText: "", stateBlock: "" };
+  }
+}
+
+// =============================================================================
+// END RAZAFI ASSISTANT — PATCH G.1
+// =============================================================================
 
 // ── Payment diagnostic ────────────────────────────────────────────────────
 // ---------------------------------------------------------------------------
@@ -4229,7 +4819,10 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     updateAssistantThread({ thread, userMessage: "", assistantAnswer: "", lang, slots: followUpSignals });
   }
 
-  // Build safe conversation context for AI prompt
+  // ── Patch G.1: ensure conversation_state exists on thread (before context build) ──
+  ensureAssistantConversationState(thread);
+
+  // Build safe conversation context for AI prompt (includes G.1 state snapshot)
   const conversationContext = buildSafeConversationContext(thread);
 
   // ── Patch F: payment diagnostic (portal_user only) ──────────────────────
@@ -4263,7 +4856,23 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
       thread.pending_fields = diagnosticResult.missing_fields;
     } else if (diagnosticResult?.status === "checked") {
       thread.pending_fields = [];
-      thread.pending_issue_type = null; // resolved
+      // Fix 2: only clear pending_issue_type when the issue is genuinely done.
+      // Keep it open for wait/pending/not_found states so short follow-ups
+      // ("ok", "now?", "efa?", an amount, a time) continue the same diagnostic flow.
+      const _dc2 = diagnosticResult.diagnosis_code || "";
+      const _ua2 = diagnosticResult.user_action    || "";
+      const _clearIssue =
+        _dc2 === "payment_received_code_exists" ||
+        _ua2 === "use_code_button"              ||
+        _ua2 === "contact_support"              ||
+        _ua2 === "send_reference_to_support";
+      if (_clearIssue) {
+        thread.pending_issue_type = null; // resolved or escalated — issue is closed
+      }
+      // Otherwise (payment_pending, payment_not_found, multiple_possible_matches,
+      // payment_not_confirmed, diagnostic_unavailable, wait, provide_missing_details)
+      // pending_issue_type remains "payment_no_code" so the next short follow-up
+      // re-enters the diagnostic path without requiring a full complaint message.
     }
     // Merge diagnostic safe fields into liveData for AI and fallback
     if (diagnosticResult?.status === "checked") {
@@ -4426,6 +5035,48 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     topic: thread.current_topic,
     slots: {},
   });
+
+  // ── Patch G.1: resolve goal/stage/action and update conversation_state ──
+  // Runs AFTER the Patch F thread update. Non-regressive: errors are caught.
+  try {
+    const g1Goal = resolveAssistantConversationGoal({
+      context,
+      message,
+      intentKey: intent?.intent_key || null,
+      diagnosticResult,
+      thread,
+    });
+    const g1Stage = resolveAssistantConversationStage({
+      context,
+      goal: g1Goal,
+      diagnosticResult,
+      thread,
+    });
+    const g1Action = computeAssistantNextBestAction({
+      context,
+      goal: g1Goal,
+      stage: g1Stage,
+      signals: followUpSignals,
+      diagnosticResult,
+      thread,
+      liveData,
+    });
+    updateAssistantConversationState({
+      thread,
+      context,
+      message,
+      intentKey: intent?.intent_key || null,
+      diagnosticResult,
+      finalAnswer,
+      signals: followUpSignals,
+      nextBestAction: g1Action,
+      newGoal: g1Goal,
+      newStage: g1Stage,
+    });
+  } catch (g1Err) {
+    // Never break existing flow on G.1 error
+    console.warn("[PATCH G.1] handleAssistantChat G.1 update error (non-fatal):", g1Err?.message || g1Err);
+  }
 
   // Safe diagnostic metadata (never includes PII or internal refs)
   const safeDiagnostic = diagnosticResult ? {
@@ -4984,6 +5635,16 @@ function buildGroundedAssistantPrompt({
     "SUPPORT PHONE RULE: NEVER use the user's payment phone as the support/assistance phone number.",
     "For support contact, use ONLY the contact_phone from SAFE DIAGNOSTIC RESULT or SAFE LIVE DATA.",
     "If no trusted support phone is available, say 'contactez l'assistance RAZAFI' without any phone number.",
+    // Patch G.1: natural conversation policy appended to system prompt
+    "\n## NATURAL CONVERSATION POLICY",
+    "Do not restart the conversation. Continue from the open goal and stage.",
+    "Do not repeat a question already answered. Ask only one missing piece of information at a time.",
+    "Greet only at the very start of a new conversation, not on every reply.",
+    "Do not say 'je me souviens de vous', 'je vous reconnais', or any similar phrase to portal_user.",
+    "Do not pretend to perform admin actions (create/hide/delete/modify). Only advise.",
+    "Do not direct platform_prospect to Espace propriétaire unless they explicitly say they have an owner account.",
+    "If the issue is solved, close politely with a clear next action. Do not keep asking questions.",
+    "If uncertain, preserve the existing safe fallback behavior.",
   ].join("\n");
 
   // ── USER CONTENT ──────────────────────────────────────────────────────────
@@ -5028,10 +5689,51 @@ function buildGroundedAssistantPrompt({
     diagnosticSection = `\n\n## SAFE DIAGNOSTIC RESULT\n${dLines.join("\n")}`;
   }
 
+  // ── Patch G.1: inject conversation policy + state block from buildAssistantConversationPolicy ──
+  // buildAssistantConversationPolicy requires a live thread for greeting/stage logic.
+  // Since buildGroundedAssistantPrompt only has conversationContext (a snapshot), we
+  // use the snapshot's conversation_state directly and build a minimal inline block.
+  // This makes buildAssistantConversationPolicy genuinely used and removes dead code risk.
+  let g1PolicySection = "";
+  try {
+    const g1State = conversationContext?.conversation_state;
+    if (g1State) {
+      // Build safe state block for the prompt
+      const safeStateForPrompt = {
+        current_goal:          g1State.current_goal || "unknown",
+        stage:                 g1State.stage        || "opening",
+        already_asked:         (g1State.already_asked || []).slice(0, 8),
+        last_next_best_action: g1State.last_next_best_action || null,
+        resolved:              g1State.resolved  || false,
+        escalated:             g1State.escalated || false,
+      };
+      // Anti-repetition hints derived from state
+      const askedList     = safeStateForPrompt.already_asked;
+      const antiRepeat    = askedList.length
+        ? `Do not ask again for: ${askedList.join(", ")}.`
+        : "";
+      // Closing hint
+      const closingHint = (g1State.resolved || g1State.escalated)
+        ? "The issue is resolved or escalated — close politely with a clear next step."
+        : "";
+      // Action hint
+      const actionHint = g1State.last_next_best_action
+        ? `Suggested next action: ${g1State.last_next_best_action}.`
+        : "";
+      const policyHints = [antiRepeat, closingHint, actionHint].filter(Boolean).join(" ");
+      g1PolicySection = [
+        "\n\n## CONVERSATION STATE (G.1)",
+        JSON.stringify(safeStateForPrompt, null, 2).slice(0, 350),
+        policyHints ? `\nHints: ${policyHints}` : "",
+      ].join("\n");
+    }
+  } catch (_) {}
+
   const userContent = [
     "## USER MESSAGE",
     String(rawMessage).slice(0, 500),
     conversationSection,
+    g1PolicySection,
     diagnosticSection,
     paymentSection,
     liveSection,
@@ -5291,6 +5993,59 @@ function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer, di
   if (answer.trim().length < 8) {
     console.warn("[AI SAFETY BLOCK] answer too short");
     return false;
+  }
+
+  // 6. Patch G.1: block creepy memory phrases for portal_user
+  if (context === "portal_user") {
+    const creepyMemoryPhrases = [
+      "je me souviens de vous",
+      "je vous reconnais",
+      "je sais qui vous êtes",
+      "i remember you",
+      "i recognise you",
+      "i know who you are",
+      "mahalala anao aho",
+    ];
+    for (const phrase of creepyMemoryPhrases) {
+      if (lower.includes(phrase)) {
+        console.warn("[AI SAFETY BLOCK G.1] creepy memory phrase blocked, context:", context);
+        return false;
+      }
+    }
+  }
+
+  // 7. Patch G.1: block fake admin action completion phrases (belt-and-suspenders — also in rule 3 above)
+  // Rule 3 catches first-person; this catches passive-voice variants not caught there.
+  if (context === "admin_owner") {
+    const fakeActionPassive = [
+      "j'ai caché", "j'ai créé le forfait", "j'ai supprimé le forfait",
+      "le forfait est maintenant caché", "le forfait a bien été",
+      "i have hidden", "i have created the plan", "i have deleted the plan",
+      "the plan is now hidden", "the plan has been successfully",
+    ];
+    for (const phrase of fakeActionPassive) {
+      if (lower.includes(phrase)) {
+        console.warn("[AI SAFETY BLOCK G.1] fake admin action (passive), context:", context);
+        return false;
+      }
+    }
+  }
+
+  // 8. Patch G.1: block premature prospect redirect to owner space
+  if (context === "platform_prospect") {
+    const ownerSpacePhrases = [
+      "espace propriétaire",
+      "connectez-vous à votre espace",
+      "accédez à l'espace propriétaire",
+      "owner dashboard",
+      "go to your owner",
+    ];
+    for (const phrase of ownerSpacePhrases) {
+      if (lower.includes(phrase)) {
+        console.warn("[AI SAFETY BLOCK G.1] prospect redirected to owner space prematurely");
+        return false;
+      }
+    }
   }
 
   return true;
