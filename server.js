@@ -1685,6 +1685,97 @@ async function buildReturningUserPlanContext({ clientMac, poolId }) {
 // END RAZAFI ASSISTANT — PATCH G.2
 // =============================================================================
 
+// =============================================================================
+// RAZAFI ASSISTANT — PATCH G.2.1: Deterministic Returning-User Intro
+// =============================================================================
+// buildReturningUserIntro() builds a server-owned intro string prepended to
+// finalAnswer in handleAssistantChat(). The AI never generates this text — it
+// only receives a "do not repeat" instruction via portalUserRules.
+// Pure synchronous function, no DB calls, no async. Never throws.
+// =============================================================================
+
+const G21_TEST_PLAN_PATTERN = /test|bonus|admin|gratuit|free|maintenance|d[eé]mo|sample/i;
+
+function buildReturningUserIntro({ lang, returningUserContext: ruc }) {
+  try {
+    if (!ruc || !ruc.has_history || !ruc.last_used_plan_name) return "";
+
+    const l = String(lang || "fr").toLowerCase();
+    const planName      = String(ruc.last_used_plan_name          || "");
+    const suggested     = ruc.suggested_real_plan_name ? String(ruc.suggested_real_plan_name) : null;
+    const stillAvail    = !!ruc.last_plan_still_available;
+    const isTestPlan    = G21_TEST_PLAN_PATTERN.test(planName);
+
+    function t(fr, mg, en) {
+      if (l === "mg") return mg;
+      if (l === "en") return en;
+      return fr;
+    }
+
+    const greeting = t("Bon retour 👋", "Tongasoa indray 👋", "Welcome back 👋");
+
+    let body = "";
+
+    if (isTestPlan) {
+      // Test-like plan: acknowledge but do not recommend it as main option
+      const testMention = t(
+        `La dernière fois, vous avez utilisé ${planName}, surtout utile pour un test rapide.`,
+        `Tamin\'ny farany, nampiasa ${planName} ianao, mahasoa indrindra amin\'ny fitsapana haingana.`,
+        `Last time, you used ${planName}, mainly useful for a quick test.`
+      );
+      const guidance = suggested
+        ? t(
+            `Pour un usage normal aujourd\'hui, je vous conseille plutôt ${suggested}.`,
+            `Ho an\'ny fampiasana mahazatra anio, manoro hevitra ${suggested} aho.`,
+            `For regular use today, I recommend ${suggested} instead.`
+          )
+        : t(
+            "Pour un usage normal aujourd\'hui, consultez les forfaits disponibles ci-dessous.",
+            "Ho an\'ny fampiasana mahazatra anio, jereo ny forfait misy eto.",
+            "For regular use today, check the available plans below."
+          );
+      body = testMention + " " + guidance;
+
+    } else if (stillAvail) {
+      // Normal plan still available
+      if (suggested) {
+        body = t(
+          `La dernière fois, vous avez utilisé ${planName}. Vous pouvez reprendre ce forfait, ou essayer ${suggested} si vous voulez rester plus longtemps.`,
+          `Tamin\'ny farany, nampiasa ${planName} ianao. Azonao averina io forfait io, na jerena ${suggested} raha te-hijanona lavabe kokoa.`,
+          `Last time, you used ${planName}. You can use the same plan again, or try ${suggested} if you want to stay longer.`
+        );
+      } else {
+        body = t(
+          `La dernière fois, vous avez utilisé ${planName}. Vous pouvez reprendre ce forfait aujourd\'hui.`,
+          `Tamin\'ny farany, nampiasa ${planName} ianao. Azonao averina io forfait io anio.`,
+          `Last time, you used ${planName}. You can use the same plan again today.`
+        );
+      }
+
+    } else {
+      // Plan no longer available
+      if (!suggested) return ""; // nothing safe to say — let AI handle normally
+      body = t(
+        `La dernière fois, vous avez utilisé ${planName}, qui n\'est plus disponible. Le forfait le plus proche disponible est ${suggested}.`,
+        `Tamin\'ny farany, nampiasa ${planName} ianao, tsy misy intsony anio. Ny forfait akaiky indrindra amin\'izao dia ${suggested}.`,
+        `Last time, you used ${planName}, which is no longer available. The closest available plan is ${suggested}.`
+      );
+    }
+
+    if (!body) return "";
+
+    const full = greeting + " " + body;
+    // Cap at 300 characters to keep intro concise
+    return full.slice(0, 300);
+  } catch {
+    return "";
+  }
+}
+
+// =============================================================================
+// END RAZAFI ASSISTANT — PATCH G.2.1
+// =============================================================================
+
 // ── Payment diagnostic ────────────────────────────────────────────────────
 // ---------------------------------------------------------------------------
 // Patch F.3 Fix 1: safe support phone — only trusted sources allowed.
@@ -5267,6 +5358,30 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   // END PATCH B+C+D+E
   // ---------------------------------------------------------------------------
 
+  // ── Patch G.2.1: deterministic returning-user intro prepend ──────────────
+  // The server owns this intro — the AI does not generate it.
+  // Gate: portal_user + first turn + has_history + not payment complaint.
+  // Runs after finalAnswer is fully resolved by AI/fallback chains.
+  // Errors are caught; original finalAnswer is always preserved.
+  try {
+    if (
+      context === "portal_user" &&
+      liveData?.returning_user_context?.has_history === true &&
+      !messageIsPaymentComplaint &&
+      thread?.pending_issue_type !== "payment_no_code" &&
+      (thread?.turns?.length || 0) === 0
+    ) {
+      const intro = buildReturningUserIntro({
+        lang,
+        returningUserContext: liveData.returning_user_context,
+      });
+      if (intro) finalAnswer = intro + "\n" + finalAnswer;
+    }
+  } catch (introErr) {
+    // Non-fatal: original finalAnswer preserved on any error
+    console.warn("[G.2.1] intro prepend failed (non-fatal):", introErr?.message || introErr);
+  }
+
   // Patch F: update thread with final turn
   updateAssistantThread({
     thread,
@@ -5873,6 +5988,16 @@ function buildGroundedAssistantPrompt({
     "PLAN DURATION: monthly = 28+ days (40320+ min). Weekly = 5–10 days. State clearly if none found.",
     "RAZAFI APP: no app to download — portal works directly from the browser.",
     "PAYMENT SAFETY: never say payment is confirmed unless latest_payment_status = 'completed'. Never say code is ready unless latest_voucher_status = 'ready'. Never accuse MVola/Orange/Airtel. Never ask for PIN. Never promise refund.",
+    // G.2.1: anti-duplication rule — the server prepends the returning-user intro; AI must not repeat it
+    ...(liveData?.returning_user_context?.has_history === true && !isPaymentComplaint
+      ? [
+          "RETURNING USER CONTEXT: The server has already prepended a returning-user intro before your answer. " +
+          "Do NOT repeat 'Bon retour', 'La dernière fois', 'Last time', 'Tamin\'ny farany', or any similar opening. " +
+          "Start your answer directly with the recommendation or information. " +
+          "Use the RETURNING USER CONTEXT section to make your recommendation coherent with the previous plan. " +
+          "If is_test_or_temp_plan is true, guide toward a normal visible plan and do not recommend the test plan as the main option.",
+        ]
+      : []),
     ...(isPaymentComplaint ? [
       "PAYMENT COMPLAINT ACTIVE — follow PAYMENT CONTEXT and PAYMENT COMPLAINT PROTOCOL strictly.",
       // G.1 Polish: explicit rule to prevent premature "not found" answers
@@ -6050,18 +6175,20 @@ function buildGroundedAssistantPrompt({
         last_plan_still_available: !!ruc.last_plan_still_available,
         suggested_real_plan_name:  ruc.suggested_real_plan_name ? String(ruc.suggested_real_plan_name) : null,
         reason:                    String(ruc.reason || ""),
+        // G.2.1: flag test-like plans so AI body avoids recommending them
+        is_test_or_temp_plan: G21_TEST_PLAN_PATTERN.test(String(ruc.last_used_plan_name || "")),
       };
       returningUserSection = [
         "\n\n## RETURNING USER CONTEXT",
         JSON.stringify(rucSafe, null, 2),
-        "RETURNING USER RULES:",
-        "- Use this on the first turn only to offer a natural, helpful welcome hint.",
-        "- Do not repeat this context in subsequent turns.",
-        "- Do not say 'je me souviens de vous', 'je vous reconnais', 'votre appareil est reconnu', or any identity-recognition phrase.",
+        "RETURNING USER RULES (AI body only — server has already prepended the intro):",
+        "- Do NOT open with 'Bon retour', 'La dernière fois', 'Last time', or 'Tamin\'ny farany' — the server already did this.",
+        "- Start your response directly with the recommendation or answer.",
+        "- Do not say 'je me souviens de vous', 'je vous reconnais', or any identity-recognition phrase.",
         "- Never mention MAC address, device ID, phone number, voucher code, or any identifier.",
-        "- If last_plan_still_available is true: offer to repeat the same plan, or suggest suggested_real_plan_name as a longer option if not null.",
-        "- If last_plan_still_available is false: say the previous plan is no longer available; suggest suggested_real_plan_name only (if not null).",
-        "- If suggested_real_plan_name is null: give general plan guidance without a specific suggestion.",
+        "- If is_test_or_temp_plan is true: do not recommend the previous plan as main option; guide toward suggested_real_plan_name.",
+        "- If last_plan_still_available is true: recommend same plan or suggested_real_plan_name as upgrade.",
+        "- If last_plan_still_available is false: recommend suggested_real_plan_name only (if not null).",
         "- Only ever name suggested_real_plan_name — never invent a different plan.",
       ].join("\n");
     }
@@ -6070,9 +6197,9 @@ function buildGroundedAssistantPrompt({
   const userContent = [
     "## USER MESSAGE",
     String(rawMessage).slice(0, 500),
+    returningUserSection,    // G.2.1: immediately after user message — never truncated, AI sees it first
     conversationSection,
     g1PolicySection,
-    returningUserSection,
     diagnosticSection,
     paymentSection,
     liveSection,
