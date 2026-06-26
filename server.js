@@ -1599,6 +1599,65 @@ async function buildReturningUserPlanContext({ clientMac, poolId }) {
     const MAX_HISTORY_AGE_DAYS = 90;
     const cutoff = new Date(Date.now() - MAX_HISTORY_AGE_DAYS * 86400 * 1000).toISOString();
 
+    // ── DEBUG: progressive count queries — no identifiers logged ─────────────
+    // Each step narrows the filter to isolate exactly which condition is failing.
+    try {
+      // Count 1: rows for this MAC (any pool, any status)
+      const { count: c1 } = await supabase
+        .from("vw_voucher_sessions_truth")
+        .select("*", { count: "exact", head: true })
+        .eq("client_mac", clientMac);
+
+      // Count 2: rows for this MAC + pool
+      const { count: c2 } = await supabase
+        .from("vw_voucher_sessions_truth")
+        .select("*", { count: "exact", head: true })
+        .eq("client_mac", clientMac)
+        .eq("pool_id",    poolId);
+
+      // Count 3: same + non-bonus + plan_id present
+      const { count: c3 } = await supabase
+        .from("vw_voucher_sessions_truth")
+        .select("*", { count: "exact", head: true })
+        .eq("client_mac",       clientMac)
+        .eq("pool_id",          poolId)
+        .eq("is_bonus_session", false)
+        .not("plan_id",         "is", null);
+
+      // Count 4: same + within 90-day cutoff
+      const { count: c4 } = await supabase
+        .from("vw_voucher_sessions_truth")
+        .select("*", { count: "exact", head: true })
+        .eq("client_mac",       clientMac)
+        .eq("pool_id",          poolId)
+        .eq("is_bonus_session", false)
+        .not("plan_id",         "is", null)
+        .gte("created_at",      cutoff);
+
+      // Count 5: same + activated_at or started_at present (usable rows)
+      // Supabase does not support OR directly in .not(), so we fetch and count in JS
+      const { data: c5rows } = await supabase
+        .from("vw_voucher_sessions_truth")
+        .select("activated_at, started_at")
+        .eq("client_mac",       clientMac)
+        .eq("pool_id",          poolId)
+        .eq("is_bonus_session", false)
+        .not("plan_id",         "is", null)
+        .gte("created_at",      cutoff);
+      const c5 = (c5rows || []).filter(r => r.activated_at || r.started_at).length;
+
+      console.info("[G.2 DB DEBUG] progressive counts", {
+        c1_mac_any:                  c1 ?? -1,
+        c2_mac_pool:                 c2 ?? -1,
+        c3_mac_pool_nonbonus_planid: c3 ?? -1,
+        c4_mac_pool_nonbonus_cutoff: c4 ?? -1,
+        c5_usable_activated:         c5,
+      });
+    } catch (countErr) {
+      console.warn("[G.2 DB DEBUG] count queries failed (non-fatal):", countErr?.message || countErr);
+    }
+    // ── END DEBUG counts ──────────────────────────────────────────────────────
+
     // ── Query 1: last session for this device on this pool (non-bonus, with plan) ──
     const { data: rows, error: rowsErr } = await supabase
       .from("vw_voucher_sessions_truth")
@@ -1611,12 +1670,31 @@ async function buildReturningUserPlanContext({ clientMac, poolId }) {
       .order("created_at",    { ascending: false })
       .limit(10);
 
-    if (rowsErr) return { has_history: false };
+    if (rowsErr) {
+      console.warn("[G.2 DB DEBUG] query 1 error:", rowsErr?.message || rowsErr);
+      return { has_history: false, reason: "rows_error" };
+    }
+
+    // DEBUG: log row counts only — no field values, no identifiers
+    console.info("[G.2 DB DEBUG]", {
+      rows_count:       Array.isArray(rows) ? rows.length : 0,
+      rows_with_plan:   (rows || []).filter(r => !!r.plan_id).length,
+      rows_activated:   (rows || []).filter(r => !!r.activated_at).length,
+      rows_started:     (rows || []).filter(r => !!r.started_at).length,
+      rows_delivered:   (rows || []).filter(r => !!r.delivered_at).length,
+    });
+
+    if (!rows || rows.length === 0) return { has_history: false, reason: "no_rows" };
 
     // Prefer sessions where the user actually connected (activated or started).
     // delivered_at alone only means the code was generated, not that the user connected.
     const usableRows = (rows || []).filter(r => r.plan_id && (r.activated_at || r.started_at));
-    if (!usableRows.length) return { has_history: false };
+
+    console.info("[G.2 DB DEBUG]", {
+      usable_rows_count: usableRows.length,
+    });
+
+    if (!usableRows.length) return { has_history: false, reason: "no_usable_rows" };
 
     // Pick the most recent usable row by best timestamp
     function bestTs(r) {
@@ -1634,7 +1712,15 @@ async function buildReturningUserPlanContext({ clientMac, poolId }) {
       .eq("pool_id", poolId)             // rejects plans from other pools
       .maybeSingle();
 
-    if (planErr || !lastPlan?.name) return { has_history: false };
+    if (planErr) {
+      console.warn("[G.2 DB DEBUG] query 2 error:", planErr?.message || planErr);
+      return { has_history: false, reason: "last_plan_not_found" };
+    }
+    if (!lastPlan?.name) {
+      console.info("[G.2 DB DEBUG]", { query2_plan_found: false });
+      return { has_history: false, reason: "last_plan_not_found" };
+    }
+    console.info("[G.2 DB DEBUG]", { query2_plan_found: true });
 
     // ── Query 3: trusted server-side visible active Mikrotik plans for this pool ──
     // This is the ONLY source used for suggested_real_plan_name.
@@ -1649,9 +1735,15 @@ async function buildReturningUserPlanContext({ clientMac, poolId }) {
       .order("sort_order", { ascending: true, nullsFirst: false })
       .order("price_ar",   { ascending: true });
 
-    if (vpErr) return { has_history: false };
+    if (vpErr) {
+      console.warn("[G.2 DB DEBUG] query 3 error:", vpErr?.message || vpErr);
+      return { has_history: false, reason: "visible_plans_error" };
+    }
 
     const trustedPlans = dbVisiblePlans || [];
+    console.info("[G.2 DB DEBUG]", { query3_visible_plans_count: trustedPlans.length });
+
+    if (!trustedPlans.length) return { has_history: false, reason: "no_visible_plans" };
 
     // Confirm last plan is still visible and active in the trusted server list
     const lastPlanStillAvailable = trustedPlans.some(p => p.id === lastPlan.id);
@@ -1675,9 +1767,10 @@ async function buildReturningUserPlanContext({ clientMac, poolId }) {
         : "plan_no_longer_available",
       // client_mac, pool_id, plan_id, voucher_code never appear in this object
     };
-  } catch {
+  } catch (unexpectedErr) {
     // Graceful degradation — never break the assistant flow
-    return { has_history: false };
+    console.warn("[G.2 DB DEBUG] unexpected error:", unexpectedErr?.message || unexpectedErr);
+    return { has_history: false, reason: "unexpected_error" };
   }
 }
 
