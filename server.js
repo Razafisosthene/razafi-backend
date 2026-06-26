@@ -1707,7 +1707,7 @@ async function buildReturningUserPlanContext({ clientMac, poolId }) {
     // ── Query 2: resolve last plan, confirm pool ownership ──────────────────
     const { data: lastPlan, error: planErr } = await supabase
       .from("plans")
-      .select("id, name, price_ar, duration_minutes, data_mb, is_active, is_visible, sort_order, ui_role")
+      .select("id, name, price_ar, duration_minutes, data_mb, is_active, is_visible, sort_order")
       .eq("id",      bestRow.plan_id)
       .eq("pool_id", poolId)             // rejects plans from other pools
       .maybeSingle();
@@ -1727,7 +1727,7 @@ async function buildReturningUserPlanContext({ clientMac, poolId }) {
     // Frontend liveData.all_plans is NOT used here — cannot be trusted for safety decisions.
     const { data: dbVisiblePlans, error: vpErr } = await supabase
       .from("plans")
-      .select("id, name, price_ar, duration_minutes, data_mb, is_active, is_visible, sort_order, ui_role")
+      .select("id, name, price_ar, duration_minutes, data_mb, is_active, is_visible, sort_order")
       .eq("pool_id",    poolId)
       .eq("is_active",  true)
       .eq("is_visible", true)
