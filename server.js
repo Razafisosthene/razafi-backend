@@ -1791,6 +1791,111 @@ function buildReturningUserIntro({ lang, returningUserContext: ruc }) {
 // END RAZAFI ASSISTANT — PATCH G.2.1
 // =============================================================================
 
+// =============================================================================
+// RAZAFI ASSISTANT — PATCH G.2.2: Concise Returning Plan Answer
+// =============================================================================
+
+// Detect whether this turn is a returning user asking for plan advice.
+// Used to decide whether to produce a concise deterministic answer (no AI body).
+function isReturningPlanAdviceTurn({ context, message, intentKey }) {
+  if (context !== "portal_user") return false;
+
+  // KB intent key match
+  const ik = String(intentKey || "").toLowerCase();
+  if (
+    ik === "plan_choice"                  ||
+    ik === "choose_plan"                  ||
+    ik === "plan_list"                    ||
+    ik.startsWith("portal_plan_advice")
+  ) return true;
+
+  // Signal-keyword match (FR + MG)
+  const s = String(message || "").toLowerCase();
+  return (
+    s.includes("quel forfait")    ||
+    s.includes("quelle plan")     ||
+    s.includes("quel plan")       ||
+    s.includes("conseille")       ||
+    s.includes("recommande")      ||
+    s.includes("choisir")         ||
+    s.includes("forfait choisir") ||
+    s.includes("plan choisir")    ||
+    s.includes("plan inona")      ||
+    s.includes("forfait inona")   ||
+    s.includes("inona no tsara")  ||
+    s.includes("safidy")
+  );
+}
+
+// Build a short, self-contained returning plan-advice answer.
+// Used when the gate fires: replaces the AI body entirely so the answer stays concise.
+// Pure, synchronous, no DB call, no logging. Returns "" if not applicable.
+function buildReturningUserConcisePlanAnswer({ lang, returningUserContext: ruc }) {
+  try {
+    if (!ruc || !ruc.has_history || !ruc.last_used_plan_name) return "";
+
+    const l         = String(lang || "fr").toLowerCase();
+    const planName  = String(ruc.last_used_plan_name            || "").trim();
+    const suggested = ruc.suggested_real_plan_name ? String(ruc.suggested_real_plan_name).trim() : null;
+    const stillAvail = !!ruc.last_plan_still_available;
+    const isTestPlan = G21_TEST_PLAN_PATTERN.test(planName);
+
+    function t(fr, mg, en) {
+      if (l === "mg") return mg;
+      if (l === "en") return en;
+      return fr;
+    }
+
+    if (isTestPlan) {
+      if (suggested) {
+        return t(
+          `Bon retour 👋 La dernière fois, vous avez utilisé ${planName}, surtout utile pour un test rapide. Pour aujourd\'hui, je vous conseille plutôt ${suggested} : plus confortable pour naviguer, réseaux sociaux et vidéos légères. Vous pouvez le choisir dans la liste des forfaits.`,
+          `Tongasoa indray 👋 Tamin\'ny farany, nampiasa forfait ${planName} ianao, mety indrindra ho an\'ny test rapide. Ho an\'ny usage normal androany, aleo ${suggested} : mahazo aina kokoa amin\'ny navigation, réseaux sociaux ary vidéo légère. Safidio ao amin\'ny liste des forfaits.`,
+          `Welcome back 👋 Last time, you used ${planName}, mainly useful for a quick test. For normal use today, I recommend ${suggested}: more comfortable for browsing, social media, and light videos. You can choose it from the plan list.`
+        );
+      }
+      return t(
+        `Bon retour 👋 La dernière fois, vous avez utilisé ${planName}, surtout utile pour un test rapide. Pour un usage normal aujourd\'hui, choisissez plutôt un forfait plus long dans la liste.`,
+        `Tongasoa indray 👋 Tamin\'ny farany, nampiasa forfait ${planName} ianao, mety indrindra ho an\'ny test rapide. Ho an\'ny usage normal androany, safidio plutôt forfait lava kokoa ao amin\'ny liste.`,
+        `Welcome back 👋 Last time, you used ${planName}, mainly useful for a quick test. For normal use today, choose a longer plan from the list.`
+      );
+    }
+
+    if (stillAvail && suggested) {
+      return t(
+        `Bon retour 👋 La dernière fois, vous avez utilisé ${planName}. Vous pouvez le reprendre, ou choisir ${suggested} si vous voulez rester plus longtemps.`,
+        `Tongasoa indray 👋 Tamin\'ny farany, nampiasa forfait ${planName} ianao. Afaka maka io indray ianao, na misafidy ${suggested} raha te hijanona ela kokoa.`,
+        `Welcome back 👋 Last time, you used ${planName}. You can use it again, or choose ${suggested} if you want to stay longer.`
+      );
+    }
+
+    if (stillAvail) {
+      return t(
+        `Bon retour 👋 La dernière fois, vous avez utilisé ${planName}. Vous pouvez reprendre ce forfait aujourd\'hui.`,
+        `Tongasoa indray 👋 Tamin\'ny farany, nampiasa forfait ${planName} ianao. Afaka maka io forfait io indray androany.`,
+        `Welcome back 👋 Last time, you used ${planName}. You can use the same plan again today.`
+      );
+    }
+
+    if (suggested) {
+      return t(
+        `Bon retour 👋 La dernière fois, vous avez utilisé ${planName}, mais il n\'est plus disponible. Le forfait le plus proche aujourd\'hui est ${suggested}.`,
+        `Tongasoa indray 👋 Tamin\'ny farany, nampiasa forfait ${planName} ianao, fa tsy disponible intsony izy. Ny forfait akaiky indrindra androany dia ${suggested}.`,
+        `Welcome back 👋 Last time, you used ${planName}, but it is no longer available. The closest plan today is ${suggested}.`
+      );
+    }
+
+    return ""; // no safe suggestion — let intro+AI body handle it
+  } catch (_) {
+    return "";
+  }
+}
+
+// =============================================================================
+// END RAZAFI ASSISTANT — PATCH G.2.2
+// =============================================================================
+
+
 // ── Payment diagnostic ────────────────────────────────────────────────────
 // ---------------------------------------------------------------------------
 // Patch F.3 Fix 1: safe support phone — only trusted sources allowed.
@@ -5376,10 +5481,12 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   // END PATCH B+C+D+E
   // ---------------------------------------------------------------------------
 
-  // ── Patch G.2.1: deterministic returning-user intro prepend ──────────────
-  // The server owns this intro — the AI does not generate it.
+  // ── Patch G.2.1 / G.2.2: deterministic returning-user answer ───────────────
   // Gate: portal_user + first turn + has_history + not payment complaint.
-  // Runs after finalAnswer is fully resolved by AI/fallback chains.
+  // G.2.2: if the turn is a plan-advice question, replace finalAnswer entirely
+  //        with a short concise answer (no AI body).
+  // G.2.1: otherwise prepend the intro to the existing finalAnswer.
+  // The server owns this text — the AI does not generate it.
   // Errors are caught; original finalAnswer is always preserved.
   try {
     if (
@@ -5389,16 +5496,33 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
       thread?.pending_issue_type !== "payment_no_code" &&
       (thread?.turns?.length || 0) === 0
     ) {
-      const intro = buildReturningUserIntro({
-        lang,
-        returningUserContext: liveData.returning_user_context,
-      });
+      // G.2.2: concise path — replaces AI body for plan-advice turns
+      const conciseReturningAnswer = isReturningPlanAdviceTurn({
+        context,
+        message,
+        intentKey: intent?.intent_key || null,
+      })
+        ? buildReturningUserConcisePlanAnswer({
+            lang,
+            returningUserContext: liveData.returning_user_context,
+          })
+        : "";
 
-      if (intro) finalAnswer = intro + "\n" + finalAnswer;
+      if (conciseReturningAnswer) {
+        // Full replacement: concise deterministic answer, no AI body appended
+        finalAnswer = conciseReturningAnswer;
+      } else {
+        // G.2.1: non-plan-advice first turn — prepend intro to AI body
+        const intro = buildReturningUserIntro({
+          lang,
+          returningUserContext: liveData.returning_user_context,
+        });
+        if (intro) finalAnswer = intro + "\n" + finalAnswer;
+      }
     }
   } catch (introErr) {
     // Non-fatal: original finalAnswer preserved on any error
-    console.warn("[G.2.1] intro prepend failed (non-fatal):", introErr?.message || introErr);
+    console.warn("[G.2.1] returning-user answer failed (non-fatal):", introErr?.message || introErr);
   }
 
   // Patch F: update thread with final turn
@@ -5999,6 +6123,8 @@ function buildGroundedAssistantPrompt({
   // ── CONTEXT-SPECIFIC RULES ────────────────────────────────────────────────
   const portalUserRules = [
     "Answer in 1 to 4 short sentences. Prefer 2 sentences for simple questions.",
+    // G.2.2: Malagasy language style rule
+    "MALAGASY STYLE: If the detected language is Malagasy (mg), use natural everyday Malagasy as spoken in Madagascar. Keep these technical/product words in French when they are more natural: data, limité, illimité, plan, forfait, code, paiement, bouton, réseau, connexion, client, usage, navigation, réseaux sociaux, test rapide, vidéo, liste. When referring to the code activation button, always write exactly: bouton Utiliser ce code. Do not translate this button label into Malagasy.",
     "Use simple words understandable by a non-technical user.",
     "Do not use Markdown formatting, bullet points, bold, tables, or numbered lists.",
     "Start directly with the answer. No greetings, no 'Bien sûr !', no title.",
