@@ -3008,7 +3008,7 @@ function saturationLabel(pct) {
            data-plan-unlimited="${isUnlimited ? "1" : "0"}"
            data-plan-devices="${escapeHtml(String(maxDevices))}"
            data-plan-speed="${escapeHtml(speedHuman)}"
-           data-plan-rate-limit="${escapeHtml(normalizeRateLimit(plan.mikrotik_rate_limit))}"
+           data-plan-rate-limit=""
            data-plan-ui-role="${escapeHtml(String(uiMeta.role || "neutral"))}"
            data-plan-recommended="${uiMeta.isRecommended ? "1" : "0"}"
            data-plan-free-test="${uiMeta.isFreeTest ? "1" : "0"}">
@@ -3741,7 +3741,7 @@ function bindPlanHandlers() {
                 const isUnlimited = (card.getAttribute("data-plan-unlimited") || "0") === "1";
                 const maxDevices = Number(card.getAttribute("data-plan-devices") || "1") || 1;
                 const speedHuman = card.getAttribute("data-plan-speed") || "";
-                const rateLimit = card.getAttribute("data-plan-rate-limit") || "";
+                // H.1: mikrotik_rate_limit removed from public API; speed_human is the display field.
                 receiptDraft = {
                   id: planId || null,
                   name: planName,
@@ -3751,7 +3751,6 @@ function bindPlanHandlers() {
                   unlimited: isUnlimited,
                   devices: maxDevices,
                   speed_human: speedHuman || null,
-                  mikrotik_rate_limit: rateLimit || null,
                   at: Date.now(),
                 };
               } catch (_) {}
@@ -3810,7 +3809,7 @@ function bindPlanHandlers() {
                   await refreshPortalAfterNewCode({
                     phone: cleaned,
                     code: freeCode,
-                    receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices, speed_human: receiptDraft.speed_human, mikrotik_rate_limit: receiptDraft.mikrotik_rate_limit } : null,
+                    receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices, speed_human: receiptDraft.speed_human } : null,
                   });
                   showToast("🎉 Code gratuit généré ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
                   return;
@@ -3859,7 +3858,7 @@ function bindPlanHandlers() {
               await refreshPortalAfterNewCode({
                 phone: cleaned,
                 code,
-                receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices, speed_human: receiptDraft.speed_human, mikrotik_rate_limit: receiptDraft.mikrotik_rate_limit } : null,
+                receiptMeta: receiptDraft ? { planName: receiptDraft.name, durationMinutes: receiptDraft.duration_minutes, maxDevices: receiptDraft.devices, speed_human: receiptDraft.speed_human } : null,
               });
               showToast("🎉 Code reçu ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
             } catch (e) {

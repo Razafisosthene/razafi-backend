@@ -12628,6 +12628,64 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
     return res.status(500).json({ ok: false, error: "internal_error" });
   }
 });
+// =============================================================================
+// PATCH H.1 — Public Portal Plan Serializer
+// =============================================================================
+// Strips internal fields (pool_id, system, is_active, is_visible, sort_order,
+// mikrotik_rate_limit, sales_limit, auto_hide_when_limit_reached, updated_at)
+// from the public /api/mikrotik/plans response.
+// Derives safe display helpers (speed_mbps, speed_human, unlimited) server-side.
+// The server still uses full DB plan data internally — only the response is shaped.
+// =============================================================================
+
+// Parse a MikroTik rate-limit string (e.g. "20M/20M") into safe display fields.
+// Called server-side only — raw rate_limit is never exposed after this patch.
+function parsePublicSpeedFromRateLimit(rateLimit) {
+  try {
+    const s = String(rateLimit || "").trim();
+    const first = s.split("/")[0] || "";
+    const m = first.match(/^(\d+(?:\.\d+)?)([KMG])$/i);
+    if (!m) return { speed_mbps: null, speed_human: null };
+    let n = Number(m[1]);
+    const unit = String(m[2] || "").toUpperCase();
+    if (!Number.isFinite(n) || n <= 0) return { speed_mbps: null, speed_human: null };
+    if (unit === "K") n = n / 1024;
+    if (unit === "G") n = n * 1024;
+    const rounded = n >= 10 ? Math.round(n) : Math.round(n * 10) / 10;
+    return {
+      speed_mbps:  rounded,
+      speed_human: `${Number.isInteger(rounded) ? rounded : String(rounded).replace(".", ",")} Mbps`,
+    };
+  } catch (_) {
+    return { speed_mbps: null, speed_human: null };
+  }
+}
+
+// Shape a DB plan row into a safe public object.
+// Only fields the portal UI actually needs are included.
+// Internal fields (pool_id, system, sort_order, etc.) are never included.
+function serializePublicPortalPlan(plan) {
+  const speed = parsePublicSpeedFromRateLimit(plan?.mikrotik_rate_limit);
+  return {
+    id:               plan?.id               || null,   // needed: card hash, data-plan-id, identity
+    name:             plan?.name             || "",
+    price_ar:         Number(plan?.price_ar  || 0),
+    duration_minutes: plan?.duration_minutes != null ? Number(plan.duration_minutes) : null,
+    duration_hours:   plan?.duration_hours   != null ? plan.duration_hours            : null,
+    data_mb:          plan?.data_mb          != null ? plan.data_mb                  : null,  // null = unlimited
+    max_devices:      plan?.max_devices      != null ? Number(plan.max_devices)       : 1,
+    unlimited:        plan?.data_mb === null || plan?.data_mb === undefined,  // convenience flag
+    speed_mbps:       speed.speed_mbps,    // derived — raw rate_limit not exposed
+    speed_human:      speed.speed_human,   // derived — preferred by mikrotik.js
+  };
+  // Fields intentionally omitted: pool_id, updated_at, system, is_active, is_visible,
+  // sort_order, mikrotik_rate_limit, sales_limit, auto_hide_when_limit_reached
+}
+
+// =============================================================================
+// END PATCH H.1 — Serializer helpers
+// =============================================================================
+
 // ===============================
 // MIKROTIK (User) — PLANS by AP (DB ONLY)
 // Used by SSID "Radius 2" splash page (e.g. /mikrotik/?ap_mac=...)
@@ -12795,14 +12853,17 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
       assistantHistoryToken = null;
     }
 
+    // H.1: serialize plans to public-safe shape — strips pool_id, system, sort_order,
+    // mikrotik_rate_limit, is_active, is_visible, sales_limit, auto_hide_when_limit_reached.
+    // Speed is derived server-side into speed_mbps / speed_human.
+    const publicPlans = (visiblePlans || []).map(serializePublicPortalPlan);
+
     return res.json({
-      ok: true,
-      ap_mac,
-      nas_id,
-      pool_id,
-      pool_name: pool?.name ?? null,
-      portal_announcement: serializePortalAnnouncement(pool),
-      plans: visiblePlans || [],
+      ok:                   true,
+      // ap_mac and pool_id removed — not needed by portal UI
+      pool_name:            pool?.name ?? null,
+      portal_announcement:  serializePortalAnnouncement(pool),
+      plans:                publicPlans,
       assistant_history_token: assistantHistoryToken || null, // G.2: null when no client_mac
     });
   } catch (e) {
