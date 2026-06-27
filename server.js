@@ -1850,13 +1850,13 @@ function buildReturningUserConcisePlanAnswer({ lang, returningUserContext: ruc }
       if (suggested) {
         return t(
           `Bon retour 👋 La dernière fois, vous avez utilisé ${planName}, surtout utile pour un test rapide. Pour aujourd\'hui, je vous conseille plutôt ${suggested} : plus confortable pour naviguer, réseaux sociaux et vidéos légères. Vous pouvez le choisir dans la liste des forfaits.`,
-          `Tongasoa indray 👋 Tamin\'ny farany, nampiasa forfait ${planName} ianao, mety indrindra ho an\'ny test rapide. Ho an\'ny usage normal androany, aleo ${suggested} : mahazo aina kokoa amin\'ny navigation, réseaux sociaux ary vidéo légère. Safidio ao amin\'ny liste des forfaits.`,
+          `Tongasoa indray 👋 Tamin\'ny farany ianao nampiasa forfait ${planName}, mety amin\'ny test rapide. Raha usage normal androany, aleo ${suggested} : mahazo aina kokoa amin\'ny navigation, réseaux sociaux ary vidéo légère. Safidio ao amin\'ny liste des forfaits.`,
           `Welcome back 👋 Last time, you used ${planName}, mainly useful for a quick test. For normal use today, I recommend ${suggested}: more comfortable for browsing, social media, and light videos. You can choose it from the plan list.`
         );
       }
       return t(
         `Bon retour 👋 La dernière fois, vous avez utilisé ${planName}, surtout utile pour un test rapide. Pour un usage normal aujourd\'hui, choisissez plutôt un forfait plus long dans la liste.`,
-        `Tongasoa indray 👋 Tamin\'ny farany, nampiasa forfait ${planName} ianao, mety indrindra ho an\'ny test rapide. Ho an\'ny usage normal androany, safidio plutôt forfait lava kokoa ao amin\'ny liste.`,
+        `Tongasoa indray 👋 Tamin\'ny farany ianao nampiasa forfait ${planName}, mety amin\'ny test rapide. Raha usage normal androany, aleo maka forfait lava kokoa ao amin\'ny liste des forfaits.`,
         `Welcome back 👋 Last time, you used ${planName}, mainly useful for a quick test. For normal use today, choose a longer plan from the list.`
       );
     }
@@ -1864,7 +1864,7 @@ function buildReturningUserConcisePlanAnswer({ lang, returningUserContext: ruc }
     if (stillAvail && suggested) {
       return t(
         `Bon retour 👋 La dernière fois, vous avez utilisé ${planName}. Vous pouvez le reprendre, ou choisir ${suggested} si vous voulez rester plus longtemps.`,
-        `Tongasoa indray 👋 Tamin\'ny farany, nampiasa forfait ${planName} ianao. Afaka maka io indray ianao, na misafidy ${suggested} raha te hijanona ela kokoa.`,
+        `Tongasoa indray 👋 Tamin\'ny farany ianao nampiasa forfait ${planName}. Afaka maka io indray ianao, na misafidy ${suggested} raha te hijanona ela kokoa.`,
         `Welcome back 👋 Last time, you used ${planName}. You can use it again, or choose ${suggested} if you want to stay longer.`
       );
     }
@@ -1872,7 +1872,7 @@ function buildReturningUserConcisePlanAnswer({ lang, returningUserContext: ruc }
     if (stillAvail) {
       return t(
         `Bon retour 👋 La dernière fois, vous avez utilisé ${planName}. Vous pouvez reprendre ce forfait aujourd\'hui.`,
-        `Tongasoa indray 👋 Tamin\'ny farany, nampiasa forfait ${planName} ianao. Afaka maka io forfait io indray androany.`,
+        `Tongasoa indray 👋 Tamin\'ny farany ianao nampiasa forfait ${planName}. Afaka maka io forfait io indray androany.`,
         `Welcome back 👋 Last time, you used ${planName}. You can use the same plan again today.`
       );
     }
@@ -1880,7 +1880,7 @@ function buildReturningUserConcisePlanAnswer({ lang, returningUserContext: ruc }
     if (suggested) {
       return t(
         `Bon retour 👋 La dernière fois, vous avez utilisé ${planName}, mais il n\'est plus disponible. Le forfait le plus proche aujourd\'hui est ${suggested}.`,
-        `Tongasoa indray 👋 Tamin\'ny farany, nampiasa forfait ${planName} ianao, fa tsy disponible intsony izy. Ny forfait akaiky indrindra androany dia ${suggested}.`,
+        `Tongasoa indray 👋 Tamin\'ny farany ianao nampiasa forfait ${planName}, fa tsy disponible intsony izy. Ny forfait akaiky indrindra androany dia ${suggested}.`,
         `Welcome back 👋 Last time, you used ${planName}, but it is no longer available. The closest plan today is ${suggested}.`
       );
     }
@@ -1894,6 +1894,108 @@ function buildReturningUserConcisePlanAnswer({ lang, returningUserContext: ruc }
 // =============================================================================
 // END RAZAFI ASSISTANT — PATCH G.2.2
 // =============================================================================
+
+// =============================================================================
+// RAZAFI ASSISTANT — PATCH G.2.3: Natural Malagasy Voice Polish
+// =============================================================================
+// polishRazafiMalagasyAnswer() is a post-processing pass applied to the final
+// answer when lang === "mg". It replaces over-translated or overly-formal
+// Malagasy terms with natural spoken Malagasy + French technical words.
+//
+// Rules:
+// - Pure, synchronous, no DB, no logging, no async.
+// - Never changes meaning — only surface wording.
+// - Context-specific replacements avoid false positives.
+// - Returns original answer unchanged on any error.
+// =============================================================================
+function polishRazafiMalagasyAnswer(answer, context) {
+  try {
+    let s = String(answer || "").trim();
+    if (!s) return s;
+    const ctx = String(context || "").trim();
+
+    // —— Common terms across all 3 contexts ——————————————————————————
+    const common = [
+      [/\bkaody\b/gi,             "code"],
+      [/\bbokotra\b/gi,           "bouton"],
+      [/\bfandoavam-bola\b/gi,    "paiement"],
+      [/\bangona\b/gi,            "data"],
+      [/\btsy voafetra\b/gi,      "illimité"],
+      [/\bvoafetra\b/gi,          "limité"],
+      [/\btambajotra\b/gi,        "réseau"],
+      [/\bfifandraisana\b/gi,     "connexion"],
+      [/\bvavahady\b/gi,          "portail"],
+    ];
+    for (const [re, val] of common) s = s.replace(re, val);
+
+    // —— portal_user —————————————————————————————————————————————————————————
+    if (ctx === "portal_user") {
+      const portal = [
+        [/\banjara WiFi\b/gi,                    "forfait WiFi"],
+        [/\banjara\b/gi,                          "forfait"],
+        [/\bmpanjifa\b/gi,                        "client"],
+        [/\bmpampiasa\b/gi,                       "client"],
+        [/Ho an'ny fampiasana mahazatra/gi,       "Raha usage normal"],
+        [/Ho an'ny usage normal/gi,               "Raha usage normal"],
+        [/amin'izao fotoana izao/gi,              "izao"],
+        // Always keep the code button label in French exactly
+        [/bokotra\s+Ampiasao\s+ity\s+code\s+ity/gi,  "bouton Utiliser ce code"],
+        [/bokotra\s+Hampiasa\s+ity\s+code\s+ity/gi,  "bouton Utiliser ce code"],
+        [/Ampiasao\s+ity\s+code\s+ity/gi,            "bouton Utiliser ce code"],
+        [/Hampiasa\s+ity\s+code\s+ity/gi,            "bouton Utiliser ce code"],
+      ];
+      for (const [re, val] of portal) s = s.replace(re, val);
+    }
+
+    // —— admin_owner —————————————————————————————————————————————————————————
+    if (ctx === "admin_owner") {
+      const admin = [
+        [/\bpejy Plans\b/gi,        "page Plans"],
+        [/\bpejy Revenus\b/gi,      "page Revenus"],
+        [/\bpejy Clients\b/gi,      "page Clients"],
+        [/\bpejy Dashboard\b/gi,    "page Dashboard"],
+        [/\bvola miditra\b/gi,      "revenus"],
+        [/\bvarotra\b/gi,           "ventes"],
+        [/\banjara WiFi\b/gi,       "forfait WiFi"],
+        [/\banjara\b/gi,            "forfait"],
+        [/\bforfait hita\b/gi,      "forfait visible"],
+        [/\bforfait nafenina\b/gi,  "forfait caché"],
+        [/\bafenina\b/gi,           "masqué"],
+        [/\basehoy\b/gi,            "afficher"],
+        [/\bmpanjifa\b/gi,          "clients"],
+        [/\bmpampiasa\b/gi,         "clients"],
+      ];
+      for (const [re, val] of admin) s = s.replace(re, val);
+    }
+
+    // —— platform_prospect ———————————————————————————————————————————————
+    if (ctx === "platform_prospect") {
+      const prospect = [
+        [/\bsehatra\b/gi,                   "plateforme"],
+        [/\bvaravarana client\b/gi,          "portail client"],
+        [/\btompony\b/gi,                    "propriétaire"],
+        [/\bfifandraisana WhatsApp\b/gi,     "contact WhatsApp"],
+        [/\bfampisehoana\b/gi,               "démo"],
+        [/\bfandoavana automatique\b/gi,     "paiement automatique"],
+        [/\bWiFi andoavam-bola\b/gi,         "WiFi payant"],
+        [/\banjara\b/gi,                     "forfait"],
+        [/\bmpanjifa\b/gi,                   "client"],
+      ];
+      for (const [re, val] of prospect) s = s.replace(re, val);
+    }
+
+    // General cleanup: collapse multiple spaces
+    s = s.replace(/\s{2,}/g, " ").trim();
+    return s;
+  } catch (_) {
+    return String(answer || "");
+  }
+}
+
+// =============================================================================
+// END RAZAFI ASSISTANT — PATCH G.2.3
+// =============================================================================
+
 
 
 // ── Payment diagnostic ────────────────────────────────────────────────────
@@ -5525,6 +5627,14 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     console.warn("[G.2.1] returning-user answer failed (non-fatal):", introErr?.message || introErr);
   }
 
+  // ── Patch G.2.3: natural Malagasy voice polish ──────────────────────────────
+  // Applied after all answer paths (dynamic, KB, AI, fallback, G.2.1/G.2.2).
+  // Only fires when lang === "mg" — FR/EN untouched.
+  // Safety validators already ran above; polish is surface-wording only.
+  if (lang === "mg" && ["portal_user", "admin_owner", "platform_prospect"].includes(context)) {
+    finalAnswer = polishRazafiMalagasyAnswer(finalAnswer, context);
+  }
+
   // Patch F: update thread with final turn
   updateAssistantThread({
     thread,
@@ -5884,7 +5994,7 @@ function buildPaymentDiagnosticFallbackAnswer(lang, diagnosticResult, liveData) 
       `Please send: ${askParts.join(", ")}.`
     );
     return t(
-      "Mbola mila antsipiriany aho hijerena ny paiement-nao. " + askStr + " Aza mandefa PIN.",
+      "Mila info kely aho hijerena ny paiement-nao. " + askStr + " Aza mandefa PIN.",
       "J'ai besoin de quelques détails pour vérifier votre paiement. " + askStr + " N'envoyez jamais votre PIN.",
       "I need a few details to check your payment. " + askStr + " Never share your PIN."
     );
@@ -6124,7 +6234,7 @@ function buildGroundedAssistantPrompt({
   const portalUserRules = [
     "Answer in 1 to 4 short sentences. Prefer 2 sentences for simple questions.",
     // G.2.2: Malagasy language style rule
-    "MALAGASY STYLE: If the detected language is Malagasy (mg), use natural everyday Malagasy as spoken in Madagascar. Keep these technical/product words in French when they are more natural: data, limité, illimité, plan, forfait, code, paiement, bouton, réseau, connexion, client, usage, navigation, réseaux sociaux, test rapide, vidéo, liste. When referring to the code activation button, always write exactly: bouton Utiliser ce code. Do not translate this button label into Malagasy.",
+    "MALAGASY STYLE: If the detected language is Malagasy (mg), use natural everyday Malagasy as spoken in Madagascar. Do not use heavy official Malagasy. Keep common RAZAFI/UI/business/technical words in French when they are more natural: forfait, plan, data, limité, illimité, code, paiement, bouton, réseau, connexion, client, usage, navigation, réseaux sociaux, vidéo, portail, WiFi, MVola, dashboard, revenus, ventes, pool, page Plans, page Revenus, plateforme, démo, contact WhatsApp, Starlink, fibre, routeur, access point. For code activation, always write exactly: bouton Utiliser ce code — never translate this button label. Prefer natural phrases like 'Mila info kely aho hijerena ny paiement-nao' over overly formal or fully-translated wording.",
     "Use simple words understandable by a non-technical user.",
     "Do not use Markdown formatting, bullet points, bold, tables, or numbered lists.",
     "Start directly with the answer. No greetings, no 'Bien sûr !', no title.",
@@ -6153,6 +6263,7 @@ function buildGroundedAssistantPrompt({
 
   const adminOwnerRules = [
     "You are advising a WiFi network owner in their admin dashboard.",
+    "MALAGASY STYLE: If the detected language is Malagasy (mg), use natural everyday Malagasy as spoken in Madagascar. Do not use heavy official Malagasy. Keep common RAZAFI/UI/business/technical words in French when they are more natural: forfait, plan, data, limité, illimité, code, paiement, bouton, réseau, connexion, client, usage, navigation, réseaux sociaux, vidéo, portail, WiFi, MVola, dashboard, revenus, ventes, pool, page Plans, page Revenus, plateforme, démo, contact WhatsApp, Starlink, fibre, routeur, access point. For code activation, always write exactly: bouton Utiliser ce code — never translate this button label. Prefer natural phrases like 'Mila info kely aho hijerena ny paiement-nao' over overly formal or fully-translated wording.",
     "Act like a knowledgeable business advisor. Be practical, grounded, and honest.",
     "Short bullets are acceptable here when listing multiple options or steps, but keep it concise.",
     "Use 'Je vous conseille…', 'Vous pouvez…', 'D'après les données visibles…' — never say 'I created/deleted/changed' anything.",
@@ -6162,6 +6273,7 @@ function buildGroundedAssistantPrompt({
 
   const prospectRules = [
     "You are presenting the RAZAFI platform to a business prospect.",
+    "MALAGASY STYLE: If the detected language is Malagasy (mg), use natural everyday Malagasy as spoken in Madagascar. Do not use heavy official Malagasy. Keep common RAZAFI/UI/business/technical words in French when they are more natural: forfait, plan, data, limité, illimité, code, paiement, bouton, réseau, connexion, client, usage, navigation, réseaux sociaux, vidéo, portail, WiFi, MVola, dashboard, revenus, ventes, pool, page Plans, page Revenus, plateforme, démo, contact WhatsApp, Starlink, fibre, routeur, access point. For code activation, always write exactly: bouton Utiliser ce code — never translate this button label. Prefer natural phrases like 'Mila info kely aho hijerena ny paiement-nao' over overly formal or fully-translated wording.",
     "Be warm, commercial, and clear. Explain RAZAFI as a WiFi monetization platform for hotspot owners.",
     "Invite to demo or contact when useful.",
     "Hardware: MikroTik hAP ax² for small/medium sites. Larger sites may use more powerful models.",
