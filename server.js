@@ -2102,14 +2102,55 @@ async function buildAssistantDiagnosticContext({ context, message, liveData, thr
       };
     }
 
-    // Best match: prefer amount match, then most recent
-    let best = rows[0];
-    if (amount && rows.length > 1) {
-      const amountMatch = rows.find(r => Math.abs(Number(r.amount) - amount) < 10);
-      if (amountMatch) best = amountMatch;
+    // Patch F.4: strict amount match guard.
+    // If amount was provided, ALL candidate rows must match it.
+    // If no row matches the amount, return mismatch immediately — never fall through
+    // to a different transaction that could confirm an unrelated payment.
+    let candidateRows = rows;
+
+    if (amount) {
+      const amountMatches = rows.filter(r => paymentAmountMatches(r.amount, amount));
+
+      if (!amountMatches.length) {
+        // No transaction found for this phone + amount combination.
+        // Keep pending_issue_type open (user_action = provide_missing_details).
+        return {
+          type: "payment",
+          status: "checked",
+          diagnosis_code: "payment_amount_mismatch",
+          payment_status: "unknown",
+          voucher_status: "unknown",
+          responsibility: "unknown",
+          should_apologize: false,
+          user_action: "provide_missing_details",
+          missing_fields: ["time_hint", "transaction_reference"],
+          amount_match: false,
+          contact_phone: contactPhone,
+        };
+      }
+
+      candidateRows = amountMatches;
     }
 
-    if (rows.length > 1 && !amount) {
+    // Multiple candidates — need time or reference to disambiguate
+    if (candidateRows.length > 1 && !slots.time_hint && !slots.transaction_ref) {
+      return {
+        type: "payment",
+        status: "checked",
+        diagnosis_code: "multiple_possible_matches",
+        payment_status: "unknown",
+        voucher_status: "unknown",
+        responsibility: "unknown",
+        should_apologize: false,
+        user_action: "provide_missing_details",
+        missing_fields: ["time_hint", "transaction_reference"],
+        amount_match: amount ? true : null,
+        contact_phone: contactPhone,
+      };
+    }
+
+    // No amount provided and multiple rows — ask for amount first
+    if (candidateRows.length > 1 && !amount) {
       return {
         type: "payment",
         status: "checked",
@@ -2120,9 +2161,12 @@ async function buildAssistantDiagnosticContext({ context, message, liveData, thr
         should_apologize: false,
         user_action: "provide_missing_details",
         missing_fields: ["amount_ar", "time_hint"],
+        amount_match: null,
         contact_phone: contactPhone,
       };
     }
+
+    let best = candidateRows[0];
 
     const txStatus = String(best.status || "").toLowerCase();
     const hasCode = !!(best.code || best.voucher);
@@ -2183,7 +2227,7 @@ async function buildAssistantDiagnosticContext({ context, message, liveData, thr
       diagnosis_code,
       payment_status,
       voucher_status,
-      amount_match: amount ? Math.abs(Number(best.amount) - amount) < 10 : null,
+      amount_match: amount ? paymentAmountMatches(best.amount, amount) : null, // Patch F.4
       time_ago: timeAgo,
       provider: String(best.provider || provider || "unknown").toLowerCase(),
       responsibility,
@@ -5422,7 +5466,8 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
         thread.pending_issue_type = null; // resolved or escalated — issue is closed
       }
       // Otherwise (payment_pending, payment_not_found, multiple_possible_matches,
-      // payment_not_confirmed, diagnostic_unavailable, wait, provide_missing_details)
+      // payment_not_confirmed, diagnostic_unavailable, wait, provide_missing_details,
+      // payment_amount_mismatch [Patch F.4] — amount mismatch keeps issue open)
       // pending_issue_type remains "payment_no_code" so the next short follow-up
       // re-enters the diagnostic path without requiring a full complaint message.
     }
@@ -5914,6 +5959,18 @@ function buildPaymentContextBlock(liveData) {
 // ---------------------------------------------------------------------------
 // Patch C: Payment diagnosis instructions injected into system prompt
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Patch F.4: strict amount match guard for payment diagnostic.
+// Uses a tolerance of <10 Ar to handle rounding/typos.
+// Returns false if either value is missing or non-positive.
+// ---------------------------------------------------------------------------
+function paymentAmountMatches(rowAmount, providedAmount) {
+  const a = Number(rowAmount);
+  const b = Number(providedAmount);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= 0) return false;
+  return Math.abs(a - b) < 10;
+}
+
 const PAYMENT_DIAGNOSIS_RULES = `
 PAYMENT COMPLAINT PROTOCOL — follow this strictly:
 - If payment_status = "completed" AND voucher_status = "ready":
@@ -5933,6 +5990,7 @@ SAFETY RULES:
 - NEVER promise a refund unless you have confirmed refund workflow data.
 - NEVER ask for PIN or password.
 - NEVER invent a transaction reference or voucher code.
+- If diagnosis_code = "payment_amount_mismatch" OR amount_match = false: NEVER say the payment is confirmed and NEVER say the code is ready. Ask for the correct amount, approximate time, or SMS reference. Never ask for PIN.
 `;
 
 // ---------------------------------------------------------------------------
@@ -6042,6 +6100,15 @@ function buildPaymentDiagnosticFallbackAnswer(lang, diagnosticResult, liveData) 
       "Tsy nahazo confirmation paiement ny RAZAFI. Raha nihena ny solde MVola-nao, alefaso amin'ny assistance ny SMS na référence transaction. Aza mandefa PIN." + contactSuffix,
       "RAZAFI n'a pas reçu la confirmation de ce paiement. Si votre solde a été débité, envoyez le SMS ou la référence de transaction à l'assistance. N'envoyez jamais votre PIN." + contactSuffix,
       "RAZAFI did not receive payment confirmation. If your balance was debited, send the SMS or transaction reference to support. Never share your PIN." + contactSuffix
+    );
+  }
+
+  // Patch F.4: amount provided but no transaction matches — do not reveal other transactions
+  if (dc === "payment_amount_mismatch") {
+    return t(
+      "Tsy hitako izay paiement mifanaraka amin\'io montant io amin\'io numéro io. Alefaso azafady ny ora nandoavanao na ny référence SMS raha misy, na avereno jereo ny montant. Aza mandefa PIN.",
+      "Je ne trouve pas de paiement correspondant à ce montant avec ce numéro. Envoyez l\'heure approximative ou la référence SMS si vous l\'avez, ou vérifiez le montant saisi. N\'envoyez jamais votre PIN.",
+      "I can\'t find a payment matching that amount for this number. Please send the approximate time or SMS reference if you have it, or check the amount entered. Never send your PIN."
     );
   }
 
