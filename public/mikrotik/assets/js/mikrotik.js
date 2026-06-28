@@ -4090,6 +4090,82 @@ function bindPlanHandlers() {
       } catch (_) {}
       var poolLabel = displayName || poolName || brandName || null;
 
+      // ---- G.3B: selected_plan (safe object from .plan-card.selected, never IDs) ----
+      var selectedPlan = null;
+      try {
+        var selectedCard = document.querySelector(".plan-card.selected");
+        if (selectedCard) {
+          var spIsUnlimited = selectedCard.getAttribute("data-plan-unlimited") === "1";
+          var spRawData     = selectedCard.getAttribute("data-plan-data");
+          selectedPlan = {
+            name:             selectedCard.getAttribute("data-plan-name") || null,
+            price_ar:         Number(selectedCard.getAttribute("data-plan-price") || 0),
+            duration_minutes: Number(selectedCard.getAttribute("data-plan-duration") || 0),
+            unlimited:        spIsUnlimited,
+            data_mb:          spIsUnlimited ? null : (spRawData !== null && spRawData !== "" ? Number(spRawData) : null),
+            speed_label:      selectedCard.getAttribute("data-plan-speed") || null,
+          };
+        }
+      } catch (_) {}
+
+      // ---- G.3B: payment_form_state ----
+      var paymentFormState = "idle";
+      try {
+        if (!!window.razafiPaymentInProgress) {
+          paymentFormState = "in_progress";
+        } else {
+          var selectedCardForPayment = document.querySelector(".plan-card.selected");
+          if (selectedCardForPayment) {
+            var payConfirmEl = selectedCardForPayment.querySelector(".pay-confirm");
+            var payFormEl    = selectedCardForPayment.querySelector(".plan-payment");
+            var payConfirmVisible = payConfirmEl && payConfirmEl.offsetParent !== null &&
+              !payConfirmEl.classList.contains("hidden") &&
+              getComputedStyle(payConfirmEl).display !== "none";
+            var payFormVisible = payFormEl && payFormEl.offsetParent !== null &&
+              !payFormEl.classList.contains("hidden") &&
+              getComputedStyle(payFormEl).display !== "none";
+            if (payConfirmVisible)     paymentFormState = "confirmation_visible";
+            else if (payFormVisible)   paymentFormState = "form_visible";
+          }
+        }
+      } catch (_) {}
+
+      // ---- G.3B: main_next_action ----
+      var mainNextAction = "choose_plan";
+      try {
+        if (paymentFormState === "in_progress") {
+          mainNextAction = "wait_payment_confirmation";
+        } else if (paymentFormState === "confirmation_visible") {
+          mainNextAction = "confirm_payment";
+        } else if (paymentFormState === "form_visible") {
+          mainNextAction = "enter_mvola_number";
+        } else {
+          var st = String(status || "none");
+          if (st === "pending") {
+            // Check whether the use-code button is visible and enabled
+            var useCodeBtn = document.querySelector(".use-code-btn, [data-action='use-code'], #useCodeBtn");
+            mainNextAction = "use_code_button";
+          } else if (st === "active") {
+            mainNextAction = "continue_internet";
+          } else if (st === "used" || st === "expired") {
+            mainNextAction = hasUsableBonusSafe ? "reactivate_code" : "choose_new_plan";
+          } else {
+            mainNextAction = "choose_plan";
+          }
+        }
+      } catch (_) {}
+
+      // ---- G.3B: portal_status_label ----
+      var portalStatusLabel = "no_active_code";
+      try {
+        var stl = String(status || "none");
+        if      (stl === "none")                     portalStatusLabel = "no_active_code";
+        else if (stl === "pending")                  portalStatusLabel = "code_ready";
+        else if (stl === "active")                   portalStatusLabel = "connection_active";
+        else if (stl === "used" || stl === "expired") portalStatusLabel = "previous_consumption";
+        else                                          portalStatusLabel = "checking";
+      } catch (_) {}
+
       return {
         visible_plans:              visiblePlans,
         all_plans:                  allPlans,
@@ -4108,6 +4184,13 @@ function bindPlanHandlers() {
         display_name:               displayName,
         brand_name:                 brandName,
         pool_label:                 poolLabel,
+        // G.3B new safe context fields
+        selected_plan:              selectedPlan,
+        payment_form_state:         paymentFormState,
+        main_next_action:           mainNextAction,
+        portal_status_label:        portalStatusLabel,
+        page_context:               "portal",
+        ui_context_version:         "G.3B.1",
       };
     } catch (_) {
       // Fail-safe: always return a valid object so the assistant can proceed
@@ -4120,6 +4203,8 @@ function bindPlanHandlers() {
         active_clients: null, capacity_max: null, contact_phone: null,
         available_payment_methods: ["MVola"],
         pool_name: null, display_name: null, brand_name: null, pool_label: null,
+        selected_plan: null, payment_form_state: "idle", main_next_action: "choose_plan",
+        portal_status_label: "no_active_code", page_context: "portal", ui_context_version: "G.3B.1",
       };
     }
   };

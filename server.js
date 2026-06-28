@@ -783,6 +783,11 @@ function extractAssistantFollowUpSignals(message, context, thread) {
 
   // Topic hints
   if (/tiktok|facebook|youtube|instagram|streaming/.test(s)) signals.plan_use = s.match(/tiktok|facebook|youtube|instagram|streaming/)[0];
+  // G.3B: gaming signal — checked before generic streaming so "jouer" does not fall to video
+  if (/jeu.*en.*ligne|jeux.*en.*ligne|jouer.*en.*ligne|gaming|gamer|\bgame\b|online.*game|ping|latence|latency|\blag\b|\bfps\b|stabilit[ée]|stable|free fire|fortnite|pubg|roblox|minecraft|cod\b|lalao|milalao|jouer/.test(s)) {
+    signals.plan_use = "gaming";
+    signals.topic = "gaming";
+  }
   if (/1\s*h(eure)?|1jour|1\s*day/.test(s)) signals.plan_duration = "1h_or_1j";
   if (/7\s*j(our)?|semaine|hafanadiny/.test(s)) signals.plan_duration = "7j";
   if (/mois|month|volana/.test(s)) signals.plan_duration = "monthly";
@@ -981,7 +986,7 @@ const ASSISTANT_GOAL_SIGNALS = [
   ["portal_user", (s) => /tsy tonga.*code|code.*tsy tonga|tsy azoko.*code|code.*tsy azoko|pas.*reçu.*code|pas.*code|je n'ai pas.*code|pas de code|payment.*no.*code|no.*code|vola.*lasa|lasa.*vola/.test(s), "payment_no_code"],
   ["portal_user", (s) => /est-ce que.*code|code.*marche|code.*valide|code.*work|code.*valid|ahoana.*code|mody.*code/.test(s), "code_status"],
   ["portal_user", (s) => /payer|acheter|buy|purchase|prendre.*forfait|je veux.*forfait|hividiana/.test(s), "buy_plan"],
-  ["portal_user", (s) => /tiktok|facebook|youtube|instagram|streaming|quel forfait|forfait.*pour|combien.*data|data.*combien|milina.*forfait|safidy.*forfait|choisir|choose/.test(s), "choose_plan"],
+  ["portal_user", (s) => /tiktok|facebook|youtube|instagram|streaming|quel forfait|forfait.*pour|combien.*data|data.*combien|milina.*forfait|safidy.*forfait|choisir|choose|jeu.*en.*ligne|jeux.*en.*ligne|gaming|jouer.*en.*ligne|ping|latence|stabilit[ée]|free fire|fortnite|pubg|roblox|lalao|milalao/.test(s), "choose_plan"],
   ["portal_user", (s) => /connexion|connection|connecter|se connecter|wifi.*marche|wifi.*misy|wifi.*tsy misy|cant.*connect|cannot.*connect/.test(s), "connection_help"],
   ["portal_user", (s) => /lent|slow|coupure|déconnecté|disconnected|mauvais.*signal|signal.*faible|vitesse|speed/.test(s), "network_issue"],
   ["portal_user", (s) => /razafi.*comment|razafi.*c'est quoi|razafi.*inona|platform.*razafi|comment.*marche|how.*work/.test(s), "platform_interest"],
@@ -1711,6 +1716,39 @@ async function buildReturningUserPlanContext({ clientMac, poolId }) {
 
 const G21_TEST_PLAN_PATTERN = /test|bonus|admin|gratuit|free|maintenance|d[eé]mo|sample/i;
 
+// G.3B: Gate helper — only use returning memory when it genuinely helps the user.
+// Returns true only for plan-advice contexts; returns false for greetings,
+// payment complaints, code problems, connection issues, and generic help requests.
+function shouldUseReturningMemoryForTurn({ context, message, intentKey, diagnosticResult, liveData }) {
+  if (context !== "portal_user") return false;
+  if (!liveData?.returning_user_context?.has_history) return false;
+  if (diagnosticResult) return false; // Payment diagnostic wins — no returning memory overlay
+
+  const s = String(message || "").toLowerCase().trim();
+  const ik = String(intentKey || "").toLowerCase();
+
+  // Block: payment / code / connection problems — returning memory is not helpful here
+  const isPaymentOrCode =
+    /pay[eé]|payer|mvola|argent|vola|code.*march|code.*fonct|reçu|recu|reçu|pas reçu|pas de code|connexion.*probl|probl.*connex|lent|lente|ne marche|tsy miasa|tsy misy code|tsy mandray|internet.*lent|réseau.*lent/.test(s) ||
+    ik.includes("payment") || ik.includes("code_problem") || ik.includes("connection");
+
+  if (isPaymentOrCode) return false;
+
+  // Block: simple greetings and generic help — returning memory should stay silent
+  const isGreeting =
+    /^(bonjour|salut|hello|hi|hey|aide|help|mba|manahoana|manao ahoana|tongasoa|comment.*march|c'est quoi|qu'est-ce|what is|inona no|ça marche comment|comment ça fonctionne)\b/.test(s) ||
+    (s.length < 20 && !/forfait|plan|choisir|conseil|recommand|safidy|milina/.test(s));
+
+  if (isGreeting) return false;
+
+  // Allow: explicit plan-choice / advice / recommendation signals
+  const isPlanAdvice =
+    /forfait|plan|choisir|conseil|recommand|quel.*utiliser|que.*choisir|safidy|milina|anjara|fomba|quel.*prendre|what.*plan|which.*plan|suggest/.test(s) ||
+    ik.includes("plan_advice") || ik.includes("choose_plan") || ik.includes("plan_list");
+
+  return isPlanAdvice;
+}
+
 function buildReturningUserIntro({ lang, returningUserContext: ruc }) {
   try {
     if (!ruc || !ruc.has_history || !ruc.last_used_plan_name) return "";
@@ -1727,43 +1765,44 @@ function buildReturningUserIntro({ lang, returningUserContext: ruc }) {
       return fr;
     }
 
-    const greeting = t("Bon retour 👋", "Tongasoa indray 👋", "Welcome back 👋");
+    // G.3B: No automatic "Bon retour" greeting. Return only contextual plan info.
+    // The calling code (handleAssistantChat) now gates this via shouldUseReturningMemoryForTurn.
 
     let body = "";
 
     if (isTestPlan) {
-      // Test-like plan: acknowledge but do not recommend it as main option
+      // Test-like plan: acknowledge quietly, suggest better option
       const testMention = t(
-        `La dernière fois, vous avez utilisé ${planName}, surtout utile pour un test rapide.`,
-        `Tamin\'ny farany, nampiasa ${planName} ianao, mahasoa indrindra amin\'ny fitsapana haingana.`,
-        `Last time, you used ${planName}, mainly useful for a quick test.`
+        `Votre dernier forfait était ${planName}, surtout utile pour un test rapide.`,
+        `Ny anjara farany nampiasainao dia ${planName}, natao ho an\'ny fitsapana haingana.`,
+        `Your last plan was ${planName}, mainly useful for a quick test.`
       );
       const guidance = suggested
         ? t(
-            `Pour un usage normal aujourd\'hui, je vous conseille plutôt ${suggested}.`,
-            `Ho an\'ny fampiasana mahazatra anio, manoro hevitra ${suggested} aho.`,
-            `For regular use today, I recommend ${suggested} instead.`
+            `Pour aujourd\'hui, je vous conseille plutôt ${suggested}.`,
+            `Ho an\'ny androany, aleo ${suggested} no safidio.`,
+            `For today, I recommend ${suggested} instead.`
           )
         : t(
-            "Pour un usage normal aujourd\'hui, consultez les forfaits disponibles ci-dessous.",
-            "Ho an\'ny fampiasana mahazatra anio, jereo ny forfait misy eto.",
-            "For regular use today, check the available plans below."
+            "Pour aujourd\'hui, consultez les forfaits disponibles ci-dessous.",
+            "Ho an\'ny androany, jereo ny forfait misy eto.",
+            "For today, check the available plans below."
           );
       body = testMention + " " + guidance;
 
     } else if (stillAvail) {
-      // Normal plan still available
+      // Normal plan still available — mention naturally without greeting
       if (suggested) {
         body = t(
-          `La dernière fois, vous avez utilisé ${planName}. Vous pouvez reprendre ce forfait, ou essayer ${suggested} si vous voulez rester plus longtemps.`,
-          `Tamin\'ny farany, nampiasa ${planName} ianao. Azonao averina io forfait io, na jerena ${suggested} raha te-hijanona lavabe kokoa.`,
-          `Last time, you used ${planName}. You can use the same plan again, or try ${suggested} if you want to stay longer.`
+          `Votre dernier forfait était ${planName}. Vous pouvez le reprendre, ou essayer ${suggested} si vous voulez rester plus longtemps.`,
+          `Ny anjara farany nampiasainao dia ${planName}. Azonao averina io, na jerena ${suggested} raha te-hijanona lavabe kokoa.`,
+          `Your last plan was ${planName}. You can use it again, or try ${suggested} if you want to stay longer.`
         );
       } else {
         body = t(
-          `La dernière fois, vous avez utilisé ${planName}. Vous pouvez reprendre ce forfait aujourd\'hui.`,
-          `Tamin\'ny farany, nampiasa ${planName} ianao. Azonao averina io forfait io anio.`,
-          `Last time, you used ${planName}. You can use the same plan again today.`
+          `Votre dernier forfait était ${planName}. Vous pouvez le reprendre aujourd\'hui.`,
+          `Ny anjara farany nampiasainao dia ${planName}. Azonao averina io anio.`,
+          `Your last plan was ${planName}. You can use it again today.`
         );
       }
 
@@ -1771,17 +1810,14 @@ function buildReturningUserIntro({ lang, returningUserContext: ruc }) {
       // Plan no longer available
       if (!suggested) return ""; // nothing safe to say — let AI handle normally
       body = t(
-        `La dernière fois, vous avez utilisé ${planName}, qui n\'est plus disponible. Le forfait le plus proche disponible est ${suggested}.`,
-        `Tamin\'ny farany, nampiasa ${planName} ianao, tsy misy intsony anio. Ny forfait akaiky indrindra amin\'izao dia ${suggested}.`,
-        `Last time, you used ${planName}, which is no longer available. The closest available plan is ${suggested}.`
+        `Votre dernier forfait (${planName}) n\'est plus disponible. Le forfait le plus proche disponible est ${suggested}.`,
+        `Ny anjara farany nampiasainao (${planName}) tsy misy intsony. Ny akaiky indrindra ankehitriny dia ${suggested}.`,
+        `Your last plan (${planName}) is no longer available. The closest available plan is ${suggested}.`
       );
     }
 
     if (!body) return "";
-
-    const full = greeting + " " + body;
-    // Cap at 300 characters to keep intro concise
-    return full.slice(0, 300);
+    return body.slice(0, 300);
   } catch {
     return "";
   }
@@ -1794,6 +1830,39 @@ function buildReturningUserIntro({ lang, returningUserContext: ruc }) {
 // =============================================================================
 // RAZAFI ASSISTANT — PATCH G.2.2: Concise Returning Plan Answer
 // =============================================================================
+
+// G.3B correction: detect gaming turns so returning memory never overrides gaming advice.
+// Mirrors the keyword set used in the dynamic intent routing chain.
+// Pure, synchronous, never throws.
+function isGamingPlanAdviceTurn(message, intentKey) {
+  const s  = String(message   || "").toLowerCase();
+  const ik = String(intentKey || "").toLowerCase();
+
+  return (
+    ik === "portal_plan_advice_gaming" ||
+    s.includes("jeu en ligne")   ||
+    s.includes("jeux en ligne")  ||
+    s.includes("jouer en ligne") ||
+    s.includes("gaming")         ||
+    s.includes("gamer")          ||
+    s.includes("online game")    ||
+    s.includes("ping")           ||
+    s.includes("latence")        ||
+    s.includes("latency")        ||
+    s.includes("lag")            ||
+    s.includes("fps")            ||
+    s.includes("stabilité")      ||
+    s.includes("stabilite")      ||
+    s.includes("free fire")      ||
+    s.includes("fortnite")       ||
+    s.includes("pubg")           ||
+    s.includes("roblox")         ||
+    s.includes("minecraft")      ||
+    s.includes("lalao")          ||
+    s.includes("milalao")        ||
+    (s.includes("jouer") && !s.includes("regarder"))
+  );
+}
 
 // Detect whether this turn is a returning user asking for plan advice.
 // Used to decide whether to produce a concise deterministic answer (no AI body).
@@ -1830,6 +1899,8 @@ function isReturningPlanAdviceTurn({ context, message, intentKey }) {
 // Build a short, self-contained returning plan-advice answer.
 // Used when the gate fires: replaces the AI body entirely so the answer stays concise.
 // Pure, synchronous, no DB call, no logging. Returns "" if not applicable.
+// G.3B: "Bon retour 👋" removed — returning info is now presented as natural context,
+//       not a robotic salutation. The plan history is mentioned matter-of-factly.
 function buildReturningUserConcisePlanAnswer({ lang, returningUserContext: ruc }) {
   try {
     if (!ruc || !ruc.has_history || !ruc.last_used_plan_name) return "";
@@ -1849,39 +1920,39 @@ function buildReturningUserConcisePlanAnswer({ lang, returningUserContext: ruc }
     if (isTestPlan) {
       if (suggested) {
         return t(
-          `Bon retour 👋 La dernière fois, vous avez utilisé ${planName}, surtout utile pour un test rapide. Pour aujourd\'hui, je vous conseille plutôt ${suggested} : plus confortable pour naviguer, réseaux sociaux et vidéos légères. Vous pouvez le choisir dans la liste des forfaits.`,
-          `Tongasoa indray 👋 Tamin\'ny farany ianao nampiasa forfait ${planName}, mety amin\'ny test rapide. Raha usage normal androany, aleo ${suggested} : mahazo aina kokoa amin\'ny navigation, réseaux sociaux ary vidéo légère. Safidio ao amin\'ny liste des forfaits.`,
-          `Welcome back 👋 Last time, you used ${planName}, mainly useful for a quick test. For normal use today, I recommend ${suggested}: more comfortable for browsing, social media, and light videos. You can choose it from the plan list.`
+          `Pour aujourd\'hui, je vous conseille ${suggested} — plus confortable pour naviguer, réseaux sociaux et vidéos légères. Votre dernier forfait (${planName}) était surtout utile pour un test rapide.`,
+          `Aleo ${suggested} ho an\'ny androany — mahazo aina kokoa amin\'ny navigation, réseaux sociaux ary vidéo légère. Ilay anjara farany nampiasainao (${planName}) dia natao ho an\'ny fitsapana haingana kokoa.`,
+          `For today, I recommend ${suggested} — more comfortable for browsing, social media, and light videos. Your last plan (${planName}) was mainly useful for a quick test.`
         );
       }
       return t(
-        `Bon retour 👋 La dernière fois, vous avez utilisé ${planName}, surtout utile pour un test rapide. Pour un usage normal aujourd\'hui, choisissez plutôt un forfait plus long dans la liste.`,
-        `Tongasoa indray 👋 Tamin\'ny farany ianao nampiasa forfait ${planName}, mety amin\'ny test rapide. Raha usage normal androany, aleo maka forfait lava kokoa ao amin\'ny liste des forfaits.`,
-        `Welcome back 👋 Last time, you used ${planName}, mainly useful for a quick test. For normal use today, choose a longer plan from the list.`
+        `Votre dernier forfait était ${planName}, surtout utile pour un test rapide. Pour un usage normal aujourd\'hui, choisissez plutôt un forfait plus long dans la liste.`,
+        `Ny anjara farany nampiasainao dia ${planName}, natao ho an\'ny fitsapana haingana. Ho an\'ny fampiasana mahazatra androany, mifidiana anjara maharitra kokoa ao amin\'ny liste.`,
+        `Your last plan was ${planName}, mainly useful for a quick test. For normal use today, choose a longer plan from the list.`
       );
     }
 
     if (stillAvail && suggested) {
       return t(
-        `Bon retour 👋 La dernière fois, vous avez utilisé ${planName}. Vous pouvez le reprendre, ou choisir ${suggested} si vous voulez rester plus longtemps.`,
-        `Tongasoa indray 👋 Tamin\'ny farany ianao nampiasa forfait ${planName}. Afaka maka io indray ianao, na misafidy ${suggested} raha te hijanona ela kokoa.`,
-        `Welcome back 👋 Last time, you used ${planName}. You can use it again, or choose ${suggested} if you want to stay longer.`
+        `Votre dernier forfait était ${planName}. Vous pouvez le reprendre, ou choisir ${suggested} si vous voulez rester plus longtemps.`,
+        `Ny anjara farany nampiasainao dia ${planName}. Azonao averina io, na misafidy ${suggested} raha te-hijanona ela kokoa.`,
+        `Your last plan was ${planName}. You can use it again, or choose ${suggested} if you want to stay longer.`
       );
     }
 
     if (stillAvail) {
       return t(
-        `Bon retour 👋 La dernière fois, vous avez utilisé ${planName}. Vous pouvez reprendre ce forfait aujourd\'hui.`,
-        `Tongasoa indray 👋 Tamin\'ny farany ianao nampiasa forfait ${planName}. Afaka maka io forfait io indray androany.`,
-        `Welcome back 👋 Last time, you used ${planName}. You can use the same plan again today.`
+        `Votre dernier forfait était ${planName}. Vous pouvez reprendre ce forfait aujourd\'hui.`,
+        `Ny anjara farany nampiasainao dia ${planName}. Azonao averina io anjara io androany.`,
+        `Your last plan was ${planName}. You can use the same plan again today.`
       );
     }
 
     if (suggested) {
       return t(
-        `Bon retour 👋 La dernière fois, vous avez utilisé ${planName}, mais il n\'est plus disponible. Le forfait le plus proche aujourd\'hui est ${suggested}.`,
-        `Tongasoa indray 👋 Tamin\'ny farany ianao nampiasa forfait ${planName}, fa tsy disponible intsony izy. Ny forfait akaiky indrindra androany dia ${suggested}.`,
-        `Welcome back 👋 Last time, you used ${planName}, but it is no longer available. The closest plan today is ${suggested}.`
+        `Votre dernier forfait (${planName}) n\'est plus disponible. Le forfait le plus proche aujourd\'hui est ${suggested}.`,
+        `Ny anjara farany nampiasainao (${planName}) tsy misy intsony. Ny akaiky indrindra ankehitriny dia ${suggested}.`,
+        `Your last plan (${planName}) is no longer available. The closest plan today is ${suggested}.`
       );
     }
 
@@ -2370,6 +2441,13 @@ const ASSISTANT_ALLOWED_LIVE_KEYS = {
     // G.2 NOTE: "returning_user_context" is intentionally NOT in this allowlist.
     // It is injected server-side in handleAssistantChat() AFTER sanitizeAssistantLiveData()
     // has already run, so the browser cannot fake it by sending live_data.returning_user_context.
+    // G.3B: new safe portal context fields
+    "selected_plan",         // safe object: name, price_ar, duration_minutes, unlimited, data_mb, speed_label — no IDs
+    "payment_form_state",    // "idle" | "form_visible" | "confirmation_visible" | "in_progress"
+    "main_next_action",      // safe next-action string
+    "portal_status_label",   // safe human label for portal status
+    "page_context",          // "portal" (static string)
+    "ui_context_version",    // "G.3B.1" (static version string)
   ]),
   admin_owner: new Set([
     "plans", "revenue", "clients", "pools", "pool_percent",
@@ -2397,7 +2475,15 @@ const ASSISTANT_ALLOWED_LIVE_KEYS = {
     "accessible_pool_names",       // string[] — display names of accessible pools (no IDs)
     "owner_single_pool_name",      // string — set only when accessible_pool_count === 1
   ]),
-  platform_prospect: new Set(), // live_data ignored for prospects
+  platform_prospect: new Set([
+    // G.3B: tiny safe page context — no PII, no tracking, no visitor identifiers
+    "page_context",       // "razafi_public_home" (static string)
+    "site_language",      // "fr" (static string)
+    "visible_sections",   // string[] — static list of visible page sections
+    "main_cta",           // "whatsapp_or_demo" (static string)
+    "product_context",    // short static product description string
+    "context_version",    // "G.3B.1" (static version string)
+  ]),
 };
 
 // Allowed button types in KB responses.
@@ -2530,6 +2616,114 @@ function sanitizeAssistantLiveData(liveData, context) {
     if (!allowed.has(key)) continue;
     safe[key] = v;
   }
+
+  // G.3B: deep sanitization for selected_plan — strip any internal IDs that may have
+  // slipped in, clamp types and lengths. Only the display fields listed in the spec pass.
+  if (safe.selected_plan !== null && safe.selected_plan !== undefined) {
+    if (typeof safe.selected_plan !== "object" || Array.isArray(safe.selected_plan)) {
+      safe.selected_plan = null;
+    } else {
+      const sp = safe.selected_plan;
+      // Forbidden field guard — if any internal key is present, drop the whole object.
+      const FORBIDDEN_SP_KEYS = new Set([
+        "id", "plan_id", "pool_id", "nas_id", "mac", "phone",
+        "voucher", "requestRef", "transaction_ref", "router_ip",
+        "mikrotik_rate_limit", "radius_attr",
+      ]);
+      let spClean = null;
+      if (!Object.keys(sp).some(k2 => FORBIDDEN_SP_KEYS.has(String(k2 || "").toLowerCase()))) {
+        spClean = {
+          name:             (typeof sp.name === "string" ? sp.name.slice(0, 120) : null) || null,
+          price_ar:         (Number.isFinite(Number(sp.price_ar)) && Number(sp.price_ar) >= 0) ? Number(sp.price_ar) : 0,
+          duration_minutes: (Number.isFinite(Number(sp.duration_minutes)) && Number(sp.duration_minutes) >= 0) ? Number(sp.duration_minutes) : 0,
+          unlimited:        !!sp.unlimited,
+          data_mb:          (sp.data_mb !== null && sp.data_mb !== undefined && Number.isFinite(Number(sp.data_mb)) && Number(sp.data_mb) >= 0)
+                              ? Number(sp.data_mb) : null,
+          speed_label:      (typeof sp.speed_label === "string" ? sp.speed_label.slice(0, 40) : null) || null,
+        };
+      }
+      safe.selected_plan = spClean;
+    }
+  }
+
+  // G.3B: allowlist-only sanitization for string enum fields
+  const ALLOWED_PAYMENT_FORM_STATES = new Set(["idle", "form_visible", "confirmation_visible", "in_progress"]);
+  if ("payment_form_state" in safe) {
+    safe.payment_form_state = ALLOWED_PAYMENT_FORM_STATES.has(String(safe.payment_form_state || ""))
+      ? String(safe.payment_form_state) : "idle";
+  }
+
+  const ALLOWED_NEXT_ACTIONS = new Set([
+    "choose_plan", "enter_mvola_number", "confirm_payment", "wait_payment_confirmation",
+    "use_code_button", "reactivate_code", "continue_internet", "choose_new_plan",
+    "contact_support_if_needed",
+  ]);
+  if ("main_next_action" in safe) {
+    safe.main_next_action = ALLOWED_NEXT_ACTIONS.has(String(safe.main_next_action || ""))
+      ? String(safe.main_next_action) : "choose_plan";
+  }
+
+  const ALLOWED_STATUS_LABELS = new Set(["no_active_code", "code_ready", "connection_active", "previous_consumption", "checking"]);
+  if ("portal_status_label" in safe) {
+    safe.portal_status_label = ALLOWED_STATUS_LABELS.has(String(safe.portal_status_label || ""))
+      ? String(safe.portal_status_label) : "no_active_code";
+  }
+
+  if ("page_context" in safe) {
+    // portal_user: must be "portal"; platform_prospect: must be "razafi_public_home"
+    const allowedPageCtx = context === "portal_user"
+      ? new Set(["portal"])
+      : context === "platform_prospect"
+        ? new Set(["razafi_public_home"])
+        : new Set();
+    safe.page_context = allowedPageCtx.has(String(safe.page_context || "")) ? String(safe.page_context) : null;
+    if (safe.page_context === null) delete safe.page_context;
+  }
+
+  if ("ui_context_version" in safe) {
+    // Allow only known version strings
+    safe.ui_context_version = /^G\.\d+[A-Z]?\.\d+$/.test(String(safe.ui_context_version || ""))
+      ? String(safe.ui_context_version).slice(0, 20) : null;
+    if (safe.ui_context_version === null) delete safe.ui_context_version;
+  }
+
+  // G.3B: platform_prospect field sanitization
+  if ("site_language" in safe) {
+    const allowedLangs = new Set(["fr", "mg", "en"]);
+    safe.site_language = allowedLangs.has(String(safe.site_language || "")) ? String(safe.site_language) : "fr";
+  }
+
+  if ("visible_sections" in safe) {
+    const ALLOWED_SECTIONS = new Set(["hero", "how_it_works", "owner_value", "demo", "faq", "contact", "pricing", "compatibility"]);
+    if (Array.isArray(safe.visible_sections)) {
+      safe.visible_sections = safe.visible_sections
+        .map(s => String(s || "").trim().slice(0, 40))
+        .filter(s => ALLOWED_SECTIONS.has(s))
+        .slice(0, 10);
+    } else {
+      delete safe.visible_sections;
+    }
+  }
+
+  if ("main_cta" in safe) {
+    const allowedCtas = new Set(["whatsapp_or_demo", "contact", "demo", "whatsapp"]);
+    safe.main_cta = allowedCtas.has(String(safe.main_cta || "")) ? String(safe.main_cta) : null;
+    if (safe.main_cta === null) delete safe.main_cta;
+  }
+
+  if ("product_context" in safe) {
+    safe.product_context = (typeof safe.product_context === "string")
+      ? safe.product_context.slice(0, 300)
+      : null;
+    if (!safe.product_context) delete safe.product_context;
+  }
+
+  if ("context_version" in safe) {
+    safe.context_version = /^G\.\d+[A-Z]?\.\d+$/.test(String(safe.context_version || ""))
+      ? String(safe.context_version).slice(0, 20) : null;
+    if (safe.context_version === null) delete safe.context_version;
+  }
+
   return safe;
 }
 
@@ -2699,7 +2893,22 @@ function detectDynamicIntentFromMessage(msg, context) {
       (s.includes("live") && s.includes("regarder"))
     ) return "portal_plan_advice_live_match";
 
-    // Video streaming (TikTok, YouTube, séries — but not "live match" already caught above)
+    // G.3B: Online gaming — checked before video (stability/ping is different from streaming)
+    if (
+      s.includes("jeu en ligne") || s.includes("jeux en ligne") ||
+      s.includes("jouer en ligne") || s.includes("gaming") ||
+      s.includes("gamer") || (s.includes("game") && !s.includes("game show")) ||
+      s.includes("online game") || s.includes("ping") ||
+      s.includes("latence") || s.includes("latency") ||
+      s.includes("lag") || s.includes("fps") ||
+      s.includes("stabilité") || s.includes("stabilite") ||
+      (s.includes("stable") && (s.includes("forfait") || s.includes("réseau") || s.includes("connexion") || s.includes("jouer"))) ||
+      s.includes("free fire") || s.includes("fortnite") ||
+      s.includes("pubg") || s.includes("roblox") ||
+      s.includes("minecraft") || s.includes("lalao") ||
+      s.includes("milalao") ||
+      (s.includes("jouer") && !s.includes("regarder"))
+    ) return "portal_plan_advice_gaming";
     if (
       s.includes("tiktok") || s.includes("youtube") || s.includes("vidéo") ||
       s.includes("video") || s.includes("série") || s.includes("film") ||
@@ -3516,6 +3725,29 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData, message) {
       return pool.reduce((b, p) => Number(p.price_ar) < Number(b.price_ar) ? p : b);
     }
 
+    if (criteria === "stable_gaming") {
+      // G.3B gaming: stability > volume. Prefer ≥60 min paid plans.
+      // Unlimited preferred for longer sessions. Avoid very-short/test plans when alternatives exist.
+      // Within eligible plans, prefer affordable stable options (not necessarily highest data).
+      const usable = excludeShortTestIfPossible(pool, 60);
+      const stable60 = usable.filter(p => Number(p.duration_minutes) >= 60);
+      if (!stable60.length) {
+        // No plan >= 60 min available — use any paid plan and note limitation
+        return usable.length ? usable[0] : pool[0];
+      }
+      // Prefer unlimited ≥60 min first
+      const unlimitedStable = stable60.filter(p => p.unlimited || p.ui_role === "unlimited");
+      if (unlimitedStable.length) {
+        return unlimitedStable.reduce((b, p) => Number(p.price_ar) < Number(b.price_ar) ? p : b);
+      }
+      // Then highest data ≥ 60 min, prefer more data (stability/headroom for gaming)
+      const dataStable = stable60.filter(p => p.data_mb !== null && p.data_mb !== undefined);
+      if (dataStable.length) {
+        return dataStable.reduce((best, p) => Number(p.data_mb) > Number(best.data_mb) ? p : best);
+      }
+      return stable60[0];
+    }
+
     return pool[0]; // default: first in sorted order
   }
 
@@ -3638,6 +3870,58 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData, message) {
       `Pour regarder un match ou une vidéo en direct, choisissez plutôt un forfait illimité ou avec beaucoup de data. Ici, je vous conseille : ${line}.${networkWarning()}`,
       `Raha hijery baolina na video mivantana, safidio ny anjara tsy voafetra na misy data betsaka. Eto, toroheviko : ${line}.${networkWarning()}`,
       `For watching a match or live video, prefer an unlimited or high-data plan. Here, I recommend: ${line}.${networkWarning()}`
+    );
+  }
+
+  // G.3B: Gaming / jeu en ligne — stability and ping matter more than just data volume
+  if (intent_key === "portal_plan_advice_gaming") {
+    // Check if user is asking about a currently selected plan
+    const msgLow = String(message || "").toLowerCase();
+    const isAboutSelectedPlan =
+      (msgLow.includes("ce forfait") || msgLow.includes("ce plan") ||
+       msgLow.includes("celui-ci") || msgLow.includes("celui là") ||
+       msgLow.includes("ity") || msgLow.includes("this plan") || msgLow.includes("this one")) &&
+      ld.selected_plan && ld.selected_plan.name;
+
+    if (isAboutSelectedPlan) {
+      const sp = ld.selected_plan;
+      const spLine = formatPlanLine(sp);
+      const spDuration = Number(sp.duration_minutes || 0);
+      const spIsShortTest = spDuration > 0 && spDuration <= 60 && !sp.unlimited;
+      if (spIsShortTest) {
+        return t(
+          `${spLine} peut convenir pour tester rapidement, mais pour jouer en ligne longtemps, la stabilité et le ping sont plus importants que la data. Un forfait plus long serait plus confortable pour une vraie session de jeu.${networkWarning()}`,
+          `${spLine} dia azo ampiasaina amin'ny fitsapana haingana, fa ho an'ny lalao en ligne maharitra, ny stabilité sy ny ping no lehibe indrindra, fa tsy ny data fotsiny. Ny anjara maharitra kokoa no mahazo aina kokoa amin'ny session lalao.${networkWarning()}`,
+          `${spLine} is fine for a quick test, but for extended online gaming, stability and ping matter more than data. A longer plan would be more comfortable for a real gaming session.${networkWarning()}`
+        );
+      } else {
+        return t(
+          `${spLine} est un choix correct pour jouer en ligne. N'oubliez pas que le ping dépend aussi de la qualité du signal et de la charge du réseau, pas seulement du forfait.${networkWarning()}`,
+          `${spLine} dia safiidy tsara amin'ny lalao en ligne. Tsarovy fa ny ping dia miankina amin'ny kalitaon'ny signal sy ny enta-mavesatra ny réseau koa, fa tsy ny forfait ihany.${networkWarning()}`,
+          `${spLine} is a reasonable choice for online gaming. Keep in mind that ping also depends on signal quality and network load, not just the plan.${networkWarning()}`
+        );
+      }
+    }
+
+    // General gaming recommendation from visible/all plans
+    const rp = getRecommendationPlans(message);
+    if (!rp) return null;
+    const best = findBestPlan(rp, "stable_gaming");
+    if (!best) return null;
+    const line = formatPlanLine(best);
+    const bestDuration = Number(best.duration_minutes || 0);
+    const isOnlyShortAvailable = bestDuration > 0 && bestDuration <= 60 && !best.unlimited;
+    const shortNote = isOnlyShortAvailable
+      ? t(
+          " C'est le seul forfait disponible ici — pour une session longue, c'est limité.",
+          " Ity ihany ny anjara misy eto — voafetra ny fotoana raha hilalao ela.",
+          " This is the only plan available here — it's limited for a long gaming session."
+        )
+      : "";
+    return t(
+      `Pour jouer en ligne, la stabilité et le ping comptent plus que la data seule. Évitez les forfaits test si vous jouez longtemps. Je vous conseille : ${line}.${shortNote} Si le réseau est très chargé, il peut y avoir du lag indépendamment du forfait.${networkWarning()}`,
+      `Ho an'ny lalao en ligne, ny stabilité sy ny ping no zava-dehibe kokoa noho ny data fotsiny. Aza misafidy forfait test raha hilalao ela. Toroheviko : ${line}.${shortNote} Raha be enta ny réseau, mety hisy lag ihany na amin'ny forfait tsara.${networkWarning()}`,
+      `For online gaming, stability and ping matter more than just data. Avoid test plans if you plan to play for long. I recommend: ${line}.${shortNote} If the network is busy, you may still experience lag regardless of your plan.${networkWarning()}`
     );
   }
 
@@ -5262,6 +5546,7 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
     // Phase 3: portal plan advisor
     "portal_plan_advice_general", "portal_plan_advice_social",
     "portal_plan_advice_video", "portal_plan_advice_live_match",
+    "portal_plan_advice_gaming",  // G.3B: online gaming intent
     "portal_plan_advice_work", "portal_plan_advice_download",
     "portal_plan_advice_cheap", "portal_plan_advice_day",
     "portal_plan_advice_browsing",
@@ -5732,11 +6017,13 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   // END PATCH B+C+D+E
   // ---------------------------------------------------------------------------
 
-  // ── Patch G.2.1 / G.2.2: deterministic returning-user answer ───────────────
+  // ── Patch G.2.1 / G.2.2 (G.3B): deterministic returning-user answer ─────────
   // Gate: portal_user + first turn + has_history + not payment complaint.
+  // G.3B change: shouldUseReturningMemoryForTurn() now decides whether returning
+  //   history should be surfaced. Generic greetings and non-plan turns are silent.
   // G.2.2: if the turn is a plan-advice question, replace finalAnswer entirely
   //        with a short concise answer (no AI body).
-  // G.2.1: otherwise prepend the intro to the existing finalAnswer.
+  // G.2.1: prepend contextual plan info (no automatic "Bon retour") when allowed.
   // The server owns this text — the AI does not generate it.
   // Errors are caught; original finalAnswer is always preserved.
   try {
@@ -5745,25 +6032,42 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
       liveData?.returning_user_context?.has_history === true &&
       !messageIsPaymentComplaint &&
       thread?.pending_issue_type !== "payment_no_code" &&
-      (thread?.turns?.length || 0) === 0
-    ) {
-      // G.2.2: concise path — replaces AI body for plan-advice turns
-      const conciseReturningAnswer = isReturningPlanAdviceTurn({
+      (thread?.turns?.length || 0) === 0 &&
+      // G.3B: only use returning memory when it genuinely helps this turn
+      shouldUseReturningMemoryForTurn({
         context,
         message,
         intentKey: intent?.intent_key || null,
+        diagnosticResult,
+        liveData,
       })
-        ? buildReturningUserConcisePlanAnswer({
-            lang,
-            returningUserContext: liveData.returning_user_context,
-          })
-        : "";
+    ) {
+      // G.2.2: concise path — replaces AI body for plan-advice turns.
+      // G.3B correction: gaming turns must NEVER be overridden by the generic
+      // returning-plan answer ("réseaux sociaux et vidéos légères" is wrong for gaming).
+      // resolvedIntent is already computed above in handleAssistantChat.
+      const isGamingTurn = isGamingPlanAdviceTurn(
+        message,
+        resolvedIntent || intent?.intent_key || null
+      );
+
+      const conciseReturningAnswer =
+        !isGamingTurn && isReturningPlanAdviceTurn({
+          context,
+          message,
+          intentKey: intent?.intent_key || null,
+        })
+          ? buildReturningUserConcisePlanAnswer({
+              lang,
+              returningUserContext: liveData.returning_user_context,
+            })
+          : "";
 
       if (conciseReturningAnswer) {
         // Full replacement: concise deterministic answer, no AI body appended
         finalAnswer = conciseReturningAnswer;
       } else {
-        // G.2.1: non-plan-advice first turn — prepend intro to AI body
+        // G.2.1: plan-advice first turn — prepend contextual plan info (no greeting)
         const intro = buildReturningUserIntro({
           lang,
           returningUserContext: liveData.returning_user_context,
