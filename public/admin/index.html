@@ -390,6 +390,12 @@
       const card = document.getElementById("sinceLastVisitCard");
       if (!card) return;
 
+      // Reset any collapse state from a previous render
+      card.style.maxHeight  = "";
+      card.style.opacity    = "";
+      card.style.overflow   = "";
+      card.style.transition = "";
+
       if (!data || !data.ok) {
         card.style.display = "none";
         return;
@@ -401,62 +407,73 @@
       const sales     = Number(data.new_sales_ar)        || 0;
       const share     = Number(data.owner_share_ar)      || 0;
 
-      const clientWord = clients > 1 ? "nouveaux clients connectés" : "nouveau client connecté";
+      if (hasNew) {
+        // ── HAS NEW DATA: compact card with inline chips + small "Vu" button ──
+        const clientChip = clients > 0
+          ? `<span class="rz-since-chip rz-since-chip-blue">+${esc(String(clients))} client${clients > 1 ? "s" : ""}</span>`
+          : "";
+        const salesChip = sales > 0
+          ? `<span class="rz-since-chip rz-since-chip-green">+${esc(fmtAr(sales))} ventes</span>`
+          : "";
+        const shareChip = share > 0
+          ? `<span class="rz-since-chip rz-since-chip-green">+${esc(fmtAr(share))} estimé</span>`
+          : "";
 
-      card.innerHTML = `
-        <div class="rz-since-card">
-          <div class="rz-since-header">
-            <span class="rz-since-title">Depuis votre dernière visite</span>
+        card.innerHTML = `
+          <div class="rz-since-card rz-since-has-new">
+            <div class="rz-since-top">
+              <span class="rz-since-title">Depuis votre dernière visite</span>
+              ${timeLabel ? `<span class="rz-since-time">${esc(timeLabel)}</span>` : ""}
+            </div>
+            <div class="rz-since-chips-row">
+              ${clientChip}${salesChip}${shareChip}
+              <button type="button" class="rz-since-btn" id="sinceMarkSeenBtn">Vu</button>
+            </div>
+          </div>
+        `;
+
+        card.style.display = "";
+
+        document.getElementById("sinceMarkSeenBtn")?.addEventListener("click", async () => {
+          const btn = document.getElementById("sinceMarkSeenBtn");
+          if (btn) { btn.disabled = true; btn.textContent = "…"; }
+          try {
+            await fetchJSON("/api/admin/dashboard-since-last-visit/mark-seen", { method: "POST" });
+            // Collapse then hide — no dashboard reload, no scroll jump
+            card.style.overflow   = "hidden";
+            card.style.maxHeight  = card.scrollHeight + "px";
+            card.style.opacity    = "1";
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                card.style.transition = "max-height 0.32s ease, opacity 0.22s ease";
+                card.style.maxHeight  = "0px";
+                card.style.opacity    = "0";
+              });
+            });
+            card.addEventListener("transitionend", () => {
+              card.style.display = "none";
+              // Reset inline styles so a future re-render starts clean
+              card.style.maxHeight  = "";
+              card.style.opacity    = "";
+              card.style.overflow   = "";
+              card.style.transition = "";
+            }, { once: true });
+          } catch (_) {
+            if (btn) { btn.disabled = false; btn.textContent = "Vu"; }
+          }
+        });
+
+      } else {
+        // ── EMPTY STATE: single compact pill, no button, no divider ──
+        card.innerHTML = `
+          <div class="rz-since-pill">
+            <span class="rz-since-pill-check">✓</span>
+            <span class="rz-since-pill-text">Aucune nouvelle activité</span>
             ${timeLabel ? `<span class="rz-since-time">${esc(timeLabel)}</span>` : ""}
           </div>
-
-          ${hasNew ? `
-            <div class="rz-since-rows">
-              ${clients > 0 ? `
-                <div class="rz-since-row">
-                  <span class="rz-since-icon">👤</span>
-                  <span class="rz-since-label">${esc(clientWord)}</span>
-                  <span class="rz-since-chip rz-since-chip-blue">+${esc(String(clients))}</span>
-                </div>
-              ` : ""}
-              ${sales > 0 ? `
-                <div class="rz-since-row">
-                  <span class="rz-since-icon">💳</span>
-                  <span class="rz-since-label">Ventes confirmées</span>
-                  <span class="rz-since-chip rz-since-chip-green">+${esc(fmtAr(sales))}</span>
-                </div>
-              ` : ""}
-              ${share > 0 ? `
-                <div class="rz-since-row">
-                  <span class="rz-since-icon">📊</span>
-                  <span class="rz-since-label">Part propriétaire estimée</span>
-                  <span class="rz-since-chip rz-since-chip-green">+${esc(fmtAr(share))}</span>
-                </div>
-              ` : ""}
-            </div>
-          ` : `
-            <div class="rz-since-empty">Aucune nouvelle activité depuis votre dernière visite.</div>
-          `}
-
-          <div class="rz-since-footer">
-            <button type="button" class="rz-since-btn" id="sinceMarkSeenBtn">Marquer comme vu</button>
-          </div>
-        </div>
-      `;
-
-      card.style.display = "";
-
-      document.getElementById("sinceMarkSeenBtn")?.addEventListener("click", async () => {
-        const btn = document.getElementById("sinceMarkSeenBtn");
-        if (btn) { btn.disabled = true; btn.textContent = "…"; }
-        try {
-          await fetchJSON("/api/admin/dashboard-since-last-visit/mark-seen", { method: "POST" });
-          // Reload card after marking seen — will show empty state
-          await loadSinceLastVisitCard();
-        } catch (_) {
-          if (btn) { btn.disabled = false; btn.textContent = "Marquer comme vu"; }
-        }
-      });
+        `;
+        card.style.display = "";
+      }
     }
 
     async function loadSinceLastVisitCard() {
