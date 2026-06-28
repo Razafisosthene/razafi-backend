@@ -2012,6 +2012,85 @@ function safeAssistantSupportPhone(raw) {
   return cleaned || null;
 }
 
+
+// =============================================================================
+// RAZAFI ASSISTANT — PATCH G.3A: Language Continuity
+// =============================================================================
+// hasStrongAssistantLanguageSignal() returns true when the current message has
+// enough lexical evidence to determine the language on its own, meaning the
+// thread's previous language should NOT override it.
+//
+// shouldReuseAssistantThreadLang() returns true when the message is too short
+// or neutral to change the language — the thread's previous lang should be kept.
+//
+// Both helpers are pure, synchronous, no DB, no logging.
+// =============================================================================
+
+function hasStrongAssistantLanguageSignal(message) {
+  try {
+    const s = String(message || "").toLowerCase().trim();
+    if (!s) return false;
+
+    // Explicit language change requests always win.
+    // Standalone names ("English", "Gasy", "Français") are also strong signals.
+    if (
+      /\b(?:fran[cç]ais|en fran[cç]ais|parle.*fran[cç]ais)\b/i.test(s) ||
+      /\b(?:english|anglais|in english|speak.*english)\b/i.test(s) ||
+      /\b(?:malagasy|gasy|teny gasy|amin.ny teny gasy)\b/i.test(s)
+    ) return true;
+
+    // Strong English signals (function words, phrases)
+    if (
+      /\b(i need|i want|i have|i paid|how to|what is|how do|can you|do you|help me|show me|tell me|recommend|choose|already|hello|hi there)\b/i.test(s) ||
+      /\b(please|thanks|thank you|not working|no code|my plan|my internet)\b/i.test(s)
+    ) return true;
+
+    // Strong French signals
+    if (
+      /\b(je|j.ai|vous|nous|besoin|aide|comment|pourquoi|quel|quelle|choisir|conseille|recommande|merci|bonjour|bonsoir)\b/i.test(s) ||
+      /pouvez-vous|est-ce que|j.ai besoin|s.il vous|qu.est-ce/i.test(s)
+    ) return true;
+
+    // Strong Malagasy signals
+    if (
+      /\b(inona|ahoana|aho|ianao|azafady|misaotra|mila|efa|tsy|misy|tsara|nandoa|voaloa|lasa|vola|safidy|manao|hijery|hijerena|androany|izao|raha|ny)\b/i.test(s) ||
+      /plan inona|inona no tsara|tsy tonga|tsy misy|lasa ny vola/i.test(s)
+    ) return true;
+
+    return false;
+  } catch (_) {
+    return false;
+  }
+}
+
+function shouldReuseAssistantThreadLang(message) {
+  try {
+    const s = String(message || "").trim();
+    if (!s) return false;
+
+    // Message has a clear language signal — let detectAssistantLang decide
+    if (hasStrongAssistantLanguageSignal(s)) return false;
+
+    // Short neutral messages (≤40 chars) should inherit thread language
+    if (s.length <= 40) return true;
+
+    // Payment/diagnostic fragments should also inherit thread language
+    if (ASSISTANT_PHONE_PATTERN.test(s)) return true;
+    if (ASSISTANT_AMOUNT_PATTERN.test(s)) return true;
+    if (/^\s*(?:ref|r[eé]f|reference|r[eé]f[eé]rence|transaction)\s*[:#-]?\s*[a-z0-9.\-]{6,40}\s*$/i.test(s)) return true;
+
+    // Common neutral product/service/intent words
+    if (/^(netflix|youtube|tiktok|facebook|instagram|whatsapp|mvola|orange money|airtel money|zoom|google meet|google|starlink|fibre|pass foot|code|forfait|plan|data|wifi)$/i.test(s)) return true;
+
+    return false;
+  } catch (_) {
+    return false;
+  }
+}
+
+// =============================================================================
+// END RAZAFI ASSISTANT — PATCH G.3A
+// =============================================================================
 async function buildAssistantDiagnosticContext({ context, message, liveData, thread }) {
   // Only run for portal_user payment issues
   if (context !== "portal_user") return null;
@@ -2350,6 +2429,12 @@ const RAZAFI_NEUTRAL_WORDS = [
 function detectAssistantLang(msg) {
   // Step 1 — Normalize
   const s = String(msg || "").toLowerCase().trim();
+
+  // Step 1b — Explicit language name/request (G.3A fix): standalone words like
+  // "Gasy", "English", "Français" must resolve immediately before any scoring.
+  if (/\b(?:malagasy|gasy|teny gasy|amin.ny teny gasy)\b/i.test(s)) return "mg";
+  if (/\b(?:english|anglais|in english|speak.*english)\b/i.test(s)) return "en";
+  if (/\b(?:fran[cç]ais|en fran[cç]ais|parle.*fran[cç]ais)\b/i.test(s)) return "fr";
 
   // Step 2 — Strong English PHRASES
   // Checked on the original normalized message (before neutral-word
@@ -5369,12 +5454,21 @@ async function logAssistantInteraction({ context, intent_key, lang, escalated, p
 
 async function handleAssistantChat({ context, rawMessage, liveData, pool_id, page_path, conversationId, scopeKey, historyToken }) {
   const message = cleanAssistantMessage(rawMessage);
-  const lang = detectAssistantLang(message);
+  const detectedLang = detectAssistantLang(message);
 
   // ── Patch F: thread / conversation memory ───────────────────────────────
   const safeConvId = normalizeAssistantConversationId(conversationId) || generateAssistantConversationId();
   let thread = getAssistantThread({ conversationId: safeConvId, context, scopeKey });
-  if (!thread) thread = createAssistantThread({ conversationId: safeConvId, context, scopeKey, lang });
+  if (!thread) thread = createAssistantThread({ conversationId: safeConvId, context, scopeKey, lang: detectedLang });
+
+  // ── Patch G.3A: language continuity ─────────────────────────────────────
+  // If the message is short/neutral and the thread already has a language,
+  // reuse the thread language instead of defaulting to fr/en.
+  // Explicit language signals in the current message always override thread.lang.
+  let lang = detectedLang;
+  if (thread?.lang && shouldReuseAssistantThreadLang(message)) {
+    lang = thread.lang;
+  }
 
   // Extract follow-up signals from current message and merge into slots
   const followUpSignals = extractAssistantFollowUpSignals(message, context, thread);
