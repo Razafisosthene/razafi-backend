@@ -5820,6 +5820,28 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     lang = thread.lang;
   }
 
+  // ── Hotfix: Global PIN guard ────────────────────────────────────────────
+  // Must fire before extractAssistantFollowUpSignals (which stores phone/amount),
+  // before KB, AI, payment complaint check, and payment education check.
+  // A bare "1234" reaches this point regardless of context or pending issue.
+  if (looksLikePin(message)) {
+    const _pinWarnGlobal =
+      lang === "mg"
+        ? "Aza alefa eto mihitsy ny PIN-nao. Ny PIN dia ampidirina ao amin’ny fenêtre officielle MVola amin’ny findainao ihany."
+      : lang === "en"
+        ? "Never send your PIN here. Enter your PIN only in the official MVola prompt on your phone."
+      : "N’envoyez jamais votre PIN ici. Le PIN doit être saisi uniquement dans la fenêtre officielle MVola sur votre téléphone.";
+    await logAssistantInteraction({ context, intent_key: "pin_warning_global", lang, escalated: false, pool_id: pool_id || null, page_path: page_path || null });
+    return {
+      ok: true, context, intent_key: "pin_warning_global", lang,
+      answer: _pinWarnGlobal, buttons: [], requires_live_data: false, live_data_keys: [],
+      dynamic: false, ai_enhanced: false,
+      conversation_id: safeConvId, memory_active: true,
+      diagnostic: { type: "safety", status: "pin_warning", diagnosis_code: "pin_detected", user_action: "do_not_send_pin", missing_fields: [] },
+    };
+  }
+  // ── End Global PIN guard ─────────────────────────────────────────────────
+
   // Extract follow-up signals from current message and merge into slots
   const followUpSignals = extractAssistantFollowUpSignals(message, context, thread);
   if (Object.keys(followUpSignals).length) {
@@ -5891,7 +5913,7 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     // If the portal already shows a delivered code, active connection, or consumed code,
     // the complaint is likely a UI confusion — answer from portal state, skip heavy diagnostic.
     // Exception: payment in_progress is already handled by the client-side guard (mikrotik.js).
-    const _portalFirstAnswer = buildPortalStateFirstPaymentAnswer(lang, liveData);
+    const _portalFirstAnswer = buildPortalStateFirstPaymentAnswer(lang, { ...liveData, _raw_message_hint: message });
     if (_portalFirstAnswer) {
       // Portal state resolved the complaint — return early, no diagnostic needed.
       updateAssistantThread({ thread, userMessage: message, assistantAnswer: _portalFirstAnswer, lang, slots: {} });
@@ -5922,18 +5944,34 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
       const _dc2 = diagnosticResult.diagnosis_code || "";
       const _ua2 = diagnosticResult.user_action    || "";
       const _clearIssue =
-        _dc2 === "payment_received_code_exists" ||
-        _ua2 === "use_code_button"              ||
-        _ua2 === "contact_support"              ||
-        _ua2 === "send_reference_to_support";
+        _dc2 === "payment_received_code_exists"  ||
+        _ua2 === "use_code_button"               ||
+        _ua2 === "contact_support"               ||
+        _ua2 === "send_reference_to_support"     ||
+        // Hotfix: all diagnosis codes that now produce portal-first answers
+        // must close the pending issue so follow-up phone/amount messages
+        // are not recycled as transaction-lookup inputs.
+        _dc2 === "payment_not_found"             ||
+        _dc2 === "payment_amount_mismatch"       ||
+        _dc2 === "multiple_possible_matches"     ||
+        _dc2 === "missing_payment_details"       ||
+        _dc2 === "payment_received_code_missing";
       if (_clearIssue) {
         thread.pending_issue_type = null; // resolved or escalated — issue is closed
+        thread.pending_fields = [];
       }
-      // Otherwise (payment_pending, payment_not_found, multiple_possible_matches,
-      // payment_not_confirmed, diagnostic_unavailable, wait, provide_missing_details,
-      // payment_amount_mismatch [Patch F.4] — amount mismatch keeps issue open)
-      // pending_issue_type remains "payment_no_code" so the next short follow-up
-      // re-enters the diagnostic path without requiring a full complaint message.
+      // payment_pending and payment_not_confirmed keep the issue open so the user
+      // can follow up ("still pending?", "still waiting") without re-sending a complaint.
+      // All other codes now close the issue (portal-first wording is final for those).
+    }
+    // Hotfix: also close pending issue when portal state already tells the whole story.
+    // If portal_status_label is previous_consumption or no_active_code, the portal-state-first
+    // path returned above — but if it somehow fell through, clear the thread so subsequent
+    // phone/amount messages are never fed back into the diagnostic path.
+    const _pslForClear = String(liveData?.portal_status_label || "").toLowerCase();
+    if (_pslForClear === "previous_consumption" || _pslForClear === "no_active_code") {
+      thread.pending_issue_type = null;
+      thread.pending_fields = [];
     }
     // Merge diagnostic safe fields into liveData for AI and fallback
     // G.1 Polish: also set diagnostic_status so buildPaymentContextBlock can distinguish
@@ -6070,8 +6108,29 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   let aiUsed = false;
 
   const messageIsPaymentComplaint = isPaymentComplaintMessage(message);
-  // Patch E: run AI for every valid message when enabled, not only payment complaints / no-dynamic cases.
-  const shouldRunAi = isAssistantAiEnabled() && !!message;
+
+  // ── Hotfix: payment-sensitive turn detection ─────────────────────────────
+  // For any portal_user turn that touches payment, code, or known-status states,
+  // skip AI entirely and use only deterministic portal-state-first / diagnostic
+  // / payment-education answers. This prevents the AI from inventing confirmations,
+  // asking for MVola details, or echoing amount/phone fragments from the message.
+  const _psl = String(liveData?.portal_status_label || "").toLowerCase();
+  const _msgLow = String(message || "").toLowerCase();
+  const _paymentSignalInMsg = (
+    /(pay[eé]|pay|paiement|mvola|vola|argent|code|d[eé]bit[eé]|solde|forfait|reçu|nandoa|nahazo|nihena|nalefa|lasa)/.test(_msgLow)
+  );
+  const paymentSensitiveTurn = context === "portal_user" && (
+    messageIsPaymentComplaint                                  ||
+    thread?.pending_issue_type === "payment_no_code"           ||
+    _psl === "code_ready"                                      ||
+    _psl === "connection_active"                               ||
+    _psl === "previous_consumption"                            ||
+    _psl === "no_active_code"                                  ||
+    _paymentSignalInMsg                                        ||
+    !!diagnosticResult
+  );
+  // Patch E: run AI for every valid message when enabled, EXCEPT payment-sensitive portal turns.
+  const shouldRunAi = isAssistantAiEnabled() && !!message && !paymentSensitiveTurn;
 
   if (shouldRunAi) {
     try {
@@ -6534,11 +6593,43 @@ function buildPortalStateFirstPaymentAnswer(lang, liveData) {
     );
   }
 
-  // Case 4: previous_consumption / used or expired — last code was delivered and used/expired
+  // Case 4: previous_consumption / used or expired — last code was delivered and used/expired.
+  // Sub-case: if user signals they believe they never received a code at all,
+  // skip the clarifying question and escalate to portal-first directly.
+  // Never ask for phone/amount/forfait/reference in either branch.
   if (psl === "previous_consumption" || st === "used" || st === "expired") {
+    const _rawMsgHint = String(liveData?._raw_message_hint || "").toLowerCase();
+    const _noCodeSignal = (
+      _rawMsgHint.includes("pas reçu") ||
+      _rawMsgHint.includes("pas eu de code") ||
+      _rawMsgHint.includes("je crois ne pas") ||
+      _rawMsgHint.includes("jamais reçu") ||
+      _rawMsgHint.includes("never received") ||
+      _rawMsgHint.includes("i didn’t receive") ||
+      _rawMsgHint.includes("i don’t think i received") ||
+      _rawMsgHint.includes("tsy nahazo") ||
+      _rawMsgHint.includes("tsy tonga ny code") ||
+      _rawMsgHint.includes("tsy mba nahazo")
+    );
+    if (_noCodeSignal) {
+      // User insists they never got the code — portal-first escalation, no detail asks.
+      const _pc4ContactPart = contactPhone
+        ? t(
+            `, mifandraisa amin’ny ${brandName || "assistance"} au ${contactPhone}`,
+            `, contactez ${brandName ? brandName + " au" : "l’assistance au"} ${contactPhone}`,
+            `, contact ${brandName ? brandName + " at" : "support at"} ${contactPhone}`
+          )
+        : t(", mifandraisa amin’ny assistance", ", contactez l’assistance", ", contact support");
+      return t(
+        `Araka ny portail, ny code farany dia efa nomen’izy io ary nampiasaina na lany. Actualisez aloha ny page. Raha tena nihena ny solde MVola-nao ho an’ny paiement vaovao nefa tsy misy code vaovao miseho aorian’ny actualisation${_pc4ContactPart}. Aza mandefa PIN.`,
+        `D’après le portail, le dernier code a déjà été livré puis utilisé ou expiré. Actualisez d’abord le portail. Si votre solde a vraiment été débité pour un nouveau paiement mais qu’aucun nouveau code ne s’affiche après actualisation${_pc4ContactPart}. N’envoyez jamais votre PIN.`,
+        `According to the portal, the last code was already delivered then used or expired. Please refresh the portal first. If your balance was truly debited for a new payment but no new code appears after refreshing${_pc4ContactPart}. Never share your PIN.`
+      );
+    }
+    // First complaint — ask the clarifying question (forfait too fast vs. no code at all).
     return t(
       "Ny code farany nomena anao dia efa nampiasaina na efa lany. Raha heverinao fa tsy nampiasainao izy, lazao ahy: vita faingana be ny forfait, sa heverinao fa tsy mba nahazo code mihitsy ianao?",
-      "Le dernier code livré a déjà été utilisé ou a expiré. Si vous pensez ne pas l’avoir utilisé, dites-moi : le forfait s’est-il épuisé trop vite, ou croyez-vous ne pas avoir reçu de code du tout ?",
+      "Le dernier code livré a déjà été utilisé ou a expiré. Si vous pensez ne pas l’avoir utilisé, dites-moi : le forfait s’est-il épuisé trop vite, ou croyez-vous ne pas avoir reçu de code du tout ?",
       "The last code delivered was already used or expired. If you believe you didn’t use it, tell me: did the data run out too fast, or do you think you never received a code at all?"
     );
   }
@@ -7600,6 +7691,54 @@ function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer, di
     for (const phrase of identityPhrases) {
       if (lower.includes(phrase)) {
         console.warn("[AI SAFETY BLOCK G.2] identity recognition phrase in portal answer");
+        return false;
+      }
+    }
+  }
+
+  // 13. Hotfix: block payment-detail-request and fake-confirmation phrases
+  //     in portal_user answers for payment-sensitive turns.
+  //     These phrases indicate the AI invented a transaction, echoed user phone/amount,
+  //     or asked for transaction details as if it could check merchant MVola history.
+  if (context === "portal_user") {
+    const paymentDetailPhrases = [
+      // Fake confirmation / recording phrases
+      "a bien été enregistré",
+      "a bien été noté",
+      "est bien enregistré",
+      "est bien noté",
+      "votre paiement mvola de",
+      "votre paiement de",
+      "depuis le 038",
+      "depuis le 032",
+      "depuis le 034",
+      // Ask-for-transaction-detail phrases
+      "pouvez-vous me dire le montant",
+      "pouvez-vous préciser le montant",
+      "quel montant",
+      "montant exact",
+      "le montant payé",
+      "montant envoyé",
+      "le numéro utilisé",
+      "numéro mvola utilisé",
+      "la référence",
+      "référence de transaction",
+      "référence sms",
+      "retrouver la transaction",
+      "transaction correspondante",
+      "vérifier votre transaction",
+      "vérifier le paiement",
+      // English equivalents
+      "the reference number",
+      "transaction reference",
+      "find the transaction",
+      "verify your payment",
+      "what amount did you pay",
+      "which number did you use",
+    ];
+    for (const phrase of paymentDetailPhrases) {
+      if (lower.includes(phrase.toLowerCase())) {
+        console.warn("[AI SAFETY BLOCK hotfix] payment detail/fake-confirm phrase blocked:", phrase);
         return false;
       }
     }
