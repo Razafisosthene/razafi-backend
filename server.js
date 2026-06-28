@@ -2053,8 +2053,8 @@ function hasStrongAssistantLanguageSignal(message) {
 
     // Strong Malagasy signals
     if (
-      /\b(inona|ahoana|aho|ianao|azafady|misaotra|mila|efa|tsy|misy|tsara|nandoa|voaloa|lasa|vola|safidy|manao|hijery|hijerena|androany|izao|raha|ny)\b/i.test(s) ||
-      /plan inona|inona no tsara|tsy tonga|tsy misy|lasa ny vola/i.test(s)
+      /\b(inona|ahoana|aho|ianao|azafady|misaotra|mila|efa|tsy|misy|tsara|nandoa|voaloa|lasa|vola|safidy|manao|hijery|hijerena|androany|izao|raha|ny|tena|marina|ve|izany)\b/i.test(s) ||
+      /plan inona|inona no tsara|tsy tonga|tsy misy|lasa ny vola|tena marina/i.test(s)
     ) return true;
 
     return false;
@@ -5461,12 +5461,22 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   let thread = getAssistantThread({ conversationId: safeConvId, context, scopeKey });
   if (!thread) thread = createAssistantThread({ conversationId: safeConvId, context, scopeKey, lang: detectedLang });
 
-  // ── Patch G.3A: language continuity ─────────────────────────────────────
-  // If the message is short/neutral and the thread already has a language,
-  // reuse the thread language instead of defaulting to fr/en.
-  // Explicit language signals in the current message always override thread.lang.
+  // ── Patch G.3A / G.3A.1: language continuity ───────────────────────────────
+  // Reuse thread.lang only when the current message is truly neutral — i.e.
+  // detectAssistantLang returned the default "fr" because it found no signal.
+  // If detectAssistantLang returned "mg" or "en", the user expressed a language
+  // in this message and that must win, even if the thread was previously English.
+  //
+  // Examples:
+  //   "Netflix"           → detectLang = "fr" (default)   → reuse thread.lang ✅
+  //   "Tena marina ve?"   → detectLang = "mg"              → use "mg", not thread ✅
+  //   "I need help"       → detectLang = "en"              → use "en", not thread ✅
   let lang = detectedLang;
-  if (thread?.lang && shouldReuseAssistantThreadLang(message)) {
+  if (
+    thread?.lang &&
+    shouldReuseAssistantThreadLang(message) &&
+    detectedLang === "fr"   // G.3A.1: only override the default fallback, not a real detection
+  ) {
     lang = thread.lang;
   }
 
