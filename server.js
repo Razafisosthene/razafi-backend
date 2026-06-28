@@ -6015,6 +6015,56 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   }
   // ── End Patch 3 ──────────────────────────────────────────────────────────
 
+  // ── No-code gate (portal_user) ──────────────────────────────────────────
+  // Fires when user says they did not receive a code, even without mentioning
+  // payment explicitly (e.g. "Je crois ne pas avoir reçu de code").
+  // Routes directly to portal-state-first — never triggers the DB diagnostic
+  // path, so no phone/amount/time/reference is ever requested.
+  // Must run AFTER the payment complaint block (which handles "j'ai payé + pas
+  // de code" and already returns portal-state-first) and AFTER payment education.
+  if (context === "portal_user" && !diagnosticResult && isNoCodeMessage(message)) {
+    const _noCodePortalAnswer = buildPortalStateFirstPaymentAnswer(
+      lang,
+      { ...liveData, _raw_message_hint: message }
+    );
+    // buildPortalStateFirstPaymentAnswer returns null only for indeterminate
+    // portal state ("checking"). In that case use a safe generic fallback.
+    const _noCodeFinalAnswer = _noCodePortalAnswer || (function() {
+      const _ncBrand = String(liveData?.brand_name || liveData?.display_name || liveData?.pool_name || "").trim() || null;
+      const _ncPhone = (function() {
+        const p = String(liveData?.contact_phone || "").trim();
+        return /^[\d\s()+-]{6,20}$/.test(p) ? p : null;
+      })();
+      const _ncContact = _ncPhone
+        ? (lang === "mg"
+            ? `, mifandraisa amin’ny ${_ncBrand || "assistance"} au ${_ncPhone}`
+            : lang === "en"
+              ? `, contact ${_ncBrand ? _ncBrand + " at" : "support at"} ${_ncPhone}`
+              : `, contactez ${_ncBrand ? _ncBrand + " au" : "l’assistance au"} ${_ncPhone}`)
+        : (lang === "mg" ? ", mifandraisa amin’ny assistance"
+            : lang === "en" ? ", contact support"
+            : ", contactez l’assistance");
+      return lang === "mg"
+        ? `Tsy mbola hitako eto amin’ny portail ny code livré. Actualisez aloha ny page. Raha nihena ny solde nefa tsy misy code miseho aorian’ny actualisation${_ncContact}. Aza mandefa PIN.`
+        : lang === "en"
+          ? `I don’t see a delivered code on this portal yet. Please refresh the page first. If your balance was debited but no code appears after refreshing${_ncContact}. Never share your PIN.`
+          : `Je ne vois pas encore de code livré sur ce portail. Actualisez d’abord la page. Si votre solde a été débité mais qu’aucun code ne s’affiche après actualisation${_ncContact}. N’envoyez jamais votre PIN.`;
+    })();
+    // Clear thread so no follow-up is treated as a transaction-lookup signal
+    thread.pending_issue_type = null;
+    thread.pending_fields     = [];
+    updateAssistantThread({ thread, userMessage: message, assistantAnswer: _noCodeFinalAnswer, lang, slots: {} });
+    await logAssistantInteraction({ context, intent_key: "no_code_portal_first", lang, escalated: false, pool_id: pool_id || null, page_path: page_path || null });
+    return {
+      ok: true, context, intent_key: "no_code_portal_first", lang,
+      answer: _noCodeFinalAnswer, buttons: [], requires_live_data: true,
+      live_data_keys: ["portal_status_label", "payment_form_state", "main_next_action"],
+      dynamic: true, ai_enhanced: false,
+      conversation_id: safeConvId, memory_active: true,
+    };
+  }
+  // ── End no-code gate ──────────────────────────────────────────────────────
+
   // ── G.3B: Generic opening guard ──────────────────────────────────────────
   // Fires ONLY for standalone greetings / help requests with no other intent.
   // Payment complaints already handled above (isPaymentComplaintMessage check),
@@ -6121,6 +6171,7 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   );
   const paymentSensitiveTurn = context === "portal_user" && (
     messageIsPaymentComplaint                                  ||
+    isNoCodeMessage(message)                                   ||
     thread?.pending_issue_type === "payment_no_code"           ||
     _psl === "code_ready"                                      ||
     _psl === "connection_active"                               ||
@@ -6537,6 +6588,55 @@ function isPaymentEducationMessage(msg) {
   ];
   if (educationSignals.some(sig => s.includes(sig))) return true;
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Portal no-code detector — separate from isPaymentComplaintMessage.
+// Matches messages where the user says they did not receive their code, even
+// without explicitly mentioning a payment or money. These are always handled
+// by portal-state-first; the diagnostic path is never triggered.
+// ---------------------------------------------------------------------------
+function isNoCodeMessage(msg) {
+  const s = String(msg || "").toLowerCase();
+  // Each phrase below unambiguously means the user did not receive a WiFi code.
+  const noCodeSignals = [
+    // French — with and without accent on ç, with and without leading "je n'ai"
+    "pas reçu de code",      // "je crois ne pas avoir reçu de code" contains this
+    "pas recu de code",       // accent-less variant
+    "je n’ai pas reçu de code",
+    "je n’ai pas recu de code",
+    "j’ai pas reçu de code",
+    "j’ai pas recu de code",
+    "pas eu de code",
+    "pas encore reçu de code",
+    "pas encore recu de code",
+    "code non reçu",
+    "code non recu",
+    "aucun code reçu",
+    "n’ai pas reçu le code",
+    "ne pas avoir reçu de code",    // covers "je crois ne pas avoir reçu de code"
+    "ne pas avoir recu de code",
+    // Malagasy
+    "code tsy tonga",
+    "tsy nahazo code",
+    "tsy azoko ny code",
+    "tsy tonga ny code",
+    "tsy mba nahazo code",
+    "mbola tsy nahazo",
+    // English
+    "no code received",
+    "did not receive code",
+    "did not receive the code",
+    "didn’t receive the code",
+    "didn’t receive a code",
+    "have not received the code",
+    "haven’t received the code",
+    "haven’t received a code",
+    "i didn’t receive the code",
+    "not received the code",
+    "not received a code",
+  ];
+  return noCodeSignals.some(sig => s.includes(sig));
 }
 
 // ---------------------------------------------------------------------------
