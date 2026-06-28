@@ -39,6 +39,9 @@
         </div>
       </div>
 
+      <!-- Phase 1: "Depuis votre dernière visite" card — hidden until data resolves -->
+      <div id="sinceLastVisitCard" style="display:none;" aria-live="polite"></div>
+
       <div id="poolsContainer" class="rz-pools-grid"></div>
       <div id="status" class="rz-dashboard-status"></div>
     </div>
@@ -341,6 +344,10 @@
           };
 
           if (statusEl) statusEl.textContent = `Chargé : ${poolCountLabel(pools?.length || 0)}.`;
+
+          // Phase 1: load since-last-visit card after pool cards are rendered.
+          // Non-blocking: pool cards are already visible if this fails.
+          loadSinceLastVisitCard().catch(() => {});
         } catch (e) {
           if (statusEl) statusEl.textContent = "";
           container.innerHTML = `<div class="rz-empty-card" style="color:#d9534f;">Échec du chargement : ${esc(e.message || e)}</div>`;
@@ -351,6 +358,116 @@
       poolFilterEl?.addEventListener("change", load);
 
       await load();
+    }
+
+    // ---------------------------------------------------------------------------
+    // PHASE 1 — "Depuis votre dernière visite" card
+    // Non-blocking. Never auto-resets. Only POST on button click.
+    // ---------------------------------------------------------------------------
+
+    function fmtAr(n) {
+      const v = Math.round(Number(n) || 0);
+      return v.toLocaleString("fr-FR") + " Ar";
+    }
+
+    function fmtRelativeTime(isoString) {
+      try {
+        const diff = Date.now() - new Date(isoString).getTime();
+        const mins  = Math.floor(diff / 60000);
+        if (mins < 2)  return "il y a quelques secondes";
+        if (mins < 60) return `il y a ${mins} min`;
+        const hrs = Math.floor(mins / 60);
+        if (hrs < 24)  return `il y a ${hrs}h`;
+        const days = Math.floor(hrs / 24);
+        if (days === 1) return "hier";
+        return `il y a ${days} jours`;
+      } catch (_) {
+        return "";
+      }
+    }
+
+    function renderSinceLastVisitCard(data) {
+      const card = document.getElementById("sinceLastVisitCard");
+      if (!card) return;
+
+      if (!data || !data.ok) {
+        card.style.display = "none";
+        return;
+      }
+
+      const timeLabel = data.last_seen_at ? fmtRelativeTime(data.last_seen_at) : "";
+      const hasNew    = !!data.has_new_data;
+      const clients   = Number(data.new_client_sessions) || 0;
+      const sales     = Number(data.new_sales_ar)        || 0;
+      const share     = Number(data.owner_share_ar)      || 0;
+
+      const clientWord = clients > 1 ? "nouveaux clients connectés" : "nouveau client connecté";
+
+      card.innerHTML = `
+        <div class="rz-since-card">
+          <div class="rz-since-header">
+            <span class="rz-since-title">Depuis votre dernière visite</span>
+            ${timeLabel ? `<span class="rz-since-time">${esc(timeLabel)}</span>` : ""}
+          </div>
+
+          ${hasNew ? `
+            <div class="rz-since-rows">
+              ${clients > 0 ? `
+                <div class="rz-since-row">
+                  <span class="rz-since-icon">👤</span>
+                  <span class="rz-since-label">${esc(clientWord)}</span>
+                  <span class="rz-since-chip rz-since-chip-blue">+${esc(String(clients))}</span>
+                </div>
+              ` : ""}
+              ${sales > 0 ? `
+                <div class="rz-since-row">
+                  <span class="rz-since-icon">💳</span>
+                  <span class="rz-since-label">Ventes confirmées</span>
+                  <span class="rz-since-chip rz-since-chip-green">+${esc(fmtAr(sales))}</span>
+                </div>
+              ` : ""}
+              ${share > 0 ? `
+                <div class="rz-since-row">
+                  <span class="rz-since-icon">📊</span>
+                  <span class="rz-since-label">Part propriétaire estimée</span>
+                  <span class="rz-since-chip rz-since-chip-green">+${esc(fmtAr(share))}</span>
+                </div>
+              ` : ""}
+            </div>
+          ` : `
+            <div class="rz-since-empty">Aucune nouvelle activité depuis votre dernière visite.</div>
+          `}
+
+          <div class="rz-since-footer">
+            <button type="button" class="rz-since-btn" id="sinceMarkSeenBtn">Marquer comme vu</button>
+          </div>
+        </div>
+      `;
+
+      card.style.display = "";
+
+      document.getElementById("sinceMarkSeenBtn")?.addEventListener("click", async () => {
+        const btn = document.getElementById("sinceMarkSeenBtn");
+        if (btn) { btn.disabled = true; btn.textContent = "…"; }
+        try {
+          await fetchJSON("/api/admin/dashboard-since-last-visit/mark-seen", { method: "POST" });
+          // Reload card after marking seen — will show empty state
+          await loadSinceLastVisitCard();
+        } catch (_) {
+          if (btn) { btn.disabled = false; btn.textContent = "Marquer comme vu"; }
+        }
+      });
+    }
+
+    async function loadSinceLastVisitCard() {
+      try {
+        const data = await fetchJSON("/api/admin/dashboard-since-last-visit");
+        renderSinceLastVisitCard(data);
+      } catch (_) {
+        // Silent failure: pool cards are unaffected, card stays hidden
+        const card = document.getElementById("sinceLastVisitCard");
+        if (card) card.style.display = "none";
+      }
     }
 
     function formatAdminIdentity(admin) {

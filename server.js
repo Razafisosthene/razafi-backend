@@ -616,7 +616,12 @@ async function requireAdmin(req, res, next) {
       const allowOwnerAssistantChat =
         method === "POST" && fullPath === "/api/admin/assistant/chat";
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat) {
+      // Phase 1: owner acknowledges the "since last visit" summary card.
+      // Writes only to admin_dashboard_visits keyed by req.admin.id — never touches pool data.
+      const allowOwnerMarkSeen =
+        method === "POST" && fullPath === "/api/admin/dashboard-since-last-visit/mark-seen";
+
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat || allowOwnerMarkSeen) {
         return next();
       }
 
@@ -639,7 +644,9 @@ async function requireAdmin(req, res, next) {
         fullPath === "/api/admin/blocked-devices" ||
         fullPath === "/api/admin/blocked-devices/usage" ||
         fullPath.startsWith("/api/admin/revenue/") ||
-        fullPath.startsWith("/api/owner/");
+        fullPath.startsWith("/api/owner/") ||
+        // Phase 1: since-last-visit summary card (read-only GET)
+        fullPath === "/api/admin/dashboard-since-last-visit";
 
       if (!allow) {
         return res.status(403).json({ error: "readonly_forbidden" });
@@ -23026,6 +23033,160 @@ doc.end();
     }
   }
 });
+// ---------------------------------------------------------------------------
+// PHASE 1 — DASHBOARD "DEPUIS VOTRE DERNIÈRE VISITE"
+// ---------------------------------------------------------------------------
+// Table: admin_dashboard_visits (Supabase, service role only)
+//   - RLS enabled, anon + authenticated revoked
+//   - One row per admin user, upserted on explicit "Marquer comme vu" action only
+//   - Never auto-reset on page load
+//
+// GET  /api/admin/dashboard-since-last-visit      → read delta stats (pool-scoped)
+// POST /api/admin/dashboard-since-last-visit/mark-seen → upsert last_seen_at = now()
+// ---------------------------------------------------------------------------
+
+// Default lookback when no visit row exists yet for this admin.
+const DASHBOARD_VISIT_DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+app.get("/api/admin/dashboard-since-last-visit", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const adminId   = String(req.admin.id || "").trim();
+    const isSuperadmin = !!req.admin.is_superadmin;
+
+    if (!adminId) return res.status(401).json({ error: "admin_id_missing" });
+
+    // 1. Resolve last_seen_at for this admin. Never expose it as a UUID or NAS ID.
+    const { data: visitRow, error: visitErr } = await supabase
+      .from("admin_dashboard_visits")
+      .select("last_seen_at")
+      .eq("admin_user_id", adminId)
+      .maybeSingle();
+
+    if (visitErr) {
+      console.error("DASHBOARD VISIT LOOKUP ERROR", visitErr);
+      return res.status(500).json({ error: visitErr.message });
+    }
+
+    const lastSeenAt = visitRow?.last_seen_at
+      ? new Date(visitRow.last_seen_at).toISOString()
+      : new Date(Date.now() - DASHBOARD_VISIT_DEFAULT_LOOKBACK_MS).toISOString();
+
+    // 2. Build scoped pool IDs (same pattern as all other endpoints).
+    let allowedPoolIds = [];
+    if (!isSuperadmin) {
+      allowedPoolIds = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
+      if (!allowedPoolIds.length) {
+        return res.status(403).json({ error: "no_pools_assigned" });
+      }
+    }
+
+    // 3. Fetch scoped pool map for owner_share_pct calculation.
+    //    getScopedMikrotikPoolsMap already enforces pool_ids scope.
+    const poolMap = await getScopedMikrotikPoolsMap(req.admin);
+
+    // 4. Count new client sessions since last_seen_at.
+    //    Source of truth: vw_voucher_sessions_truth.activated_at
+    //    (MikroTik-verified; not created_at which is voucher generation time)
+    let clientQ = supabase
+      .from("vw_voucher_sessions_truth")
+      .select("id", { count: "exact", head: true })
+      .gt("activated_at", lastSeenAt)
+      .not("activated_at", "is", null);
+
+    if (!isSuperadmin) {
+      clientQ = clientQ.in("pool_id", allowedPoolIds);
+    }
+
+    const { count: newClientCount, error: clientErr } = await clientQ;
+    if (clientErr) {
+      console.error("DASHBOARD VISIT CLIENT QUERY ERROR", clientErr);
+      return res.status(500).json({ error: clientErr.message });
+    }
+
+    // 5. Sum confirmed sales + compute owner share since last_seen_at.
+    //    Source of truth: v_revenue_paid_truth (paid transactions only, view-enforced)
+    //    owner_share_ar uses current pool owner_share_pct — correctly labelled "estimée"
+    let revenueQ = supabase
+      .from("v_revenue_paid_truth")
+      .select("amount_num, pool_id")
+      .gt("transaction_created_at", lastSeenAt);
+
+    if (!isSuperadmin) {
+      revenueQ = revenueQ.in("pool_id", allowedPoolIds);
+    }
+
+    const { data: revenueRows, error: revenueErr } = await revenueQ;
+    if (revenueErr) {
+      console.error("DASHBOARD VISIT REVENUE QUERY ERROR", revenueErr);
+      return res.status(500).json({ error: revenueErr.message });
+    }
+
+    let newSalesAr   = 0;
+    let ownerShareAr = 0;
+
+    for (const row of (revenueRows || [])) {
+      const gross    = roundMoney2(row?.amount_num);
+      newSalesAr     = roundMoney2(newSalesAr + gross);
+
+      const pid      = String(row?.pool_id || "").trim();
+      const poolCfg  = poolMap[pid] || null;
+      const ownerPct = poolCfg ? Number(poolCfg.owner_share_pct || 0) : 0;
+      ownerShareAr   = roundMoney2(ownerShareAr + roundMoney2((gross * ownerPct) / 100));
+    }
+
+    const hasNewData = (newClientCount || 0) > 0 || newSalesAr > 0;
+
+    // Response: no UUIDs, no NAS IDs, no platform share details, no raw pool IDs.
+    return res.json({
+      ok:                  true,
+      last_seen_at:        lastSeenAt,
+      has_new_data:        hasNewData,
+      new_client_sessions: newClientCount || 0,
+      new_sales_ar:        newSalesAr,
+      owner_share_ar:      ownerShareAr,
+    });
+  } catch (e) {
+    console.error("DASHBOARD SINCE LAST VISIT ERROR", e);
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/dashboard-since-last-visit/mark-seen", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const adminId = String(req.admin.id || "").trim();
+    if (!adminId) return res.status(401).json({ error: "admin_id_missing" });
+
+    const now = new Date().toISOString();
+
+    // Upsert: one row per admin, conflict key = admin_user_id.
+    // This is the ONLY place last_seen_at is ever written — never on page load.
+    const { error } = await supabase
+      .from("admin_dashboard_visits")
+      .upsert(
+        {
+          admin_user_id: adminId,
+          last_seen_at:  now,
+          updated_at:    now,
+        },
+        { onConflict: "admin_user_id" }
+      );
+
+    if (error) {
+      console.error("DASHBOARD MARK SEEN ERROR", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    return res.json({ ok: true, marked_at: now });
+  } catch (e) {
+    console.error("DASHBOARD MARK SEEN ERROR", e);
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // START SERVER
 // ---------------------------------------------------------------------------

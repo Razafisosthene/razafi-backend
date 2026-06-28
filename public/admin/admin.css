@@ -4106,3 +4106,168 @@ body.rz-admin-shell .rz-aa-send:not(:disabled):active {
 body:has(.rz-aa-panel.rz-open) .rz-aa-fab {
   z-index: 100 !important;
 }
+
+/* ============================================================
+   RAZAFI ADMIN — PHASE 1 "Depuis votre dernière visite" card
+   Scope: .rz-since-* only. Append-only. No existing rules modified.
+   Design: iPhone-style frosted card, consistent with .rz-pool-card tokens.
+   ============================================================ */
+
+.rz-since-card {
+  position: relative;
+  overflow: hidden;
+  padding: 16px 18px 14px;
+  border-radius: var(--rz-radius-xl);
+  background: linear-gradient(180deg, rgba(255,255,255,.97), rgba(255,255,255,.88));
+  border: 1px solid rgba(255,255,255,.92);
+  box-shadow: var(--rz-shadow-card);
+  /* Left accent bar — blue, mirrors pool card top bar repositioned to left */
+  border-left: 4px solid var(--rz-blue);
+}
+
+/* Header row: title + relative timestamp */
+.rz-since-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.rz-since-title {
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: -0.01em;
+  color: var(--rz-text);
+  text-transform: uppercase;
+}
+
+.rz-since-time {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--rz-muted);
+  white-space: nowrap;
+}
+
+/* Stat rows */
+.rz-since-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.rz-since-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rz-since-icon {
+  font-size: 15px;
+  line-height: 1;
+  flex-shrink: 0;
+  width: 22px;
+  text-align: center;
+}
+
+.rz-since-label {
+  flex: 1;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--rz-text);
+}
+
+/* Value chips */
+.rz-since-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 850;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.rz-since-chip-green {
+  background: var(--rz-green-soft);
+  color: var(--rz-green);
+  border: 1px solid rgba(22,163,74,.18);
+}
+
+.rz-since-chip-blue {
+  background: var(--rz-blue-soft);
+  color: var(--rz-blue);
+  border: 1px solid rgba(13,110,253,.18);
+}
+
+/* Empty state */
+.rz-since-empty {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--rz-muted);
+  margin-bottom: 14px;
+}
+
+/* Footer with CTA */
+.rz-since-footer {
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid var(--rz-line);
+  padding-top: 12px;
+}
+
+/* "Marquer comme vu" button — pill, compact, overrides global button { width:100% } */
+.rz-since-btn,
+body.rz-admin-shell .rz-since-btn {
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: max-content !important;
+  padding: 8px 18px !important;
+  border-radius: 999px !important;
+  background: linear-gradient(135deg, var(--rz-blue), #2563eb) !important;
+  border: none !important;
+  color: #fff !important;
+  font-size: 13px !important;
+  font-weight: 850 !important;
+  letter-spacing: 0 !important;
+  cursor: pointer !important;
+  box-shadow: 0 4px 12px rgba(13,110,253,.20) !important;
+  transition: opacity 0.15s, transform 0.12s !important;
+  white-space: nowrap !important;
+  line-height: 1.2 !important;
+}
+
+.rz-since-btn:hover,
+body.rz-admin-shell .rz-since-btn:hover {
+  background: linear-gradient(135deg, #0b5ed7, #1d4ed8) !important;
+  box-shadow: 0 6px 16px rgba(13,110,253,.28) !important;
+}
+
+.rz-since-btn:active,
+body.rz-admin-shell .rz-since-btn:active {
+  transform: scale(0.97) !important;
+}
+
+.rz-since-btn:disabled,
+body.rz-admin-shell .rz-since-btn:disabled {
+  background: rgba(17,24,39,.10) !important;
+  color: var(--rz-muted) !important;
+  box-shadow: none !important;
+  cursor: not-allowed !important;
+}
+
+/* Mobile: full-width button on small screens */
+@media (max-width: 480px) {
+  .rz-since-footer {
+    justify-content: stretch;
+  }
+  .rz-since-btn,
+  body.rz-admin-shell .rz-since-btn {
+    width: 100% !important;
+    max-width: 100% !important;
+    text-align: center !important;
+  }
+}
