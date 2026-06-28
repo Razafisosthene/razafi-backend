@@ -1831,6 +1831,52 @@ function buildReturningUserIntro({ lang, returningUserContext: ruc }) {
 // RAZAFI ASSISTANT — PATCH G.2.2: Concise Returning Plan Answer
 // =============================================================================
 
+// G.3B micro-correction: detect pure greetings and generic help requests.
+// These turns must never produce plan recommendations or trigger returning memory.
+// Pure, synchronous, never throws. Intentionally tight — only matches standalone
+// greetings, not "Bonjour, j'ai payé…" (the payment complaint check fires first).
+function isAssistantGenericOpeningTurn(message) {
+  const s = String(message || "").toLowerCase().trim();
+  if (!s) return false;
+
+  return (
+    /^(bonjour|salut|hello|hi|hey|bonsoir|coucou)\s*[!.?]*$/.test(s) ||
+    /^(aide|help|i need help|j'ai besoin d'aide|j ai besoin d aide|mba ampio|manampy|fanampiana)\s*[!.?]*$/.test(s) ||
+    /^(comment ça marche|comment ca marche|ça marche comment|ca marche comment|how does it work|how to use|ahoana no fampiasana|ahoana no fomba)\s*[!.?]*$/.test(s) ||
+    /^(manahoana|manao ahoana|salama)\s*[!.?]*$/.test(s)
+  );
+}
+
+// G.3B micro-correction: build a simple, context-aware greeting response.
+// No plan recommendation, no returning memory, no "Bon retour".
+// Pure, synchronous, never throws.
+function buildGenericOpeningAnswer({ context, lang }) {
+  const l = String(lang || "fr").toLowerCase();
+
+  if (context === "portal_user") {
+    if (l === "mg") return "Manahoana 👋 Afaka manampy anao hisafidy forfait, hahatakatra ny paiement MVola, na hampiasa ny code aho.";
+    if (l === "en") return "Hello 👋 I can help you choose a plan, understand MVola payment, or use your code.";
+    return "Bonjour 👋 Je peux vous aider à choisir un forfait, comprendre le paiement MVola, ou utiliser votre code.";
+  }
+
+  if (context === "admin_owner") {
+    if (l === "mg") return "Manahoana 👋 Afaka manampy anao hamaky ny dashboard, plans, clients, na revenus aho. Tsy manova zavatra mivantana aho, manome conseil fotsiny.";
+    if (l === "en") return "Hello 👋 I can help you understand your dashboard, plans, clients, or revenue. I only give advice and do not modify anything.";
+    return "Bonjour 👋 Je peux vous aider à comprendre votre dashboard, vos forfaits, vos clients ou vos revenus. Je donne seulement des conseils, je ne modifie rien.";
+  }
+
+  if (context === "platform_prospect") {
+    if (l === "mg") return "Manahoana 👋 Afaka manazava RAZAFI, ny démo, ny contact WhatsApp, na ny fonctionnement amin'ny Starlink/fibre aho.";
+    if (l === "en") return "Hello 👋 I can explain RAZAFI, the demo, WhatsApp contact, or how it works with Starlink/fibre.";
+    return "Bonjour 👋 Je peux vous expliquer RAZAFI, la démo, le contact WhatsApp, ou le fonctionnement avec Starlink/fibre.";
+  }
+
+  // Universal fallback
+  if (l === "en") return "Hello 👋 How can I help?";
+  if (l === "mg") return "Manahoana 👋 Ahoana no hanampiako anao ?";
+  return "Bonjour 👋 Comment puis-je vous aider ?";
+}
+
 // G.3B correction: detect gaming turns so returning memory never overrides gaming advice.
 // Mirrors the keyword set used in the dynamic intent routing chain.
 // Pure, synchronous, never throws.
@@ -2124,8 +2170,8 @@ function hasStrongAssistantLanguageSignal(message) {
 
     // Strong Malagasy signals
     if (
-      /\b(inona|ahoana|aho|ianao|azafady|misaotra|mila|efa|tsy|misy|tsara|nandoa|voaloa|lasa|vola|safidy|manao|hijery|hijerena|androany|izao|raha|ny|tena|marina|ve|izany)\b/i.test(s) ||
-      /plan inona|inona no tsara|tsy tonga|tsy misy|lasa ny vola|tena marina/i.test(s)
+      /\b(inona|ahoana|aho|ianao|azafady|misaotra|mila|efa|tsy|misy|tsara|nandoa|voaloa|lasa|vola|safidy|manao|hijery|hijerena|androany|izao|raha|ny|tena|marina|ve|izany|manahoana|salama)\b/i.test(s) ||
+      /plan inona|inona no tsara|tsy tonga|tsy misy|lasa ny vola|tena marina|manahoana|salama/i.test(s)
     ) return true;
 
     return false;
@@ -2547,6 +2593,8 @@ function detectAssistantLang(msg) {
     // Patch C: payment complaint phrases
     "mangalatra vola", "sao dia", "tsy nahazo code", "efa nandoa",
     "vola lasa fa", "nalefa ny vola", "lany ny vola",
+    // G.3B: Malagasy greeting phrases
+    "manahoana", "salama",
   ];
   const mgPhraseHit = mgPhrases.some(p => s.includes(p));
 
@@ -2577,6 +2625,8 @@ function detectAssistantLang(msg) {
     "tsy", "lany", "nahazo", "nampiasaina", "nandoa", "farany",
     "aiza", "fanampiana", "izany", "tsara", "voalohany",
     "raha", "rehefa", "veloma", "misaotra",
+    // G.3B: Malagasy greetings as standalone tokens
+    "manahoana", "salama",
   ];
 
   // Single-word English tokens (word-boundary matched on stripped text)
@@ -5881,6 +5931,28 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     }
     // Update current_topic
     thread.current_topic = "payment_issue";
+  }
+
+  // ── G.3B: Generic opening guard ──────────────────────────────────────────
+  // Fires ONLY for standalone greetings / help requests with no other intent.
+  // Payment complaints already handled above (isPaymentComplaintMessage check),
+  // so "Bonjour, j'ai payé…" never reaches here — diagnosticResult is set first.
+  // Gaming questions, plan questions, and anything > a pure greeting are not
+  // matched by isAssistantGenericOpeningTurn(), so they pass through normally.
+  const isGenericOpening = isAssistantGenericOpeningTurn(message) && !diagnosticResult;
+
+  if (isGenericOpening) {
+    const greetingAnswer = buildGenericOpeningAnswer({ context, lang });
+    // Update thread so conversation memory is consistent (no plan slot set)
+    updateAssistantThread({ thread, userMessage: message, assistantAnswer: greetingAnswer, lang, slots: {} });
+    await logAssistantInteraction({ context, intent_key: "generic_opening", lang, escalated: false, pool_id: pool_id || null, page_path: page_path || null });
+    return {
+      ok: true, context, intent_key: "generic_opening", lang,
+      answer: greetingAnswer, buttons: [],
+      requires_live_data: false, live_data_keys: [],
+      dynamic: false, ai_enhanced: false,
+      conversation_id: safeConvId, memory_active: true,
+    };
   }
 
   // Load KB rows for this context + universal rows
