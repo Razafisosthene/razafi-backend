@@ -1195,7 +1195,7 @@ body.theme-dark .rz-resp-chip {
 /* ---- Input row ---- */
 .rz-assist-input-row {
   display: flex;
-  align-items: center;
+  align-items: flex-end; /* pin send button to bottom as textarea grows */
   gap: 8px;
   padding: 10px 14px 12px;
   border-top: 1px solid rgba(17,24,39,.07);
@@ -1204,18 +1204,26 @@ body.theme-dark .rz-resp-chip {
 body.theme-dark .rz-assist-input-row {
   border-top-color: rgba(255,255,255,.08);
 }
+/* WhatsApp-style auto-growing textarea */
 #rzAssistInput {
   flex: 1;
-  height: 40px;
-  border-radius: 999px;
+  min-height: 40px;
+  max-height: 112px;       /* ~4 lines at 14px / line-height 1.5 + padding */
+  border-radius: 20px;     /* rounded but not pill — looks natural multiline */
   border: 1px solid rgba(17,24,39,.12);
   background: rgba(118,118,128,.07);
   color: #111827;
   font-size: 14px;
   font-weight: 600;
-  padding: 0 14px;
+  line-height: 1.5;
+  padding: 10px 14px;      /* vertical padding so first line centres at ~40px */
   outline: none;
   -webkit-appearance: none;
+  resize: none;            /* user must not drag-resize */
+  overflow-y: hidden;      /* JS switches to auto once max-height is hit */
+  box-sizing: border-box;
+  display: block;
+  font-family: inherit;
 }
 #rzAssistInput::placeholder {
   color: #9ca3af;

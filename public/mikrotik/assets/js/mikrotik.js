@@ -4337,14 +4337,14 @@ function bindPlanHandlers() {
     var inputRow = document.createElement("div");
     inputRow.className = "rz-assist-input-row";
 
-    var input = document.createElement("input");
-    input.type = "text";
+    var input = document.createElement("textarea");
     input.id = "rzAssistInput";
     input.placeholder = "Écrivez votre question…";
     input.setAttribute("maxlength", "400");
     input.setAttribute("autocomplete", "off");
     input.setAttribute("autocorrect", "off");
     input.setAttribute("spellcheck", "false");
+    input.rows = 1;
 
     var sendBtn = document.createElement("button");
     sendBtn.type = "button";
@@ -4457,6 +4457,7 @@ function bindPlanHandlers() {
       // User bubble
       appendMsg(msg, "user");
       input.value = "";
+      resetInputHeight();
       sendBtn.disabled = true;
 
       // Payment guard — do not call backend while payment method is processing.
@@ -4553,6 +4554,20 @@ function bindPlanHandlers() {
         });
     }
 
+    // ---- WhatsApp-style auto-resize helper ----
+    var RZ_INPUT_MAX_H = 112; // ~4 lines
+    function autoResizeInput() {
+      input.style.height = "auto";
+      var sh = input.scrollHeight;
+      input.style.height = Math.min(sh, RZ_INPUT_MAX_H) + "px";
+      input.style.overflowY = sh > RZ_INPUT_MAX_H ? "auto" : "hidden";
+    }
+
+    function resetInputHeight() {
+      input.style.height = "";
+      input.style.overflowY = "hidden";
+    }
+
     // ---- Event listeners ----
     btn.addEventListener("click", function () {
       if (isOpen) closePanel(); else openPanel();
@@ -4563,6 +4578,7 @@ function bindPlanHandlers() {
 
     input.addEventListener("input", function () {
       sendBtn.disabled = !input.value.trim();
+      autoResizeInput();
     });
 
     input.addEventListener("keydown", function (e) {
@@ -4570,6 +4586,7 @@ function bindPlanHandlers() {
         e.preventDefault();
         sendMessage(input.value);
       }
+      // Shift+Enter: textarea inserts newline naturally → onChange fires → autoResize
     });
 
     sendBtn.addEventListener("click", function () {
