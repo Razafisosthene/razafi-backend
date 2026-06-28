@@ -2240,14 +2240,16 @@ async function buildAssistantDiagnosticContext({ context, message, liveData, thr
   const amount = slots.amount_ar ? parseInt(slots.amount_ar, 10) : null;
   const provider = slots.provider || null;
 
-  // Not enough to query
+  // Not enough to query — use portal-first guidance; do not ask for phone/amount/time/ref.
+  // The assistant cannot check merchant MVola history, so collecting transaction details
+  // would be misleading. Direct user to refresh the portal and contact support if needed.
   if (!phone) {
     return {
       type: "payment",
       status: "not_enough_info",
       diagnosis_code: "missing_payment_details",
-      missing_fields: ["phone_number", ...(amount ? [] : ["amount_ar"]), "time_hint"],
-      user_action: "provide_missing_details",
+      missing_fields: [],           // cleared: do not ask for transaction details
+      user_action: "contact_support",
       contact_phone: contactPhone,
     };
   }
@@ -2284,6 +2286,8 @@ async function buildAssistantDiagnosticContext({ context, message, liveData, thr
     }
 
     if (rows.length === 0) {
+      // No transaction found for this phone — use portal-first guidance.
+      // Do not ask for reference/time as if the assistant can verify merchant MVola history.
       return {
         type: "payment",
         status: "checked",
@@ -2292,8 +2296,8 @@ async function buildAssistantDiagnosticContext({ context, message, liveData, thr
         voucher_status: "unknown",
         responsibility: "unknown",
         should_apologize: false,
-        user_action: "provide_missing_details",
-        missing_fields: ["transaction_reference", "time_hint"],
+        user_action: "contact_support",
+        missing_fields: [],   // cleared: portal-first path handles this
         contact_phone: contactPhone,
       };
     }
@@ -2309,7 +2313,7 @@ async function buildAssistantDiagnosticContext({ context, message, liveData, thr
 
       if (!amountMatches.length) {
         // No transaction found for this phone + amount combination.
-        // Keep pending_issue_type open (user_action = provide_missing_details).
+        // Use portal-first guidance — do not ask for time/reference as if checking merchant history.
         return {
           type: "payment",
           status: "checked",
@@ -2318,8 +2322,8 @@ async function buildAssistantDiagnosticContext({ context, message, liveData, thr
           voucher_status: "unknown",
           responsibility: "unknown",
           should_apologize: false,
-          user_action: "provide_missing_details",
-          missing_fields: ["time_hint", "transaction_reference"],
+          user_action: "contact_support",
+          missing_fields: [],   // cleared: portal-first path handles this
           amount_match: false,
           contact_phone: contactPhone,
         };
@@ -2328,7 +2332,8 @@ async function buildAssistantDiagnosticContext({ context, message, liveData, thr
       candidateRows = amountMatches;
     }
 
-    // Multiple candidates — need time or reference to disambiguate
+    // Multiple candidates — use portal-first guidance rather than asking for time/ref.
+    // The assistant cannot verify merchant MVola history; collect no transaction details.
     if (candidateRows.length > 1 && !slots.time_hint && !slots.transaction_ref) {
       return {
         type: "payment",
@@ -2338,14 +2343,14 @@ async function buildAssistantDiagnosticContext({ context, message, liveData, thr
         voucher_status: "unknown",
         responsibility: "unknown",
         should_apologize: false,
-        user_action: "provide_missing_details",
-        missing_fields: ["time_hint", "transaction_reference"],
+        user_action: "contact_support",
+        missing_fields: [],   // cleared: portal-first path handles this
         amount_match: amount ? true : null,
         contact_phone: contactPhone,
       };
     }
 
-    // No amount provided and multiple rows — ask for amount first
+    // No amount provided and multiple rows — use portal-first guidance; do not ask for amount/time.
     if (candidateRows.length > 1 && !amount) {
       return {
         type: "payment",
@@ -2355,8 +2360,8 @@ async function buildAssistantDiagnosticContext({ context, message, liveData, thr
         voucher_status: "unknown",
         responsibility: "unknown",
         should_apologize: false,
-        user_action: "provide_missing_details",
-        missing_fields: ["amount_ar", "time_hint"],
+        user_action: "contact_support",
+        missing_fields: [],   // cleared: portal-first path handles this
         amount_match: null,
         contact_phone: contactPhone,
       };
@@ -5881,6 +5886,26 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
         diagnostic: { type: "payment", status: "pin_warning", diagnosis_code: "pin_detected", user_action: "do_not_send_pin", missing_fields: [] },
       };
     }
+    // ── Patch 2: Portal-state-first payment complaint resolution ──────────────
+    // Check portal live state BEFORE running the DB diagnostic.
+    // If the portal already shows a delivered code, active connection, or consumed code,
+    // the complaint is likely a UI confusion — answer from portal state, skip heavy diagnostic.
+    // Exception: payment in_progress is already handled by the client-side guard (mikrotik.js).
+    const _portalFirstAnswer = buildPortalStateFirstPaymentAnswer(lang, liveData);
+    if (_portalFirstAnswer) {
+      // Portal state resolved the complaint — return early, no diagnostic needed.
+      updateAssistantThread({ thread, userMessage: message, assistantAnswer: _portalFirstAnswer, lang, slots: {} });
+      await logAssistantInteraction({ context, intent_key: "payment_portal_state_first", lang, escalated: false, pool_id: pool_id || null, page_path: page_path || null });
+      return {
+        ok: true, context, intent_key: "payment_portal_state_first", lang,
+        answer: _portalFirstAnswer, buttons: [], requires_live_data: true,
+        live_data_keys: ["portal_status_label", "payment_form_state", "main_next_action"],
+        dynamic: true, ai_enhanced: false,
+        conversation_id: safeConvId, memory_active: true,
+      };
+    }
+    // ── End Patch 2 ──────────────────────────────────────────────────────────
+
     diagnosticResult = await buildAssistantDiagnosticContext({ context, message, liveData, thread });
     // Mark pending issue for future turns
     if (diagnosticResult && !thread.pending_issue_type) {
@@ -5932,6 +5957,25 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     // Update current_topic
     thread.current_topic = "payment_issue";
   }
+
+  // ── Patch 3: Payment education gate ─────────────────────────────────────
+  // Answers "how do I pay?", "is it safe?", "sao dia mangalatra?" etc.
+  // Must run after payment complaint path (which already returned or set diagnosticResult).
+  // Never fires when diagnosticResult is set (complaint takes priority).
+  if (context === "portal_user" && !diagnosticResult && isPaymentEducationMessage(message)) {
+    // Pass message as _raw_message_hint so buildPaymentEducationAnswer can branch
+    const _eduAnswer = buildPaymentEducationAnswer(lang, { ...liveData, _raw_message_hint: message });
+    updateAssistantThread({ thread, userMessage: message, assistantAnswer: _eduAnswer, lang, slots: {} });
+    await logAssistantInteraction({ context, intent_key: "payment_education", lang, escalated: false, pool_id: pool_id || null, page_path: page_path || null });
+    return {
+      ok: true, context, intent_key: "payment_education", lang,
+      answer: _eduAnswer, buttons: [],
+      requires_live_data: false, live_data_keys: [],
+      dynamic: false, ai_enhanced: false,
+      conversation_id: safeConvId, memory_active: true,
+    };
+  }
+  // ── End Patch 3 ──────────────────────────────────────────────────────────
 
   // ── G.3B: Generic opening guard ──────────────────────────────────────────
   // Fires ONLY for standalone greetings / help requests with no other intent.
@@ -6360,6 +6404,25 @@ const ASSISTANT_AI_FORBIDDEN_TERMS = [
 function isPaymentComplaintMessage(msg) {
   const s = String(msg || "").toLowerCase();
 
+  // ── Education/trust exclusion: always check FIRST ──────────────────────
+  // Messages asking whether the system is safe or trustworthy are education
+  // questions, not complaints — even when they contain "mangalatra", "voleur",
+  // "sao dia", or a provider name. Route them to the education path instead.
+  // Pattern: "sao dia mangalatra ny MVola?" = "does MVola steal?" (reassurance)
+  //          "mangalatra vola" = "stole money" (complaint — already paid and gone)
+  const trustPhrases = [
+    "sao dia mangalatra",   // "does it steal?" — Malagasy trust question
+    "tsy mangalatra",       // "it doesn't steal" — seeking reassurance
+    "est-ce que ça vole",   // French trust question
+    "est-ce sécurisé",
+    "est-ce que c'est sécurisé",
+    "is it safe",
+    "is it secure",
+    "does it steal",
+    "will it steal",
+  ];
+  if (trustPhrases.some(ph => s.includes(ph))) return false;
+
   // Strong signals — unambiguous on their own; always a payment complaint.
   const strongSignals = [
     // Malagasy
@@ -6379,6 +6442,8 @@ function isPaymentComplaintMessage(msg) {
   if (strongSignals.some(sig => s.includes(sig))) return true;
 
   // Broad signals — ambiguous alone; only a payment complaint when a payment anchor is also present.
+  // Note: "sao dia" alone is not a complaint — the trust exclusion above handles
+  // "sao dia mangalatra" before this block is reached.
   const broadSignals = ["sao dia", "voleur", "a volé", "scam", "arnaque", "pas de code", "sans code", "no code"];
   const paymentAnchors = [
     "mvola", "orange money", "airtel money",
@@ -6390,6 +6455,151 @@ function isPaymentComplaintMessage(msg) {
   }
 
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Patch 2: Detect payment education questions (not complaints).
+// These questions ask HOW to pay, whether it is safe, etc. — not a complaint.
+// ---------------------------------------------------------------------------
+function isPaymentEducationMessage(msg) {
+  const s = String(msg || "").toLowerCase();
+  const educationSignals = [
+    // French
+    "comment payer", "comment faire le paiement", "comment utiliser mvola",
+    "comment ça marche", "est-ce sécurisé", "est-ce que c'est sécurisé",
+    "sécurité du paiement", "comment procéder",
+    // Malagasy
+    "ahoana no handoavana", "ahoana ny fandoavana", "sao dia mangalatra",
+    "tsy mangalatra", "ahoana no ampiasana", "ahoana ny dingana",
+    // English
+    "how do i pay", "how to pay", "how to use mvola",
+    "is it safe", "is it secure", "payment process", "how does payment work",
+    "why does mvola ask for pin", "why pin", "why ask pin",
+  ];
+  if (educationSignals.some(sig => s.includes(sig))) return true;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Patch 2: Build deterministic portal-state-first answer for payment complaints.
+// Must be called BEFORE the generic diagnostic path when liveData is available.
+// Returns a string answer, or null if the portal state does not resolve the complaint.
+// Never exposes voucher code, transaction ref, phone, MAC, NAS, PIN, secrets.
+// ---------------------------------------------------------------------------
+function buildPortalStateFirstPaymentAnswer(lang, liveData) {
+  if (!liveData || typeof liveData !== "object") return null;
+
+  const l = String(lang || "fr").toLowerCase();
+  const pfs  = String(liveData.payment_form_state  || "idle").toLowerCase();
+  const psl  = String(liveData.portal_status_label || "no_active_code").toLowerCase();
+  const mna  = String(liveData.main_next_action    || "choose_plan").toLowerCase();
+  const st   = String(liveData.status              || "none").toLowerCase();
+  const brandName   = String(liveData.brand_name   || liveData.display_name || liveData.pool_name || "").trim() || null;
+  const contactPhone = (function() {
+    const p = String(liveData.contact_phone || "").trim();
+    // Only accept recognizable phone formats; never echo back user input
+    return /^[\d\s()+-]{6,20}$/.test(p) ? p : null;
+  })();
+
+  function t(mg, fr, en) {
+    if (l === "mg") return mg;
+    if (l === "en") return en;
+    return fr;
+  }
+
+  // Case 1: payment in progress — tell user to wait (matches Patch 1 safety guard)
+  if (pfs === "in_progress") {
+    return t(
+      "Mbola eo am-piandrasana confirmation ny mobile money ny paiement-nao. Azafady miandrasa kely.",
+      "Votre paiement est en cours de confirmation. Merci de patienter jusqu’à la confirmation.",
+      "Your payment is still being confirmed. Please wait until confirmation."
+    );
+  }
+
+  // Case 2: code_ready / pending — code was already delivered, user should use it
+  if (psl === "code_ready" || st === "pending" || mna === "use_code_button") {
+    return t(
+      "Hita eto amin’ny portail ny code-nao, efa vonona izy. Tsindrio ny bouton «Utiliser ce code» mba hamorona ny connexion WiFi.",
+      "Votre code est prêt sur le portail. Cliquez sur le bouton «Utiliser ce code» pour activer votre connexion WiFi.",
+      "Your code is ready on the portal. Click «Utiliser ce code» to activate your WiFi connection."
+    );
+  }
+
+  // Case 3: connection_active / active — already connected
+  if (psl === "connection_active" || st === "active" || mna === "continue_internet") {
+    return t(
+      "Efa active ny connexion-nao. Tsindrio «Continuer vers Internet» na misokatra pejy web iray mba hanamarinana. Raha mbola tsy misy connexion aorian’izany, lazao ahy izay miseho.",
+      "Votre connexion est déjà active. Cliquez sur «Continuer vers Internet» ou ouvrez une page web pour vérifier. Si vous n’arrivez toujours pas à vous connecter, dites-moi ce qui se passe.",
+      "Your connection is already active. Click «Continuer vers Internet» or open a web page to verify. If you still cannot connect, tell me what happens."
+    );
+  }
+
+  // Case 4: previous_consumption / used or expired — last code was delivered and used/expired
+  if (psl === "previous_consumption" || st === "used" || st === "expired") {
+    return t(
+      "Ny code farany nomena anao dia efa nampiasaina na efa lany. Raha heverinao fa tsy nampiasainao izy, lazao ahy: vita faingana be ny forfait, sa heverinao fa tsy mba nahazo code mihitsy ianao?",
+      "Le dernier code livré a déjà été utilisé ou a expiré. Si vous pensez ne pas l’avoir utilisé, dites-moi : le forfait s’est-il épuisé trop vite, ou croyez-vous ne pas avoir reçu de code du tout ?",
+      "The last code delivered was already used or expired. If you believe you didn’t use it, tell me: did the data run out too fast, or do you think you never received a code at all?"
+    );
+  }
+
+  // Case 5: no_active_code — portal shows nothing delivered, user says they paid
+  if (psl === "no_active_code" || st === "none") {
+    const wifiLabel = brandName || "le WiFi";
+    const contactPart = contactPhone
+      ? t(
+          `, contactez ${wifiLabel} au ${contactPhone}`,
+          `, contactez ${wifiLabel} au ${contactPhone}`,
+          `, contact ${wifiLabel} at ${contactPhone}`
+        )
+      : t(
+          ", mifandraisa amin’ny assistance",
+          ", contactez l’assistance",
+          ", contact support"
+        );
+    return t(
+      `Tsy mbola hitako eto amin’ny portail ny code livré. Actualisez aloha ny page. Raha tena confirmed ny paiement dia mety hiseho automatique ny code. Raha tena nihena ny solde MVola-nao nefa tsy misy code miseho aorian’ny actualisation${contactPart}.`,
+      `Je ne vois pas encore de code livré sur ce portail. Actualisez d’abord la page. Si le paiement a bien été confirmé, le code peut s’afficher automatiquement. Si votre solde MVola a bien été débité mais qu’aucun code ne s’affiche après actualisation${contactPart}.`,
+      `I don’t see a delivered code on this portal yet. Please refresh the page first. If the payment was confirmed, the code may appear automatically. If your mobile money balance was debited but no code appears after refreshing${contactPart}.`
+    );
+  }
+
+  // Portal state is indeterminate — let existing diagnostic path handle it
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Patch 3: Deterministic payment education answer.
+// Explains the normal payment flow. Never a payment complaint handler.
+// ---------------------------------------------------------------------------
+function buildPaymentEducationAnswer(lang, liveData) {
+  const l = String(lang || "fr").toLowerCase();
+  // Generic provider name — MVola is the active provider; Orange Money / Airtel Money would fit the same logic
+  const activeProvider = "MVola";
+
+  function t(mg, fr, en) {
+    if (l === "mg") return mg;
+    if (l === "en") return en;
+    return fr;
+  }
+
+  const s = String(liveData?._raw_message_hint || "").toLowerCase();
+
+  // Special case: "sao dia mangalatra ny MVola?" — reassurance wording
+  if (s.includes("mangalatra") || s.includes("mangalatra mvola") || s.includes("mangalatra vola")) {
+    return t(
+      "Tsia, tsy mangalatra MVola ny portail. Mifidy forfait ianao, manamarina ny paiement amin’ny MVola, ary rehefa voamarina ny paiement dia miseho automatique ny code WiFi. Aza alefa amin’olona mihitsy ny PIN-nao.",
+      "Non, le portail ne vole pas votre argent MVola. Vous choisissez un forfait, vous confirmez le paiement via MVola, et une fois le paiement confirmé, le code WiFi apparaît automatiquement. Ne partagez jamais votre PIN.",
+      "No, the portal does not steal your MVola money. You choose a plan, confirm the payment via MVola, and once the payment is confirmed, your WiFi code appears automatically. Never share your PIN."
+    );
+  }
+
+  // General payment flow explanation
+  return t(
+    `Voici ny dingana: (1) Mifidy forfait ianao. (2) Miditra ny nomerao ${activeProvider}-nao. (3) Manamarina ny paiement ianao. (4) Miditra ny PIN-nao amin’ny ${activeProvider} ihany — ato amin’ny chat RAZAFI tsy ilaina mihitsy ny PIN. (5) Andraso ny confirmation ${activeProvider}. (6) Rehefa voamarina dia miseho automatique ny code WiFi. Aza mandefa PIN ato amin’ny chat mihitsy.`,
+    `Voici les étapes : (1) Vous choisissez un forfait. (2) Vous saisissez votre numéro ${activeProvider}. (3) Vous confirmez le paiement. (4) Vous entrez votre PIN uniquement dans ${activeProvider} — RAZAFI ne vous demandera jamais votre PIN dans ce chat. (5) RAZAFI attend la confirmation ${activeProvider}. (6) Une fois confirmé, votre code WiFi apparaît automatiquement. Ne partagez jamais votre PIN ici.`,
+    `Here are the steps: (1) Choose a plan. (2) Enter your ${activeProvider} number. (3) Confirm the payment. (4) Enter your PIN only in ${activeProvider} — RAZAFI will never ask for your PIN in this chat. (5) RAZAFI waits for ${activeProvider} confirmation. (6) Once confirmed, your WiFi code appears automatically. Never share your PIN here.`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -6416,13 +6626,16 @@ function buildPaymentContextBlock(liveData) {
   // both cases require the soft wording, NOT "no recent transaction found".
   if (!ps) {
     // latest_payment_status is only set when a real DB lookup ran and returned a result.
-    // If it is absent, details are still missing — emit the soft wording.
-    // True payment_not_found always sets latest_payment_status = "not_found", so
-    // this branch never suppresses a genuine "not found" result.
+    // If it is absent, portal state has already been checked (portal-state-first path).
+    // Do NOT instruct AI to ask for MVola number/amount/time/reference — the assistant
+    // cannot check merchant MVola history. Use portal-first guidance instead.
     return [
-      "PAYMENT CONTEXT: not enough details yet to check this payment.",
-      "Ask for the number used, amount, approximate time, and reference if available.",
-      "Do not say transaction not found yet. Never ask for PIN.",
+      "PAYMENT CONTEXT: portal does not currently show a delivered code.",
+      "Tell user to refresh the portal page.",
+      "If payment was confirmed, code may appear automatically after refresh.",
+      "If balance was truly debited but no code appears after refresh, direct user to contact WiFi owner/assistance using contact_phone and brand_name from SAFE LIVE DATA.",
+      "Do not ask for MVola number, amount, time, or transaction reference.",
+      "Never ask for PIN.",
     ].join(" ");
   }
 
@@ -6462,7 +6675,8 @@ PAYMENT COMPLAINT PROTOCOL — follow this strictly:
 - If payment_status = "failed" OR "timeout":
   Tell user RAZAFI did not receive payment confirmation. If their balance was debited, ask them to send the SMS/transaction reference to assistance. Give contact_phone.
 - If payment_status = "not_found" OR no payment context:
-  Do NOT invent. Empathize, then ask user for: the number used, amount, approximate time, and transaction reference if available.
+  Do NOT ask for the user's MVola number, amount, time, or transaction reference as if you can check merchant MVola history — you cannot.
+  Instead: (1) Tell the user the portal does not currently show a delivered code. (2) Ask them to refresh the portal page. (3) Explain that if the payment was confirmed, the code may appear after refresh. (4) If their balance was truly debited but no code appears after refreshing, direct them to contact the WiFi owner/assistance using contact_phone and brand_name from SAFE LIVE DATA.
 SAFETY RULES:
 - NEVER say the provider (MVola/Orange/Airtel) stole or took money.
 - NEVER say "payment confirmed" unless payment_status explicitly says "completed".
@@ -6470,7 +6684,8 @@ SAFETY RULES:
 - NEVER promise a refund unless you have confirmed refund workflow data.
 - NEVER ask for PIN or password.
 - NEVER invent a transaction reference or voucher code.
-- If diagnosis_code = "payment_amount_mismatch" OR amount_match = false: NEVER say the payment is confirmed and NEVER say the code is ready. Ask for the correct amount, approximate time, or SMS reference. Never ask for PIN.
+- NEVER ask for MVola number, amount, time, or reference as a way to "check" payment — the assistant cannot access merchant MVola balance or history.
+- If diagnosis_code = "payment_amount_mismatch" OR amount_match = false: NEVER say the payment is confirmed and NEVER say the code is ready. Direct user to refresh portal and contact support with contact_phone. Never ask for PIN.
 `;
 
 // ---------------------------------------------------------------------------
@@ -6509,32 +6724,25 @@ function buildPaymentDiagnosticFallbackAnswer(lang, diagnosticResult, liveData) 
   // missing_payment_details diagnosis — never on missing.length alone, so that
   // payment_not_found and multiple_possible_matches keep their own correct branches.
   if (st === "not_enough_info" || dc === "missing_payment_details") {
-    const fieldLabels = {
-      phone_number:          t("nomerao nampiasaina",    "le numéro utilisé",               "the number used"),
-      amount_ar:             t("vola naloa",             "le montant payé",                 "the amount paid"),
-      time_hint:             t("ora nahazoana SMS",      "l'heure approximative",           "the approximate time"),
-      transaction_reference: t("référence raha misy",   "la référence si disponible",      "the reference if available"),
-    };
-    const safeFields = missing.filter(f =>
-      ["phone_number", "amount_ar", "time_hint", "transaction_reference"].includes(f)
-    );
-    const askParts = safeFields.length
-      ? safeFields.map(f => fieldLabels[f] || f)
-      : [
-          fieldLabels.phone_number,
-          fieldLabels.amount_ar,
-          fieldLabels.time_hint,
-          fieldLabels.transaction_reference,
-        ];
-    const askStr = t(
-      `Alefaso azafady: ${askParts.join(", ")}.`,
-      `Envoyez-moi : ${askParts.join(", ")}.`,
-      `Please send: ${askParts.join(", ")}.`
-    );
+    // Do NOT ask for MVola number, amount, time, or transaction reference.
+    // The assistant cannot check merchant MVola balance or history.
+    // Portal-first: refresh the portal, then contact support if balance was debited.
+    const _dNiWifiLabel = String(liveData?.brand_name || liveData?.display_name || liveData?.pool_name || "").trim() || null;
+    const _dNiContactPart = phone
+      ? t(
+          `, mifandraisa amin'ny ${_dNiWifiLabel ? _dNiWifiLabel : "assistance"} au ${phone}`,
+          `, contactez ${_dNiWifiLabel ? _dNiWifiLabel + " au" : "l'assistance au"} ${phone}`,
+          `, contact ${_dNiWifiLabel ? _dNiWifiLabel + " at" : "support at"} ${phone}`
+        )
+      : t(
+          ", mifandraisa amin'ny assistance",
+          ", contactez l'assistance",
+          ", contact support"
+        );
     return t(
-      "Mila info kely aho hijerena ny paiement-nao. " + askStr + " Aza mandefa PIN.",
-      "J'ai besoin de quelques détails pour vérifier votre paiement. " + askStr + " N'envoyez jamais votre PIN.",
-      "I need a few details to check your payment. " + askStr + " Never share your PIN."
+      `Mbola misy détails tsy maintsy ho jereko momban'ny paiement-nao. Actualisez aloha ny page portail. Raha tena confirmed ny paiement dia mety hiseho automatique ny code. Raha nihena ny solde nefa tsy misy code aorian'ny actualisation${_dNiContactPart}. Aza mandefa PIN.`,
+      `Je ne vois pas encore de code livré sur ce portail. Actualisez d'abord la page. Si le paiement a bien été confirmé, le code peut s'afficher automatiquement. Si votre solde a bien été débité mais qu'aucun code ne s'affiche après actualisation${_dNiContactPart}. N'envoyez jamais votre PIN.`,
+      `I don't see a delivered code on this portal yet. Please refresh the page first. If the payment was confirmed, the code may appear automatically. If your balance was truly debited but no code appears after refreshing${_dNiContactPart}. Never share your PIN.`
     );
   }
 
@@ -6556,12 +6764,14 @@ function buildPaymentDiagnosticFallbackAnswer(lang, diagnosticResult, liveData) 
     );
   }
 
-  // Payment confirmed but code missing — RAZAFI side issue, apologize
+  // Payment confirmed but code missing — RAZAFI side issue, apologize.
+  // Payment is already confirmed in the system; do not ask user for their number/time.
+  // Support has the transaction record; user just needs to contact them.
   if (dc === "payment_received_code_missing") {
     return t(
-      "Azafady, toa voaray ny paiement, fa tsy nivoaka tsara ny code côté RAZAFI. Mifandraisa amin'ny assistance miaraka amin'ny nomerao nampiasaina sy ny ora nandoavana. Aza mandefa PIN." + contactSuffix,
-      "Désolé, le paiement semble bien reçu, mais le code n'a pas été généré correctement côté RAZAFI. Contactez l'assistance avec le numéro utilisé et l'heure du paiement. N'envoyez jamais votre PIN." + contactSuffix,
-      "Sorry, your payment appears received but the code was not generated correctly on RAZAFI's side. Contact support with the number used and payment time. Never share your PIN." + contactSuffix
+      "Azafady, toa voaray ny paiement, fa tsy nivoaka tsara ny code côté RAZAFI. Mifandraisa amin'ny assistance mba hahazoana ny code. Aza mandefa PIN." + contactSuffix,
+      "Désolé, le paiement semble bien reçu, mais le code n'a pas été généré correctement côté RAZAFI. Contactez l'assistance pour obtenir votre code. N'envoyez jamais votre PIN." + contactSuffix,
+      "Sorry, your payment appears received but the code was not generated correctly on RAZAFI's side. Contact support to get your code. Never share your PIN." + contactSuffix
     );
   }
 
@@ -6583,54 +6793,64 @@ function buildPaymentDiagnosticFallbackAnswer(lang, diagnosticResult, liveData) 
     );
   }
 
-  // Patch F.4: amount provided but no transaction matches — do not reveal other transactions
+  // payment_amount_mismatch — portal-first: no transaction details asked.
+  // The assistant cannot check merchant MVola history to verify any amount.
   if (dc === "payment_amount_mismatch") {
+    const _amWifiLabel = String(liveData?.brand_name || liveData?.display_name || liveData?.pool_name || "").trim() || null;
+    const _amContactPart = phone
+      ? t(
+          `, mifandraisa amin'ny ${_amWifiLabel || "assistance"} au ${phone}`,
+          `, contactez ${_amWifiLabel ? _amWifiLabel + " au" : "l'assistance au"} ${phone}`,
+          `, contact ${_amWifiLabel ? _amWifiLabel + " at" : "support at"} ${phone}`
+        )
+      : t(", mifandraisa amin'ny assistance", ", contactez l'assistance", ", contact support");
     return t(
-      "Tsy hitako izay paiement mifanaraka amin\'io montant io amin\'io numéro io. Alefaso azafady ny ora nandoavanao na ny référence SMS raha misy, na avereno jereo ny montant. Aza mandefa PIN.",
-      "Je ne trouve pas de paiement correspondant à ce montant avec ce numéro. Envoyez l\'heure approximative ou la référence SMS si vous l\'avez, ou vérifiez le montant saisi. N\'envoyez jamais votre PIN.",
-      "I can\'t find a payment matching that amount for this number. Please send the approximate time or SMS reference if you have it, or check the amount entered. Never send your PIN."
+      `Tsy mbola hitako eto amin'ny portail ny code livré. Actualisez aloha ny page. Raha tena confirmed ny paiement dia mety hiseho automatique ny code. Raha nihena ny solde nefa tsy misy code aorian'ny actualisation${_amContactPart}. Aza mandefa PIN.`,
+      `Je ne vois pas encore de code livré sur ce portail. Actualisez d'abord la page. Si le paiement a bien été confirmé, le code peut s'afficher automatiquement. Si votre solde a bien été débité mais qu'aucun code ne s'affiche après actualisation${_amContactPart}. N'envoyez jamais votre PIN.`,
+      `I don't see a delivered code on this portal yet. Please refresh the page first. If the payment was confirmed, the code may appear automatically. If your balance was truly debited but no code appears after refreshing${_amContactPart}. Never share your PIN.`
     );
   }
 
-  // No transaction found
+  // payment_not_found — portal-first: no transaction details asked.
+  // The assistant cannot check merchant MVola history.
   if (dc === "payment_not_found") {
+    const _nfWifiLabel = String(liveData?.brand_name || liveData?.display_name || liveData?.pool_name || "").trim() || null;
+    const _nfContactPart = phone
+      ? t(
+          `, mifandraisa amin'ny ${_nfWifiLabel || "assistance"} au ${phone}`,
+          `, contactez ${_nfWifiLabel ? _nfWifiLabel + " au" : "l'assistance au"} ${phone}`,
+          `, contact ${_nfWifiLabel ? _nfWifiLabel + " at" : "support at"} ${phone}`
+        )
+      : t(", mifandraisa amin'ny assistance", ", contactez l'assistance", ", contact support");
     return t(
-      "Tsy hita ny transaction eo amin'ny système RAZAFI. Alefaso amin'ny assistance ny SMS na référence transaction, ny ora nandoavana, ary ny nomerao nampiasaina. Aza mandefa PIN." + contactSuffix,
-      "Aucune transaction correspondante trouvée dans le système RAZAFI. Envoyez à l'assistance le SMS ou la référence, l'heure du paiement, et le numéro utilisé. N'envoyez jamais votre PIN." + contactSuffix,
-      "No matching transaction found in RAZAFI. Send the support team your SMS or reference, payment time, and number used. Never share your PIN." + contactSuffix
+      `Tsy mbola hitako eto amin'ny portail ny code livré. Actualisez aloha ny page. Raha tena confirmed ny paiement dia mety hiseho automatique ny code. Raha nihena ny solde nefa tsy misy code aorian'ny actualisation${_nfContactPart}. Aza mandefa PIN.`,
+      `Je ne vois pas encore de code livré sur ce portail. Actualisez d'abord la page. Si le paiement a bien été confirmé, le code peut s'afficher automatiquement. Si votre solde a bien été débité mais qu'aucun code ne s'affiche après actualisation${_nfContactPart}. N'envoyez jamais votre PIN.`,
+      `I don't see a delivered code on this portal yet. Please refresh the page first. If the payment was confirmed, the code may appear automatically. If your balance was truly debited but no code appears after refreshing${_nfContactPart}. Never share your PIN.`
     );
   }
 
-  // Multiple matches — need more details
+  // multiple_possible_matches — portal-first: no transaction details asked.
+  // The assistant cannot check merchant MVola history to disambiguate.
   if (dc === "multiple_possible_matches") {
-    const ask = missing.length
-      ? t(`Precizao: ${missing.join(", ")}.`, `Précisez : ${missing.join(", ")}.`, `Please provide: ${missing.join(", ")}.`)
-      : t("Precizao ny montant sy ny ora.", "Précisez le montant et l'heure.", "Please specify the amount and time.");
+    const _mpWifiLabel = String(liveData?.brand_name || liveData?.display_name || liveData?.pool_name || "").trim() || null;
+    const _mpContactPart = phone
+      ? t(
+          `, mifandraisa amin'ny ${_mpWifiLabel || "assistance"} au ${phone}`,
+          `, contactez ${_mpWifiLabel ? _mpWifiLabel + " au" : "l'assistance au"} ${phone}`,
+          `, contact ${_mpWifiLabel ? _mpWifiLabel + " at" : "support at"} ${phone}`
+        )
+      : t(", mifandraisa amin'ny assistance", ", contactez l'assistance", ", contact support");
     return t(
-      "Misy transaction maromaro mifanitsy. " + ask,
-      "Plusieurs transactions possibles trouvées. " + ask,
-      "Multiple matching transactions found. " + ask
+      `Tsy mbola hitako eto amin'ny portail ny code livré. Actualisez aloha ny page. Raha tena confirmed ny paiement dia mety hiseho automatique ny code. Raha nihena ny solde nefa tsy misy code aorian'ny actualisation${_mpContactPart}. Aza mandefa PIN.`,
+      `Je ne vois pas encore de code livré sur ce portail. Actualisez d'abord la page. Si le paiement a bien été confirmé, le code peut s'afficher automatiquement. Si votre solde a bien été débité mais qu'aucun code ne s'affiche après actualisation${_mpContactPart}. N'envoyez jamais votre PIN.`,
+      `I don't see a delivered code on this portal yet. Please refresh the page first. If the payment was confirmed, the code may appear automatically. If your balance was truly debited but no code appears after refreshing${_mpContactPart}. Never share your PIN.`
     );
   }
 
-  // Missing payment details — ask only for what's missing
-  if (dc === "missing_payment_details") {
-    const fieldLabels = {
-      phone_number: t("nomerao nampiasaina", "le numéro utilisé", "the number used"),
-      amount_ar:    t("montant nandoavanao", "le montant envoyé", "the amount sent"),
-      time_hint:    t("ny ora teo ho eo", "l'heure approximative", "the approximate time"),
-      transaction_reference: t("référence transaction raha misy", "la référence de transaction si disponible", "the transaction reference if available"),
-    };
-    const askParts = missing.map(f => fieldLabels[f] || f);
-    const askStr = askParts.length
-      ? t(`Lazao aminay: ${askParts.join(", ")}.`, `Merci de préciser : ${askParts.join(", ")}.`, `Please share: ${askParts.join(", ")}.`)
-      : t("Lazao aminay ny details momba ny paiement.", "Merci de préciser les détails du paiement.", "Please share the payment details.");
-    return t(
-      "Mba hanampy anao tsara, " + askStr + " Aza mandefa PIN.",
-      "Pour mieux vous aider, " + askStr + " N'envoyez jamais votre PIN.",
-      "To help you better, " + askStr + " Never share your PIN."
-    );
-  }
+  // missing_payment_details: reached only if the top-level guard did not already return.
+  // This branch is now a no-op — the guard above (not_enough_info || missing_payment_details)
+  // handles both cases with portal-first wording. This block is kept as a safety comment only.
+  // (dead code — never reached because the guard above covers dc === "missing_payment_details")
 
   // Generic diagnostic fallback
   return t(
@@ -6682,10 +6902,12 @@ function buildPaymentComplaintFallbackAnswer(lang, liveData) {
     );
   }
 
-  // Branch 2: payment completed but voucher not generated
+  // Branch 2: payment completed but voucher not generated — RAZAFI side issue.
+  // Do not ask user for nomerao/montant/ora/reference — the assistant cannot check merchant history.
+  // Direct to contact support; they already have the confirmed payment on record.
   if (ps === "completed" && vs === "not_generated") {
     return t(
-      "Voamarina ny paiement-nao, fa mbola tsy hita ny code. Alefaso amin'ny assistance ny nomerao nampiasaina, montant nandoavanao, ora, ary référence transaction raha misy. Aza mandefa PIN." + contactSuffix,
+      "Voamarina ny paiement-nao, fa tsy nivoaka tsara ny code côté RAZAFI. Mifandraisa amin'ny assistance mba hahazoana ny code. Aza mandefa PIN." + contactSuffix,
       "Votre paiement semble confirmé mais le code n'a pas pu être généré automatiquement. L'assistance doit vérifier." + contactSuffix,
       "Your payment appears confirmed but the code was not generated automatically. Support needs to verify." + contactSuffix
     );
@@ -6709,11 +6931,25 @@ function buildPaymentComplaintFallbackAnswer(lang, liveData) {
     );
   }
 
-  // Branch 5: not found or unknown — ask for minimum details
+  // Branch 5: not found or unknown — portal-first: refresh first, then contact support.
+  // Do NOT ask for MVola number, amount, time, or reference — the assistant cannot check
+  // merchant MVola balance or history. Direct user to refresh, then to contact support.
+  const _b5WifiLabel = String(liveData?.brand_name || liveData?.display_name || liveData?.pool_name || "").trim() || null;
+  const _b5ContactPart = phone
+    ? t(
+        `, contactez ${_b5WifiLabel ? _b5WifiLabel + " au" : "l'assistance au"} ${phone}`,
+        `, contactez ${_b5WifiLabel ? _b5WifiLabel + " au" : "l'assistance au"} ${phone}`,
+        `, contact ${_b5WifiLabel ? _b5WifiLabel + " at" : "support at"} ${phone}`
+      )
+    : t(
+        ", mifandraisa amin'ny assistance",
+        ", contactez l'assistance",
+        ", contact support"
+      );
   return t(
-    "Tsy mbola mahita paiement farany ato amin'ny système RAZAFI aho. Tsy afaka milaza aho hoe nalain'ny MVola ny vola raha tsy voamarina ny transaction. Raha nihena ny solde MVola-nao nefa tsy nahazo code ianao, alefaso amin'ny assistance ny nomerao nampiasaina, montant nandoavanao, ora, ary référence transaction raha misy. Aza mandefa PIN.",
-    "Je ne trouve pas de paiement récent dans le système. Pour vous aider, merci de préciser : le numéro utilisé, le montant envoyé, la date et l'heure, et la référence de transaction si disponible. Ne communiquez pas votre PIN.",
-    "No recent payment found in the system. To help you, please share: the number you used, the amount sent, the date and time, and the transaction reference if available. Never share your PIN."
+    `Tsy mbola hitako eto amin'ny portail ny code livré. Actualisez aloha ny page. Raha tena confirmed ny paiement dia mety hiseho automatique ny code. Raha tena nihena ny solde MVola-nao nefa tsy misy code miseho aorian'ny actualisation${_b5ContactPart}. Aza mandefa PIN.`,
+    `Je ne vois pas encore de code livré sur ce portail. Actualisez d'abord la page. Si le paiement a bien été confirmé, le code peut s'afficher automatiquement. Si votre solde MVola a bien été débité mais qu'aucun code ne s'affiche après actualisation${_b5ContactPart}. N'envoyez jamais votre PIN.`,
+    `I don't see a delivered code on this portal yet. Please refresh the page first. If the payment was confirmed, the code may appear automatically. If your mobile money balance was truly debited but no code appears after refreshing${_b5ContactPart}. Never share your PIN.`
   );
 }
 
@@ -6803,7 +7039,7 @@ function buildGroundedAssistantPrompt({
     ...(isPaymentComplaint ? [
       "PAYMENT COMPLAINT ACTIVE — follow PAYMENT CONTEXT and PAYMENT COMPLAINT PROTOCOL strictly.",
       // G.1 Polish: explicit rule to prevent premature "not found" answers
-      "MISSING DETAILS RULE: If PAYMENT CONTEXT says 'not enough details yet', do NOT say the transaction was not found. Do NOT say the payment failed. Ask only for: the number used, the amount paid, the approximate time, and the reference if available. Never ask for PIN.",
+      "PORTAL-FIRST RULE: If PAYMENT CONTEXT says 'not enough details yet', do NOT say the transaction was not found. Do NOT say the payment failed. Do NOT ask for the MVola number, amount, time, or transaction reference — the assistant cannot check merchant MVola history. Instead: tell user the portal does not show a delivered code yet, ask them to refresh the portal, and explain that if their balance was truly debited and no code appears after refresh, they should contact the WiFi owner/assistance using contact_phone and brand_name from SAFE LIVE DATA. Never ask for PIN.",
       PAYMENT_DIAGNOSIS_RULES,
     ] : []),
   ].join("\n- ");

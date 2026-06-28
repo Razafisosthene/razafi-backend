@@ -4459,12 +4459,23 @@ function bindPlanHandlers() {
       input.value = "";
       sendBtn.disabled = true;
 
-      // Payment guard — do not call backend while MVola is processing
+      // Payment guard — do not call backend while payment method is processing.
+      // Language-aware: detect from current message then fall back to default (fr).
       if (window.razafiPaymentInProgress) {
-        appendMsg(
-          "Votre paiement MVola est en cours. Merci de patienter jusqu’à la confirmation.",
-          "assistant"
-        );
+        var _pip_s = msg.toLowerCase();
+        var _pip_lang =
+          (/\b(tsy|azafady|eo|mba|misy|misaotra|salama|efa|kely|amin|dia|ny|aho|ianao|izao|nahazo|nandoa|mbola)\b/.test(_pip_s))
+            ? "mg"
+          : (/\b(how|please|payment|waiting|confirm|my|i |the |is |are |do |did |can |what)\b/.test(_pip_s))
+            ? "en"
+          : "fr";
+        var _pip_msg =
+          _pip_lang === "mg"
+            ? "Mbola eo am-piandrasana confirmation MVola ny paiement-nao. Azafady miandrasa kely."
+          : _pip_lang === "en"
+            ? "Your payment is still being confirmed. Please wait until confirmation."
+          : "Votre paiement est en cours de confirmation. Merci de patienter jusqu’à la confirmation.";
+        appendMsg(_pip_msg, "assistant");
         return;
       }
 
