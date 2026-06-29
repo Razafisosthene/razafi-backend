@@ -5898,6 +5898,116 @@ async function logAssistantInteraction({ context, intent_key, lang, escalated, p
   } catch (_) {}
 }
 
+
+// =============================================================================
+// RAZAFI ASSISTANT — G.4.1: Platform prospect short numeric follow-up
+// =============================================================================
+// Purpose: when the assistant asks a prospect "Combien d'utilisateurs ?" and
+// the user replies with a short number like "200", understand it as approximate
+// user count instead of falling back to "message unclear".
+// Scope: platform_prospect only. No portal/payment/admin logic touched.
+// Pure helpers, no DB, no external calls, no write actions.
+// =============================================================================
+
+function extractPlatformProspectUserCount(message) {
+  try {
+    const raw = String(message || "").trim();
+    if (!raw) return null;
+    const s = raw.toLowerCase();
+
+    // Bare numeric follow-up: "20", "50", "200".
+    if (/^\d{1,4}$/.test(s)) {
+      const n = parseInt(s, 10);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    }
+
+    // Explicit phrasing: "200 utilisateurs", "50 users", "30 clients".
+    const explicit = s.match(/\b(\d{1,5})\s*(?:utilisateurs?|users?|clients?|personnes?|appareils?|devices?|connexions?)\b/i);
+    if (explicit) {
+      const n = parseInt(explicit[1], 10);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    }
+
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function isPlatformProspectAwaitingUserCount(thread) {
+  try {
+    if (!thread || !Array.isArray(thread.turns)) return false;
+    const recentAssistantTurns = thread.turns
+      .filter(t => t && t.role === "assistant" && t.text)
+      .slice(-3)
+      .map(t => String(t.text || "").toLowerCase())
+      .join("\n");
+
+    if (!recentAssistantTurns) return false;
+
+    return (
+      recentAssistantTurns.includes("combien d’utilisateurs") ||
+      recentAssistantTurns.includes("combien d'utilisateurs") ||
+      recentAssistantTurns.includes("combien d utilisateurs") ||
+      recentAssistantTurns.includes("utilisateurs souhaitez-vous connecter") ||
+      recentAssistantTurns.includes("utilisateurs environ") ||
+      recentAssistantTurns.includes("connecter approximativement") ||
+      recentAssistantTurns.includes("how many users") ||
+      recentAssistantTurns.includes("users are you planning to connect") ||
+      recentAssistantTurns.includes("planning to connect approximately")
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+function buildPlatformProspectUserCountAnswer({ lang, userCount }) {
+  try {
+    const n = Math.max(1, Math.floor(Number(userCount || 0)));
+    const l = String(lang || "fr").toLowerCase();
+
+    if (l === "en") {
+      if (n >= 150) {
+        return `For around ${n} users, this is a structured project: you should plan a stronger MikroTik/router, several well-placed access points, and proper sizing of the zone. If ${n} means simultaneous users, the design must be even more robust. The best next step is to contact RAZAFI on WhatsApp so we can size the installation correctly.`;
+      }
+      if (n >= 50) {
+        return `For around ${n} users, RAZAFI can work, but the installation should be well dimensioned: MikroTik/router, access points, coverage, and expected simultaneous users. Contact RAZAFI on WhatsApp so we can recommend the right setup.`;
+      }
+      return `For around ${n} users, RAZAFI can be set up with a simple but clean installation. The exact equipment depends on the area size and whether users connect at the same time. Contact RAZAFI on WhatsApp for the right sizing.`;
+    }
+
+    if (n >= 150) {
+      return `Pour environ ${n} utilisateurs, il faut prévoir une installation bien structurée : MikroTik/routeur plus adapté, plusieurs points d’accès bien placés, et un dimensionnement correct de la zone. Si ${n} signifie utilisateurs simultanés, il faut encore renforcer la configuration. Le mieux est de contacter RAZAFI sur WhatsApp pour dimensionner correctement le projet.`;
+    }
+    if (n >= 50) {
+      return `Pour environ ${n} utilisateurs, RAZAFI peut convenir, mais il faut bien dimensionner l’installation : MikroTik/routeur, points d’accès, couverture WiFi et nombre d’utilisateurs simultanés. Contactez RAZAFI sur WhatsApp pour choisir la bonne configuration.`;
+    }
+    return `Pour environ ${n} utilisateurs, RAZAFI peut être installé avec une configuration simple mais propre. Le matériel exact dépend surtout de la taille de la zone et du nombre d’utilisateurs connectés en même temps. Contactez RAZAFI sur WhatsApp pour le bon dimensionnement.`;
+  } catch (_) {
+    return "Pour ce nombre d’utilisateurs, le mieux est de contacter RAZAFI sur WhatsApp afin de dimensionner correctement le projet.";
+  }
+}
+
+function buildPlatformProspectNumericFollowUpAnswer({ message, lang, thread }) {
+  try {
+    const userCount = extractPlatformProspectUserCount(message);
+    if (!userCount) return null;
+
+    // Accept explicit "200 utilisateurs" anytime. Accept bare "200" only if the
+    // previous assistant turn asked for the approximate number of users.
+    const raw = String(message || "").trim().toLowerCase();
+    const explicitUserCount = /\b(utilisateurs?|users?|clients?|personnes?|appareils?|devices?|connexions?)\b/i.test(raw);
+    const awaitingUserCount = isPlatformProspectAwaitingUserCount(thread);
+
+    if (!explicitUserCount && !awaitingUserCount) return null;
+
+    return buildPlatformProspectUserCountAnswer({ lang, userCount });
+  } catch (_) {
+    return null;
+  }
+}
+
+
 async function handleAssistantChat({ context, rawMessage, liveData, pool_id, page_path, conversationId, scopeKey, historyToken }) {
   const message = cleanAssistantMessage(rawMessage);
   const detectedLang = detectAssistantLang(message);
@@ -6191,6 +6301,66 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
       dynamic: false, ai_enhanced: false,
       conversation_id: safeConvId, memory_active: true,
     };
+  }
+
+  // ── G.4.1: platform_prospect short numeric follow-up ────────────────
+  // Example: assistant asks "Combien d’utilisateurs ?" then user replies "200".
+  // This must be understood as user_count=200, not as an unclear message.
+  if (context === "platform_prospect") {
+    const numericFollowUpAnswer = buildPlatformProspectNumericFollowUpAnswer({
+      message,
+      lang,
+      thread,
+    });
+    if (numericFollowUpAnswer) {
+      updateAssistantThread({
+        thread,
+        userMessage: message,
+        assistantAnswer: numericFollowUpAnswer,
+        lang,
+        intentKey: "platform_user_count_followup",
+        topic: "project_sizing",
+        slots: { user_count: extractPlatformProspectUserCount(message) },
+      });
+
+      try {
+        ensureAssistantConversationState(thread);
+        if (thread.conversation_state && typeof thread.conversation_state === "object") {
+          thread.conversation_state.current_goal = "compatibility_interest";
+          thread.conversation_state.stage = "guiding_action";
+          thread.conversation_state.collected_slots = thread.conversation_state.collected_slots || {};
+          thread.conversation_state.collected_slots.user_count = extractPlatformProspectUserCount(message);
+          thread.conversation_state.last_next_best_action = "project_sizing_advice";
+          if (!thread.conversation_state.already_asked.includes("user_count")) {
+            thread.conversation_state.already_asked.push("user_count");
+          }
+        }
+      } catch (_) {}
+
+      await logAssistantInteraction({
+        context,
+        intent_key: "platform_user_count_followup",
+        lang,
+        escalated: false,
+        pool_id: pool_id || null,
+        page_path: page_path || null,
+      });
+
+      return {
+        ok: true,
+        context,
+        intent_key: "platform_user_count_followup",
+        lang,
+        answer: numericFollowUpAnswer,
+        buttons: [],
+        requires_live_data: false,
+        live_data_keys: [],
+        dynamic: true,
+        ai_enhanced: false,
+        conversation_id: safeConvId,
+        memory_active: true,
+      };
+    }
   }
 
   // Load KB rows for this context + universal rows
