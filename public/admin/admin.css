@@ -4311,6 +4311,25 @@ body.rz-admin-shell .rz-since-btn:disabled {
   100% { opacity: 1; transform: scale(1);    }
 }
 
+/* Attention pulse: runs twice after entrance, then stops forever.
+   scale stays within 1→1.010, glow ring is barely perceptible.
+   Peak sits at 45% so the inhale is slightly slower than the exhale
+   — feels more like a resting heartbeat than an alert. */
+@keyframes rzSincePulse {
+  0%   {
+    transform:  scale(1);
+    box-shadow: var(--rz-shadow-card);
+  }
+  45%  {
+    transform:  scale(1.010);
+    box-shadow: var(--rz-shadow-card), 0 0 0 5px rgba(13, 110, 253, 0.07);
+  }
+  100% {
+    transform:  scale(1);
+    box-shadow: var(--rz-shadow-card);
+  }
+}
+
 /* ── B. Empty-state pill animations ──────────────────────── */
 
 .rz-since-pill {
@@ -4324,9 +4343,13 @@ body.rz-admin-shell .rz-since-btn:disabled {
 
 /* ── A. Has-new card animations ───────────────────────────── */
 
-/* Card shell */
+/* Card shell: entrance, then a two-beat attention pulse once chips have landed.
+   rzSincePulse is listed second so it wins on transform during its active period.
+   Delay 700ms = 75ms stillness after the last chip/button finishes at 625ms. */
 .rz-since-card.rz-since-has-new {
-  animation: rzSinceCardIn 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation:
+    rzSinceCardIn 380ms cubic-bezier(0.22, 1, 0.36, 1) both,
+    rzSincePulse  1.4s  ease-in-out                    700ms 2 forwards;
 }
 
 /* Top label row fades in just after the card shell */
