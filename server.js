@@ -1873,9 +1873,9 @@ function buildGenericOpeningAnswer({ context, lang }) {
   }
 
   if (context === "platform_prospect") {
-    if (l === "mg") return "Manahoana 👋 Afaka manazava RAZAFI, ny démo, ny contact WhatsApp, na ny fonctionnement amin'ny Starlink/fibre aho.";
-    if (l === "en") return "Hello 👋 I can explain RAZAFI, the demo, WhatsApp contact, or how it works with Starlink/fibre.";
-    return "Bonjour 👋 Je peux vous expliquer RAZAFI, la démo, le contact WhatsApp, ou le fonctionnement avec Starlink/fibre.";
+    if (l === "mg") return "Manahoana 👋 RAZAFI dia plateforme ahafahan’ny tompony Starlink/fibre mivarotra accès WiFi amin’ny mpampiasa, amin’ny alalan’ny fandoavana mobile sy code automatique. Manana connexion efa misy ve ianao, sa mbola amboarina ny projet WiFi ?";
+    if (l === "en") return "Hello 👋 RAZAFI is a platform that lets Starlink or fibre owners sell WiFi access automatically — clients pay from their phone, get a code, and connect. Do you already have an internet connection in place, or are you still planning your WiFi project?";
+    return "Bonjour 👋 RAZAFI est une plateforme qui permet aux propriétaires de connexion Starlink ou fibre de vendre l’accès WiFi automatiquement. Les clients paient depuis leur téléphone, reçoivent un code et se connectent. Vous avez déjà une connexion Internet en place, ou vous préparez encore votre projet WiFi ?";
   }
 
   // Universal fallback
@@ -2541,6 +2541,8 @@ const ASSISTANT_ALLOWED_LIVE_KEYS = {
     "main_cta",           // "whatsapp_or_demo" (static string)
     "product_context",    // short static product description string
     "context_version",    // "G.3B.1" (static version string)
+    // G.4: structured public site knowledge — static, no PII, no internal IDs
+    "site_knowledge",     // safe public content object derived from page.tsx
   ]),
 };
 
@@ -2784,6 +2786,57 @@ function sanitizeAssistantLiveData(liveData, context) {
     safe.context_version = /^G\.\d+[A-Z]?\.\d+$/.test(String(safe.context_version || ""))
       ? String(safe.context_version).slice(0, 20) : null;
     if (safe.context_version === null) delete safe.context_version;
+  }
+
+  // G.4: site_knowledge deep sanitization for platform_prospect
+  // Accept only known public text fields. No URLs, no IDs, no internal keys.
+  if ("site_knowledge" in safe && context === "platform_prospect") {
+    const sk = safe.site_knowledge;
+    if (!sk || typeof sk !== "object" || Array.isArray(sk)) {
+      delete safe.site_knowledge;
+    } else {
+      // Forbidden keys guard — if any private key is present, drop the whole object
+      const FORBIDDEN_SK_KEYS = new Set([
+        "id", "pool_id", "nas_id", "mac", "phone", "voucher", "token",
+        "api_key", "secret", "requestRef", "transaction_ref", "router_ip",
+        "admin_url", "owner_email", "password",
+      ]);
+      const hasForbidden = Object.keys(sk).some(k2 =>
+        FORBIDDEN_SK_KEYS.has(String(k2 || "").toLowerCase())
+      );
+      if (hasForbidden) {
+        delete safe.site_knowledge;
+      } else {
+        // Allowlist-only: only accept known safe string fields and safe arrays
+        const ALLOWED_SK_KEYS = new Set([
+          "hero_title", "hero_subtitle", "hero_features", "value_proposition",
+          "how_it_works", "target_customers", "key_strengths",
+          "faq_summary", "demo_cta_label", "demo_options",
+          "contact_cta_label", "compatibility_note", "pricing_note",
+        ]);
+        const skClean = {};
+        for (const [k2, v2] of Object.entries(sk)) {
+          if (!ALLOWED_SK_KEYS.has(String(k2 || ""))) continue;
+          if (typeof v2 === "string") {
+            skClean[k2] = v2.slice(0, 300);
+          } else if (Array.isArray(v2)) {
+            skClean[k2] = v2
+              .filter(item => typeof item === "string")
+              .map(item => item.slice(0, 150))
+              .slice(0, 10);
+          }
+          // Objects and other types are silently dropped
+        }
+        if (Object.keys(skClean).length === 0) {
+          delete safe.site_knowledge;
+        } else {
+          safe.site_knowledge = skClean;
+        }
+      }
+    }
+  } else if ("site_knowledge" in safe) {
+    // Only allowed for platform_prospect
+    delete safe.site_knowledge;
   }
 
   return safe;
@@ -3327,12 +3380,19 @@ function detectDynamicIntentFromMessage(msg, context) {
 
     // platform_owner_dashboard — before platform_revenue to capture "voir les revenus dans le dashboard"
     // (prospect asking about the dashboard feature, not about revenue-sharing conditions)
+    // Also catches existing owners asking where to log in (so Espace propriétaire may be mentioned)
     if (
       s.includes("espace propriétaire") || s.includes("espace proprietaire") ||
       s.includes("dashboard") || s.includes("tableau de bord") ||
       s.includes("admin panel") || s.includes("owner dashboard") ||
       s.includes("suivre les ventes") || s.includes("voir les clients") ||
       s.includes("gérer les forfaits") || s.includes("gerer les forfaits") ||
+      s.includes("je suis déjà propriétaire") || s.includes("je suis deja proprietaire") ||
+      s.includes("j'ai déjà un compte propriétaire") || s.includes("j'ai deja un compte proprietaire") ||
+      s.includes("déjà propriétaire") || s.includes("deja proprietaire") ||
+      s.includes("compte propriétaire") || s.includes("compte proprietaire") ||
+      s.includes("me connecter à mon compte") || s.includes("me connecter a mon compte") ||
+      s.includes("owner account") || s.includes("already owner") ||
       (s.includes("voir les revenus") && (s.includes("dashboard") || s.includes("admin") || s.includes("tableau"))) ||
       (s.includes("admin") && (s.includes("espace") || s.includes("panel") || s.includes("voir") || s.includes("accès")))
     ) return "platform_owner_dashboard";
@@ -5679,7 +5739,7 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
     dynamicAnswer = buildAdminOwnerDynamicAnswer(resolvedIntent, lang, liveData);
   } else if (context === "platform_prospect") {
     // Phase 5: deterministic commercial answers for platform prospects
-    dynamicAnswer = buildPlatformProspectDynamicAnswer(resolvedIntent, lang, message);
+    dynamicAnswer = buildPlatformProspectDynamicAnswer(resolvedIntent, lang, message, liveData);
   }
 
   if (!dynamicAnswer) return null;
@@ -5694,80 +5754,119 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
 // Short, warm, commercial. French primary. No live_data used.
 // Never expose internal infrastructure. Never promise revenue.
 // ===============================
-function buildPlatformProspectDynamicAnswer(intent_key, lang, message) {
-  // Tri-lingual helper (French primary, Malagasy/English simple fallback)
+// G.4: buildPlatformProspectDynamicAnswer now accepts liveData to use site_knowledge.
+// Falls back to hardcoded safe text when site_knowledge is absent or incomplete.
+function buildPlatformProspectDynamicAnswer(intent_key, lang, message, liveData) {
+  const sk = (liveData && typeof liveData === "object" && typeof liveData.site_knowledge === "object" && liveData.site_knowledge) || null;
+
+  // Tri-lingual helper (French primary, English simple fallback)
   function t(fr, en) {
     return lang === "en" ? en : fr;
+  }
+
+  // Safe one-liner from site_knowledge field, with fallback
+  function sk_str(key, fallback) {
+    const v = sk && typeof sk[key] === "string" ? sk[key].trim() : "";
+    return v || fallback;
+  }
+
+  // Safe array from site_knowledge field, joined as a readable list
+  function sk_list(key, fallback) {
+    const arr = sk && Array.isArray(sk[key]) ? sk[key] : null;
+    if (arr && arr.length > 0) return arr.join(", ");
+    return fallback;
   }
 
   switch (intent_key) {
 
     case "platform_internal_security":
       return t(
-        "La partie technique est configurée par RAZAFI. Pour le propriétaire et les clients, l'objectif est de garder une expérience simple et sécurisée, sans exposer les détails internes.",
+        "La partie technique est configurée par RAZAFI. Pour le propriétaire et les clients, l’objectif est de garder une expérience simple et sécurisée, sans exposer les détails internes.",
         "The technical side is managed by RAZAFI. For owners and clients, the goal is to keep the experience simple and secure — internal details are not exposed."
       );
 
-    case "platform_intro":
-      return t(
-        "RAZAFI est une plateforme qui transforme votre connexion Internet en service WiFi payant automatisé. Vos clients choisissent un forfait, paient depuis leur téléphone, reçoivent un code, puis se connectent. Vous suivez les ventes, les clients et vos pools depuis votre tableau de bord.",
-        "RAZAFI is a platform that turns your Internet connection into an automated paid WiFi service. Clients choose a plan, pay from their phone, receive a code, and connect. You track sales, clients, and your pools from your dashboard."
+    case "platform_intro": {
+      const vp = sk_str("value_proposition",
+        "RAZAFI transforme votre connexion Internet en service WiFi payant automatisé. Vos clients choisissent un forfait, paient depuis leur téléphone, reçoivent un code, puis se connectent. Vous suivez les ventes et vos pools depuis votre tableau de bord."
       );
+      const strengths = sk_list("key_strengths", null);
+      const base = lang === "en"
+        ? sk_str("value_proposition", "RAZAFI turns your Internet connection into an automated paid WiFi service. Clients choose a plan, pay from their phone, receive a code, and connect. You track sales and pools from your dashboard.")
+        : vp;
+      if (strengths && lang !== "en") {
+        return `${base} Points clés : ${strengths}.`;
+      }
+      return base;
+    }
 
     case "platform_owner_start":
       return t(
-        "Pour démarrer avec RAZAFI, le plus simple est de nous contacter directement. Nous vous guidons pour vérifier votre connexion, votre matériel, vos pools et la mise en service. Vous pouvez demander une démo ou une proposition adaptée à votre projet.",
-        "To get started with RAZAFI, the simplest step is to contact us directly. We guide you through verifying your connection, equipment, pools, and setup. You can request a demo or a proposal tailored to your project."
+        "Pour démarrer avec RAZAFI, contactez-nous directement sur WhatsApp. Nous vérifions ensemble votre connexion, votre matériel et votre zone avant de lancer. Avez-vous déjà une connexion Starlink ou fibre en place ?",
+        "To get started with RAZAFI, contact us directly on WhatsApp. We verify your connection, equipment, and zone together before launch. Do you already have a Starlink or fibre connection in place?"
       );
 
     case "platform_revenue":
       return t(
-        "RAZAFI vous permet de suivre vos ventes et votre part des revenus depuis votre tableau de bord. Les conditions de partage et de reversement dépendent de votre installation et sont définies avec RAZAFI. Pour les détails exacts, demandez une proposition adaptée à votre projet.",
-        "RAZAFI lets you track your sales and your revenue share from your dashboard. Revenue sharing and payout terms depend on your setup and are agreed with RAZAFI. For exact details, request a proposal tailored to your project."
+        "RAZAFI vous permet de suivre vos ventes et votre part des revenus depuis votre tableau de bord, accessible depuis votre téléphone. Les conditions de partage dépendent de votre installation et sont définies avec RAZAFI. Contactez-nous sur WhatsApp pour une proposition adaptée.",
+        "RAZAFI lets you track your sales and revenue share from your dashboard, accessible from your phone. Revenue sharing terms depend on your setup and are agreed with RAZAFI. Contact us on WhatsApp for a tailored proposal."
       );
 
-    case "platform_compatibility":
-      return t(
-        "Oui, RAZAFI peut fonctionner avec une connexion Starlink ou fibre. Pour démarrer, nous recommandons le MikroTik hAP ax². Il est adapté aux petits et moyens points WiFi. Pour un site plus grand, RAZAFI peut conseiller un modèle plus puissant selon le nombre d'utilisateurs. Vos points d'accès peuvent aussi être utilisés s'ils sont configurés correctement en mode AP/bridge.",
-        "Yes, RAZAFI can work with Starlink or fibre. To get started, we recommend the MikroTik hAP ax². It is suitable for small and medium WiFi spots. For a larger site, RAZAFI can recommend a more powerful model based on the number of users. Your access points can also be used if they are correctly configured in AP/bridge mode."
-      );
+    case "platform_compatibility": {
+      const compatNote = sk_str("compatibility_note", null);
+      const base_fr = compatNote
+        ? compatNote
+        : "Oui, RAZAFI fonctionne avec une connexion Starlink ou fibre. Nous recommandons le MikroTik hAP ax² pour les petits et moyens sites. Pour un site plus grand, RAZAFI peut conseiller un modèle plus puissant. Vos points d’accès existants peuvent aussi être utilisés s’ils sont configurés en mode AP/bridge.";
+      const base_en = "Yes, RAZAFI works with Starlink or fibre. We recommend the MikroTik hAP ax² for small and medium sites. For larger sites, RAZAFI can advise a more powerful model. Your existing access points can also be used if configured in AP/bridge mode.";
+      const question_fr = " Combien d’utilisateurs souhaitez-vous connecter approximativement ?";
+      const question_en = " How many users are you planning to connect approximately?";
+      return lang === "en" ? base_en + question_en : base_fr + question_fr;
+    }
 
-    case "platform_pricing":
-      return t(
-        "Le coût dépend de votre installation, du nombre de pools, du matériel et du niveau d'accompagnement souhaité. Le plus simple est de contacter RAZAFI pour recevoir une proposition adaptée à votre situation.",
-        "The cost depends on your setup, number of pools, equipment, and the level of support you need. The simplest step is to contact RAZAFI for a proposal tailored to your situation."
+    case "platform_pricing": {
+      const pricingNote = sk_str("pricing_note",
+        "Le coût dépend de votre installation, du matériel et du niveau d’accompagnement souhaité. Il n’y a pas d’abonnement mensuel fixe : RAZAFI fonctionne avec une commission sur les ventes réalisées."
       );
+      const cta = lang === "en"
+        ? " Contact us on WhatsApp for a proposal tailored to your project."
+        : " Contactez-nous sur WhatsApp pour recevoir une proposition adaptée à votre situation.";
+      return lang === "en"
+        ? "The cost depends on your setup, equipment, and the level of support needed. There is no fixed monthly fee: RAZAFI works with a commission on sales." + cta
+        : pricingNote + cta;
+    }
 
     case "platform_not_technician":
       return t(
-        "Ce n'est pas un problème. L'objectif de RAZAFI est justement de rendre la vente WiFi simple : le client paie, reçoit son code et se connecte automatiquement. RAZAFI peut vous accompagner pour la configuration, et vous gardez une interface claire pour suivre votre activité.",
-        "That is not a problem. RAZAFI is designed to make WiFi selling simple: the client pays, receives a code, and connects automatically. RAZAFI can guide you through the setup, and you keep a clear interface to monitor your activity."
+        "Ce n’est pas un problème. RAZAFI est conçu pour rendre la vente WiFi simple : le client paie, reçoit son code et se connecte automatiquement. RAZAFI vous accompagne pour la configuration, et vous gardez une interface claire pour suivre votre activité depuis votre téléphone.",
+        "That is not a problem. RAZAFI is designed to make WiFi selling simple: the client pays, receives a code, and connects automatically. RAZAFI guides you through setup and you keep a clear interface to follow your activity from your phone."
       );
 
     // Phase 5C-A: cross-context awareness — prospect asking about client/owner features
     case "platform_client_portal":
       return t(
-        "Côté client, le portail RAZAFI permet de choisir un forfait, payer depuis le téléphone, recevoir un code, puis se connecter au WiFi. L'objectif est de rendre l'achat simple, rapide et automatique.",
+        "Côté client, le portail RAZAFI permet de choisir un forfait, payer depuis le téléphone, recevoir un code, puis se connecter au WiFi. L’objectif est de rendre l’achat simple, rapide et automatique.",
         "On the client side, the RAZAFI portal lets users choose a plan, pay from their phone, receive a code, and connect to WiFi. The goal is to make purchasing simple, fast, and automatic."
       );
 
     case "platform_owner_dashboard":
       return t(
-        "Côté propriétaire, l'espace RAZAFI permet de suivre les ventes, les clients, les forfaits et les pools WiFi depuis un tableau de bord clair. Le propriétaire peut suivre son activité sans utiliser une interface technique compliquée.",
-        "On the owner side, the RAZAFI space lets owners track sales, clients, plans, and WiFi pools from a clear dashboard. The owner can follow activity without using a complicated technical interface."
+        "Côté propriétaire, le tableau de bord RAZAFI permet de suivre les ventes, les clients, les forfaits et les pools WiFi, directement depuis votre téléphone. Pas besoin d’interface technique compliquée.",
+        "On the owner side, the RAZAFI dashboard lets you track sales, clients, plans, and WiFi pools directly from your phone. No complicated technical interface needed."
       );
 
     case "platform_multi_pool":
       return t(
-        "Oui, RAZAFI peut gérer plusieurs pools ou lieux. C'est utile si vous avez plusieurs zones WiFi, plusieurs quartiers ou plusieurs points d'accès à suivre depuis une même plateforme.",
-        "Yes, RAZAFI can manage multiple pools or locations. This is useful if you have several WiFi zones, neighborhoods, or access points to monitor from one platform."
+        "Oui, RAZAFI peut gérer plusieurs pools ou lieux depuis un seul tableau de bord. C’est utile si vous avez plusieurs zones WiFi, plusieurs quartiers ou plusieurs points d’accès.",
+        "Yes, RAZAFI can manage multiple pools or locations from one dashboard. Useful if you have several WiFi zones, neighborhoods, or access points."
       );
 
-    case "platform_demo":
-      return t(
-        "Vous pouvez demander une démo pour voir le portail client et l'espace propriétaire. Le plus simple est de visiter https://razafistore.com ou de contacter RAZAFI pour une présentation adaptée à votre projet.",
-        "You can request a demo to see the client portal and owner space. The simplest option is to visit https://razafistore.com or contact RAZAFI for a presentation adapted to your project."
-      );
+    case "platform_demo": {
+      // G.4: never give raw demo URLs — always point to the page button
+      const demoCtaLabel = sk_str("demo_cta_label", "Voir les démos");
+      const demoOptions = sk_list("demo_options", "Démo propriétaire, Démo client");
+      return lang === "en"
+        ? `To see the client portal and owner dashboard in action, click the « ${demoCtaLabel} » button on the page and choose between ${demoOptions}.`
+        : `Pour voir concrètement le portail client et le dashboard propriétaire, cliquez sur le bouton « ${demoCtaLabel} » puis choisissez ${demoOptions}.`;
+    }
 
     default:
       return null;
@@ -6217,6 +6316,7 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
         canonicalAnswer,
         diagnosticResult,
         forbiddenPhones,
+        rawMessage: message,   // G.4: used to detect existing-owner context in safety check
       });
 
       if (aiSafe) {
@@ -7198,6 +7298,15 @@ function buildGroundedAssistantPrompt({
     }
   }
 
+  // G.4: dedicated site_knowledge section for platform_prospect — higher char budget, clear label
+  let siteKnowledgeSection = "";
+  if (context === "platform_prospect" && liveData?.site_knowledge && typeof liveData.site_knowledge === "object") {
+    try {
+      const skSafe = JSON.stringify(liveData.site_knowledge, null, 2).slice(0, 1200);
+      siteKnowledgeSection = `\n\n## SITE KNOWLEDGE (primary public source — use this for RAZAFI facts)\n${skSafe}`;
+    } catch (_) {}
+  }
+
   // ── SECTION: PAYMENT CONTEXT (portal_user payment complaints only) ────────
   const paymentSection = isPaymentComplaint
     ? `\n\n## PAYMENT CONTEXT\n${buildPaymentContextBlock(liveData)}`
@@ -7253,14 +7362,21 @@ function buildGroundedAssistantPrompt({
   ].join("\n- ");
 
   const prospectRules = [
-    "You are presenting the RAZAFI platform to a business prospect.",
-    "MALAGASY STYLE: If the detected language is Malagasy (mg), use natural everyday Malagasy as spoken in Madagascar. Do not use heavy official Malagasy. Keep common RAZAFI/UI/business/technical words in French when they are more natural: forfait, plan, data, limité, illimité, code, paiement, bouton, réseau, connexion, client, usage, navigation, réseaux sociaux, vidéo, portail, WiFi, MVola, dashboard, revenus, ventes, pool, page Plans, page Revenus, plateforme, démo, contact WhatsApp, Starlink, fibre, routeur, access point. For code activation, always write exactly: bouton Utiliser ce code — never translate this button label. Prefer natural phrases like 'Mila info kely aho hijerena ny paiement-nao' over overly formal or fully-translated wording.",
-    "Be warm, commercial, and clear. Explain RAZAFI as a WiFi monetization platform for hotspot owners.",
-    "Invite to demo or contact when useful.",
+    // G.4: upgraded to professional consultative sales agent rules
+    "You are a professional consultative sales agent for RAZAFI. Your goal is to understand the prospect's situation and guide them toward a relevant next step.",
+    "MALAGASY STYLE: If the detected language is Malagasy (mg), use natural everyday Malagasy as spoken in Madagascar. Do not use heavy official Malagasy. Keep common RAZAFI/UI/business/technical words in French when they are more natural: forfait, plan, data, limité, illimité, code, paiement, bouton, réseau, connexion, client, usage, navigation, réseaux sociaux, vidéo, portail, WiFi, MVola, dashboard, revenus, ventes, pool, page Plans, page Revenus, plateforme, démo, contact WhatsApp, Starlink, fibre, routeur, access point.",
+    "If live_data.site_knowledge is present, use it as the primary public knowledge source about RAZAFI. Prefer it over generic training knowledge.",
+    "Answer the prospect's question first. Then, only if natural, ask ONE useful qualifying question or suggest a next step.",
+    "DEMO RULE: Mention demos only when the prospect asks to see, test, understand visually, or compare owner/client experience. When mentioning demos, say 'cliquez sur le bouton Voir les démos' — never give raw demo URLs, never say 'visitez razafistore.com', never say 'ouvrez ce lien'.",
+    "WHATSAPP RULE: Mention WhatsApp only when the prospect asks to contact RAZAFI, start a project, get an exact quote, or after a clear qualification step. Do not push WhatsApp in every answer.",
+    "REPETITION RULE: Do not repeat demo or WhatsApp invitations if already mentioned in the recent conversation turns.",
+    "ESPACE PROPRIÉTAIRE RULE: NEVER direct a prospect to 'Espace propriétaire' as a contact or start method — that is only for existing owners with an active account.",
+    "PRICING RULE: Explain that pricing depends on installation, equipment, and project. No fixed monthly fee — RAZAFI works on commission. Invite WhatsApp only if they want an exact quote.",
+    "COMPATIBILITY RULE: Answer compatibility questions directly. Ask one useful qualifying question (zone size, number of users, existing equipment) only if it helps qualify the project.",
+    "CONTACT RULE: For project-ready prospects, guide clearly to WhatsApp. Do not mention 'Espace propriétaire'.",
     "Hardware: MikroTik hAP ax² for small/medium sites. Larger sites may use more powerful models.",
-    "NEVER direct a prospect to 'Espace propriétaire' as a contact method — that is only for existing owners.",
-    "For prospect contact: mention the website, WhatsApp, or demo request.",
     "Do not expose private data, internal IDs, backend details, or voucher mechanics.",
+    "Ask only one question at a time. Keep responses 2–4 sentences unless more detail is genuinely needed.",
   ].join("\n- ");
 
   const contextRulesMap = {
@@ -7440,6 +7556,7 @@ function buildGroundedAssistantPrompt({
     g1PolicySection,
     diagnosticSection,
     paymentSection,
+    siteKnowledgeSection,   // G.4: platform_prospect public knowledge — injected before liveSection
     liveSection,
     groundingSection,
     knowledgeSection,
@@ -7544,7 +7661,7 @@ async function generateRazafiGroundedAiAnswer({
 // ---------------------------------------------------------------------------
 // Safety validator — blocks unsafe AI answers; returns canonical fallback
 // ---------------------------------------------------------------------------
-function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer, diagnosticResult, forbiddenPhones }) {
+function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer, diagnosticResult, forbiddenPhones, rawMessage }) {
   if (!answer || typeof answer !== "string" || !answer.trim()) return false;
 
   const lower = answer.toLowerCase();
@@ -7735,19 +7852,39 @@ function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer, di
     }
   }
 
-  // 8. Patch G.1: block premature prospect redirect to owner space
+  // 8. Patch G.1 / G.4: block premature prospect redirect to owner space,
+  // UNLESS the user message clearly identifies an existing owner.
   if (context === "platform_prospect") {
-    const ownerSpacePhrases = [
-      "espace propriétaire",
-      "connectez-vous à votre espace",
-      "accédez à l'espace propriétaire",
-      "owner dashboard",
-      "go to your owner",
+    const EXISTING_OWNER_SIGNALS = [
+      "je suis déjà propriétaire",
+      "je suis deja proprietaire",
+      "j'ai déjà un compte propriétaire",
+      "j'ai deja un compte proprietaire",
+      "déjà propriétaire",
+      "deja proprietaire",
+      "compte propriétaire",
+      "compte proprietaire",
+      "me connecter à mon compte",
+      "me connecter a mon compte",
+      "owner account",
+      "already owner",
     ];
-    for (const phrase of ownerSpacePhrases) {
-      if (lower.includes(phrase)) {
-        console.warn("[AI SAFETY BLOCK G.1] prospect redirected to owner space prematurely");
-        return false;
+    const rawMsgLower = String(rawMessage || "").toLowerCase();
+    const isExistingOwner = EXISTING_OWNER_SIGNALS.some(sig => rawMsgLower.includes(sig));
+
+    if (!isExistingOwner) {
+      const ownerSpacePhrases = [
+        "espace propriétaire",
+        "connectez-vous à votre espace",
+        "accédez à l'espace propriétaire",
+        "owner dashboard",
+        "go to your owner",
+      ];
+      for (const phrase of ownerSpacePhrases) {
+        if (lower.includes(phrase)) {
+          console.warn("[AI SAFETY BLOCK G.1] prospect redirected to owner space prematurely (no existing-owner signal in message)");
+          return false;
+        }
       }
     }
   }
@@ -8463,10 +8600,8 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
       return res.status(400).json({ ok: false, error: "message_required" });
     }
 
-    // platform_prospect: ignore live_data entirely per spec
-    const liveData = rawContext === "platform_prospect"
-      ? {}
-      : sanitizeAssistantLiveData(req.body?.live_data || {}, rawContext);
+    // G.4: platform_prospect now uses sanitized live_data (site_knowledge enabled)
+    const liveData = sanitizeAssistantLiveData(req.body?.live_data || {}, rawContext);
 
     // Optional anonymous context hints (never PII)
     const pool_id = null; // Public endpoint: never log pool_id (avoids UUID issues, keeps logs anonymous)
