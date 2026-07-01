@@ -610,25 +610,25 @@ document.addEventListener("DOMContentLoaded", async () => {
           <div class="rz-pay-methods-grid">
             <label class="rz-pay-method-card ${payMvola ? "is-on" : ""}">
               <input type="checkbox" id="modalPayMvola" ${payMvola ? "checked" : ""} ${canEditBusiness ? "" : "disabled"} />
-              <span class="rz-pay-method-logo"><img src="/mikrotik/assets/img/mvola.png" alt="MVola"></span>
+              <span class="rz-pay-method-logo"><img src="/mikrotik/assets/img/mvola.png" alt="MVola" onerror="this.style.display='none';"></span>
               <span class="rz-pay-method-name">MVola</span>
               <span class="rz-pay-method-switch" aria-hidden="true"></span>
             </label>
             <label class="rz-pay-method-card ${payOrange ? "is-on" : ""}">
               <input type="checkbox" id="modalPayOrange" ${payOrange ? "checked" : ""} ${canEditBusiness ? "" : "disabled"} />
-              <span class="rz-pay-method-logo"><img src="/mikrotik/assets/img/orange-money.png" alt="Orange Money"></span>
+              <span class="rz-pay-method-logo"><img src="/mikrotik/assets/img/orange-money.png" alt="Orange Money" onerror="this.style.display='none';"></span>
               <span class="rz-pay-method-name">Orange Money</span>
               <span class="rz-pay-method-switch" aria-hidden="true"></span>
             </label>
             <label class="rz-pay-method-card ${payAirtel ? "is-on" : ""}">
               <input type="checkbox" id="modalPayAirtel" ${payAirtel ? "checked" : ""} ${canEditBusiness ? "" : "disabled"} />
-              <span class="rz-pay-method-logo"><img src="/mikrotik/assets/img/airtel-money.png" alt="Airtel Money"></span>
+              <span class="rz-pay-method-logo"><img src="/mikrotik/assets/img/airtel-money.png" alt="Airtel Money" onerror="this.style.display='none';"></span>
               <span class="rz-pay-method-name">Airtel Money</span>
               <span class="rz-pay-method-switch" aria-hidden="true"></span>
             </label>
             <label class="rz-pay-method-card ${payVisa ? "is-on" : ""}">
               <input type="checkbox" id="modalPayVisa" ${payVisa ? "checked" : ""} ${canEditBusiness ? "" : "disabled"} />
-              <span class="rz-pay-method-logo"><img src="/mikrotik/assets/img/visa.jpg" alt="Visa"></span>
+              <span class="rz-pay-method-logo"><img src="/mikrotik/assets/img/visa.jpg" alt="Visa" onerror="this.style.display='none';"></span>
               <span class="rz-pay-method-name">Visa</span>
               <span class="rz-pay-method-switch" aria-hidden="true"></span>
             </label>

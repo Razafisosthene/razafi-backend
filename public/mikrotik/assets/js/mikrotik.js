@@ -585,7 +585,9 @@
       .plan-card .plan-payment { margin-top: 14px; }
       @media (max-width: 380px) { .plan-price-row { align-items: flex-start; flex-direction: column; gap: 4px; } .plan-price-caption { padding-bottom: 0; } }
 
-      /* Per-pool payment method logo buttons (MVola / Orange Money / Airtel Money / Visa) */
+      /* Per-pool payment method logo buttons (MVola / Orange Money / Airtel Money / Visa).
+         Fixed/proportional format: every button is the same shape and every logo sits
+         inside the same invisible frame — no per-logo adaptive width. */
       .plan-payment-methods {
         display: flex;
         flex-wrap: nowrap;
@@ -596,37 +598,37 @@
         overflow: visible;
         margin-top: 2px;
       }
-      .payment-method-btn {
-        flex: 0 0 auto;
+      .payment-method-btn,
+      .plan-card .choose-plan-btn.payment-method-btn {
+        flex: 0 1 clamp(58px, 20vw, 76px);
+        width: clamp(58px, 20vw, 76px) !important;
+        aspect-ratio: 76 / 48;
+        height: auto !important;
+        min-height: 40px !important;
+        padding: 6px 8px !important;
+        margin: 0 !important;
+        border-radius: 18px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        width: 62px;
-        height: 42px;
-        padding: 5px 7px;
-        border-radius: 14px;
-        background: #fff;
+        background: #fff !important;
         border: 1px solid rgba(118,118,128,.18);
-        box-shadow: 0 4px 10px rgba(17,24,39,.06);
+        box-shadow: 0 4px 10px rgba(17,24,39,.06) !important;
         cursor: pointer;
         -webkit-tap-highlight-color: transparent;
         transition: transform .12s ease, box-shadow .16s ease, opacity .16s ease;
       }
       .payment-method-btn:active { transform: scale(.95); }
-      .payment-method-logo { max-width: 100%; max-height: 24px; object-fit: contain; display: block; }
-      /* MVola gets slightly more logo space for visibility, matching the "Paiement sécurisé via" logo below */
-      .payment-method-btn[data-method="mvola"] .payment-method-logo { max-height: 26px; }
-      .payment-method-btn.payment-method-soon { opacity: .82; }
-      /* MVola keeps the existing choose-plan-btn look/behavior, sized to match the other logo pills */
-      .plan-card .choose-plan-btn.payment-method-btn {
-        width: 62px !important;
-        height: 42px !important;
-        min-height: 42px !important;
-        padding: 5px 7px !important;
-        margin: 0 !important;
-        background: #fff !important;
-        box-shadow: 0 4px 10px rgba(17,24,39,.06) !important;
+      .payment-method-logo {
+        width: 78%;
+        height: 62%;
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+        object-position: center;
+        display: block;
       }
+      .payment-method-btn.payment-method-soon { opacity: .82; }
       .plan-card.selected .choose-plan-btn.payment-method-btn {
         background: rgba(0,122,255,.10) !important;
         border: 1.5px solid rgba(0,122,255,.55) !important;
@@ -641,10 +643,11 @@
         .plan-payment-methods { gap: 5px; }
         .payment-method-btn,
         .plan-card .choose-plan-btn.payment-method-btn {
-          width: 56px !important;
-          height: 40px !important;
-          min-height: 40px !important;
-          padding: 4px 5px !important;
+          flex-basis: clamp(54px, 20vw, 68px);
+          width: clamp(54px, 20vw, 68px) !important;
+          min-height: 38px !important;
+          padding: 5px 6px !important;
+          border-radius: 16px;
         }
       }
     `;
