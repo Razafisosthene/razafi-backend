@@ -486,6 +486,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     const annPriority = String(p.portal_announcement_priority || "normal").trim().toLowerCase();
     const annMessage = String(p.portal_announcement_message || "").trim();
 
+    // Per-pool payment methods (structural prep). Backend already normalizes this
+    // to booleans on the 4 known keys — default here only covers a missing field.
+    const pm = (p.payment_methods && typeof p.payment_methods === "object") ? p.payment_methods : {};
+    const payMvola = pm.mvola === true;
+    const payOrange = pm.orange_money === true;
+    const payAirtel = pm.airtel_money === true;
+    const payVisa = pm.visa === true;
+
     const stats = liveStatsByPool[pid] || null;
     const liveClients = stats ? toNum(stats.active_clients, 0) : 0;
     const capacityForPct = (stats && stats.capacity_max !== null && stats.capacity_max !== undefined)
@@ -597,6 +605,37 @@ document.addEventListener("DOMContentLoaded", async () => {
           <div id="modalAnnPreview" class="rz-ann-preview ${annMessage ? "" : "is-empty"}">${esc(annMessage || "Aperçu : aucun message affiché sur le portail.")}</div>
         </div>
 
+        <div class="rz-modal-section">
+          <div class="rz-modal-section-title">Modes de paiement du portail</div>
+          <div class="rz-pay-methods-grid">
+            <label class="rz-pay-method-card ${payMvola ? "is-on" : ""}">
+              <input type="checkbox" id="modalPayMvola" ${payMvola ? "checked" : ""} ${canEditBusiness ? "" : "disabled"} />
+              <span class="rz-pay-method-logo"><img src="/mikrotik/assets/img/mvola.png" alt="MVola"></span>
+              <span class="rz-pay-method-name">MVola</span>
+              <span class="rz-pay-method-switch" aria-hidden="true"></span>
+            </label>
+            <label class="rz-pay-method-card ${payOrange ? "is-on" : ""}">
+              <input type="checkbox" id="modalPayOrange" ${payOrange ? "checked" : ""} ${canEditBusiness ? "" : "disabled"} />
+              <span class="rz-pay-method-logo"><img src="/mikrotik/assets/img/orange-money.png" alt="Orange Money"></span>
+              <span class="rz-pay-method-name">Orange Money</span>
+              <span class="rz-pay-method-switch" aria-hidden="true"></span>
+            </label>
+            <label class="rz-pay-method-card ${payAirtel ? "is-on" : ""}">
+              <input type="checkbox" id="modalPayAirtel" ${payAirtel ? "checked" : ""} ${canEditBusiness ? "" : "disabled"} />
+              <span class="rz-pay-method-logo"><img src="/mikrotik/assets/img/airtel-money.png" alt="Airtel Money"></span>
+              <span class="rz-pay-method-name">Airtel Money</span>
+              <span class="rz-pay-method-switch" aria-hidden="true"></span>
+            </label>
+            <label class="rz-pay-method-card ${payVisa ? "is-on" : ""}">
+              <input type="checkbox" id="modalPayVisa" ${payVisa ? "checked" : ""} ${canEditBusiness ? "" : "disabled"} />
+              <span class="rz-pay-method-logo"><img src="/mikrotik/assets/img/visa.jpg" alt="Visa"></span>
+              <span class="rz-pay-method-name">Visa</span>
+              <span class="rz-pay-method-switch" aria-hidden="true"></span>
+            </label>
+          </div>
+          <div class="rz-pay-methods-note">Les modes désactivés n’apparaissent pas sur le portail client.</div>
+        </div>
+
         ${canManageAll ? `
           <div class="rz-modal-section">
             <button type="button" id="techToggle" class="rz-tech-toggle">Technique / Superadmin ▾</button>
@@ -692,6 +731,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     logoChooseBtn?.addEventListener("click", () => logoFile?.click());
     logoFile?.addEventListener("change", () => uploadPoolLogo(pid, logoFile));
     logoDeleteBtn?.addEventListener("click", () => deletePoolLogo(pid));
+
+    // Payment method toggles: keep the card's on/off visual state in sync with its checkbox.
+    ["modalPayMvola", "modalPayOrange", "modalPayAirtel", "modalPayVisa"].forEach((id) => {
+      const input = $id(id);
+      input?.addEventListener("change", () => {
+        const card = input.closest(".rz-pay-method-card");
+        card?.classList.toggle("is-on", !!input.checked);
+      });
+    });
 
     cancelBtn?.addEventListener("click", closePoolModal);
     saveBtn?.addEventListener("click", () => saveModalPool(pid));
@@ -808,6 +856,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     payload.portal_announcement_type = ($id("modalAnnType")?.value || "information").trim();
     payload.portal_announcement_priority = ($id("modalAnnPriority")?.value || "normal").trim();
     payload.portal_announcement_message = ($id("modalAnnMessage")?.value || "").trim() || null;
+
+    payload.payment_methods = {
+      mvola: !!$id("modalPayMvola")?.checked,
+      orange_money: !!$id("modalPayOrange")?.checked,
+      airtel_money: !!$id("modalPayAirtel")?.checked,
+      visa: !!$id("modalPayVisa")?.checked,
+    };
 
     if (canManageAll) {
       const mtikIpInput = $id("modalMikrotikIp");

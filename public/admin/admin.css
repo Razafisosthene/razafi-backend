@@ -4393,3 +4393,125 @@ body.rz-admin-shell .rz-since-btn:disabled {
   }
 }
 
+
+/* ============================================================= */
+/* RAZAFI — Pool modal: "Modes de paiement du portail" (per pool) */
+/* Scope: admin pool edit modal only. iPhone-style toggle cards.  */
+/* Defensive fallback styles for .rz-modal-section / -title in    */
+/* case they are not already styled elsewhere.                    */
+/* ============================================================= */
+.rz-modal-section {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(118, 118, 128, 0.14);
+}
+.rz-modal-section:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+.rz-modal-section-title {
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: -0.01em;
+  opacity: 0.82;
+  margin-bottom: 10px;
+}
+
+.rz-pay-methods-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+@media (max-width: 420px) {
+  .rz-pay-methods-grid { grid-template-columns: 1fr; }
+}
+
+.rz-pay-method-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: #fff;
+  border: 1px solid rgba(118, 118, 128, 0.16);
+  box-shadow: 0 4px 10px rgba(17, 24, 39, 0.05);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.12s ease;
+}
+.rz-pay-method-card:active { transform: scale(0.98); }
+.rz-pay-method-card.is-on {
+  border-color: rgba(52, 199, 89, 0.55);
+  box-shadow: 0 8px 18px rgba(52, 199, 89, 0.12);
+}
+.rz-pay-method-card input[type="checkbox"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.rz-pay-method-logo {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(118, 118, 128, 0.06);
+}
+.rz-pay-method-logo img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.rz-pay-method-name {
+  flex: 1 1 auto;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  min-width: 0;
+}
+.rz-pay-method-switch {
+  flex: 0 0 auto;
+  position: relative;
+  width: 40px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(118, 118, 128, 0.28);
+  transition: background 0.18s ease;
+}
+.rz-pay-method-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.18);
+  transition: transform 0.18s ease;
+}
+.rz-pay-method-card.is-on .rz-pay-method-switch {
+  background: #34c759;
+}
+.rz-pay-method-card.is-on .rz-pay-method-switch::after {
+  transform: translateX(16px);
+}
+.rz-pay-method-card:has(input:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.rz-pay-methods-note {
+  margin-top: 8px;
+  font-size: 11.5px;
+  opacity: 0.62;
+  line-height: 1.35;
+}

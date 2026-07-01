@@ -584,6 +584,55 @@
       .plan-card.selected .choose-plan-btn { background: rgba(118,118,128,.16) !important; color: inherit !important; box-shadow: none !important; border: 1px solid rgba(118,118,128,.10) !important; }
       .plan-card .plan-payment { margin-top: 14px; }
       @media (max-width: 380px) { .plan-price-row { align-items: flex-start; flex-direction: column; gap: 4px; } .plan-price-caption { padding-bottom: 0; } }
+
+      /* Per-pool payment method logo buttons (MVola / Orange Money / Airtel Money / Visa) */
+      .plan-payment-methods {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        align-items: center;
+        gap: 10px;
+        margin-top: 2px;
+      }
+      .payment-method-btn {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 68px;
+        height: 42px;
+        padding: 6px 10px;
+        border-radius: 14px;
+        background: #fff;
+        border: 1px solid rgba(118,118,128,.18);
+        box-shadow: 0 4px 10px rgba(17,24,39,.06);
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        transition: transform .12s ease, box-shadow .16s ease, opacity .16s ease;
+      }
+      .payment-method-btn:active { transform: scale(.95); }
+      .payment-method-logo { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+      .payment-method-btn.payment-method-soon { opacity: .82; }
+      /* MVola keeps the existing choose-plan-btn look/behavior, sized to match the other logo pills */
+      .plan-card .choose-plan-btn.payment-method-btn {
+        width: 68px !important;
+        height: 42px !important;
+        min-height: 42px !important;
+        padding: 6px 10px !important;
+        margin: 0 !important;
+        background: #fff !important;
+        box-shadow: 0 4px 10px rgba(17,24,39,.06) !important;
+      }
+      .plan-card.selected .choose-plan-btn.payment-method-btn {
+        background: rgba(0,122,255,.10) !important;
+        border: 1.5px solid rgba(0,122,255,.55) !important;
+        box-shadow: none !important;
+      }
+      .plan-payment-unavailable {
+        text-align: center;
+        margin: 4px 0 0;
+        opacity: .75;
+      }
     `;
     document.head.appendChild(st);
   }
@@ -1436,13 +1485,19 @@
     ensurePortalPreviewStyle();
     getPlanCards().forEach((card) => {
       card.classList.add("plan-card-preview");
-      const chooseBtn = card.querySelector(".choose-plan-btn");
-      if (chooseBtn) {
-        chooseBtn.textContent = "Aperçu seulement";
-        chooseBtn.disabled = true;
-        chooseBtn.setAttribute("aria-disabled", "true");
-        chooseBtn.setAttribute("data-default-label", "Aperçu seulement");
-      }
+
+      // Disable every payment method button (MVola logo button + Orange/Airtel/Visa
+      // "coming soon" buttons) without touching their innerHTML/textContent —
+      // logo-only buttons must keep their logo image in preview mode.
+      card.querySelectorAll(".payment-method-btn").forEach((btn) => {
+        btn.disabled = true;
+        btn.setAttribute("aria-disabled", "true");
+      });
+
+      // Hide the payment methods row entirely in preview mode (admin read-only view).
+      const paymentMethodsRow = card.querySelector(".plan-payment-methods");
+      if (paymentMethodsRow) paymentMethodsRow.classList.add("hidden");
+
       const payment = card.querySelector(".plan-payment");
       if (payment) payment.classList.add("hidden");
       card.querySelectorAll(".mvola-input,.pay-btn,.confirm-btn,.confirm-cancel-btn,.cancel-btn").forEach((el) => {
@@ -2517,6 +2572,37 @@ function submitToLoginUrl(code, ev) {
 
   // -------- Pool context (AP -> Pool) --------
   let poolContext = { pool_name: null, display_name: null, brand_name: null, branding_logo_url: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
+
+  // ── Per-pool payment methods (structural prep) ──────────────────────────
+  // Populated from /api/mikrotik/plans (payment_methods / active_payment_methods).
+  // Default keeps MVola available before the first successful fetch resolves,
+  // matching the DB default and today's production behavior.
+  const PAYMENT_METHOD_META = {
+    mvola:        { label: "MVola",        logo: "assets/img/mvola.png" },
+    orange_money: { label: "Orange Money", logo: "assets/img/orange-money.png" },
+    airtel_money: { label: "Airtel Money", logo: "assets/img/airtel-money.png" },
+    visa:         { label: "Visa",         logo: "assets/img/visa.jpg" },
+  };
+  const PAYMENT_METHOD_ORDER = ["mvola", "orange_money", "airtel_money", "visa"];
+  let currentPaymentMethods = { mvola: true, orange_money: false, airtel_money: false, visa: false };
+  let currentActivePaymentMethods = ["mvola"];
+
+  function getActivePaymentMethodKeys() {
+    return PAYMENT_METHOD_ORDER.filter((k) => currentPaymentMethods && currentPaymentMethods[k] === true);
+  }
+
+  // Updates the "Plans" section subtitle based on whether any payment method
+  // is active for the current pool. Removes the old hardcoded MVola-only copy.
+  function updatePaymentMethodsSubtitle() {
+    try {
+      const subtitle = document.querySelector(".section-subtitle-ios");
+      if (!subtitle) return;
+      subtitle.textContent = currentActivePaymentMethods.length
+        ? "Appuyez sur le mode de paiement souhaité."
+        : "Paiement temporairement indisponible pour ce WiFi.";
+    } catch (_) {}
+  }
+
   let poolIsFull = false;
 
   // ---- Assistant bridge state (infrastructure only, no UI) ----
@@ -2867,7 +2953,10 @@ function saturationLabel(pct) {
 
       const chooseBtn = card.querySelector(".choose-plan-btn");
       if (chooseBtn) {
-        chooseBtn.textContent = "Indisponible";
+        // Logo-only payment buttons keep their image; disabling + title communicates "full".
+        if (!chooseBtn.querySelector(".payment-method-logo")) {
+          chooseBtn.textContent = "Indisponible";
+        }
         chooseBtn.setAttribute("disabled", "disabled");
         chooseBtn.title = "Pool plein (100%). Achat temporairement indisponible.";
       }
@@ -2975,6 +3064,38 @@ function saturationLabel(pct) {
     }
   }
 
+  // Build the payment method buttons for a plan card from the current pool's
+  // active payment_methods. MVola reuses the existing .choose-plan-btn class
+  // and click flow untouched; other methods are inert "coming soon" logos.
+  function buildPlanPaymentMethodsHTML(ctaText) {
+    const activeKeys = getActivePaymentMethodKeys();
+
+    if (!activeKeys.length) {
+      return `<p class="plan-payment-unavailable muted small">Paiement temporairement indisponible pour ce WiFi.</p>`;
+    }
+
+    const buttonsHtml = activeKeys.map((key) => {
+      const meta = PAYMENT_METHOD_META[key];
+      if (!meta) return "";
+
+      if (key === "mvola") {
+        // Exact same class/attributes as before — reuses the existing MVola flow untouched.
+        return `<button class="choose-plan-btn payment-method-btn payment-method-mvola" type="button"
+                  data-method="mvola" data-default-label="${escapeHtml(ctaText)}"
+                  aria-pressed="false" aria-label="Payer avec MVola">
+                  <img src="${meta.logo}" alt="MVola" class="payment-method-logo">
+                </button>`;
+      }
+
+      return `<button class="payment-method-btn payment-method-soon" type="button"
+                data-method="${escapeHtml(key)}" aria-label="Payer avec ${escapeHtml(meta.label)}">
+                <img src="${meta.logo}" alt="${escapeHtml(meta.label)}" class="payment-method-logo">
+              </button>`;
+    }).join("");
+
+    return `<div class="plan-payment-methods">${buttonsHtml}</div>`;
+  }
+
   function planCardHTML(plan, uiMeta = {}) {
     const name = plan.name || "Plan";
     const price = formatAr(plan.price_ar);
@@ -2998,6 +3119,7 @@ function saturationLabel(pct) {
     const dataText = formatData(dataMb);
     const devicesText = formatDevices(maxDevices);
     const speedText = speedHuman || "Selon le forfait";
+    const mvolaActive = !!(currentPaymentMethods && currentPaymentMethods.mvola === true);
     return `
       <div class="card plan-card ${familyClass} ${variantClass} ${roleClass}" 
            data-plan-id="${escapeHtml(plan.id)}"
@@ -3029,10 +3151,11 @@ function saturationLabel(pct) {
           <span>⏳ ${escapeHtml(durationText)}</span><span class="plan-compact-sep">·</span><span>📦 ${escapeHtml(dataText)}</span><span class="plan-compact-sep">·</span><span>🚀 ${escapeHtml(speedText)}</span>
         </div>
 
-        <p class="plan-speed-line">Choisissez ce forfait, puis confirmez le paiement MVola.</p>
+        <p class="plan-speed-line">Choisissez ce forfait, puis choisissez votre mode de paiement.</p>
 
-        <button class="choose-plan-btn" data-default-label="${escapeHtml(ctaText)}" aria-pressed="false">${escapeHtml(ctaText)}</button>
+        ${buildPlanPaymentMethodsHTML(ctaText)}
 
+        ${mvolaActive ? `
         <div class="plan-payment hidden" aria-live="polite">
           <h5>Paiement</h5>
 
@@ -3086,6 +3209,7 @@ function saturationLabel(pct) {
             💼 Paiement en espèces possible avec assistance du staff.
           </p>
         </div>
+        ` : ``}
       </div>
     `;
   }
@@ -3117,6 +3241,22 @@ function saturationLabel(pct) {
       if (!res.ok) throw new Error(data?.error || "Erreur chargement plans");
 
       renderPortalAnnouncement(data.portal_announcement);
+
+      // Structural prep: capture per-pool payment methods for plan card rendering,
+      // subtitle copy, and assistant live data. Safe default keeps MVola active,
+      // matching the DB default and today's production behavior.
+      if (data && data.payment_methods && typeof data.payment_methods === "object") {
+        currentPaymentMethods = {
+          mvola:        data.payment_methods.mvola === true,
+          orange_money: data.payment_methods.orange_money === true,
+          airtel_money: data.payment_methods.airtel_money === true,
+          visa:         data.payment_methods.visa === true,
+        };
+      } else {
+        currentPaymentMethods = { mvola: true, orange_money: false, airtel_money: false, visa: false };
+      }
+      currentActivePaymentMethods = getActivePaymentMethodKeys();
+      updatePaymentMethodsSubtitle();
 
       // G.2: save opaque history token from server (closure variable only)
       // Never stored in localStorage, sessionStorage, DOM, window, or URL.
@@ -3256,7 +3396,10 @@ function saturationLabel(pct) {
     card.classList.remove("selected");
     const chooseBtn = card.querySelector(".choose-plan-btn");
     if (chooseBtn) {
-      chooseBtn.textContent = getChooseButtonDefaultLabel(chooseBtn);
+      // Logo-only payment buttons keep their image; only legacy text buttons get relabeled.
+      if (!chooseBtn.querySelector(".payment-method-logo")) {
+        chooseBtn.textContent = getChooseButtonDefaultLabel(chooseBtn);
+      }
       chooseBtn.setAttribute("aria-pressed", "false");
       chooseBtn.removeAttribute("title");
     }
@@ -3267,7 +3410,11 @@ function saturationLabel(pct) {
     card.classList.add("selected");
     const chooseBtn = card.querySelector(".choose-plan-btn");
     if (chooseBtn) {
-      chooseBtn.textContent = "✓ Sélectionné";
+      // Logo-only payment buttons keep their image; the card's own selected badge
+      // (.plan-selected-mark) already communicates selection visually.
+      if (!chooseBtn.querySelector(".payment-method-logo")) {
+        chooseBtn.textContent = "✓ Sélectionné";
+      }
       chooseBtn.setAttribute("aria-pressed", "true");
       chooseBtn.title = "Forfait sélectionné";
     }
@@ -3555,15 +3702,15 @@ function bindPlanHandlers() {
       const confirmBtn = card.querySelector(".confirm-btn");
       const summaryEl = card.querySelector(".pay-summary");
 
-      card.addEventListener("click", function (e) {
-        if (card.classList.contains("selected")) return;
-
-        const t = e.target;
-        if (!t || typeof t.closest !== "function") return;
-        if (t.closest(".plan-payment")) return;
-        if (t.closest("button, a, input, textarea, select, label")) return;
-
-        if (chooseBtn) chooseBtn.click();
+      // Plan card itself is NOT clickable: title, price, duration, and empty
+      // background do nothing. Only real payment method buttons act.
+      const soonBtns = card.querySelectorAll(".payment-method-soon");
+      soonBtns.forEach((btn) => {
+        btn.addEventListener("click", function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          showToast("Bientôt disponible.", "info", 4000);
+        });
       });
 
       if (chooseBtn) {
@@ -4076,8 +4223,11 @@ function bindPlanHandlers() {
         }
       } catch (_) {}
 
-      // ---- available_payment_methods: static for Patch A ----
-      var paymentMethods = ["MVola"];
+      // ---- available_payment_methods: dynamic, from per-pool payment_methods ----
+      var paymentMethods = getActivePaymentMethodKeys().map(function (k) {
+        return (PAYMENT_METHOD_META[k] && PAYMENT_METHOD_META[k].label) || k;
+      });
+      if (!paymentMethods.length) paymentMethods = [];
 
       // ---- pool identity: display name and brand (display-only, never NAS/MAC/IP) ----
       var poolName = null;

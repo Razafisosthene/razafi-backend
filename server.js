@@ -197,6 +197,11 @@ function withPoolDisplayName(poolRow) {
     brand_name: cleanOptionalText(poolRow.brand_name, 120),
     branding_logo_url: cleanOptionalText(poolRow.branding_logo_url, 2000),
     display_name: buildPoolDisplayName(poolRow),
+    // Only reshape payment_methods when the select actually asked for it —
+    // avoids silently injecting the field into responses that don't select it.
+    ...(Object.prototype.hasOwnProperty.call(poolRow, "payment_methods")
+      ? { payment_methods: normalizePaymentMethods(poolRow.payment_methods) }
+      : {}),
   };
 }
 
@@ -264,6 +269,37 @@ function serializePortalAnnouncement(poolRow) {
     priority: normalizePortalAnnouncementPriority(poolRow?.portal_announcement_priority),
     message: enabled ? message : "",
   };
+}
+
+// ===============================
+// PATCH — Per-pool payment methods (structural prep only)
+// Allowed keys: mvola, orange_money, airtel_money, visa. Values are booleans only.
+// MVola stays intact: existing pools without a valid payment_methods value keep
+// mvola usable (safe backward-compat fallback), everything else defaults to false.
+// ===============================
+const PAYMENT_METHOD_KEYS = ["mvola", "orange_money", "airtel_money", "visa"];
+
+function normalizePaymentMethods(value, opts = {}) {
+  const fallbackMvolaTrue = opts.fallbackMvolaTrue !== false; // default true
+  const src = (value && typeof value === "object" && !Array.isArray(value)) ? value : null;
+
+  const out = {};
+  for (const key of PAYMENT_METHOD_KEYS) {
+    out[key] = !!(src && src[key] === true);
+  }
+
+  // Backward-compat safety net: only when the DB field itself is missing/invalid
+  // (never for a well-formed object that simply omits "mvola").
+  if (!src && fallbackMvolaTrue) {
+    out.mvola = true;
+  }
+
+  return out;
+}
+
+function activePaymentMethodsList(paymentMethods) {
+  const pm = paymentMethods && typeof paymentMethods === "object" ? paymentMethods : {};
+  return PAYMENT_METHOD_KEYS.filter((k) => pm[k] === true);
 }
 
 
@@ -14289,7 +14325,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     if (nas_id) {
       const { data: poolRow, error: poolRowErr } = await supabase
         .from("internet_pools")
-        .select(`id,name,system,radius_nas_id,${POOL_ANNOUNCEMENT_SELECT}`)
+        .select(`id,name,system,radius_nas_id,payment_methods,${POOL_ANNOUNCEMENT_SELECT}`)
         .eq("radius_nas_id", nas_id)
         .maybeSingle();
 
@@ -14328,7 +14364,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     if (!pool) {
       const { data: poolDb, error: poolErr } = await supabase
         .from("internet_pools")
-        .select(`id,name,system,radius_nas_id,${POOL_ANNOUNCEMENT_SELECT}`)
+        .select(`id,name,system,radius_nas_id,payment_methods,${POOL_ANNOUNCEMENT_SELECT}`)
         .eq("id", pool_id)
         .maybeSingle();
 
@@ -14430,12 +14466,19 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     // Speed is derived server-side into speed_mbps / speed_human.
     const publicPlans = (visiblePlans || []).map(serializePublicPortalPlan);
 
+    // Structural prep: per-pool payment methods (MVola/Orange/Airtel/Visa toggles).
+    // Safe-normalized so the portal never sees anything but booleans on known keys.
+    const normalizedPaymentMethods = normalizePaymentMethods(pool?.payment_methods);
+    const activePaymentMethods = activePaymentMethodsList(normalizedPaymentMethods);
+
     return res.json({
       ok:                   true,
       // ap_mac and pool_id removed — not needed by portal UI
       pool_name:            pool?.name ?? null,
       portal_announcement:  serializePortalAnnouncement(pool),
       plans:                publicPlans,
+      payment_methods:        normalizedPaymentMethods,   // e.g. { mvola: true, orange_money: false, ... }
+      active_payment_methods: activePaymentMethods,       // e.g. ["mvola"]
       assistant_history_token: assistantHistoryToken || null, // G.2: null when no client_mac
     });
   } catch (e) {
@@ -15467,7 +15510,7 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
 
     let query = supabase
       .from("internet_pools")
-      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`, { count: "exact" });
+      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,payment_methods,${POOL_ANNOUNCEMENT_SELECT}`, { count: "exact" });
 
     // 🔐 Pool scoping (server-side): pool assignments OR business owner
     if (!req.admin?.is_superadmin) {
@@ -15667,7 +15710,7 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
     const { data, error } = await supabase
       .from("internet_pools")
       .insert(payload)
-      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
+      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,payment_methods,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -15835,6 +15878,17 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       updates.portal_announcement_priority = normalizePortalAnnouncementPriority(req.body.portal_announcement_priority);
     }
 
+    // Per-pool payment methods (structural prep — MVola/Orange/Airtel/Visa toggles).
+    // Safe owner field: same permission tier as name/brand_name/contact_phone/announcement above.
+    const hasPaymentMethods = Object.prototype.hasOwnProperty.call(req.body || {}, "payment_methods");
+    if (hasPaymentMethods) {
+      const pmRaw = req.body.payment_methods;
+      if (!pmRaw || typeof pmRaw !== "object" || Array.isArray(pmRaw)) {
+        return res.status(400).json({ error: "payment_methods_invalid" });
+      }
+      updates.payment_methods = normalizePaymentMethods(pmRaw, { fallbackMvolaTrue: false });
+    }
+
     // Safety: don't allow clearing mikrotik_ip on an existing mikrotik pool
     if (hasMikrotikIp && updates.mikrotik_ip === null) {
       if (currentPool?.system === "mikrotik") {
@@ -15849,7 +15903,7 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       .from("internet_pools")
       .update(updates)
       .eq("id", id)
-      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
+      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,payment_methods,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -15911,7 +15965,7 @@ app.post("/api/admin/pools/:id/logo", requireAdmin, async (req, res) => {
       .from("internet_pools")
       .update({ branding_logo_url: publicUrl })
       .eq("id", id)
-      .select(`id,name,${POOL_BRANDING_SELECT},contact_phone,system,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
+      .select(`id,name,${POOL_BRANDING_SELECT},contact_phone,system,owner_admin_user_id,payment_methods,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -15962,7 +16016,7 @@ app.delete("/api/admin/pools/:id/logo", requireAdmin, async (req, res) => {
       .from("internet_pools")
       .update({ branding_logo_url: null })
       .eq("id", id)
-      .select(`id,name,${POOL_BRANDING_SELECT},contact_phone,system,owner_admin_user_id,${POOL_ANNOUNCEMENT_SELECT}`)
+      .select(`id,name,${POOL_BRANDING_SELECT},contact_phone,system,owner_admin_user_id,payment_methods,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
