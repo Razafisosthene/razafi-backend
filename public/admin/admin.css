@@ -4470,6 +4470,10 @@ body.rz-admin-shell .rz-since-btn:disabled {
   object-fit: contain;
   display: block;
 }
+/* Broken/missing logo: hide the whole frame, keep the text label visible. */
+.rz-pay-method-logo.is-logo-missing {
+  display: none !important;
+}
 .rz-pay-method-name {
   flex: 1 1 auto;
   font-size: 13px;
