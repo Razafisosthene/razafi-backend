@@ -600,28 +600,28 @@
       }
       .payment-method-btn,
       .plan-card .choose-plan-btn.payment-method-btn {
-        flex: 0 1 clamp(58px, 20vw, 76px);
-        width: clamp(58px, 20vw, 76px) !important;
-        aspect-ratio: 76 / 48;
+        flex: 0 1 clamp(72px, 21vw, 86px);
+        width: clamp(72px, 21vw, 86px) !important;
+        aspect-ratio: 86 / 48;
         height: auto !important;
-        min-height: 40px !important;
-        padding: 6px 8px !important;
+        min-height: 44px !important;
+        padding: 4px 6px !important;
         margin: 0 !important;
-        border-radius: 18px;
+        border-radius: 12px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
         background: #fff !important;
-        border: 1px solid rgba(118,118,128,.18);
-        box-shadow: 0 4px 10px rgba(17,24,39,.06) !important;
+        border: 1px solid rgba(17,24,39,.12);
+        box-shadow: 0 8px 18px rgba(15,23,42,.14) !important;
         cursor: pointer;
         -webkit-tap-highlight-color: transparent;
         transition: transform .12s ease, box-shadow .16s ease, opacity .16s ease;
       }
       .payment-method-btn:active { transform: scale(.95); }
       .payment-method-logo {
-        width: 78%;
-        height: 62%;
+        width: 92%;
+        height: 78%;
         max-width: 100%;
         max-height: 100%;
         object-fit: contain;
@@ -630,9 +630,9 @@
       }
       .payment-method-btn.payment-method-soon { opacity: .82; }
       .plan-card.selected .choose-plan-btn.payment-method-btn {
-        background: rgba(0,122,255,.10) !important;
-        border: 1.5px solid rgba(0,122,255,.55) !important;
-        box-shadow: none !important;
+        background: #fff !important;
+        border: 2px solid rgba(0,122,255,.65) !important;
+        box-shadow: 0 10px 24px rgba(0,122,255,.18) !important;
       }
       .plan-payment-unavailable {
         text-align: center;
@@ -643,11 +643,11 @@
         .plan-payment-methods { gap: 5px; }
         .payment-method-btn,
         .plan-card .choose-plan-btn.payment-method-btn {
-          flex-basis: clamp(54px, 20vw, 68px);
-          width: clamp(54px, 20vw, 68px) !important;
-          min-height: 38px !important;
-          padding: 5px 6px !important;
-          border-radius: 16px;
+          flex-basis: clamp(66px, 21vw, 78px);
+          width: clamp(66px, 21vw, 78px) !important;
+          min-height: 42px !important;
+          padding: 3px 5px !important;
+          border-radius: 11px;
         }
       }
     `;
