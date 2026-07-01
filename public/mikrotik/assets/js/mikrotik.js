@@ -588,10 +588,12 @@
       /* Per-pool payment method logo buttons (MVola / Orange Money / Airtel Money / Visa) */
       .plan-payment-methods {
         display: flex;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
         justify-content: center;
         align-items: center;
-        gap: 10px;
+        gap: 7px;
+        width: 100%;
+        overflow: visible;
         margin-top: 2px;
       }
       .payment-method-btn {
@@ -599,9 +601,9 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        width: 68px;
+        width: 62px;
         height: 42px;
-        padding: 6px 10px;
+        padding: 5px 7px;
         border-radius: 14px;
         background: #fff;
         border: 1px solid rgba(118,118,128,.18);
@@ -611,14 +613,16 @@
         transition: transform .12s ease, box-shadow .16s ease, opacity .16s ease;
       }
       .payment-method-btn:active { transform: scale(.95); }
-      .payment-method-logo { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+      .payment-method-logo { max-width: 100%; max-height: 24px; object-fit: contain; display: block; }
+      /* MVola gets slightly more logo space for visibility, matching the "Paiement sécurisé via" logo below */
+      .payment-method-btn[data-method="mvola"] .payment-method-logo { max-height: 26px; }
       .payment-method-btn.payment-method-soon { opacity: .82; }
       /* MVola keeps the existing choose-plan-btn look/behavior, sized to match the other logo pills */
       .plan-card .choose-plan-btn.payment-method-btn {
-        width: 68px !important;
+        width: 62px !important;
         height: 42px !important;
         min-height: 42px !important;
-        padding: 6px 10px !important;
+        padding: 5px 7px !important;
         margin: 0 !important;
         background: #fff !important;
         box-shadow: 0 4px 10px rgba(17,24,39,.06) !important;
@@ -632,6 +636,16 @@
         text-align: center;
         margin: 4px 0 0;
         opacity: .75;
+      }
+      @media (max-width: 360px) {
+        .plan-payment-methods { gap: 5px; }
+        .payment-method-btn,
+        .plan-card .choose-plan-btn.payment-method-btn {
+          width: 56px !important;
+          height: 40px !important;
+          min-height: 40px !important;
+          padding: 4px 5px !important;
+        }
       }
     `;
     document.head.appendChild(st);

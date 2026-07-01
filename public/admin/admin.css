@@ -4455,8 +4455,8 @@ body.rz-admin-shell .rz-since-btn:disabled {
 }
 .rz-pay-method-logo {
   flex: 0 0 auto;
-  width: 40px;
-  height: 28px;
+  width: 44px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4476,6 +4476,9 @@ body.rz-admin-shell .rz-since-btn:disabled {
   font-weight: 800;
   letter-spacing: -0.01em;
   min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .rz-pay-method-switch {
   flex: 0 0 auto;
