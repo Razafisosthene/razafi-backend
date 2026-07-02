@@ -591,19 +591,19 @@
       .plan-payment-methods {
         display: grid;
         grid-template-columns: repeat(4, 1fr);
-        gap: 9px;
+        gap: 8px;
         width: 100%;
         margin-top: 10px;
       }
       .payment-method-btn,
       .plan-card .choose-plan-btn.payment-method-btn {
         width: 100% !important;
-        height: 64px !important;
-        min-height: 64px !important;
+        height: 54px !important;
+        min-height: 54px !important;
         padding: 0 !important;
         margin: 0 !important;
         border: 0 !important;
-        border-radius: 10px !important;
+        border-radius: 9px !important;
         overflow: hidden;
         display: block;
         background: #fff !important;
@@ -639,9 +639,9 @@
         .plan-payment-methods { gap: 7px; }
         .payment-method-btn,
         .plan-card .choose-plan-btn.payment-method-btn {
-          height: 58px !important;
-          min-height: 58px !important;
-          border-radius: 9px !important;
+          height: 52px !important;
+          min-height: 52px !important;
+          border-radius: 8px !important;
         }
       }
     `;
