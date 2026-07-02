@@ -15878,10 +15878,14 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       updates.portal_announcement_priority = normalizePortalAnnouncementPriority(req.body.portal_announcement_priority);
     }
 
-    // Per-pool payment methods (structural prep — MVola/Orange/Airtel/Visa toggles).
-    // Safe owner field: same permission tier as name/brand_name/contact_phone/announcement above.
+    // Per-pool payment methods (MVola/Orange/Airtel/Visa toggles).
+    // Backend security: payment methods are superadmin-only. Owners may edit
+    // safe business fields, but must never change how clients can pay.
     const hasPaymentMethods = Object.prototype.hasOwnProperty.call(req.body || {}, "payment_methods");
     if (hasPaymentMethods) {
+      if (!isSuperadmin) {
+        return res.status(403).json({ error: "superadmin_only" });
+      }
       const pmRaw = req.body.payment_methods;
       if (!pmRaw || typeof pmRaw !== "object" || Array.isArray(pmRaw)) {
         return res.status(400).json({ error: "payment_methods_invalid" });
