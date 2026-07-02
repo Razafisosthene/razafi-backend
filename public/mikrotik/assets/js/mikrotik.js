@@ -3922,6 +3922,7 @@ function bindPlanHandlers() {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
+                  provider: "mvola",
                   phone: cleaned,
                   plan: planStr || planId || planPrice || "plan",
                   plan_id: planId || null,
