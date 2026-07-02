@@ -569,12 +569,12 @@
       .plan-card::before { display: none !important; width: 0 !important; }
       .plan-card.selected { border-color: rgba(0,122,255,.58) !important; box-shadow: 0 22px 46px rgba(0,122,255,.16), 0 0 0 1.5px rgba(0,122,255,.18) inset !important; transform: translateY(-1px); }
       .plan-card .plan-ux-badge { position: static !important; box-shadow: none !important; margin: 0 0 10px !important; font-size: 10px !important; text-transform: uppercase; }
-      .plan-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+      .plan-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 3px; }
       .plan-name { margin: 0 !important; font-size: 1.08rem !important; line-height: 1.15 !important; font-weight: 900 !important; letter-spacing: -.025em; }
       .plan-subtitle { display: none !important; }
       .plan-selected-mark { display: none; padding: 6px 10px; border-radius: 999px; background: #007aff; color: #fff; font-size: 12px; font-weight: 900; white-space: nowrap; box-shadow: 0 8px 18px rgba(0,122,255,.18); }
       .plan-card.selected .plan-selected-mark { display: inline-flex; }
-      .plan-price-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 0 0 3px; }
+      .plan-price-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 0; }
       .plan-card .price { margin: 0 !important; font-size: clamp(1.78rem,7.45vw,2.38rem) !important; line-height: .95 !important; font-weight: 950 !important; letter-spacing: -.06em !important; }
       .plan-price-caption { font-size: 12px; font-weight: 800; opacity: .76; white-space: nowrap; padding-bottom: 3px; }
       .plan-compact-meta { display: block; margin: 0 0 6px; font-size: 13px; font-weight: 850; line-height: 1.24; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
