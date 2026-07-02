@@ -12,6 +12,24 @@
     refreshBtn: $("refreshBtn"),
   };
 
+  // Own session guard: does not rely only on nav.js. Confirms a valid admin
+  // session before requesting owner revenue data. Does not change
+  // /api/owner/revenue behavior in any way.
+  async function ensureAdminSession() {
+    try {
+      const res = await fetch("/api/admin/me", {
+        method: "GET",
+        credentials: "include",
+        headers: { "Accept": "application/json" },
+      });
+      if (!res.ok) throw new Error("unauthenticated");
+      return true;
+    } catch {
+      window.location.href = "/admin/login.html";
+      return false;
+    }
+  }
+
   function esc(v) {
     return String(v ?? "")
       .replaceAll("&", "&amp;")
@@ -158,5 +176,10 @@
   }
 
   els.refreshBtn?.addEventListener("click", loadOwnerRevenue);
-  loadOwnerRevenue();
+
+  (async () => {
+    const sessionOk = await ensureAdminSession();
+    if (!sessionOk) return;
+    await loadOwnerRevenue();
+  })();
 })();

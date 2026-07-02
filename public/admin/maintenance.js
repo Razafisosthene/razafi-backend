@@ -52,6 +52,10 @@ function setBusy(btn, busy, text) {
   }
 }
 
+// Frontend defense-in-depth only. Real authorization must still be verified
+// by the backend (requires server.js backend verification).
+let isSuperadminSession = false;
+
 async function loadCurrentAdmin() {
   const meEl = document.getElementById("me");
   try {
@@ -61,8 +65,27 @@ async function loadCurrentAdmin() {
     return admin;
   } catch (e) {
     if (meEl) meEl.textContent = "Session indisponible";
+    window.location.href = "/admin/login.html";
     throw e;
   }
+}
+
+// Frontend defense-in-depth only (requires server.js backend verification).
+// Maintenance DB is the most destructive admin page (data cleanup), so a
+// non-superadmin session is blocked before usage/preview/cleanup ever load.
+function requireSuperadminOrBlock(admin) {
+  const isSuper = !!admin?.is_superadmin || String(admin?.role || "").toLowerCase() === "superadmin";
+  isSuperadminSession = isSuper;
+  if (!isSuper) {
+    setError("Action non autorisée.");
+    const refreshUsageBtn = document.getElementById("refreshUsageBtn");
+    const previewBtn = document.getElementById("previewBtn");
+    const cleanupBtn = document.getElementById("cleanupBtn");
+    [refreshUsageBtn, previewBtn, cleanupBtn].forEach((btn) => { if (btn) btn.disabled = true; });
+    window.location.href = "/admin/";
+    return false;
+  }
+  return true;
 }
 
 async function loadUsage() {
@@ -178,6 +201,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const cleanupBtn = document.getElementById("cleanupBtn");
 
   refreshUsageBtn?.addEventListener("click", async () => {
+    // Frontend defense-in-depth only (requires server.js backend verification).
+    if (!isSuperadminSession) return;
     try {
       setError("");
       setBusy(refreshUsageBtn, true, "Actualisation…");
@@ -190,6 +215,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   previewBtn?.addEventListener("click", async () => {
+    // Frontend defense-in-depth only (requires server.js backend verification).
+    if (!isSuperadminSession) return;
     try {
       setError("");
       setBusy(previewBtn, true, "Analyse…");
@@ -202,6 +229,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   cleanupBtn?.addEventListener("click", async () => {
+    // Frontend defense-in-depth only (requires server.js backend verification).
+    if (!isSuperadminSession) return;
     try {
       setBusy(cleanupBtn, true, "Nettoyage…");
       await runCleanup();
@@ -213,7 +242,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   try {
-    await loadCurrentAdmin();
+    const admin = await loadCurrentAdmin();
+    if (!requireSuperadminOrBlock(admin)) return;
     await loadUsage();
     await loadPreview();
   } catch (e) {

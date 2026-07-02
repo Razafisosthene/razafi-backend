@@ -43,12 +43,12 @@
       <aside class="rz-drawer" id="rzDrawer" aria-hidden="true">
         <div class="rz-drawer-head">
           <div class="rz-drawer-title">RAZAFI Admin</div>
-          <div class="rz-drawer-sub" id="rzDrawerMe">Checking session…</div>
+          <div class="rz-drawer-sub" id="rzDrawerMe">Vérification de la session…</div>
         </div>
 
         <nav class="rz-drawer-nav">
           <a class="rz-item" data-href="/admin/" href="/admin/">
-            <span class="rz-item-label">Dashboard</span>
+            <span class="rz-item-label">Tableau de bord</span>
           </a>
           <a class="rz-item" data-href="/admin/clients.html" href="/admin/clients.html">
             <span class="rz-item-label">Clients</span>
@@ -72,13 +72,13 @@
             <span class="rz-item-label">Appareils bloqués</span>
           </a>
           <a class="rz-item" data-href="/admin/revenue.html" href="/admin/revenue.html">
-            <span class="rz-item-label">Revenue</span>
+            <span class="rz-item-label">Revenus</span>
           </a>
           <a class="rz-item" data-href="/admin/owner-revenue.html" href="/admin/owner-revenue.html" id="rzNavOwnerRevenue">
-            <span class="rz-item-label">Owner Revenue</span>
+            <span class="rz-item-label">Revenus propriétaire</span>
           </a>
           <a class="rz-item" data-href="/admin/users.html" href="/admin/users.html" id="rzNavUsers">
-            <span class="rz-item-label">Users</span>
+            <span class="rz-item-label">Utilisateurs</span>
           </a>
           <a class="rz-item" data-href="/admin/audit.html" href="/admin/audit.html" id="rzNavAudit">
             <span class="rz-item-label">AUDIT</span>
@@ -89,7 +89,7 @@
         </nav>
 
         <div class="rz-drawer-foot">
-          <button class="rz-logout" id="rzLogoutBtn" type="button">Logout</button>
+          <button class="rz-logout" id="rzLogoutBtn" type="button">Déconnexion</button>
         </div>
       </aside>
     `;
@@ -101,7 +101,7 @@
       <nav class="rz-bottom-nav" id="rzBottomNav" aria-label="Raccourcis admin">
         <a class="rz-bottom-item" data-href="/admin/" href="/admin/">
           <span class="rz-bottom-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1v-9.5Z" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-          <span>Dashboard</span>
+          <span>Tableau de bord</span>
         </a>
         <a class="rz-bottom-item" data-href="/admin/clients.html" href="/admin/clients.html">
           <span class="rz-bottom-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M16 11a4 4 0 1 0-8 0" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/><path d="M5.5 20c.7-3.2 3-5 6.5-5s5.8 1.8 6.5 5" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/><path d="M18.5 12.5c1.9.3 3.1 1.5 3.5 3.5" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/><path d="M5.5 12.5C3.6 12.8 2.4 14 2 16" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></svg></span>
@@ -113,7 +113,7 @@
         </button>
         <a class="rz-bottom-item" data-href="/admin/revenue.html" href="/admin/revenue.html">
           <span class="rz-bottom-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v18" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/><path d="M17 7.5c-.9-1.2-2.4-2-4.5-2C10 5.5 8 6.8 8 8.8c0 4 9 2 9 6.6 0 2-2 3.1-4.7 3.1-2.3 0-4.1-.8-5.3-2.2" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-          <span>Revenue</span>
+          <span>Revenus</span>
         </a>
         <a class="rz-bottom-item" data-href="/admin/plans.html" href="/admin/plans.html">
           <span class="rz-bottom-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 7.5h14M7 4.5h10a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-11a2 2 0 0 1 2-2Z" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 11h8M8 15h5" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></svg></span>
@@ -350,7 +350,7 @@
 
 // drawer label
       const meDrawer = $("#rzDrawerMe");
-      if (meDrawer) meDrawer.textContent = `Connected as ${email}`;
+      if (meDrawer) meDrawer.textContent = `Connecté en tant que ${email}`;
 
       // pages that show #me (support English + French placeholders)
       const meInline = document.getElementById("me");

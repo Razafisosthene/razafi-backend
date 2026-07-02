@@ -133,6 +133,9 @@
   // Pagination
   let cursorStack = [];
   let nextCursor = "";
+  // Frontend defense-in-depth only. Real authorization must still be verified
+  // by the backend (requires server.js backend verification).
+  let isSuperadminSession = false;
 
   function buildParams() {
     const q = String($("q")?.value || "").trim();
@@ -279,6 +282,8 @@
     const statusLine = $("statusLine");
     const tbody = $("rows");
     if (!tbody) return;
+    // Frontend defense-in-depth only (requires server.js backend verification).
+    if (!isSuperadminSession) return;
 
     try {
       if (statusLine) statusLine.textContent = "Chargement…";
@@ -359,8 +364,25 @@
       const admin = await fetchJSON("/api/admin/me");
       const meEl = $("me");
       if (meEl) meEl.innerHTML = formatAdminIdentity(admin);
+
+      // Frontend defense-in-depth only: hides/blocks the Audit UI for
+      // non-superadmin sessions. Real authorization must still be verified
+      // by the backend (requires server.js backend verification).
+      const isSuper = !!admin?.is_superadmin || String(admin?.role || "").toLowerCase() === "superadmin";
+      isSuperadminSession = isSuper;
+      if (!isSuper) {
+        const tbody = $("rows");
+        const statusLine = $("statusLine");
+        if (tbody) tbody.innerHTML = `<tr><td colspan="8" style="padding:12px;">Action non autorisée.</td></tr>`;
+        if (statusLine) statusLine.textContent = "Action non autorisée.";
+        window.location.href = "/admin/";
+        return false;
+      }
+
+      return true;
     } catch {
       window.location.href = "/admin/login.html";
+      return false;
     }
   }
 
@@ -408,7 +430,8 @@
 
   // init
   setDefaultDates();
-  await checkSession();
+  const sessionOk = await checkSession();
+  if (!sessionOk) return;
   await loadEventTypes();
   await loadPlanAndPoolDropdowns();
   await loadPage(false);

@@ -104,6 +104,18 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (meEl) {
         meEl.innerHTML = `Connecté :<strong>${esc(displayAdminName(me))}</strong>`;
       }
+
+      // Frontend defense-in-depth only: hides/blocks the AP management UI for
+      // non-superadmin sessions. Real authorization must still be verified by
+      // the backend (requires server.js backend verification).
+      const isSuper = !!me?.is_superadmin || String(me?.role || "").toLowerCase() === "superadmin";
+      if (!isSuper) {
+        if (errEl) errEl.textContent = "Action non autorisée.";
+        rowsEl.innerHTML = `<tr><td colspan="5" class="rz-empty-state">Action non autorisée.</td></tr>`;
+        window.location.href = "/admin/";
+        return false;
+      }
+
       return true;
     } catch {
       window.location.href = "/admin/login.html";
