@@ -565,11 +565,11 @@
       }
 
       /* Apple Cards Phase 1 overrides (kept here because this style is injected after index.html) */
-      .plan-card { padding: 15px 15px 13px !important; border-radius: 28px !important; }
+      .plan-card { padding: 15px 15px 13px !important; border-radius: 28px !important; gap: 2px !important; }
       .plan-card::before { display: none !important; width: 0 !important; }
       .plan-card.selected { border-color: rgba(0,122,255,.58) !important; box-shadow: 0 22px 46px rgba(0,122,255,.16), 0 0 0 1.5px rgba(0,122,255,.18) inset !important; transform: translateY(-1px); }
       .plan-card .plan-ux-badge { position: static !important; box-shadow: none !important; margin: 0 0 10px !important; font-size: 10px !important; text-transform: uppercase; }
-      .plan-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 3px; }
+      .plan-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 0; }
       .plan-name { margin: 0 !important; font-size: 1.08rem !important; line-height: 1.15 !important; font-weight: 900 !important; letter-spacing: -.025em; }
       .plan-subtitle { display: none !important; }
       .plan-selected-mark { display: none; padding: 6px 10px; border-radius: 999px; background: #007aff; color: #fff; font-size: 12px; font-weight: 900; white-space: nowrap; box-shadow: 0 8px 18px rgba(0,122,255,.18); }
