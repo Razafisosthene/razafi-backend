@@ -17920,6 +17920,39 @@ function buildReadableSection(title, lines = []) {
   return [title, ...clean].join("\n");
 }
 
+// Payment provider label helpers for notification emails (Phase B.3).
+// Display-only mapping — does not touch MVola API logic, voucher logic,
+// or transaction status logic.
+function normalizePaymentProviderForEmail(provider) {
+  const p = String(provider || "").trim().toLowerCase();
+  if (p === "mvola") return "mvola";
+  if (p === "orange" || p === "orange_money") return "orange";
+  if (p === "airtel" || p === "airtel_money") return "airtel";
+  if (p === "visa") return "visa";
+  return "unknown";
+}
+
+function paymentProviderEmailLabel(provider) {
+  const p = normalizePaymentProviderForEmail(provider);
+  if (p === "mvola") return "MVola";
+  if (p === "orange") return "Orange Money";
+  if (p === "airtel") return "Airtel Money";
+  if (p === "visa") return "Visa";
+  return "Paiement";
+}
+
+function buildPaymentSuccessIntro(provider) {
+  const p = normalizePaymentProviderForEmail(provider);
+  if (p === "unknown") return "Paiement réussi. Un voucher a été généré avec succès.";
+  return `Paiement ${paymentProviderEmailLabel(provider)} réussi. Un voucher a été généré avec succès.`;
+}
+
+function buildVoucherGenerationFailureIntro(provider) {
+  const p = normalizePaymentProviderForEmail(provider);
+  if (p === "unknown") return "Paiement terminé, mais une erreur est survenue pendant le traitement final du voucher.";
+  return `Paiement ${paymentProviderEmailLabel(provider)} terminé, mais une erreur est survenue pendant le traitement final du voucher.`;
+}
+
 function buildReadablePaymentEmail({
   intro = "",
   requestRef = "",
@@ -17932,6 +17965,7 @@ function buildReadablePaymentEmail({
   clientMac = "",
   apMac = "",
   mode = "",
+  paymentProvider = "",
   serverCorrelationId = "",
   transactionReference = "",
   extraLines = [],
@@ -17951,7 +17985,8 @@ function buildReadablePaymentEmail({
     poolLabel ? `• Pool: ${poolLabel}` : "",
     clientMac ? `• Client MAC: ${clientMac}` : "",
     apMac ? `• AP MAC: ${apMac}` : "",
-    mode ? `• Mode: ${mode}` : "",
+    paymentProvider ? `• Mode de paiement: ${paymentProvider}` : "",
+    mode ? `• Système: ${mode}` : "",
     timestamp ? `• Heure Madagascar: ${timestamp}` : "",
   ]);
   if (summary) sections.push(summary);
@@ -18645,10 +18680,13 @@ async function pollTransactionStatus({
               payload: { voucherCode: maskVoucherCode(voucherCode), plan_id: metaPlanId, pool_id: metaPoolId, client_mac: metaClientMac, ap_mac: metaApMac },
             });
 
+            const rawPaymentProvider = tx?.provider || baseMeta?.provider || "mvola";
+            const paymentProvider = paymentProviderEmailLabel(rawPaymentProvider);
+
             await sendEmailNotification(
-              `[RAZAFI WIFI] 💰 Payment Success – RequestRef ${requestRef}`,
+              `[RAZAFI WIFI] 💰 Payment Success ${paymentProvider} – RequestRef ${requestRef}`,
               buildReadablePaymentEmail({
-                intro: "Paiement MVola réussi. Un voucher a été généré avec succès.",
+                intro: buildPaymentSuccessIntro(rawPaymentProvider),
                 requestRef,
                 statusLabel: "completed",
                 phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
@@ -18658,6 +18696,7 @@ async function pollTransactionStatus({
                 clientMac: metaClientMac || "—",
                 apMac: metaApMac || "—",
                 mode: "new_system",
+                paymentProvider,
                 serverCorrelationId,
                 timestamp: toISOStringMG(new Date()),
                 extraLines: [
@@ -18759,16 +18798,20 @@ async function pollTransactionStatus({
             payload: { voucherCode: maskVoucherCode(voucherCode) },
           });
 
+          const rawPaymentProvider = tx?.provider || baseMeta?.provider || "mvola";
+          const paymentProvider = paymentProviderEmailLabel(rawPaymentProvider);
+
           await sendEmailNotification(
-            `[RAZAFI WIFI] 💰 Payment Success – RequestRef ${requestRef}`,
+            `[RAZAFI WIFI] 💰 Payment Success ${paymentProvider} – RequestRef ${requestRef}`,
             buildReadablePaymentEmail({
-              intro: "Paiement MVola réussi. Un voucher a été attribué avec succès.",
+              intro: buildPaymentSuccessIntro(rawPaymentProvider),
               requestRef,
               statusLabel: "completed",
               phone: maskPhone(tx?.phone || baseMeta.phone || phone || ""),
               amount: `${tx?.amount ?? amount ?? ""} Ar`,
               voucherCode,
               mode: "legacy_system",
+              paymentProvider,
               serverCorrelationId,
               timestamp: toISOStringMG(new Date()),
             })
@@ -18797,15 +18840,21 @@ async function pollTransactionStatus({
               .eq("request_ref", requestRef);
           } catch (_) {}
 
+          // tx/baseMeta are scoped to the try block above and are not available
+          // here; "mvola" is the safe fallback (only live provider today).
+          const rawPaymentProvider = "mvola";
+          const paymentProvider = paymentProviderEmailLabel(rawPaymentProvider);
+
           await sendEmailNotification(
             `[RAZAFI WIFI] 🚨 CRITICAL – Voucher Generation Failed – RequestRef ${requestRef}`,
             buildReadablePaymentEmail({
-              intro: "Paiement MVola terminé, mais une erreur est survenue pendant le traitement final du voucher.",
+              intro: buildVoucherGenerationFailureIntro(rawPaymentProvider),
               requestRef,
               statusLabel: "voucher_generation_failed",
               phone: maskPhone(phone),
               amount: `${amount ?? ""} Ar`,
               poolLabel: await resolvePoolEmailLabel(metaPoolId || "—"),
+              paymentProvider,
               serverCorrelationId,
               timestamp: toISOStringMG(new Date()),
               extraLines: [
