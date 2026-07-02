@@ -480,6 +480,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     const ownerAdminUserId = String(p.owner_admin_user_id || p.ownerAdminUserId || "").trim();
     const canManageAll = isSuperadmin();
     const canEditBusiness = canManageAll || canEditOwnerFields();
+    // Payment methods are superadmin-only. Owners (canEditBusiness) may still
+    // edit other business fields but must not toggle payment methods.
+    const canEditPaymentMethods = canManageAll;
 
     const annEnabled = p.portal_announcement_enabled === true || String(p.portal_announcement_enabled).toLowerCase() === "true";
     const annType = String(p.portal_announcement_type || "information").trim().toLowerCase();
@@ -609,31 +612,31 @@ document.addEventListener("DOMContentLoaded", async () => {
           <div class="rz-modal-section-title">Modes de paiement du portail</div>
           <div class="rz-pay-methods-grid">
             <label class="rz-pay-method-card ${payMvola ? "is-on" : ""}">
-              <input type="checkbox" id="modalPayMvola" ${payMvola ? "checked" : ""} ${canEditBusiness ? "" : "disabled"} />
+              <input type="checkbox" id="modalPayMvola" ${payMvola ? "checked" : ""} ${canEditPaymentMethods ? "" : "disabled"} />
               <span class="rz-pay-method-logo"><img src="assets/img/payment/mvola.png?v=admin-payment-icons-1" alt="MVola" onerror="this.closest('.rz-pay-method-logo')?.classList.add('is-logo-missing');"></span>
               <span class="rz-pay-method-name">MVola</span>
               <span class="rz-pay-method-switch" aria-hidden="true"></span>
             </label>
             <label class="rz-pay-method-card ${payOrange ? "is-on" : ""}">
-              <input type="checkbox" id="modalPayOrange" ${payOrange ? "checked" : ""} ${canEditBusiness ? "" : "disabled"} />
+              <input type="checkbox" id="modalPayOrange" ${payOrange ? "checked" : ""} ${canEditPaymentMethods ? "" : "disabled"} />
               <span class="rz-pay-method-logo"><img src="assets/img/payment/orange-money.png?v=admin-payment-icons-1" alt="Orange Money" onerror="this.closest('.rz-pay-method-logo')?.classList.add('is-logo-missing');"></span>
               <span class="rz-pay-method-name">Orange Money</span>
               <span class="rz-pay-method-switch" aria-hidden="true"></span>
             </label>
             <label class="rz-pay-method-card ${payAirtel ? "is-on" : ""}">
-              <input type="checkbox" id="modalPayAirtel" ${payAirtel ? "checked" : ""} ${canEditBusiness ? "" : "disabled"} />
+              <input type="checkbox" id="modalPayAirtel" ${payAirtel ? "checked" : ""} ${canEditPaymentMethods ? "" : "disabled"} />
               <span class="rz-pay-method-logo"><img src="assets/img/payment/airtel-money.png?v=admin-payment-icons-1" alt="Airtel Money" onerror="this.closest('.rz-pay-method-logo')?.classList.add('is-logo-missing');"></span>
               <span class="rz-pay-method-name">Airtel Money</span>
               <span class="rz-pay-method-switch" aria-hidden="true"></span>
             </label>
             <label class="rz-pay-method-card ${payVisa ? "is-on" : ""}">
-              <input type="checkbox" id="modalPayVisa" ${payVisa ? "checked" : ""} ${canEditBusiness ? "" : "disabled"} />
+              <input type="checkbox" id="modalPayVisa" ${payVisa ? "checked" : ""} ${canEditPaymentMethods ? "" : "disabled"} />
               <span class="rz-pay-method-logo"><img src="assets/img/payment/visa.jpg?v=admin-payment-icons-1" alt="Visa" onerror="this.closest('.rz-pay-method-logo')?.classList.add('is-logo-missing');"></span>
               <span class="rz-pay-method-name">Visa</span>
               <span class="rz-pay-method-switch" aria-hidden="true"></span>
             </label>
           </div>
-          <div class="rz-pay-methods-note">Les modes désactivés n’apparaissent pas sur le portail client.</div>
+          <div class="rz-pay-methods-note">${canEditPaymentMethods ? "Les modes désactivés n’apparaissent pas sur le portail client." : "Modes de paiement gérés par RAZAFI."}</div>
         </div>
 
         ${canManageAll ? `
@@ -857,12 +860,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     payload.portal_announcement_priority = ($id("modalAnnPriority")?.value || "normal").trim();
     payload.portal_announcement_message = ($id("modalAnnMessage")?.value || "").trim() || null;
 
-    payload.payment_methods = {
-      mvola: !!$id("modalPayMvola")?.checked,
-      orange_money: !!$id("modalPayOrange")?.checked,
-      airtel_money: !!$id("modalPayAirtel")?.checked,
-      visa: !!$id("modalPayVisa")?.checked,
-    };
+    if (canManageAll) {
+      payload.payment_methods = {
+        mvola: !!$id("modalPayMvola")?.checked,
+        orange_money: !!$id("modalPayOrange")?.checked,
+        airtel_money: !!$id("modalPayAirtel")?.checked,
+        visa: !!$id("modalPayVisa")?.checked,
+      };
+    }
 
     if (canManageAll) {
       const mtikIpInput = $id("modalMikrotikIp");
