@@ -12706,6 +12706,25 @@ app.get("/api/admin/revenue/share-transactions", requireAdmin, async (req, res) 
     const to = normalizeDateInput(req.query.to);
     const search = String(req.query.search || "").trim();
 
+    // Mode de paiement filter — transaction table only (Phase B.2).
+    // Not used by totals/by-plan/by-pool/payout endpoints.
+    const PROVIDER_FILTER_MAP = {
+      mvola: "mvola",
+      orange: "orange",
+      orange_money: "orange",
+      airtel: "airtel",
+      airtel_money: "airtel",
+      visa: "visa",
+    };
+    const providerRaw = String(req.query.provider || "").trim().toLowerCase();
+    let normalizedProvider = "";
+    if (providerRaw && providerRaw !== "all") {
+      if (!Object.prototype.hasOwnProperty.call(PROVIDER_FILTER_MAP, providerRaw)) {
+        return res.status(400).json({ error: "provider_invalid" });
+      }
+      normalizedProvider = PROVIDER_FILTER_MAP[providerRaw];
+    }
+
     const limit = Math.min(500, Math.max(1, safeNumber(req.query.limit, 200)));
     const offset = Math.max(0, safeNumber(req.query.offset, 0));
 
@@ -12800,6 +12819,8 @@ app.get("/api/admin/revenue/share-transactions", requireAdmin, async (req, res) 
         ].join(",")
       );
     }
+
+    if (normalizedProvider) q = q.eq("provider", normalizedProvider);
 
     const { data: txRows, error: txErr, count } = await q;
     if (txErr) return res.status(500).json({ error: txErr.message });

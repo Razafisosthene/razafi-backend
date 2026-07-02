@@ -116,6 +116,14 @@ function buildCommonParams() {
   return params;
 }
 
+// Mode de paiement filter — transaction table only (Phase B.2).
+// Deliberately NOT part of buildCommonParams(): totals/by-plan/by-pool/
+// payout auto-create must stay provider-blind for now.
+function getProviderFilterValue() {
+  const v = String(byId("providerFilter")?.value || "").trim().toLowerCase();
+  return v;
+}
+
 function pillHTML(text, tone = "neutral") {
   const bg = tone === "ok" ? "rgba(80,200,120,.18)"
     : tone === "warn" ? "rgba(255,196,0,.22)"
@@ -433,9 +441,21 @@ function wireFilters() {
     byId("search").value = "";
     byId("from").value = "";
     byId("to").value = "";
+    byId("providerFilter").value = "";
     txOffset = 0;
+    selectedTxIds.clear();
     loadAll();
   };
+
+  // Mode de paiement filter — transaction table only (Phase B.2).
+  // Deliberately does NOT call loadAll(): totals/by-plan/by-pool/payouts
+  // must stay unaffected by this filter.
+  byId("providerFilter").addEventListener("change", () => {
+    txOffset = 0;
+    selectedTxIds.clear();
+    updateSelectionMeta();
+    loadTransactions();
+  });
 
   let t = null;
   byId("search").addEventListener("input", () => {
@@ -736,6 +756,9 @@ async function loadTransactions() {
   const params = buildCommonParams();
   params.set("limit", String(txLimit));
   params.set("offset", String(txOffset));
+
+  const provider = getProviderFilterValue();
+  if (provider) params.set("provider", provider);
 
   try {
     const r = await fetchJSON("/api/admin/revenue/share-transactions?" + params.toString());

@@ -487,12 +487,21 @@
                 <input id="to" class="filter-select" type="date" />
               </div>
 
+              <select id="providerFilter" class="filter-select">
+                <option value="">Tous les modes</option>
+                <option value="mvola">MVola</option>
+                <option value="orange">Orange Money</option>
+                <option value="airtel">Airtel Money</option>
+                <option value="visa">Visa</option>
+              </select>
+
               <button id="refreshBtn" class="filter-btn primary" type="button">Actualiser</button>
               <button id="clearBtn" class="filter-btn" type="button">Réinitialiser</button>
             </div>
 
             <div id="hint" class="rz-revenue-hint">
               Les montants affichés concernent uniquement les paiements réussis. Les totaux suivent les filtres appliqués.
+              Le filtre Mode s’applique uniquement à la liste des transactions. Les totaux restent basés sur les filtres date/recherche.
             </div>
           </div>
         </details>
@@ -599,6 +608,6 @@
   </div>
 
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="/admin/revenue.js?v=admin-wide-2"></script>
+  <script src="/admin/revenue.js?v=admin-wide-3"></script>
 </body>
 </html>
