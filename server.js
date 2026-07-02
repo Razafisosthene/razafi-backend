@@ -302,6 +302,33 @@ function activePaymentMethodsList(paymentMethods) {
   return PAYMENT_METHOD_KEYS.filter((k) => pm[k] === true);
 }
 
+function normalizePaymentProviderForSendPayment(rawProvider) {
+  const raw = String(rawProvider || "").trim().toLowerCase();
+  const safeRaw = raw.slice(0, 32);
+  if (!raw) return { ok: true, provider: "mvola", raw: safeRaw };
+
+  // Accept common UI/API aliases while keeping one internal provider key.
+  // Examples: orange-money, orange money, orange_money, orangemoney → orange.
+  const normalized = raw.replace(/[-\s]+/g, "_");
+
+  const map = {
+    mvola: "mvola",
+    orange: "orange",
+    orange_money: "orange",
+    orangemoney: "orange",
+    airtel: "airtel",
+    airtel_money: "airtel",
+    airtelmoney: "airtel",
+    visa: "visa",
+  };
+
+  if (!Object.prototype.hasOwnProperty.call(map, normalized)) {
+    return { ok: false, provider: null, raw: safeRaw };
+  }
+
+  return { ok: true, provider: map[normalized], raw: safeRaw };
+}
+
 
 // ===============================
 // ADMIN PORTAL PREVIEW — signed short-lived links
@@ -18564,7 +18591,7 @@ async function pollTransactionStatus({
           // Read transaction row to recover the original metadata (plan_id/pool_id/client_mac/ap_mac).
           const { data: tx, error: txErr } = await supabase
             .from("transactions")
-            .select("id,phone,amount,metadata,code,voucher")
+            .select("id,phone,amount,metadata,code,voucher,provider")
             .eq("request_ref", requestRef)
             .maybeSingle();
 
@@ -21955,6 +21982,42 @@ app.get("/api/free-plan/check", async (req, res) => {
 app.post("/api/send-payment", async (req, res) => {
   const body = req.body || {};
   const correlationId = crypto.randomUUID();
+
+  const rawPaymentProvider = (
+    body.rawPaymentProvider ||
+    body.paymentProvider ||
+    body.provider ||
+    body.payment_method ||
+    body.method ||
+    ""
+  ).toString().trim();
+  const providerSelection = normalizePaymentProviderForSendPayment(rawPaymentProvider);
+
+  if (!providerSelection.ok) {
+    return res.status(400).json({
+      ok: false,
+      error: "provider_invalid",
+      provider: providerSelection.raw || null,
+      message: "Mode de paiement invalide.",
+    });
+  }
+
+  const paymentProvider = providerSelection.provider;
+
+  console.info("[payment] provider_selected", {
+    rawPaymentProvider: providerSelection.raw || null,
+    paymentProvider,
+  });
+
+  if (paymentProvider !== "mvola") {
+    return res.status(409).json({
+      ok: false,
+      error: "provider_not_available",
+      provider: paymentProvider,
+      message: "Ce mode de paiement n'est pas encore disponible.",
+    });
+  }
+
   const client_mac_raw = (
     body.client_mac ||
     body.clientMac ||
@@ -22380,6 +22443,7 @@ if (supabase) {
         description: `Achat WiFi ${plan}`,
         request_ref: requestRef,
         status: "completed",
+        provider: paymentProvider,
         voucher: voucherCode,
         code: voucherCode,
         metadata: metadataForInsert,
@@ -22442,6 +22506,7 @@ const { error: vsErr } = await supabase
         description: `Achat WiFi ${plan}`,
         request_ref: requestRef,
         status: "initiated",
+        provider: paymentProvider,
         metadata: metadataForInsert,
       }]);
 
