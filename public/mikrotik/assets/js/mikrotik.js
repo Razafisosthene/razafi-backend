@@ -586,53 +586,49 @@
       @media (max-width: 380px) { .plan-price-row { align-items: flex-start; flex-direction: column; gap: 4px; } .plan-price-caption { padding-bottom: 0; } }
 
       /* Per-pool payment method logo buttons (MVola / Orange Money / Airtel Money / Visa).
-         Fixed/proportional format: every button is the same shape and every logo sits
-         inside the same invisible frame — no per-logo adaptive width. */
+         Square icon style: same visual weight for every provider, light rounded corners,
+         soft shadow, and cheap-phone-safe touch feedback. Payment logic is unchanged. */
       .plan-payment-methods {
-        display: flex;
-        flex-wrap: nowrap;
-        justify-content: center;
-        align-items: center;
-        gap: 7px;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 9px;
         width: 100%;
-        overflow: visible;
-        margin-top: 2px;
+        margin-top: 10px;
       }
       .payment-method-btn,
       .plan-card .choose-plan-btn.payment-method-btn {
-        flex: 0 1 clamp(72px, 21vw, 86px);
-        width: clamp(72px, 21vw, 86px) !important;
-        aspect-ratio: 86 / 48;
-        height: auto !important;
-        min-height: 44px !important;
-        padding: 4px 6px !important;
+        width: 100% !important;
+        height: 64px !important;
+        min-height: 64px !important;
+        padding: 0 !important;
         margin: 0 !important;
-        border-radius: 12px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
+        border: 0 !important;
+        border-radius: 10px !important;
+        overflow: hidden;
+        display: block;
         background: #fff !important;
-        border: 1px solid rgba(17,24,39,.12);
-        box-shadow: 0 8px 18px rgba(15,23,42,.14) !important;
+        box-shadow: 0 6px 14px rgba(15,23,42,.12) !important;
         cursor: pointer;
         -webkit-tap-highlight-color: transparent;
-        transition: transform .12s ease, box-shadow .16s ease, opacity .16s ease;
+        transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease, opacity 120ms ease;
       }
-      .payment-method-btn:active { transform: scale(.95); }
+      .payment-method-btn:active {
+        transform: scale(.96);
+        box-shadow: 0 3px 8px rgba(15,23,42,.16) !important;
+        filter: brightness(.96);
+      }
       .payment-method-logo {
-        width: 92%;
-        height: 78%;
-        max-width: 100%;
-        max-height: 100%;
-        object-fit: contain;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
         object-position: center;
         display: block;
       }
-      .payment-method-btn.payment-method-soon { opacity: .82; }
+      .payment-method-btn.payment-method-soon { opacity: .92; }
       .plan-card.selected .choose-plan-btn.payment-method-btn {
         background: #fff !important;
         border: 2px solid rgba(0,122,255,.65) !important;
-        box-shadow: 0 10px 24px rgba(0,122,255,.18) !important;
+        box-shadow: 0 8px 18px rgba(0,122,255,.18) !important;
       }
       .plan-payment-unavailable {
         text-align: center;
@@ -640,14 +636,12 @@
         opacity: .75;
       }
       @media (max-width: 360px) {
-        .plan-payment-methods { gap: 5px; }
+        .plan-payment-methods { gap: 7px; }
         .payment-method-btn,
         .plan-card .choose-plan-btn.payment-method-btn {
-          flex-basis: clamp(66px, 21vw, 78px);
-          width: clamp(66px, 21vw, 78px) !important;
-          min-height: 42px !important;
-          padding: 3px 5px !important;
-          border-radius: 11px;
+          height: 58px !important;
+          min-height: 58px !important;
+          border-radius: 9px !important;
         }
       }
     `;
