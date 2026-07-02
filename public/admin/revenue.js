@@ -154,6 +154,17 @@ function payoutTone(status) {
   return "neutral";
 }
 
+// Display-only mapping. Does not affect filtering, totals, or any
+// revenue/owner-share calculation — provider is not filterable yet (Phase B.1).
+function providerLabel(provider) {
+  const p = String(provider || "").trim().toLowerCase();
+  if (p === "mvola") return "MVola";
+  if (p === "orange" || p === "orange_money") return "Orange Money";
+  if (p === "airtel" || p === "airtel_money") return "Airtel Money";
+  if (p === "visa") return "Visa";
+  return "—";
+}
+
 // -------------------------
 // Session gate
 // -------------------------
@@ -234,7 +245,8 @@ function syncTxHeaders() {
     <th style="text-align:left; padding:10px;">Montant brut</th>
     <th style="text-align:left; padding:10px;">Part plateforme</th>
     <th style="text-align:left; padding:10px;">Part propriétaire</th>
-    <th style="text-align:left; padding:10px;">Téléphone</th>
+    <th style="text-align:left; padding:10px;">Client</th>
+    <th style="text-align:left; padding:10px;">Mode</th>
     <th style="text-align:left; padding:10px;">Voucher</th>
     <th style="text-align:left; padding:10px;">Plan</th>
     <th style="text-align:left; padding:10px;">Pool</th>
@@ -718,7 +730,7 @@ function updateRevenueAssistantBridge() {
 
 async function loadTransactions() {
   const body = byId("txBody");
-  body.innerHTML = `<tr><td colspan="12" style="padding:12px; opacity:.75;">Chargement...</td></tr>`;
+  body.innerHTML = `<tr><td colspan="13" style="padding:12px; opacity:.75;">Chargement...</td></tr>`;
   syncTxHeaders();
 
   const params = buildCommonParams();
@@ -735,7 +747,7 @@ async function loadTransactions() {
       `${items.length} affichée${items.length > 1 ? "s" : ""} / ${total} (page ${Math.floor(txOffset / txLimit) + 1})`;
 
     if (!items.length) {
-      body.innerHTML = `<tr><td colspan="12" style="padding:12px; opacity:.75;">Aucun résultat.</td></tr>`;
+      body.innerHTML = `<tr><td colspan="13" style="padding:12px; opacity:.75;">Aucun résultat.</td></tr>`;
       updateSelectionMeta();
       return;
     }
@@ -759,6 +771,7 @@ async function loadTransactions() {
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtAr(it.platform_amount_ar)}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtAr(it.owner_amount_ar)}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
+          <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(providerLabel(it.provider))}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || it.transaction_voucher || "—")}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(poolDisplayName(it))}</td>
@@ -807,7 +820,7 @@ async function loadTransactions() {
     renderSelectionChecks();
 
   } catch (e) {
-    body.innerHTML = `<tr><td colspan="12" style="padding:12px; color:#c0392b;">${esc(e.message)}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="13" style="padding:12px; color:#c0392b;">${esc(e.message)}</td></tr>`;
     byId("txMeta").textContent = "—";
   }
 }
@@ -921,7 +934,7 @@ function showTxDetail(it) {
           <div style="margin-top:4px;">${pillHTML(payoutLabel(it.payout_status || "unpaid"), payoutTone(it.payout_status || "unpaid"))}</div>
         </div>
         <div style="text-align:right;">
-          <div style="opacity:.7; font-size:12px;">Téléphone</div>
+          <div style="opacity:.7; font-size:12px;">Client</div>
           <div style="font-weight:900; font-size:16px; margin-top:4px;">${esc(it.mvola_phone || "—")}</div>
         </div>
       </div>
@@ -941,7 +954,10 @@ function showTxDetail(it) {
     ) + row2(
       kv("Voucher", esc(it.voucher_code || it.transaction_voucher || "—"), true),
       kv("Statut transaction", esc(transactionLabel(it.transaction_status)))
-    ) + row2(
+    ) + (it.provider ? row2(
+      kv("Mode", esc(providerLabel(it.provider)), true),
+      ""
+    ) : "") + row2(
       kv("MAC client", esc(it.client_mac || "—")),
       kv("MAC AP", esc(it.ap_mac || "—"))
     ) + row2(

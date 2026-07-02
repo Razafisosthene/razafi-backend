@@ -12770,7 +12770,9 @@ app.get("/api/admin/revenue/share-transactions", requireAdmin, async (req, res) 
         plan_price_ar,
 
         pool_id,
-        pool_name
+        pool_name,
+
+        provider
         `,
         { count: "exact" }
       )
