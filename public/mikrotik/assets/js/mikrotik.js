@@ -590,7 +590,9 @@
          soft shadow, and cheap-phone-safe touch feedback. Payment logic is unchanged. */
       .plan-payment-methods {
         display: none;
-        grid-template-columns: repeat(4, 1fr);
+        grid-template-columns: repeat(auto-fit, 54px);
+        justify-content: start;
+        align-items: center;
         gap: 8px;
         width: 100%;
         margin-top: 10px;
@@ -606,9 +608,11 @@
       }
       .payment-method-btn,
       .plan-card .choose-plan-btn.payment-method-btn {
-        width: 100% !important;
+        width: 54px !important;
         height: 54px !important;
+        min-width: 54px !important;
         min-height: 54px !important;
+        aspect-ratio: 1 / 1;
         padding: 0 !important;
         margin: 0 !important;
         border: 0 !important;
@@ -648,10 +652,15 @@
       }
       .plan-card.selected .plan-payment-unavailable { display: block; }
       @media (max-width: 360px) {
-        .plan-payment-methods { gap: 7px; }
+        .plan-payment-methods {
+          grid-template-columns: repeat(auto-fit, 52px);
+          gap: 7px;
+        }
         .payment-method-btn,
         .plan-card .choose-plan-btn.payment-method-btn {
+          width: 52px !important;
           height: 52px !important;
+          min-width: 52px !important;
           min-height: 52px !important;
           border-radius: 8px !important;
         }
@@ -2621,7 +2630,7 @@ function submitToLoginUrl(code, ev) {
       const subtitle = document.querySelector(".section-subtitle-ios");
       if (!subtitle) return;
       subtitle.textContent = currentActivePaymentMethods.length
-        ? "Appuyez sur le mode de paiement souhaité."
+        ? "Sélectionnez un forfait, puis choisissez votre mode de paiement."
         : "Paiement temporairement indisponible pour ce WiFi.";
     } catch (_) {}
   }
@@ -3019,6 +3028,7 @@ function saturationLabel(pct) {
       poolIsFull = false;
     } finally {
       applyPoolContextUI();
+      try { applyPoolFullLockToPlans(); } catch (_) {}
     }
   }
 
@@ -3713,6 +3723,7 @@ function saturationLabel(pct) {
 
 function selectPlanCardOnly(card) {
     if (!card) return;
+    if (document.querySelector(".plan-card.processing")) return;
     if (portalPreviewState.active || poolIsFull) return;
     if (card.classList.contains("hidden-by-filter") || card.style.display === "none") return;
 
