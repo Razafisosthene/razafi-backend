@@ -639,10 +639,9 @@
         display: block;
       }
       .payment-method-btn.payment-method-soon { opacity: .92; }
-      .plan-card.selected .choose-plan-btn.payment-method-btn {
-        background: #fff !important;
-        border: 2px solid rgba(0,122,255,.65) !important;
-        box-shadow: 0 8px 18px rgba(0,122,255,.18) !important;
+      .payment-method-btn.payment-method-selected {
+        border: 2px solid rgba(0,122,255,.75) !important;
+        box-shadow: 0 8px 18px rgba(0,122,255,.20), 0 0 0 3px rgba(0,122,255,.12) !important;
       }
       .plan-payment-unavailable {
         display: none;
@@ -3427,6 +3426,10 @@ function saturationLabel(pct) {
   function resetPlanSelectionUi(card) {
     if (!card) return;
     card.classList.remove("selected");
+    card.querySelectorAll(".payment-method-btn").forEach(function (btn) {
+      btn.classList.remove("payment-method-selected");
+      btn.setAttribute("aria-pressed", "false");
+    });
     const chooseBtn = card.querySelector(".choose-plan-btn");
     if (chooseBtn) {
       // Logo-only payment buttons keep their image; only legacy text buttons get relabeled.
@@ -3444,13 +3447,24 @@ function saturationLabel(pct) {
     const chooseBtn = card.querySelector(".choose-plan-btn");
     if (chooseBtn) {
       // Logo-only payment buttons keep their image; the card's own selected badge
-      // (.plan-selected-mark) already communicates selection visually.
+      // (.plan-selected-mark) already communicates plan selection visually.
       if (!chooseBtn.querySelector(".payment-method-logo")) {
         chooseBtn.textContent = "✓ Sélectionné";
+        chooseBtn.setAttribute("aria-pressed", "true");
+      } else {
+        // Do not mark MVola as the selected payment method just because the plan is selected.
+        chooseBtn.setAttribute("aria-pressed", chooseBtn.classList.contains("payment-method-selected") ? "true" : "false");
       }
-      chooseBtn.setAttribute("aria-pressed", "true");
       chooseBtn.title = "Forfait sélectionné";
     }
+  }
+
+  function setSelectedPaymentMethod(card, btn) {
+    if (!card || !btn) return;
+    card.querySelectorAll(".payment-method-btn").forEach(function (other) {
+      other.classList.toggle("payment-method-selected", other === btn);
+      other.setAttribute("aria-pressed", other === btn ? "true" : "false");
+    });
   }
 
   function scrollSelectedPlanIntoView(card) {
@@ -3852,6 +3866,7 @@ function selectPlanCardOnly(card) {
 
           closeAllPayments();
           setPlanSelectedUi(card);
+          setSelectedPaymentMethod(card, chooseBtn);
           const payment = card.querySelector(".plan-payment");
           if (payment) payment.classList.remove("hidden");
           scrollPaymentFormIntoView(card, 120);
