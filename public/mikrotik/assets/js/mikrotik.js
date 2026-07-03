@@ -589,11 +589,20 @@
          Square icon style: same visual weight for every provider, light rounded corners,
          soft shadow, and cheap-phone-safe touch feedback. Payment logic is unchanged. */
       .plan-payment-methods {
-        display: grid;
+        display: none;
         grid-template-columns: repeat(4, 1fr);
         gap: 8px;
         width: 100%;
         margin-top: 10px;
+      }
+      .plan-card.selected .plan-payment-methods {
+        display: grid;
+        animation: razafiPayMethodsIn 160ms ease both;
+      }
+      .plan-payment-methods.hidden { display: none !important; }
+      @keyframes razafiPayMethodsIn {
+        from { opacity: 0; transform: translateY(-4px); }
+        to { opacity: 1; transform: translateY(0); }
       }
       .payment-method-btn,
       .plan-card .choose-plan-btn.payment-method-btn {
@@ -612,10 +621,11 @@
         -webkit-tap-highlight-color: transparent;
         transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease, opacity 120ms ease;
       }
-      .payment-method-btn:active {
-        transform: scale(.96);
-        box-shadow: 0 3px 8px rgba(15,23,42,.16) !important;
-        filter: brightness(.96);
+      .payment-method-btn:active,
+      .payment-method-btn.razafi-pay-pressing {
+        transform: scale(.94);
+        box-shadow: 0 4px 10px rgba(0,122,255,.24), 0 0 0 3px rgba(0,122,255,.16) !important;
+        filter: brightness(1.08) saturate(1.08);
       }
       .payment-method-logo {
         width: 100%;
@@ -631,10 +641,12 @@
         box-shadow: 0 8px 18px rgba(0,122,255,.18) !important;
       }
       .plan-payment-unavailable {
+        display: none;
         text-align: center;
         margin: 4px 0 0;
         opacity: .75;
       }
+      .plan-card.selected .plan-payment-unavailable { display: block; }
       @media (max-width: 360px) {
         .plan-payment-methods { gap: 7px; }
         .payment-method-btn,
@@ -3699,7 +3711,52 @@ function saturationLabel(pct) {
     });
   }
 
-function bindPlanHandlers() {
+function selectPlanCardOnly(card) {
+    if (!card) return;
+    if (portalPreviewState.active || poolIsFull) return;
+    if (card.classList.contains("hidden-by-filter") || card.style.display === "none") return;
+
+    getPlanCards().forEach(function (other) {
+      if (other === card) return;
+      resetPlanSelectionUi(other);
+      var otherPayment = other.querySelector(".plan-payment");
+      if (otherPayment) otherPayment.classList.add("hidden");
+    });
+
+    setPlanSelectedUi(card);
+  }
+
+  function isPlanCardPassiveClickTarget(target) {
+    try {
+      if (!target) return false;
+      return !!(target.closest && target.closest("button,input,textarea,select,a,.plan-payment,.plan-payment-methods"));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function addPaymentButtonPressFeedback(btn) {
+    if (!btn || btn.dataset.razafiPayPressBound === "1") return;
+    btn.dataset.razafiPayPressBound = "1";
+
+    var clear = function () {
+      btn.classList.remove("razafi-pay-pressing");
+    };
+    var press = function () {
+      btn.classList.remove("razafi-pay-pressing");
+      void btn.offsetWidth;
+      btn.classList.add("razafi-pay-pressing");
+      window.setTimeout(clear, 180);
+    };
+
+    btn.addEventListener("touchstart", press, { passive: true });
+    btn.addEventListener("mousedown", press);
+    btn.addEventListener("touchend", clear, { passive: true });
+    btn.addEventListener("mouseup", clear);
+    btn.addEventListener("mouseleave", clear);
+  }
+
+  function bindPlanHandlers() {
     const planCards = getPlanCards();
 
     planCards.forEach((card) => {
@@ -3713,8 +3770,18 @@ function bindPlanHandlers() {
       const confirmBtn = card.querySelector(".confirm-btn");
       const summaryEl = card.querySelector(".pay-summary");
 
-      // Plan card itself is NOT clickable: title, price, duration, and empty
-      // background do nothing. Only real payment method buttons act.
+      // New compact payment UX: the plan card selects the plan first.
+      // Payment method buttons appear only on the selected plan.
+      if (card.dataset.razafiSelectBound !== "1") {
+        card.dataset.razafiSelectBound = "1";
+        card.addEventListener("click", function (e) {
+          if (isPlanCardPassiveClickTarget(e.target)) return;
+          selectPlanCardOnly(card);
+        });
+      }
+
+      card.querySelectorAll(".payment-method-btn").forEach(addPaymentButtonPressFeedback);
+
       const soonBtns = card.querySelectorAll(".payment-method-soon");
       soonBtns.forEach((btn) => {
         btn.addEventListener("click", function (e) {
@@ -3725,7 +3792,11 @@ function bindPlanHandlers() {
       });
 
       if (chooseBtn) {
-        chooseBtn.addEventListener("click", async function () {
+        chooseBtn.addEventListener("click", async function (e) {
+          if (e) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
           if (!isTermsAccepted()) {
             showTermsError();
             closeAllOpenPaymentsBecauseTermsUnchecked();
@@ -3742,6 +3813,8 @@ function bindPlanHandlers() {
             try { focusVoucherBlock(); } catch (_) {}
             return;
           }
+
+          selectPlanCardOnly(card);
 
           // Free plan pre-check (price=0)
           try {
