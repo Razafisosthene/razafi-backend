@@ -639,6 +639,8 @@
         display: block;
       }
       .payment-method-btn.payment-method-soon { opacity: .92; }
+      .plan-card.selected .choose-plan-btn.payment-method-btn.payment-method-selected,
+      .plan-card.selected .payment-method-btn.payment-method-selected,
       .payment-method-btn.payment-method-selected {
         border: 2px solid rgba(0,122,255,.75) !important;
         box-shadow: 0 8px 18px rgba(0,122,255,.20), 0 0 0 3px rgba(0,122,255,.12) !important;
