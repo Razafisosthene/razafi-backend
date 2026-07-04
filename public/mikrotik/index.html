@@ -261,6 +261,21 @@
     .secondary-btn{background:rgba(118,118,128,.12)!important;border-color:transparent!important;color:var(--ios-text)!important;}
 
     .plans-shell{margin-top:18px;animation:razafiFadeUp .38s ease both;animation-delay:.04s;}
+    .plans-sticky-head{
+      position:-webkit-sticky;
+      position:sticky;
+      top:calc(env(safe-area-inset-top,0px) + 58px);
+      z-index:9;
+      margin:0 -2px 12px;
+      padding:8px 0 6px;
+      background:rgba(245,245,247,.92);
+      border-radius:22px;
+      backdrop-filter:blur(18px);
+      -webkit-backdrop-filter:blur(18px);
+    }
+    body.theme-dark .plans-sticky-head{background:rgba(5,5,7,.92);}
+    .plan-card,
+    .mvola-input{scroll-margin-top:190px;}
     .plans-heading-row{
       display:flex;
       align-items:center;
@@ -719,19 +734,21 @@
 
     <!-- ========= PLANS ========= -->
     <section class="plans-shell">
-      <div class="plans-heading-row">
-        <h3 class="section-title-ios">Plans</h3>
+      <div class="plans-sticky-head">
+        <div class="plans-heading-row">
+          <h3 class="section-title-ios">Plans</h3>
 
-        <button type="button" id="priceSortBtn" aria-label="Trier par prix" title="Trier par prix">Prix ↑</button>
-      </div>
-      <div style="margin:0 0 6px;">
-        <div id="planFilters" class="plan-filters" role="tablist" aria-label="Filtrer les forfaits">
-          <button type="button" class="plan-filter-btn active" data-plan-filter="all" aria-pressed="true">Tous</button>
-          <button type="button" class="plan-filter-btn" data-plan-filter="data" aria-pressed="false">Data</button>
-          <button type="button" class="plan-filter-btn" data-plan-filter="unlimited" aria-pressed="false">Illimité</button>
+          <button type="button" id="priceSortBtn" aria-label="Trier par prix" title="Trier par prix">Prix ↑</button>
         </div>
+        <div style="margin:0 0 6px;">
+          <div id="planFilters" class="plan-filters" role="tablist" aria-label="Filtrer les forfaits">
+            <button type="button" class="plan-filter-btn active" data-plan-filter="all" aria-pressed="true">Tous</button>
+            <button type="button" class="plan-filter-btn" data-plan-filter="data" aria-pressed="false">Data</button>
+            <button type="button" class="plan-filter-btn" data-plan-filter="unlimited" aria-pressed="false">Illimité</button>
+          </div>
+        </div>
+        <p class="section-subtitle-ios">Appuyez sur le mode de paiement souhaité.</p>
       </div>
-      <p class="section-subtitle-ios">Appuyez sur le mode de paiement souhaité.</p>
 
       <div id="plansGrid" class="plans-grid">
         <p class="muted small">Chargement des plans…</p>
