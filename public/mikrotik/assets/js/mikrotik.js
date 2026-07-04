@@ -3041,6 +3041,10 @@ function saturationLabel(pct) {
     const safePhone = String(phone || "").trim();
     const safeCode = String(code || "").trim();
 
+    // Payment completed / code delivered: leave checkout focus before the
+    // existing magic-code focus mode hides the full plans section.
+    try { exitPaymentFocusMode(); } catch (_) {}
+
     // Keep phone in memory for later actions (e.g., use/copy)
     if (safePhone) currentPhone = safePhone;
 
@@ -3710,10 +3714,43 @@ function saturationLabel(pct) {
     }
   }
 
+  function ensurePaymentFocusStyle() {
+    if (document.getElementById("razafi-payment-focus-style")) return;
+    const st = document.createElement("style");
+    st.id = "razafi-payment-focus-style";
+    st.textContent = `
+      body.razafi-payment-focus .plans-sticky-head { display: none !important; }
+      body.razafi-payment-focus #durationFilterBar { display: none !important; }
+      body.razafi-payment-focus .plan-card:not(.razafi-payment-focus-target) { display: none !important; }
+    `;
+    document.head.appendChild(st);
+  }
+
+  function enterPaymentFocusMode(selectedCard) {
+    try {
+      if (!selectedCard) return;
+      ensurePaymentFocusStyle();
+      getPlanCards().forEach(function (card) {
+        card.classList.toggle("razafi-payment-focus-target", card === selectedCard);
+      });
+      document.body.classList.add("razafi-payment-focus");
+    } catch (_) {}
+  }
+
+  function exitPaymentFocusMode() {
+    try {
+      document.body.classList.remove("razafi-payment-focus");
+      getPlanCards().forEach(function (card) {
+        card.classList.remove("razafi-payment-focus-target");
+      });
+    } catch (_) {}
+  }
+
   function closeAllOpenPaymentsBecauseTermsUnchecked() {
     getPlanCards().forEach((card) => {
       resetCardPaymentState(card);
     });
+    try { exitPaymentFocusMode(); } catch (_) {}
   }
 
   function bindTermsAcceptanceGuard() {
@@ -3871,6 +3908,7 @@ function selectPlanCardOnly(card) {
           setSelectedPaymentMethod(card, chooseBtn);
           const payment = card.querySelector(".plan-payment");
           if (payment) payment.classList.remove("hidden");
+          enterPaymentFocusMode(card);
           scrollPaymentFormIntoView(card, 120);
           if (input) {
             try { input.focus({ preventScroll: true }); } catch (_) { try { input.focus(); } catch (_) {} }
@@ -3901,6 +3939,7 @@ function selectPlanCardOnly(card) {
         cancelBtn.addEventListener("click", function () {
           if (card.classList.contains("processing")) return;
           resetCardPaymentState(card);
+          exitPaymentFocusMode();
           showToast("Choisissez un autre plan pour continuer.", "info");
         });
       }
