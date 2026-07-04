@@ -3721,6 +3721,8 @@ function saturationLabel(pct) {
     st.textContent = `
       body.razafi-payment-focus .plans-sticky-head { display: none !important; }
       body.razafi-payment-focus #durationFilterBar { display: none !important; }
+      body.razafi-payment-focus .terms-card { display: none !important; }
+      body.razafi-payment-focus .portal-footer { display: none !important; }
       body.razafi-payment-focus .plan-card:not(.razafi-payment-focus-target) { display: none !important; }
     `;
     document.head.appendChild(st);
