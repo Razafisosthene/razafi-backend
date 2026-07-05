@@ -9336,10 +9336,16 @@ app.get("/api/admin/audit", requireAdmin, requireSuperadmin, async (req, res) =>
     if (planIds.length) {
       const { data: plansData, error: plansErr } = await supabase
         .from("plans")
-        .select("id,name")
+        .select("id,name,mikrotik_rate_limit,price_ar")
         .in("id", planIds);
       if (!plansErr && Array.isArray(plansData)) {
-        for (const p of plansData) planMap[p.id] = p.name || "";
+        for (const p of plansData) {
+          planMap[p.id] = {
+            name: p.name || "",
+            mikrotik_rate_limit: p.mikrotik_rate_limit || null,
+            price_ar: (p.price_ar === 0 || p.price_ar) ? p.price_ar : null,
+          };
+        }
       }
     }
 
@@ -9363,12 +9369,100 @@ app.get("/api/admin/audit", requireAdmin, requireSuperadmin, async (req, res) =>
       }
     }
 
+    // ------------------------------
+    // Payment mode enrichment (display-only, fail-open)
+    // One batched transactions lookup: entity_id (entity_type="transaction")
+    // plus request_ref. Never blocks the audit list.
+    // ------------------------------
+    let txById = {};
+    let txByRef = {};
+    try {
+      // Defensive charset filter: these values are interpolated into a
+      // PostgREST or() filter string; skip anything that could break it.
+      const safeVal = (v) => /^[A-Za-z0-9_\-\.:@]+$/.test(v);
+
+      const entityIds = Array.from(new Set(
+        itemsRaw
+          .filter((x) => String(x?.entity_type || "") === "transaction" && x?.entity_id)
+          .map((x) => String(x.entity_id).trim())
+          .filter((v) => v && safeVal(v))
+      ));
+      const refs = Array.from(new Set(
+        itemsRaw
+          .map((x) => String(x?.request_ref || "").trim())
+          .filter((v) => v && safeVal(v))
+      ));
+
+      if (entityIds.length || refs.length) {
+        const orParts = [];
+        if (entityIds.length) orParts.push(`id.in.(${entityIds.map((v) => `"${v}"`).join(",")})`);
+        if (refs.length) orParts.push(`request_ref.in.(${refs.map((v) => `"${v}"`).join(",")})`);
+
+        const { data: txRows, error: txErr } = await supabase
+          .from("transactions")
+          .select("id, request_ref, provider, amount")
+          .or(orParts.join(","));
+
+        if (!txErr && Array.isArray(txRows)) {
+          for (const t of txRows) {
+            if (!t) continue;
+            if (t.id) txById[String(t.id)] = t;
+            const rk = String(t.request_ref || "").trim();
+            if (rk && !txByRef[rk]) txByRef[rk] = t;
+          }
+        } else if (txErr) {
+          console.error("ADMIN AUDIT: payment provider lookup failed:", txErr?.message || txErr);
+        }
+      }
+    } catch (e) {
+      console.error("ADMIN AUDIT: payment enrichment failed:", e?.message || e);
+      txById = {};
+      txByRef = {};
+    }
+
     const items = itemsRaw.map((it) => {
       const poolInfo = it?.pool_id ? (poolMap[it.pool_id] || null) : null;
+      const planInfo = it?.plan_id ? (planMap[it.plan_id] || null) : null;
+
+      // Tx-linked payment resolution (display-only):
+      // no linked transaction -> "—", even if the audit row has mvola_phone.
+      let payment_provider = null;
+      let payment_provider_label = "—";
+      try {
+        const txKeyId = (String(it?.entity_type || "") === "transaction" && it?.entity_id)
+          ? String(it.entity_id).trim()
+          : null;
+        const txRefKey = String(it?.request_ref || "").trim();
+        const tx = (txKeyId && txById[txKeyId]) || (txRefKey && txByRef[txRefKey]) || null;
+
+        if (tx) {
+          const info = resolveAdminPaymentDisplay({
+            provider: tx.provider,
+            // MVola fallback is allowed here ONLY because a transaction is linked.
+            mvola_phone: it?.mvola_phone,
+            // Explicit tx amount first; explicit plan price as fallback.
+            // resolveAdminPaymentDisplay only treats an explicit 0 as Gratuit.
+            price_ar: (tx.amount ?? planInfo?.price_ar ?? null),
+          });
+          payment_provider = info.payment_provider;
+          payment_provider_label = info.payment_provider_label;
+        }
+      } catch (_) {
+        payment_provider = null;
+        payment_provider_label = "—";
+      }
 
       return {
         ...it,
-        plan_name: it?.plan_id ? (planMap[it.plan_id] || null) : null,
+        plan_name: planInfo ? (planInfo.name || null) : null,
+
+        // ✅ Display-only speed limit (from plans.mikrotik_rate_limit)
+        plan_rate_limit: planInfo ? (normalizeMikrotikRateLimit(planInfo.mikrotik_rate_limit) || null) : null,
+        plan_speed_human: planInfo ? mikrotikRateLimitToSpeedHuman(planInfo.mikrotik_rate_limit) : null,
+
+        // ✅ Display-only payment mode (tx-linked)
+        payment_provider,
+        payment_provider_label,
 
         // Backward-compatible: keep the old field unchanged for existing admin UI.
         pool_name: poolInfo ? (poolInfo.name || null) : null,

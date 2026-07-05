@@ -64,9 +64,11 @@
               <th style="padding:10px;">Statut</th>
               <th style="padding:10px;">Événement</th>
               <th style="padding:10px;">MVola</th>
+              <th style="padding:10px;">Paiement</th>
               <th style="padding:10px;">Référence</th>
               <th style="padding:10px;">Client MAC</th>
               <th style="padding:10px;">Plan</th>
+              <th style="padding:10px;">Débit</th>
               <th style="padding:10px;">Pool</th>
             </tr>
           </thead>
@@ -104,6 +106,9 @@
               <div class="k">MVola</div><div class="v" id="m_mvola_phone">—</div>
             </div>
             <div class="audit-kv">
+              <div class="k">Mode paiement</div><div class="v" id="m_payment">—</div>
+            </div>
+            <div class="audit-kv">
               <div class="k">Client MAC</div><div class="v" id="m_client_mac">—</div>
             </div>
             <div class="audit-kv">
@@ -111,6 +116,9 @@
             </div>
             <div class="audit-kv">
               <div class="k">Plan</div><div class="v" id="m_plan_id">—</div>
+            </div>
+            <div class="audit-kv">
+              <div class="k">Limite débit</div><div class="v" id="m_speed">—</div>
             </div>
             <div class="audit-kv">
               <div class="k">Pool</div><div class="v" id="m_pool_id">—</div>
@@ -134,6 +142,6 @@
   </div>
 
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="/admin/audit.js?v=admin-wide-1"></script>
+  <script src="/admin/audit.js?v=admin-wide-2"></script>
 </body>
 </html>

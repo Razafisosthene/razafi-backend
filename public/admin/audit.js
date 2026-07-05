@@ -194,6 +194,8 @@
     setText("m_plan_id", planText);
     setText("m_pool_id", poolText);
     setText("m_message", message);
+    setText("m_payment", ev.payment_provider_label || "—");
+    setText("m_speed", ev.plan_speed_human || ev.plan_rate_limit || "—");
 
     // Status badge class
     const badge = $("m_status_badge");
@@ -300,7 +302,7 @@
       nextCursor = returnedNext || "";
 
       if (!items.length) {
-        tbody.innerHTML = `<tr><td colspan="8" style="padding:12px; opacity:.75;">Aucun résultat.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" style="padding:12px; opacity:.75;">Aucun résultat.</td></tr>`;
         if (statusLine) statusLine.textContent = "Aucun résultat.";
         return;
       }
@@ -328,9 +330,11 @@
             <td style="padding:10px;">${badge}</td>
             <td style="padding:10px; font-weight:800;">${esc(eventType || "—")}</td>
             <td style="padding:10px; white-space:nowrap;">${esc(mvola || "—")}</td>
+            <td style="padding:10px; white-space:nowrap;">${esc(it.payment_provider_label || "—")}</td>
             <td style="padding:10px; white-space:nowrap;">${esc(requestRef || "—")}</td>
             <td style="padding:10px; white-space:nowrap;">${esc(clientMac || "—")}</td>
             <td style="padding:10px; white-space:nowrap;" title="${esc(planId || "")}">${esc(planDisplay(it))}</td>
+            <td style="padding:10px; white-space:nowrap;">${esc(it.plan_speed_human || it.plan_rate_limit || "—")}</td>
             <td style="padding:10px; white-space:nowrap;" title="${esc(poolId || "")}">${esc(poolDisplay(it))}</td>
           </tr>
         `;
@@ -355,7 +359,7 @@
 
     } catch (e) {
       if (statusLine) statusLine.textContent = "";
-      tbody.innerHTML = `<tr><td colspan="8" style="padding:12px; color:#d9534f;">Échec du chargement : ${esc(e.message || e)}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="10" style="padding:12px; color:#d9534f;">Échec du chargement : ${esc(e.message || e)}</td></tr>`;
     }
   }
 
@@ -373,7 +377,7 @@
       if (!isSuper) {
         const tbody = $("rows");
         const statusLine = $("statusLine");
-        if (tbody) tbody.innerHTML = `<tr><td colspan="8" style="padding:12px;">Action non autorisée.</td></tr>`;
+        if (tbody) tbody.innerHTML = `<tr><td colspan="10" style="padding:12px;">Action non autorisée.</td></tr>`;
         if (statusLine) statusLine.textContent = "Action non autorisée.";
         window.location.href = "/admin/";
         return false;
