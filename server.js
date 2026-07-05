@@ -10078,7 +10078,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         data_remaining_human,
         is_bonus_session,
 
-        plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
+        plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices, mikrotik_rate_limit ),
         pool:internet_pools ( id, name, brand_name, radius_nas_id )
       `, { count: "exact" })
       .order("created_at", { ascending: false })
@@ -10155,6 +10155,9 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       plan_id: r.plan_id,
       plan_name: r.plans?.name || null,
       plan_price: r.plans?.price_ar ?? null,
+      // ✅ Display-only speed limit (from plans.mikrotik_rate_limit)
+      plan_rate_limit: normalizeMikrotikRateLimit(r.plans?.mikrotik_rate_limit) || null,
+      plan_speed_human: mikrotikRateLimitToSpeedHuman(r.plans?.mikrotik_rate_limit),
 
       stored_status: r.status || null,
       truth_status: r.truth_status || null,
@@ -10267,15 +10270,25 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       console.error("ADMIN CLIENTS: Tanaza name lookup failed:", e?.message || e);
     }
 
+    // Session id -> transaction id map (populated by the fallback query below;
+    // consumed by the payment provider enrichment block further down).
+    const __idToTransactionId = {};
+
     try {
       const ids = Array.from(new Set(items.map((i) => i.id).filter(Boolean)));
       if (ids.length) {
         const { data: vsRows, error: vsErr } = await supabase
           .from("voucher_sessions")
-          .select("id, nas_id")
+          .select("id, nas_id, transaction_id")
           .in("id", ids);
 
         if (!vsErr && Array.isArray(vsRows) && vsRows.length) {
+          for (const r of vsRows) {
+            if (r && r.id && r.transaction_id) {
+              __idToTransactionId[String(r.id)] = String(r.transaction_id);
+            }
+          }
+
           const idToNas = Object.fromEntries(
             vsRows
               .filter((r) => r && r.id)
@@ -10312,6 +10325,52 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       }
     } catch (e) {
       console.error("ADMIN CLIENTS: MikroTik AP fallback failed:", e?.message || e);
+    }
+
+    // ------------------------------
+    // Payment mode enrichment (display-only, fail-open)
+    // One batched transactions lookup; never blocks the clients list.
+    // ------------------------------
+    try {
+      const txIds = Array.from(
+        new Set(Object.values(__idToTransactionId).filter((v) => v && String(v).trim()))
+      );
+
+      let txProviderById = {};
+      if (txIds.length) {
+        const { data: txRows, error: txErr } = await supabase
+          .from("transactions")
+          .select("id, provider")
+          .in("id", txIds);
+
+        if (!txErr && Array.isArray(txRows)) {
+          txProviderById = Object.fromEntries(
+            txRows
+              .filter((r) => r && r.id)
+              .map((r) => [String(r.id), r.provider || null])
+          );
+        } else if (txErr) {
+          console.error("ADMIN CLIENTS: payment provider lookup failed:", txErr?.message || txErr);
+        }
+      }
+
+      for (const it of items) {
+        const txId = __idToTransactionId[String(it.id)] || null;
+        const rawProvider = txId ? (txProviderById[txId] || null) : null;
+        const info = resolveAdminPaymentDisplay({
+          provider: rawProvider,
+          mvola_phone: it.mvola_phone,
+          price_ar: it.plan_price,
+        });
+        it.payment_provider = info.payment_provider;
+        it.payment_provider_label = info.payment_provider_label;
+      }
+    } catch (e) {
+      console.error("ADMIN CLIENTS: payment enrichment failed:", e?.message || e);
+      for (const it of items || []) {
+        if (it.payment_provider === undefined) it.payment_provider = null;
+        if (it.payment_provider_label === undefined) it.payment_provider_label = "—";
+      }
     }
 
     // ------------------------------
@@ -12055,7 +12114,7 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
         data_used_human,
         data_remaining_human,
 
-        plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices ),
+        plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices, mikrotik_rate_limit ),
         pool:internet_pools ( id, name )
       `);
 
@@ -12176,6 +12235,51 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
       (data.remaining_seconds === 0 || data.remaining_seconds)
         ? Number(data.remaining_seconds)
         : null;
+
+    // -----------------------------
+    // Display-only enrichment: speed limit + payment mode (Clients modal)
+    // Fail-open. Does NOT touch status/raw_status/bonus/permission/payment logic.
+    // -----------------------------
+    try {
+      data.plan_rate_limit = normalizeMikrotikRateLimit(data.plans?.mikrotik_rate_limit) || null;
+      data.plan_speed_human = mikrotikRateLimitToSpeedHuman(data.plans?.mikrotik_rate_limit);
+    } catch (_) {
+      data.plan_rate_limit = null;
+      data.plan_speed_human = null;
+    }
+
+    try {
+      let txProvider = null;
+
+      const { data: vsTxRow, error: vsTxErr } = await supabase
+        .from("voucher_sessions")
+        .select("transaction_id")
+        .eq("id", data.id)
+        .maybeSingle();
+
+      const txId = (!vsTxErr && vsTxRow?.transaction_id) ? String(vsTxRow.transaction_id) : null;
+
+      if (txId) {
+        const { data: txRow, error: txErr } = await supabase
+          .from("transactions")
+          .select("id, provider")
+          .eq("id", txId)
+          .maybeSingle();
+
+        if (!txErr && txRow) txProvider = txRow.provider || null;
+      }
+
+      const info = resolveAdminPaymentDisplay({
+        provider: txProvider,
+        mvola_phone: data.mvola_phone,
+        price_ar: data.plans?.price_ar,
+      });
+      data.payment_provider = info.payment_provider;
+      data.payment_provider_label = info.payment_provider_label;
+    } catch (_) {
+      data.payment_provider = null;
+      data.payment_provider_label = "—";
+    }
 
     // -----------------------------
     // Free plan override info (client_mac + plan_id)
@@ -17966,6 +18070,33 @@ function paymentProviderEmailLabel(provider) {
   if (p === "airtel") return "Airtel Money";
   if (p === "visa") return "Visa";
   return "Paiement";
+}
+
+// Admin Clients panel: display-only payment mode resolver.
+// Reuses the existing provider normalization above. Does NOT touch payment flow,
+// transaction status, MVola/Orange/Airtel/Visa logic, or voucher logic.
+// Priority: free (0 Ar) -> known provider -> legacy MVola fallback (phone present) -> "—".
+function resolveAdminPaymentDisplay({ provider, mvola_phone, price_ar } = {}) {
+  // Free only when price is explicitly 0 (Number(null) === 0, so guard nullish/empty).
+  const priceN = Number(price_ar);
+  const hasPrice =
+    price_ar !== null &&
+    price_ar !== undefined &&
+    String(price_ar).trim() !== "" &&
+    Number.isFinite(priceN);
+  if (hasPrice && priceN === 0) {
+    return { payment_provider: "free", payment_provider_label: "Gratuit" };
+  }
+  const norm = normalizePaymentProviderForEmail(provider);
+  if (norm !== "unknown") {
+    return { payment_provider: norm, payment_provider_label: paymentProviderEmailLabel(norm) };
+  }
+  if (String(mvola_phone || "").trim()) {
+    // Backward compatibility: old MVola-era sessions have no provider on the
+    // transaction row (or no linked transaction) but do have an MVola phone.
+    return { payment_provider: "mvola", payment_provider_label: "MVola" };
+  }
+  return { payment_provider: null, payment_provider_label: "—" };
 }
 
 function buildPaymentSuccessIntro(provider) {

@@ -448,14 +448,22 @@ tr.innerHTML = `
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}${bonusChip}</td>
 
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
+
+      <!-- ✅ Payment mode (display-only, from backend enrichment) -->
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.payment_provider_label || "—")}</td>
+
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_price ?? "—")}</td>
+
+      <!-- ✅ Speed limit (plans.mikrotik_rate_limit → "7 Mbps", raw "7M/7M" fallback) -->
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_speed_human || it.plan_rate_limit || "—")}</td>
+
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(apDisplay)}</td>
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(poolDisplayName(it))}</td>
 
       <!-- ✅ remaining_seconds now is DB truth (view); display time remaining -->
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
+      <td data-col="remaining" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
 
       <!-- ✅ data remaining (human) -->
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(computeQuota(it).remainingHuman || "—")}</td>
@@ -537,11 +545,9 @@ function flashUpdatedRowAndBlock({ sessionId, blockEl }){
 function updateRowRemaining(sessionId, remainingSeconds) {
   const tr = document.querySelector(`tr[data-id="${CSS.escape(String(sessionId))}"]`);
   if (!tr) return;
-  const tds = tr.querySelectorAll("td");
-  // Time Remaining column is now the 9th column (0-based index 8)
-  if (tds && tds.length >= 11) {
-    tds[8].textContent = fmtRemaining(remainingSeconds);
-  }
+  // ✅ Column-order safe: target the tagged cell, not a hardcoded index.
+  const cell = tr.querySelector('[data-col="remaining"]');
+  if (cell) cell.textContent = fmtRemaining(remainingSeconds);
 }
 
 async function openDetail(id) {
@@ -597,7 +603,8 @@ async function openDetail(id) {
       ["Pool", poolDisplayName(rowItem || it)],
       ["Statut", it.status || "—"],
       ["Code", it.voucher_code],
-      ["MVola", it.mvola_phone],
+      ["Mode paiement", it.payment_provider_label || rowItem?.payment_provider_label || "—"],
+      ["Numéro paiement", it.mvola_phone],
       ["Créé", fmtDate(it.created_at)],
       ["Livré", fmtDate(it.delivered_at)],
       ["Activé", fmtDate(it.activated_at)],
@@ -607,6 +614,7 @@ async function openDetail(id) {
       ["Plan", it.plans?.name || it.plan_name],
       ["Prix", (it.plans?.price_ar ?? it.plan_price)],
       ["Durée", fmtDurationMinutes(it.plans?.duration_minutes)],
+      ["Limite débit", it.plan_speed_human || it.plan_rate_limit || rowItem?.plan_speed_human || rowItem?.plan_rate_limit || "—"],
 
       // ✅ Data quota (human readable) from voucher_sessions_usage_view
       ["Data totale", computeQuota(it).totalHuman],
