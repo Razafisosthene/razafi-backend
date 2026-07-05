@@ -294,7 +294,7 @@
       flex:0 0 auto;
     }
     .section-subtitle-ios{
-      margin:0 4px 12px;
+      margin:0 4px 8px;
       color:var(--ios-muted);
       font-size:13px;
       line-height:1.35;
@@ -735,19 +735,16 @@
     <!-- ========= PLANS ========= -->
     <section class="plans-shell">
       <div class="plans-sticky-head">
+        <p class="section-subtitle-ios">Choisissez un forfait, puis payez.</p>
         <div class="plans-heading-row">
-          <h3 class="section-title-ios">Plans</h3>
-
           <button type="button" id="priceSortBtn" aria-label="Trier par prix" title="Trier par prix">Prix ↑</button>
-        </div>
-        <div style="margin:0 0 6px;">
+
           <div id="planFilters" class="plan-filters" role="tablist" aria-label="Filtrer les forfaits">
             <button type="button" class="plan-filter-btn active" data-plan-filter="all" aria-pressed="true">Tous</button>
             <button type="button" class="plan-filter-btn" data-plan-filter="data" aria-pressed="false">Data</button>
             <button type="button" class="plan-filter-btn" data-plan-filter="unlimited" aria-pressed="false">Illimité</button>
           </div>
         </div>
-        <p class="section-subtitle-ios">Appuyez sur le mode de paiement souhaité.</p>
       </div>
 
       <div id="plansGrid" class="plans-grid">

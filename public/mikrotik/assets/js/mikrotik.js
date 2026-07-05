@@ -2631,7 +2631,7 @@ function submitToLoginUrl(code, ev) {
       const subtitle = document.querySelector(".section-subtitle-ios");
       if (!subtitle) return;
       subtitle.textContent = currentActivePaymentMethods.length
-        ? "Sélectionnez un forfait, puis choisissez votre mode de paiement."
+        ? "Choisissez un forfait, puis payez."
         : "Paiement temporairement indisponible pour ce WiFi.";
     } catch (_) {}
   }
