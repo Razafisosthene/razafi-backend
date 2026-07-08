@@ -4573,6 +4573,23 @@ function selectPlanCardOnly(card) {
       }
     }
 
+
+    function isDesktopAssistantPanel() {
+      try {
+        return !!(window.matchMedia && window.matchMedia("(min-width: 960px) and (hover: hover) and (pointer: fine)").matches);
+      } catch (_) {
+        return (window.innerWidth || 0) >= 960;
+      }
+    }
+
+    function syncPanelA11yMode() {
+      try {
+        if (!panel) return;
+        // Desktop-wide panel is a non-blocking floating chat card; mobile remains modal bottom sheet.
+        panel.setAttribute("aria-modal", isDesktopAssistantPanel() ? "false" : "true");
+      } catch (_) {}
+    }
+
     function setButtonFull() {
       btn.classList.remove("rz-assist-mode-icon");
       btn.classList.add("rz-assist-mode-full");
@@ -4616,7 +4633,7 @@ function selectPlanCardOnly(card) {
     panel.id = "rzAssistPanel";
     panel.setAttribute("role", "dialog");
     panel.setAttribute("aria-label", "Assistant RAZAFI");
-    panel.setAttribute("aria-modal", "true");
+    syncPanelA11yMode();
 
     // Panel header
     var head = document.createElement("div");
@@ -4678,6 +4695,7 @@ function selectPlanCardOnly(card) {
 
     function openPanel() {
       isOpen = true;
+      syncPanelA11yMode();
       panel.classList.add("rz-open");
       backdrop.classList.add("rz-open");
       btn.setAttribute("aria-expanded", "true");
@@ -4911,6 +4929,7 @@ function selectPlanCardOnly(card) {
 
     // Keep desktop/mobile toggle behavior correct if the viewport changes.
     window.addEventListener("resize", function () {
+      syncPanelA11yMode();
       if (isOpen) setButtonFull();
       else scheduleCollapse();
     });

@@ -1106,6 +1106,57 @@ body.theme-dark #rzAssistPanel {
   box-shadow: 0 -12px 52px rgba(0,0,0,.52);
 }
 
+
+/* Desktop-wide assistant panel patch: right-side floating chat card, no visible backdrop.
+   Mobile/tablet bottom-sheet behavior stays untouched. */
+@media (min-width: 960px) and (hover: hover) and (pointer: fine) {
+  #rzAssistBackdrop.rz-open {
+    display: none !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    pointer-events: none !important;
+  }
+
+  #rzAssistPanel {
+    left: auto;
+    right: 24px;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 76px);
+    width: min(420px, calc(100vw - 48px));
+    height: min(620px, calc(100vh - 112px));
+    max-height: calc(100vh - 112px);
+    border-radius: 24px;
+    border: 1px solid rgba(17,24,39,.10);
+    box-shadow: 0 24px 70px rgba(15,23,42,.22),
+                0 6px 18px rgba(15,23,42,.10);
+    padding-bottom: 0;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(14px) scale(.985);
+    transition: opacity .18s ease,
+                transform .24s cubic-bezier(.32,.72,0,1),
+                bottom .22s ease;
+  }
+
+  #rzAssistPanel.rz-open {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0) scale(1);
+  }
+
+  body.dur-bar-visible #rzAssistPanel {
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 150px);
+    height: min(560px, calc(100vh - 186px));
+    max-height: calc(100vh - 186px);
+  }
+
+  body.theme-dark #rzAssistPanel {
+    border-color: rgba(255,255,255,.12);
+    box-shadow: 0 24px 74px rgba(0,0,0,.56),
+                0 6px 18px rgba(0,0,0,.28);
+  }
+}
+
 /* ---- Panel header ---- */
 .rz-assist-head {
   display: flex;
