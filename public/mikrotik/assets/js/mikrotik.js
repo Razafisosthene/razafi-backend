@@ -4565,11 +4565,19 @@ function selectPlanCardOnly(card) {
     // ---- Timed-collapse helpers (no localStorage, no persistence) ----
     var _rzCollapseTimer = null;
 
+    function isDesktopAssistantToggle() {
+      try {
+        return !!(window.matchMedia && window.matchMedia("(min-width: 721px) and (hover: hover) and (pointer: fine)").matches);
+      } catch (_) {
+        return (window.innerWidth || 0) >= 721;
+      }
+    }
+
     function setButtonFull() {
       btn.classList.remove("rz-assist-mode-icon");
       btn.classList.add("rz-assist-mode-full");
       btn.setAttribute("aria-label", "Assistant RAZAFI");
-      btn.textContent = "💬 Aide";
+      btn.textContent = isDesktopAssistantToggle() ? "💬 Aide RAZAFI" : "💬 Aide";
     }
 
     function setButtonIcon() {
@@ -4579,9 +4587,13 @@ function selectPlanCardOnly(card) {
       btn.textContent = "💬";
     }
 
-    // Schedule collapse to icon after 5s; cancels any pending timer first.
+    // Schedule collapse to icon after 5s on mobile only; desktop stays as a visible pill.
     function scheduleCollapse() {
       try { clearTimeout(_rzCollapseTimer); } catch (_) {}
+      if (isDesktopAssistantToggle()) {
+        setButtonFull();
+        return;
+      }
       _rzCollapseTimer = setTimeout(function () {
         if (!isOpen) setButtonIcon();
       }, 5000);
@@ -4895,6 +4907,12 @@ function selectPlanCardOnly(card) {
 
     sendBtn.addEventListener("click", function () {
       sendMessage(input.value);
+    });
+
+    // Keep desktop/mobile toggle behavior correct if the viewport changes.
+    window.addEventListener("resize", function () {
+      if (isOpen) setButtonFull();
+      else scheduleCollapse();
     });
 
     // Close on Escape
