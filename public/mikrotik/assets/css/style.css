@@ -573,6 +573,11 @@ input[type="tel"] {
   color: #fff;
   border: 1px solid rgba(255,255,255,.14);
 }
+.toast-warning{
+  background: rgba(142, 91, 8, .94);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,.16);
+}
 
 .phone-hint{
   margin-top: 6px;
@@ -643,21 +648,30 @@ input[type="tel"] {
 .processing-overlay.hidden{ display:none; }
 
 .processing-card{
-  width: min(92%, 420px);
-  background: rgba(20, 28, 36, .90);
+  width: min(94%, 430px);
+  background: rgba(20, 28, 36, .94);
   color: #fff;
-  border-radius: 18px;
+  border-radius: 20px;
   border: 1px solid rgba(255,255,255,.14);
-  padding: 14px 14px;
-  display:flex;
-  align-items:center;
-  gap: 12px;
+  padding: 16px;
   box-shadow: 0 18px 50px rgba(0,0,0,.35);
+}
+
+.processing-main{
+  display:flex;
+  align-items:flex-start;
+  gap: 12px;
+}
+
+.processing-text{
+  flex:1 1 auto;
+  min-width:0;
 }
 
 .spinner{
   width: 22px;
   height: 22px;
+  margin-top: 1px;
   border-radius: 50%;
   border: 3px solid rgba(255,255,255,.28);
   border-top-color: rgba(255,255,255,.95);
@@ -672,11 +686,108 @@ input[type="tel"] {
 .processing-title{
   font-weight: 900;
   margin-bottom: 4px;
+  line-height: 1.25;
 }
 .processing-sub{
   opacity: .88;
   font-size: 13px;
-  line-height: 1.25;
+  line-height: 1.35;
+}
+
+.payment-progress{
+  margin-top: 15px;
+}
+
+.payment-progress-track{
+  position:relative;
+  width:100%;
+  height:8px;
+  overflow:hidden;
+  border-radius:999px;
+  background:rgba(255,255,255,.17);
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.18);
+}
+
+.payment-progress-fill{
+  height:100%;
+  width:8%;
+  border-radius:inherit;
+  background:linear-gradient(90deg,rgba(255,255,255,.72),rgba(255,255,255,1));
+  box-shadow:0 0 12px rgba(255,255,255,.22);
+  transition:width .35s ease;
+}
+
+.payment-progress-track.is-indeterminate .payment-progress-fill{
+  width:38%;
+  transform:translateX(-135%);
+  animation:paymentProgressIndeterminate 1.45s ease-in-out infinite;
+}
+
+.payment-progress-track.is-complete .payment-progress-fill{
+  background:#34c759;
+  box-shadow:0 0 14px rgba(52,199,89,.34);
+}
+
+@keyframes paymentProgressIndeterminate{
+  0%{transform:translateX(-135%);}
+  60%,100%{transform:translateX(365%);}
+}
+
+.payment-progress-meta{
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  gap:12px;
+  margin-top:9px;
+  font-size:12px;
+  line-height:1.3;
+}
+
+.payment-progress-label{
+  font-weight:800;
+  color:rgba(255,255,255,.92);
+}
+
+.payment-progress-elapsed{
+  flex:0 0 auto;
+  font-variant-numeric:tabular-nums;
+  color:rgba(255,255,255,.74);
+}
+
+.payment-progress-note{
+  margin:6px 0 0;
+  color:rgba(255,255,255,.72);
+  font-size:12px;
+  line-height:1.4;
+}
+
+.sr-only{
+  position:absolute!important;
+  width:1px!important;
+  height:1px!important;
+  padding:0!important;
+  margin:-1px!important;
+  overflow:hidden!important;
+  clip:rect(0,0,0,0)!important;
+  white-space:nowrap!important;
+  border:0!important;
+}
+
+@media (max-width:420px){
+  .processing-overlay{padding:12px;}
+  .processing-card{width:100%;padding:15px;border-radius:18px;}
+  .payment-progress-meta{gap:8px;}
+}
+
+@media (prefers-reduced-motion: reduce){
+  .spinner{animation:none!important;}
+  .payment-progress-fill{transition:none!important;}
+  .payment-progress-track.is-indeterminate .payment-progress-fill{
+    width:42%;
+    transform:none;
+    animation:none!important;
+    opacity:.82;
+  }
 }
 /* ===============================
    VOUCHER – NEW CODE HIGHLIGHT

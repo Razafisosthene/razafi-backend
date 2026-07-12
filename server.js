@@ -8665,6 +8665,13 @@ const MVOLA_CLIENT_ID = process.env.MVOLA_CLIENT_ID || process.env.MVOLA_CONSUME
 const MVOLA_CLIENT_SECRET = process.env.MVOLA_CLIENT_SECRET || process.env.MVOLA_CONSUMER_SECRET;
 const PARTNER_NAME = process.env.MVOLA_PARTNER_NAME || "RAZAFI";
 const PARTNER_MSISDN = process.env.MVOLA_PARTNER_MSISDN || "0340500592";
+// Single source of truth for the live MVola verification window.
+// The portal receives this value from /api/send-payment and mirrors the real
+// backend polling duration instead of running an unrelated/random animation.
+const MVOLA_VERIFICATION_TIMEOUT_MS = Math.max(
+  30_000,
+  Math.min(10 * 60_000, parseInt(process.env.MVOLA_VERIFICATION_TIMEOUT_MS || "180000", 10) || 180_000)
+);
 const USER_LANGUAGE = "FR";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -18752,7 +18759,7 @@ async function pollTransactionStatus({
   const start = Date.now();
   const timeoutMs = Number.isFinite(Number(timeoutMsOverride)) && Number(timeoutMsOverride) > 0
     ? Number(timeoutMsOverride)
-    : 3 * 60 * 1000; // default: 3 minutes
+    : MVOLA_VERIFICATION_TIMEOUT_MS; // default/live verification window
   const pollScheduleMs = [400, 700, 1000, 1500, 2200, 3000, 4000, 5000, 6000];
   const maxAttemptCount = Number.isFinite(Number(maxAttempts)) && Number(maxAttempts) > 0
     ? Math.floor(Number(maxAttempts))
@@ -22843,7 +22850,13 @@ const { error: vsErr } = await supabase
       payload: { ...data, initiate_retry_used: !!usedRetry },
     });
 
-    res.json({ ok: true, requestRef, serverCorrelationId, mvola: data });
+    res.json({
+      ok: true,
+      requestRef,
+      serverCorrelationId,
+      verificationTimeoutMs: MVOLA_VERIFICATION_TIMEOUT_MS,
+      mvola: data,
+    });
 
     // start background poll (non-blocking)
     (async () => {

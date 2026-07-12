@@ -37,6 +37,19 @@
   // Current truth status from /api/portal/status (used to drive small UX copy)
   let portalTruthStatus = "none";
 
+  // Backward-compatible fallback only. In normal production flow, the portal
+  // uses verificationTimeoutMs returned by /api/send-payment so the visual
+  // progress mirrors the backend's real MVola polling window.
+  const DEFAULT_MVOLA_VERIFICATION_TIMEOUT_MS = 180000;
+
+  function normalizeMvolaVerificationTimeoutMs(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 30000 || n > 10 * 60 * 1000) {
+      return DEFAULT_MVOLA_VERIFICATION_TIMEOUT_MS;
+    }
+    return Math.round(n);
+  }
+
 
   // -------- Backend base URL (Option A: page served from MikroTik) --------
   // When the captive page is served from the MikroTik router (e.g. http://192.168.88.1),
@@ -359,10 +372,17 @@
   // Toast (top-center, safe-area)
   function ensureToastContainer() {
     let c = document.getElementById("toastContainer");
-    if (c) return c;
-    c = document.createElement("div");
-    c.id = "toastContainer";
-    document.body.appendChild(c);
+
+    if (!c) {
+      c = document.createElement("div");
+      c.id = "toastContainer";
+      document.body.appendChild(c);
+    }
+
+    c.setAttribute("role", "status");
+    c.setAttribute("aria-live", "polite");
+    c.setAttribute("aria-atomic", "true");
+
     return c;
   }
 
@@ -2004,37 +2024,60 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
     } catch (_) {}
   })();
 
-async function pollDernierCode(phone, { timeoutMs = 180000, baselineCode = null, requestRef = null, clientMac: forcedClientMac = null } = {}) {
+async function pollDernierCode(phone, { timeoutMs = DEFAULT_MVOLA_VERIFICATION_TIMEOUT_MS, baselineCode = null, requestRef = null, clientMac: forcedClientMac = null } = {}) {
   const started = Date.now();
+  const safeTimeoutMs = normalizeMvolaVerificationTimeoutMs(timeoutMs);
   const safePhone = String(phone || "").trim();
   const safeRequestRef = String(requestRef || "").trim();
   const safeClientMac = String(forcedClientMac || clientMac || "").trim();
+  let httpResponses = 0;
+  let transportErrors = 0;
+  let lastStatus = "";
 
   // HOTFIX B1: after Patch A, phone-only /api/dernier-code is intentionally blocked.
   // For paid MVola delivery, poll by requestRef (unique per payment) so the code appears
   // immediately after completion without requiring a portal refresh.
   if (safeRequestRef) {
-    while (Date.now() - started < timeoutMs) {
+    while (Date.now() - started < safeTimeoutMs) {
       const elapsed = Date.now() - started;
       const intervalMs = elapsed < 10000 ? 1000 : 3000;
 
       try {
         const r = await fetch(apiUrl(`/api/tx/${encodeURIComponent(safeRequestRef)}`), { method: "GET" });
+        httpResponses += 1;
 
         if (r.status === 404) {
-          // transaction not visible yet
+          // Transaction not visible yet; keep polling.
         } else if (r.ok) {
           const j = await r.json().catch(() => ({}));
           const tx = (j && j.transaction && typeof j.transaction === "object") ? j.transaction : j;
           const status = String(tx?.status || j?.status || "").trim().toLowerCase();
           const c = String(tx?.voucher || tx?.code || tx?.voucher_code || j?.code || j?.voucher || "").trim();
+          const txMeta = (tx?.metadata && typeof tx.metadata === "object") ? tx.metadata : {};
+          lastStatus = status || lastStatus;
 
           if (c && (!baselineCode || c !== String(baselineCode))) {
-            return c;
+            return { outcome: "success", code: c, status: status || "completed" };
           }
 
-          if (["failed", "fail", "cancelled", "canceled", "rejected", "expired"].includes(status)) {
-            throw new Error("payment_failed");
+          // Payment was confirmed by MVola but the backend could not prepare a code.
+          // Do not mislabel this as a provider rejection and do not make the client
+          // wait for the full verification window when no code can be delivered.
+          if (status === "no_voucher_pending") {
+            return { outcome: "code_unavailable", code: null, status };
+          }
+
+          if (["failed", "fail", "cancelled", "canceled", "rejected", "expired", "declined"].includes(status)) {
+            const hasInternalProcessingError = status === "failed" && !!String(txMeta?.error || "").trim();
+            return {
+              outcome: hasInternalProcessingError ? "processing_error" : "failed",
+              code: null,
+              status,
+            };
+          }
+
+          if (status === "timeout") {
+            return { outcome: "timeout", code: null, status };
           }
         } else {
           let msg = "Erreur serveur";
@@ -2042,37 +2085,43 @@ async function pollDernierCode(phone, { timeoutMs = 180000, baselineCode = null,
           throw new Error(msg);
         }
       } catch (e) {
+        transportErrors += 1;
         console.warn("[RAZAFI] pollTransactionCode error", e?.message || e);
       }
 
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
-    return null;
+    return {
+      outcome: httpResponses === 0 && transportErrors > 0 ? "network_error" : "timeout",
+      code: null,
+      status: lastStatus || null,
+    };
   }
 
   // Secure fallback only: never call /api/dernier-code by phone alone.
-  if (!safePhone || !safeClientMac) return null;
+  if (!safePhone || !safeClientMac) {
+    return { outcome: "unavailable", code: null, status: null };
+  }
 
-  while (Date.now() - started < timeoutMs) {
+  while (Date.now() - started < safeTimeoutMs) {
     const elapsed = Date.now() - started;
-
-    // ⚡ FAST at start, slower later
     const intervalMs = elapsed < 10000 ? 1000 : 3000;
 
     try {
       const params = new URLSearchParams({ phone: safePhone, client_mac: safeClientMac });
       const url = `/api/dernier-code?${params.toString()}`;
       const r = await fetch(apiUrl(url), { method: "GET" });
+      httpResponses += 1;
 
       if (r.status === 204) {
-        // no code yet
+        // No code yet.
       } else if (r.ok) {
         const j = await r.json();
         if (j && j.code) {
           const c = String(j.code);
           if (!baselineCode || c !== String(baselineCode)) {
-            return c;
+            return { outcome: "success", code: c, status: "completed" };
           }
         }
       } else {
@@ -2081,14 +2130,19 @@ async function pollDernierCode(phone, { timeoutMs = 180000, baselineCode = null,
         throw new Error(msg);
       }
     } catch (e) {
+      transportErrors += 1;
       console.warn("[RAZAFI] pollDernierCode error", e?.message || e);
     }
 
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
 
-  return null;
-}  
+  return {
+    outcome: httpResponses === 0 && transportErrors > 0 ? "network_error" : "timeout",
+    code: null,
+    status: lastStatus || null,
+  };
+}
   
   // Build MikroTik login URL (GET) for Option C redirect-based login
   function buildMikrotikLoginTarget(code) {
@@ -3228,13 +3282,33 @@ function saturationLabel(pct) {
           </div>
 
           <!-- Processing overlay (local) -->
-          <div class="processing-overlay hidden" aria-live="assertive">
+          <div class="processing-overlay hidden">
             <div class="processing-card">
-              <div class="spinner" aria-hidden="true"></div>
-              <div class="processing-text">
-                <div class="processing-title">📲 Vérifiez votre téléphone MVola</div>
-                <div class="processing-sub">Entrez votre PIN si demandé. Votre code WiFi apparaîtra automatiquement après confirmation.</div>
+              <div class="processing-main">
+                <div class="spinner" aria-hidden="true"></div>
+                <div class="processing-text">
+                  <div class="processing-title">📡 Connexion avec MVola…</div>
+                  <div class="processing-sub">Envoi sécurisé de la demande. Gardez cette page ouverte.</div>
+                </div>
               </div>
+
+              <div class="payment-progress">
+                <div class="payment-progress-track is-indeterminate"
+                  role="progressbar"
+                  aria-label="Envoi de la demande MVola"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-valuetext="Envoi de la demande MVola">
+                  <div class="payment-progress-fill"></div>
+                </div>
+                <div class="payment-progress-meta">
+                  <span class="payment-progress-label">Connexion sécurisée avec MVola</span>
+                  <span class="payment-progress-elapsed" aria-hidden="true"></span>
+                </div>
+                <p class="payment-progress-note">Ne fermez pas cette page.</p>
+              </div>
+
+              <div class="processing-sr-status sr-only" aria-live="polite" aria-atomic="true"></div>
             </div>
           </div>
 
@@ -3540,6 +3614,135 @@ function saturationLabel(pct) {
     } catch (_) {}
   }
 
+  const paymentProgressStates = new WeakMap();
+
+  function formatPaymentElapsed(ms) {
+    const totalSeconds = Math.max(0, Math.floor(Number(ms || 0) / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0");
+  }
+
+  function formatPaymentWindow(ms) {
+    const seconds = Math.max(1, Math.round(Number(ms || 0) / 1000));
+    if (seconds % 60 === 0) {
+      const minutes = seconds / 60;
+      return minutes + " minute" + (minutes > 1 ? "s" : "");
+    }
+    return seconds + " secondes";
+  }
+
+  function getPaymentProgressElements(card) {
+    if (!card) return {};
+    return {
+      track: card.querySelector(".payment-progress-track"),
+      fill: card.querySelector(".payment-progress-fill"),
+      label: card.querySelector(".payment-progress-label"),
+      elapsed: card.querySelector(".payment-progress-elapsed"),
+      note: card.querySelector(".payment-progress-note"),
+      sr: card.querySelector(".processing-sr-status"),
+    };
+  }
+
+  function announcePaymentProcessing(card, message) {
+    try {
+      const sr = getPaymentProgressElements(card).sr;
+      if (!sr || !message) return;
+      sr.textContent = "";
+      window.setTimeout(() => { sr.textContent = String(message); }, 20);
+    } catch (_) {}
+  }
+
+  function stopPaymentProgress(card, { reset = false } = {}) {
+    try {
+      const state = paymentProgressStates.get(card);
+      if (state?.intervalId) window.clearInterval(state.intervalId);
+      paymentProgressStates.delete(card);
+
+      if (reset) {
+        const els = getPaymentProgressElements(card);
+        if (els.track) {
+          els.track.classList.remove("is-determinate", "is-complete");
+          els.track.classList.add("is-indeterminate");
+          els.track.removeAttribute("aria-valuenow");
+          els.track.setAttribute("aria-valuetext", "Envoi de la demande MVola");
+        }
+        if (els.fill) els.fill.style.width = "";
+        if (els.elapsed) els.elapsed.textContent = "";
+      }
+    } catch (_) {}
+  }
+
+  function startPaymentRequestProgress(card) {
+    stopPaymentProgress(card, { reset: true });
+    const els = getPaymentProgressElements(card);
+    if (els.label) els.label.textContent = "Connexion sécurisée avec MVola";
+    if (els.note) els.note.textContent = "Ne fermez pas cette page.";
+    if (els.track) {
+      els.track.setAttribute("aria-label", "Envoi de la demande MVola");
+      els.track.setAttribute("aria-valuetext", "Envoi de la demande MVola");
+    }
+    announcePaymentProcessing(card, "Envoi de la demande MVola. Gardez cette page ouverte.");
+  }
+
+  function startPaymentVerificationProgress(card, timeoutMs) {
+    stopPaymentProgress(card);
+    const safeTimeoutMs = normalizeMvolaVerificationTimeoutMs(timeoutMs);
+    const els = getPaymentProgressElements(card);
+    const startedAt = Date.now();
+
+    if (els.track) {
+      els.track.classList.remove("is-indeterminate", "is-complete");
+      els.track.classList.add("is-determinate");
+      els.track.setAttribute("aria-label", "Temps de vérification auprès de MVola");
+    }
+    if (els.label) els.label.textContent = "Vérification auprès de MVola";
+    if (els.note) {
+      els.note.textContent = `La confirmation peut prendre jusqu’à ${formatPaymentWindow(safeTimeoutMs)}. Ne lancez pas un deuxième paiement.`;
+    }
+
+    const update = function () {
+      const elapsedMs = Math.max(0, Date.now() - startedAt);
+      const ratio = Math.min(1, elapsedMs / safeTimeoutMs);
+      const percent = Math.min(92, 8 + (84 * ratio));
+      const elapsedText = formatPaymentElapsed(elapsedMs);
+
+      if (els.fill) els.fill.style.width = percent.toFixed(2) + "%";
+      if (els.elapsed) els.elapsed.textContent = elapsedText + " écoulées";
+      if (els.track) {
+        els.track.setAttribute("aria-valuenow", String(Math.round(percent)));
+        els.track.setAttribute(
+          "aria-valuetext",
+          `${elapsedText} écoulées sur une fenêtre de vérification de ${formatPaymentWindow(safeTimeoutMs)}`
+        );
+      }
+    };
+
+    update();
+    const intervalId = window.setInterval(update, 250);
+    paymentProgressStates.set(card, { intervalId, startedAt, timeoutMs: safeTimeoutMs });
+    announcePaymentProcessing(
+      card,
+      `Demande envoyée à MVola. Vérifiez votre téléphone et entrez votre PIN si MVola vous le demande. La confirmation peut prendre jusqu’à ${formatPaymentWindow(safeTimeoutMs)}.`
+    );
+  }
+
+  function completePaymentProgress(card) {
+    stopPaymentProgress(card);
+    const els = getPaymentProgressElements(card);
+    if (els.track) {
+      els.track.classList.remove("is-indeterminate", "is-determinate");
+      els.track.classList.add("is-complete");
+      els.track.setAttribute("aria-valuenow", "100");
+      els.track.setAttribute("aria-valuetext", "Paiement confirmé");
+    }
+    if (els.fill) els.fill.style.width = "100%";
+    if (els.label) els.label.textContent = "Paiement confirmé";
+    if (els.elapsed) els.elapsed.textContent = "100 %";
+    if (els.note) els.note.textContent = "Préparation de votre code WiFi…";
+    updateProcessingMessage(card, "✅ Paiement confirmé", "Préparation de votre code WiFi…");
+  }
+
   const processingWaitTimers = new WeakMap();
 
   function clearProcessingWaitMessages(card) {
@@ -3563,7 +3766,10 @@ function saturationLabel(pct) {
   function setProcessing(card, isProcessing) {
     // Assistant bridge: keep payment-in-progress flag in sync (no card/code data exposed).
     try { window.razafiPaymentInProgress = !!isProcessing; } catch (_) {}
-    if (!isProcessing) clearProcessingWaitMessages(card);
+    if (!isProcessing) {
+      clearProcessingWaitMessages(card);
+      stopPaymentProgress(card, { reset: true });
+    }
     card.classList.toggle("processing", !!isProcessing);
     const overlay = card.querySelector(".processing-overlay");
     if (overlay) overlay.classList.toggle("hidden", !isProcessing);
@@ -3571,9 +3777,10 @@ function saturationLabel(pct) {
     if (isProcessing) {
       updateProcessingMessage(
         card,
-        "📲 Vérifiez votre téléphone MVola",
-        "Entrez votre PIN si demandé. Votre code WiFi apparaîtra automatiquement après confirmation."
+        "📡 Connexion avec MVola…",
+        "Envoi sécurisé de la demande. Gardez cette page ouverte."
       );
+      startPaymentRequestProgress(card);
     }
 
     const inputs = card.querySelectorAll("input, button");
@@ -4019,13 +4226,8 @@ function selectPlanCardOnly(card) {
           }
 
           if (confirmWrap) confirmWrap.classList.add("hidden");
-          showToast("📲 Vérifiez votre téléphone pour valider MVola.", "info", 5200);
+          showToast("📲 Une demande MVola va être envoyée sur votre téléphone.", "info", 5200);
           setProcessing(card, true);
-          updateProcessingMessage(
-            card,
-            "📡 Envoi de la demande MVola…",
-            "Gardez cette page ouverte. La demande va arriver sur votre téléphone."
-          );
 
           (async () => {
             try {
@@ -4094,7 +4296,10 @@ function selectPlanCardOnly(card) {
 
               if (!resp.ok || !data.ok) {
                 const msg = data?.message || data?.error || "Erreur lors du paiement";
-                throw new Error(msg);
+                const paymentError = new Error(msg);
+                paymentError.razafiPaymentStage = "initiate_response";
+                paymentError.razafiHttpStatus = Number(resp?.status || 0) || null;
+                throw paymentError;
               }
 
               if (data && data.free && data.code) {
@@ -4118,38 +4323,85 @@ function selectPlanCardOnly(card) {
                 }
               }
 
-              updateProcessingMessage(
-                card,
-                "📲 Vérifiez votre téléphone MVola",
-                "Entrez votre PIN si demandé. Votre code WiFi apparaîtra automatiquement après confirmation."
-              );
-              scheduleProcessingWaitMessages(card);
-              showToast("📲 Demande MVola envoyée. Vérifiez votre téléphone.", "success", 5200);
-
               const paymentRequestRef = String(data?.requestRef || data?.request_ref || "").trim();
               if (!paymentRequestRef) {
-                throw new Error("request_ref_missing");
+                const missingRefError = new Error("request_ref_missing");
+                missingRefError.razafiPaymentStage = "verification_start";
+                throw missingRefError;
               }
 
-              const code = await pollDernierCode(cleaned, {
-                timeoutMs: 180000,
-                intervalMs: 3000,
+              const verificationTimeoutMs = normalizeMvolaVerificationTimeoutMs(
+                data?.verificationTimeoutMs ?? data?.verification_timeout_ms
+              );
+
+              updateProcessingMessage(
+                card,
+                "📲 Demande envoyée à MVola",
+                "Vérifiez votre téléphone et entrez votre PIN si MVola vous le demande."
+              );
+              startPaymentVerificationProgress(card, verificationTimeoutMs);
+              showToast("📲 Demande MVola envoyée. Vérifiez votre téléphone.", "success", 5200);
+
+              const pollResult = await pollDernierCode(cleaned, {
+                timeoutMs: verificationTimeoutMs,
                 baselineCode,
                 requestRef: paymentRequestRef,
                 clientMac: clientMac || null,
               });
-              if (!code) {
+
+              if (!pollResult || pollResult.outcome !== "success" || !pollResult.code) {
                 clearProcessingWaitMessages(card);
-                updateProcessingMessage(
-                  card,
-                  "❌ Paiement non confirmé",
-                  "Vérifiez votre téléphone MVola, votre solde ou votre réseau mobile puis réessayez."
-                );
-                showToast("❌ Paiement non confirmé. Vérifiez votre téléphone MVola, votre solde ou votre réseau mobile puis réessayez.", "error", 7500);
-                setProcessing(card, false);
-                updatePayButtonState(card);
+
+                if (pollResult?.outcome === "failed") {
+                  updateProcessingMessage(
+                    card,
+                    "❌ Paiement non validé par MVola",
+                    "MVola n’a pas confirmé ce paiement. Vérifiez votre téléphone avant de réessayer."
+                  );
+                  showToast(
+                    "❌ Paiement non validé par MVola. Vérifiez votre téléphone avant de réessayer.",
+                    "error",
+                    7500
+                  );
+                } else if (["processing_error", "code_unavailable"].includes(pollResult?.outcome)) {
+                  updateProcessingMessage(
+                    card,
+                    "⚠️ Code WiFi non disponible",
+                    "Le paiement peut avoir été confirmé. Ne payez pas une deuxième fois et contactez l’assistance."
+                  );
+                  showToast(
+                    "⚠️ Le paiement peut avoir été confirmé, mais aucun code WiFi n’est disponible. Ne payez pas une deuxième fois et contactez l’assistance.",
+                    "warning",
+                    10000
+                  );
+                } else if (pollResult?.outcome === "network_error") {
+                  updateProcessingMessage(
+                    card,
+                    "⚠️ Vérification interrompue",
+                    "Le paiement peut encore être en cours. Ne payez pas une deuxième fois si votre solde a été débité."
+                  );
+                  showToast(
+                    "⚠️ Connexion interrompue pendant la vérification. Si votre solde a été débité, ne payez pas une deuxième fois et contactez l’assistance.",
+                    "warning",
+                    9000
+                  );
+                } else {
+                  updateProcessingMessage(
+                    card,
+                    "⏱️ Confirmation MVola non reçue",
+                    "Si votre solde a été débité, ne payez pas une deuxième fois. Contactez l’assistance."
+                  );
+                  showToast(
+                    "⏱️ Confirmation MVola non reçue. Si votre solde a été débité, ne payez pas une deuxième fois et contactez l’assistance.",
+                    "warning",
+                    9000
+                  );
+                }
                 return;
               }
+
+              const code = pollResult.code;
+              completePaymentProgress(card);
 
               try {
                 if (receiptDraft) sessionStorage.setItem("razafi_last_purchase", JSON.stringify(receiptDraft));
@@ -4166,16 +4418,39 @@ function selectPlanCardOnly(card) {
             } catch (e) {
               console.error("[RAZAFI] payment error", e);
               const friendly = friendlyErrorMessage(e);
-              const isPaymentLikeError = /paiement|mvola|payment/i.test(String(friendly || "") + " " + String(e?.message || ""));
-              if (isPaymentLikeError) {
+              const rawMessage = String(e?.message || "");
+              const isNetworkError = String(e?.name || "") === "TypeError" || /failed to fetch|network|connexion/i.test(rawMessage);
+              const isMissingRef = rawMessage === "request_ref_missing";
+
+              if (e?.razafiPaymentStage === "initiate_response") {
+                updateProcessingMessage(
+                  card,
+                  "❌ Demande MVola non acceptée",
+                  friendly
+                );
+                showToast("❌ " + friendly, "error", 7500);
+              } else if (isNetworkError || isMissingRef) {
+                updateProcessingMessage(
+                  card,
+                  "⚠️ Impossible de confirmer l’envoi",
+                  "La demande peut avoir été reçue. Si votre solde a été débité, ne payez pas une deuxième fois et contactez l’assistance."
+                );
+                showToast(
+                  "⚠️ Impossible de confirmer l’envoi MVola. Si votre solde a été débité, ne payez pas une deuxième fois et contactez l’assistance.",
+                  "warning",
+                  9000
+                );
+              } else {
                 updateProcessingMessage(
                   card,
                   "❌ Paiement non confirmé",
-                  "Vérifiez votre téléphone MVola, votre solde ou votre réseau mobile puis réessayez."
+                  "RAZAFI n’a pas pu confirmer ce paiement. Si votre solde a été débité, ne payez pas une deuxième fois."
                 );
-                showToast("❌ Paiement non confirmé. Vérifiez votre téléphone MVola, votre solde ou votre réseau mobile puis réessayez.", "error", 7500);
-              } else {
-                showToast("❌ " + friendly, "error", 6500);
+                showToast(
+                  "❌ Paiement non confirmé. Si votre solde a été débité, ne payez pas une deuxième fois et contactez l’assistance.",
+                  "error",
+                  8500
+                );
               }
             } finally {
               setProcessing(card, false);
