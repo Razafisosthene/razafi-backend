@@ -10146,16 +10146,28 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-    const status = String(req.query.status || "all").toLowerCase();
+    // ------------------------------
+    // P0 FIX (F-01 / F-22)
+    // - The status filter is now applied SERVER-SIDE (it used to be applied by
+    //   the frontend on a single 200-row page, which made counters and the
+    //   "Tous les pools" view wrong past 200 sessions).
+    // - Counters ("summary") are now exact DB counts over the WHOLE filtered
+    //   scope, not counts over the returned page.
+    // - "online"/"offline" are live (RADIUS) statuses that do not exist in
+    //   vw_voucher_sessions_truth: they are resolved over the ACTIVE set below.
+    // ------------------------------
+    const ALLOWED_STATUSES = new Set(["all", "active", "pending", "used", "expired", "online", "offline"]);
+    let status = String(req.query.status || "all").toLowerCase();
+    if (!ALLOWED_STATUSES.has(status)) status = "all";
+    const liveMode = status === "online" || status === "offline";
+
     const search = String(req.query.search || "").trim();
     const plan_id = String(req.query.plan_id || "all").trim();
     const pool_id = String(req.query.pool_id || "all").trim();
     const limit = Math.min(500, Math.max(1, safeNumber(req.query.limit, 200)));
     const offset = Math.max(0, safeNumber(req.query.offset, 0));
 
-    let q = supabase
-      .from("vw_voucher_sessions_truth")
-      .select(`
+    const CLIENTS_SELECT_COLUMNS = `
         id,
         voucher_code,
         plan_id,
@@ -10181,22 +10193,22 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
 
         plans:plans ( id, name, price_ar, duration_minutes, duration_hours, data_mb, max_devices, mikrotik_rate_limit ),
         pool:internet_pools ( id, name, brand_name, radius_nas_id )
-      `, { count: "exact" })
-      .order("created_at", { ascending: false })
-      .range(offset, offset + limit - 1);
+      `;
 
+    // 🔐 Pool scoping (server-side) — unchanged behavior.
+    let allowedPools = null;
     if (!req.admin?.is_superadmin) {
-      const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
-      if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
+      allowedPools = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
+      if (!allowedPools.length) return res.status(403).json({ error: "no_pools_assigned" });
 
-      if (pool_id && pool_id !== "all" && !allowed.includes(pool_id)) {
+      if (pool_id && pool_id !== "all" && !allowedPools.includes(pool_id)) {
         return res.status(403).json({ error: "forbidden_pool" });
       }
-
-      q = q.in("pool_id", allowed);
     }
 
+    // Search (alias -> MAC resolution unchanged; escaping unchanged in P0 — see F-12/P2).
     let aliasMacs = [];
+    let searchOrExpr = null;
     if (search) {
       const s = search.replace(/%/g, "\\%");
       try {
@@ -10220,24 +10232,295 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       if (aliasMacs.length) {
         orParts.push(`client_mac.in.(${aliasMacs.map((m) => `"${m}"`).join(",")})`);
       }
-      q = q.or(orParts.join(","));
+      searchOrExpr = orParts.join(",");
     }
 
-    if (status !== "all") {
-      q = q.eq("truth_status", status);
+    // Every query (list + counters) goes through the exact same filter set,
+    // so table, counters and pagination always describe the same scope.
+    const applyCommonFilters = (query) => {
+      if (allowedPools) query = query.in("pool_id", allowedPools);
+      if (searchOrExpr) query = query.or(searchOrExpr);
+      if (plan_id && plan_id !== "all") query = query.eq("plan_id", plan_id);
+      if (pool_id && pool_id !== "all") query = query.eq("pool_id", pool_id);
+      return query;
+    };
+
+    // ------------------------------
+    // Summary: exact head-counts per truth_status over the whole filtered scope.
+    // ------------------------------
+    const countByTruthStatus = async (st) => {
+      let cq = supabase
+        .from("vw_voucher_sessions_truth")
+        .select("id", { count: "exact", head: true });
+      cq = applyCommonFilters(cq);
+      if (st) cq = cq.eq("truth_status", st);
+      const { count, error } = await cq;
+      if (error) throw error;
+      return Number(count || 0);
+    };
+
+    let cTotal = 0, cActive = 0, cPending = 0, cUsed = 0, cExpired = 0;
+    try {
+      [cTotal, cActive, cPending, cUsed, cExpired] = await Promise.all([
+        countByTruthStatus(null),
+        countByTruthStatus("active"),
+        countByTruthStatus("pending"),
+        countByTruthStatus("used"),
+        countByTruthStatus("expired"),
+      ]);
+    } catch (e) {
+      return res.status(500).json({ error: String(e?.message || e) });
     }
 
-    if (plan_id && plan_id !== "all") {
-      q = q.eq("plan_id", plan_id);
-    }
-    if (pool_id && pool_id !== "all") {
-      q = q.eq("pool_id", pool_id);
+    // Online/offline over the full ACTIVE scope. Active sessions are bounded by
+    // pool capacity in practice; LIVE_SCAN_MAX is a defensive cap, and we
+    // disclose truncation instead of hiding it.
+    //
+    // P0.1 FIX (audit correction 1): live status is resolved with the composite
+    // key `${radius_nas_id}|${normalized client_mac}` — NEVER by MAC alone —
+    // because the same MAC can legitimately appear under several pools/NAS.
+    // The accounting query is keyed by the scoped NAS IDs (a handful of short
+    // values) instead of an `.in()` list of up to 1000 MACs, which could exceed
+    // HTTP/PostgREST URL limits.
+    const LIVE_SCAN_MAX = 1000;  // active-voucher scan cap (disclosed via live_scan_truncated)
+    const LIVE_ROWS_MAX = 2000;  // recent accounting rows cap (disclosed via live_scan_truncated)
+
+    let activeScopeRows = [];
+    let liveScanTruncated = false;
+    if (cActive > 0) {
+      let aq = supabase
+        .from("vw_voucher_sessions_truth")
+        .select(liveMode ? CLIENTS_SELECT_COLUMNS : "id, client_mac, pool_id")
+        .eq("truth_status", "active")
+        // P0.1 FIX (audit correction 3): deterministic order — created_at DESC, id DESC.
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(LIVE_SCAN_MAX);
+      aq = applyCommonFilters(aq);
+      const { data: aRows, error: aErr } = await aq;
+      if (aErr) return res.status(500).json({ error: aErr.message });
+      activeScopeRows = aRows || [];
+      liveScanTruncated = cActive > activeScopeRows.length;
     }
 
-    const { data, error, count } = await q;
-    if (error) return res.status(500).json({ error: error.message });
+    // P0.2 FIX (defect 2): the pool→NAS mapping is part of the live-status
+    // dependency. Declared here because a mapping failure — or an active
+    // session that cannot be mapped to a non-empty radius_nas_id — must make
+    // live status EXPLICITLY unavailable instead of producing the false data
+    // "online = 0 / offline = all actives".
+    let liveStatusAvailable = true;
 
-    const items = (data || []).map(r => ({
+    // pool_id -> radius_nas_id for every pool seen in the active scope.
+    // (Page items resolve their NAS from their own joined pool.radius_nas_id,
+    // so this map does not need to cover pools beyond the active scan.)
+    let poolNasById = {};
+    {
+      const scopePoolIds = Array.from(new Set(
+        activeScopeRows.map((r) => String(r?.pool_id || "").trim()).filter(Boolean)
+      ));
+      if (scopePoolIds.length) {
+        const { data: poolRows, error: poolErr } = await supabase
+          .from("internet_pools")
+          .select("id, radius_nas_id")
+          .in("id", scopePoolIds);
+        if (poolErr || !Array.isArray(poolRows)) {
+          // P0.2 FIX (defect 2): a failed mapping means online/offline cannot
+          // be computed — never leave liveStatusAvailable=true with an empty map.
+          console.error("ADMIN CLIENTS: pool NAS lookup failed:", poolErr?.message || poolErr);
+          liveStatusAvailable = false;
+        } else {
+          poolNasById = Object.fromEntries(
+            poolRows.map((p) => [String(p?.id || ""), String(p?.radius_nas_id || "").trim()])
+          );
+        }
+      }
+    }
+
+    // Resolve the NAS a voucher's accounting rows would be reported under.
+    const resolveVoucherNas = (r) =>
+      String(r?.pool?.radius_nas_id || "").trim() ||
+      String(poolNasById[String(r?.pool_id || "")] || "").trim();
+
+    // P0.2 FIX (defect 2): an active session whose pool has no radius_nas_id
+    // cannot be matched against accounting rows — it must be reported as
+    // unknown/unavailable, never silently classified as offline.
+    if (liveStatusAvailable && activeScopeRows.some((r) => !resolveVoucherNas(r))) {
+      console.error("ADMIN CLIENTS: active session(s) without radius_nas_id — live status unavailable");
+      liveStatusAvailable = false;
+    }
+
+    // ------------------------------
+    // P0.1 FIX (audit correction 4): clamp the offset when the dataset shrank
+    // (rows deleted while paging) so we never serve an empty page while earlier
+    // pages still contain records. The effective offset is echoed back so the
+    // frontend can resynchronize.
+    // ------------------------------
+    const clampOffset = (requested, totalRows) => {
+      if (!Number.isFinite(totalRows) || totalRows <= 0) return 0;
+      if (requested < totalRows) return requested;
+      return Math.max(0, Math.floor((totalRows - 1) / limit) * limit);
+    };
+    let effectiveOffset = offset;
+
+    // ------------------------------
+    // List query (non-live statuses) — status filtered in DB, paginated with an
+    // exact total. Fetched BEFORE the RADIUS lookup so the page's NAS IDs can be
+    // included in that single accounting query.
+    // ------------------------------
+    let rows = [];
+    let total = 0;
+
+    if (!liveMode) {
+      const expectedTotalByStatus = {
+        all: cTotal,
+        active: cActive,
+        pending: cPending,
+        used: cUsed,
+        expired: cExpired,
+      };
+      const expectedTotal = Number(expectedTotalByStatus[status] ?? cTotal);
+      effectiveOffset = clampOffset(offset, expectedTotal);
+
+      if (expectedTotal <= 0) {
+        rows = [];
+        total = 0;
+      } else {
+        const buildListQuery = (off) => {
+          let q = supabase
+            .from("vw_voucher_sessions_truth")
+            .select(CLIENTS_SELECT_COLUMNS, { count: "exact" })
+            // P0.1 FIX (audit correction 3): deterministic order for stable pages.
+            .order("created_at", { ascending: false })
+            .order("id", { ascending: false })
+            .range(off, off + limit - 1);
+          q = applyCommonFilters(q);
+          if (status !== "all") q = q.eq("truth_status", status);
+          return q;
+        };
+
+        let { data, error, count } = await buildListQuery(effectiveOffset);
+
+        // Concurrency guard: if the dataset shrank between the count and the
+        // page query (PostgREST "range not satisfiable"), restart from page 1.
+        if (error && effectiveOffset > 0 && /range/i.test(String(error?.message || ""))) {
+          effectiveOffset = 0;
+          ({ data, error, count } = await buildListQuery(0));
+        }
+        if (error) return res.status(500).json({ error: error.message });
+
+        rows = data || [];
+        total = Number(count || 0);
+
+        // Re-clamp against the authoritative count from the page query itself.
+        const reclamped = clampOffset(effectiveOffset, total);
+        if (reclamped !== effectiveOffset && total > 0) {
+          effectiveOffset = reclamped;
+          const retry = await buildListQuery(effectiveOffset);
+          if (!retry.error) {
+            rows = retry.data || [];
+            total = Number(retry.count || total);
+          }
+        }
+      }
+    }
+
+    // ------------------------------
+    // Single RADIUS accounting lookup, keyed by NAS IDs.
+    // P0.1 FIX (audit correction 2) + P0.2 (defect 2): if this lookup fails —
+    // or if the pool→NAS dependency above already failed — live status is
+    // EXPLICITLY unavailable (live_status_available:false). Active clients are
+    // never silently classified as offline, and online/offline counters are
+    // returned as null instead of false zeros.
+    // ------------------------------
+    let latestByKey = {};
+    let liveRowsTruncated = false;
+    if (liveStatusAvailable) {
+      try {
+        const nasIds = Array.from(new Set([
+          ...Object.values(poolNasById),
+          ...rows.map((r) => String(r?.pool?.radius_nas_id || "").trim()),
+        ].map((v) => String(v || "").trim()).filter(Boolean)));
+
+        if (nasIds.length) {
+          const cutoffIso = getUtcCutoffIso(2);
+          const { data: liveRows, error: liveErr } = await supabase
+            .from("radius_acct_sessions")
+            .select("client_mac,calling_station_id,acct_status_type,updated_at,nas_id")
+            .in("nas_id", nasIds)
+            .gte("updated_at", cutoffIso)
+            .order("updated_at", { ascending: false })
+            .limit(LIVE_ROWS_MAX);
+
+          if (liveErr) throw liveErr;
+
+          const liveArr = Array.isArray(liveRows) ? liveRows : [];
+          liveRowsTruncated = liveArr.length >= LIVE_ROWS_MAX;
+          for (const row of liveArr) {
+            const mac = normalizeLiveMac(row?.client_mac || row?.calling_station_id);
+            const nas = String(row?.nas_id || "").trim();
+            if (!mac || !nas) continue;
+            const key = `${nas}|${mac}`;
+            if (latestByKey[key]) continue; // rows are ordered DESC: first seen = latest
+            latestByKey[key] = row;
+          }
+        }
+      } catch (e) {
+        // P0.1 FIX (correction 2): a failed live lookup must NOT classify every
+        // active client as offline. Live status becomes explicitly unavailable.
+        console.error("ADMIN CLIENTS: live status lookup failed:", e?.message || e);
+        liveStatusAvailable = false;
+        latestByKey = {};
+      }
+    }
+
+    const liveKeyForVoucher = (poolNas, mac) => {
+      const nas = String(poolNas || "").trim();
+      const m = normalizeLiveMac(mac);
+      if (!nas || !m) return null;
+      return `${nas}|${m}`;
+    };
+    const isVoucherOnline = (poolNas, mac) => {
+      const key = liveKeyForVoucher(poolNas, mac);
+      if (!key) return false;
+      const row = latestByKey[key];
+      return !!(row && String(row?.acct_status_type || "").toLowerCase() === "interim-update");
+    };
+
+    // Online/offline summary over the (possibly capped) active scope.
+    // null when live status is unavailable — never a false zero.
+    let cOnline = null;
+    let cOffline = null;
+    if (liveStatusAvailable) {
+      let n = 0;
+      for (const r of activeScopeRows) {
+        if (isVoucherOnline(resolveVoucherNas(r), r?.client_mac)) n += 1;
+      }
+      cOnline = n;
+      cOffline = Math.max(0, cActive - n);
+    }
+
+    // ------------------------------
+    // List for live statuses (online/offline): the active scope was fetched
+    // with full columns above; filter it by resolved live status, then clamp
+    // and paginate in-process.
+    // ------------------------------
+    if (liveMode) {
+      if (!liveStatusAvailable) {
+        rows = [];
+        total = 0;
+        effectiveOffset = 0;
+      } else {
+        const wantOnline = status === "online";
+        const filteredRows = activeScopeRows.filter(
+          (r) => isVoucherOnline(resolveVoucherNas(r), r?.client_mac) === wantOnline
+        );
+        total = filteredRows.length;
+        effectiveOffset = clampOffset(offset, total);
+        rows = filteredRows.slice(effectiveOffset, effectiveOffset + limit);
+      }
+    }
+
+    const items = rows.map(r => ({
       id: r.id,
       voucher_code: r.voucher_code,
 
@@ -10292,65 +10575,38 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     } catch (_) {}
 
     // ------------------------------
-    // Live connection status (MikroTik/RADIUS truth)
-    // 🟢 Online only when the latest recent RADIUS accounting row is Interim-Update.
-    // ⚫ Offline otherwise. Voucher status remains separate from live status.
+    // Live connection status (MikroTik/RADIUS truth) — P0.1 (corrections 1 & 2)
+    // Reuses the pool-safe `${nas_id}|${mac}` lookup computed above (single
+    // accounting query for the whole request — no per-page MAC in-list).
+    // 🟢 Online only when the latest recent accounting row for that NAS+MAC is
+    // Interim-Update. ⚫ Offline otherwise. When the RADIUS lookup failed, live
+    // status is EXPLICITLY unknown — never silently "offline".
     // ------------------------------
-    try {
-      const activeMacs = Array.from(
-        new Set(
-          (items || [])
-            .filter((i) => String(i?.truth_status || i?.status || "").toLowerCase() === "active")
-            .map((i) => normalizeLiveMac(i?.client_mac))
-            .filter(Boolean)
-        )
+    for (const it of items) {
+      if (!liveStatusAvailable) {
+        it.is_online = null;
+        it.live_status = "unknown";
+        it.live_status_label = "Statut inconnu";
+        it.live_status_updated_at = null;
+        continue;
+      }
+
+      const isActiveVoucher = String(it?.truth_status || it?.status || "").toLowerCase() === "active";
+      const poolNas =
+        String(it?.pool_nas_id || "").trim() ||
+        String(poolNasById[String(it?.pool_id || "")] || "").trim();
+      const key = liveKeyForVoucher(poolNas, it?.client_mac);
+      const row = key ? (latestByKey[key] || null) : null;
+      const isOnline = !!(
+        isActiveVoucher &&
+        row &&
+        String(row?.acct_status_type || "").toLowerCase() === "interim-update"
       );
 
-      const latestByMac = {};
-      if (activeMacs.length) {
-        const cutoffIso = getUtcCutoffIso(2);
-        const { data: liveRows, error: liveErr } = await supabase
-          .from("radius_acct_sessions")
-          .select("client_mac,calling_station_id,acct_status_type,updated_at,nas_id")
-          .in("client_mac", activeMacs)
-          .gte("updated_at", cutoffIso)
-          .order("updated_at", { ascending: false })
-          .limit(1000);
-
-        if (!liveErr && Array.isArray(liveRows)) {
-          for (const row of liveRows) {
-            const mac = normalizeLiveMac(row?.client_mac || row?.calling_station_id);
-            if (!mac || latestByMac[mac]) continue;
-            latestByMac[mac] = row;
-          }
-        } else if (liveErr) {
-          console.error("ADMIN CLIENTS: live status lookup failed:", liveErr?.message || liveErr);
-        }
-      }
-
-      for (const it of items) {
-        const mac = normalizeLiveMac(it?.client_mac);
-        const row = latestByMac[mac] || null;
-        const isActiveVoucher = String(it?.truth_status || it?.status || "").toLowerCase() === "active";
-        const isOnline = !!(
-          isActiveVoucher &&
-          row &&
-          String(row?.acct_status_type || "").toLowerCase() === "interim-update"
-        );
-
-        it.is_online = isOnline;
-        it.live_status = isOnline ? "online" : "offline";
-        it.live_status_label = isOnline ? "Connecté" : "Hors ligne";
-        it.live_status_updated_at = row?.updated_at || null;
-      }
-    } catch (e) {
-      console.error("ADMIN CLIENTS: live status enrichment failed:", e?.message || e);
-      for (const it of items || []) {
-        it.is_online = false;
-        it.live_status = "offline";
-        it.live_status_label = "Hors ligne";
-        it.live_status_updated_at = null;
-      }
+      it.is_online = isOnline;
+      it.live_status = isOnline ? "online" : "offline";
+      it.live_status_label = isOnline ? "Connecté" : "Hors ligne";
+      it.live_status_updated_at = row?.updated_at || null;
     }
 
     try {
@@ -10601,19 +10857,35 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       }
     }
 
-    // ✅ Summary based on DB truth_status
-    const total = count || 0;
-    const active = items.filter(i => i.truth_status === "active").length;
-    const pending = items.filter(i => i.truth_status === "pending").length;
-    const used = items.filter(i => i.truth_status === "used").length;
-    const expired = items.filter(i => i.truth_status === "expired").length;
-    const online = items.filter(i => i.truth_status === "active" && i.is_online === true).length;
-    const offline = items.filter(i => i.truth_status === "active" && i.is_online !== true).length;
-
+    // ------------------------------
+    // P0 FIX (F-01): the summary now reflects the WHOLE filtered scope
+    // (exact DB counts computed above), never just the current page.
+    // Note: the bonus auto-cleanup above may have just flipped a handful of
+    // page rows from active -> used/expired; counters converge on the next
+    // refresh. (Moving that cleanup out of this GET is tracked as F-08 / P2.)
+    // ------------------------------
     res.json({
       items,
       total,
-      summary: { total, active, online, offline, pending, used, expired }
+      limit,
+      offset: effectiveOffset,
+      // P0.1 (correction 2): explicit live availability — the UI must show
+      // "unavailable", never false zeros / false offline.
+      live_status_available: liveStatusAvailable,
+      // P0.1 (correction 7 support): truncation of either the active-voucher
+      // scan or the accounting window means Connectés/Hors ligne may be
+      // incomplete — disclosed whatever the selected status.
+      live_scan_truncated: liveScanTruncated || liveRowsTruncated,
+      live_scanned: activeScopeRows.length,
+      summary: {
+        total: cTotal,
+        active: cActive,
+        online: cOnline,
+        offline: cOffline,
+        pending: cPending,
+        used: cUsed,
+        expired: cExpired,
+      }
     });
 
   } catch (e) {

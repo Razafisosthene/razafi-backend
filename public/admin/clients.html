@@ -51,6 +51,9 @@
 
       <div id="summary" class="rz-clients-summary"></div>
 
+      <!-- P0.1 (corrections 2 & 7) : avertissement quand les compteurs Connectés/Hors ligne sont indisponibles ou incomplets. -->
+      <div id="liveNotice" class="subtitle" style="display:none; margin-top:8px;"></div>
+
       <div class="table-wrap">
         <table id="table" style="width:100%; border-collapse: collapse; min-width: 1140px;">
           <thead>
@@ -76,6 +79,13 @@
 
       <div id="empty" class="subtitle" style="margin-top:14px; display:none;">
         Aucun enregistrement trouvé.
+      </div>
+
+      <!-- P0 FIX (F-01): pagination — la liste n'est plus limitée à une seule page de 200 lignes. -->
+      <div id="pager" style="display:none; align-items:center; justify-content:center; gap:12px; margin-top:14px; flex-wrap:wrap;">
+        <button id="prevPageBtn" class="filter-btn" type="button">◀ Précédent</button>
+        <span id="pageMeta" class="subtitle" style="margin:0;">—</span>
+        <button id="nextPageBtn" class="filter-btn" type="button">Suivant ▶</button>
       </div>
 
       <div id="error" class="error" style="display:none;"></div>
@@ -108,6 +118,6 @@
 
   <!-- NEW shared drawer -->
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="./clients.js?v=admin-wide-2"></script>
+  <script src="./clients.js?v=admin-wide-5"></script>
 </body>
 </html>

@@ -122,6 +122,10 @@ function computeQuota(it) {
 
 let debounceTimer = null;
 let lastItems = [];
+// P0 FIX (F-01): real offset pagination against the backend.
+let pageOffset = 0;
+const PAGE_LIMIT = 200;
+let lastTotal = 0;
 let currentDetailId = null;
 let __initialClientUrlFiltersApplied = false;
 let __initialPoolIdFromUrl = null;
@@ -236,12 +240,19 @@ function renderSummary(summary) {
   const el = document.getElementById("summary");
   const currentStatus = normStatus(document.getElementById("status")?.value || "all");
 
+  // P0.1 FIX (audit correction 2): online/offline arrive as null when the
+  // RADIUS lookup failed — display "—", never a false zero.
+  const fmtCount = (v) => (v === null || v === undefined) ? "—" : v;
+
   const cards = [
     { label: "Actifs", value: summary.active ?? 0, status: "active" },
-    { label: "Connectés", value: summary.online ?? 0, status: "online" },
-    { label: "Hors ligne", value: summary.offline ?? 0, status: "offline" },
+    { label: "Connectés", value: fmtCount(summary.online), status: "online" },
+    { label: "Hors ligne", value: fmtCount(summary.offline), status: "offline" },
     { label: "En attente", value: summary.pending ?? 0, status: "pending" },
     { label: "Expirés", value: summary.expired ?? 0, status: "expired" },
+    // P0 FIX (F-14): "used" sessions were counted in Total but shown in no card,
+    // so the visible cards never summed to Total.
+    { label: "Utilisés", value: summary.used ?? 0, status: "used" },
     { label: "Total", value: summary.total ?? 0, status: "all" },
   ];
 
@@ -263,6 +274,7 @@ function renderSummary(summary) {
       const status = card.getAttribute("data-summary-status") || "all";
       const statusSelect = document.getElementById("status");
       if (statusSelect) statusSelect.value = status;
+      pageOffset = 0; // P0: filter change restarts at page 1
       loadClients().catch(showTopError);
     });
   });
@@ -278,93 +290,160 @@ function normStatus(statusRaw) {
   return String(statusRaw || "").toLowerCase().trim();
 }
 
-function computeSummaryFromItems(items) {
-  const summary = { total: 0, active: 0, online: 0, offline: 0, pending: 0, used: 0, expired: 0 };
-  if (!Array.isArray(items)) return summary;
-  summary.total = items.length;
+// P0 FIX (F-01): computeSummaryFromItems() and filterItemsByStatus() are gone.
+// The backend now applies the status filter in the database and returns exact
+// counters over the whole filtered scope — the frontend must not re-count or
+// re-filter a single page.
 
-  for (const it of items) {
-    const s = normStatus(it?.status);
-    if (s === "active") {
-      summary.active++;
-      if (it?.is_online === true || normStatus(it?.live_status) === "online") summary.online++;
-      else summary.offline++;
-    } else if (s === "pending") summary.pending++;
-    else if (s === "used") summary.used++;
-    else if (s === "expired") summary.expired++;
+// P0 FIX (F-05) + P0.1 (audit correction 5): plan/pool dropdown options come
+// from the dedicated (server-scoped) endpoints — never from page rows — and
+// are fetched page by page so they are NOT silently truncated at 200. Both
+// endpoints already enforce owner pool scoping server-side. Duplicate plan
+// names are disambiguated with their pool display name.
+let __planPoolOptionsLoaded = false;
+
+async function fetchAllOptionPages(baseUrl, itemsKey) {
+  // The backends cap each page at 200 rows and return an exact `total`.
+  const PAGE = 200;
+  const HARD_CAP_PAGES = 25; // 5000 options — sanity guard, disclosed if hit
+  const collected = [];
+  let offsetOpt = 0;
+  let truncated = false;
+
+  for (let page = 0; page < HARD_CAP_PAGES; page++) {
+    const sep = baseUrl.includes("?") ? "&" : "?";
+    const data = await fetchJSON(`${baseUrl}${sep}limit=${PAGE}&offset=${offsetOpt}`);
+    const batch = Array.isArray(data?.[itemsKey]) ? data[itemsKey] : [];
+    collected.push(...batch);
+
+    const totalOpt = Number(data?.total ?? collected.length);
+    offsetOpt += batch.length;
+    if (batch.length < PAGE || collected.length >= totalOpt) {
+      return { items: collected, truncated: false };
+    }
+    truncated = true; // will only stand if the loop exits via the hard cap
   }
-  return summary;
+  console.warn(`[clients] option list ${baseUrl} exceeds ${25 * 200} rows — truncated`);
+  return { items: collected, truncated };
 }
 
-let __planPoolOptionsLoaded = false;
-function initPlanAndPoolFiltersFromItems(items) {
+async function loadPlanAndPoolFilterOptions() {
   if (__planPoolOptionsLoaded) return;
   const planSel = document.getElementById("planFilter");
   const poolSel = document.getElementById("poolFilter");
   if (!planSel || !poolSel) return;
 
-  const plans = new Map(); // id -> name
-  const pools = new Map(); // id -> name
+  const poolOptionLabel = (p) => {
+    const display = String(p?.display_name || p?.pool_display_name || "").trim();
+    if (display) return display;
+    const place = String(p?.name || "").trim();
+    const brand = String(p?.brand_name || "").trim();
+    if (brand && place) return `${brand} – ${place}`;
+    return place || brand || String(p?.id || "");
+  };
 
-  for (const it of (items || [])) {
-    if (it?.plan_id && it?.plan_name) plans.set(String(it.plan_id), String(it.plan_name));
-    if (it?.pool_id) pools.set(String(it.pool_id), String(poolDisplayName(it)));
-  }
-
-  // Only populate if we actually have data (prevents empty dropdowns)
-  if (!plans.size && !pools.size) return;
-
-  // Plans
-  const planEntries = Array.from(plans.entries()).sort((a, b) => a[1].localeCompare(b[1]));
-  for (const [id, name] of planEntries) {
+  const appendTruncationNotice = (sel) => {
     const opt = document.createElement("option");
-    opt.value = id;
-    opt.textContent = name;
-    planSel.appendChild(opt);
+    opt.value = "";
+    opt.disabled = true;
+    opt.textContent = "⚠ Liste incomplète — affinez côté serveur";
+    sel.appendChild(opt);
+  };
+
+  try {
+    const [poolsRes, plansRes] = await Promise.all([
+      fetchAllOptionPages("/api/admin/pools", "pools"),
+      fetchAllOptionPages("/api/admin/plans?active=all&visible=all", "plans"),
+    ]);
+
+    const pools = (poolsRes.items || [])
+      .map((p) => ({ id: String(p?.id || ""), name: poolOptionLabel(p) }))
+      .filter((p) => p.id)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const p of pools) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.name;
+      poolSel.appendChild(opt);
+    }
+    if (poolsRes.truncated) appendTruncationNotice(poolSel);
+
+    // P0.1 (correction 5): plans are per-pool — the same commercial name can
+    // exist in several pools. Disambiguate duplicates with the pool name.
+    const rawPlans = (plansRes.items || [])
+      .map((p) => ({
+        id: String(p?.id || ""),
+        name: String(p?.name || p?.id || "").trim(),
+        poolLabel: String(p?.pool_display_name || p?.pool_name || "").trim(),
+      }))
+      .filter((p) => p.id);
+
+    const nameCounts = {};
+    for (const p of rawPlans) {
+      const k = p.name.toLowerCase();
+      nameCounts[k] = (nameCounts[k] || 0) + 1;
+    }
+
+    const plans = rawPlans
+      .map((p) => ({
+        id: p.id,
+        label: (nameCounts[p.name.toLowerCase()] > 1 && p.poolLabel)
+          ? `${p.name} — ${p.poolLabel}`
+          : p.name,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    for (const p of plans) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.label;
+      planSel.appendChild(opt);
+    }
+    if (plansRes.truncated) appendTruncationNotice(planSel);
+
+    __planPoolOptionsLoaded = true;
+
+    // P0 FIX (F-06 support): if the URL requested a pool that does not exist in
+    // the (scoped) options — deleted or forbidden — drop it instead of silently
+    // re-applying it on every load.
+    if (__initialPoolIdFromUrl) {
+      const exists = Array.from(poolSel.options || []).some(
+        (opt) => String(opt.value) === String(__initialPoolIdFromUrl)
+      );
+      if (!exists) __initialPoolIdFromUrl = null;
+    }
+  } catch (_) {
+    // Fail-open: the filters simply stay at "Tous" if options cannot be loaded.
   }
-
-  // Pools
-  const poolEntries = Array.from(pools.entries()).sort((a, b) => a[1].localeCompare(b[1]));
-  for (const [id, name] of poolEntries) {
-    const opt = document.createElement("option");
-    opt.value = id;
-    opt.textContent = name;
-    poolSel.appendChild(opt);
-  }
-
-  __planPoolOptionsLoaded = true;
-}
-
-function filterItemsByStatus(items, uiStatusFilter) {
-  const f = normStatus(uiStatusFilter);
-  if (!Array.isArray(items) || f === "all" || !f) return items || [];
-
-  if (f === "online") {
-    return (items || []).filter(it =>
-      normStatus(it?.status) === "active" &&
-      (it?.is_online === true || normStatus(it?.live_status) === "online")
-    );
-  }
-
-  if (f === "offline") {
-    return (items || []).filter(it =>
-      normStatus(it?.status) === "active" &&
-      !(it?.is_online === true || normStatus(it?.live_status) === "online")
-    );
-  }
-
-  return (items || []).filter(it => normStatus(it?.status) === f);
 }
 
 function renderLiveClientLabel(it) {
+  const label = it?.client_name || it?.client_mac || "—";
+
+  // P0.2 FIX (defect 1): unknown/null live status is handled BEFORE the
+  // online/offline classification. When the backend reports
+  // is_online:null / live_status:"unknown" (RADIUS or NAS mapping
+  // unavailable), the row shows a neutral indicator — never "Hors ligne".
+  const isUnknown =
+    it?.is_online === null ||
+    it?.is_online === undefined ||
+    normStatus(it?.live_status) === "unknown";
+  if (isUnknown) {
+    const title = "Statut live indisponible";
+    return `
+    <span title="${esc(title)}" aria-label="${esc(title)}" style="display:inline-flex; align-items:center; gap:7px; font-weight:800; white-space:nowrap;">
+      <span aria-hidden="true">⚪</span>
+      <span>${esc(label)}</span>
+    </span>
+  `;
+  }
+
   const isActiveVoucher = normStatus(it?.status) === "active";
   const isOnline = isActiveVoucher && (it?.is_online === true || normStatus(it?.live_status) === "online");
   const dot = isOnline ? "🟢" : "⚫";
   const title = isOnline ? "Connecté" : "Hors ligne";
-  const label = it?.client_name || it?.client_mac || "—";
 
   return `
-    <span title="${esc(title)}" style="display:inline-flex; align-items:center; gap:7px; font-weight:800; white-space:nowrap;">
+    <span title="${esc(title)}" aria-label="${esc(title)}" style="display:inline-flex; align-items:center; gap:7px; font-weight:800; white-space:nowrap;">
       <span aria-hidden="true">${dot}</span>
       <span>${esc(label)}</span>
     </span>
@@ -485,7 +564,7 @@ async function loadClients() {
   err.style.display = "none";
   err.textContent = "";
 
-  const uiStatus = document.getElementById("status").value;
+  const uiStatus = normStatus(document.getElementById("status").value || "all") || "all";
   const search = document.getElementById("search").value.trim();
   const planId = document.getElementById("planFilter")?.value || "all";
   let poolId = document.getElementById("poolFilter")?.value || "all";
@@ -493,26 +572,99 @@ async function loadClients() {
     poolId = __initialPoolIdFromUrl;
   }
 
-  // Always fetch "all" so counters stay correct and "used" can be grouped under Expired.
+  // P0 FIX (F-01): the status filter and every counter are now computed by the
+  // backend over the WHOLE filtered scope ("online"/"offline" included — the
+  // backend resolves them against the active set). The frontend no longer
+  // re-filters or re-counts a single page.
   const qs = new URLSearchParams();
-  qs.set("status", "all");
+  qs.set("status", uiStatus);
   if (search) qs.set("search", search);
   if (planId && planId !== "all") qs.set("plan_id", planId);
   if (poolId && poolId !== "all") qs.set("pool_id", poolId);
-  qs.set("limit", "200");
-  qs.set("offset", "0");
+  qs.set("limit", String(PAGE_LIMIT));
+  qs.set("offset", String(pageOffset));
 
   const data = await fetchJSON("/api/admin/clients?" + qs.toString());
 
-  const allItems = data.items || [];
-  initPlanAndPoolFiltersFromItems(allItems);
   applyInitialPoolFilterWhenReady();
-  const summary = computeSummaryFromItems(allItems);
-  renderSummary(summary);
 
-  const filtered = filterItemsByStatus(allItems, uiStatus);
-  renderTable(filtered);
+  // P0.1 FIX (audit correction 4): the backend clamps the offset when the
+  // dataset shrank (e.g. last row of the last page deleted) and echoes the
+  // effective offset — resynchronize so prev/next stay coherent.
+  if (Number.isFinite(Number(data?.offset))) {
+    pageOffset = Math.max(0, Number(data.offset));
+  }
+
+  lastTotal = Number(data.total || 0);
+  renderSummary(data.summary || {});
+  renderTable(data.items || []);
+
+  // P0.1 FIX (audit correction 2): when live status is unavailable and the
+  // Connectés/Hors ligne filter is selected, say so — an empty table here is
+  // "unknown", not "zero clients".
+  const emptyEl = document.getElementById("empty");
+  if (emptyEl) {
+    if ((uiStatus === "online" || uiStatus === "offline") && data.live_status_available === false) {
+      emptyEl.textContent = "Statut live indisponible pour le moment — impossible de filtrer Connectés / Hors ligne. Réessayez avec Actualiser.";
+    } else {
+      emptyEl.textContent = "Aucun enregistrement trouvé.";
+    }
+  }
+
+  renderPagination();
+  renderLiveNotice(data);
   scrollToClientListPreviewAfterRedirect();
+}
+
+// P0.1 FIX (audit corrections 2 & 7): live-status caveats are surfaced for
+// EVERY selected status (including "Tous"), since the Connectés/Hors ligne
+// cards are always visible.
+function renderLiveNotice(data) {
+  const el = document.getElementById("liveNotice");
+  if (!el) return;
+
+  const summary = data?.summary || {};
+
+  if (data?.live_status_available === false) {
+    el.style.display = "block";
+    el.textContent = "⚠ Statut live (Connectés / Hors ligne) momentanément indisponible — compteurs non calculés.";
+    return;
+  }
+
+  if (data?.live_scan_truncated === true) {
+    const scanned = Number(data?.live_scanned || 0);
+    const active = Number(summary.active || 0);
+    el.style.display = "block";
+    el.textContent = `⚠ Compteurs Connectés / Hors ligne calculés sur les ${scanned} sessions actives les plus récentes (sur ${active}).`;
+    return;
+  }
+
+  el.style.display = "none";
+  el.textContent = "";
+}
+
+// P0 FIX (F-01) + P0.1 (audit correction 6): pagination controls — the pager
+// is hidden whenever everything fits on one page (total <= PAGE_LIMIT).
+function renderPagination() {
+  const meta = document.getElementById("pageMeta");
+  const prev = document.getElementById("prevPageBtn");
+  const next = document.getElementById("nextPageBtn");
+  const pager = document.getElementById("pager");
+  if (!meta || !prev || !next) return;
+
+  const shown = Array.isArray(lastItems) ? lastItems.length : 0;
+  const page = Math.floor(pageOffset / PAGE_LIMIT) + 1;
+  const pages = Math.max(1, Math.ceil(lastTotal / PAGE_LIMIT));
+  const fromN = lastTotal === 0 ? 0 : pageOffset + 1;
+  const toN = Math.min(lastTotal, pageOffset + shown);
+
+  meta.textContent = lastTotal === 0
+    ? "0 résultat"
+    : `${fromN}–${toN} sur ${lastTotal} (page ${page}/${pages})`;
+
+  prev.disabled = pageOffset <= 0;
+  next.disabled = pageOffset + PAGE_LIMIT >= lastTotal;
+  if (pager) pager.style.display = lastTotal > PAGE_LIMIT ? "flex" : "none";
 }
 
 // ✅ small helper: flash a row green + show Mis à jour ✅ effect + show Mis à jour ✅ effect
@@ -589,6 +741,12 @@ async function openDetail(id) {
     // may not always include the same live fields.
     const modalLiveSource = rowItem || it || {};
     const modalStatus = normStatus(rowItem?.status || it?.status);
+    // P0.2 FIX (defect 1, consistency): the modal's "Connexion" row follows the
+    // same rule as the table — unknown live status is never shown as "Hors ligne".
+    const modalLiveUnknown =
+      modalLiveSource?.is_online === null ||
+      modalLiveSource?.is_online === undefined ||
+      normStatus(modalLiveSource?.live_status) === "unknown";
     const modalIsOnline =
       modalStatus === "active" &&
       (modalLiveSource?.is_online === true || normStatus(modalLiveSource?.live_status) === "online");
@@ -597,7 +755,7 @@ async function openDetail(id) {
     const rows = [
       ["Nom appareil", it.client_name || rowItem?.client_name || "—"],
       ["MAC client", it.client_mac || rowItem?.client_mac],
-      ["Connexion", modalIsOnline ? "🟢 Connecté" : "⚫ Hors ligne"],
+      ["Connexion", modalLiveUnknown ? "⚪ Statut live indisponible" : (modalIsOnline ? "🟢 Connecté" : "⚫ Hors ligne")],
       ["Dernier signal", fmtDate(modalLiveUpdatedAt)],
       ["AP", it.ap_name || rowItem?.ap_name || "—"],
       ["Pool", poolDisplayName(rowItem || it)],
@@ -1119,16 +1277,28 @@ function wireUI() {
     const pof = document.getElementById("poolFilter");
     if (pf) pf.value = "all";
     if (pof) pof.value = "all";
+
+    // P0 FIX (F-06): forget the pool injected via the URL and clean the query
+    // string — otherwise the next load silently re-applied it and "Effacer"
+    // never actually reset the pool filter.
+    __initialPoolIdFromUrl = null;
+    try {
+      window.history.replaceState({}, "", window.location.pathname);
+    } catch (_) {}
+
+    pageOffset = 0;
     loadClients().catch(showTopError);
   };
 
   document.getElementById("status").addEventListener("change", () => {
+    pageOffset = 0; // P0: filter change restarts at page 1
     loadClients().catch(showTopError);
   });
 
   const planFilterEl = document.getElementById("planFilter");
   if (planFilterEl) {
     planFilterEl.addEventListener("change", () => {
+      pageOffset = 0;
       loadClients().catch(showTopError);
     });
   }
@@ -1136,14 +1306,32 @@ function wireUI() {
   const poolFilterEl = document.getElementById("poolFilter");
   if (poolFilterEl) {
     poolFilterEl.addEventListener("change", () => {
+      pageOffset = 0;
       loadClients().catch(showTopError);
     });
   }
 
   document.getElementById("search").addEventListener("input", () => {
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => loadClients().catch(showTopError), 300);
+    debounceTimer = setTimeout(() => {
+      pageOffset = 0;
+      loadClients().catch(showTopError);
+    }, 300);
   });
+
+  // P0 FIX (F-01): pagination controls.
+  const prevBtn = document.getElementById("prevPageBtn");
+  const nextBtn = document.getElementById("nextPageBtn");
+  if (prevBtn) prevBtn.onclick = () => {
+    pageOffset = Math.max(0, pageOffset - PAGE_LIMIT);
+    loadClients().catch(showTopError);
+  };
+  if (nextBtn) nextBtn.onclick = () => {
+    if (pageOffset + PAGE_LIMIT < lastTotal) {
+      pageOffset += PAGE_LIMIT;
+      loadClients().catch(showTopError);
+    }
+  };
 
   document.getElementById("closeModalBtn").onclick = closeModal;
   document.getElementById("closeModalBtn2").onclick = closeModal;
@@ -1168,6 +1356,11 @@ function showTopError(e) {
   try {
     await requireAdmin();
     wireUI();
+    // P0 FIX (F-05): load the (server-scoped) dropdown options first so the
+    // URL pool filter can be validated and applied before the first fetch.
+    applyInitialClientUrlFiltersBeforeLoad();
+    await loadPlanAndPoolFilterOptions();
+    applyInitialPoolFilterWhenReady();
     await loadClients();
   } catch (e) {
     // requireAdmin redirects; do nothing.
