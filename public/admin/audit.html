@@ -46,8 +46,10 @@
             <option value="">Tous les pools</option>
           </select>
 
-          <input id="from" type="datetime-local" class="filter-search" />
-          <input id="to" type="datetime-local" class="filter-search" />
+          <input id="from" type="datetime-local" class="filter-search" title="Heure de Madagascar (Indian/Antananarivo, UTC+03:00)" />
+          <input id="to" type="datetime-local" class="filter-search" title="Heure de Madagascar (Indian/Antananarivo, UTC+03:00)" />
+          <!-- P1-07 : les dates/heures sont interprétées en heure de Madagascar (+03:00 fixe), quel que soit le fuseau de l'appareil. -->
+          <span class="rz-audit-status-line" style="align-self:center; opacity:.8;">🕒 Heure de Madagascar (UTC+03:00)</span>
 
           <button type="button" id="apply" class="filter-btn primary">Appliquer</button>
           <button type="button" id="clear" class="filter-btn">Effacer</button>
@@ -142,6 +144,6 @@
   </div>
 
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="/admin/audit.js?v=admin-wide-2"></script>
+  <script src="/admin/audit.js?v=admin-wide-4"></script>
 </body>
 </html>

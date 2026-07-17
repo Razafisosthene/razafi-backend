@@ -485,15 +485,19 @@
                 <input id="from" class="filter-select" type="date" />
                 <label class="rz-filter-label" for="to">Au</label>
                 <input id="to" class="filter-select" type="date" />
+                <!-- P1-07 : journée métier RAZAFI — Indian/Antananarivo, +03:00 fixe -->
+                <span class="rz-filter-label" title="Les journées sélectionnées correspondent à la journée complète de Madagascar (Indian/Antananarivo, UTC+03:00), quel que soit le fuseau de votre appareil.">🕒 Heure de Madagascar (UTC+03:00)</span>
               </div>
 
-              <select id="providerFilter" class="filter-select">
+              <select id="providerFilter" class="filter-select" title="Filtre appliqué au tableau des transactions uniquement (pas aux totaux ni aux agrégats).">
                 <option value="">Tous les modes</option>
                 <option value="mvola">MVola</option>
                 <option value="orange">Orange Money</option>
                 <option value="airtel">Airtel Money</option>
                 <option value="visa">Visa</option>
               </select>
+              <!-- P1-06 : portée explicite du filtre fournisseur -->
+              <span class="rz-filter-label" style="opacity:.75;">Mode : tableau des transactions uniquement</span>
 
               <button id="refreshBtn" class="filter-btn primary" type="button">Actualiser</button>
               <button id="clearBtn" class="filter-btn" type="button">Réinitialiser</button>
@@ -608,6 +612,6 @@
   </div>
 
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="/admin/revenue.js?v=admin-wide-3"></script>
+  <script src="/admin/revenue.js?v=admin-wide-5"></script>
 </body>
 </html>

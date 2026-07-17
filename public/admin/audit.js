@@ -85,24 +85,42 @@
     `;
   }
 
+  // P1-07 — Fuseau métier RAZAFI (décision approuvée) : les champs
+  // datetime-local sont interprétés en heure de Madagascar
+  // (Indian/Antananarivo, +03:00 fixe, sans DST), et non dans le fuseau du
+  // navigateur — résultat identique depuis Madagascar, les Seychelles ou
+  // ailleurs. Ne pas revenir à new Date(valeurLocale) nu.
+  const RAZAFI_BUSINESS_TZ_OFFSET = "+03:00"; // Indian/Antananarivo — fixe
+
   function toISOFromLocalInput(v) {
     if (!v) return "";
-    const d = new Date(v);
+    const s = String(v).trim();
+    // datetime-local: YYYY-MM-DDTHH:MM(:SS)?
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(s)) return "";
+    const withSeconds = s.length === 16 ? `${s}:00` : s;
+    const d = new Date(`${withSeconds}${RAZAFI_BUSINESS_TZ_OFFSET}`);
     if (Number.isNaN(d.getTime())) return "";
     return d.toISOString();
   }
 
-  function setDefaultDates() {
-    const now = new Date();
-    const from = new Date(now.getTime() - 24 * 3600 * 1000);
-    const fmt = (d) => {
-      const pad = (n) => String(n).padStart(2, "0");
-      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    };
+  const RAZAFI_BUSINESS_TZ_OFFSET_MINUTES = 180; // Indian/Antananarivo (+03:00)
+
+  function formatMadagascarDateTimeLocal(instant) {
+    const d = instant instanceof Date ? instant : new Date(instant);
+    if (Number.isNaN(d.getTime())) return "";
+    const shifted = new Date(d.getTime() + RAZAFI_BUSINESS_TZ_OFFSET_MINUTES * 60 * 1000);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}T${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}`;
+  }
+
+  function setDefaultDates({ force = false, now = new Date() } = {}) {
+    const nowDate = now instanceof Date ? now : new Date(now);
+    if (Number.isNaN(nowDate.getTime())) return;
+    const from = new Date(nowDate.getTime() - 24 * 3600 * 1000);
     const fromEl = $("from");
     const toEl = $("to");
-    if (fromEl && !fromEl.value) fromEl.value = fmt(from);
-    if (toEl && !toEl.value) toEl.value = fmt(now);
+    if (fromEl && (force || !fromEl.value)) fromEl.value = formatMadagascarDateTimeLocal(from);
+    if (toEl && (force || !toEl.value)) toEl.value = formatMadagascarDateTimeLocal(nowDate);
   }
 
   function normalizeStatus(raw) {
@@ -130,9 +148,14 @@
     return JSON.stringify(v ?? null, null, 2);
   }
 
-  // Pagination
-  let cursorStack = [];
-  let nextCursor = "";
+  // Pagination — P1-04 : le contrat officiel est offset/limit (le modèle
+  // « cursor » n'a jamais existé côté serveur ; next_cursor restait vide et
+  // « Suivant » ne fonctionnait pas — seules les 100 lignes les plus récentes
+  // étaient accessibles). Le backend renvoie désormais total/limit/offset
+  // (offset clampé et écho, façon P0.2 Clients).
+  const PAGE_LIMIT = 100;
+  let pageOffset = 0;
+  let lastTotal = 0;
   // Frontend defense-in-depth only. Real authorization must still be verified
   // by the backend (requires server.js backend verification).
   let isSuperadminSession = false;
@@ -148,7 +171,8 @@
     const toIso = toISOFromLocalInput($("to")?.value || "");
 
     const params = new URLSearchParams();
-    params.set("limit", "100");
+    params.set("limit", String(PAGE_LIMIT));
+    params.set("offset", String(pageOffset));
     if (q) params.set("q", q);
     if (status) params.set("status", status);
     if (event_type) params.set("event_type", event_type);
@@ -156,8 +180,14 @@
     if (pool_id) params.set("pool_id", pool_id);
     if (fromIso) params.set("from", fromIso);
     if (toIso) params.set("to", toIso);
-    if (nextCursor) params.set("cursor", nextCursor);
     return params;
+  }
+
+  function updatePagerButtons() {
+    const prevBtn = $("prev");
+    const nextBtn = $("next");
+    if (prevBtn) prevBtn.disabled = pageOffset <= 0;
+    if (nextBtn) nextBtn.disabled = pageOffset + PAGE_LIMIT >= lastTotal;
   }
 
   function openModal(ev) {
@@ -264,7 +294,11 @@
   async function loadEventTypes() {
     try {
       const data = await fetchJSON("/api/admin/audit/event-types");
-      const list = data?.event_types || data?.items || [];
+      // P1-05 : préférer items ({event_type, count}) quand le backend les
+      // fournit (vue complète) ; event_types (chaînes) reste le fallback legacy.
+      const list = (Array.isArray(data?.items) && data.items.length)
+        ? data.items
+        : (data?.event_types || []);
       const sel = $("event_type");
       if (!sel) return;
 
@@ -280,7 +314,7 @@
     }
   }
 
-  async function loadPage(pushPrevCursor) {
+  async function loadPage() {
     const statusLine = $("statusLine");
     const tbody = $("rows");
     if (!tbody) return;
@@ -296,14 +330,18 @@
 
       const data = await fetchJSON(url);
       const items = data.items || data.rows || data.data || [];
-      const returnedNext = data.next_cursor || data.nextCursor || "";
 
-      if (pushPrevCursor) cursorStack.push(nextCursor || "");
-      nextCursor = returnedNext || "";
+      // P1-04 : resynchronisation sur l'offset effectif (clampé) du backend
+      // — jamais de page vide impossible quand le jeu a rétréci.
+      if (Number.isFinite(Number(data?.offset))) {
+        pageOffset = Math.max(0, Number(data.offset));
+      }
+      lastTotal = Number(data?.total ?? items.length ?? 0);
 
       if (!items.length) {
         tbody.innerHTML = `<tr><td colspan="10" style="padding:12px; opacity:.75;">Aucun résultat.</td></tr>`;
         if (statusLine) statusLine.textContent = "Aucun résultat.";
+        updatePagerButtons();
         return;
       }
 
@@ -340,8 +378,14 @@
         `;
       }).join("");
 
-      if (statusLine) statusLine.textContent = `Chargé : ${items.length} événement(s).` +
-        (nextCursor ? " Suite disponible." : "");
+      if (statusLine) {
+        const fromN = lastTotal === 0 ? 0 : pageOffset + 1;
+        const toN = Math.min(lastTotal, pageOffset + items.length);
+        const page = Math.floor(pageOffset / PAGE_LIMIT) + 1;
+        const pages = Math.max(1, Math.ceil(lastTotal / PAGE_LIMIT));
+        statusLine.textContent = `${fromN}–${toN} sur ${lastTotal} événement(s) (page ${page}/${pages}).`;
+      }
+      updatePagerButtons();
 
       // bind rows
       document.querySelectorAll("tr.audit-row").forEach(tr => {
@@ -393,9 +437,8 @@
   // UI actions
   const applyBtn = $("apply");
   if (applyBtn) applyBtn.addEventListener("click", async () => {
-    cursorStack = [];
-    nextCursor = "";
-    await loadPage(false);
+    pageOffset = 0; // P1-04 : tout changement de filtre repart de la page 1
+    await loadPage();
   });
 
   const clearBtn = $("clear");
@@ -405,23 +448,23 @@
     if ($("event_type")) $("event_type").value = "";
     if ($("plan_id")) $("plan_id").value = "";
     if ($("pool_id")) $("pool_id").value = "";
-    cursorStack = [];
-    nextCursor = "";
-    setDefaultDates();
-    await loadPage(false);
+    pageOffset = 0;
+    setDefaultDates({ force: true });
+    await loadPage();
   });
 
   const nextBtn = $("next");
   if (nextBtn) nextBtn.addEventListener("click", async () => {
-    if (!nextCursor) return;
-    await loadPage(true);
+    if (pageOffset + PAGE_LIMIT >= lastTotal) return;
+    pageOffset += PAGE_LIMIT;
+    await loadPage();
   });
 
   const prevBtn = $("prev");
   if (prevBtn) prevBtn.addEventListener("click", async () => {
-    if (!cursorStack.length) return;
-    nextCursor = cursorStack.pop() || "";
-    await loadPage(false);
+    if (pageOffset <= 0) return;
+    pageOffset = Math.max(0, pageOffset - PAGE_LIMIT);
+    await loadPage();
   });
 
   const closeBtn = $("closeModal");
@@ -438,5 +481,5 @@
   if (!sessionOk) return;
   await loadEventTypes();
   await loadPlanAndPoolDropdowns();
-  await loadPage(false);
+  await loadPage();
 })();

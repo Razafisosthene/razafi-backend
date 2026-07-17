@@ -35,14 +35,24 @@ function poolDisplayName(obj) {
   return obj?.pool_display_name || obj?.pool_name || obj?.pool?.display_name || obj?.pool?.name || "—";
 }
 
+// P1-07 — Fuseau métier RAZAFI (décision approuvée) :
+// Une journée sélectionnée = la journée métier complète de Madagascar
+// (IANA Indian/Antananarivo, décalage fixe +03:00, pas d'heure d'été).
+// Le décalage est écrit EXPLICITEMENT : le résultat est identique quel que
+// soit le fuseau du navigateur/appareil de l'administrateur (Madagascar,
+// Seychelles ou ailleurs). Ne jamais utiliser new Date(dateLocale) nu ici.
+const RAZAFI_BUSINESS_TZ_OFFSET = "+03:00"; // Indian/Antananarivo — fixe, sans DST
+
 function dateToISOStart(d) {
   if (!d) return "";
-  return new Date(d + "T00:00:00.000Z").toISOString();
+  // 2026-07-16 → 2026-07-16T00:00:00.000+03:00 → 2026-07-15T21:00:00.000Z
+  return new Date(`${d}T00:00:00.000${RAZAFI_BUSINESS_TZ_OFFSET}`).toISOString();
 }
 
 function dateToISOEnd(d) {
   if (!d) return "";
-  return new Date(d + "T23:59:59.999Z").toISOString();
+  // 2026-07-16 → 2026-07-16T23:59:59.999+03:00 → 2026-07-16T20:59:59.999Z
+  return new Date(`${d}T23:59:59.999${RAZAFI_BUSINESS_TZ_OFFSET}`).toISOString();
 }
 
 function byId(id) {
@@ -84,23 +94,16 @@ function updateOwnerShareLabel() {
   }
 }
 
-async function loadOwnerShareTotalFallback() {
-  // Fallback front-end: use the same filtered/authorized revenue endpoint and sum owner_amount_ar.
-  // This keeps the change safe even if /totals does not yet return owner_total_ar.
-  const params = buildCommonParams();
-  params.set("limit", "5000");
-  params.set("offset", "0");
-
-  const r = await fetchJSON("/api/admin/revenue/share-transactions?" + params.toString());
-  const items = Array.isArray(r.items) ? r.items : [];
-  const sum = items.reduce((total, it) => total + Number(it?.owner_amount_ar || 0), 0);
-  const totalRows = Number(r.total || items.length || 0);
-
-  const hint = totalRows > items.length
-    ? `Selon les filtres actuels • ${items.length}/${totalRows} lignes calculées`
-    : "Selon les filtres actuels";
-
-  setOwnerShareTotal(sum, hint);
+// P1-01 : l'ancien fallback loadOwnerShareTotalFallback() (somme d'une page
+// share-transactions plafonnée à 500 lignes par le backend) est SUPPRIMÉ.
+// La part propriétaire vient désormais de /totals (owner_total_ar), calculée
+// en SQL sur tout le scope filtré. Si le champ manque (migration SQL non
+// appliquée), la carte affiche « — / Indisponible » — jamais un chiffre faux.
+function setOwnerShareUnavailable(hint = "Indisponible pour le moment") {
+  const el = byId("ownerShareTotal");
+  const hintEl = byId("ownerShareHint");
+  if (el) el.textContent = "—";
+  if (hintEl) hintEl.textContent = hint;
 }
 
 // ✅ Common filter params for ALL endpoints
@@ -345,6 +348,8 @@ function ensurePayoutUI() {
     panel.className = "rz-panel-card";
     panel.innerHTML = `
       <div class="rz-panel-note">Liste des reversements propriétaires. Cliquez sur une ligne pour voir les détails.</div>
+      <!-- P1-06 : portée explicite des filtres sur ce tableau (décision approuvée). -->
+      <div class="rz-panel-note" style="opacity:.8;">⚠ La recherche ne s'applique pas aux reversements. Les dates « Du / Au » filtrent la date de <strong>création du reversement</strong> (heure de Madagascar).</div>
       <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin:0 0 10px;">
         <div id="payoutMeta" class="rz-table-meta">—</div>
         <div id="payoutActions" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
@@ -629,20 +634,23 @@ async function loadTotals() {
       total_amount_ar:   Number(it.total_amount_ar   ?? 0),
       paid_transactions: Number(it.paid_transactions ?? 0),
       last_paid_at:      it.last_paid_at || null,
-      owner_total_ar:    ownerTotal != null ? ownerTotal : 0,
+      owner_total_ar:    ownerTotal != null ? ownerTotal : null,
     };
     updateRevenueAssistantBridge();
 
     if (ownerTotal != null) {
       setOwnerShareTotal(ownerTotal);
     } else {
-      await loadOwnerShareTotalFallback();
+      // P1-01 : plus aucun fallback par sommation de page — état explicite.
+      setOwnerShareUnavailable();
     }
   } catch (e) {
     byId("paidTotal").textContent = "—";
     byId("paidCount").textContent = "—";
     byId("lastPaidAt").textContent = "—";
-    setOwnerShareTotal(0, "Impossible de calculer pour le moment");
+    lastRevenueTotals = null;
+    updateRevenueAssistantBridge();
+    setOwnerShareUnavailable("Impossible de calculer pour le moment");
   }
 }
 
@@ -667,9 +675,26 @@ async function loadByPlan() {
       body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Aucune donnée.</td></tr>`;
       return;
     }
+
+    // P1 (noms de plans dupliqués) : les lignes restent groupées par plan_id
+    // (jamais fusionnées entre pools). Quand le même nom affiché existe dans
+    // plusieurs pools, on le désambiguïse avec le nom de pool complet fourni
+    // par le backend : « Nom du plan — Marque – Lieu ».
+    const nameCounts = {};
+    for (const it of items) {
+      const k = String(it.plan_name || "—").trim().toLowerCase();
+      nameCounts[k] = (nameCounts[k] || 0) + 1;
+    }
+    const planLabel = (it) => {
+      const name = String(it.plan_name || "—").trim();
+      const poolLabel = String(it.pool_display_name || "").trim();
+      const isDuplicate = (nameCounts[name.toLowerCase()] || 0) > 1;
+      return isDuplicate && poolLabel ? `${name} — ${poolLabel}` : name;
+    };
+
     body.innerHTML = items.map(it => `
       <tr>
-        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
+        <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(planLabel(it))}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.paid_transactions ?? 0)}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08); font-weight:700;">${fmtAr(it.total_amount_ar ?? 0)}</td>
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtDate(it.last_paid_at)}</td>
@@ -853,7 +878,12 @@ async function loadPayouts() {
   body.innerHTML = `<tr><td colspan="9" style="padding:12px; opacity:.75;">Chargement...</td></tr>`;
 
   try {
+    // P1-06 : la recherche ne s'applique pas aux reversements (décision
+    // approuvée) — on cesse d'envoyer un paramètre que le backend ignorait
+    // silencieusement. Les dates restent transmises : elles filtrent la date
+    // de création du reversement (created_at), côté serveur, comme avant.
     const params = buildCommonParams();
+    params.delete("search");
     const r = await fetchJSON("/api/admin/revenue/payouts?" + params.toString());
     const items = r.items || [];
     lastPayoutItems = items;
