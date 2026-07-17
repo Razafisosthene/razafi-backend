@@ -9252,6 +9252,30 @@ app.get("/api/admin/audit/event-types", requireAdmin, requireSuperadmin, async (
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
+    // P1-05: complete event-type list from v_audit_event_types (GROUP BY over
+    // the whole table — audit_logs_event_type_idx already exists), instead of
+    // sampling only the newest 500 rows, which silently dropped older types.
+    try {
+      const { data: viewRows, error: viewErr } = await supabase
+        .from("v_audit_event_types")
+        .select("event_type,count,last_seen_at")
+        .order("count", { ascending: false });
+
+      if (viewErr) throw viewErr;
+
+      const items = (viewRows || [])
+        .filter((r) => r?.event_type)
+        .map((r) => ({ event_type: String(r.event_type), count: Number(r.count || 0) }));
+
+      // event_types keeps the legacy string-array shape for compatibility;
+      // items carries {event_type, count} (the UI supports both).
+      return res.json({ event_types: items.map((r) => r.event_type), items });
+    } catch (viewError) {
+      // Migration p1-revenue-audit.sql not applied yet — legacy fallback
+      // (newest 500 rows), so the panel keeps working during rollout.
+      console.warn("audit event-types: view unavailable, legacy fallback:", viewError?.message || viewError);
+    }
+
     const { data, error } = await supabase
       .from("audit_logs")
       .select("event_type")
@@ -9297,37 +9321,73 @@ app.get("/api/admin/audit", requireAdmin, requireSuperadmin, async (req, res) =>
     const limit = Math.min(200, Math.max(1, Number(req.query?.limit || 100)));
     const offset = Math.max(0, Number(req.query?.offset || 0));
 
-    let query = supabase
-      .from("audit_logs")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .range(offset, offset + limit - 1);
+    // P1-04: offset/limit is the official pagination contract for this route.
+    // (`cursor` was never implemented server-side and `next_cursor` stays ""
+    // for backward compatibility — deprecated.) `count:"exact"` + clamped,
+    // echoed offset follow the P0.2 Clients pattern; ordering gets a secondary
+    // `id DESC` so pages are deterministic when created_at ties.
+    const buildAuditQuery = (off) => {
+      let query = supabase
+        .from("audit_logs")
+        .select("*", { count: "exact" })
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(off, off + limit - 1);
 
-    if (status) query = query.eq("status", String(status));
-    if (event_type) query = query.eq("event_type", String(event_type));
-    if (plan_id) query = query.eq("plan_id", String(plan_id));
-    if (pool_id) query = query.eq("pool_id", String(pool_id));
-    if (client_mac) query = query.ilike("client_mac", `%${String(client_mac)}%`);
-    if (ap_mac) query = query.ilike("ap_mac", `%${String(ap_mac)}%`);
-    if (request_ref) query = query.ilike("request_ref", `%${String(request_ref)}%`);
-    if (mvola_phone) query = query.ilike("mvola_phone", `%${String(mvola_phone)}%`);
+      if (status) query = query.eq("status", String(status));
+      if (event_type) query = query.eq("event_type", String(event_type));
+      if (plan_id) query = query.eq("plan_id", String(plan_id));
+      if (pool_id) query = query.eq("pool_id", String(pool_id));
+      if (client_mac) query = query.ilike("client_mac", `%${String(client_mac)}%`);
+      if (ap_mac) query = query.ilike("ap_mac", `%${String(ap_mac)}%`);
+      if (request_ref) query = query.ilike("request_ref", `%${String(request_ref)}%`);
+      if (mvola_phone) query = query.ilike("mvola_phone", `%${String(mvola_phone)}%`);
 
-    if (from) query = query.gte("created_at", String(from));
-    if (to) query = query.lte("created_at", String(to));
+      if (from) query = query.gte("created_at", String(from));
+      if (to) query = query.lte("created_at", String(to));
 
-    const qq = String(q || "").trim();
-    if (qq) {
-      query = query.or([
-        `request_ref.ilike.%${qq}%`,
-        `client_mac.ilike.%${qq}%`,
-        `ap_mac.ilike.%${qq}%`,
-        `mvola_phone.ilike.%${qq}%`,
-        `event_type.ilike.%${qq}%`,
-        `message.ilike.%${qq}%`,
-      ].join(","));
+      const qq = String(q || "").trim();
+      if (qq) {
+        query = query.or([
+          `request_ref.ilike.%${qq}%`,
+          `client_mac.ilike.%${qq}%`,
+          `ap_mac.ilike.%${qq}%`,
+          `mvola_phone.ilike.%${qq}%`,
+          `event_type.ilike.%${qq}%`,
+          `message.ilike.%${qq}%`,
+        ].join(","));
+      }
+      return query;
+    };
+
+    const clampAuditOffset = (requested, totalRows) => {
+      if (!Number.isFinite(totalRows) || totalRows <= 0) return 0;
+      if (requested < totalRows) return requested;
+      return Math.max(0, Math.floor((totalRows - 1) / limit) * limit);
+    };
+
+    let effectiveOffset = offset;
+    let { data, error, count } = await buildAuditQuery(effectiveOffset);
+
+    // Dataset shrank / stale offset (PostgREST "range not satisfiable"): retry page 1.
+    if (error && effectiveOffset > 0 && /range/i.test(String(error?.message || ""))) {
+      effectiveOffset = 0;
+      ({ data, error, count } = await buildAuditQuery(0));
     }
+    if (error) return res.status(500).json({ error: error.message });
 
-    const { data, error } = await query;
+    let total = Number(count || 0);
+    // Reclamp from the ORIGINAL requested offset (not the retried one), so a
+    // stale offset lands on the last valid page rather than page 1.
+    const reclamped = clampAuditOffset(offset, total);
+    if (reclamped !== effectiveOffset && total > 0) {
+      effectiveOffset = reclamped;
+      const retry = await buildAuditQuery(effectiveOffset);
+      if (!retry.error) {
+        data = retry.data;
+        total = Number(retry.count || total);
+      }
+    }
     if (error) throw error;
 
     const itemsRaw = data || [];
@@ -9482,7 +9542,9 @@ app.get("/api/admin/audit", requireAdmin, requireSuperadmin, async (req, res) =>
       };
     });
 
-    return res.json({ items, next_cursor: "" });
+    // P1-04: page metadata for offset pagination. next_cursor kept for
+    // backward compatibility only (deprecated — always empty).
+    return res.json({ items, total, limit, offset: effectiveOffset, next_cursor: "" });
   } catch (e) {
     console.error("audit list error:", e?.message || e);
     return res.status(500).json({ error: "server_error" });
@@ -11059,8 +11121,12 @@ function serializeFreeAccessDevice(row) {
 function serializeRevenueByPlan(row) {
   if (!row || typeof row !== "object") return row;
   return {
+    plan_id:          row.plan_id          ?? null,
     plan_name:        row.plan_name        ?? null,
-    paid_transactions: row.paid_transactions ?? 0,
+    // P1-03 FIX: v_revenue_paid_by_plan exposes the count as `paid_count`;
+    // the RPCs expose `paid_transactions`. Alias both so no data path can
+    // ever render « 0 transactions payées » again.
+    paid_transactions: row.paid_transactions ?? row.paid_count ?? 0,
     total_amount_ar:  row.total_amount_ar  ?? 0,
     last_paid_at:     row.last_paid_at     ?? null,
     // safe extras that some RPC versions return
@@ -14173,7 +14239,57 @@ app.get("/api/admin/revenue/by-plan", requireAdmin, async (req, res) => {
       throw e;
     }
 
-    // Superadmin: keep existing view (or filter to single pool if requested)
+    // P1 (by-plan duplicate names): items are ALWAYS grouped by plan_id (never
+    // merged across pools). When the same displayed name exists in several
+    // pools, attach the complete pool display name (« Brand – Place ») so the
+    // UI can disambiguate. Fail-open: display info only, never blocks the data.
+    const attachPlanPoolDisplay = async (items) => {
+      try {
+        const list = Array.isArray(items) ? items : [];
+        const planIds = Array.from(new Set(
+          list.map((it) => String(it?.plan_id || "").trim()).filter(Boolean)
+        ));
+        if (!planIds.length) return list;
+
+        const { data: planRows, error: planErr } = await supabase
+          .from("plans")
+          .select("id,pool_id")
+          .in("id", planIds);
+        if (planErr || !Array.isArray(planRows)) return list;
+
+        const poolIdByPlanId = {};
+        for (const p of planRows) {
+          if (p?.id) poolIdByPlanId[String(p.id)] = String(p?.pool_id || "").trim();
+        }
+
+        const poolIds = Array.from(new Set(Object.values(poolIdByPlanId).filter(Boolean)));
+        if (!poolIds.length) return list;
+
+        const { data: poolRows, error: poolErr } = await supabase
+          .from("internet_pools")
+          .select("id,name,brand_name")
+          .in("id", poolIds);
+        if (poolErr || !Array.isArray(poolRows)) return list;
+
+        const displayByPoolId = {};
+        for (const p of poolRows) {
+          if (p?.id) displayByPoolId[String(p.id)] = buildPoolDisplayName(p);
+        }
+
+        for (const it of list) {
+          const poolId = poolIdByPlanId[String(it?.plan_id || "").trim()] || "";
+          const display = poolId ? displayByPoolId[poolId] : null;
+          if (display && it && typeof it === "object") {
+            it.pool_display_name = it.pool_display_name || display;
+          }
+        }
+        return list;
+      } catch (_) {
+        return Array.isArray(items) ? items : [];
+      }
+    };
+
+    // Superadmin: filtered RPC (or scoped RPC for a single pool)
     if (req.admin?.is_superadmin) {
       if (validatedPoolId) {
         // Superadmin requested a specific pool — use scoped RPC with that pool only
@@ -14188,15 +14304,28 @@ app.get("/api/admin/revenue/by-plan", requireAdmin, async (req, res) => {
             p_pool_ids: [validatedPoolId],
           });
         if (error) return res.status(500).json({ error: error.message });
-        return res.json({ items: (data || []).map(serializeRevenueByPlan) });
+        const items = (data || []).map(serializeRevenueByPlan);
+        return res.json({ items: await attachPlanPoolDisplay(items) });
       }
+
+      // P1-02 FIX: the "all pools" path used the ALL-TIME view
+      // v_revenue_paid_by_plan and silently discarded from/to/search (and its
+      // `paid_count` column rendered as 0 transactions — P1-03). It now uses
+      // the pre-existing, previously unused fn_revenue_paid_by_plan_filtered,
+      // which honors from/to/search and returns `paid_transactions`.
+      const from = normalizeDateInput(req.query.from);
+      const to = normalizeDateInput(req.query.to);
+      const search = String(req.query.search || "").trim() || null;
       const { data, error } = await supabase
-        .from("v_revenue_paid_by_plan")
-        .select("*")
-        .order("total_amount_ar", { ascending: false });
+        .rpc("fn_revenue_paid_by_plan_filtered", {
+          p_from: from || null,
+          p_to: to || null,
+          p_search: search,
+        });
 
       if (error) return res.status(500).json({ error: error.message });
-      return res.json({ items: (data || []).map(serializeRevenueByPlan) });
+      const items = (data || []).map(serializeRevenueByPlan);
+      return res.json({ items: await attachPlanPoolDisplay(items) });
     }
 
     // pool_readonly: use scoped RPC (server-side)
@@ -14219,7 +14348,9 @@ app.get("/api/admin/revenue/by-plan", requireAdmin, async (req, res) => {
       });
 
     if (error) return res.status(500).json({ error: error.message });
-    return res.json({ items: (data || []).map(serializeRevenueByPlan) });
+    // P1: same duplicate-name disambiguation for multi-pool owners.
+    const ownerItems = (data || []).map(serializeRevenueByPlan);
+    return res.json({ items: await attachPlanPoolDisplay(ownerItems) });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
@@ -14301,6 +14432,35 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
     const to = normalizeDateInput(req.query.to);
     const search = String(req.query.search || "").trim() || null;
 
+    // P1-01: owner/platform share computed IN SQL over the whole filtered
+    // scope (fn_revenue_owner_totals_filtered), replacing the frontend
+    // page-sum fallback that was capped at 500 rows. Semantics unchanged:
+    // estimate at the pools' CURRENT share percentages, per-transaction
+    // rounding identical to getShareTransactionsCore (roundMoney2).
+    // Fail-open: if the RPC is unavailable (migration not applied yet), the
+    // card shows « indisponible » instead of a wrong number — never a 500.
+    const fetchShareTotals = async (poolIds /* null = all pools */) => {
+      try {
+        const { data, error } = await supabase
+          .rpc("fn_revenue_owner_totals_filtered", {
+            p_from: from || null,
+            p_to: to || null,
+            p_search: search,
+            p_pool_ids: poolIds && poolIds.length ? poolIds : null,
+          });
+        if (error) throw error;
+        const row = (data && data[0]) ? data[0] : null;
+        if (!row) return null;
+        return {
+          owner_total_ar: Number(row.owner_total_ar ?? 0) || 0,
+          platform_total_ar: Number(row.platform_total_ar ?? 0) || 0,
+        };
+      } catch (e) {
+        console.error("REVENUE TOTALS: owner share RPC failed:", e?.message || e);
+        return null;
+      }
+    };
+
     // Superadmin: keep existing fast RPC (or filter by pool if requested)
     if (req.admin?.is_superadmin) {
       if (validatedPoolId) {
@@ -14321,6 +14481,11 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
           },
           { paid_transactions: 0, total_amount_ar: 0 }
         );
+        const share = await fetchShareTotals([validatedPoolId]);
+        if (share) {
+          item.owner_total_ar = share.owner_total_ar;
+          item.platform_total_ar = share.platform_total_ar;
+        }
         return res.json({ item });
       }
       const { data, error } = await supabase
@@ -14333,6 +14498,11 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
       if (error) return res.status(500).json({ error: error.message });
 
       const item = (data && data[0]) ? data[0] : { paid_transactions: 0, total_amount_ar: 0 };
+      const share = await fetchShareTotals(null);
+      if (share) {
+        item.owner_total_ar = share.owner_total_ar;
+        item.platform_total_ar = share.platform_total_ar;
+      }
       return res.json({ item });
     }
 
@@ -14360,6 +14530,14 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
       },
       { paid_transactions: 0, total_amount_ar: 0 }
     );
+
+    // P1-01: the owner gets their own share over their (validated) pools.
+    // platform_total_ar is DELIBERATELY omitted for pool_readonly admins —
+    // platform-only financial details are not exposed to owners.
+    const share = await fetchShareTotals(filterIds);
+    if (share) {
+      item.owner_total_ar = share.owner_total_ar;
+    }
 
     return res.json({ item });
   } catch (e) {
