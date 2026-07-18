@@ -51,6 +51,7 @@
     .rz-ref-item{display:flex;justify-content:space-between;gap:10px;padding:10px 11px;border-radius:16px;background:rgba(248,250,252,.82);border:1px solid rgba(15,23,42,.07);font-size:13px;}
     .rz-ref-item strong{color:#0f172a;}
     .rz-ref-item span{color:#0d6efd;font-weight:950;white-space:nowrap;}
+    .rz-ref-item.inactive{opacity:.62;}
     .error{text-align:left;}
 
     .rz-admin-config{margin-top:0;}
@@ -62,13 +63,21 @@
     .rz-config-save-row{display:flex;gap:10px;align-items:center;justify-content:flex-end;margin-top:12px;flex-wrap:wrap;}
     .rz-config-save-row button{width:auto;min-height:46px;padding:0 16px;border-radius:18px!important;}
     .rz-editor-status{color:#64748b;font-size:13px;font-weight:850;}
-    .rz-ref-editor-list{display:flex;flex-direction:column;gap:9px;margin-top:12px;}
-    .rz-ref-editor-item{display:grid;grid-template-columns:minmax(180px,1.2fr) minmax(110px,.55fr) minmax(90px,.45fr) minmax(90px,.45fr);gap:10px;align-items:end;padding:12px;border-radius:20px;background:rgba(248,250,252,.82);border:1px solid rgba(15,23,42,.07);}
+    .rz-ref-editor-toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px;flex-wrap:wrap;}
+    .rz-ref-editor-toolbar p{margin:0;color:#64748b;font-size:12px;font-weight:800;line-height:1.35;}
+    .rz-ref-editor-toolbar button{width:auto;min-height:42px;padding:0 14px;border-radius:16px!important;}
+    .rz-ref-editor-list{display:flex;flex-direction:column;gap:9px;margin-top:10px;}
+    .rz-ref-editor-item{padding:12px;border-radius:20px;background:rgba(248,250,252,.82);border:1px solid rgba(15,23,42,.07);}
+    .rz-ref-editor-headrow{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;}
     .rz-ref-editor-title{font-weight:950;color:#0f172a;line-height:1.15;}
     .rz-ref-editor-sub{margin-top:4px;color:#64748b;font-size:12px;font-weight:800;}
-    .rz-ref-editor-item input{height:44px!important;border-radius:16px!important;margin:0!important;}
-    .rz-ref-editor-check{display:flex;align-items:center;gap:8px;height:44px;padding:0 10px;border-radius:16px;background:rgba(255,255,255,.75);border:1px solid rgba(15,23,42,.07);font-size:13px;font-weight:900;color:#334155;}
+    .rz-ref-editor-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+    .rz-ref-editor-fields{display:grid;grid-template-columns:minmax(180px,1.3fr) repeat(6,minmax(90px,.65fr));gap:9px;margin-top:10px;align-items:end;}
+    .rz-ref-label-field{grid-column:auto;}
+    .rz-ref-editor-item input,.rz-ref-editor-item select{height:44px!important;border-radius:16px!important;margin:0!important;}
+    .rz-ref-editor-check{display:flex;align-items:center;gap:8px;height:42px;padding:0 10px;border-radius:16px;background:rgba(255,255,255,.75);border:1px solid rgba(15,23,42,.07);font-size:13px;font-weight:900;color:#334155;}
     .rz-ref-editor-check input{width:18px!important;height:18px!important;margin:0!important;accent-color:#0d6efd;}
+    .rz-remove-ref-btn{width:auto!important;min-height:42px!important;padding:0 12px!important;border-radius:16px!important;}
 
     .rz-assistant-card{margin-top:14px;padding:14px;border-radius:22px;background:rgba(248,250,252,.88);border:1px solid rgba(15,23,42,.08);}
     .rz-assistant-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px;}
@@ -133,8 +142,9 @@
       .rz-config-edit-grid,.rz-ref-editor-list{margin-top:9px;}
     }
     @media (max-width:520px){.rz-create-grid{grid-template-columns:1fr;}.rz-create-grid .full{grid-column:auto;}.rz-create-actions{grid-template-columns:1fr;}}
-    @media (max-width:860px){.rz-config-edit-grid{grid-template-columns:1fr 1fr;}.rz-ref-editor-item{grid-template-columns:1fr 1fr;}.rz-ref-editor-item .rz-ref-editor-titlewrap{grid-column:1/-1;}}
-    @media (max-width:520px){.rz-config-edit-grid{grid-template-columns:1fr;}.rz-ref-editor-item{grid-template-columns:1fr;}.rz-config-save-row button{width:100%;}.rz-config-save-row{justify-content:stretch;}}
+    @media (max-width:1100px){.rz-ref-editor-fields{grid-template-columns:repeat(3,minmax(110px,1fr));}.rz-ref-label-field{grid-column:1/-1;}}
+    @media (max-width:860px){.rz-config-edit-grid{grid-template-columns:1fr 1fr;}.rz-ref-editor-fields{grid-template-columns:1fr 1fr;}.rz-ref-label-field{grid-column:1/-1;}}
+    @media (max-width:520px){.rz-config-edit-grid{grid-template-columns:1fr;}.rz-ref-editor-fields{grid-template-columns:1fr;}.rz-ref-label-field{grid-column:auto;}.rz-ref-editor-actions{width:100%;}.rz-ref-editor-check,.rz-remove-ref-btn{flex:1;justify-content:center;}.rz-ref-editor-toolbar button,.rz-config-save-row button{width:100%;}.rz-config-save-row{justify-content:stretch;}}
     @media (max-width:860px){.rz-simulator-grid{grid-template-columns:1fr;}.rz-simulator-form{grid-template-columns:1fr;}.rz-type-switch{grid-template-columns:1fr 1fr;}.rz-range{grid-template-columns:1fr;}}
     @media (max-width:520px){.rz-price-big{font-size:36px;}}
   </style>
@@ -200,7 +210,13 @@
 
             <div class="rz-field rz-speed-field">
               <label for="speedMbps">Vitesse (Mbps)</label>
-              <input id="speedMbps" inputmode="decimal" value="7" placeholder="Ex : 10" required />
+              <input id="speedMbps" inputmode="decimal" list="speedOptions" value="7" placeholder="Ex : 10" required />
+              <datalist id="speedOptions">
+                <option value="5"></option>
+                <option value="7"></option>
+                <option value="10"></option>
+                <option value="12"></option>
+              </datalist>
               <div id="speedMbpsError" class="rz-field-error"></div>
             </div>
 
@@ -241,6 +257,10 @@
               <input id="cfg_realistic_usage_factor_pct" inputmode="numeric" />
             </div>
             <div class="rz-field">
+              <label for="cfg_warning_usage_factor_pct">Seuil avertissement (%)</label>
+              <input id="cfg_warning_usage_factor_pct" inputmode="numeric" />
+            </div>
+            <div class="rz-field">
               <label for="cfg_max_data_gb">Max data (Go)</label>
               <input id="cfg_max_data_gb" inputmode="numeric" />
             </div>
@@ -268,6 +288,14 @@
               <label for="cfg_max_total_plans">Max forfaits total</label>
               <input id="cfg_max_total_plans" inputmode="numeric" />
             </div>
+            <div class="rz-field">
+              <label for="cfg_allowed_speeds_mbps">Débits autorisés (Mbps)</label>
+              <input id="cfg_allowed_speeds_mbps" placeholder="5, 7, 10, 12" />
+            </div>
+          </div>
+          <div class="rz-ref-editor-toolbar">
+            <p>Les références inactives restent disponibles et peuvent être réactivées.</p>
+            <button id="addReferenceBtn" type="button" class="filter-btn">Ajouter une référence</button>
           </div>
           <div id="referencesEditor" class="rz-ref-editor-list"></div>
 
@@ -283,6 +311,6 @@
   </div>
 
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="./pricing-simulator.js?v=admin-wide-1"></script>
+  <script src="./pricing-simulator.js?v=pricing-market-1"></script>
 </body>
 </html>

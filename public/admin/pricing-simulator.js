@@ -95,6 +95,57 @@ function durationReferenceLabel(r) {
   return `${minutes} min`;
 }
 
+function durationEditorParts(durationMinutes) {
+  const minutes = Number(durationMinutes);
+  if (!Number.isFinite(minutes) || minutes <= 0) return { value: 1, unit: "day" };
+  if (minutes % 43200 === 0) return { value: minutes / 43200, unit: "month" };
+  if (minutes % 10080 === 0) return { value: minutes / 10080, unit: "week" };
+  if (minutes % 1440 === 0) return { value: minutes / 1440, unit: "day" };
+  if (minutes % 60 === 0) return { value: minutes / 60, unit: "hour" };
+  return { value: minutes, unit: "minute" };
+}
+
+function durationMinutesFromEditor(value, unit) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const factors = { minute: 1, hour: 60, day: 1440, week: 10080, month: 43200 };
+  const factor = factors[String(unit || "day")] || null;
+  return factor ? Math.round(n * factor) : null;
+}
+
+function parseAllowedSpeeds(value) {
+  const raw = Array.isArray(value) ? value : String(value ?? "").split(",");
+  return Array.from(new Set(raw
+    .map((v) => Number(String(v).trim()))
+    .filter((v) => Number.isFinite(v) && v > 0)
+    .map((v) => Math.round(v * 100) / 100)))
+    .sort((a, b) => a - b);
+}
+
+function refreshSpeedOptions(settings = {}) {
+  const list = document.getElementById("speedOptions");
+  if (!list) return;
+  const speeds = parseAllowedSpeeds(settings.allowed_speeds_mbps);
+  list.innerHTML = speeds.map((speed) => `<option value="${esc(speed)}"></option>`).join("");
+}
+
+function createReferenceDraft() {
+  newReferenceSequence += 1;
+  const now = Date.now();
+  return {
+    key: `custom_${now}_${newReferenceSequence}`,
+    label: "",
+    type: "data",
+    duration_minutes: 1440,
+    data_gb: 1,
+    speed_mbps: 10,
+    price_ar: 500,
+    is_active: true,
+    sort_order: editableReferences.length + 1,
+    _isNew: true,
+  };
+}
+
 let currentType = "unlimited";
 let simulatorConfig = null;
 let currentAdmin = null;
@@ -105,6 +156,7 @@ let lastSimulationData = null;
 const SETTING_KEYS = [
   "price_tolerance_pct",
   "realistic_usage_factor_pct",
+  "warning_usage_factor_pct",
   "max_data_gb",
   "max_speed_mbps",
   "max_duration_days",
@@ -112,7 +164,11 @@ const SETTING_KEYS = [
   "max_visible_unlimited_plans",
   "minimum_price_ar",
   "max_total_plans",
+  "allowed_speeds_mbps",
 ];
+
+let editableReferences = [];
+let newReferenceSequence = 0;
 
 document.addEventListener("DOMContentLoaded", async () => {
   const meEl = document.getElementById("me");
@@ -144,6 +200,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const configSaveStatus = document.getElementById("configSaveStatus");
   const saveConfigBtn = document.getElementById("saveConfigBtn");
   const reloadConfigBtn = document.getElementById("reloadConfigBtn");
+  const addReferenceBtn = document.getElementById("addReferenceBtn");
 
   function showError(msg) { if (errorEl) errorEl.textContent = msg || ""; }
   function showConfigStatus(msg) { if (configSaveStatus) configSaveStatus.textContent = msg || ""; }
@@ -300,28 +357,94 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const settings = cfg?.settings || {};
     const references = Array.isArray(cfg?.references) ? cfg.references : [];
+    const activeCount = references.filter((r) => r.is_active !== false).length;
 
     configSummary.innerHTML = `
       <div class="rz-config-line"><span>Tolérance prix</span><span>${esc(formatSetting(settings.price_tolerance_pct, "%"))}</span></div>
       <div class="rz-config-line"><span>Facteur réaliste</span><span>${esc(formatSetting(settings.realistic_usage_factor_pct, "%"))}</span></div>
+      <div class="rz-config-line"><span>Seuil d’avertissement</span><span>${esc(formatSetting(settings.warning_usage_factor_pct, "%"))}</span></div>
       <div class="rz-config-line"><span>Max data</span><span>${esc(formatSetting(settings.max_data_gb, " Go"))}</span></div>
       <div class="rz-config-line"><span>Max débit</span><span>${esc(formatSetting(settings.max_speed_mbps, " Mbps"))}</span></div>
+      <div class="rz-config-line"><span>Débits autorisés</span><span>${esc(parseAllowedSpeeds(settings.allowed_speeds_mbps).join(", ") || "—")} Mbps</span></div>
       <div class="rz-config-line"><span>Prix minimum accepté</span><span>${esc(formatSetting(settings.minimum_price_ar, " Ar"))}</span></div>
       <div class="rz-config-line"><span>Max forfaits total</span><span>${esc(formatSetting(settings.max_total_plans, ""))}</span></div>
-      <div class="rz-config-line"><span>Références actives</span><span>${references.filter(r => r.is_active !== false).length}</span></div>
+      <div class="rz-config-line"><span>Références</span><span>${activeCount} actives / ${references.length} total</span></div>
     `;
 
     referencesList.innerHTML = references.map((r) => `
-      <div class="rz-ref-item">
-        <strong>${esc(r.label || r.key || "Référence")}</strong>
+      <div class="rz-ref-item ${r.is_active === false ? "inactive" : ""}">
+        <strong>${esc(r.label || r.key || "Référence")}${r.is_active === false ? " · Inactive" : ""}</strong>
         <span>${formatAr(r.price_ar)}</span>
       </div>
     `).join("");
 
-    renderConfigEditor(cfg);
+    refreshSpeedOptions(settings);
+    renderConfigEditor(cfg, true);
   }
 
-  function renderConfigEditor(cfg) {
+  function referenceEditorItemHtml(r, idx) {
+    const key = String(r.key || `ref_${idx}`);
+    const duration = durationEditorParts(r.duration_minutes);
+    const isData = String(r.type || "data") === "data";
+    return `
+      <div class="rz-ref-editor-item" data-ref-key="${esc(key)}">
+        <div class="rz-ref-editor-headrow">
+          <div class="rz-ref-editor-titlewrap">
+            <div class="rz-ref-editor-title">${esc(r.label || (r._isNew ? "Nouvelle référence" : key))}</div>
+            <div class="rz-ref-editor-sub">${esc(r.type || "—")} · ${esc(durationReferenceLabel(r))} · ${isData ? `${esc(r.data_gb ?? "—")} Go` : "Illimité"} · ${esc(r.speed_mbps)} Mbps</div>
+          </div>
+          <div class="rz-ref-editor-actions">
+            <label class="rz-ref-editor-check">
+              <input data-ref-active="${esc(key)}" type="checkbox" ${r.is_active === false ? "" : "checked"} />
+              Actif
+            </label>
+            ${r._isNew ? `<button type="button" class="filter-btn rz-remove-ref-btn" data-remove-ref="${esc(key)}">Retirer</button>` : ""}
+          </div>
+        </div>
+        <div class="rz-ref-editor-fields">
+          <div class="rz-field rz-ref-label-field">
+            <label>Nom affiché</label>
+            <input data-ref-label="${esc(key)}" value="${esc(r.label || "")}" placeholder="Nom automatique si vide" />
+          </div>
+          <div class="rz-field">
+            <label>Type</label>
+            <select data-ref-type="${esc(key)}">
+              <option value="data" ${isData ? "selected" : ""}>Data</option>
+              <option value="unlimited" ${isData ? "" : "selected"}>Illimité</option>
+            </select>
+          </div>
+          <div class="rz-field">
+            <label>Durée</label>
+            <input data-ref-duration-value="${esc(key)}" inputmode="decimal" value="${esc(duration.value)}" />
+          </div>
+          <div class="rz-field">
+            <label>Unité</label>
+            <select data-ref-duration-unit="${esc(key)}">
+              <option value="minute" ${duration.unit === "minute" ? "selected" : ""}>minute(s)</option>
+              <option value="hour" ${duration.unit === "hour" ? "selected" : ""}>heure(s)</option>
+              <option value="day" ${duration.unit === "day" ? "selected" : ""}>jour(s)</option>
+              <option value="week" ${duration.unit === "week" ? "selected" : ""}>semaine(s)</option>
+              <option value="month" ${duration.unit === "month" ? "selected" : ""}>mois</option>
+            </select>
+          </div>
+          <div class="rz-field">
+            <label>Data (Go)</label>
+            <input data-ref-data="${esc(key)}" inputmode="decimal" value="${isData ? esc(r.data_gb ?? "") : ""}" ${isData ? "" : "disabled"} />
+          </div>
+          <div class="rz-field">
+            <label>Débit (Mbps)</label>
+            <input data-ref-speed="${esc(key)}" inputmode="decimal" list="speedOptions" value="${esc(r.speed_mbps ?? "")}" />
+          </div>
+          <div class="rz-field">
+            <label>Prix (Ar)</label>
+            <input data-ref-price="${esc(key)}" inputmode="numeric" value="${esc(r.price_ar ?? "")}" />
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderConfigEditor(cfg, resetReferences = false) {
     if (!configEditor || !referencesEditor) return;
     configEditor.hidden = !isSuperadminUser;
     if (!isSuperadminUser) return;
@@ -329,34 +452,19 @@ document.addEventListener("DOMContentLoaded", async () => {
     const settings = cfg?.settings || {};
     for (const key of SETTING_KEYS) {
       const input = document.getElementById(`cfg_${key}`);
-      if (input) input.value = settings[key] ?? "";
+      if (!input) continue;
+      input.value = key === "allowed_speeds_mbps"
+        ? parseAllowedSpeeds(settings[key]).join(", ")
+        : (settings[key] ?? "");
     }
 
-    const references = Array.isArray(cfg?.references) ? cfg.references.slice() : [];
-    references.sort((a, b) => Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0));
-    referencesEditor.innerHTML = references.map((r, idx) => {
-      const key = String(r.key || `ref_${idx}`);
-      return `
-        <div class="rz-ref-editor-item" data-ref-key="${esc(key)}">
-          <div class="rz-ref-editor-titlewrap">
-            <div class="rz-ref-editor-title">${esc(r.label || key)}</div>
-            <div class="rz-ref-editor-sub">${esc(r.type || "—")} · ${esc(durationReferenceLabel(r))} · ${esc(r.data_gb ?? "Illimité")} ${r.data_gb == null ? "" : "Go"} · ${esc(r.speed_mbps)} Mbps</div>
-          </div>
-          <div class="rz-field">
-            <label>Nom affiché</label>
-            <input data-ref-label="${esc(key)}" value="${esc(r.label || "")}" />
-          </div>
-          <div class="rz-field">
-            <label>Prix (Ar)</label>
-            <input data-ref-price="${esc(key)}" inputmode="numeric" value="${esc(r.price_ar ?? "")}" />
-          </div>
-          <label class="rz-ref-editor-check">
-            <input data-ref-active="${esc(key)}" type="checkbox" ${r.is_active === false ? "" : "checked"} />
-            Actif
-          </label>
-        </div>
-      `;
-    }).join("");
+    if (resetReferences) {
+      editableReferences = (Array.isArray(cfg?.references) ? cfg.references : [])
+        .map((r) => ({ ...r, _isNew: false }))
+        .sort((a, b) => Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0));
+    }
+
+    referencesEditor.innerHTML = editableReferences.map(referenceEditorItemHtml).join("");
   }
 
   function currentSimulationPayload() {
@@ -552,31 +660,51 @@ document.addEventListener("DOMContentLoaded", async () => {
     for (const key of SETTING_KEYS) {
       const input = document.getElementById(`cfg_${key}`);
       if (!input) continue;
+      if (key === "allowed_speeds_mbps") {
+        const speeds = parseAllowedSpeeds(input.value);
+        if (!speeds.length) throw new Error("Ajoutez au moins un débit autorisé.");
+        settings[key] = speeds;
+        continue;
+      }
       const n = toNumberOrNull(input.value);
       if (n === null || n < 0) throw new Error(`Valeur invalide pour ${key}.`);
       settings[key] = n;
     }
 
-    const originalReferences = Array.isArray(simulatorConfig?.references) ? simulatorConfig.references : [];
-    const references = originalReferences.map((r) => {
-      const key = String(r.key || "");
-      const labelInput = document.querySelector(`[data-ref-label="${CSS.escape(key)}"]`);
-      const priceInput = document.querySelector(`[data-ref-price="${CSS.escape(key)}"]`);
-      const activeInput = document.querySelector(`[data-ref-active="${CSS.escape(key)}"]`);
+    const references = editableReferences.map((r, idx) => {
+      const key = String(r.key || "").trim();
+      const row = referencesEditor.querySelector(`[data-ref-key="${CSS.escape(key)}"]`);
+      const labelInput = row?.querySelector(`[data-ref-label="${CSS.escape(key)}"]`);
+      const typeInput = row?.querySelector(`[data-ref-type="${CSS.escape(key)}"]`);
+      const durationValueInput = row?.querySelector(`[data-ref-duration-value="${CSS.escape(key)}"]`);
+      const durationUnitInput = row?.querySelector(`[data-ref-duration-unit="${CSS.escape(key)}"]`);
+      const dataInput = row?.querySelector(`[data-ref-data="${CSS.escape(key)}"]`);
+      const speedInput = row?.querySelector(`[data-ref-speed="${CSS.escape(key)}"]`);
+      const priceInput = row?.querySelector(`[data-ref-price="${CSS.escape(key)}"]`);
+      const activeInput = row?.querySelector(`[data-ref-active="${CSS.escape(key)}"]`);
+
+      const type = String(typeInput?.value || r.type || "data") === "unlimited" ? "unlimited" : "data";
+      const durationMinutes = durationMinutesFromEditor(durationValueInput?.value, durationUnitInput?.value);
+      const data = type === "data" ? toNumberOrNull(dataInput?.value) : null;
+      const speed = toNumberOrNull(speedInput?.value);
       const price = toNumberOrNull(priceInput?.value);
+
       if (!key) throw new Error("Référence invalide.");
-      if (price === null || price < 0) throw new Error(`Prix invalide pour ${r.label || key}.`);
+      if (!durationMinutes) throw new Error(`Durée invalide pour ${r.label || key}.`);
+      if (type === "data" && (data === null || data <= 0)) throw new Error(`Data invalide pour ${r.label || key}.`);
+      if (speed === null || speed <= 0) throw new Error(`Débit invalide pour ${r.label || key}.`);
+      if (price === null || price <= 0) throw new Error(`Prix invalide pour ${r.label || key}.`);
 
       return {
         key,
-        label: String(labelInput?.value || r.label || key).trim() || key,
-        type: r.type,
-        duration_minutes: Number(r.duration_minutes),
-        data_gb: r.data_gb === null || r.data_gb === undefined ? null : Number(r.data_gb),
-        speed_mbps: Number(r.speed_mbps),
+        label: String(labelInput?.value || "").trim(),
+        type,
+        duration_minutes: durationMinutes,
+        data_gb: type === "data" ? data : null,
+        speed_mbps: speed,
         price_ar: Math.round(price),
         is_active: !!(activeInput ? activeInput.checked : r.is_active !== false),
-        sort_order: Number(r.sort_order ?? 0),
+        sort_order: idx + 1,
       };
     });
 
@@ -714,6 +842,39 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (!placeValidationError(err)) showError(err.message);
     }
   });
+
+  if (referencesEditor) {
+    referencesEditor.addEventListener("change", (e) => {
+      const typeInput = e.target.closest?.("[data-ref-type]");
+      if (!typeInput) return;
+      const row = typeInput.closest("[data-ref-key]");
+      const dataInput = row?.querySelector("[data-ref-data]");
+      if (!dataInput) return;
+      const isData = typeInput.value === "data";
+      dataInput.disabled = !isData;
+      if (!isData) dataInput.value = "";
+      else if (!String(dataInput.value || "").trim()) dataInput.value = "1";
+    });
+
+    referencesEditor.addEventListener("click", (e) => {
+      const removeBtn = e.target.closest?.("[data-remove-ref]");
+      if (!removeBtn) return;
+      const key = String(removeBtn.dataset.removeRef || "");
+      editableReferences = editableReferences.filter((r) => String(r.key || "") !== key);
+      removeBtn.closest("[data-ref-key]")?.remove();
+    });
+  }
+
+  if (addReferenceBtn) {
+    addReferenceBtn.addEventListener("click", () => {
+      const draft = createReferenceDraft();
+      editableReferences.push(draft);
+      referencesEditor?.insertAdjacentHTML("beforeend", referenceEditorItemHtml(draft, editableReferences.length - 1));
+      const rows = referencesEditor?.querySelectorAll("[data-ref-key]");
+      const lastRow = rows?.[rows.length - 1];
+      lastRow?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    });
+  }
 
   if (configForm) {
     configForm.addEventListener("submit", async (e) => {

@@ -16877,22 +16877,34 @@ const PLAN_SIMULATOR_DEFAULT_SETTINGS = Object.freeze({
   warning_usage_factor_pct: 90,
   max_visible_data_plans: 10,
   max_visible_unlimited_plans: 10,
-  minimum_price_ar: 400,
+  minimum_price_ar: 500,
   max_total_plans: 30,
-  max_data_gb: 500,
-  max_speed_mbps: 20,
+  max_data_gb: 100,
+  max_speed_mbps: 12,
   max_duration_days: 30,
-  allowed_speeds_mbps: [5, 7, 10, 12, 15, 20],
+  allowed_speeds_mbps: [5, 7, 10, 12],
 });
 
+// Commercial baseline validated in July 2026 after Madagascar market review.
+// These rows are calculator references only; they do not publish plans by themselves.
 const PLAN_SIMULATOR_DEFAULT_REFERENCES = Object.freeze([
-  { key: "unlimited_1h_7m", label: "Illimité 1H 7M", type: "unlimited", duration_minutes: 60, data_gb: null, speed_mbps: 7, price_ar: 400, is_active: true, sort_order: 1 },
-  { key: "unlimited_1d_7m", label: "Illimité Jour 7M", type: "unlimited", duration_minutes: 1440, data_gb: null, speed_mbps: 7, price_ar: 2000, is_active: true, sort_order: 2 },
-  { key: "unlimited_1d_10m", label: "Illimité Jour 10M", type: "unlimited", duration_minutes: 1440, data_gb: null, speed_mbps: 10, price_ar: 3000, is_active: true, sort_order: 3 },
-  { key: "data_2go_1d_10m", label: "2 Go Jour 10M", type: "data", duration_minutes: 1440, data_gb: 2, speed_mbps: 10, price_ar: 500, is_active: true, sort_order: 4 },
-  { key: "data_20go_7d_10m", label: "20 Go Semaine 10M", type: "data", duration_minutes: 10080, data_gb: 20, speed_mbps: 10, price_ar: 3500, is_active: true, sort_order: 5 },
+  { key: "unlimited_1h_7m", label: "Illimité 1H 7M", type: "unlimited", duration_minutes: 60, data_gb: null, speed_mbps: 7, price_ar: 500, is_active: true, sort_order: 1 },
+  { key: "unlimited_1h_10m", label: "Illimité 1H 10M", type: "unlimited", duration_minutes: 60, data_gb: null, speed_mbps: 10, price_ar: 700, is_active: true, sort_order: 2 },
+  { key: "unlimited_1h_12m", label: "Illimité 1H 12M", type: "unlimited", duration_minutes: 60, data_gb: null, speed_mbps: 12, price_ar: 1000, is_active: true, sort_order: 3 },
+  { key: "unlimited_1d_7m", label: "Illimité Jour 7M", type: "unlimited", duration_minutes: 1440, data_gb: null, speed_mbps: 7, price_ar: 2000, is_active: true, sort_order: 4 },
+  { key: "unlimited_1d_10m", label: "Illimité Jour 10M", type: "unlimited", duration_minutes: 1440, data_gb: null, speed_mbps: 10, price_ar: 3000, is_active: true, sort_order: 5 },
   { key: "unlimited_7d_7m", label: "Illimité Semaine 7M", type: "unlimited", duration_minutes: 10080, data_gb: null, speed_mbps: 7, price_ar: 10000, is_active: true, sort_order: 6 },
   { key: "unlimited_7d_10m", label: "Illimité Semaine 10M", type: "unlimited", duration_minutes: 10080, data_gb: null, speed_mbps: 10, price_ar: 15000, is_active: true, sort_order: 7 },
+  { key: "unlimited_30d_7m", label: "Illimité Mois 7M", type: "unlimited", duration_minutes: 43200, data_gb: null, speed_mbps: 7, price_ar: 45000, is_active: true, sort_order: 8 },
+  { key: "unlimited_30d_10m", label: "Illimité Mois 10M", type: "unlimited", duration_minutes: 43200, data_gb: null, speed_mbps: 10, price_ar: 60000, is_active: true, sort_order: 9 },
+  { key: "data_1go_1d_10m", label: "1 Go Jour 10M", type: "data", duration_minutes: 1440, data_gb: 1, speed_mbps: 10, price_ar: 500, is_active: true, sort_order: 10 },
+  { key: "data_2go_1d_10m", label: "2 Go Jour 10M", type: "data", duration_minutes: 1440, data_gb: 2, speed_mbps: 10, price_ar: 1000, is_active: true, sort_order: 11 },
+  { key: "data_5go_3d_10m", label: "5 Go 3 Jours 10M", type: "data", duration_minutes: 4320, data_gb: 5, speed_mbps: 10, price_ar: 2500, is_active: true, sort_order: 12 },
+  { key: "data_10go_7d_10m", label: "10 Go Semaine 10M", type: "data", duration_minutes: 10080, data_gb: 10, speed_mbps: 10, price_ar: 5000, is_active: true, sort_order: 13 },
+  { key: "data_20go_7d_10m", label: "20 Go Semaine 10M", type: "data", duration_minutes: 10080, data_gb: 20, speed_mbps: 10, price_ar: 8000, is_active: true, sort_order: 14 },
+  { key: "data_50go_30d_10m", label: "50 Go Mois 10M", type: "data", duration_minutes: 43200, data_gb: 50, speed_mbps: 10, price_ar: 25000, is_active: true, sort_order: 15 },
+  { key: "data_70go_30d_10m", label: "70 Go Mois 10M", type: "data", duration_minutes: 43200, data_gb: 70, speed_mbps: 10, price_ar: 32000, is_active: true, sort_order: 16 },
+  { key: "data_100go_30d_10m", label: "100 Go Mois 10M", type: "data", duration_minutes: 43200, data_gb: 100, speed_mbps: 10, price_ar: 40000, is_active: true, sort_order: 17 },
 ]);
 
 const PLAN_DUPLICATE_MESSAGE = "Ce forfait existe déjà dans ce pool. Modifiez la durée, les données ou le débit avant de continuer.";
@@ -17027,9 +17039,13 @@ function normalizePlanSimulatorSettingsFromKeyValueRows(rows = []) {
   return settings;
 }
 
-function normalizePlanSimulatorSettingsObject(obj = {}) {
-  const settings = { ...PLAN_SIMULATOR_DEFAULT_SETTINGS };
-  for (const key of Object.keys(settings)) {
+function normalizePlanSimulatorSettingsObject(obj = {}, baseSettings = PLAN_SIMULATOR_DEFAULT_SETTINGS) {
+  const settings = {};
+  for (const key of Object.keys(PLAN_SIMULATOR_DEFAULT_SETTINGS)) {
+    const baseValue = Object.prototype.hasOwnProperty.call(baseSettings || {}, key)
+      ? baseSettings[key]
+      : PLAN_SIMULATOR_DEFAULT_SETTINGS[key];
+    settings[key] = normalizePlanSimulatorSettingValue(key, baseValue);
     if (Object.prototype.hasOwnProperty.call(obj || {}, key)) {
       settings[key] = normalizePlanSimulatorSettingValue(key, obj[key]);
     }
@@ -17081,7 +17097,7 @@ function serializePlanSimulatorReference(row) {
   };
 }
 
-async function getPlanSimulatorConfig() {
+async function getPlanSimulatorConfig({ includeInactiveReferences = false } = {}) {
   let settings = { ...PLAN_SIMULATOR_DEFAULT_SETTINGS };
   let references = PLAN_SIMULATOR_DEFAULT_REFERENCES.map((r) => ({ ...r }));
   const source = { settings: "defaults", references: "defaults" };
@@ -17101,16 +17117,17 @@ async function getPlanSimulatorConfig() {
   } catch (_) {}
 
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from("plan_simulator_references")
-      .select("key,label,type,duration_minutes,data_gb,speed_mbps,price_ar,is_active,sort_order")
-      .eq("is_active", true)
-      .order("sort_order", { ascending: true });
+      .select("key,label,type,duration_minutes,data_gb,speed_mbps,price_ar,is_active,sort_order");
+
+    if (!includeInactiveReferences) query = query.eq("is_active", true);
+    const { data, error } = await query.order("sort_order", { ascending: true });
 
     if (!error && Array.isArray(data) && data.length) {
       const rows = data.map(normalizePlanSimulatorReferenceRow).filter(Boolean);
       if (rows.length) {
-        references = rows;
+        references = includeInactiveReferences ? rows : rows.filter((r) => r.is_active !== false);
         source.references = "db";
       }
     }
@@ -17154,7 +17171,7 @@ function findExactPlanSimulatorReference({ target, references }) {
 }
 
 function weightedPlanSimulatorReferencePrice({ target, references }) {
-  const refs = (references || []).filter((r) => r.type === target.type && Number(r.price_ar) > 0);
+  const refs = (references || []).filter((r) => r.is_active !== false && r.type === target.type && Number(r.price_ar) > 0);
   if (!refs.length) return null;
 
   let weighted = 0;
@@ -17197,7 +17214,7 @@ function weightedPlanSimulatorReferencePrice({ target, references }) {
 function calculateSuggestedPlanPrice({ type, data_gb, duration_minutes, speed_mbps, settings, references }) {
   const target = { type, data_gb, duration_minutes, speed_mbps };
   const tolerancePct = clampPlanSimulatorNumber(settings?.price_tolerance_pct, 0, 100, 20);
-  const minimumAcceptedPriceAr = Math.max(0, Math.round(Number(settings?.minimum_price_ar ?? 400) || 400));
+  const minimumAcceptedPriceAr = Math.max(0, Math.round(Number(settings?.minimum_price_ar ?? PLAN_SIMULATOR_DEFAULT_SETTINGS.minimum_price_ar) || PLAN_SIMULATOR_DEFAULT_SETTINGS.minimum_price_ar));
 
   // Exact reference rule:
   // If the requested technical plan exactly matches a configured pricing reference,
@@ -17244,7 +17261,7 @@ function validatePlanSimulatorInput({ type, data_gb, duration_minutes, speed_mbp
 
   if (errors.length) return { status: "blocked", errors, warnings };
 
-  const maxDurationMinutes = Number(settings.max_duration_days || 30) * 1440;
+  const maxDurationMinutes = Number(settings.max_duration_days || PLAN_SIMULATOR_DEFAULT_SETTINGS.max_duration_days) * 1440;
   if (duration_minutes > maxDurationMinutes) {
     errors.push({
       code: "duration_above_limit",
@@ -17252,14 +17269,23 @@ function validatePlanSimulatorInput({ type, data_gb, duration_minutes, speed_mbp
     });
   }
 
-  if (speed_mbps > Number(settings.max_speed_mbps || 20)) {
+  if (speed_mbps > Number(settings.max_speed_mbps || PLAN_SIMULATOR_DEFAULT_SETTINGS.max_speed_mbps)) {
     errors.push({
       code: "speed_above_limit",
       message: `Débit trop élevé. Maximum actuel : ${settings.max_speed_mbps} Mbps.`,
     });
   }
 
-  if (type === "data" && data_gb > Number(settings.max_data_gb || 500)) {
+  const allowedSpeeds = normalizePlanSimulatorSettingValue("allowed_speeds_mbps", settings.allowed_speeds_mbps);
+  if (Array.isArray(allowedSpeeds) && allowedSpeeds.length && !allowedSpeeds.some((v) => Math.abs(Number(v) - Number(speed_mbps)) < 0.001)) {
+    errors.push({
+      code: "speed_not_allowed",
+      message: `Débit non autorisé. Choisissez : ${allowedSpeeds.join(", ")} Mbps.`,
+      allowed_speeds_mbps: allowedSpeeds,
+    });
+  }
+
+  if (type === "data" && data_gb > Number(settings.max_data_gb || PLAN_SIMULATOR_DEFAULT_SETTINGS.max_data_gb)) {
     errors.push({
       code: "data_above_limit",
       message: `Volume de données trop élevé. Maximum actuel : ${settings.max_data_gb} Go.`,
@@ -17384,18 +17410,42 @@ function publicPlanSimulatorSettings(settings = {}) {
   };
 }
 
-function validatePlanSimulatorConfigPayload(body = {}) {
+function validatePlanSimulatorConfigPayload(body = {}, currentSettings = PLAN_SIMULATOR_DEFAULT_SETTINGS) {
   const incomingSettings = body.settings && typeof body.settings === "object" ? body.settings : {};
-  const settings = normalizePlanSimulatorSettingsObject(incomingSettings);
+  const settings = normalizePlanSimulatorSettingsObject(incomingSettings, currentSettings);
 
   const refsRaw = Array.isArray(body.references) ? body.references : null;
   let references = null;
   if (refsRaw) {
-    references = refsRaw.map(normalizePlanSimulatorReferenceRow).filter(Boolean);
+    references = refsRaw.map(normalizePlanSimulatorReferenceRow);
     if (!references.length) {
       const err = new Error("references_required");
       err.status = 400;
       throw err;
+    }
+    if (references.some((r) => !r)) {
+      const err = new Error("reference_invalid");
+      err.status = 400;
+      throw err;
+    }
+
+    const keys = new Set();
+    const technicalKeys = new Set();
+    for (const ref of references) {
+      if (keys.has(ref.key)) {
+        const err = new Error("reference_key_duplicate");
+        err.status = 400;
+        throw err;
+      }
+      keys.add(ref.key);
+
+      const technicalKey = [ref.type, ref.duration_minutes, ref.type === "data" ? ref.data_gb : "unlimited", ref.speed_mbps].join("|");
+      if (technicalKeys.has(technicalKey)) {
+        const err = new Error("reference_technical_duplicate");
+        err.status = 400;
+        throw err;
+      }
+      technicalKeys.add(technicalKey);
     }
 
     const activeRefs = references.filter((r) => r.is_active !== false);
@@ -17406,6 +17456,25 @@ function validatePlanSimulatorConfigPayload(body = {}) {
       err.status = 400;
       throw err;
     }
+
+    const allowedSpeeds = normalizePlanSimulatorSettingValue("allowed_speeds_mbps", settings.allowed_speeds_mbps);
+    for (const ref of activeRefs) {
+      if (ref.duration_minutes > Number(settings.max_duration_days) * 1440) {
+        const err = new Error("reference_duration_above_limit");
+        err.status = 400;
+        throw err;
+      }
+      if (ref.speed_mbps > Number(settings.max_speed_mbps) || !allowedSpeeds.some((v) => Math.abs(Number(v) - Number(ref.speed_mbps)) < 0.001)) {
+        const err = new Error("reference_speed_not_allowed");
+        err.status = 400;
+        throw err;
+      }
+      if (ref.type === "data" && ref.data_gb > Number(settings.max_data_gb)) {
+        const err = new Error("reference_data_above_limit");
+        err.status = 400;
+        throw err;
+      }
+    }
   }
 
   return { settings, references };
@@ -17415,7 +17484,7 @@ function validatePlanSimulatorConfigPayload(body = {}) {
 // Superadmin only. Returns full calculator settings and pricing references.
 app.get("/api/admin/plan-simulator/config", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
-    const cfg = await getPlanSimulatorConfig();
+    const cfg = await getPlanSimulatorConfig({ includeInactiveReferences: true });
     const references = (cfg.references || [])
       .map(serializePlanSimulatorReference)
       .filter(Boolean)
@@ -17439,7 +17508,8 @@ app.put("/api/admin/plan-simulator/config", requireAdmin, requireSuperadmin, asy
   try {
     if (!supabase) return res.status(500).json({ ok: false, error: "supabase_not_configured" });
 
-    const { settings, references } = validatePlanSimulatorConfigPayload(req.body || {});
+    const currentCfg = await getPlanSimulatorConfig({ includeInactiveReferences: true });
+    const { settings, references } = validatePlanSimulatorConfigPayload(req.body || {}, currentCfg.settings);
     const nowIso = new Date().toISOString();
     const updatedBy = req.admin?.email || req.admin?.id || null;
 
@@ -17484,7 +17554,7 @@ app.put("/api/admin/plan-simulator/config", requireAdmin, requireSuperadmin, asy
       }
     }
 
-    const cfg = await getPlanSimulatorConfig();
+    const cfg = await getPlanSimulatorConfig({ includeInactiveReferences: true });
     return res.json({
       ok: true,
       settings: publicPlanSimulatorSettings(cfg.settings),
