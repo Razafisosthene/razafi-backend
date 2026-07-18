@@ -261,80 +261,81 @@
         </div>
       </div>
 
-      <!-- Modal plan -->
-      <div id="modal" class="modal" style="display:none;">
-        <div class="card modal-card rz-plans-modal-card" style="max-width: 680px;">
-          <h2 id="modalTitle" class="rz-modal-title">Nouveau plan</h2>
-          <p class="rz-modal-sub">Renseignez les informations du forfait. Les réglages seront appliqués selon le pool MikroTik sélectionné.</p>
+    </div>
+  </div>
 
-          <form id="form">
-            <div class="rz-form-grid">
-              <input id="f_name" class="full" placeholder="Nom du plan" required />
-              <input id="f_price_ar" class="full" placeholder="Prix (Ar)" required inputmode="numeric" />
-              <input id="f_max_devices" type="hidden" value="1" />
+  <!-- Modal plan: body-level so position:fixed uses the viewport -->
+  <div id="modal" class="modal" style="display:none;">
+    <div class="card modal-card rz-plans-modal-card" style="max-width: 680px;">
+      <h2 id="modalTitle" class="rz-modal-title">Nouveau plan</h2>
+      <p class="rz-modal-sub">Renseignez les informations du forfait. Les réglages seront appliqués selon le pool MikroTik sélectionné.</p>
 
-              <div class="form-row full" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-                <input id="f_duration_value" placeholder="Durée" required style="width:140px; min-width:140px; flex:0 0 140px;" inputmode="numeric" />
-                <select id="f_duration_unit" style="width:auto; flex:1 1 160px;">
-                  <option value="minutes">minutes</option>
-                  <option value="hours">heures</option>
-                  <option value="days">jours</option>
-                </select>
-              </div>
+      <form id="form">
+        <div class="rz-form-grid">
+          <input id="f_name" class="full" placeholder="Nom du plan" required />
+          <input id="f_price_ar" class="full" placeholder="Prix (Ar)" required inputmode="numeric" />
+          <input id="f_max_devices" type="hidden" value="1" />
 
-              <div class="form-row full" id="poolRow" style="display:flex; margin-top:2px;">
-                <select id="f_pool_id" style="flex:1;">
-                  <option value="">Sélectionner un pool…</option>
-                </select>
-              </div>
-              <div id="poolHint" class="rz-form-hint full">Obligatoire pour les plans MikroTik. Le pool/routeur applique ensuite l’accès.</div>
+          <div class="form-row full" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <input id="f_duration_value" placeholder="Durée" required style="width:140px; min-width:140px; flex:0 0 140px;" inputmode="numeric" />
+            <select id="f_duration_unit" style="width:auto; flex:1 1 160px;">
+              <option value="minutes">minutes</option>
+              <option value="hours">heures</option>
+              <option value="days">jours</option>
+            </select>
+          </div>
 
-              <label class="check-row full">
-                <input id="f_unlimited_data" type="checkbox" />
-                <span>Data illimitée</span>
-              </label>
+          <div class="form-row full" id="poolRow" style="display:flex; margin-top:2px;">
+            <select id="f_pool_id" style="flex:1;">
+              <option value="">Sélectionner un pool…</option>
+            </select>
+          </div>
+          <div id="poolHint" class="rz-form-hint full">Obligatoire pour les plans MikroTik. Le pool/routeur applique ensuite l’accès.</div>
 
-              <input id="f_data_gb" placeholder="Data (Go)" required inputmode="decimal" />
-              <input id="f_mikrotik_rate_limit" placeholder="Vitesse max (ex : 3M/3M)" />
-              <div class="rz-form-hint full">Optionnel. Exemple : 3M/3M. Si vide, le fallback d’urgence reste utilisé.</div>
+          <label class="check-row full">
+            <input id="f_unlimited_data" type="checkbox" />
+            <span>Data illimitée</span>
+          </label>
 
-              <input id="f_sort_order" placeholder="Ordre d’affichage" inputmode="numeric" />
-              <input id="f_sales_limit" placeholder="Limite de ventes" inputmode="numeric" />
-              <div class="rz-form-hint full">Optionnel. Compte les vouchers pending + active pour ce plan/pool. Vide = aucune limite.</div>
+          <input id="f_data_gb" placeholder="Data (Go)" required inputmode="decimal" />
+          <input id="f_mikrotik_rate_limit" placeholder="Vitesse max (ex : 3M/3M)" />
+          <div class="rz-form-hint full">Optionnel. Exemple : 3M/3M. Si vide, le fallback d’urgence reste utilisé.</div>
 
-              <label class="check-row full">
-                <input id="f_auto_hide_when_limit_reached" type="checkbox" />
-                <span>Masquer automatiquement quand la limite est atteinte</span>
-              </label>
+          <input id="f_sort_order" placeholder="Ordre d’affichage" inputmode="numeric" />
+          <input id="f_sales_limit" placeholder="Limite de ventes" inputmode="numeric" />
+          <div class="rz-form-hint full">Optionnel. Compte les vouchers pending + active pour ce plan/pool. Vide = aucune limite.</div>
 
-              <label class="check-row">
-                <input id="f_is_visible" type="checkbox" checked />
-                <span>Visible sur le portail</span>
-              </label>
+          <label class="check-row full">
+            <input id="f_auto_hide_when_limit_reached" type="checkbox" />
+            <span>Masquer automatiquement quand la limite est atteinte</span>
+          </label>
 
-              <label class="check-row">
-                <input id="f_is_active" type="checkbox" checked />
-                <span>Actif</span>
-              </label>
-            </div>
+          <label class="check-row">
+            <input id="f_is_visible" type="checkbox" checked />
+            <span>Visible sur le portail</span>
+          </label>
 
-            <div id="formError" class="error" style="margin:8px 0;"></div>
-
-            <div class="rz-modal-action-strip">
-              <div class="left-actions">
-                <button id="modalDeleteBtn" type="button" class="filter-btn danger" style="display:none;">Supprimer</button>
-                <button id="modalToggleBtn" type="button" class="filter-btn" style="display:none;">Désactiver</button>
-                <button id="modalDuplicateBtn" type="button" class="filter-btn" style="display:none;">Dupliquer</button>
-              </div>
-              <div class="right-actions">
-                <button id="cancelBtn" type="button" class="filter-btn">Annuler</button>
-                <button id="saveBtn" type="submit" class="filter-btn primary">Enregistrer</button>
-              </div>
-              <div id="modalActionNote" class="rz-modal-danger-note" style="display:none;"></div>
-            </div>
-          </form>
+          <label class="check-row">
+            <input id="f_is_active" type="checkbox" checked />
+            <span>Actif</span>
+          </label>
         </div>
-      </div>
+
+        <div id="formError" class="error" style="margin:8px 0;"></div>
+
+        <div class="rz-modal-action-strip">
+          <div class="left-actions">
+            <button id="modalDeleteBtn" type="button" class="filter-btn danger" style="display:none;">Supprimer</button>
+            <button id="modalToggleBtn" type="button" class="filter-btn" style="display:none;">Désactiver</button>
+            <button id="modalDuplicateBtn" type="button" class="filter-btn" style="display:none;">Dupliquer</button>
+          </div>
+          <div class="right-actions">
+            <button id="cancelBtn" type="button" class="filter-btn">Annuler</button>
+            <button id="saveBtn" type="submit" class="filter-btn primary">Enregistrer</button>
+          </div>
+          <div id="modalActionNote" class="rz-modal-danger-note" style="display:none;"></div>
+        </div>
+      </form>
     </div>
   </div>
 
