@@ -540,6 +540,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function closeModal() {
+    closeDuplicateModal();
     modal.style.display = "none";
     modal.classList.remove("rz-plans-modal-open");
     document.body.classList.remove("rz-plans-modal-open");
@@ -805,7 +806,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   function closeDuplicateModal() {
-    if (duplicateModal) duplicateModal.style.display = "none";
+    if (duplicateModal) {
+      duplicateModal.style.display = "none";
+      duplicateModal.classList.remove("rz-duplicate-modal-open");
+    }
+    document.body.classList.remove("rz-duplicate-modal-open");
     if (duplicateError) duplicateError.textContent = "";
     if (duplicatePoolList) duplicatePoolList.innerHTML = "";
   }
@@ -878,9 +883,13 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (e.target === duplicateModal) finish([]);
       };
 
+      document.body.classList.add("rz-duplicate-modal-open");
+      duplicateModal.classList.add("rz-duplicate-modal-open");
       duplicateModal.style.display = "flex";
       try {
         duplicateModal.scrollTop = 0;
+        const card = duplicateModal.querySelector(".modal-card");
+        if (card) card.scrollTop = 0;
         const firstInput = duplicatePoolList.querySelector('input[type="checkbox"]');
         if (firstInput) firstInput.focus({ preventScroll: true });
       } catch (_) {}

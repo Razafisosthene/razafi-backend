@@ -2854,6 +2854,51 @@ body.rz-plans-modal-open .rz-bottom-nav{
   }
 }
 
+/* ================================================================== */
+/* RAZAFI Plans duplicate modal layering fix                           */
+/* Scope: Plans duplicate modal only. Keeps business logic unchanged.  */
+/* ================================================================== */
+body.rz-duplicate-modal-open{
+  overflow: hidden !important;
+}
+
+body.rz-duplicate-modal-open .rz-bottom-nav{
+  display: none !important;
+}
+
+#duplicateModal.modal,
+#duplicateModal.rz-duplicate-modal{
+  align-items: center !important;
+  justify-content: center !important;
+  padding-top: max(12px, env(safe-area-inset-top)) !important;
+  padding-bottom: max(12px, env(safe-area-inset-bottom)) !important;
+  overflow: hidden !important;
+  overscroll-behavior: contain !important;
+  z-index: 2147483600 !important;
+}
+
+#duplicateModal .rz-duplicate-card{
+  margin: 0 auto !important;
+  width: min(460px, calc(100vw - 24px)) !important;
+  max-width: min(460px, calc(100vw - 24px)) !important;
+  max-height: calc(100dvh - 24px) !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain !important;
+  -webkit-overflow-scrolling: touch !important;
+}
+
+@media (max-width: 700px){
+  #duplicateModal.modal,
+  #duplicateModal.rz-duplicate-modal{
+    padding: 8px !important;
+  }
+
+  #duplicateModal .rz-duplicate-card{
+    width: calc(100vw - 16px) !important;
+    max-width: calc(100vw - 16px) !important;
+    max-height: calc(100dvh - 16px) !important;
+  }
+}
 
 
 /* ================================================================== */
