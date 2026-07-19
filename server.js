@@ -13750,14 +13750,15 @@ app.post("/api/admin/revenue/payouts/create", requireAdmin, requireSuperadmin, a
 
 
 // POST /api/admin/revenue/payouts/auto-create
-// Auto-create draft owner payouts from paid transactions not yet included in any owner payout.
+// P2-A1: délègue la création automatique au RPC PostgreSQL transactionnel.
 // Safe rules:
 // - Superadmin only
-// - MikroTik pools only (via getShareTransactionsCore)
+// - MikroTik pools only
 // - Draft only: admin still manually clicks "Marquer payé" after real payout
-// - One draft payout per pool/owner group
-// - Existing payout items are excluded to avoid double payout
-// - Final DB re-check before insert, so repeated clicks/race conditions cannot duplicate payouts
+// - Exhaustive NOT EXISTS selection, no 5k/20k scan horizon
+// - Fixed batches of 1,000 transactions per payout, oldest first
+// - Atomic header + items + totals; advisory lock + UNIQUE(transaction_id)
+// - Cancelled payout items remain attached and therefore locked
 app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
@@ -13765,259 +13766,76 @@ app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadm
     const from = normalizeDateInput(req.body?.from ?? req.query?.from);
     const to = normalizeDateInput(req.body?.to ?? req.query?.to);
     const search = String(req.body?.search ?? req.query?.search ?? "").trim();
-    const note = String(req.body?.note ?? req.query?.note ?? "Auto payout draft").trim() || "Auto payout draft";
-
+    const note = String(req.body?.note ?? req.query?.note ?? "Reversement auto brouillon").trim()
+      || "Reversement auto brouillon";
     const requestedPoolId = String(req.body?.pool_id ?? req.query?.pool_id ?? "").trim();
 
-    const pageLimit = 500;
-    const maxScanRaw = Number(req.body?.max_scan ?? req.query?.max_scan ?? 5000);
-    const maxScan = Number.isFinite(maxScanRaw)
-      ? Math.min(Math.max(Math.floor(maxScanRaw), pageLimit), 20000)
-      : 5000;
-
-    let offset = 0;
-    let scanned_count = 0;
-    const unpaidTxById = new Map();
-
-    while (offset < maxScan) {
-      // Fetch source rows first, then filter unpaid locally.
-      // This prevents PostgREST 416 "Requested range not satisfiable".
-      const { items: pageItems } = await getShareTransactionsCore({
-        admin: req.admin,
-        from,
-        to,
-        search,
-        limit: pageLimit,
-        offset,
-        unpaidOnly: false,
-      });
-
-      const sourceItems = Array.isArray(pageItems) ? pageItems : [];
-      scanned_count += sourceItems.length;
-
-      for (const row of sourceItems) {
-        const txId = String(row?.transaction_id || "").trim();
-        if (!txId) continue;
-
-        if (requestedPoolId && String(row?.pool_id || "").trim() !== requestedPoolId) continue;
-
-        // A transaction is eligible only if getShareTransactionsCore sees no payout item for it.
-        if (String(row?.payout_status || "unpaid").toLowerCase() !== "unpaid") continue;
-        if (row?.payout_id) continue;
-
-        unpaidTxById.set(txId, row);
-      }
-
-      if (sourceItems.length < pageLimit) break;
-      offset += pageLimit;
+    // P2-A1: le nouveau RPC attend un UUID typé. Refuser proprement une valeur
+    // invalide plutôt que de laisser PostgREST renvoyer une erreur de cast opaque.
+    if (requestedPoolId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestedPoolId)) {
+      return res.status(400).json({ error: "pool_id_invalid" });
     }
 
-    let unpaidItems = Array.from(unpaidTxById.values());
+    const { data, error } = await supabase.rpc("fn_owner_payouts_auto_create", {
+      p_from: from || null,
+      p_to: to || null,
+      p_search: search || null,
+      p_pool_id: requestedPoolId || null,
+      p_note: note,
+      p_created_by: req.admin?.id || null,
+    });
 
-    // 🔒 Final DB re-check before grouping/insert.
-    // This protects against double-clicks or another admin creating payouts between the scan and insert.
-    const candidateTxIds = unpaidItems
-      .map((r) => String(r?.transaction_id || "").trim())
-      .filter(Boolean);
-
-    let alreadyAttachedSet = new Set();
-    if (candidateTxIds.length) {
-      const { data: alreadyRows, error: alreadyErr } = await supabase
-        .from("owner_payout_items")
-        .select("transaction_id,payout_id")
-        .in("transaction_id", candidateTxIds);
-
-      if (alreadyErr) throw alreadyErr;
-
-      alreadyAttachedSet = new Set(
-        (alreadyRows || [])
-          .map((r) => String(r?.transaction_id || "").trim())
-          .filter(Boolean)
-      );
-
-      if (alreadyAttachedSet.size) {
-        unpaidItems = unpaidItems.filter((r) => {
-          const txId = String(r?.transaction_id || "").trim();
-          return txId && !alreadyAttachedSet.has(txId);
-        });
-      }
-    }
-
-    if (!unpaidItems.length) {
-      return res.json({
-        ok: true,
-        created_count: 0,
-        transaction_count_created: 0,
-        owner_total_created_ar: 0,
-        created: [],
-        skipped: alreadyAttachedSet.size
-          ? [{ reason: "transactions_already_attached", transaction_count: alreadyAttachedSet.size }]
-          : [],
-        skipped_count: alreadyAttachedSet.size ? 1 : 0,
-        message: "no_unpaid_transactions",
-        scanned_count,
-        scanned_limit: maxScan,
-        filters: {
-          from,
-          to,
-          search,
-          pool_id: requestedPoolId || null,
-        },
-        system: "mikrotik",
+    if (error) {
+      console.error("ADMIN REVENUE AUTO PAYOUT RPC ERROR", error);
+      return res.status(500).json({
+        error: error.message || "auto_payout_rpc_failed",
+        details: error.details || null,
+        hint: error.hint || null,
       });
     }
 
-    const groups = new Map();
-    for (const row of unpaidItems) {
-      const poolId = String(row?.pool_id || "").trim();
-      if (!poolId) continue;
-      if (!groups.has(poolId)) groups.set(poolId, []);
-      groups.get(poolId).push(row);
+    let result = data;
+    if (Array.isArray(result)) result = result[0] || null;
+    if (typeof result === "string") {
+      try { result = JSON.parse(result); } catch (_) { /* leave as-is */ }
+    }
+    if (!result || typeof result !== "object" || Array.isArray(result)) {
+      return res.status(500).json({ error: "auto_payout_invalid_rpc_response" });
     }
 
-    const created = [];
-    const skipped = [];
-
-    for (const [pool_id, initialRows] of groups.entries()) {
-      try {
-        if (!initialRows.length) continue;
-
-        // 🔒 Re-check this group immediately before inserting its payout items.
-        // This narrows the race window as much as possible without a DB transaction/RPC.
-        const groupTxIds = initialRows
-          .map((r) => String(r?.transaction_id || "").trim())
-          .filter(Boolean);
-
-        const { data: groupAttachedRows, error: groupAttachedErr } = groupTxIds.length
-          ? await supabase
-              .from("owner_payout_items")
-              .select("transaction_id,payout_id")
-              .in("transaction_id", groupTxIds)
-          : { data: [], error: null };
-
-        if (groupAttachedErr) throw groupAttachedErr;
-
-        const groupAttachedSet = new Set(
-          (groupAttachedRows || [])
-            .map((r) => String(r?.transaction_id || "").trim())
-            .filter(Boolean)
-        );
-
-        const rows = initialRows.filter((r) => {
-          const txId = String(r?.transaction_id || "").trim();
-          return txId && !groupAttachedSet.has(txId);
-        });
-
-        if (!rows.length) {
-          skipped.push({
-            pool_id,
-            transaction_count: initialRows.length,
-            error: "all_transactions_already_attached",
-          });
-          continue;
-        }
-
-        const admin_user_id = await getSinglePoolOwnerIdOrThrow(pool_id);
-
-        const gross_total_ar = roundMoney2(rows.reduce((sum, r) => sum + Number(r.gross_amount_ar || 0), 0));
-        const platform_total_ar = roundMoney2(rows.reduce((sum, r) => sum + Number(r.platform_amount_ar || 0), 0));
-        const owner_total_ar = roundMoney2(rows.reduce((sum, r) => sum + Number(r.owner_amount_ar || 0), 0));
-
-        const txDates = rows
-          .map((r) => r?.transaction_created_at ? new Date(r.transaction_created_at).getTime() : NaN)
-          .filter((n) => Number.isFinite(n));
-
-        const period_from = txDates.length ? new Date(Math.min(...txDates)).toISOString() : null;
-        const period_to = txDates.length ? new Date(Math.max(...txDates)).toISOString() : null;
-
-        const { data: payout, error: payoutErr } = await supabase
-          .from("owner_payouts")
-          .insert({
-            pool_id,
-            admin_user_id,
-            period_from,
-            period_to,
-            gross_total_ar,
-            platform_total_ar,
-            owner_total_ar,
-            status: "draft",
-            receipt_number: null,
-            note,
-            paid_at: null,
-            created_by: req.admin.id,
-            paid_by: null,
-          })
-          .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by")
-          .single();
-
-        if (payoutErr) throw payoutErr;
-
-        const payoutItemsRows = rows.map((r) => ({
-          payout_id: payout.id,
-          transaction_id: r.transaction_id,
-          voucher_session_id: r.voucher_session_id || null,
-          pool_id: r.pool_id,
-          gross_amount_ar: r.gross_amount_ar,
-          platform_share_pct: r.platform_share_pct,
-          platform_amount_ar: r.platform_amount_ar,
-          owner_share_pct: r.owner_share_pct,
-          owner_amount_ar: r.owner_amount_ar,
-          transaction_created_at: r.transaction_created_at || null,
-        }));
-
-        const { error: itemsErr } = await supabase
-          .from("owner_payout_items")
-          .insert(payoutItemsRows);
-
-        if (itemsErr) {
-          // Roll back the payout header if item insert fails.
-          await supabase.from("owner_payouts").delete().eq("id", payout.id);
-          throw itemsErr;
-        }
-
-        created.push({
-          ...payout,
-          pool_name: rows[0]?.pool_name || null,
-          owner_email: null,
-          transaction_count: rows.length,
-          transaction_ids: rows.map((r) => r.transaction_id).filter(Boolean),
-          system: "mikrotik",
-        });
-
-        if (groupAttachedSet.size) {
-          skipped.push({
-            pool_id,
-            transaction_count: groupAttachedSet.size,
-            error: "some_transactions_already_attached",
-          });
-        }
-      } catch (groupErr) {
-        skipped.push({
-          pool_id,
-          transaction_count: initialRows.length,
-          error: groupErr?.message || "group_failed",
-          details: groupErr?.details || null,
-        });
-      }
-    }
-
-    const transaction_count_created = created.reduce((sum, p) => sum + Number(p?.transaction_count || 0), 0);
-    const owner_total_created_ar = roundMoney2(created.reduce((sum, p) => sum + Number(p?.owner_total_ar || 0), 0));
+    const allowedOutcomes = new Set(["created", "nothing_to_create", "partial"]);
+    const outcome = allowedOutcomes.has(String(result.outcome || ""))
+      ? String(result.outcome)
+      : "partial";
+    const created = Array.isArray(result.created) ? result.created : [];
+    const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+    const skippedPoolCount = Math.max(0, Number(result.skipped_pool_count || 0) || 0);
+    const alreadyAttachedCount = Math.max(0, Number(result.already_attached_count || 0) || 0);
 
     return res.json({
       ok: true,
-      created_count: created.length,
-      transaction_count_created,
-      owner_total_created_ar,
-      skipped_count: skipped.length,
+      outcome,
+      created_count: Math.max(0, Number(result.created_count || 0) || 0),
+      eligible_transaction_count: Math.max(0, Number(result.eligible_transaction_count || 0) || 0),
+      transaction_count_created: Math.max(0, Number(result.transaction_count_created || 0) || 0),
+      gross_total_created_ar: roundMoney2(result.gross_total_created_ar || 0),
+      platform_total_created_ar: roundMoney2(result.platform_total_created_ar || 0),
+      owner_total_created_ar: roundMoney2(result.owner_total_created_ar || 0),
+      already_attached_count: alreadyAttachedCount,
+      skipped_pool_count: skippedPoolCount,
+      skipped_transaction_count: Math.max(0, Number(result.skipped_transaction_count || 0) || 0),
+      // Compatibilité avec l'ancien frontend/contrat : nombre de groupes de skip,
+      // sans réintroduire de scan ou de sommation de pages côté serveur.
+      skipped_count: skippedPoolCount + (alreadyAttachedCount > 0 ? 1 : 0),
+      batch_size: Number(result.batch_size || 1000) || 1000,
+      scan_exhaustive: result.scan_exhaustive === true,
       created,
       skipped,
-      scanned_count,
-      scanned_limit: maxScan,
-      filters: {
-        from,
-        to,
-        search,
+      message: outcome === "nothing_to_create" ? "no_unpaid_transactions" : null,
+      filters: result.filters || {
+        from: from || null,
+        to: to || null,
+        search: search || null,
         pool_id: requestedPoolId || null,
       },
       system: "mikrotik",
@@ -14030,7 +13848,6 @@ app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadm
     });
   }
 });
-
 
 // POST /api/admin/revenue/payouts/:id/mark-paid
 app.post("/api/admin/revenue/payouts/:id/mark-paid", requireAdmin, requireSuperadmin, async (req, res) => {
