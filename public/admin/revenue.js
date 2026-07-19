@@ -490,6 +490,54 @@ function wireFilters() {
   };
 }
 
+function buildAutoPayoutResultMessage(result) {
+  const outcome = String(result?.outcome || "partial");
+  const createdCount = Math.max(0, Number(result?.created_count || 0) || 0);
+  const transactionCount = Math.max(0, Number(result?.transaction_count_created || 0) || 0);
+  const skippedPoolCount = Math.max(0, Number(result?.skipped_pool_count || 0) || 0);
+  const skippedTransactionCount = Math.max(0, Number(result?.skipped_transaction_count || 0) || 0);
+  const alreadyAttachedCount = Math.max(0, Number(result?.already_attached_count || 0) || 0);
+  const ownerTotal = Number(result?.owner_total_created_ar || 0) || 0;
+  const grossTotal = Number(result?.gross_total_created_ar || 0) || 0;
+
+  const lines = [];
+  if (outcome === "created") {
+    lines.push("Reversements automatiques créés ✅");
+  } else if (outcome === "nothing_to_create") {
+    lines.push("Aucun reversement à créer ✅");
+  } else {
+    lines.push("Création partielle des reversements ⚠️");
+  }
+
+  if (createdCount > 0) {
+    lines.push(`Reversements créés : ${createdCount}`);
+    lines.push(`Transactions incluses : ${transactionCount}`);
+    lines.push(`Montant brut : ${fmtAr(grossTotal)}`);
+    lines.push(`Part propriétaire : ${fmtAr(ownerTotal)}`);
+  }
+
+  if (outcome === "nothing_to_create") {
+    lines.push("Aucune transaction payée non encore reversée au propriétaire n’a été trouvée.");
+  }
+
+  if (skippedPoolCount > 0) {
+    lines.push(`Pools ignorés : ${skippedPoolCount}`);
+    lines.push("Vérifiez que chaque pool concerné possède un propriétaire.");
+  }
+  if (skippedTransactionCount > 0) {
+    lines.push(`Transactions ignorées : ${skippedTransactionCount}`);
+  }
+  if (alreadyAttachedCount > 0) {
+    lines.push(`Transactions déjà rattachées pendant l’opération : ${alreadyAttachedCount}`);
+  }
+
+  if (result?.scan_exhaustive === true) {
+    lines.push("Sélection exhaustive : oui");
+  }
+
+  return lines.join("\n");
+}
+
 function wirePayoutActions() {
   byId("autoCreatePayoutBtn")?.addEventListener("click", async () => {
     if (!currentAdmin?.is_superadmin) return;
@@ -508,8 +556,8 @@ function wirePayoutActions() {
     if (body.to) filterText.push(`Jusqu'à: ${fmtDate(body.to)}`);
 
     const msg = filterText.length
-      ? `Créer automatiquement les reversements brouillons pour les transactions non encore payées avec ces filtres ?\n\n${filterText.join("\n")}`
-      : "Créer automatiquement les reversements brouillons pour toutes les transactions non encore payées ?";
+      ? `Créer automatiquement les reversements brouillons pour les transactions payées non encore reversées au propriétaire avec ces filtres ?\n\n${filterText.join("\n")}`
+      : "Créer automatiquement les reversements brouillons pour toutes les transactions payées non encore reversées au propriétaire ?";
 
     if (!confirm(msg)) return;
 
@@ -522,25 +570,13 @@ function wirePayoutActions() {
         btn.textContent = "Création...";
       }
 
-      const r = await fetchJSON("/api/admin/revenue/payouts/auto-create", {
+      const result = await fetchJSON("/api/admin/revenue/payouts/auto-create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
       });
 
-      const created = Number(r?.created_count || 0);
-      const skipped = Number(r?.skipped_count || 0);
-      const createdRows = Array.isArray(r?.created) ? r.created : [];
-      const createdTotal = createdRows.reduce((sum, p) => sum + Number(p?.owner_total_ar || 0), 0);
-
-      let alertMsg = `Reversements auto terminés ✅\nCréés: ${created}\nIgnorés: ${skipped}`;
-      if (createdRows.length) alertMsg += `\nPart propriétaire totale: ${fmtAr(createdTotal)}`;
-      if (r?.message === "no_unpaid_transactions") alertMsg += "\nAucune transaction impayée trouvée.";
-      if (skipped && Array.isArray(r?.skipped) && r.skipped.length) {
-        alertMsg += "\n\nCertains pools ont été ignorés. Vérifiez que chaque pool possède un propriétaire.";
-      }
-
-      alert(alertMsg);
+      alert(buildAutoPayoutResultMessage(result));
       selectedTxIds.clear();
       updateSelectionMeta();
       await loadAll();
