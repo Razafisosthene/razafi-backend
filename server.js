@@ -13500,7 +13500,7 @@ app.get("/api/admin/revenue/payouts", requireAdmin, async (req, res) => {
 
     let q = supabase
       .from("owner_payouts")
-      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by", { count: "exact" })
+      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by,payout_items:owner_payout_items(count)", { count: "exact" })
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
 
@@ -13545,16 +13545,25 @@ app.get("/api/admin/revenue/payouts", requireAdmin, async (req, res) => {
 
     const items = rows
       .filter((r) => !!poolMap[String(r?.pool_id || "")])
-      .map((r) => ({
-        ...r,
-        pool_name: cleanOptionalText(poolMap[String(r?.pool_id || "")]?.name, 120),
-        pool_display_name: buildPoolDisplayName(poolMap[String(r?.pool_id || "")] || {}),
-        pool_brand_name: cleanOptionalText(poolMap[String(r?.pool_id || "")]?.brand_name, 120),
-        pool_place: cleanOptionalText(poolMap[String(r?.pool_id || "")]?.name, 120),
-        pool_nas_id: cleanOptionalText(poolMap[String(r?.pool_id || "")]?.radius_nas_id, 120),
-        owner_email: ownerMap[String(r?.admin_user_id || "")]?.email || null,
-        system: "mikrotik",
-      }));
+      .map((r) => {
+        const payoutItemsAggregate = Array.isArray(r?.payout_items)
+          ? r.payout_items[0]
+          : r?.payout_items;
+        const itemsCount = Math.max(0, Number(payoutItemsAggregate?.count || 0) || 0);
+        const { payout_items: _payoutItemsAggregate, ...payout } = r;
+
+        return {
+          ...payout,
+          items_count: itemsCount,
+          pool_name: cleanOptionalText(poolMap[String(r?.pool_id || "")]?.name, 120),
+          pool_display_name: buildPoolDisplayName(poolMap[String(r?.pool_id || "")] || {}),
+          pool_brand_name: cleanOptionalText(poolMap[String(r?.pool_id || "")]?.brand_name, 120),
+          pool_place: cleanOptionalText(poolMap[String(r?.pool_id || "")]?.name, 120),
+          pool_nas_id: cleanOptionalText(poolMap[String(r?.pool_id || "")]?.radius_nas_id, 120),
+          owner_email: ownerMap[String(r?.admin_user_id || "")]?.email || null,
+          system: "mikrotik",
+        };
+      });
 
     return res.json({ items, total: count || 0, system: "mikrotik" });
   } catch (e) {
