@@ -45,6 +45,159 @@ function toSafeInt(v) {
   return Number.isFinite(+v) ? parseInt(v, 10) : 0;
 }
 
+// ===============================
+// P2-B1 — Admin search/input hardening
+// ===============================
+const ADMIN_SEARCH_MAX_CODEPOINTS = 80;
+const ADMIN_MAX_OFFSET = 1_000_000;
+const UUID_V1_TO_V5_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function makeRequestValidationError(code) {
+  const err = new Error(String(code || "invalid_request"));
+  err.httpStatus = 400;
+  err.publicCode = String(code || "invalid_request");
+  err.isRequestValidationError = true;
+  return err;
+}
+
+function sendRequestValidationError(res, err) {
+  if (!err?.isRequestValidationError) return false;
+  res.status(400).json({ error: err.publicCode || err.message || "invalid_request" });
+  return true;
+}
+
+function normalizeRequestText(raw) {
+  return String(raw ?? "")
+    .normalize("NFC")
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function readSingleTextValue(raw, name, opts = {}) {
+  const paramName = String(name || "value");
+  const invalidCode = String(opts.invalidCode || `${paramName}_invalid`);
+  const tooLongCode = String(opts.tooLongCode || `${paramName}_too_long`);
+  const defaultValue = opts.defaultValue ?? "";
+  const maxCodePoints = Number.isFinite(Number(opts.maxCodePoints))
+    ? Math.max(0, Math.floor(Number(opts.maxCodePoints)))
+    : null;
+
+  if (raw === undefined || raw === null) return defaultValue;
+  if (Array.isArray(raw) || (typeof raw === "object" && raw !== null)) {
+    throw makeRequestValidationError(invalidCode);
+  }
+  if (!["string", "number", "boolean", "bigint"].includes(typeof raw)) {
+    throw makeRequestValidationError(invalidCode);
+  }
+
+  const value = normalizeRequestText(raw);
+  if (maxCodePoints !== null && [...value].length > maxCodePoints) {
+    throw makeRequestValidationError(tooLongCode);
+  }
+  return value;
+}
+
+function readSingleTextParam(source, name, opts = {}) {
+  return readSingleTextValue(source?.[name], name, opts);
+}
+
+// PostgreSQL LIKE/ILIKE uses backslash as the default escape character.
+// Escape literal user wildcards before adding our own surrounding wildcards.
+function escapeLikeLiteral(value) {
+  return String(value ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/%/g, "\\%")
+    .replace(/_/g, "\\_")
+    .replace(/\*/g, "\\*");
+}
+
+// Values embedded in a raw PostgREST `.or(...)` expression must be quoted.
+// PostgREST quoted values escape a double quote and a backslash with backslash.
+function quotePostgrestValue(value) {
+  const escaped = String(value ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}
+
+function buildPostgrestIlikeContains(column, escapedLiteral) {
+  const safeColumn = String(column || "");
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(safeColumn)) {
+    throw new Error("unsafe_postgrest_column");
+  }
+  return `${safeColumn}.ilike.${quotePostgrestValue(`*${String(escapedLiteral ?? "")}*`)}`;
+}
+
+function readStrictUnsignedInteger(raw, name, defaultValue) {
+  if (raw === undefined || raw === null) return BigInt(defaultValue);
+  if (Array.isArray(raw) || (typeof raw === "object" && raw !== null)) {
+    throw makeRequestValidationError(`${name}_invalid`);
+  }
+  const value = String(raw);
+  if (!/^[0-9]+$/.test(value)) {
+    throw makeRequestValidationError(`${name}_invalid`);
+  }
+  try {
+    return BigInt(value);
+  } catch (_) {
+    throw makeRequestValidationError(`${name}_invalid`);
+  }
+}
+
+function readStrictPagination(source, opts = {}) {
+  const defaultLimit = Math.max(1, Math.floor(Number(opts.defaultLimit || 1)));
+  const maxLimit = Math.max(defaultLimit, Math.floor(Number(opts.maxLimit || defaultLimit)));
+  const maxOffset = Math.max(0, Math.floor(Number(opts.maxOffset ?? ADMIN_MAX_OFFSET)));
+
+  const limitBig = readStrictUnsignedInteger(source?.limit, "limit", defaultLimit);
+  const offsetBig = readStrictUnsignedInteger(source?.offset, "offset", 0);
+
+  if (limitBig < 1n) throw makeRequestValidationError("limit_invalid");
+  if (offsetBig > BigInt(maxOffset)) throw makeRequestValidationError("offset_too_large");
+
+  return {
+    limit: Number(limitBig > BigInt(maxLimit) ? BigInt(maxLimit) : limitBig),
+    offset: Number(offsetBig),
+  };
+}
+
+function readOptionalUuidValue(raw, name, opts = {}) {
+  const invalidCode = `${name}_invalid`;
+  const value = readSingleTextValue(raw, name, {
+    defaultValue: "",
+    maxCodePoints: 64,
+    invalidCode,
+    tooLongCode: invalidCode,
+  });
+  if (!value) return null;
+  if (opts.allowAll && value.toLowerCase() === "all") return "all";
+  if (!UUID_V1_TO_V5_RE.test(value)) throw makeRequestValidationError(invalidCode);
+  return value.toLowerCase();
+}
+
+function readOptionalUuidParam(source, name, opts = {}) {
+  return readOptionalUuidValue(source?.[name], name, opts);
+}
+
+function readOptionalDateValue(raw, name) {
+  const invalidCode = `${name}_invalid`;
+  const value = readSingleTextValue(raw, name, {
+    defaultValue: "",
+    maxCodePoints: 64,
+    invalidCode,
+    tooLongCode: invalidCode,
+  });
+  if (!value) return null;
+  const normalized = normalizeDateInput(value);
+  if (!normalized) throw makeRequestValidationError(invalidCode);
+  return normalized;
+}
+
+function readOptionalDateParam(source, name) {
+  return readOptionalDateValue(source?.[name], name);
+}
+
 
 // helper: format bonus line for USER UX (compact)
 // returns string like "Bonus: +1h · +2GB" or "" if no bonus
@@ -9370,22 +9523,21 @@ app.get("/api/admin/audit", requireAdmin, requireSuperadmin, async (req, res) =>
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
 
-    const {
-      q = "",
-      status = "",
-      event_type = "",
-      plan_id = "",
-      pool_id = "",
-      client_mac = "",
-      ap_mac = "",
-      request_ref = "",
-      mvola_phone = "",
-      from = "",
-      to = "",
-    } = req.query || {};
-
-    const limit = Math.min(200, Math.max(1, Number(req.query?.limit || 100)));
-    const offset = Math.max(0, Number(req.query?.offset || 0));
+    const q = readSingleTextParam(req.query, "q", {
+      maxCodePoints: ADMIN_SEARCH_MAX_CODEPOINTS,
+      tooLongCode: "search_too_long",
+    });
+    const status = readSingleTextParam(req.query, "status", { maxCodePoints: 40, tooLongCode: "status_invalid" });
+    const event_type = readSingleTextParam(req.query, "event_type", { maxCodePoints: 80, tooLongCode: "event_type_invalid" });
+    const plan_id = readOptionalUuidParam(req.query, "plan_id") || "";
+    const pool_id = readOptionalUuidParam(req.query, "pool_id") || "";
+    const client_mac = readSingleTextParam(req.query, "client_mac", { maxCodePoints: 80, tooLongCode: "search_too_long" });
+    const ap_mac = readSingleTextParam(req.query, "ap_mac", { maxCodePoints: 80, tooLongCode: "search_too_long" });
+    const request_ref = readSingleTextParam(req.query, "request_ref", { maxCodePoints: 80, tooLongCode: "search_too_long" });
+    const mvola_phone = readSingleTextParam(req.query, "mvola_phone", { maxCodePoints: 80, tooLongCode: "search_too_long" });
+    const from = readOptionalDateParam(req.query, "from");
+    const to = readOptionalDateParam(req.query, "to");
+    const { limit, offset } = readStrictPagination(req.query, { defaultLimit: 100, maxLimit: 200 });
 
     // P1-04: offset/limit is the official pagination contract for this route.
     // (`cursor` was never implemented server-side and `next_cursor` stays ""
@@ -9404,23 +9556,23 @@ app.get("/api/admin/audit", requireAdmin, requireSuperadmin, async (req, res) =>
       if (event_type) query = query.eq("event_type", String(event_type));
       if (plan_id) query = query.eq("plan_id", String(plan_id));
       if (pool_id) query = query.eq("pool_id", String(pool_id));
-      if (client_mac) query = query.ilike("client_mac", `%${String(client_mac)}%`);
-      if (ap_mac) query = query.ilike("ap_mac", `%${String(ap_mac)}%`);
-      if (request_ref) query = query.ilike("request_ref", `%${String(request_ref)}%`);
-      if (mvola_phone) query = query.ilike("mvola_phone", `%${String(mvola_phone)}%`);
+      if (client_mac) query = query.ilike("client_mac", `%${escapeLikeLiteral(client_mac)}%`);
+      if (ap_mac) query = query.ilike("ap_mac", `%${escapeLikeLiteral(ap_mac)}%`);
+      if (request_ref) query = query.ilike("request_ref", `%${escapeLikeLiteral(request_ref)}%`);
+      if (mvola_phone) query = query.ilike("mvola_phone", `%${escapeLikeLiteral(mvola_phone)}%`);
 
-      if (from) query = query.gte("created_at", String(from));
-      if (to) query = query.lte("created_at", String(to));
+      if (from) query = query.gte("created_at", from);
+      if (to) query = query.lte("created_at", to);
 
-      const qq = String(q || "").trim();
-      if (qq) {
+      if (q) {
+        const qPattern = escapeLikeLiteral(q);
         query = query.or([
-          `request_ref.ilike.%${qq}%`,
-          `client_mac.ilike.%${qq}%`,
-          `ap_mac.ilike.%${qq}%`,
-          `mvola_phone.ilike.%${qq}%`,
-          `event_type.ilike.%${qq}%`,
-          `message.ilike.%${qq}%`,
+          buildPostgrestIlikeContains("request_ref", qPattern),
+          buildPostgrestIlikeContains("client_mac", qPattern),
+          buildPostgrestIlikeContains("ap_mac", qPattern),
+          buildPostgrestIlikeContains("mvola_phone", qPattern),
+          buildPostgrestIlikeContains("event_type", qPattern),
+          buildPostgrestIlikeContains("message", qPattern),
         ].join(","));
       }
       return query;
@@ -9612,6 +9764,7 @@ app.get("/api/admin/audit", requireAdmin, requireSuperadmin, async (req, res) =>
     // backward compatibility only (deprecated — always empty).
     return res.json({ items, total, limit, offset: effectiveOffset, next_cursor: "" });
   } catch (e) {
+    if (sendRequestValidationError(res, e)) return;
     console.error("audit list error:", e?.message || e);
     return res.status(500).json({ error: "server_error" });
   }
@@ -10289,11 +10442,13 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     if (!ALLOWED_STATUSES.has(status)) status = "all";
     const liveMode = status === "online" || status === "offline";
 
-    const search = String(req.query.search || "").trim();
-    const plan_id = String(req.query.plan_id || "all").trim();
-    const pool_id = String(req.query.pool_id || "all").trim();
-    const limit = Math.min(500, Math.max(1, safeNumber(req.query.limit, 200)));
-    const offset = Math.max(0, safeNumber(req.query.offset, 0));
+    const search = readSingleTextParam(req.query, "search", {
+      maxCodePoints: ADMIN_SEARCH_MAX_CODEPOINTS,
+      tooLongCode: "search_too_long",
+    });
+    const plan_id = readOptionalUuidParam(req.query, "plan_id", { allowAll: true }) || "all";
+    const pool_id = readOptionalUuidParam(req.query, "pool_id", { allowAll: true }) || "all";
+    const { limit, offset } = readStrictPagination(req.query, { defaultLimit: 200, maxLimit: 500 });
 
     const CLIENTS_SELECT_COLUMNS = `
         id,
@@ -10338,12 +10493,12 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     let aliasMacs = [];
     let searchOrExpr = null;
     if (search) {
-      const s = search.replace(/%/g, "\\%");
+      const searchPattern = escapeLikeLiteral(search);
       try {
         const { data: arows, error: aerr } = await supabase
           .from("client_devices")
           .select("client_mac")
-          .ilike("alias", `%${s}%`)
+          .ilike("alias", `%${searchPattern}%`)
           .limit(50);
         if (!aerr) {
           aliasMacs = (arows || [])
@@ -10353,12 +10508,12 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       } catch (_) {}
 
       const orParts = [
-        `client_mac.ilike.%${s}%`,
-        `voucher_code.ilike.%${s}%`,
-        `mvola_phone.ilike.%${s}%`,
+        buildPostgrestIlikeContains("client_mac", searchPattern),
+        buildPostgrestIlikeContains("voucher_code", searchPattern),
+        buildPostgrestIlikeContains("mvola_phone", searchPattern),
       ];
       if (aliasMacs.length) {
-        orParts.push(`client_mac.in.(${aliasMacs.map((m) => `"${m}"`).join(",")})`);
+        orParts.push(`client_mac.in.(${aliasMacs.map(quotePostgrestValue).join(",")})`);
       }
       searchOrExpr = orParts.join(",");
     }
@@ -10962,6 +11117,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     });
 
   } catch (e) {
+    if (sendRequestValidationError(res, e)) return;
     res.status(500).json({ error: String(e.message || e) });
   }
 });
@@ -12919,12 +13075,15 @@ app.get("/api/admin/revenue/transactions", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-    const from = normalizeDateInput(req.query.from);
-    const to = normalizeDateInput(req.query.to);
-    const search = String(req.query.search || "").trim();
+    const from = readOptionalDateParam(req.query, "from");
+    const to = readOptionalDateParam(req.query, "to");
+    const search = readSingleTextParam(req.query, "search", {
+      maxCodePoints: ADMIN_SEARCH_MAX_CODEPOINTS,
+      tooLongCode: "search_too_long",
+    });
+    const searchPattern = search ? escapeLikeLiteral(search) : "";
 
-    const limit = Math.min(500, Math.max(1, safeNumber(req.query.limit, 200)));
-    const offset = Math.max(0, safeNumber(req.query.offset, 0));
+    const { limit, offset } = readStrictPagination(req.query, { defaultLimit: 200, maxLimit: 500 });
 
     let q = supabase
       .from("v_revenue_paid_truth")
@@ -12968,18 +13127,17 @@ app.get("/api/admin/revenue/transactions", requireAdmin, async (req, res) => {
     if (from) q = q.gte("transaction_created_at", from);
     if (to) q = q.lte("transaction_created_at", to);
 
-    if (search) {
-      const s = search.replace(/%/g, "\\%"); // avoid wildcard injection
+    if (searchPattern) {
       q = q.or(
         [
-          `mvola_phone.ilike.%${s}%`,
-          `voucher_code.ilike.%${s}%`,
-          `client_mac.ilike.%${s}%`,
-          `ap_mac.ilike.%${s}%`,
-          `request_ref.ilike.%${s}%`,
-          `transaction_reference.ilike.%${s}%`,
-          `server_correlation_id.ilike.%${s}%`,
-          `transaction_voucher.ilike.%${s}%`,
+          buildPostgrestIlikeContains("mvola_phone", searchPattern),
+          buildPostgrestIlikeContains("voucher_code", searchPattern),
+          buildPostgrestIlikeContains("client_mac", searchPattern),
+          buildPostgrestIlikeContains("ap_mac", searchPattern),
+          buildPostgrestIlikeContains("request_ref", searchPattern),
+          buildPostgrestIlikeContains("transaction_reference", searchPattern),
+          buildPostgrestIlikeContains("server_correlation_id", searchPattern),
+          buildPostgrestIlikeContains("transaction_voucher", searchPattern),
         ].join(",")
       );
     }
@@ -12989,6 +13147,7 @@ app.get("/api/admin/revenue/transactions", requireAdmin, async (req, res) => {
 
     res.json({ items: data || [], total: count || 0 });
   } catch (e) {
+    if (sendRequestValidationError(res, e)) return;
     res.status(500).json({ error: String(e.message || e) });
   }
 });
@@ -13042,7 +13201,7 @@ async function getScopedMikrotikPoolsMap(admin) {
   );
 }
 
-async function getShareTransactionsCore({ admin, from = null, to = null, search = "", limit = 200, offset = 0, transactionIds = null, unpaidOnly = false }) {
+async function getShareTransactionsCore({ admin, from = null, to = null, searchPattern = "", limit = 200, offset = 0, transactionIds = null, unpaidOnly = false }) {
   const poolMap = await getScopedMikrotikPoolsMap(admin);
   const poolIds = Object.keys(poolMap).filter(Boolean);
   if (!poolIds.length) {
@@ -13090,21 +13249,20 @@ async function getShareTransactionsCore({ admin, from = null, to = null, search 
   if (from) q = q.gte("transaction_created_at", from);
   if (to) q = q.lte("transaction_created_at", to);
 
-  const cleanSearch = String(search || "").trim();
-  if (cleanSearch) {
-    const s = cleanSearch.replace(/%/g, "\%");
+  const safeSearchPattern = typeof searchPattern === "string" ? searchPattern : "";
+  if (safeSearchPattern) {
     q = q.or(
       [
-        `mvola_phone.ilike.%${s}%`,
-        `voucher_code.ilike.%${s}%`,
-        `client_mac.ilike.%${s}%`,
-        `ap_mac.ilike.%${s}%`,
-        `request_ref.ilike.%${s}%`,
-        `transaction_reference.ilike.%${s}%`,
-        `server_correlation_id.ilike.%${s}%`,
-        `transaction_voucher.ilike.%${s}%`,
-        `plan_name.ilike.%${s}%`,
-        `pool_name.ilike.%${s}%`,
+        buildPostgrestIlikeContains("mvola_phone", safeSearchPattern),
+        buildPostgrestIlikeContains("voucher_code", safeSearchPattern),
+        buildPostgrestIlikeContains("client_mac", safeSearchPattern),
+        buildPostgrestIlikeContains("ap_mac", safeSearchPattern),
+        buildPostgrestIlikeContains("request_ref", safeSearchPattern),
+        buildPostgrestIlikeContains("transaction_reference", safeSearchPattern),
+        buildPostgrestIlikeContains("server_correlation_id", safeSearchPattern),
+        buildPostgrestIlikeContains("transaction_voucher", safeSearchPattern),
+        buildPostgrestIlikeContains("plan_name", safeSearchPattern),
+        buildPostgrestIlikeContains("pool_name", safeSearchPattern),
       ].join(",")
     );
   }
@@ -13283,9 +13441,13 @@ app.get("/api/admin/revenue/share-transactions", requireAdmin, async (req, res) 
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-    const from = normalizeDateInput(req.query.from);
-    const to = normalizeDateInput(req.query.to);
-    const search = String(req.query.search || "").trim();
+    const from = readOptionalDateParam(req.query, "from");
+    const to = readOptionalDateParam(req.query, "to");
+    const search = readSingleTextParam(req.query, "search", {
+      maxCodePoints: ADMIN_SEARCH_MAX_CODEPOINTS,
+      tooLongCode: "search_too_long",
+    });
+    const searchPattern = search ? escapeLikeLiteral(search) : "";
 
     // Mode de paiement filter — transaction table only (Phase B.2).
     // Not used by totals/by-plan/by-pool/payout endpoints.
@@ -13306,8 +13468,7 @@ app.get("/api/admin/revenue/share-transactions", requireAdmin, async (req, res) 
       normalizedProvider = PROVIDER_FILTER_MAP[providerRaw];
     }
 
-    const limit = Math.min(500, Math.max(1, safeNumber(req.query.limit, 200)));
-    const offset = Math.max(0, safeNumber(req.query.offset, 0));
+    const { limit, offset } = readStrictPagination(req.query, { defaultLimit: 200, maxLimit: 500 });
 
     let poolsQuery = supabase
       .from("internet_pools")
@@ -13383,20 +13544,19 @@ app.get("/api/admin/revenue/share-transactions", requireAdmin, async (req, res) 
     if (from) q = q.gte("transaction_created_at", from);
     if (to) q = q.lte("transaction_created_at", to);
 
-    if (search) {
-      const s = search.replace(/%/g, "\\%");
+    if (searchPattern) {
       q = q.or(
         [
-          `mvola_phone.ilike.%${s}%`,
-          `voucher_code.ilike.%${s}%`,
-          `client_mac.ilike.%${s}%`,
-          `ap_mac.ilike.%${s}%`,
-          `request_ref.ilike.%${s}%`,
-          `transaction_reference.ilike.%${s}%`,
-          `server_correlation_id.ilike.%${s}%`,
-          `transaction_voucher.ilike.%${s}%`,
-          `plan_name.ilike.%${s}%`,
-          `pool_name.ilike.%${s}%`,
+          buildPostgrestIlikeContains("mvola_phone", searchPattern),
+          buildPostgrestIlikeContains("voucher_code", searchPattern),
+          buildPostgrestIlikeContains("client_mac", searchPattern),
+          buildPostgrestIlikeContains("ap_mac", searchPattern),
+          buildPostgrestIlikeContains("request_ref", searchPattern),
+          buildPostgrestIlikeContains("transaction_reference", searchPattern),
+          buildPostgrestIlikeContains("server_correlation_id", searchPattern),
+          buildPostgrestIlikeContains("transaction_voucher", searchPattern),
+          buildPostgrestIlikeContains("plan_name", searchPattern),
+          buildPostgrestIlikeContains("pool_name", searchPattern),
         ].join(",")
       );
     }
@@ -13491,6 +13651,7 @@ app.get("/api/admin/revenue/share-transactions", requireAdmin, async (req, res) 
 
     return res.json({ items, total: count || 0, system: "mikrotik" });
   } catch (e) {
+    if (sendRequestValidationError(res, e)) return;
     console.error("ADMIN REVENUE SHARE TRANSACTIONS EX", e);
     return res.status(500).json({ error: String(e?.message || e) });
   }
@@ -13502,12 +13663,11 @@ app.get("/api/admin/revenue/payouts", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-    const status = String(req.query.status || "").trim().toLowerCase();
-    const pool_id = String(req.query.pool_id || "").trim();
-    const from = normalizeDateInput(req.query.from);
-    const to = normalizeDateInput(req.query.to);
-    const limit = Math.min(200, Math.max(1, safeNumber(req.query.limit, 100)));
-    const offset = Math.max(0, safeNumber(req.query.offset, 0));
+    const status = readSingleTextParam(req.query, "status", { maxCodePoints: 24, tooLongCode: "status_invalid" }).toLowerCase();
+    const pool_id = readOptionalUuidParam(req.query, "pool_id") || "";
+    const from = readOptionalDateParam(req.query, "from");
+    const to = readOptionalDateParam(req.query, "to");
+    const { limit, offset } = readStrictPagination(req.query, { defaultLimit: 100, maxLimit: 200 });
 
     let q = supabase
       .from("owner_payouts")
@@ -13578,6 +13738,7 @@ app.get("/api/admin/revenue/payouts", requireAdmin, async (req, res) => {
 
     return res.json({ items, total: count || 0, system: "mikrotik" });
   } catch (e) {
+    if (sendRequestValidationError(res, e)) return;
     console.error("ADMIN REVENUE PAYOUTS LIST EX", e);
     return res.status(500).json({ error: String(e?.message || e) });
   }
@@ -13783,23 +13944,22 @@ app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadm
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-    const from = normalizeDateInput(req.body?.from ?? req.query?.from);
-    const to = normalizeDateInput(req.body?.to ?? req.query?.to);
-    const search = String(req.body?.search ?? req.query?.search ?? "").trim();
+    const from = readOptionalDateValue(req.body?.from ?? req.query?.from, "from");
+    const to = readOptionalDateValue(req.body?.to ?? req.query?.to, "to");
+    const search = readSingleTextValue(req.body?.search ?? req.query?.search, "search", {
+      defaultValue: "",
+      maxCodePoints: ADMIN_SEARCH_MAX_CODEPOINTS,
+      tooLongCode: "search_too_long",
+    });
+    const searchPattern = search ? escapeLikeLiteral(search) : "";
     const note = String(req.body?.note ?? req.query?.note ?? "Reversement auto brouillon").trim()
       || "Reversement auto brouillon";
-    const requestedPoolId = String(req.body?.pool_id ?? req.query?.pool_id ?? "").trim();
-
-    // P2-A1: le nouveau RPC attend un UUID typé. Refuser proprement une valeur
-    // invalide plutôt que de laisser PostgREST renvoyer une erreur de cast opaque.
-    if (requestedPoolId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestedPoolId)) {
-      return res.status(400).json({ error: "pool_id_invalid" });
-    }
+    const requestedPoolId = readOptionalUuidValue(req.body?.pool_id ?? req.query?.pool_id, "pool_id") || "";
 
     const { data, error } = await supabase.rpc("fn_owner_payouts_auto_create", {
       p_from: from || null,
       p_to: to || null,
-      p_search: search || null,
+      p_search: searchPattern || null,
       p_pool_id: requestedPoolId || null,
       p_note: note,
       p_created_by: req.admin?.id || null,
@@ -13852,7 +14012,8 @@ app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadm
       created,
       skipped,
       message: outcome === "nothing_to_create" ? "no_unpaid_transactions" : null,
-      filters: result.filters || {
+      filters: {
+        ...((result.filters && typeof result.filters === "object" && !Array.isArray(result.filters)) ? result.filters : {}),
         from: from || null,
         to: to || null,
         search: search || null,
@@ -13861,6 +14022,7 @@ app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadm
       system: "mikrotik",
     });
   } catch (e) {
+    if (sendRequestValidationError(res, e)) return;
     console.error("ADMIN REVENUE AUTO PAYOUT CREATE EX", e);
     return res.status(e?.httpStatus || 500).json({
       error: e?.message || "internal_error",
@@ -14040,7 +14202,7 @@ app.post("/api/admin/revenue/payouts/:id/cancel", requireAdmin, requireSuperadmi
 // pools inside their own req.admin.pool_ids list.
 // -----------------------------------------------------------------------
 function getRequestedPoolId(req) {
-  return String(req.query.pool_id || "").trim() || null;
+  return readOptionalUuidParam(req.query, "pool_id");
 }
 
 async function assertAdminCanReadPool(req, poolId) {
@@ -14065,6 +14227,14 @@ async function assertAdminCanReadPool(req, poolId) {
 app.get("/api/admin/revenue/by-plan", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const from = readOptionalDateParam(req.query, "from");
+    const to = readOptionalDateParam(req.query, "to");
+    const search = readSingleTextParam(req.query, "search", {
+      maxCodePoints: ADMIN_SEARCH_MAX_CODEPOINTS,
+      tooLongCode: "search_too_long",
+    });
+    const searchPattern = search ? escapeLikeLiteral(search) : null;
 
     // Phase 2B-E: optional pool_id for assistant filtered fetch
     const requestedPoolId = getRequestedPoolId(req);
@@ -14130,14 +14300,11 @@ app.get("/api/admin/revenue/by-plan", requireAdmin, async (req, res) => {
     if (req.admin?.is_superadmin) {
       if (validatedPoolId) {
         // Superadmin requested a specific pool — use scoped RPC with that pool only
-        const from = normalizeDateInput(req.query.from);
-        const to = normalizeDateInput(req.query.to);
-        const search = String(req.query.search || "").trim() || null;
         const { data, error } = await supabase
           .rpc("fn_revenue_paid_by_plan_scoped", {
             p_from: from || null,
             p_to: to || null,
-            p_search: search,
+            p_search: searchPattern,
             p_pool_ids: [validatedPoolId],
           });
         if (error) return res.status(500).json({ error: error.message });
@@ -14150,14 +14317,11 @@ app.get("/api/admin/revenue/by-plan", requireAdmin, async (req, res) => {
       // `paid_count` column rendered as 0 transactions — P1-03). It now uses
       // the pre-existing, previously unused fn_revenue_paid_by_plan_filtered,
       // which honors from/to/search and returns `paid_transactions`.
-      const from = normalizeDateInput(req.query.from);
-      const to = normalizeDateInput(req.query.to);
-      const search = String(req.query.search || "").trim() || null;
       const { data, error } = await supabase
         .rpc("fn_revenue_paid_by_plan_filtered", {
           p_from: from || null,
           p_to: to || null,
-          p_search: search,
+          p_search: searchPattern,
         });
 
       if (error) return res.status(500).json({ error: error.message });
@@ -14166,10 +14330,6 @@ app.get("/api/admin/revenue/by-plan", requireAdmin, async (req, res) => {
     }
 
     // pool_readonly: use scoped RPC (server-side)
-    const from = normalizeDateInput(req.query.from);
-    const to = normalizeDateInput(req.query.to);
-    const search = String(req.query.search || "").trim() || null;
-
     const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
     if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
 
@@ -14180,7 +14340,7 @@ app.get("/api/admin/revenue/by-plan", requireAdmin, async (req, res) => {
       .rpc("fn_revenue_paid_by_plan_scoped", {
         p_from: from || null,
         p_to: to || null,
-        p_search: search,
+        p_search: searchPattern,
         p_pool_ids: poolIdsForQuery,
       });
 
@@ -14189,6 +14349,7 @@ app.get("/api/admin/revenue/by-plan", requireAdmin, async (req, res) => {
     const ownerItems = (data || []).map(serializeRevenueByPlan);
     return res.json({ items: await attachPlanPoolDisplay(ownerItems) });
   } catch (e) {
+    if (sendRequestValidationError(res, e)) return;
     res.status(500).json({ error: String(e.message || e) });
   }
 });
@@ -14199,15 +14360,19 @@ app.get("/api/admin/revenue/by-pool", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-    const from = normalizeDateInput(req.query.from);
-    const to = normalizeDateInput(req.query.to);
-    const search = String(req.query.search || "").trim() || null;
+    const from = readOptionalDateParam(req.query, "from");
+    const to = readOptionalDateParam(req.query, "to");
+    const search = readSingleTextParam(req.query, "search", {
+      maxCodePoints: ADMIN_SEARCH_MAX_CODEPOINTS,
+      tooLongCode: "search_too_long",
+    });
+    const searchPattern = search ? escapeLikeLiteral(search) : null;
 
     const { data, error } = await supabase
       .rpc("fn_revenue_paid_by_pool_filtered", {
         p_from: from || null,
         p_to: to || null,
-        p_search: search,
+        p_search: searchPattern,
       });
 
         if (error) return res.status(500).json({ error: error.message });
@@ -14245,6 +14410,7 @@ app.get("/api/admin/revenue/by-pool", requireAdmin, async (req, res) => {
 
     res.json({ items });
   } catch (e) {
+    if (sendRequestValidationError(res, e)) return;
     res.status(500).json({ error: String(e.message || e) });
   }
 });
@@ -14255,6 +14421,14 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
+    const from = readOptionalDateParam(req.query, "from");
+    const to = readOptionalDateParam(req.query, "to");
+    const search = readSingleTextParam(req.query, "search", {
+      maxCodePoints: ADMIN_SEARCH_MAX_CODEPOINTS,
+      tooLongCode: "search_too_long",
+    });
+    const searchPattern = search ? escapeLikeLiteral(search) : null;
+
     // Phase 2B-E: optional pool_id for assistant filtered fetch
     const requestedPoolId = getRequestedPoolId(req);
     let validatedPoolId = null;
@@ -14264,10 +14438,6 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
       if (e.httpStatus === 403) return res.status(403).json({ error: "pool_forbidden" });
       throw e;
     }
-
-    const from = normalizeDateInput(req.query.from);
-    const to = normalizeDateInput(req.query.to);
-    const search = String(req.query.search || "").trim() || null;
 
     // P1-01: owner/platform share computed IN SQL over the whole filtered
     // scope (fn_revenue_owner_totals_filtered), replacing the frontend
@@ -14282,7 +14452,7 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
           .rpc("fn_revenue_owner_totals_filtered", {
             p_from: from || null,
             p_to: to || null,
-            p_search: search,
+            p_search: searchPattern,
             p_pool_ids: poolIds && poolIds.length ? poolIds : null,
           });
         if (error) throw error;
@@ -14306,7 +14476,7 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
           .rpc("fn_revenue_paid_by_pool_filtered", {
             p_from: from || null,
             p_to: to || null,
-            p_search: search,
+            p_search: searchPattern,
           });
         if (berr) return res.status(500).json({ error: berr.message });
         const poolRows = (rows || []).filter(r => String(r?.pool_id || "").trim() === validatedPoolId);
@@ -14329,7 +14499,7 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
         .rpc("fn_revenue_paid_totals_filtered", {
           p_from: from || null,
           p_to: to || null,
-          p_search: search,
+          p_search: searchPattern,
         });
 
       if (error) return res.status(500).json({ error: error.message });
@@ -14351,7 +14521,7 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
       .rpc("fn_revenue_paid_by_pool_filtered", {
         p_from: from || null,
         p_to: to || null,
-        p_search: search,
+        p_search: searchPattern,
       });
 
     if (berr) return res.status(500).json({ error: berr.message });
@@ -14378,6 +14548,7 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
 
     return res.json({ item });
   } catch (e) {
+    if (sendRequestValidationError(res, e)) return;
     res.status(500).json({ error: String(e.message || e) });
   }
 });
@@ -15542,7 +15713,11 @@ app.get("/api/admin/plans", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-    const q = String(req.query.q || "").trim();
+    const q = readSingleTextParam(req.query, "q", {
+      maxCodePoints: ADMIN_SEARCH_MAX_CODEPOINTS,
+      tooLongCode: "search_too_long",
+    });
+    const qPattern = q ? escapeLikeLiteral(q) : "";
 
     const systemRaw = req.query.system;
     const system = systemRaw === undefined || systemRaw === null ? "" : String(systemRaw).trim();
@@ -15551,14 +15726,13 @@ app.get("/api/admin/plans", requireAdmin, async (req, res) => {
     }
     const active = String(req.query.active || "all"); // 1|0|all
     const visible = String(req.query.visible || "all"); // 1|0|all
-    const limit = Math.min(Math.max(toInt(req.query.limit) ?? 50, 1), 200);
-    const offset = Math.max(toInt(req.query.offset) ?? 0, 0);
+    const { limit, offset } = readStrictPagination(req.query, { defaultLimit: 50, maxLimit: 200 });
 
     let query = supabase
       .from("plans")
       .select("*", { count: "exact" });
 
-    if (q) query = query.ilike("name", `%${q}%`);
+    if (qPattern) query = query.ilike("name", `%${qPattern}%`);
     if (active === "1") query = query.eq("is_active", true);
     if (active === "0") query = query.eq("is_active", false);
     if (visible === "1") query = query.eq("is_visible", true);
@@ -15566,7 +15740,7 @@ app.get("/api/admin/plans", requireAdmin, async (req, res) => {
 
     if (system) query = query.eq("system", system);
 
-    const pool_id = req.query.pool_id === undefined || req.query.pool_id === null ? "" : String(req.query.pool_id).trim();
+    const pool_id = readOptionalUuidParam(req.query, "pool_id") || "";
 
     // 🔐 Pool scoping (server-side)
     if (!req.admin?.is_superadmin) {
@@ -15639,6 +15813,7 @@ app.get("/api/admin/plans", requireAdmin, async (req, res) => {
 
     return res.json({ ok: true, plans: enrichedPlans, total: count || 0 });
   } catch (e) {
+    if (sendRequestValidationError(res, e)) return;
     console.error("ADMIN PLANS LIST EX", e);
     return res.status(500).json({ error: "internal error" });
   }
@@ -15684,8 +15859,12 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-    const q = String(req.query.q || "").trim(); // search ap_mac
-    const pool_id = String(req.query.pool_id || "").trim(); // exact pool id
+    const q = readSingleTextParam(req.query, "q", {
+      maxCodePoints: ADMIN_SEARCH_MAX_CODEPOINTS,
+      tooLongCode: "search_too_long",
+    }); // search ap_mac
+    const qPattern = q ? escapeLikeLiteral(q) : "";
+    const pool_id = readOptionalUuidParam(req.query, "pool_id") || ""; // exact pool id
 
     // 🔐 Pool scoping (server-side)
     let allowedPools = null;
@@ -15699,8 +15878,7 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
     }
     const active = String(req.query.active || "all"); // 1|0|all
     const stale = String(req.query.stale || "all"); // 1|0|all (based on ap_live_stats.is_stale or missing stats)
-    const limit = Math.min(Math.max(toInt(req.query.limit) ?? 50, 1), 200);
-    const offset = Math.max(toInt(req.query.offset) ?? 0, 0);
+    const { limit, offset } = readStrictPagination(req.query, { defaultLimit: 50, maxLimit: 200 });
 
     // 1) AP registry list
     let query = supabase
@@ -15709,7 +15887,7 @@ app.get("/api/admin/aps", requireAdmin, async (req, res) => {
 
     if (allowedPools) query = query.in("pool_id", allowedPools);
 
-    if (q) query = query.ilike("ap_mac", `%${q}%`);
+    if (qPattern) query = query.ilike("ap_mac", `%${qPattern}%`);
     if (pool_id) query = query.eq("pool_id", pool_id);
     if (active === "1") query = query.eq("is_active", true);
     if (active === "0") query = query.eq("is_active", false);
@@ -15826,6 +16004,7 @@ try {
 
     return res.json({ ok: true, aps: merged, total: count || 0 });
   } catch (e) {
+    if (sendRequestValidationError(res, e)) return;
     console.error("ADMIN APS LIST EX", e);
     return res.status(500).json({ error: "internal error" });
   }
@@ -16041,11 +16220,12 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-    const q = String(req.query.q || "").trim();
-    const limitRaw = Number(req.query.limit ?? 200);
-    const offsetRaw = Number(req.query.offset ?? 0);
-    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 200;
-    const offset = Number.isFinite(offsetRaw) ? Math.max(offsetRaw, 0) : 0;
+    const q = readSingleTextParam(req.query, "q", {
+      maxCodePoints: ADMIN_SEARCH_MAX_CODEPOINTS,
+      tooLongCode: "search_too_long",
+    });
+    if (q) return res.status(400).json({ error: "pool_search_unsupported" });
+    const { limit, offset } = readStrictPagination(req.query, { defaultLimit: 200, maxLimit: 200 });
 
     const systemRaw = String(req.query.system || "").trim().toLowerCase();
     const system = (systemRaw === "mikrotik" || systemRaw === "portal") ? systemRaw : "";
@@ -16064,10 +16244,8 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
       }
     }
 
-    // safest filter: by id only (schema-stable)
-    if (q) {
-      query = query.ilike("id", `%${q}%`);
-    }
+    // P2-B1: UUID columns are not searched with ILIKE. A true text search
+    // by brand/place belongs to P2-B4/P2-D.
     if (system) query = query.eq("system", system);
 
     query = query.order("id", { ascending: true }).range(offset, offset + limit - 1);
@@ -16081,6 +16259,7 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
 
     return res.json({ ok: true, pools: (data || []).map(withPoolDisplayName), total: count ?? (data ? data.length : 0) });
   } catch (e) {
+    if (sendRequestValidationError(res, e)) return;
     console.error("ADMIN POOLS LIST EX", e);
     return res.status(500).json({ error: "internal error" });
   }
