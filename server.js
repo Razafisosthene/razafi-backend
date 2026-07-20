@@ -10793,7 +10793,9 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     }
 
     // ------------------------------
-    // Bonus overlay + cleanup-aware flags (FINAL)
+    // Bonus overlay flags — READ-ONLY (P2-A2)
+    // Cleanup is performed independently by fn_cleanup_finished_bonus_sessions
+    // through the periodic backend job. This GET never writes bonus/session data.
     // ------------------------------
     try {
       const ids = Array.from(new Set((items || []).map(x => x?.id).filter(Boolean)));
@@ -10820,63 +10822,9 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
 
           for (const it of items) {
             const b = bMap[String(it.id)];
-
-            let bs = toSafeInt(b?.bonus_seconds);
-            let bb = toSafeInt(b?.bonus_bytes);
-
-            // Current truth first
-            const statusNorm = String(it.status || "").toLowerCase();
-            const isBonusSession = !!it.is_bonus_session;
-
-            // ============================
-            // 🔥 AUTO CLEANUP (admin-side)
-            // If bonus session has ended by time OR data, destroy the bonus immediately
-            // so admin reflects the same truth without waiting for portal open.
-            // ============================
-            const now = new Date();
-
-            const expired =
-              isBonusSession &&
-              it.expires_at &&
-              new Date(it.expires_at) <= now;
-
-            const bonusConsumedBytes = getBonusConsumedBytes(it.data_used_bytes, b?.note);
-            const dataReached =
-              isBonusSession &&
-              bb > 0 &&
-              bonusConsumedBytes >= bb;
-
-            if (expired || dataReached) {
-              const preBonusStatus = getPreBonusStatus(b?.note, statusNorm);
-
-              await supabase
-                .from("voucher_bonus_overrides")
-                .update({
-                  bonus_seconds: 0,
-                  bonus_bytes: 0,
-                  note: null,
-                  updated_at: new Date().toISOString(),
-                  updated_by: req.admin?.email || null,
-                })
-                .eq("voucher_session_id", it.id);
-
-              await supabase
-                .from("voucher_sessions")
-                .update({
-                  status: preBonusStatus,
-                  is_bonus_session: false,
-                  updated_at: new Date().toISOString(),
-                })
-                .eq("id", it.id);
-
-              // Reset local values immediately for this response
-              bs = 0;
-              bb = 0;
-              it.is_bonus_session = false;
-              it.status = preBonusStatus;
-              it.truth_status = preBonusStatus;
-            }
-
+            const bs = toSafeInt(b?.bonus_seconds);
+            const bb = toSafeInt(b?.bonus_bytes);
+            const statusNorm = String(it.status || it.truth_status || "").toLowerCase();
             const hasTimeBonus = bs > 0;
             const hasDataBonus = (bb === -1 || bb > 0);
 
@@ -10908,7 +10856,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         }
       }
     } catch (e) {
-      console.error("BONUS CLEANUP ERROR", e);
+      console.error("BONUS OVERLAY LOAD ERROR", e);
 
       for (const it of items || []) {
         it.bonus_seconds = 0;
@@ -10920,11 +10868,8 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     }
 
     // ------------------------------
-    // P0 FIX (F-01): the summary now reflects the WHOLE filtered scope
+    // P0 FIX (F-01): the summary reflects the WHOLE filtered scope
     // (exact DB counts computed above), never just the current page.
-    // Note: the bonus auto-cleanup above may have just flipped a handful of
-    // page rows from active -> used/expired; counters converge on the next
-    // refresh. (Moving that cleanup out of this GET is tracked as F-08 / P2.)
     // ------------------------------
     res.json({
       items,
@@ -19950,6 +19895,152 @@ function startMvolaRecoveryJob() {
   try { mvolaRecoveryIntervalHandle.unref?.(); } catch (_) {}
 }
 
+
+// =============================================================================
+// P2-A2 — GLOBAL BONUS CLEANUP JOB
+// Moves bonus/session writes out of GET /api/admin/clients.
+// The PostgreSQL RPC is atomic, globally locked and limited to service_role.
+// =============================================================================
+const BONUS_CLEANUP_ENABLED = String(
+  process.env.BONUS_CLEANUP_ENABLED || "true"
+).toLowerCase() !== "false";
+const BONUS_CLEANUP_INTERVAL_MS = Math.max(
+  30_000,
+  Math.min(
+    60 * 60_000,
+    parseInt(process.env.BONUS_CLEANUP_INTERVAL_MS || "60000", 10) || 60_000
+  )
+);
+const BONUS_CLEANUP_STARTUP_DELAY_MS = Math.max(
+  5_000,
+  Math.min(
+    5 * 60_000,
+    parseInt(process.env.BONUS_CLEANUP_STARTUP_DELAY_MS || "15000", 10) || 15_000
+  )
+);
+const BONUS_CLEANUP_BATCH_SIZE = Math.max(
+  1,
+  Math.min(
+    1000,
+    parseInt(process.env.BONUS_CLEANUP_BATCH_SIZE || "200", 10) || 200
+  )
+);
+
+let bonusCleanupRunning = false;
+let bonusCleanupIntervalHandle = null;
+let bonusCleanupStartupHandle = null;
+
+async function runBonusCleanupOnce({
+  reason = "interval",
+  batchSize = BONUS_CLEANUP_BATCH_SIZE,
+} = {}) {
+  if (!BONUS_CLEANUP_ENABLED) {
+    return { ok: true, disabled: true, outcome: "disabled", cleaned_count: 0 };
+  }
+
+  // Local guard for overlapping timer ticks in the same Node process.
+  if (bonusCleanupRunning) {
+    return { ok: true, outcome: "busy_local", cleaned_count: 0 };
+  }
+
+  if (!supabase) {
+    return { ok: false, error: "supabase_not_configured", cleaned_count: 0 };
+  }
+
+  const safeBatchSize = Math.max(
+    1,
+    Math.min(1000, parseInt(String(batchSize), 10) || BONUS_CLEANUP_BATCH_SIZE)
+  );
+  bonusCleanupRunning = true;
+
+  try {
+    const { data, error } = await supabase.rpc(
+      "fn_cleanup_finished_bonus_sessions",
+      { p_batch_size: safeBatchSize }
+    );
+
+    if (error) throw error;
+
+    const result = (data && typeof data === "object" && !Array.isArray(data))
+      ? data
+      : {};
+
+    const output = {
+      ok: result.ok !== false,
+      outcome: String(result.outcome || "unknown"),
+      batch_size: Number(result.batch_size || safeBatchSize),
+      eligible_before: Number(result.eligible_before || 0),
+      checked_count: Number(result.checked_count || 0),
+      cleaned_count: Number(result.cleaned_count || 0),
+      cleaned_by_time: Number(result.cleaned_by_time || 0),
+      cleaned_by_data: Number(result.cleaned_by_data || 0),
+      cleaned_by_both: Number(result.cleaned_by_both || 0),
+      skipped_count: Number(result.skipped_count || 0),
+      override_missing_count: Number(result.override_missing_count || 0),
+      malformed_metadata_count: Number(result.malformed_metadata_count || 0),
+      has_more: result.has_more === true,
+      reason,
+    };
+
+    // Avoid one empty log per minute. Startup, actual cleanup, contention and
+    // remaining work are still visible without exposing voucher/client data.
+    if (
+      reason !== "interval" ||
+      output.cleaned_count > 0 ||
+      output.has_more ||
+      output.outcome === "busy"
+    ) {
+      console.info("[BONUS CLEANUP]", output);
+    }
+
+    return output;
+  } catch (e) {
+    console.error("[BONUS CLEANUP] run failed", {
+      reason,
+      error: e?.message || String(e),
+    });
+    return {
+      ok: false,
+      outcome: "error",
+      error: "bonus_cleanup_failed",
+      cleaned_count: 0,
+      reason,
+    };
+  } finally {
+    bonusCleanupRunning = false;
+  }
+}
+
+function startBonusCleanupJob() {
+  if (!BONUS_CLEANUP_ENABLED) {
+    console.log("[BONUS CLEANUP] disabled by BONUS_CLEANUP_ENABLED=false");
+    return;
+  }
+  if (bonusCleanupIntervalHandle || bonusCleanupStartupHandle) return;
+
+  console.log("[BONUS CLEANUP] enabled", {
+    interval_ms: BONUS_CLEANUP_INTERVAL_MS,
+    startup_delay_ms: BONUS_CLEANUP_STARTUP_DELAY_MS,
+    batch_size: BONUS_CLEANUP_BATCH_SIZE,
+  });
+
+  bonusCleanupStartupHandle = setTimeout(() => {
+    bonusCleanupStartupHandle = null;
+    runBonusCleanupOnce({ reason: "startup" }).catch((e) => {
+      console.error("[BONUS CLEANUP] startup run failed", e?.message || e);
+    });
+  }, BONUS_CLEANUP_STARTUP_DELAY_MS);
+
+  bonusCleanupIntervalHandle = setInterval(() => {
+    runBonusCleanupOnce({ reason: "interval" }).catch((e) => {
+      console.error("[BONUS CLEANUP] interval run failed", e?.message || e);
+    });
+  }, BONUS_CLEANUP_INTERVAL_MS);
+
+  try { bonusCleanupStartupHandle.unref?.(); } catch (_) {}
+  try { bonusCleanupIntervalHandle.unref?.(); } catch (_) {}
+}
+
 // Manual superadmin trigger for tests/support. No frontend dependency.
 app.post("/api/admin/payments/recover-mvola", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
@@ -24280,4 +24371,5 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server started at ${now} on port ${PORT}`);
   console.log(`[INFO] Endpoint ready: POST /api/send-payment`);
   startMvolaRecoveryJob();
+  startBonusCleanupJob();
 });
