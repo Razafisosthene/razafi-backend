@@ -14368,22 +14368,32 @@ app.get("/api/admin/revenue/by-pool", requireAdmin, async (req, res) => {
     });
     const searchPattern = search ? escapeLikeLiteral(search) : null;
 
-    const { data, error } = await supabase
-      .rpc("fn_revenue_paid_by_pool_filtered", {
-        p_from: from || null,
-        p_to: to || null,
-        p_search: searchPattern,
-      });
+    let data = null;
+    let error = null;
 
-        if (error) return res.status(500).json({ error: error.message });
-
-    let items = data || [];
-    // 🔐 Pool scoping (server-side)
-    if (!req.admin?.is_superadmin) {
+    if (req.admin?.is_superadmin) {
+      ({ data, error } = await supabase
+        .rpc("fn_revenue_paid_by_pool_filtered", {
+          p_from: from || null,
+          p_to: to || null,
+          p_search: searchPattern,
+        }));
+    } else {
       const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
       if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
-      items = items.filter((r) => allowed.includes(String(r?.pool_id || "").trim()));
+
+      ({ data, error } = await supabase
+        .rpc("fn_revenue_paid_by_pool_scoped", {
+          p_from: from || null,
+          p_to: to || null,
+          p_search: searchPattern,
+          p_pool_ids: allowed,
+        }));
     }
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    let items = data || [];
 
     const poolIds = Array.from(new Set((items || []).map((r) => String(r?.pool_id || "").trim()).filter(Boolean)));
     let poolMap = {};
@@ -14471,23 +14481,20 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
     // Superadmin: keep existing fast RPC (or filter by pool if requested)
     if (req.admin?.is_superadmin) {
       if (validatedPoolId) {
-        // Filter totals for one pool via by-pool RPC
-        const { data: rows, error: berr } = await supabase
-          .rpc("fn_revenue_paid_by_pool_filtered", {
+        const { data: scopedRows, error: scopedErr } = await supabase
+          .rpc("fn_revenue_paid_totals_scoped", {
             p_from: from || null,
             p_to: to || null,
             p_search: searchPattern,
+            p_pool_ids: [validatedPoolId],
           });
-        if (berr) return res.status(500).json({ error: berr.message });
-        const poolRows = (rows || []).filter(r => String(r?.pool_id || "").trim() === validatedPoolId);
-        const item = poolRows.reduce(
-          (acc, r) => {
-            acc.paid_transactions += Number(r?.paid_transactions ?? 0) || 0;
-            acc.total_amount_ar   += Number(r?.total_amount_ar   ?? 0) || 0;
-            return acc;
-          },
-          { paid_transactions: 0, total_amount_ar: 0 }
-        );
+        if (scopedErr) return res.status(500).json({ error: scopedErr.message });
+
+        const scopedRow = (scopedRows && scopedRows[0]) ? scopedRows[0] : null;
+        const item = {
+          paid_transactions: Number(scopedRow?.paid_transactions ?? 0) || 0,
+          total_amount_ar: Number(scopedRow?.total_amount_ar ?? 0) || 0,
+        };
         const share = await fetchShareTotals([validatedPoolId]);
         if (share) {
           item.owner_total_ar = share.owner_total_ar;
@@ -14513,30 +14520,27 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
       return res.json({ item });
     }
 
-    // pool_readonly: compute totals from by-pool (server-side scoped)
+    // pool_readonly: compute totals directly in SQL over the validated pool scope
     const allowed = Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [];
     if (!allowed.length) return res.status(403).json({ error: "no_pools_assigned" });
 
-    const { data: rows, error: berr } = await supabase
-      .rpc("fn_revenue_paid_by_pool_filtered", {
+    // If a specific pool was validated, narrow to just that one; otherwise all allowed.
+    const filterIds = validatedPoolId ? [validatedPoolId] : allowed;
+    const { data: scopedRows, error: scopedErr } = await supabase
+      .rpc("fn_revenue_paid_totals_scoped", {
         p_from: from || null,
         p_to: to || null,
         p_search: searchPattern,
+        p_pool_ids: filterIds,
       });
 
-    if (berr) return res.status(500).json({ error: berr.message });
+    if (scopedErr) return res.status(500).json({ error: scopedErr.message });
 
-    // If a specific pool was validated, filter to just that one; otherwise all allowed
-    const filterIds = validatedPoolId ? [validatedPoolId] : allowed;
-    const items = (rows || []).filter((r) => filterIds.includes(String(r?.pool_id || "").trim()));
-    const item = items.reduce(
-      (acc, r) => {
-        acc.paid_transactions += Number(r?.paid_transactions ?? 0) || 0;
-        acc.total_amount_ar   += Number(r?.total_amount_ar   ?? 0) || 0;
-        return acc;
-      },
-      { paid_transactions: 0, total_amount_ar: 0 }
-    );
+    const scopedRow = (scopedRows && scopedRows[0]) ? scopedRows[0] : null;
+    const item = {
+      paid_transactions: Number(scopedRow?.paid_transactions ?? 0) || 0,
+      total_amount_ar: Number(scopedRow?.total_amount_ar ?? 0) || 0,
+    };
 
     // P1-01: the owner gets their own share over their (validated) pools.
     // platform_total_ar is DELIBERATELY omitted for pool_readonly admins —
