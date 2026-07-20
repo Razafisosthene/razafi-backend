@@ -14494,6 +14494,8 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
         const item = {
           paid_transactions: Number(scopedRow?.paid_transactions ?? 0) || 0,
           total_amount_ar: Number(scopedRow?.total_amount_ar ?? 0) || 0,
+          first_paid_at: scopedRow?.first_paid_at ?? null,
+          last_paid_at: scopedRow?.last_paid_at ?? null,
         };
         const share = await fetchShareTotals([validatedPoolId]);
         if (share) {
@@ -14540,6 +14542,8 @@ app.get("/api/admin/revenue/totals", requireAdmin, async (req, res) => {
     const item = {
       paid_transactions: Number(scopedRow?.paid_transactions ?? 0) || 0,
       total_amount_ar: Number(scopedRow?.total_amount_ar ?? 0) || 0,
+      first_paid_at: scopedRow?.first_paid_at ?? null,
+      last_paid_at: scopedRow?.last_paid_at ?? null,
     };
 
     // P1-01: the owner gets their own share over their (validated) pools.
