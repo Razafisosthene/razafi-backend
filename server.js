@@ -153,6 +153,72 @@ function getBonusConsumedBytes(currentUsedBytes, rawNote) {
   }
 }
 
+// P2-A2b — BigInt-safe bonus quota evaluation for RADIUS accounting.
+// Returns ok=false when the override or activation metadata is unusable so
+// accounting never disconnects a client from an uncertain/partial read.
+function parseIntegerBigIntStrict(value) {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value)) return null;
+    return BigInt(value);
+  }
+
+  const raw = String(value ?? "").trim();
+  if (!/^-?\d+$/.test(raw)) return null;
+
+  try {
+    return BigInt(raw);
+  } catch (_) {
+    return null;
+  }
+}
+
+function evaluateBonusDataQuota({ currentUsedBytes, bonusBytesRaw, rawNote }) {
+  const current = parseIntegerBigIntStrict(currentUsedBytes);
+  if (current === null || current < 0n) {
+    return { ok: false, reason: "current_used_invalid", reached: false, unlimited: false };
+  }
+
+  const bonusBytes = parseIntegerBigIntStrict(bonusBytesRaw);
+  if (bonusBytes === -1n) {
+    return {
+      ok: true,
+      reason: null,
+      reached: false,
+      unlimited: true,
+      consumedBytes: 0n,
+      bonusBytes,
+      baseUsedBytes: null,
+    };
+  }
+
+  if (bonusBytes === null || bonusBytes <= 0n) {
+    return { ok: false, reason: "bonus_bytes_invalid", reached: false, unlimited: false };
+  }
+
+  const parsed = parseBonusMeta(rawNote);
+  const meta = parsed?.meta && typeof parsed.meta === "object" ? parsed.meta : {};
+  if (!Object.prototype.hasOwnProperty.call(meta, "bonus_start_used_bytes")) {
+    return { ok: false, reason: "bonus_start_missing", reached: false, unlimited: false };
+  }
+
+  const baseUsedBytes = parseIntegerBigIntStrict(meta.bonus_start_used_bytes);
+  if (baseUsedBytes === null || baseUsedBytes < 0n) {
+    return { ok: false, reason: "bonus_start_invalid", reached: false, unlimited: false };
+  }
+
+  const consumedBytes = current > baseUsedBytes ? current - baseUsedBytes : 0n;
+  return {
+    ok: true,
+    reason: null,
+    reached: consumedBytes >= bonusBytes,
+    unlimited: false,
+    consumedBytes,
+    bonusBytes,
+    baseUsedBytes,
+  };
+}
+
 function getPreBonusStatus(rawNote, fallback = "used") {
   try {
     const parsed = parseBonusMeta(rawNote);
@@ -22146,50 +22212,82 @@ app.post("/api/radius/accounting", async (req, res) => {
 
     // Determine whether data quota is exhausted.
     // IMPORTANT:
-    // - normal session       => use initial plan data_mb
-    // - bonus session        => use bonus_bytes ONLY (autonomous mini-plan)
+    // - normal session => compare the monotone cumulative counter with plan data_mb
+    // - bonus session  => compare ONLY bytes consumed since bonus activation
     let quotaReached = false;
-    let totalLimitBytes = null;
     try {
       const planId = vsRows[0].plan_id || null;
       const isBonusSessionAcct = (vsRows[0].is_bonus_session === true);
 
       if (isBonusSessionAcct) {
-        const { data: bonusRow } = await supabase
+        const { data: bonusRow, error: bonusErr } = await supabase
           .from("voucher_bonus_overrides")
           .select("bonus_bytes,note")
           .eq("voucher_session_id", vsId)
           .maybeSingle();
 
-        bonusBaseUsedBytes = getBonusStartUsedBytes(bonusRow?.note);
-        const bonusBytesRaw = toSafeInt(bonusRow?.bonus_bytes);
-
-        if (bonusBytesRaw === -1) {
-          totalLimitBytes = null; // unlimited bonus
+        if (bonusErr) {
+          console.warn("[radius][accounting][bonus-quota] skipped", {
+            voucherCode: maskVoucherCode(voucherCode),
+            nasId: nasId || null,
+            reason: "override_load_failed",
+            code: String(bonusErr.code || "") || null,
+          });
+        } else if (!bonusRow) {
+          console.warn("[radius][accounting][bonus-quota] skipped", {
+            voucherCode: maskVoucherCode(voucherCode),
+            nasId: nasId || null,
+            reason: "override_missing",
+          });
         } else {
-          const bonusBytes = Math.max(0, Math.floor(bonusBytesRaw || 0));
-          totalLimitBytes = bonusBytes > 0 ? bonusBytes : 0;
+          const bonusQuota = evaluateBonusDataQuota({
+            currentUsedBytes: safeUsedBytes,
+            bonusBytesRaw: bonusRow.bonus_bytes,
+            rawNote: bonusRow.note,
+          });
+
+          if (!bonusQuota.ok) {
+            console.warn("[radius][accounting][bonus-quota] skipped", {
+              voucherCode: maskVoucherCode(voucherCode),
+              nasId: nasId || null,
+              reason: bonusQuota.reason,
+            });
+          } else {
+            quotaReached = bonusQuota.reached;
+          }
         }
       } else if (planId) {
-        const { data: planRow } = await supabase
+        const { data: planRow, error: planErr } = await supabase
           .from("plans")
           .select("data_mb")
           .eq("id", planId)
           .maybeSingle();
 
-        const dataMbRaw = planRow?.data_mb;
-        const dataMb = (dataMbRaw === null || dataMbRaw === undefined) ? null : Number(dataMbRaw);
-        totalLimitBytes =
-          (dataMb !== null && Number.isFinite(dataMb) && dataMb > 0)
-            ? Math.floor(dataMb * 1024 * 1024)
-            : null;
-      }
+        if (planErr) {
+          console.warn("[radius][accounting][quota] plan lookup skipped", {
+            voucherCode: maskVoucherCode(voucherCode),
+            nasId: nasId || null,
+            code: String(planErr.code || "") || null,
+          });
+        } else {
+          const dataMbRaw = planRow?.data_mb;
+          const dataMb = (dataMbRaw === null || dataMbRaw === undefined) ? null : Number(dataMbRaw);
+          const totalLimitBytes =
+            (dataMb !== null && Number.isFinite(dataMb) && dataMb > 0)
+              ? BigInt(Math.floor(dataMb * 1024 * 1024))
+              : null;
 
-      if (totalLimitBytes !== null) {
-        quotaReached = aggregatedUsed >= BigInt(totalLimitBytes);
+          if (totalLimitBytes !== null) {
+            quotaReached = safeUsedBytes >= totalLimitBytes;
+          }
+        }
       }
-    } catch (_) {
-      // ignore
+    } catch (quotaErr) {
+      console.warn("[radius][accounting][quota] evaluation skipped", {
+        voucherCode: maskVoucherCode(voucherCode),
+        nasId: nasId || null,
+        reason: String(quotaErr?.message || quotaErr || "unknown_error").slice(0, 160),
+      });
     }
 
 
