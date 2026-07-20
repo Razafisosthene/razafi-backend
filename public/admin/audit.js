@@ -4,8 +4,33 @@
     const text = await res.text();
     let data;
     try { data = JSON.parse(text); } catch { throw new Error("Réponse serveur non JSON"); }
-    if (!res.ok) throw new Error(data?.error || data?.message || "Requête échouée");
+    if (!res.ok) {
+      const code = data?.error || data?.message || "Requête échouée";
+      const err = new Error(code);
+      err.code = code;
+      err.status = res.status;
+      throw err;
+    }
     return data;
+  }
+
+  function isAbortError(err) {
+    return err?.name === "AbortError" || err?.code === 20;
+  }
+
+  function humanizeApiError(err) {
+    const code = String(err?.code || err?.message || err || "").trim();
+    const messages = {
+      search_too_long: "La recherche ne peut pas dépasser 80 caractères.",
+      search_invalid: "La recherche n’est pas valide.",
+      from_invalid: "La date de début n’est pas valide.",
+      to_invalid: "La date de fin n’est pas valide.",
+      limit_invalid: "La pagination demandée n’est pas valide.",
+      offset_invalid: "La pagination demandée n’est pas valide.",
+      plan_id_invalid: "Le forfait sélectionné n’est pas valide.",
+      pool_id_invalid: "Le pool sélectionné n’est pas valide."
+    };
+    return messages[code] || code || "Une erreur est survenue.";
   }
 
   const $ = (id) => document.getElementById(id);
@@ -156,31 +181,45 @@
   const PAGE_LIMIT = 100;
   let pageOffset = 0;
   let lastTotal = 0;
+  let auditRequestGeneration = 0;
+  let auditAbortController = null;
   // Frontend defense-in-depth only. Real authorization must still be verified
   // by the backend (requires server.js backend verification).
   let isSuperadminSession = false;
 
-  function buildParams() {
-    const q = String($("q")?.value || "").trim();
-    const status = String($("status")?.value || "").trim();
-    const event_type = String($("event_type")?.value || "").trim();
-    const plan_id = String($("plan_id")?.value || "").trim();
-    const pool_id = String($("pool_id")?.value || "").trim();
+  function captureAuditSnapshot() {
+    return Object.freeze({
+      q: String($("q")?.value || "").trim(),
+      status: String($("status")?.value || "").trim(),
+      event_type: String($("event_type")?.value || "").trim(),
+      plan_id: String($("plan_id")?.value || "").trim(),
+      pool_id: String($("pool_id")?.value || "").trim(),
+      fromIso: toISOFromLocalInput($("from")?.value || ""),
+      toIso: toISOFromLocalInput($("to")?.value || ""),
+      offset: pageOffset
+    });
+  }
 
-    const fromIso = toISOFromLocalInput($("from")?.value || "");
-    const toIso = toISOFromLocalInput($("to")?.value || "");
-
+  function buildParams(snapshot = captureAuditSnapshot()) {
     const params = new URLSearchParams();
     params.set("limit", String(PAGE_LIMIT));
-    params.set("offset", String(pageOffset));
-    if (q) params.set("q", q);
-    if (status) params.set("status", status);
-    if (event_type) params.set("event_type", event_type);
-    if (plan_id) params.set("plan_id", plan_id);
-    if (pool_id) params.set("pool_id", pool_id);
-    if (fromIso) params.set("from", fromIso);
-    if (toIso) params.set("to", toIso);
+    params.set("offset", String(snapshot.offset));
+    if (snapshot.q) params.set("q", snapshot.q);
+    if (snapshot.status) params.set("status", snapshot.status);
+    if (snapshot.event_type) params.set("event_type", snapshot.event_type);
+    if (snapshot.plan_id) params.set("plan_id", snapshot.plan_id);
+    if (snapshot.pool_id) params.set("pool_id", snapshot.pool_id);
+    if (snapshot.fromIso) params.set("from", snapshot.fromIso);
+    if (snapshot.toIso) params.set("to", snapshot.toIso);
     return params;
+  }
+
+  function setAuditLoading(isLoading) {
+    ["apply", "clear", "prev", "next"].forEach((id) => {
+      const el = $(id);
+      if (el) el.disabled = !!isLoading;
+    });
+    if (!isLoading) updatePagerButtons();
   }
 
   function updatePagerButtons() {
@@ -321,14 +360,23 @@
     // Frontend defense-in-depth only (requires server.js backend verification).
     if (!isSuperadminSession) return;
 
+    const requestGeneration = ++auditRequestGeneration;
+    if (auditAbortController) auditAbortController.abort();
+    const controller = new AbortController();
+    auditAbortController = controller;
+    const snapshot = captureAuditSnapshot();
+    setAuditLoading(true);
+
     try {
       if (statusLine) statusLine.textContent = "Chargement…";
       tbody.innerHTML = "";
 
-      const params = buildParams();
+      const params = buildParams(snapshot);
       const url = `/api/admin/audit?${params.toString()}`;
+      const data = await fetchJSON(url, { signal: controller.signal });
 
-      const data = await fetchJSON(url);
+      if (controller.signal.aborted || requestGeneration !== auditRequestGeneration) return;
+
       const items = data.items || data.rows || data.data || [];
 
       // P1-04 : resynchronisation sur l'offset effectif (clampé) du backend
@@ -387,10 +435,8 @@
       }
       updatePagerButtons();
 
-      // bind rows
       document.querySelectorAll("tr.audit-row").forEach(tr => {
-        tr.addEventListener("click", (e) => {
-          // avoid selecting text causing click? keep simple
+        tr.addEventListener("click", () => {
           try {
             const raw = tr.getAttribute("data-payload") || "{}";
             const obj = JSON.parse(raw);
@@ -400,10 +446,15 @@
           }
         });
       });
-
     } catch (e) {
+      if (isAbortError(e) || requestGeneration !== auditRequestGeneration) return;
       if (statusLine) statusLine.textContent = "";
-      tbody.innerHTML = `<tr><td colspan="10" style="padding:12px; color:#d9534f;">Échec du chargement : ${esc(e.message || e)}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="10" style="padding:12px; color:#d9534f;">Échec du chargement : ${esc(humanizeApiError(e))}</td></tr>`;
+    } finally {
+      if (requestGeneration === auditRequestGeneration) {
+        auditAbortController = null;
+        setAuditLoading(false);
+      }
     }
   }
 

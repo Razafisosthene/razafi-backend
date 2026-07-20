@@ -6,8 +6,32 @@ async function fetchJSON(url, opts = {}) {
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { throw new Error("Server returned non-JSON"); }
-  if (!res.ok) throw new Error(data?.error || data?.message || "Request failed");
+  if (!res.ok) {
+    const code = data?.error || data?.message || "Request failed";
+    const err = new Error(code);
+    err.code = code;
+    err.status = res.status;
+    throw err;
+  }
   return data;
+}
+
+function isAbortError(err) {
+  return err?.name === "AbortError" || err?.code === 20;
+}
+
+function humanizeApiError(err) {
+  const code = String(err?.code || err?.message || err || "").trim();
+  const messages = {
+    search_too_long: "La recherche ne peut pas dépasser 80 caractères.",
+    search_invalid: "La recherche n’est pas valide.",
+    from_invalid: "La date de début n’est pas valide.",
+    to_invalid: "La date de fin n’est pas valide.",
+    provider_invalid: "Le mode de paiement sélectionné n’est pas valide.",
+    limit_invalid: "La pagination demandée n’est pas valide.",
+    offset_invalid: "La pagination demandée n’est pas valide."
+  };
+  return messages[code] || code || "Une erreur est survenue.";
 }
 
 function esc(s) {
@@ -107,15 +131,23 @@ function setOwnerShareUnavailable(hint = "Indisponible pour le moment") {
 }
 
 // ✅ Common filter params for ALL endpoints
-function buildCommonParams() {
-  const search = byId("search")?.value?.trim() || "";
+function captureRevenueSnapshot() {
   const fromD = byId("from")?.value || "";
   const toD = byId("to")?.value || "";
+  return Object.freeze({
+    search: byId("search")?.value?.trim() || "",
+    from: fromD ? dateToISOStart(fromD) : "",
+    to: toD ? dateToISOEnd(toD) : "",
+    provider: getProviderFilterValue(),
+    txOffset
+  });
+}
 
+function buildCommonParams(snapshot = captureRevenueSnapshot()) {
   const params = new URLSearchParams();
-  if (search) params.set("search", search);
-  if (fromD) params.set("from", dateToISOStart(fromD));
-  if (toD) params.set("to", dateToISOEnd(toD));
+  if (snapshot.search) params.set("search", snapshot.search);
+  if (snapshot.from) params.set("from", snapshot.from);
+  if (snapshot.to) params.set("to", snapshot.to);
   return params;
 }
 
@@ -215,6 +247,52 @@ let lastRevenueByPlan = [];
 let lastRevenueByPool = [];
 let currentTab = "tx";
 const selectedTxIds = new Set();
+
+const revenueRequestGroups = {
+  aggregates: { generation: 0, controller: null },
+  transactions: { generation: 0, controller: null },
+  payouts: { generation: 0, controller: null }
+};
+
+function beginRevenueRequest(groupName) {
+  const group = revenueRequestGroups[groupName];
+  if (!group) throw new Error(`Unknown revenue request group: ${groupName}`);
+  if (group.controller) group.controller.abort();
+  group.generation += 1;
+  group.controller = new AbortController();
+  return {
+    groupName,
+    generation: group.generation,
+    controller: group.controller,
+    signal: group.controller.signal
+  };
+}
+
+function isRevenueRequestCurrent(request) {
+  const group = revenueRequestGroups[request?.groupName];
+  return !!group && !request.signal.aborted && group.generation === request.generation && group.controller === request.controller;
+}
+
+function finishRevenueRequest(request) {
+  const group = revenueRequestGroups[request?.groupName];
+  if (group && group.generation === request.generation && group.controller === request.controller) {
+    group.controller = null;
+  }
+}
+
+function cancelRevenueRequest(groupName) {
+  const group = revenueRequestGroups[groupName];
+  if (!group) return;
+  if (group.controller) group.controller.abort();
+  group.generation += 1;
+  group.controller = null;
+}
+
+function clearTransactionSelection() {
+  selectedTxIds.clear();
+  updateSelectionMeta();
+  renderSelectionChecks();
+}
 
 // -------------------------
 // Selection helpers / protection
@@ -435,58 +513,81 @@ function wireTabs() {
 }
 
 function wireFilters() {
+  let searchTimer = null;
+  const cancelSearchTimer = () => {
+    clearTimeout(searchTimer);
+    searchTimer = null;
+  };
+
   const refreshAll = () => {
+    cancelSearchTimer();
     txOffset = 0;
+    clearTransactionSelection();
     loadAll();
   };
 
   byId("refreshBtn").onclick = refreshAll;
 
   byId("clearBtn").onclick = () => {
+    cancelSearchTimer();
     byId("search").value = "";
     byId("from").value = "";
     byId("to").value = "";
     byId("providerFilter").value = "";
     txOffset = 0;
-    selectedTxIds.clear();
+    clearTransactionSelection();
     loadAll();
   };
 
-  // Mode de paiement filter — transaction table only (Phase B.2).
-  // Deliberately does NOT call loadAll(): totals/by-plan/by-pool/payouts
-  // must stay unaffected by this filter.
+  // Mode de paiement filter — transaction table only.
   byId("providerFilter").addEventListener("change", () => {
+    cancelSearchTimer();
     txOffset = 0;
-    selectedTxIds.clear();
-    updateSelectionMeta();
-    loadTransactions();
+    clearTransactionSelection();
+    loadTransactions(captureRevenueSnapshot());
   });
 
-  let t = null;
   byId("search").addEventListener("input", () => {
-    clearTimeout(t);
-    t = setTimeout(() => {
-      txOffset = 0;
-      loadAll();
+    cancelSearchTimer();
+    // Invalidate old search-dependent responses immediately, before the debounce
+    // expires, so they cannot render under the newly typed filter value.
+    cancelRevenueRequest("aggregates");
+    cancelRevenueRequest("transactions");
+    txOffset = 0;
+    clearTransactionSelection();
+    searchTimer = setTimeout(() => {
+      const length = Array.from(byId("search")?.value?.trim() || "").length;
+      // Empty search restores the complete scope. One character remains available
+      // through the explicit Actualiser button without automatic fan-out.
+      if (length !== 0 && length < 2) return;
+      const snapshot = captureRevenueSnapshot();
+      Promise.all([
+        loadAggregates(snapshot),
+        loadTransactions(snapshot)
+      ]);
     }, 350);
   });
 
-  byId("from").addEventListener("change", () => {
+  const onDateChange = () => {
+    cancelSearchTimer();
     txOffset = 0;
+    clearTransactionSelection();
     loadAll();
-  });
-  byId("to").addEventListener("change", () => {
-    txOffset = 0;
-    loadAll();
-  });
+  };
+  byId("from").addEventListener("change", onDateChange);
+  byId("to").addEventListener("change", onDateChange);
 
   byId("prevBtn").onclick = () => {
+    cancelSearchTimer();
     txOffset = Math.max(0, txOffset - txLimit);
-    loadTransactions();
+    clearTransactionSelection();
+    loadTransactions(captureRevenueSnapshot());
   };
   byId("nextBtn").onclick = () => {
+    cancelSearchTimer();
     txOffset = txOffset + txLimit;
-    loadTransactions();
+    clearTransactionSelection();
+    loadTransactions(captureRevenueSnapshot());
   };
 }
 
@@ -577,12 +678,11 @@ function wirePayoutActions() {
       });
 
       alert(buildAutoPayoutResultMessage(result));
-      selectedTxIds.clear();
-      updateSelectionMeta();
+      clearTransactionSelection();
       await loadAll();
       setTab("payout");
     } catch (e) {
-      alert("Erreur création reversements auto : " + e.message);
+      alert("Erreur création reversements auto : " + humanizeApiError(e));
     } finally {
       if (btn) {
         btn.disabled = false;
@@ -618,12 +718,11 @@ function wirePayoutActions() {
         })
       });
       alert(`Reversement créé ✅${r?.payout?.owner_total_ar != null ? "\nPart propriétaire: " + fmtAr(r.payout.owner_total_ar) : ""}`);
-      selectedTxIds.clear();
-      updateSelectionMeta();
+      clearTransactionSelection();
       await loadAll();
       setTab("payout");
     } catch (e) {
-      alert("Erreur création reversement : " + e.message);
+      alert("Erreur création reversement : " + humanizeApiError(e));
     }
   });
 
@@ -647,12 +746,16 @@ function wireModal() {
 // -------------------------
 // Data loaders
 // -------------------------
-async function loadTotals() {
-  setOwnerShareLoading();
+async function loadTotals(snapshot, request) {
+  if (isRevenueRequestCurrent(request)) setOwnerShareLoading();
 
   try {
-    const params = buildCommonParams();
-    const r = await fetchJSON("/api/admin/revenue/totals?" + params.toString());
+    const params = buildCommonParams(snapshot);
+    const r = await fetchJSON("/api/admin/revenue/totals?" + params.toString(), {
+      signal: request.signal
+    });
+    if (!isRevenueRequestCurrent(request)) return undefined;
+
     const it = r.item || {};
     byId("paidTotal").textContent = fmtAr(it.total_amount_ar ?? 0);
     byId("paidCount").textContent = String(it.paid_transactions ?? 0);
@@ -665,51 +768,50 @@ async function loadTotals() {
       it.total_owner_share_ar
     );
 
-    // V2 Phase 2 — safe capture for assistant (owner_total_ar already shown in Revenue UI)
-    lastRevenueTotals = {
-      total_amount_ar:   Number(it.total_amount_ar   ?? 0),
+    const safeTotals = {
+      total_amount_ar: Number(it.total_amount_ar ?? 0),
       paid_transactions: Number(it.paid_transactions ?? 0),
-      last_paid_at:      it.last_paid_at || null,
-      owner_total_ar:    ownerTotal != null ? ownerTotal : null,
+      last_paid_at: it.last_paid_at || null,
+      owner_total_ar: ownerTotal != null ? ownerTotal : null
     };
-    updateRevenueAssistantBridge();
 
     if (ownerTotal != null) {
       setOwnerShareTotal(ownerTotal);
     } else {
-      // P1-01 : plus aucun fallback par sommation de page — état explicite.
       setOwnerShareUnavailable();
     }
+    return safeTotals;
   } catch (e) {
+    if (isAbortError(e) || !isRevenueRequestCurrent(request)) return undefined;
     byId("paidTotal").textContent = "—";
     byId("paidCount").textContent = "—";
     byId("lastPaidAt").textContent = "—";
-    lastRevenueTotals = null;
-    updateRevenueAssistantBridge();
-    setOwnerShareUnavailable("Impossible de calculer pour le moment");
+    setOwnerShareUnavailable(humanizeApiError(e));
+    return null;
   }
 }
 
-async function loadByPlan() {
+async function loadByPlan(snapshot, request) {
   const body = byId("planBody");
   body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Chargement...</td></tr>`;
   try {
-    const params = buildCommonParams();
-    const r = await fetchJSON("/api/admin/revenue/by-plan?" + params.toString());
+    const params = buildCommonParams(snapshot);
+    const r = await fetchJSON("/api/admin/revenue/by-plan?" + params.toString(), { signal: request.signal });
+    if (!isRevenueRequestCurrent(request)) return undefined;
     const items = r.items || [];
 
-    // V2 Phase 2 — safe capture: plan_name + aggregates only, no phone/voucher/MAC/txid
-    lastRevenueByPlan = items.map(it => ({
-      plan_name:         String(it.plan_name || "—").trim(),
+    // Safe capture committed atomically by loadAggregates() only after all three
+    // aggregate responses belong to the same immutable filter snapshot.
+    const safeItems = items.map(it => ({
+      plan_name: String(it.plan_name || "—").trim(),
       paid_transactions: Number(it.paid_transactions ?? 0),
-      total_amount_ar:   Number(it.total_amount_ar   ?? 0),
-      last_paid_at:      it.last_paid_at || null,
+      total_amount_ar: Number(it.total_amount_ar ?? 0),
+      last_paid_at: it.last_paid_at || null
     }));
-    updateRevenueAssistantBridge();
 
     if (!items.length) {
       body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Aucune donnée.</td></tr>`;
-      return;
+      return safeItems;
     }
 
     // P1 (noms de plans dupliqués) : les lignes restent groupées par plan_id
@@ -736,31 +838,34 @@ async function loadByPlan() {
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtDate(it.last_paid_at)}</td>
       </tr>
     `).join("");
+    return safeItems;
   } catch (e) {
-    body.innerHTML = `<tr><td colspan="4" style="padding:12px; color:#c0392b;">${esc(e.message)}</td></tr>`;
+    if (isAbortError(e) || !isRevenueRequestCurrent(request)) return undefined;
+    body.innerHTML = `<tr><td colspan="4" style="padding:12px; color:#c0392b;">${esc(humanizeApiError(e))}</td></tr>`;
+    return [];
   }
 }
 
-async function loadByPool() {
+async function loadByPool(snapshot, request) {
   const body = byId("poolBody");
   body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Chargement...</td></tr>`;
   try {
-    const params = buildCommonParams();
-    const r = await fetchJSON("/api/admin/revenue/by-pool?" + params.toString());
+    const params = buildCommonParams(snapshot);
+    const r = await fetchJSON("/api/admin/revenue/by-pool?" + params.toString(), { signal: request.signal });
+    if (!isRevenueRequestCurrent(request)) return undefined;
     const items = r.items || [];
 
-    // V2 Phase 2 — safe capture: pool display name + aggregates only
-    lastRevenueByPool = items.map(it => ({
-      pool_name:         poolDisplayName(it),
+    // Safe capture committed atomically by loadAggregates().
+    const safeItems = items.map(it => ({
+      pool_name: poolDisplayName(it),
       paid_transactions: Number(it.paid_transactions ?? 0),
-      total_amount_ar:   Number(it.total_amount_ar   ?? 0),
-      last_paid_at:      it.last_paid_at || null,
+      total_amount_ar: Number(it.total_amount_ar ?? 0),
+      last_paid_at: it.last_paid_at || null
     }));
-    updateRevenueAssistantBridge();
 
     if (!items.length) {
       body.innerHTML = `<tr><td colspan="4" style="padding:12px; opacity:.75;">Aucune donnée.</td></tr>`;
-      return;
+      return safeItems;
     }
     body.innerHTML = items.map(it => `
       <tr>
@@ -770,13 +875,17 @@ async function loadByPool() {
         <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtDate(it.last_paid_at)}</td>
       </tr>
     `).join("");
+    return safeItems;
   } catch (e) {
-    body.innerHTML = `<tr><td colspan="4" style="padding:12px; color:#c0392b;">${esc(e.message)}</td></tr>`;
+    if (isAbortError(e) || !isRevenueRequestCurrent(request)) return undefined;
+    body.innerHTML = `<tr><td colspan="4" style="padding:12px; color:#c0392b;">${esc(humanizeApiError(e))}</td></tr>`;
+    return [];
   }
 }
 
 // V2 Phase 2 — Revenue assistant page data bridge.
-// Called after each of loadTotals, loadByPlan, loadByPool to keep bridge fresh.
+// P2-B2 commits totals/by-plan/by-pool atomically only after all three responses
+// belong to the same immutable filter snapshot.
 // Never exposes raw transaction data, mvola_phone, voucher_code, client_mac,
 // ap_mac, request_ref, transaction_id, platform_amount_ar, platform_share_pct,
 // owner_share_pct, or receipt_number.
@@ -809,26 +918,28 @@ function updateRevenueAssistantBridge() {
   };
 }
 
-async function loadTransactions() {
+async function loadTransactions(snapshot = captureRevenueSnapshot()) {
+  const request = beginRevenueRequest("transactions");
   const body = byId("txBody");
   body.innerHTML = `<tr><td colspan="13" style="padding:12px; opacity:.75;">Chargement...</td></tr>`;
   syncTxHeaders();
 
-  const params = buildCommonParams();
+  const params = buildCommonParams(snapshot);
   params.set("limit", String(txLimit));
-  params.set("offset", String(txOffset));
+  params.set("offset", String(snapshot.txOffset));
 
-  const provider = getProviderFilterValue();
+  const provider = snapshot.provider;
   if (provider) params.set("provider", provider);
 
   try {
-    const r = await fetchJSON("/api/admin/revenue/share-transactions?" + params.toString());
+    const r = await fetchJSON("/api/admin/revenue/share-transactions?" + params.toString(), { signal: request.signal });
+    if (!isRevenueRequestCurrent(request)) return;
     const items = r.items || [];
     const total = r.total || 0;
     lastTxItems = items;
 
     byId("txMeta").textContent =
-      `${items.length} affichée${items.length > 1 ? "s" : ""} / ${total} (page ${Math.floor(txOffset / txLimit) + 1})`;
+      `${items.length} affichée${items.length > 1 ? "s" : ""} / ${total} (page ${Math.floor(snapshot.txOffset / txLimit) + 1})`;
 
     if (!items.length) {
       body.innerHTML = `<tr><td colspan="13" style="padding:12px; opacity:.75;">Aucun résultat.</td></tr>`;
@@ -904,12 +1015,16 @@ async function loadTransactions() {
     renderSelectionChecks();
 
   } catch (e) {
-    body.innerHTML = `<tr><td colspan="13" style="padding:12px; color:#c0392b;">${esc(e.message)}</td></tr>`;
+    if (isAbortError(e) || !isRevenueRequestCurrent(request)) return;
+    body.innerHTML = `<tr><td colspan="13" style="padding:12px; color:#c0392b;">${esc(humanizeApiError(e))}</td></tr>`;
     byId("txMeta").textContent = "—";
+  } finally {
+    finishRevenueRequest(request);
   }
 }
 
-async function loadPayouts() {
+async function loadPayouts(snapshot = captureRevenueSnapshot()) {
+  const request = beginRevenueRequest("payouts");
   const body = byId("payoutBody");
   body.innerHTML = `<tr><td colspan="9" style="padding:12px; opacity:.75;">Chargement...</td></tr>`;
 
@@ -918,9 +1033,10 @@ async function loadPayouts() {
     // approuvée) — on cesse d'envoyer un paramètre que le backend ignorait
     // silencieusement. Les dates restent transmises : elles filtrent la date
     // de création du reversement (created_at), côté serveur, comme avant.
-    const params = buildCommonParams();
+    const params = buildCommonParams(snapshot);
     params.delete("search");
-    const r = await fetchJSON("/api/admin/revenue/payouts?" + params.toString());
+    const r = await fetchJSON("/api/admin/revenue/payouts?" + params.toString(), { signal: request.signal });
+    if (!isRevenueRequestCurrent(request)) return;
     const items = r.items || [];
     lastPayoutItems = items;
 
@@ -968,16 +1084,20 @@ async function loadPayouts() {
             method: "POST"
           });
           alert("Reversement marqué payé ✅");
+          clearTransactionSelection();
           await loadAll();
         } catch (e) {
-          alert("Erreur : " + e.message);
+          alert("Erreur : " + humanizeApiError(e));
         }
       });
     });
 
   } catch (e) {
-    body.innerHTML = `<tr><td colspan="9" style="padding:12px; color:#c0392b;">${esc(e.message)}</td></tr>`;
+    if (isAbortError(e) || !isRevenueRequestCurrent(request)) return;
+    body.innerHTML = `<tr><td colspan="9" style="padding:12px; color:#c0392b;">${esc(humanizeApiError(e))}</td></tr>`;
     byId("payoutMeta").textContent = "—";
+  } finally {
+    finishRevenueRequest(request);
   }
 }
 
@@ -1145,10 +1265,33 @@ async function showPayoutDetail(it) {
   modal.style.display = "block";
 }
 
-async function loadAll() {
-  await loadTotals();
-  await Promise.all([loadByPlan(), loadByPool(), loadPayouts()]);
-  await loadTransactions();
+async function loadAggregates(snapshot = captureRevenueSnapshot()) {
+  const request = beginRevenueRequest("aggregates");
+  try {
+    const [totals, byPlan, byPool] = await Promise.all([
+      loadTotals(snapshot, request),
+      loadByPlan(snapshot, request),
+      loadByPool(snapshot, request)
+    ]);
+
+    if (!isRevenueRequestCurrent(request)) return;
+    if (totals === undefined || byPlan === undefined || byPool === undefined) return;
+
+    lastRevenueTotals = totals;
+    lastRevenueByPlan = Array.isArray(byPlan) ? byPlan : [];
+    lastRevenueByPool = Array.isArray(byPool) ? byPool : [];
+    updateRevenueAssistantBridge();
+  } finally {
+    finishRevenueRequest(request);
+  }
+}
+
+async function loadAll(snapshot = captureRevenueSnapshot()) {
+  await Promise.all([
+    loadAggregates(snapshot),
+    loadTransactions(snapshot),
+    loadPayouts(snapshot)
+  ]);
 }
 
 // -------------------------

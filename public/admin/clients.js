@@ -7,8 +7,31 @@ async function fetchJSON(url, opts = {}) {
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { throw new Error("Server returned non-JSON"); }
-  if (!res.ok) throw new Error(data?.error || data?.message || "Request failed");
+  if (!res.ok) {
+    const code = data?.error || data?.message || "Request failed";
+    const err = new Error(code);
+    err.code = code;
+    err.status = res.status;
+    throw err;
+  }
   return data;
+}
+
+function isAbortError(err) {
+  return err?.name === "AbortError" || err?.code === 20;
+}
+
+function humanizeApiError(err) {
+  const code = String(err?.code || err?.message || err || "").trim();
+  const messages = {
+    search_too_long: "La recherche ne peut pas dépasser 80 caractères.",
+    search_invalid: "La recherche n’est pas valide.",
+    limit_invalid: "La pagination demandée n’est pas valide.",
+    offset_invalid: "La pagination demandée n’est pas valide.",
+    plan_id_invalid: "Le forfait sélectionné n’est pas valide.",
+    pool_id_invalid: "Le pool sélectionné n’est pas valide."
+  };
+  return messages[code] || code || "Une erreur est survenue.";
 }
 
 function fmtDate(iso) {
@@ -122,6 +145,15 @@ function computeQuota(it) {
 
 let debounceTimer = null;
 let lastItems = [];
+let clientsRequestGeneration = 0;
+let clientsAbortController = null;
+
+function invalidateActiveClientsRequest() {
+  clientsRequestGeneration += 1;
+  if (clientsAbortController) clientsAbortController.abort();
+  clientsAbortController = null;
+}
+
 // P0 FIX (F-01): real offset pagination against the backend.
 let pageOffset = 0;
 const PAGE_LIMIT = 200;
@@ -557,13 +589,7 @@ tr.innerHTML = `
 // -------------------------
 // Loaders
 // -------------------------
-async function loadClients() {
-  applyInitialClientUrlFiltersBeforeLoad();
-
-  const err = document.getElementById("error");
-  err.style.display = "none";
-  err.textContent = "";
-
+function captureClientRequestSnapshot() {
   const uiStatus = normStatus(document.getElementById("status").value || "all") || "all";
   const search = document.getElementById("search").value.trim();
   const planId = document.getElementById("planFilter")?.value || "all";
@@ -572,48 +598,83 @@ async function loadClients() {
     poolId = __initialPoolIdFromUrl;
   }
 
-  // P0 FIX (F-01): the status filter and every counter are now computed by the
-  // backend over the WHOLE filtered scope ("online"/"offline" included — the
-  // backend resolves them against the active set). The frontend no longer
-  // re-filters or re-counts a single page.
-  const qs = new URLSearchParams();
-  qs.set("status", uiStatus);
-  if (search) qs.set("search", search);
-  if (planId && planId !== "all") qs.set("plan_id", planId);
-  if (poolId && poolId !== "all") qs.set("pool_id", poolId);
-  qs.set("limit", String(PAGE_LIMIT));
-  qs.set("offset", String(pageOffset));
+  return Object.freeze({
+    uiStatus,
+    search,
+    planId,
+    poolId,
+    offset: pageOffset
+  });
+}
 
-  const data = await fetchJSON("/api/admin/clients?" + qs.toString());
+async function loadClients() {
+  applyInitialClientUrlFiltersBeforeLoad();
 
-  applyInitialPoolFilterWhenReady();
+  const requestGeneration = ++clientsRequestGeneration;
+  if (clientsAbortController) clientsAbortController.abort();
+  const controller = new AbortController();
+  clientsAbortController = controller;
+  const snapshot = captureClientRequestSnapshot();
 
-  // P0.1 FIX (audit correction 4): the backend clamps the offset when the
-  // dataset shrank (e.g. last row of the last page deleted) and echoes the
-  // effective offset — resynchronize so prev/next stay coherent.
-  if (Number.isFinite(Number(data?.offset))) {
-    pageOffset = Math.max(0, Number(data.offset));
-  }
+  const err = document.getElementById("error");
+  err.style.display = "none";
+  err.textContent = "";
 
-  lastTotal = Number(data.total || 0);
-  renderSummary(data.summary || {});
-  renderTable(data.items || []);
+  try {
+    // P0 FIX (F-01): the status filter and every counter are now computed by the
+    // backend over the WHOLE filtered scope ("online"/"offline" included — the
+    // backend resolves them against the active set). The frontend no longer
+    // re-filters or re-counts a single page.
+    const qs = new URLSearchParams();
+    qs.set("status", snapshot.uiStatus);
+    if (snapshot.search) qs.set("search", snapshot.search);
+    if (snapshot.planId && snapshot.planId !== "all") qs.set("plan_id", snapshot.planId);
+    if (snapshot.poolId && snapshot.poolId !== "all") qs.set("pool_id", snapshot.poolId);
+    qs.set("limit", String(PAGE_LIMIT));
+    qs.set("offset", String(snapshot.offset));
 
-  // P0.1 FIX (audit correction 2): when live status is unavailable and the
-  // Connectés/Hors ligne filter is selected, say so — an empty table here is
-  // "unknown", not "zero clients".
-  const emptyEl = document.getElementById("empty");
-  if (emptyEl) {
-    if ((uiStatus === "online" || uiStatus === "offline") && data.live_status_available === false) {
-      emptyEl.textContent = "Statut live indisponible pour le moment — impossible de filtrer Connectés / Hors ligne. Réessayez avec Actualiser.";
-    } else {
-      emptyEl.textContent = "Aucun enregistrement trouvé.";
+    const data = await fetchJSON("/api/admin/clients?" + qs.toString(), {
+      signal: controller.signal
+    });
+
+    if (controller.signal.aborted || requestGeneration !== clientsRequestGeneration) return;
+
+    applyInitialPoolFilterWhenReady();
+
+    // P0.1 FIX (audit correction 4): the backend clamps the offset when the
+    // dataset shrank (e.g. last row of the last page deleted) and echoes the
+    // effective offset — resynchronize so prev/next stay coherent.
+    if (Number.isFinite(Number(data?.offset))) {
+      pageOffset = Math.max(0, Number(data.offset));
+    }
+
+    lastTotal = Number(data.total || 0);
+    renderSummary(data.summary || {});
+    renderTable(data.items || []);
+
+    // P0.1 FIX (audit correction 2): when live status is unavailable and the
+    // Connectés/Hors ligne filter is selected, say so — an empty table here is
+    // "unknown", not "zero clients".
+    const emptyEl = document.getElementById("empty");
+    if (emptyEl) {
+      if ((snapshot.uiStatus === "online" || snapshot.uiStatus === "offline") && data.live_status_available === false) {
+        emptyEl.textContent = "Statut live indisponible pour le moment — impossible de filtrer Connectés / Hors ligne. Réessayez avec Actualiser.";
+      } else {
+        emptyEl.textContent = "Aucun enregistrement trouvé.";
+      }
+    }
+
+    renderPagination();
+    renderLiveNotice(data);
+    scrollToClientListPreviewAfterRedirect();
+  } catch (e) {
+    if (isAbortError(e) || requestGeneration !== clientsRequestGeneration) return;
+    throw e;
+  } finally {
+    if (requestGeneration === clientsRequestGeneration) {
+      clientsAbortController = null;
     }
   }
-
-  renderPagination();
-  renderLiveNotice(data);
-  scrollToClientListPreviewAfterRedirect();
 }
 
 // P0.1 FIX (audit corrections 2 & 7): live-status caveats are surfaced for
@@ -1261,6 +1322,11 @@ function closeModal() {
 }
 
 function wireUI() {
+  const cancelSearchDebounce = () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  };
+
   document.getElementById("logoutBtn").onclick = async () => {
     try {
       await fetch("/api/admin/logout", { method: "POST", credentials: "include" });
@@ -1269,8 +1335,12 @@ function wireUI() {
     }
   };
 
-  document.getElementById("refreshBtn").onclick = () => loadClients().catch(showTopError);
+  document.getElementById("refreshBtn").onclick = () => {
+    cancelSearchDebounce();
+    loadClients().catch(showTopError);
+  };
   document.getElementById("clearBtn").onclick = () => {
+    cancelSearchDebounce();
     document.getElementById("search").value = "";
     document.getElementById("status").value = "all";
     const pf = document.getElementById("planFilter");
@@ -1291,6 +1361,7 @@ function wireUI() {
   };
 
   document.getElementById("status").addEventListener("change", () => {
+    cancelSearchDebounce();
     pageOffset = 0; // P0: filter change restarts at page 1
     loadClients().catch(showTopError);
   });
@@ -1298,6 +1369,7 @@ function wireUI() {
   const planFilterEl = document.getElementById("planFilter");
   if (planFilterEl) {
     planFilterEl.addEventListener("change", () => {
+      cancelSearchDebounce();
       pageOffset = 0;
       loadClients().catch(showTopError);
     });
@@ -1306,14 +1378,20 @@ function wireUI() {
   const poolFilterEl = document.getElementById("poolFilter");
   if (poolFilterEl) {
     poolFilterEl.addEventListener("change", () => {
+      cancelSearchDebounce();
       pageOffset = 0;
       loadClients().catch(showTopError);
     });
   }
 
   document.getElementById("search").addEventListener("input", () => {
+    invalidateActiveClientsRequest();
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
+      const searchLength = Array.from(document.getElementById("search").value.trim()).length;
+      // Empty search restores the full list. A single character remains available
+      // through the explicit Actualiser button, but does not trigger an automatic request.
+      if (searchLength !== 0 && searchLength < 2) return;
       pageOffset = 0;
       loadClients().catch(showTopError);
     }, 300);
@@ -1323,10 +1401,12 @@ function wireUI() {
   const prevBtn = document.getElementById("prevPageBtn");
   const nextBtn = document.getElementById("nextPageBtn");
   if (prevBtn) prevBtn.onclick = () => {
+    cancelSearchDebounce();
     pageOffset = Math.max(0, pageOffset - PAGE_LIMIT);
     loadClients().catch(showTopError);
   };
   if (nextBtn) nextBtn.onclick = () => {
+    cancelSearchDebounce();
     if (pageOffset + PAGE_LIMIT < lastTotal) {
       pageOffset += PAGE_LIMIT;
       loadClients().catch(showTopError);
@@ -1344,9 +1424,10 @@ function wireUI() {
 }
 
 function showTopError(e) {
+  if (isAbortError(e)) return;
   const err = document.getElementById("error");
   err.style.display = "block";
-  err.textContent = e?.message || String(e);
+  err.textContent = humanizeApiError(e);
 }
 
 // -------------------------
