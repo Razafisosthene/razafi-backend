@@ -381,6 +381,349 @@ function getPreBonusStatus(rawNote, fallback = "used") {
   const fb = String(fallback || "").trim().toLowerCase();
   return fb === "expired" ? "expired" : "used";
 }
+
+// =============================================================================
+// P2-A3.2 — BONUS V2 BACKEND HELPERS
+// Single source of truth: voucher_bonus_runs + fn_get_voucher_bonus_truth.
+// No fallback to voucher_bonus_overrides.
+// =============================================================================
+
+function unwrapBonusV2RpcPayload(data) {
+  if (Array.isArray(data)) return data.length ? (data[0] || {}) : {};
+  return (data && typeof data === "object") ? data : {};
+}
+
+function bonusV2KnownErrorCode(error, fallback = "bonus_v2_error") {
+  const raw = String(error?.message || error?.details || error || "").trim();
+  const known = [
+    "voucher_identifier_required",
+    "voucher_identifiers_mismatch",
+    "voucher_session_not_found",
+    "voucher_not_terminal",
+    "legacy_bonus_session_active",
+    "bonus_not_available",
+    "bonus_run_not_found",
+    "bonus_run_not_active",
+    "bonus_run_not_finished",
+    "bonus_duration_invalid",
+    "bonus_data_invalid",
+    "bonus_note_too_long",
+    "prepare_request_id_conflict",
+    "activation_request_id_conflict",
+    "finish_request_id_conflict",
+    "cancel_request_id_conflict",
+    "active_bonus_cannot_be_cancelled",
+    "bonus_already_active",
+    "voucher_session_id_and_request_id_required",
+    "bonus_run_id_and_request_id_required",
+    "bonus_data_not_due",
+    "bonus_time_not_due",
+    "bonus_both_not_due",
+    "bonus_finish_reason_invalid",
+    "coa_retry_policy_invalid",
+  ];
+  for (const code of known) {
+    if (raw.includes(code)) return code;
+  }
+  return fallback;
+}
+
+function bonusV2RequestId(rawValue = null) {
+  const raw = String(rawValue || "").trim();
+  if (!raw) return crypto.randomUUID();
+  if (!UUID_V1_TO_V5_RE.test(raw)) {
+    const err = new Error("request_id_invalid");
+    err.publicCode = "request_id_invalid";
+    err.httpStatus = 400;
+    throw err;
+  }
+  return raw.toLowerCase();
+}
+
+function bonusV2BigInt(value, { allowNull = false, allowNegativeOne = false } = {}) {
+  if ((value === null || value === undefined || value === "") && allowNull) return null;
+  const parsed = parseIntegerBigIntStrict(value);
+  if (parsed === null) return null;
+  if (allowNegativeOne && parsed === -1n) return parsed;
+  return parsed >= 0n ? parsed : null;
+}
+
+function bonusV2SafeNumber(value, fallback = 0) {
+  const parsed = bonusV2BigInt(value, { allowNull: true });
+  if (parsed === null || parsed > BigInt(Number.MAX_SAFE_INTEGER)) return fallback;
+  return Number(parsed);
+}
+
+function bonusV2RadiusNumber(value, fieldName) {
+  const parsed = bonusV2BigInt(value, { allowNull: false });
+  if (parsed === null || parsed < 0n || parsed > BigInt(Number.MAX_SAFE_INTEGER)) {
+    const err = new Error(`${fieldName || "bonus_value"}_out_of_range`);
+    err.publicCode = `${fieldName || "bonus_value"}_out_of_range`;
+    throw err;
+  }
+  return Number(parsed);
+}
+
+function serializeBonusV2(bonus) {
+  if (!bonus || typeof bonus !== "object") return null;
+  return {
+    run_id: bonus.run_id || null,
+    voucher_session_id: bonus.voucher_session_id || null,
+    state: String(bonus.state || "").toLowerCase() || null,
+    effective_state: String(bonus.effective_state || bonus.state || "").toLowerCase() || null,
+    due_reason: bonus.due_reason || null,
+    can_activate: bonus.can_activate === true,
+    can_authorize: bonus.can_authorize === true,
+    duration_seconds: bonus.duration_seconds ?? null,
+    total_bytes: bonus.total_bytes ?? null,
+    data_unlimited: bonus.data_unlimited === true,
+    baseline_used_bytes: bonus.baseline_used_bytes ?? null,
+    accounting_cutoff_at: bonus.accounting_cutoff_at || null,
+    current_used_bytes: bonus.current_used_bytes ?? null,
+    consumed_bytes: bonus.consumed_bytes ?? null,
+    remaining_bytes: bonus.remaining_bytes ?? null,
+    remaining_seconds: bonus.remaining_seconds ?? null,
+    time_due: bonus.time_due === true,
+    data_due: bonus.data_due === true,
+    prepared_at: bonus.prepared_at || null,
+    started_at: bonus.started_at || null,
+    expires_at: bonus.expires_at || null,
+    ended_at: bonus.ended_at || null,
+    ended_reason: bonus.ended_reason || null,
+    note: bonus.note || null,
+    prepared_by: bonus.prepared_by || null,
+    activated_by: bonus.activated_by || null,
+    activated_client_mac: bonus.activated_client_mac || null,
+    activated_nas_id: bonus.activated_nas_id || null,
+    coa_status: bonus.coa_status || null,
+    coa_request_id: bonus.coa_request_id || null,
+    coa_reason: bonus.coa_reason || null,
+    coa_attempts: Number(bonus.coa_attempts || 0) || 0,
+    coa_last_attempt_at: bonus.coa_last_attempt_at || null,
+    coa_next_retry_at: bonus.coa_next_retry_at || null,
+    coa_succeeded_at: bonus.coa_succeeded_at || null,
+    coa_last_error: bonus.coa_last_error || null,
+    total_human: bonus.total_human || null,
+    consumed_human: bonus.consumed_human || null,
+    remaining_human: bonus.remaining_human || null,
+    created_at: bonus.created_at || null,
+    updated_at: bonus.updated_at || null,
+  };
+}
+
+function bonusV2LegacyFields(bonus) {
+  const canonical = serializeBonusV2(bonus);
+  if (!canonical) {
+    return {
+      bonus_seconds: 0,
+      bonus_bytes: 0,
+      has_bonus: false,
+      has_usable_bonus: false,
+      bonus_mode_active: false,
+      bonus_compact: "",
+      bonus_v2: null,
+    };
+  }
+
+  const state = canonical.state;
+  const effectiveState = canonical.effective_state;
+  const available = state === "available" && effectiveState === "available" && canonical.can_activate;
+  const active = state === "active" && effectiveState === "active" && canonical.can_authorize;
+
+  const durationSeconds = bonusV2SafeNumber(canonical.duration_seconds, 0);
+  const remainingSeconds = bonusV2SafeNumber(canonical.remaining_seconds, 0);
+
+  let aliasBytes = 0;
+  if (canonical.data_unlimited && (available || active)) {
+    aliasBytes = -1;
+  } else if (available) {
+    aliasBytes = bonusV2SafeNumber(canonical.total_bytes, 0);
+  } else if (active) {
+    aliasBytes = bonusV2SafeNumber(canonical.remaining_bytes, 0);
+  }
+
+  const aliasSeconds = available ? durationSeconds : (active ? remainingSeconds : 0);
+
+  return {
+    bonus_seconds: aliasSeconds,
+    bonus_bytes: aliasBytes,
+    has_bonus: true,
+    has_usable_bonus: available,
+    bonus_mode_active: active,
+    bonus_compact: formatBonusCompactLine(aliasSeconds, aliasBytes),
+    bonus_v2: canonical,
+  };
+}
+
+async function loadVoucherBonusV2Truth({
+  voucherSessionId = null,
+  voucherCode = null,
+  includeHistory = false,
+} = {}) {
+  if (!supabase) throw new Error("supabase_not_configured");
+
+  const { data, error } = await supabase.rpc("fn_get_voucher_bonus_truth", {
+    p_voucher_session_id: voucherSessionId || null,
+    p_voucher_code: voucherCode || null,
+    p_include_history: includeHistory === true,
+  });
+
+  if (error) {
+    const err = new Error(bonusV2KnownErrorCode(error, "bonus_truth_failed"));
+    err.cause = error;
+    throw err;
+  }
+
+  const payload = unwrapBonusV2RpcPayload(data);
+  return {
+    bonus: serializeBonusV2(payload?.bonus || null),
+    history: Array.isArray(payload?.history)
+      ? payload.history.map(serializeBonusV2).filter(Boolean)
+      : [],
+  };
+}
+
+async function prepareVoucherBonusV2({
+  voucherSessionId,
+  requestId,
+  durationSeconds,
+  totalBytes,
+  note = null,
+  actor = null,
+}) {
+  const { data, error } = await supabase.rpc("fn_prepare_voucher_bonus", {
+    p_voucher_session_id: voucherSessionId,
+    p_request_id: requestId,
+    p_duration_seconds: durationSeconds,
+    p_total_bytes: totalBytes,
+    p_note: note,
+    p_actor: actor,
+  });
+  if (error) {
+    const err = new Error(bonusV2KnownErrorCode(error, "bonus_prepare_failed"));
+    err.cause = error;
+    throw err;
+  }
+  const payload = unwrapBonusV2RpcPayload(data);
+  return { ...payload, bonus: serializeBonusV2(payload?.bonus || null) };
+}
+
+async function startVoucherBonusV2({
+  voucherSessionId,
+  requestId,
+  clientMac = null,
+  nasId = null,
+  actor = null,
+}) {
+  const { data, error } = await supabase.rpc("fn_start_voucher_bonus", {
+    p_voucher_session_id: voucherSessionId,
+    p_request_id: requestId,
+    p_client_mac: clientMac,
+    p_nas_id: nasId,
+    p_actor: actor,
+  });
+  if (error) {
+    const err = new Error(bonusV2KnownErrorCode(error, "bonus_start_failed"));
+    err.cause = error;
+    throw err;
+  }
+  const payload = unwrapBonusV2RpcPayload(data);
+  return { ...payload, bonus: serializeBonusV2(payload?.bonus || null) };
+}
+
+async function finishVoucherBonusV2({
+  runId,
+  requestId,
+  reason = null,
+  actor = null,
+  details = {},
+  requireCoa = true,
+}) {
+  const { data, error } = await supabase.rpc("fn_finish_voucher_bonus", {
+    p_run_id: runId,
+    p_request_id: requestId,
+    p_reason: reason,
+    p_actor: actor,
+    p_details: details && typeof details === "object" ? details : {},
+    p_require_coa: requireCoa === true,
+  });
+  if (error) {
+    const err = new Error(bonusV2KnownErrorCode(error, "bonus_finish_failed"));
+    err.cause = error;
+    throw err;
+  }
+  const payload = unwrapBonusV2RpcPayload(data);
+  return { ...payload, bonus: serializeBonusV2(payload?.bonus || null) };
+}
+
+async function cancelVoucherBonusV2({
+  voucherSessionId,
+  requestId,
+  actor = null,
+  note = null,
+}) {
+  const { data, error } = await supabase.rpc("fn_cancel_voucher_bonus", {
+    p_voucher_session_id: voucherSessionId,
+    p_request_id: requestId,
+    p_actor: actor,
+    p_note: note,
+  });
+  if (error) {
+    const err = new Error(bonusV2KnownErrorCode(error, "bonus_cancel_failed"));
+    err.cause = error;
+    throw err;
+  }
+  const payload = unwrapBonusV2RpcPayload(data);
+  return { ...payload, bonus: serializeBonusV2(payload?.bonus || null) };
+}
+
+async function claimVoucherBonusV2Coa({
+  runId,
+  requestId,
+  actor = null,
+  maxAttempts = 3,
+  retryDelaySeconds = 30,
+}) {
+  const { data, error } = await supabase.rpc("fn_claim_voucher_bonus_coa", {
+    p_run_id: runId,
+    p_request_id: requestId,
+    p_actor: actor,
+    p_max_attempts: maxAttempts,
+    p_retry_delay_seconds: retryDelaySeconds,
+  });
+  if (error) {
+    const err = new Error(bonusV2KnownErrorCode(error, "bonus_coa_claim_failed"));
+    err.cause = error;
+    throw err;
+  }
+  const payload = unwrapBonusV2RpcPayload(data);
+  return { ...payload, bonus: serializeBonusV2(payload?.bonus || null) };
+}
+
+async function recordVoucherBonusV2CoaResult({
+  runId,
+  requestId,
+  succeeded,
+  errorMessage = null,
+  actor = null,
+  details = {},
+}) {
+  const { data, error } = await supabase.rpc("fn_record_voucher_bonus_coa_result", {
+    p_run_id: runId,
+    p_request_id: requestId,
+    p_succeeded: succeeded === true,
+    p_error: errorMessage,
+    p_actor: actor,
+    p_details: details && typeof details === "object" ? details : {},
+  });
+  if (error) {
+    const err = new Error(bonusV2KnownErrorCode(error, "bonus_coa_result_failed"));
+    err.cause = error;
+    throw err;
+  }
+  const payload = unwrapBonusV2RpcPayload(data);
+  return { ...payload, bonus: serializeBonusV2(payload?.bonus || null) };
+}
 // ===============================
 // ADMIN AUTH — SETTINGS (A1 hardening)
 // ===============================
@@ -11014,70 +11357,88 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     }
 
     // ------------------------------
-    // Bonus overlay flags — READ-ONLY (P2-A2)
-    // Cleanup is performed independently by fn_cleanup_finished_bonus_sessions
-    // through the periodic backend job. This GET never writes bonus/session data.
+    // P2-A3.2 — Bonus V2 overlay (read-only, batched)
+    // The original voucher status remains untouched; UI compatibility flags
+    // are derived exclusively from vw_voucher_bonus_truth.
     // ------------------------------
     try {
-      const ids = Array.from(new Set((items || []).map(x => x?.id).filter(Boolean)));
+      const ids = Array.from(new Set((items || []).map((x) => x?.id).filter(Boolean)));
 
+      let bonusBySessionId = {};
       if (ids.length) {
         const { data: bRows, error: bErr } = await supabase
-          .from("voucher_bonus_overrides")
-          .select("voucher_session_id,bonus_seconds,bonus_bytes,note")
-          .in("voucher_session_id", ids);
+          .from("vw_voucher_bonus_truth")
+          .select(`
+            voucher_session_id,
+            run_id,
+            stored_status,
+            effective_status,
+            due_reason,
+            can_activate,
+            can_authorize,
+            duration_seconds,
+            total_bytes,
+            data_unlimited,
+            baseline_used_bytes,
+            accounting_cutoff_at,
+            current_used_bytes,
+            consumed_bytes,
+            remaining_bytes,
+            remaining_seconds,
+            time_due,
+            data_due,
+            prepared_at,
+            started_at,
+            expires_at,
+            ended_at,
+            ended_reason,
+            note,
+            prepared_by,
+            activated_by,
+            activated_client_mac,
+            activated_nas_id,
+            coa_status,
+            coa_request_id,
+            coa_reason,
+            coa_attempts,
+            coa_last_attempt_at,
+            coa_next_retry_at,
+            coa_succeeded_at,
+            coa_last_error,
+            total_human,
+            consumed_human,
+            remaining_human,
+            created_at,
+            updated_at
+          `)
+          .in("voucher_session_id", ids)
+          .in("stored_status", ["available", "active"]);
 
-        if (!bErr && Array.isArray(bRows)) {
-          const bMap = {};
+        if (bErr) throw bErr;
 
-          for (const b of bRows) {
-            const k = String(b.voucher_session_id || "").trim();
-            if (!k) continue;
-
-            bMap[k] = {
-              bonus_seconds: toSafeInt(b.bonus_seconds),
-              bonus_bytes: toSafeInt(b.bonus_bytes),
-              note: b.note || null,
-            };
-          }
-
-          for (const it of items) {
-            const b = bMap[String(it.id)];
-            const bs = toSafeInt(b?.bonus_seconds);
-            const bb = toSafeInt(b?.bonus_bytes);
-            const statusNorm = String(it.status || it.truth_status || "").toLowerCase();
-            const hasTimeBonus = bs > 0;
-            const hasDataBonus = (bb === -1 || bb > 0);
-
-            it.bonus_seconds = bs;
-            it.bonus_bytes = bb;
-            it.has_bonus = hasTimeBonus || hasDataBonus;
-
-            // Backend truth for admin UI
-            it.has_usable_bonus =
-              !it.is_bonus_session &&
-              (statusNorm === "used" || statusNorm === "expired") &&
-              hasTimeBonus &&
-              hasDataBonus;
-
-            it.bonus_mode_active =
-              !!it.is_bonus_session &&
-              statusNorm === "active" &&
-              hasTimeBonus &&
-              hasDataBonus;
-          }
-        } else {
-          for (const it of items) {
-            it.bonus_seconds = 0;
-            it.bonus_bytes = 0;
-            it.has_bonus = false;
-            it.has_usable_bonus = false;
-            it.bonus_mode_active = false;
-          }
+        for (const row of bRows || []) {
+          const sessionId = String(row?.voucher_session_id || "").trim();
+          if (!sessionId) continue;
+          bonusBySessionId[sessionId] = serializeBonusV2({
+            ...row,
+            state: row.stored_status,
+            effective_state: row.effective_status,
+          });
         }
       }
+
+      for (const it of items || []) {
+        const bonus = bonusBySessionId[String(it.id)] || null;
+        const legacy = bonusV2LegacyFields(bonus);
+        it.bonus_seconds = legacy.bonus_seconds;
+        it.bonus_bytes = legacy.bonus_bytes;
+        it.has_bonus = legacy.has_bonus;
+        it.has_usable_bonus = legacy.has_usable_bonus;
+        it.bonus_mode_active = legacy.bonus_mode_active;
+        it.bonus_v2 = legacy.bonus_v2;
+      }
     } catch (e) {
-      console.error("BONUS OVERLAY LOAD ERROR", e);
+      console.error("BONUS V2 OVERLAY LOAD ERROR", e?.message || e);
 
       for (const it of items || []) {
         it.bonus_seconds = 0;
@@ -11085,6 +11446,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         it.has_bonus = false;
         it.has_usable_bonus = false;
         it.bonus_mode_active = false;
+        it.bonus_v2 = null;
       }
     }
 
@@ -12754,33 +13116,39 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
     data.status = data.truth_status || data.status || null;
 
     // ------------------------------
-    // BONUS-AWARE effective status (Admin detail)
-    // If expired/used but a bonus exists, allow "Utiliser ce code" by showing status as pending.
+    // P2-A3.2 — Bonus V2 truth for Admin detail
+    // Keep the original voucher status untouched. Compatibility fields are
+    // added for the current clients.js; canonical V2 data is exposed in bonus_v2.
     // ------------------------------
     data.raw_status = data.status;
+    let adminBonusV2 = null;
+    let adminBonusV2History = [];
+
     try {
-      const bonus = await getVoucherBonusOverride({ voucher_session_id: data.id });
-      data.bonus_seconds = toSafeInt(bonus?.bonus_seconds);
-      data.bonus_bytes = toSafeInt(bonus?.bonus_bytes);
-      const bonusSeconds = Math.max(0, Math.floor(data.bonus_seconds));
-      const bonusBytesRaw = toSafeInt(data.bonus_bytes);
-      const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusBytesRaw || 0));
+      const bonusTruth = await loadVoucherBonusV2Truth({
+        voucherSessionId: data.id,
+        includeHistory: true,
+      });
+      adminBonusV2 = bonusTruth.bonus || null;
+      adminBonusV2History = bonusTruth.history || [];
 
-      const nowMs = Date.now();
-      let expMs = null;
-      try { expMs = data.expires_at ? new Date(data.expires_at).getTime() : null; } catch (_) { expMs = null; }
-      const isTimeExpired = !!data.started_at && Number.isFinite(expMs) && expMs <= nowMs;
-
-      const hasTimeBonus = bonusSeconds > 0;
-      const hasDataBonus = (bonusBytes === -1 || bonusBytes > 0);
-
-      const st = String(data.status || "").toLowerCase();
-      if (st !== "pending" && st !== "active") {
-        if (isTimeExpired && hasTimeBonus) data.status = "pending";
-        else if (!isTimeExpired && hasDataBonus) data.status = "pending";
-      }
-    } catch (_) {
-      // fail-open
+      const legacy = bonusV2LegacyFields(adminBonusV2);
+      data.bonus_seconds = legacy.bonus_seconds;
+      data.bonus_bytes = legacy.bonus_bytes;
+      data.has_bonus = legacy.has_bonus;
+      data.has_usable_bonus = legacy.has_usable_bonus;
+      data.bonus_mode_active = legacy.bonus_mode_active;
+      data.bonus_v2 = legacy.bonus_v2;
+      data.bonus_history = adminBonusV2History;
+    } catch (e) {
+      console.error("ADMIN CLIENT DETAIL BONUS V2 LOAD ERROR", e?.message || e);
+      data.bonus_seconds = 0;
+      data.bonus_bytes = 0;
+      data.has_bonus = false;
+      data.has_usable_bonus = false;
+      data.bonus_mode_active = false;
+      data.bonus_v2 = null;
+      data.bonus_history = [];
     }
 
     // Best-effort Tanaza name for detail view too
@@ -12912,19 +13280,37 @@ app.get("/api/admin/voucher-sessions/:id", requireAdmin, async (req, res) => {
       data.free_plan = null;
     }
 // -----------------------------
-// Voucher bonus override info (by voucher_session_id)
+// Bonus V2 compatibility object for the current Admin UI.
 // -----------------------------
 try {
-  const b = await getVoucherBonusOverride({ voucher_session_id: data.id });
+  const legacy = bonusV2LegacyFields(adminBonusV2);
   data.bonus = {
-    bonus_seconds: toSafeInt(b.bonus_seconds),
-    bonus_bytes: toSafeInt(b.bonus_bytes),
-    note: parseBonusMeta(b.note).userNote || null,
-    updated_at: b.updated_at || null,
-    updated_by: b.updated_by || null,
+    voucher_session_id: data.id,
+    bonus_seconds: legacy.bonus_seconds,
+    bonus_bytes: legacy.bonus_bytes,
+    note: adminBonusV2?.note || null,
+    updated_at: adminBonusV2?.updated_at || null,
+    updated_by: adminBonusV2?.prepared_by || adminBonusV2?.activated_by || null,
+    state: adminBonusV2?.state || null,
+    effective_state: adminBonusV2?.effective_state || null,
+    can_activate: adminBonusV2?.can_activate === true,
+    can_authorize: adminBonusV2?.can_authorize === true,
+    bonus_v2: adminBonusV2,
   };
 } catch (_) {
-  data.bonus = { bonus_seconds: 0, bonus_bytes: 0, note: null, updated_at: null, updated_by: null };
+  data.bonus = {
+    voucher_session_id: data.id,
+    bonus_seconds: 0,
+    bonus_bytes: 0,
+    note: null,
+    updated_at: null,
+    updated_by: null,
+    state: null,
+    effective_state: null,
+    can_activate: false,
+    can_authorize: false,
+    bonus_v2: null,
+  };
 }
 
 
@@ -15229,7 +15615,6 @@ app.get("/api/portal/status", async (req, res) => {
 
     const voucher_code_raw = req.query.voucher_code || req.query.voucherCode || "";
     const voucher_code = String(voucher_code_raw || "").trim() || null;
-
     const nas_id = String(req.query.nas_id || req.query.nasId || req.query.nas || "").trim() || null;
 
     async function loadPortalAnnouncement() {
@@ -15256,22 +15641,18 @@ app.get("/api/portal/status", async (req, res) => {
       return res.status(400).json({ ok: false, error: "client_mac_required" });
     }
 
-    async function loadLatestTruthRow() {
-      let q = supabase
-        .from("vw_voucher_sessions_truth")
-        .select("*")
-        .eq("client_mac", client_mac)
-        .order("created_at", { ascending: false })
-        .limit(1);
+    let q = supabase
+      .from("vw_voucher_sessions_truth")
+      .select("*")
+      .eq("client_mac", client_mac)
+      .order("created_at", { ascending: false })
+      .limit(1);
 
-      if (voucher_code) q = q.eq("voucher_code", voucher_code);
+    if (voucher_code) q = q.eq("voucher_code", voucher_code);
 
-      const { data: rows, error: err } = await q;
-      if (err) throw err;
-      return (rows && rows[0]) ? rows[0] : null;
-    }
-
-    let row = await loadLatestTruthRow();
+    const { data: rows, error: rowErr } = await q;
+    if (rowErr) throw rowErr;
+    const row = (rows && rows[0]) ? rows[0] : null;
 
     if (!row) {
       let supportPhone = DEFAULT_SUPPORT_PHONE;
@@ -15291,6 +15672,7 @@ app.get("/api/portal/status", async (req, res) => {
         voucher_code: "",
         plan: null,
         session: null,
+        bonus: null,
         purchase_lock: false,
         can_use: false,
         contact_phone: supportPhone,
@@ -15302,100 +15684,33 @@ app.get("/api/portal/status", async (req, res) => {
       });
     }
 
-    // --------------------------------------------------
-    // BONUS CLEANUP (single-use bonus rule)
-    // If bonus session exists and either time OR data is exhausted,
-    // destroy current bonus and fall back to normal truth status.
-    // --------------------------------------------------
-    let bonus = { bonus_seconds: 0, bonus_bytes: 0, note: null, updated_at: null, updated_by: null };
+    // P2-A3.2: strict read-only endpoint. No voucher/bonus state is written here.
+    const bonusTruth = await loadVoucherBonusV2Truth({
+      voucherSessionId: row.id,
+      voucherCode: row.voucher_code,
+      includeHistory: false,
+    });
+    const bonus = bonusTruth.bonus || null;
+    const legacyBonus = bonusV2LegacyFields(bonus);
 
-    try {
-      const { data: bRow } = await supabase
-        .from("voucher_bonus_overrides")
-        .select("bonus_seconds,bonus_bytes,note,updated_at,updated_by")
-        .eq("voucher_session_id", row.id)
-        .maybeSingle();
+    const originalStatus = String(row.status || row.truth_status || "none").toLowerCase();
+    const bonusState = String(bonus?.state || "").toLowerCase();
+    const bonusEffectiveState = String(bonus?.effective_state || bonusState).toLowerCase();
 
-      if (bRow) {
-        bonus = {
-          bonus_seconds: toSafeInt(bRow.bonus_seconds),
-          bonus_bytes: toSafeInt(bRow.bonus_bytes),
-          note: bRow.note || null,
-          updated_at: bRow.updated_at || null,
-          updated_by: bRow.updated_by || null,
-        };
-      }
-    } catch (_) {}
+    const bonusAvailable =
+      bonusState === "available" &&
+      bonusEffectiveState === "available" &&
+      bonus?.can_activate === true;
 
-    const bonusSecondsN0 = toSafeInt(bonus.bonus_seconds);
-    const bonusBytesN0 = toSafeInt(bonus.bonus_bytes);
-    const bonusConsumedBytes0 = getBonusConsumedBytes(row.data_used_bytes, bonus.note);
-    const isBonusSession = row.is_bonus_session === true || row.is_bonus_session === "true";
+    const bonusActive =
+      bonusState === "active" &&
+      bonusEffectiveState === "active" &&
+      bonus?.can_authorize === true;
 
-    let bonusDead = false;
+    // For compatibility with the current portal frontend, an active Bonus V2 is
+    // presented as status=active. raw_status always keeps the original plan truth.
+    const status = bonusActive ? "active" : originalStatus;
 
-    if (isBonusSession) {
-      const nowMs = Date.now();
-
-      // 1) Time kill
-      let timeDead = false;
-      try {
-        const expMs = row.expires_at ? new Date(row.expires_at).getTime() : null;
-        timeDead = Number.isFinite(expMs) && expMs <= nowMs;
-      } catch (_) {
-        timeDead = false;
-      }
-
-      // 2) Data kill (only if limited bonus data)
-      let dataDead = false;
-      try {
-        const bonusUsedBytes = BigInt(String(bonusConsumedBytes0 ?? 0));
-        if (bonusBytesN0 !== -1 && bonusBytesN0 > 0) {
-          dataDead = bonusUsedBytes >= BigInt(bonusBytesN0);
-        }
-      } catch (_) {
-        dataDead = false;
-      }
-
-      bonusDead = timeDead || dataDead;
-
-      if (bonusDead) {
-        const preBonusStatus = getPreBonusStatus(bonus.note, row.status || row.truth_status || "used");
-        try {
-          await supabase
-            .from("voucher_sessions")
-            .update({
-              status: preBonusStatus,
-              is_bonus_session: false,
-              updated_at: new Date().toISOString()
-            })
-            .eq("id", row.id);
-        } catch (_) {}
-
-        try {
-          await supabase
-            .from("voucher_bonus_overrides")
-            .update({
-              bonus_seconds: 0,
-              bonus_bytes: 0,
-              note: null,
-              updated_at: new Date().toISOString(),
-              updated_by: "portal_status_cleanup"
-            })
-            .eq("voucher_session_id", row.id);
-        } catch (_) {}
-
-        // Re-read truth after cleanup so portal returns the normal/original voucher status
-        row = await loadLatestTruthRow();
-
-        // Reload bonus after cleanup
-        bonus = { bonus_seconds: 0, bonus_bytes: 0, note: null, updated_at: null, updated_by: null };
-      }
-    }
-
-    const status = String(row.status || row.truth_status || "none").toLowerCase();
-
-    // 2) Load plan info
     const plan_id = row.plan_id || null;
     let planRow = null;
     if (plan_id) {
@@ -15407,7 +15722,6 @@ app.get("/api/portal/status", async (req, res) => {
       if (!perr) planRow = p || null;
     }
 
-    // 3) Load pool support phone (best-effort)
     let supportPhone = DEFAULT_SUPPORT_PHONE;
     try {
       const pid = row.pool_id || null;
@@ -15421,48 +15735,50 @@ app.get("/api/portal/status", async (req, res) => {
       }
     } catch (_) {}
 
-    const bonusSecondsN = toSafeInt(bonus.bonus_seconds);
-    const bonusBytesN = toSafeInt(bonus.bonus_bytes);
-
-    const hasTimeBonus = bonusSecondsN > 0;
-    const hasDataBonus = (bonusBytesN === -1 || bonusBytesN > 0);
-
-    const has_bonus = hasTimeBonus || hasDataBonus;
-    const has_usable_bonus = hasTimeBonus && hasDataBonus;
-
-    const bonus_mode_active =
-      (row.is_bonus_session === true || row.is_bonus_session === "true") &&
-      status === "active" &&
-      has_usable_bonus;
-
-    const durMin =
+    const originalDurationMinutes =
       planRow && planRow.duration_minutes != null
         ? Number(planRow.duration_minutes)
         : (planRow && planRow.duration_hours != null ? Number(planRow.duration_hours) * 60 : null);
 
-    const unlimited = (planRow && planRow.data_mb == null);
+    const bonusDurationSeconds = bonusV2SafeNumber(bonus?.duration_seconds, 0);
+    const displayedDurationMinutes = (bonusAvailable || bonusActive)
+      ? Math.max(1, Math.ceil(bonusDurationSeconds / 60))
+      : originalDurationMinutes;
 
-    const planDataTotalHuman = row.data_total_human || (
+    const originalUnlimited = !!(planRow && planRow.data_mb == null);
+    const displayedUnlimited = (bonusAvailable || bonusActive)
+      ? bonus?.data_unlimited === true
+      : originalUnlimited;
+
+    const originalDataTotalHuman = row.data_total_human || (
       (planRow && planRow.data_mb != null && Number(planRow.data_mb) > 0)
         ? `${Number(planRow.data_mb)} MB`
         : null
     );
 
-    const purchase_lock = status === "pending" || status === "active";
+    const displayedDataTotalHuman = (bonusAvailable || bonusActive)
+      ? (bonus?.data_unlimited ? "Illimité" : (bonus?.total_human || null))
+      : (originalUnlimited ? "Illimité" : originalDataTotalHuman);
+
+    const purchase_lock =
+      originalStatus === "pending" ||
+      originalStatus === "active" ||
+      bonusActive;
+
     const can_use =
-      (status === "pending" || status === "active") ||
-      (has_usable_bonus && (status === "expired" || status === "used"));
+      originalStatus === "pending" ||
+      originalStatus === "active" ||
+      bonusAvailable ||
+      bonusActive;
 
     let toast_on_plan_click = "";
-    if (purchase_lock) {
-      if (status === "pending") {
-        toast_on_plan_click = "⚠️ Achat désactivé : vous avez déjà un code en attente. Activez-le d’abord avec « Utiliser ce code ».";
-      } else if (status === "active") {
-        toast_on_plan_click = bonus_mode_active
-          ? "🎁 Une session bonus est en cours. Terminez-la avant d’acheter un nouveau code."
-          : "⚠️ Achat désactivé : vous avez déjà une session active. Utilisez « Utiliser ce code » si la connexion s’est interrompue.";
-      }
-    } else if (has_usable_bonus && (status === "expired" || status === "used")) {
+    if (bonusActive) {
+      toast_on_plan_click = "🎁 Une session bonus est en cours. Terminez-la avant d’acheter un nouveau code.";
+    } else if (originalStatus === "pending") {
+      toast_on_plan_click = "⚠️ Achat désactivé : vous avez déjà un code en attente. Activez-le d’abord avec « Utiliser ce code ».";
+    } else if (originalStatus === "active") {
+      toast_on_plan_click = "⚠️ Achat désactivé : vous avez déjà une session active. Utilisez « Utiliser ce code » si la connexion s’est interrompue.";
+    } else if (bonusAvailable) {
       toast_on_plan_click = "🎁 Vous avez un bonus disponible. Cliquez « Utiliser ce code » pour vous reconnecter.";
     }
 
@@ -15472,37 +15788,51 @@ app.get("/api/portal/status", async (req, res) => {
     else if (status === "used") badge = { tone: "used", label: "UTILISÉ", icon: "⛔" };
     else if (status === "expired") badge = { tone: "expired", label: "EXPIRÉ", icon: "⏰" };
 
+    const sessionExpiresAt = bonusActive ? (bonus?.expires_at || null) : (row.expires_at || null);
+    const sessionRemainingSeconds = bonusActive
+      ? bonusV2SafeNumber(bonus?.remaining_seconds, 0)
+      : (row.remaining_seconds ?? null);
+
+    const sessionDataUsedHuman = bonusActive
+      ? (bonus?.consumed_human || "0 B")
+      : (row.data_used_human || null);
+
+    const sessionDataRemainingHuman = bonusActive
+      ? (bonus?.data_unlimited ? "Illimité" : (bonus?.remaining_human || null))
+      : (row.data_remaining_human || null);
+
     return res.json({
       ok: true,
       status,
-      raw_status: status,
+      raw_status: originalStatus,
       voucher_code: String(row.voucher_code || "").trim(),
       plan: {
         id: plan_id,
         name: planRow?.name || null,
-        duration_minutes: durMin,
+        duration_minutes: displayedDurationMinutes,
         max_devices: planRow?.max_devices ?? null,
-        unlimited,
-        data_total_human: unlimited ? "Illimité" : (planDataTotalHuman || null),
+        unlimited: displayedUnlimited,
+        data_total_human: displayedDataTotalHuman,
         mikrotik_rate_limit: normalizeMikrotikRateLimit(planRow?.mikrotik_rate_limit) || null,
         speed_human: mikrotikRateLimitToSpeedHuman(planRow?.mikrotik_rate_limit)
       },
       session: {
         created_at: row.created_at || null,
-        activated_at: row.activated_at || null,
-        started_at: row.started_at || null,
-        expires_at: row.expires_at || null,
-        remaining_seconds: row.remaining_seconds ?? null,
-        data_used_human: row.data_used_human || null,
-        data_remaining_human: row.data_remaining_human || null,
+        activated_at: bonusActive ? (bonus?.started_at || null) : (row.activated_at || null),
+        started_at: bonusActive ? (bonus?.started_at || null) : (row.started_at || null),
+        expires_at: sessionExpiresAt,
+        remaining_seconds: sessionRemainingSeconds,
+        data_used_human: sessionDataUsedHuman,
+        data_remaining_human: sessionDataRemainingHuman,
         devices_used: null,
-        has_bonus,
-        has_usable_bonus,
-        bonus_mode_active,
-        bonus_seconds: bonusSecondsN,
-        bonus_bytes: bonusBytesN,
-        bonus_compact: formatBonusCompactLine(bonusSecondsN, bonusBytesN)
+        has_bonus: legacyBonus.has_bonus,
+        has_usable_bonus: legacyBonus.has_usable_bonus,
+        bonus_mode_active: legacyBonus.bonus_mode_active,
+        bonus_seconds: legacyBonus.bonus_seconds,
+        bonus_bytes: legacyBonus.bonus_bytes,
+        bonus_compact: legacyBonus.bonus_compact
       },
+      bonus: serializeBonusV2(bonus),
       purchase_lock,
       can_use,
       contact_phone: supportPhone,
@@ -15513,7 +15843,7 @@ app.get("/api/portal/status", async (req, res) => {
       }
     });
   } catch (e) {
-    console.error("PORTAL STATUS EX", e);
+    console.error("PORTAL STATUS EX", e?.message || e);
     return res.status(500).json({ ok: false, error: "internal_error" });
   }
 });
@@ -20729,10 +21059,6 @@ app.post("/api/voucher/activate", async (req, res) => {
       return res.status(400).json({ error: "voucher_code and client_mac are required" });
     }
 
-    // -----------------------------------------------------------------------
-    // 1) Decide branch SAFELY
-    //    System 3 only if nas_id is actually known in mikrotik_routers
-    // -----------------------------------------------------------------------
     let isSystem3 = false;
     if (nas_id) {
       try {
@@ -20742,21 +21068,16 @@ app.post("/api/voucher/activate", async (req, res) => {
           .eq("nas_id", nas_id)
           .maybeSingle();
 
-        if (!routerErr && routerRow?.nas_id) {
-          isSystem3 = true;
-        }
+        if (!routerErr && routerRow?.nas_id) isSystem3 = true;
       } catch (_) {
         isSystem3 = false;
       }
     }
 
-    // -----------------------------------------------------------------------
-    // 2) Load session + plan
-    // -----------------------------------------------------------------------
     const { data: session, error: sErr } = await supabase
       .from("voucher_sessions")
       .select(
-        "id,voucher_code,plan_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,is_bonus_session,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)"
+        "id,voucher_code,plan_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,is_bonus_session,data_used_bytes,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)"
       )
       .eq("voucher_code", voucher_code)
       .eq("client_mac", client_mac)
@@ -20776,9 +21097,6 @@ app.post("/api/voucher/activate", async (req, res) => {
       });
     }
 
-    // -----------------------------------------------------------------------
-    // 3) Read truth status from DB view
-    // -----------------------------------------------------------------------
     let truth_status = null;
     try {
       const { data: tRow } = await supabase
@@ -20799,7 +21117,94 @@ app.post("/api/voucher/activate", async (req, res) => {
     const nowIso = now.toISOString();
 
     // -----------------------------------------------------------------------
-    // 4) If already active: keep current behavior
+    // P2-A3.2 — Bonus V2 branch.
+    // This branch never modifies voucher_sessions. The original plan remains
+    // terminal before, during and after the autonomous bonus mini-plan.
+    // -----------------------------------------------------------------------
+    const bonusTruth = await loadVoucherBonusV2Truth({
+      voucherSessionId: session.id,
+      voucherCode: session.voucher_code,
+      includeHistory: false,
+    });
+    const bonus = bonusTruth.bonus || null;
+
+    if (bonus) {
+      const state = String(bonus.state || "").toLowerCase();
+      const effectiveState = String(bonus.effective_state || state).toLowerCase();
+
+      if (state === "available" && effectiveState === "available" && bonus.can_activate === true) {
+        const requestId = bonusV2RequestId(body.request_id || body.requestId || null);
+        const started = await startVoucherBonusV2({
+          voucherSessionId: session.id,
+          requestId,
+          clientMac: client_mac,
+          nasId: nas_id,
+          actor: "portal_activate",
+        });
+        const activeBonus = started.bonus;
+
+        if (!activeBonus) {
+          return res.status(500).json({
+            error: "bonus_start_failed",
+            message: "Impossible d’activer ce bonus."
+          });
+        }
+
+        return res.json({
+          ok: true,
+          activated: true,
+          reactivated_with_bonus: true,
+          bonus_v2: true,
+          outcome: started.outcome || "activated",
+          activated_at: activeBonus.started_at || null,
+          started_at: activeBonus.started_at || null,
+          expires_at: activeBonus.expires_at || null,
+          is_bonus_session: false,
+          system_branch: isSystem3 ? "system3" : "system2",
+          bonus: activeBonus,
+        });
+      }
+
+      if (state === "active" && effectiveState === "active" && bonus.can_authorize === true) {
+        return res.json({
+          ok: true,
+          already_active: true,
+          reactivated_with_bonus: true,
+          bonus_v2: true,
+          activated_at: bonus.started_at || null,
+          started_at: bonus.started_at || null,
+          expires_at: bonus.expires_at || null,
+          is_bonus_session: false,
+          system_branch: isSystem3 ? "system3" : "system2",
+          bonus,
+        });
+      }
+
+      // A stored active run may already be effectively finished by SQL truth.
+      // Finalize it without CoA because this request occurs before a new login.
+      if (state === "active" && effectiveState === "finished" && bonus.run_id) {
+        try {
+          await finishVoucherBonusV2({
+            runId: bonus.run_id,
+            requestId: crypto.randomUUID(),
+            reason: bonus.due_reason || null,
+            actor: "portal_activate",
+            details: { source: "voucher_activate", client_mac, nas_id },
+            requireCoa: false,
+          });
+        } catch (finishErr) {
+          console.error("BONUS V2 ACTIVATE FINISH ERROR", finishErr?.message || finishErr);
+        }
+      }
+
+      return res.status(403).json({
+        error: state === "cancelled" ? "bonus_cancelled" : "bonus_finished",
+        message: "Ce bonus est terminé."
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // Normal voucher behavior remains unchanged when no Bonus V2 run exists.
     // -----------------------------------------------------------------------
     if (truth_status === "active" || session.status === "active") {
       if (session.expires_at && String(session.expires_at) <= nowIso) {
@@ -20825,9 +21230,6 @@ app.post("/api/voucher/activate", async (req, res) => {
       });
     }
 
-    // -----------------------------------------------------------------------
-    // 5) Compute plan duration minutes
-    // -----------------------------------------------------------------------
     const durationMinutes = Number(session?.plans?.duration_minutes ?? NaN);
     const planMinutes =
       Number.isFinite(durationMinutes) && durationMinutes > 0
@@ -20836,9 +21238,6 @@ app.post("/api/voucher/activate", async (req, res) => {
             ? Number(session.plans.duration_hours) * 60
             : 0);
 
-    // -----------------------------------------------------------------------
-    // 6) Pending -> split behavior by branch
-    // -----------------------------------------------------------------------
     if (truth_status === "pending" || session.status === "pending") {
       if (!planMinutes || planMinutes <= 0) {
         return res.status(500).json({
@@ -20850,11 +21249,6 @@ app.post("/api/voucher/activate", async (req, res) => {
       let updatePayload;
 
       if (isSystem3) {
-        // ---------------------------------------------------------------
-        // SYSTEM 3 (UNCHANGED)
-        // Click only ARMS the voucher.
-        // Timer starts later on first successful RADIUS authorize.
-        // ---------------------------------------------------------------
         updatePayload = {
           status: "active",
           activated_at: nowIso,
@@ -20867,10 +21261,6 @@ app.post("/api/voucher/activate", async (req, res) => {
         if (ap_mac && !session.ap_mac) updatePayload.ap_mac = ap_mac;
         if (nas_id) updatePayload.nas_id = nas_id;
       } else {
-        // ---------------------------------------------------------------
-        // SYSTEM 2 (RESTORED ORIGINAL BEHAVIOR)
-        // Click starts immediately.
-        // ---------------------------------------------------------------
         const expiresAtIso = new Date(now.getTime() + planMinutes * 60 * 1000).toISOString();
 
         updatePayload = {
@@ -20924,138 +21314,27 @@ app.post("/api/voucher/activate", async (req, res) => {
       });
     }
 
-    // -----------------------------------------------------------------------
-    // 7) Expired / Used -> BONUS SESSION
-    // Rule:
-    // - bonus session is an autonomous mini-plan
-    // - requires BOTH:
-    //     bonus_seconds > 0
-    //     AND (bonus_bytes > 0 OR bonus_bytes === -1)
-    // - click activates bonus session immediately
-    // - do NOT consume/zero bonus here; authorize/accounting will use it
-    // -----------------------------------------------------------------------
-    if (
-      truth_status === "expired" ||
-      truth_status === "used" ||
-      session.status === "expired" ||
-      session.status === "used"
-    ) {
-      const { data: bRow, error: bErr } = await supabase
-        .from("voucher_bonus_overrides")
-        .select("bonus_seconds,bonus_bytes,note")
-        .eq("voucher_session_id", session.id)
-        .maybeSingle();
-
-      if (bErr) {
-        console.error("BONUS LOAD ERROR", bErr);
-      }
-
-      const bonusSeconds = toSafeInt(bRow?.bonus_seconds);
-      const bonusBytes = toSafeInt(bRow?.bonus_bytes);
-
-      const hasTimeBonus = bonusSeconds > 0;
-      const hasDataBonus = (bonusBytes > 0 || bonusBytes === -1);
-      const hasUsableBonus = hasTimeBonus && hasDataBonus;
-
-      if (!hasUsableBonus) {
-        if (!hasTimeBonus && !hasDataBonus) {
-          return res.status(403).json({
-            error: "voucher_not_usable",
-            message: "Ce code est terminé. Aucun bonus disponible."
-          });
-        }
-
-        if (!hasTimeBonus) {
-          return res.status(400).json({
-            error: "need_time_bonus",
-            message: "Bonus temps requis pour réactiver ce code."
-          });
-        }
-
-        return res.status(400).json({
-          error: "need_data_bonus",
-          message: "Bonus data requis pour réactiver ce code."
-        });
-      }
-
-      const newExpiresAt = new Date(now.getTime() + bonusSeconds * 1000).toISOString();
-
-      const currentUsedBytesAtBonusStart = Math.max(0, toSafeInt(session?.data_used_bytes));
-      const parsedBonusNote = parseBonusMeta(bRow?.note);
-      const bonusUserNote = parsedBonusNote.userNote || null;
-      const preBonusStatus =
-        (String(truth_status || "").toLowerCase() === "expired" || String(truth_status || "").toLowerCase() === "used")
-          ? String(truth_status || "").toLowerCase()
-          : ((String(session.status || "").toLowerCase() === "expired" || String(session.status || "").toLowerCase() === "used")
-            ? String(session.status || "").toLowerCase()
-            : "used");
-
-      try {
-        await supabase
-          .from("voucher_bonus_overrides")
-          .update({
-            note: buildBonusNote(bonusUserNote, {
-              ...(parsedBonusNote.meta || {}),
-              bonus_start_used_bytes: currentUsedBytesAtBonusStart,
-              pre_bonus_status: preBonusStatus
-            }),
-            updated_at: nowIso,
-            updated_by: "system_bonus_activate"
-          })
-          .eq("voucher_session_id", session.id);
-      } catch (metaErr) {
-        console.error("BONUS META UPDATE ERROR", metaErr);
-      }
-
-      const upd = {
-        status: "active",
-        activated_at: nowIso,
-        started_at: nowIso,
-        expires_at: newExpiresAt,
-        is_bonus_session: true,
-        updated_at: nowIso
-      };
-
-      if (ap_mac && !session.ap_mac) upd.ap_mac = ap_mac;
-      if (nas_id) upd.nas_id = nas_id;
-
-      const { error: uErr } = await supabase
-        .from("voucher_sessions")
-        .update(upd)
-        .eq("id", session.id);
-
-      if (uErr) {
-        console.error("REACTIVATE UPDATE ERROR", uErr);
-        return res.status(500).json({
-          error: "reactivate_failed",
-          message: "Impossible de réactiver ce code."
-        });
-      }
-
-      return res.json({
-        ok: true,
-        reactivated_with_bonus: true,
-        activated_at: upd.activated_at,
-        started_at: upd.started_at,
-        expires_at: upd.expires_at,
-        is_bonus_session: true,
-        system_branch: isSystem3 ? "system3" : "system2"
-      });
-    }
-
     return res.status(403).json({
       error: "voucher_not_usable",
-      message: "Ce code n’est pas utilisable."
+      message: "Ce code est terminé. Aucun bonus disponible."
     });
   } catch (e) {
     console.error("/api/voucher/activate error:", e?.message || e);
-    return res.status(500).json({ error: "server_error" });
+    const code = e?.publicCode || bonusV2KnownErrorCode(e, "server_error");
+    const status =
+      code === "request_id_invalid" ? 400 :
+      code === "voucher_not_terminal" ? 409 :
+      code === "bonus_not_available" ? 404 :
+      500;
+    return res.status(status).json({ error: code });
   }
 });
+
 // ---------------------------------------------------------------------------
 // ENDPOINT: /api/hotspot/pending-code   (SYSTEM 3 helper)
 // Used by MikroTik hotspot login.html before authentication.
-// Returns the latest "armed" voucher code for this client_mac (activated but not started yet).
+// Returns an active Bonus V2 code first, otherwise the latest normal Model-B
+// "armed" voucher code for this client_mac.
 // ---------------------------------------------------------------------------
 app.get("/api/hotspot/pending-code", async (req, res) => {
   try {
@@ -21064,6 +21343,27 @@ app.get("/api/hotspot/pending-code", async (req, res) => {
     const client_mac_raw = (req.query.client_mac || req.query.clientMac || "");
     const client_mac = normalizeMacColon(client_mac_raw) || String(client_mac_raw || "").trim();
     if (!client_mac) return res.status(400).json({ error: "client_mac_required" });
+
+    // P2-A3.2: after Bonus V2 activation the original voucher row deliberately
+    // remains used/expired. The hotspot helper must therefore look at the
+    // authoritative Bonus V2 run before falling back to the normal Model-B row.
+    const { data: activeBonusRows, error: activeBonusErr } = await supabase
+      .from("vw_voucher_bonus_truth")
+      .select("voucher_code,run_id,stored_status,effective_status,can_authorize,started_at")
+      .eq("activated_client_mac", client_mac)
+      .eq("stored_status", "active")
+      .eq("effective_status", "active")
+      .eq("can_authorize", true)
+      .order("started_at", { ascending: false })
+      .limit(1);
+
+    if (!activeBonusErr && Array.isArray(activeBonusRows) && activeBonusRows.length) {
+      return res.json({
+        ok: true,
+        voucher_code: activeBonusRows[0].voucher_code,
+        bonus_v2: true,
+      });
+    }
 
     const { data, error } = await supabase
       .from("voucher_sessions")
@@ -21564,7 +21864,7 @@ let error = null;
 try {
   const r1 = await supabase
     .from("vw_voucher_sessions_truth")
-    .select("id,voucher_code,status,truth_status,client_mac,pool_id,plan_id,mvola_phone,data_used_bytes,expires_at,activated_at,started_at,created_at")
+    .select("id,voucher_code,status,truth_status,client_mac,pool_id,plan_id,mvola_phone,data_used_bytes,expires_at,activated_at,started_at,created_at,is_bonus_session")
     .ilike("voucher_code", username)
     .order("created_at", { ascending: false })
     .limit(1);
@@ -21578,7 +21878,7 @@ try {
 if (error || !rows || !rows.length) {
   const r2 = await supabase
     .from("voucher_sessions")
-    .select("id,voucher_code,status,client_mac,pool_id,plan_id,mvola_phone,data_used_bytes,expires_at,activated_at,started_at,created_at")
+    .select("id,voucher_code,status,client_mac,pool_id,plan_id,mvola_phone,data_used_bytes,expires_at,activated_at,started_at,created_at,is_bonus_session")
     .ilike("voucher_code", username)
     .order("created_at", { ascending: false })
     .limit(1);
@@ -21593,16 +21893,18 @@ if (error || !rows || !rows.length) {
 const session = rows[0];
 
 
-// Bonus override (by voucher session id) — used for time/data bonuses
-let bonusOverride = { bonus_seconds: 0, bonus_bytes: 0 };
-try {
-  bonusOverride = await getVoucherBonusOverride({ voucher_session_id: session.id });
-} catch (_) {
-  bonusOverride = { bonus_seconds: 0, bonus_bytes: 0 };
-}
-const bonusSeconds = Math.max(0, toSafeInt(bonusOverride?.bonus_seconds));
-const bonusBytesRaw = toSafeInt(bonusOverride?.bonus_bytes);
-const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusBytesRaw || 0));
+// P2-A3.2: load Bonus V2 truth once. Legacy bonus values are forced to zero
+// for the unchanged normal-plan path below.
+const bonusV2Truth = await loadVoucherBonusV2Truth({
+  voucherSessionId: session.id,
+  voucherCode: session.voucher_code,
+  includeHistory: false,
+});
+const bonusV2 = bonusV2Truth.bonus || null;
+
+const bonusOverride = { bonus_seconds: 0, bonus_bytes: 0, note: null };
+const bonusSeconds = 0;
+const bonusBytes = 0;
 
 
 // Device lock: if already bound, enforce same MAC
@@ -21646,29 +21948,250 @@ const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusByt
         }
       }
     }
-    // System 3 logic B:
-    // - Normally Accept if truth status is "pending" OR "active"
-    // - Start timer on FIRST successful RADIUS accept
-    // - Bonus intelligent: if admin granted bonus (time/data), allow reactivation even if status is expired/used.
-    //   ✅ FINAL RULE (March 2026):
-    //      - Normal mode: existing plan logic
-    //      - Bonus session mode: autonomous mini-plan (time + data bonus only)
+    // -----------------------------------------------------------------
+    // P2-A3.2 — Bonus V2 authorize branch.
+    // A Bonus V2 run is authoritative and never falls back to the original
+    // plan's terminal status, timer or quota.
+    // -----------------------------------------------------------------
+    if (bonusV2) {
+      const state = String(bonusV2.state || "").toLowerCase();
+      const effectiveState = String(bonusV2.effective_state || state).toLowerCase();
 
-    const isBonusSession = (session.is_bonus_session === true);
+      if (state === "active" && effectiveState === "finished" && bonusV2.run_id) {
+        try {
+          await finishVoucherBonusV2({
+            runId: bonusV2.run_id,
+            requestId: crypto.randomUUID(),
+            reason: bonusV2.due_reason || null,
+            actor: "radius_authorize",
+            details: {
+              source: "radius_authorize",
+              nas_id,
+              client_mac,
+              target_pool_id: targetPoolId || null,
+            },
+            requireCoa: false,
+          });
+        } catch (finishErr) {
+          console.error("[radius][authorize][bonus-v2] finish error", finishErr?.message || finishErr);
+        }
 
-    // IMPORTANT:
-    // Bonus session must win over truth_status/view timing.
-    // The SQL truth view can briefly lag right after /api/voucher/activate
-    // updated the base row to bonus mode, so do not let a stale "used/expired"
-    // truth_status block the immediate authorize that follows reactivation.
-    let effectiveStatus = session.truth_status || session.status;
-    if (isBonusSession) {
-      effectiveStatus = "active";
+        return sendReject("bonus_finished", {
+          entity_type: "voucher_bonus_run",
+          entity_id: bonusV2.run_id,
+          nas_id,
+          client_mac,
+          pool_id: session.pool_id || null,
+          plan_id: session.plan_id || null,
+          mvola_phone: session.mvola_phone || null,
+          metadata: {
+            bonus_v2: true,
+            due_reason: bonusV2.due_reason || null,
+          }
+        });
+      }
+
+      if (state === "available") {
+        return sendReject("bonus_not_activated", {
+          entity_type: "voucher_bonus_run",
+          entity_id: bonusV2.run_id,
+          nas_id,
+          client_mac,
+          pool_id: session.pool_id || null,
+          plan_id: session.plan_id || null,
+          mvola_phone: session.mvola_phone || null,
+          metadata: { bonus_v2: true, state, effective_state: effectiveState }
+        });
+      }
+
+      if (state === "finished" || state === "cancelled" || effectiveState === "finished") {
+        return sendReject(state === "cancelled" ? "bonus_cancelled" : "bonus_finished", {
+          entity_type: "voucher_bonus_run",
+          entity_id: bonusV2.run_id,
+          nas_id,
+          client_mac,
+          pool_id: session.pool_id || null,
+          plan_id: session.plan_id || null,
+          mvola_phone: session.mvola_phone || null,
+          metadata: {
+            bonus_v2: true,
+            state,
+            effective_state: effectiveState,
+            ended_reason: bonusV2.ended_reason || bonusV2.due_reason || null,
+          }
+        });
+      }
+
+      if (
+        state !== "active" ||
+        effectiveState !== "active" ||
+        bonusV2.can_authorize !== true
+      ) {
+        return sendReject("bonus_state_invalid", {
+          entity_type: "voucher_bonus_run",
+          entity_id: bonusV2.run_id,
+          nas_id,
+          client_mac,
+          pool_id: session.pool_id || null,
+          plan_id: session.plan_id || null,
+          mvola_phone: session.mvola_phone || null,
+          metadata: { bonus_v2: true, state, effective_state: effectiveState }
+        });
+      }
+
+      let remainingSeconds;
+      try {
+        remainingSeconds = bonusV2RadiusNumber(
+          bonusV2.remaining_seconds,
+          "bonus_remaining_seconds"
+        );
+      } catch (rangeErr) {
+        return sendReject(rangeErr?.publicCode || "bonus_remaining_seconds_out_of_range", {
+          entity_type: "voucher_bonus_run",
+          entity_id: bonusV2.run_id,
+          nas_id,
+          client_mac,
+          pool_id: session.pool_id || null,
+          plan_id: session.plan_id || null,
+          metadata: { bonus_v2: true }
+        });
+      }
+
+      if (remainingSeconds <= 0) {
+        try {
+          await finishVoucherBonusV2({
+            runId: bonusV2.run_id,
+            requestId: crypto.randomUUID(),
+            reason: "time",
+            actor: "radius_authorize",
+            details: { source: "radius_authorize", nas_id, client_mac },
+            requireCoa: false,
+          });
+        } catch (_) {}
+
+        return sendReject("bonus_time_exhausted", {
+          entity_type: "voucher_bonus_run",
+          entity_id: bonusV2.run_id,
+          nas_id,
+          client_mac,
+          pool_id: session.pool_id || null,
+          plan_id: session.plan_id || null,
+          metadata: { bonus_v2: true }
+        });
+      }
+
+      const replyExtra = {};
+      let remainingBytes = null;
+
+      if (bonusV2.data_unlimited !== true) {
+        try {
+          remainingBytes = bonusV2RadiusNumber(
+            bonusV2.remaining_bytes,
+            "bonus_remaining_bytes"
+          );
+        } catch (rangeErr) {
+          return sendReject(rangeErr?.publicCode || "bonus_remaining_bytes_out_of_range", {
+            entity_type: "voucher_bonus_run",
+            entity_id: bonusV2.run_id,
+            nas_id,
+            client_mac,
+            pool_id: session.pool_id || null,
+            plan_id: session.plan_id || null,
+            metadata: { bonus_v2: true }
+          });
+        }
+
+        if (remainingBytes <= 0) {
+          try {
+            await finishVoucherBonusV2({
+              runId: bonusV2.run_id,
+              requestId: crypto.randomUUID(),
+              reason: "data",
+              actor: "radius_authorize",
+              details: { source: "radius_authorize", nas_id, client_mac },
+              requireCoa: false,
+            });
+          } catch (_) {}
+
+          return sendReject("bonus_data_exhausted", {
+            entity_type: "voucher_bonus_run",
+            entity_id: bonusV2.run_id,
+            nas_id,
+            client_mac,
+            pool_id: session.pool_id || null,
+            plan_id: session.plan_id || null,
+            metadata: { bonus_v2: true }
+          });
+        }
+
+        // MikroTik must receive the RELIQUAT for this new RADIUS session.
+        replyExtra["reply:Mikrotik-Total-Limit"] = remainingBytes;
+      }
+
+      if (session.plan_id) {
+        try {
+          const { data: p2, error: p2Err } = await supabase
+            .from("plans")
+            .select("mikrotik_rate_limit")
+            .eq("id", session.plan_id)
+            .maybeSingle();
+          if (!p2Err) planMeta = p2 || null;
+        } catch (_) {}
+      }
+
+      const selectedRateLimit =
+        normalizeMikrotikRateLimit(planMeta?.mikrotik_rate_limit) ||
+        DEFAULT_MIKROTIK_RATE_LIMIT;
+
+      if (selectedRateLimit) {
+        replyExtra["reply:Mikrotik-Rate-Limit"] = selectedRateLimit;
+      }
+
+      return sendAccept(username, remainingSeconds, {
+        entity_type: "voucher_bonus_run",
+        entity_id: bonusV2.run_id,
+        nas_id,
+        client_mac,
+        pool_id: session.pool_id || null,
+        plan_id: session.plan_id || null,
+        mvola_phone: session.mvola_phone || null,
+        metadata: {
+          bonus_v2: true,
+          remaining_seconds: remainingSeconds,
+          remaining_bytes: remainingBytes,
+          data_unlimited: bonusV2.data_unlimited === true,
+          expires_at: bonusV2.expires_at || null,
+          selected_rate_limit: replyExtra["reply:Mikrotik-Rate-Limit"] || null,
+          target_pool_id: targetPoolId || null,
+          is_cross_pool_roaming: !!(
+            targetPoolId &&
+            session.pool_id &&
+            String(targetPoolId) !== String(session.pool_id)
+          )
+        }
+      }, replyExtra);
     }
 
-    const isUsableStatus = (effectiveStatus === "active" || effectiveStatus === "pending");
+    // A legacy autonomous bonus must never reappear after the V2 cutover.
+    if (session.is_bonus_session === true) {
+      return sendReject("legacy_bonus_session_unsupported", {
+        entity_type: "voucher_session",
+        entity_id: session.id,
+        nas_id,
+        client_mac,
+        pool_id: session.pool_id || null,
+        plan_id: session.plan_id || null,
+        metadata: { is_bonus_session: true }
+      });
+    }
 
-    // Determine whether the session is currently time-expired (only meaningful if started_at exists).
+    // -----------------------------------------------------------------
+    // NORMAL PLAN AUTHORIZE — no Bonus V2 run exists.
+    // This is the original plan path, without any legacy bonus extension.
+    // -----------------------------------------------------------------
+    const effectiveStatus = String(session.truth_status || session.status || "").toLowerCase();
+    const isUsableStatus = effectiveStatus === "active" || effectiveStatus === "pending";
+
     const nowMs = now.getTime();
     let expMs = null;
     try {
@@ -21676,100 +22199,12 @@ const bonusBytes = (bonusBytesRaw === -1) ? -1 : Math.max(0, Math.floor(bonusByt
     } catch (_) {
       expMs = null;
     }
-    const isTimeExpired = !!session.started_at && Number.isFinite(expMs) && expMs <= nowMs;
+    const isTimeExpired =
+      !!session.started_at &&
+      Number.isFinite(expMs) &&
+      expMs <= nowMs;
 
-const hasTimeBonus = isBonusSession || (bonusSeconds > 0);
-const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
-
-    if (isBonusSession) {
-      // --------------------------------------------------
-      // BONUS SESSION = autonomous mini-plan
-      // Ignore normal plan blockers. Only bonus validity matters.
-      // --------------------------------------------------
-      if (!hasTimeBonus || !hasDataBonus) {
-        try {
-          await supabase
-            .from("voucher_sessions")
-            .update({
-              status: getPreBonusStatus(bonusOverride?.note, session.status || session.truth_status || "used"),
-              is_bonus_session: false,
-              updated_at: now.toISOString()
-            })
-            .eq("id", session.id);
-        } catch (_) {}
-
-        try {
-          await supabase
-            .from("voucher_bonus_overrides")
-            .update({
-              bonus_seconds: 0,
-              bonus_bytes: 0,
-              updated_at: now.toISOString(),
-              updated_by: "system_authorize_bonus_invalid"
-            })
-            .eq("voucher_session_id", session.id);
-        } catch (_) {}
-
-        return sendReject("bonus_session_invalid", {
-          entity_type: "voucher_session",
-          entity_id: session.id,
-          nas_id,
-          client_mac,
-          pool_id: session.pool_id || null,
-          plan_id: session.plan_id || null,
-          mvola_phone: session.mvola_phone || null,
-          metadata: {
-            status: session.status,
-            truth_status: session.truth_status,
-            is_bonus_session: true
-          }
-        });
-      }
-
-      if (isTimeExpired) {
-        try {
-          await supabase
-            .from("voucher_sessions")
-            .update({
-              status: getPreBonusStatus(bonusOverride?.note, session.status || session.truth_status || "used"),
-              is_bonus_session: false,
-              updated_at: now.toISOString()
-            })
-            .eq("id", session.id);
-        } catch (_) {}
-
-        try {
-          await supabase
-            .from("voucher_bonus_overrides")
-            .update({
-              bonus_seconds: 0,
-              bonus_bytes: 0,
-              updated_at: now.toISOString(),
-              updated_by: "system_authorize_bonus_finished"
-            })
-            .eq("voucher_session_id", session.id);
-        } catch (_) {}
-
-        return sendReject("bonus_session_finished", {
-          entity_type: "voucher_session",
-          entity_id: session.id,
-          nas_id,
-          client_mac,
-          pool_id: session.pool_id || null,
-          plan_id: session.plan_id || null,
-          mvola_phone: session.mvola_phone || null,
-          metadata: {
-            expires_at: session.expires_at,
-            is_bonus_session: true
-          }
-        });
-      }
-
-    } else if (!isUsableStatus) {
-      // --------------------------------------------------
-      // NORMAL MODE
-      // expired/used can still be reactivated only if bonus matches blockers
-      // --------------------------------------------------
+    if (!isUsableStatus) {
       let usedBytesForCheck = 0n;
       try {
         usedBytesForCheck = BigInt(String(session?.data_used_bytes ?? 0));
@@ -21777,7 +22212,6 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
         usedBytesForCheck = 0n;
       }
 
-      // Load plan data_mb for quota check (only if needed here).
       if (!planMeta && session.plan_id) {
         try {
           const { data: pTmp } = await supabase
@@ -21790,49 +22224,20 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
       }
 
       const dataMbRaw = planMeta?.data_mb;
-      const dataMb = (dataMbRaw === null || dataMbRaw === undefined) ? null : Number(dataMbRaw);
+      const dataMb =
+        (dataMbRaw === null || dataMbRaw === undefined)
+          ? null
+          : Number(dataMbRaw);
       const baseTotalBytes =
         (dataMb !== null && Number.isFinite(dataMb) && dataMb > 0)
           ? Math.floor(dataMb * 1024 * 1024)
           : null;
 
-      // If bonusBytes == -1 => unlimited (no data blocker)
-      const effTotalBytesForCheck = (bonusBytes === -1)
-        ? null
-        : ((baseTotalBytes !== null)
-          ? (baseTotalBytes + (bonusBytes > 0 ? bonusBytes : 0))
-          : null);
-
       const isDataExhausted =
-        (effTotalBytesForCheck !== null) &&
-        (usedBytesForCheck >= BigInt(effTotalBytesForCheck));
+        baseTotalBytes !== null &&
+        usedBytesForCheck >= BigInt(baseTotalBytes);
 
-      const needsTimeBonus = isTimeExpired;
-      const needsDataBonus = isDataExhausted;
-
-      if (!needsTimeBonus && !needsDataBonus) {
-        // Safety net for unexpected states
-        // BUT: if admin added any bonus, treat it as intentional reactivation.
-        if (!(hasTimeBonus || hasDataBonus)) {
-          return sendReject("not_usable_status", {
-            entity_type: "voucher_session",
-            entity_id: session.id,
-            nas_id,
-            client_mac,
-            pool_id: session.pool_id || null,
-            plan_id: session.plan_id || null,
-            mvola_phone: session.mvola_phone || null,
-            metadata: {
-              status: session.status,
-              truth_status: session.truth_status,
-              expires_at: session.expires_at
-            }
-          });
-        }
-        // bonus exists -> allow continue
-      }
-
-      if (needsTimeBonus && !hasTimeBonus) {
+      if (isTimeExpired) {
         return sendReject("not_usable_time_expired_no_time_bonus", {
           entity_type: "voucher_session",
           entity_id: session.id,
@@ -21841,11 +22246,15 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
           pool_id: session.pool_id || null,
           plan_id: session.plan_id || null,
           mvola_phone: session.mvola_phone || null,
-          metadata: { status: session.status, truth_status: session.truth_status, expires_at: session.expires_at }
+          metadata: {
+            status: session.status,
+            truth_status: session.truth_status,
+            expires_at: session.expires_at
+          }
         });
       }
 
-      if (needsDataBonus && !hasDataBonus) {
+      if (isDataExhausted) {
         return sendReject("not_usable_needs_data_bonus", {
           entity_type: "voucher_session",
           entity_id: session.id,
@@ -21854,88 +22263,83 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
           pool_id: session.pool_id || null,
           plan_id: session.plan_id || null,
           mvola_phone: session.mvola_phone || null,
-          metadata: { status: session.status, truth_status: session.truth_status, expires_at: session.expires_at }
+          metadata: {
+            status: session.status,
+            truth_status: session.truth_status,
+            used_bytes: usedBytesForCheck.toString(),
+            total_bytes: baseTotalBytes
+          }
         });
       }
 
-      // Time bonus (normal mode only): apply bonus at authorize time, then consume it
-      if (needsTimeBonus && hasTimeBonus && session.started_at) {
-        try {
-          const { data: d, error: e } = await supabase.rpc(
-            "fn_apply_time_bonus_on_authorize",
-            {
-              p_voucher_session_id: session.id,
-              p_updated_by: "system_authorize",
-            }
-          );
-
-          if (!e) {
-            const row = Array.isArray(d) ? d[0] : d;
-            if (row?.new_expires_at) {
-              session.expires_at = row.new_expires_at;
-            }
-          }
-        } catch (_) {}
-      }
-
-      // Data bonus in normal mode: enforced later via effectiveTotalBytes + usedBytes check.
+      return sendReject("not_usable_status", {
+        entity_type: "voucher_session",
+        entity_id: session.id,
+        nas_id,
+        client_mac,
+        pool_id: session.pool_id || null,
+        plan_id: session.plan_id || null,
+        mvola_phone: session.mvola_phone || null,
+        metadata: {
+          status: session.status,
+          truth_status: session.truth_status,
+          expires_at: session.expires_at
+        }
+      });
     }
 
-    // Start timer on FIRST successful RADIUS auth (if not started yet)
+    // Start the normal-plan timer on the first successful RADIUS authorization.
     if (!session.started_at || !session.expires_at) {
       try {
-        let startedAtIso = now.toISOString();
-        let expiresAtIso = null;
+        const { data: planRow, error: pErr } = await supabase
+          .from("plans")
+          .select("duration_minutes,duration_hours,data_mb,mikrotik_rate_limit")
+          .eq("id", session.plan_id)
+          .maybeSingle();
 
-        if (isBonusSession) {
-          // BONUS SESSION: autonomous timer from bonus only
-          if (!hasTimeBonus) {
-            return sendReject("bonus_session_no_time", {
-              entity_type: "voucher_session",
-              entity_id: session.id,
-              nas_id,
-              client_mac,
-              pool_id: session.pool_id || null,
-              plan_id: session.plan_id || null,
-              mvola_phone: session.mvola_phone || null,
-              metadata: { is_bonus_session: true }
-            });
-          }
-
-          expiresAtIso = new Date(now.getTime() + (bonusSeconds * 1000)).toISOString();
-        } else {
-          // NORMAL MODE: use plan duration
-          const { data: planRow, error: pErr } = await supabase
-            .from("plans")
-            .select("duration_minutes,duration_hours,data_mb,mikrotik_rate_limit")
-            .eq("id", session.plan_id)
-            .maybeSingle();
-
-          planMeta = planRow || null;
-
-          const dm = Number(planRow?.duration_minutes ?? NaN);
-          const minutes = (Number.isFinite(dm) && dm > 0)
-            ? dm
-            : (Number(planRow?.duration_hours ?? 0) > 0 ? Number(planRow.duration_hours) * 60 : 0);
-
-          if (!minutes || minutes <= 0) {
-            return sendReject("invalid_plan_duration", {
-              entity_type: "voucher_session",
-              entity_id: session.id,
-              nas_id,
-              client_mac,
-              pool_id: session.pool_id || null,
-              plan_id: session.plan_id || null,
-              mvola_phone: session.mvola_phone || null,
-              metadata: { plan_id: session.plan_id }
-            });
-          }
-
-          const baseStartMs = session.started_at ? new Date(session.started_at).getTime() : now.getTime();
-          expiresAtIso = new Date(baseStartMs + (minutes * 60 * 1000) + (bonusSeconds * 1000)).toISOString();
+        if (pErr) {
+          return sendReject("plan_lookup_failed", {
+            entity_type: "voucher_session",
+            entity_id: session.id,
+            nas_id,
+            client_mac,
+            pool_id: session.pool_id || null,
+            plan_id: session.plan_id || null
+          });
         }
 
-        // Atomic: only start once (and detect whether we actually updated a row)
+        planMeta = planRow || null;
+
+        const dm = Number(planRow?.duration_minutes ?? NaN);
+        const minutes = (Number.isFinite(dm) && dm > 0)
+          ? dm
+          : (
+              Number(planRow?.duration_hours ?? 0) > 0
+                ? Number(planRow.duration_hours) * 60
+                : 0
+            );
+
+        if (!minutes || minutes <= 0) {
+          return sendReject("invalid_plan_duration", {
+            entity_type: "voucher_session",
+            entity_id: session.id,
+            nas_id,
+            client_mac,
+            pool_id: session.pool_id || null,
+            plan_id: session.plan_id || null,
+            mvola_phone: session.mvola_phone || null,
+            metadata: { plan_id: session.plan_id }
+          });
+        }
+
+        const startedAtIso = now.toISOString();
+        const baseStartMs = session.started_at
+          ? new Date(session.started_at).getTime()
+          : now.getTime();
+        const expiresAtIso = new Date(
+          baseStartMs + minutes * 60 * 1000
+        ).toISOString();
+
         const { data: stData, error: stErr } = await supabase
           .from("voucher_sessions")
           .update({
@@ -21954,28 +22358,31 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
 
         const didStart = Array.isArray(stData) && stData.length > 0;
 
-        if (stErr) {
-          // Best-effort continue: we'll use current session fields below
-        } else if (didStart) {
+        if (!stErr && didStart) {
           session.started_at = startedAtIso;
           session.expires_at = expiresAtIso;
           session.status = "active";
           if (!session.client_mac && client_mac) session.client_mac = client_mac;
         } else if (session.started_at && !session.expires_at) {
-          // Repair path: started_at exists but expires_at missing -> set expires_at only
           try {
             const { data: fixData, error: fixErr } = await supabase
               .from("voucher_sessions")
-              .update({ expires_at: expiresAtIso, updated_at: now.toISOString(), status: "active" })
+              .update({
+                expires_at: expiresAtIso,
+                updated_at: now.toISOString(),
+                status: "active"
+              })
               .eq("id", session.id)
               .is("expires_at", null)
               .select("id");
 
-            const didFix = !fixErr && Array.isArray(fixData) && fixData.length > 0;
+            const didFix =
+              !fixErr &&
+              Array.isArray(fixData) &&
+              fixData.length > 0;
             if (didFix) session.expires_at = expiresAtIso;
           } catch (_) {}
         }
-
       } catch (_) {
         return sendReject("start_failed", {
           entity_type: "voucher_session",
@@ -21988,33 +22395,11 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
       }
     }
 
-    const expiresAt = session.expires_at ? new Date(session.expires_at) : null;
+    const expiresAt = session.expires_at
+      ? new Date(session.expires_at)
+      : null;
+
     if (!expiresAt || expiresAt <= now) {
-      if (isBonusSession) {
-        try {
-          await supabase
-            .from("voucher_sessions")
-            .update({
-              status: getPreBonusStatus(bonusOverride?.note, session.status || session.truth_status || "used"),
-              is_bonus_session: false,
-              updated_at: now.toISOString()
-            })
-            .eq("id", session.id);
-        } catch (_) {}
-
-        try {
-          await supabase
-            .from("voucher_bonus_overrides")
-            .update({
-              bonus_seconds: 0,
-              bonus_bytes: 0,
-              updated_at: now.toISOString(),
-              updated_by: "system_authorize_bonus_expired"
-            })
-            .eq("voucher_session_id", session.id);
-        } catch (_) {}
-      }
-
       return sendReject("expired", {
         entity_type: "voucher_session",
         entity_id: session.id,
@@ -22023,20 +22408,16 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
         pool_id: session.pool_id || null,
         plan_id: session.plan_id || null,
         mvola_phone: session.mvola_phone || null,
-        metadata: { expires_at: session.expires_at, is_bonus_session: isBonusSession }
+        metadata: { expires_at: session.expires_at, bonus_v2: false }
       });
     }
 
-    // Remaining seconds => Session-Timeout
-    const remainingSeconds = Math.max(1, Math.floor((expiresAt.getTime() - now.getTime()) / 1000));
+    const remainingSeconds = Math.max(
+      1,
+      Math.floor((expiresAt.getTime() - now.getTime()) / 1000)
+    );
 
-    // Data quota
-    // NORMAL MODE:
-    // - plans.data_mb NULL => unlimited
-    // - plans.data_mb number => totalBytes = plan + optional bonus
-    // BONUS SESSION MODE:
-    // - total bytes come ONLY from bonus
-    if (!planMeta && session.plan_id && !isBonusSession) {
+    if (!planMeta && session.plan_id) {
       try {
         const { data: p2 } = await supabase
           .from("plans")
@@ -22044,75 +22425,40 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
           .eq("id", session.plan_id)
           .maybeSingle();
         planMeta = p2 || null;
-      } catch (_) {
-        // ignore; we'll treat as unlimited if we can't load it
-      }
+      } catch (_) {}
     }
 
-    let effectiveTotalBytes = null;
-
-    if (isBonusSession) {
-      if (bonusBytes === -1) {
-        effectiveTotalBytes = null; // unlimited
-      } else if (bonusBytes > 0) {
-        effectiveTotalBytes = bonusBytes; // bonus data only
-      } else {
-        effectiveTotalBytes = 0;
-      }
-    } else {
-      const dataMbRaw = planMeta?.data_mb;
-      const dataMb = (dataMbRaw === null || dataMbRaw === undefined) ? null : Number(dataMbRaw);
-      const totalBytes =
-        (dataMb !== null && Number.isFinite(dataMb) && dataMb > 0)
-          ? Math.floor(dataMb * 1024 * 1024)
-          : null;
-
-      effectiveTotalBytes = (bonusBytes === -1)
+    const dataMbRaw = planMeta?.data_mb;
+    const dataMb =
+      (dataMbRaw === null || dataMbRaw === undefined)
         ? null
-        : ((totalBytes !== null)
-          ? (totalBytes + (bonusBytes > 0 ? bonusBytes : 0))
-          : null);
-    }
+        : Number(dataMbRaw);
+    const effectiveTotalBytes =
+      (dataMb !== null && Number.isFinite(dataMb) && dataMb > 0)
+        ? Math.floor(dataMb * 1024 * 1024)
+        : null;
 
-    // If data quota already exhausted (backend truth), reject.
     let usedBytes = 0n;
     try {
-      if (isBonusSession) {
-        usedBytes = BigInt(getBonusConsumedBytes(session?.data_used_bytes, bonusOverride?.note));
-      } else {
-        usedBytes = BigInt(Number(session?.data_used_bytes ?? 0) || 0);
-      }
+      usedBytes = BigInt(String(session?.data_used_bytes ?? 0));
     } catch (_) {
       usedBytes = 0n;
     }
 
-    if (effectiveTotalBytes !== null && usedBytes >= BigInt(effectiveTotalBytes)) {
+    if (
+      effectiveTotalBytes !== null &&
+      usedBytes >= BigInt(effectiveTotalBytes)
+    ) {
       try {
         await supabase
           .from("voucher_sessions")
           .update({
-            status: isBonusSession
-              ? getPreBonusStatus(bonusOverride?.note, session.status || session.truth_status || "used")
-              : "used",
+            status: "used",
             is_bonus_session: false,
             updated_at: now.toISOString()
           })
           .eq("id", session.id);
       } catch (_) {}
-
-      if (isBonusSession) {
-        try {
-          await supabase
-            .from("voucher_bonus_overrides")
-            .update({
-              bonus_seconds: 0,
-              bonus_bytes: 0,
-              updated_at: now.toISOString(),
-              updated_by: "system_authorize_bonus_data_finished"
-            })
-            .eq("voucher_session_id", session.id);
-        } catch (_) {}
-      }
 
       return sendReject("quota_data_exhausted", {
         entity_type: "voucher_session",
@@ -22125,7 +22471,7 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
         metadata: {
           used_bytes: usedBytes.toString(),
           total_bytes: effectiveTotalBytes,
-          is_bonus_session: isBonusSession
+          bonus_v2: false
         }
       });
     }
@@ -22134,7 +22480,11 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
     if (effectiveTotalBytes !== null) {
       replyExtra["reply:Mikrotik-Total-Limit"] = effectiveTotalBytes;
     }
-    const selectedRateLimit = normalizeMikrotikRateLimit(planMeta?.mikrotik_rate_limit) || DEFAULT_MIKROTIK_RATE_LIMIT;
+
+    const selectedRateLimit =
+      normalizeMikrotikRateLimit(planMeta?.mikrotik_rate_limit) ||
+      DEFAULT_MIKROTIK_RATE_LIMIT;
+
     if (selectedRateLimit) {
       replyExtra["reply:Mikrotik-Rate-Limit"] = selectedRateLimit;
     }
@@ -22151,8 +22501,9 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
         remaining_seconds: remainingSeconds,
         expires_at: session.expires_at,
         total_bytes: effectiveTotalBytes,
-        selected_rate_limit: replyExtra["reply:Mikrotik-Rate-Limit"] || null,
-        is_bonus_session: isBonusSession,
+        selected_rate_limit:
+          replyExtra["reply:Mikrotik-Rate-Limit"] || null,
+        bonus_v2: false,
         target_pool_id: targetPoolId || null,
         is_cross_pool_roaming: !!(
           targetPoolId &&
@@ -22174,7 +22525,7 @@ const hasDataBonus = isBonusSession || (bonusBytes === -1 || bonusBytes > 0);
           actor_type: "radius",
           actor_id: getCallerIp(req),
           request_ref: null,
-          mvola_phone: auditExtra.mvola_phone || null,
+          mvola_phone: null,
           client_mac: null,
           ap_mac: null,
           pool_id: null,
@@ -22397,53 +22748,258 @@ app.post("/api/radius/accounting", async (req, res) => {
     })();
     const safeUsedBytes = aggregatedUsed > currentUsedBytes ? aggregatedUsed : currentUsedBytes;
 
-    // Determine whether data quota is exhausted.
-    // IMPORTANT:
-    // - normal session => compare the monotone cumulative counter with plan data_mb
-    // - bonus session  => compare ONLY bytes consumed since bonus activation
+    // Safe voucher-session updater (kept for normal and Bonus V2 usage fields).
+    async function updateVoucherSessionSafe(vsId, patch) {
+      let current = { ...patch };
+      for (let i = 0; i < 8; i++) {
+        const { error } = await supabase
+          .from("voucher_sessions")
+          .update(current)
+          .eq("id", vsId);
+
+        if (!error) return null;
+
+        if (String(error.code || "") !== "PGRST204") {
+          return error;
+        }
+
+        const msg = String(error.message || "");
+        const m = msg.match(/Could not find the '([^']+)' column/);
+        if (!m) return error;
+
+        const col = m[1];
+        if (col && Object.prototype.hasOwnProperty.call(current, col)) {
+          delete current[col];
+          if (!Object.keys(current).length) return error;
+          continue;
+        }
+
+        return error;
+      }
+      return { message: "voucher_sessions update failed after retries", code: "PGRST204" };
+    }
+
+    const usagePatchBase = {
+      data_used_bytes: safeUsedBytes.toString(),
+      last_acct_session_id: acctSessionId,
+      last_seen_at: new Date().toISOString(),
+      ...(framedIp ? { client_ip: framedIp } : {}),
+      updated_at: new Date().toISOString(),
+    };
+
+    // ------------------------------------------------------------------
+    // P2-A3.2 — Bonus V2 accounting branch.
+    // Once a V2 run exists, this voucher never falls back to original-plan
+    // quota/time decisions. The original voucher status is never modified.
+    // ------------------------------------------------------------------
+    let bonusV2Accounting = null;
+    try {
+      const truth = await loadVoucherBonusV2Truth({
+        voucherSessionId: vsId,
+        voucherCode,
+        includeHistory: false,
+      });
+      bonusV2Accounting = truth.bonus || null;
+    } catch (bonusTruthErr) {
+      // Fail safe: persist usage but do not apply normal-plan terminal logic
+      // when Bonus V2 truth is temporarily unavailable.
+      console.error("[radius][accounting][bonus-v2] truth load failed", {
+        voucherCode: maskVoucherCode(voucherCode),
+        nasId: nasId || null,
+        error: bonusTruthErr?.message || String(bonusTruthErr),
+      });
+      const usageErr = await updateVoucherSessionSafe(vsId, usagePatchBase);
+      if (usageErr) {
+        console.log("[radius][accounting] voucher_sessions usage update error", usageErr);
+      }
+      return res.status(200).json({});
+    }
+
+    if (bonusV2Accounting) {
+      const usageErr = await updateVoucherSessionSafe(vsId, usagePatchBase);
+      if (usageErr) {
+        console.log("[radius][accounting][bonus-v2] voucher usage update error", usageErr);
+      }
+
+      const statusTypeLower = String(statusType || "").trim().toLowerCase();
+      const terminateCauseLower = String(terminateCause || "").trim().toLowerCase();
+      let currentBonus = bonusV2Accounting;
+      let currentState = String(currentBonus.state || "").toLowerCase();
+      let currentEffectiveState = String(
+        currentBonus.effective_state || currentState
+      ).toLowerCase();
+
+      // A Stop packet is the authoritative confirmation that the network
+      // session ended. Admin-Reset confirms a requested CoA.
+      if (statusTypeLower === "stop") {
+        if (
+          currentState === "active" &&
+          currentEffectiveState === "finished" &&
+          currentBonus.run_id
+        ) {
+          try {
+            const finishResult = await finishVoucherBonusV2({
+              runId: currentBonus.run_id,
+              requestId: crypto.randomUUID(),
+              reason: currentBonus.due_reason || null,
+              actor: "radius_accounting_stop",
+              details: {
+                source: "radius_accounting",
+                nas_id: nasId || null,
+                acct_session_id: acctSessionId || null,
+                terminate_cause: terminateCause || null,
+              },
+              requireCoa: false,
+            });
+            currentBonus = finishResult.bonus || currentBonus;
+            currentState = String(currentBonus.state || "").toLowerCase();
+          } catch (finishErr) {
+            console.error("[radius][accounting][bonus-v2] stop finish failed", {
+              voucherCode: maskVoucherCode(voucherCode),
+              error: finishErr?.message || String(finishErr),
+            });
+          }
+        }
+
+        if (
+          currentBonus.run_id &&
+          currentBonus.coa_status === "requested" &&
+          currentBonus.coa_request_id
+        ) {
+          try {
+            const coaSucceeded = terminateCauseLower === "admin-reset";
+            await recordVoucherBonusV2CoaResult({
+              runId: currentBonus.run_id,
+              requestId: currentBonus.coa_request_id,
+              succeeded: coaSucceeded,
+              errorMessage: coaSucceeded ? null : "stop_without_admin_reset",
+              actor: "radius_accounting_stop",
+              details: {
+                nas_id: nasId || null,
+                acct_session_id: acctSessionId || null,
+                terminate_cause: terminateCause || null,
+              },
+            });
+          } catch (coaResultErr) {
+            console.error("[radius][accounting][bonus-v2] CoA result failed", {
+              voucherCode: maskVoucherCode(voucherCode),
+              error: coaResultErr?.message || String(coaResultErr),
+            });
+          }
+        }
+
+        return res.status(200).json({});
+      }
+
+      // Only Interim-Update can trigger a network disconnect request.
+      if (statusTypeLower === "interim-update") {
+        if (
+          currentState === "active" &&
+          currentEffectiveState === "finished" &&
+          currentBonus.run_id
+        ) {
+          try {
+            const finishResult = await finishVoucherBonusV2({
+              runId: currentBonus.run_id,
+              requestId: crypto.randomUUID(),
+              reason: currentBonus.due_reason || null,
+              actor: "radius_accounting",
+              details: {
+                source: "radius_accounting",
+                nas_id: nasId || null,
+                acct_session_id: acctSessionId || null,
+                client_mac: callingStationId || null,
+              },
+              requireCoa: true,
+            });
+            currentBonus = finishResult.bonus || currentBonus;
+            currentState = String(currentBonus.state || "").toLowerCase();
+            currentEffectiveState = String(
+              currentBonus.effective_state || currentState
+            ).toLowerCase();
+          } catch (finishErr) {
+            console.error("[radius][accounting][bonus-v2] finish failed", {
+              voucherCode: maskVoucherCode(voucherCode),
+              error: finishErr?.message || String(finishErr),
+            });
+          }
+        }
+
+        // If a previous Disconnect-Request was never confirmed and its retry
+        // window elapsed, record that attempt as failed before claiming another.
+        if (
+          currentBonus.run_id &&
+          currentBonus.coa_status === "requested" &&
+          currentBonus.coa_request_id &&
+          currentBonus.coa_next_retry_at &&
+          Date.parse(currentBonus.coa_next_retry_at) <= Date.now()
+        ) {
+          try {
+            const failedResult = await recordVoucherBonusV2CoaResult({
+              runId: currentBonus.run_id,
+              requestId: currentBonus.coa_request_id,
+              succeeded: false,
+              errorMessage: "no_stop_confirmation_before_retry",
+              actor: "radius_accounting",
+              details: {
+                nas_id: nasId || null,
+                acct_session_id: acctSessionId || null,
+              },
+            });
+            currentBonus = failedResult.bonus || currentBonus;
+          } catch (recordErr) {
+            console.error("[radius][accounting][bonus-v2] retry result failed", {
+              voucherCode: maskVoucherCode(voucherCode),
+              error: recordErr?.message || String(recordErr),
+            });
+          }
+        }
+
+        if (
+          currentBonus.run_id &&
+          String(currentBonus.state || "").toLowerCase() === "finished" &&
+          ["pending", "failed", "requested"].includes(
+            String(currentBonus.coa_status || "").toLowerCase()
+          )
+        ) {
+          try {
+            const claimResult = await claimVoucherBonusV2Coa({
+              runId: currentBonus.run_id,
+              requestId: crypto.randomUUID(),
+              actor: "radius_accounting",
+              maxAttempts: 3,
+              retryDelaySeconds: 30,
+            });
+
+            if (claimResult.claimed === true) {
+              responseJson = {
+                "control:Tmp-Integer-0": 1,
+                "control:Tmp-String-0":
+                  currentBonus.ended_reason ||
+                  currentBonus.coa_reason ||
+                  currentBonus.due_reason ||
+                  "bonus_finished",
+              };
+            }
+          } catch (claimErr) {
+            console.error("[radius][accounting][bonus-v2] CoA claim failed", {
+              voucherCode: maskVoucherCode(voucherCode),
+              error: claimErr?.message || String(claimErr),
+            });
+          }
+        }
+      }
+
+      return res.status(200).json(responseJson);
+    }
+
+    // ------------------------------------------------------------------
+    // NORMAL PLAN ACCOUNTING — behavior preserved when no Bonus V2 exists.
+    // ------------------------------------------------------------------
     let quotaReached = false;
     try {
       const planId = vsRows[0].plan_id || null;
-      const isBonusSessionAcct = (vsRows[0].is_bonus_session === true);
-
-      if (isBonusSessionAcct) {
-        const { data: bonusRow, error: bonusErr } = await supabase
-          .from("voucher_bonus_overrides")
-          .select("bonus_bytes,note")
-          .eq("voucher_session_id", vsId)
-          .maybeSingle();
-
-        if (bonusErr) {
-          console.warn("[radius][accounting][bonus-quota] skipped", {
-            voucherCode: maskVoucherCode(voucherCode),
-            nasId: nasId || null,
-            reason: "override_load_failed",
-            code: String(bonusErr.code || "") || null,
-          });
-        } else if (!bonusRow) {
-          console.warn("[radius][accounting][bonus-quota] skipped", {
-            voucherCode: maskVoucherCode(voucherCode),
-            nasId: nasId || null,
-            reason: "override_missing",
-          });
-        } else {
-          const bonusQuota = evaluateBonusDataQuota({
-            currentUsedBytes: safeUsedBytes,
-            bonusBytesRaw: bonusRow.bonus_bytes,
-            rawNote: bonusRow.note,
-          });
-
-          if (!bonusQuota.ok) {
-            console.warn("[radius][accounting][bonus-quota] skipped", {
-              voucherCode: maskVoucherCode(voucherCode),
-              nasId: nasId || null,
-              reason: bonusQuota.reason,
-            });
-          } else {
-            quotaReached = bonusQuota.reached;
-          }
-        }
-      } else if (planId) {
+      if (planId) {
         const { data: planRow, error: planErr } = await supabase
           .from("plans")
           .select("data_mb")
@@ -22458,7 +23014,10 @@ app.post("/api/radius/accounting", async (req, res) => {
           });
         } else {
           const dataMbRaw = planRow?.data_mb;
-          const dataMb = (dataMbRaw === null || dataMbRaw === undefined) ? null : Number(dataMbRaw);
+          const dataMb =
+            (dataMbRaw === null || dataMbRaw === undefined)
+              ? null
+              : Number(dataMbRaw);
           const totalLimitBytes =
             (dataMb !== null && Number.isFinite(dataMb) && dataMb > 0)
               ? BigInt(Math.floor(dataMb * 1024 * 1024))
@@ -22477,8 +23036,6 @@ app.post("/api/radius/accounting", async (req, res) => {
       });
     }
 
-
-    // Determine whether time quota is expired (voucher_sessions.expires_at)
     const now = new Date();
     const expiresAtIso = vsRows[0].expires_at || null;
     const timeExpired = !!(
@@ -22487,9 +23044,6 @@ app.post("/api/radius/accounting", async (req, res) => {
       now >= new Date(expiresAtIso)
     );
 
-    // Decide whether we should request a CoA Disconnect-Request (premium UX):
-    // - ONLY on Interim-Update (not Start/Stop)
-    // - ONLY once per (nas_id, acct_session_id) using radius_acct_sessions.coa_sent_at as an idempotency latch
     const coaAlreadySent = !!(existing && existing.coa_sent_at);
 
     let coaReason = null;
@@ -22521,8 +23075,6 @@ app.post("/api/radius/accounting", async (req, res) => {
       if (coaUpErr) {
         console.log("[radius][accounting] coa latch update error", coaUpErr);
       } else {
-        // Tell FreeRADIUS: send a Disconnect-Request (CoA).
-        // We use Tmp-* attributes to avoid "unknown attribute" warnings.
         responseJson = {
           "control:Tmp-Integer-0": 1,
           "control:Tmp-String-0": coaReason,
@@ -22530,52 +23082,10 @@ app.post("/api/radius/accounting", async (req, res) => {
       }
     }
 
-    // Build patch (only columns that really exist will be kept by the safe-updater below)
     const vsPatchBase = {
-      data_used_bytes: safeUsedBytes.toString(),
-      last_acct_session_id: acctSessionId,
-      last_seen_at: new Date().toISOString(),
-
-      // ✅ STORE ACTIVE CLIENT IP (from Framed-IP-Address) fafana ito rehefa tsy mety ok
-  ...(framedIp ? { client_ip: framedIp } : {}),
-
-
-      // status is updated when quota is reached so admin panel reflects reality
+      ...usagePatchBase,
       ...(quotaReached ? { status: "used" } : (timeExpired ? { status: "expired" } : {})),
-      updated_at: new Date().toISOString(),
     };
-
-    // Try updating voucher_sessions, but auto-strip unknown columns (Supabase schema cache mismatch)
-    async function updateVoucherSessionSafe(vsId, patch) {
-      let current = { ...patch };
-      for (let i = 0; i < 8; i++) {
-        const { error } = await supabase
-          .from("voucher_sessions")
-          .update(current)
-          .eq("id", vsId);
-
-        if (!error) return null;
-
-        if (String(error.code || "") !== "PGRST204") {
-          return error;
-        }
-
-        const msg = String(error.message || "");
-        const m = msg.match(/Could not find the '([^']+)' column/);
-        if (!m) return error;
-
-        const col = m[1];
-        if (col && Object.prototype.hasOwnProperty.call(current, col)) {
-          delete current[col];
-          if (!Object.keys(current).length) return error;
-          continue;
-        }
-
-        // Column not in our patch => nothing more we can do
-        return error;
-      }
-      return { message: "voucher_sessions update failed after retries", code: "PGRST204" };
-    }
 
     const vsUpErr = await updateVoucherSessionSafe(vsId, vsPatchBase);
 
@@ -22596,7 +23106,8 @@ app.post("/api/radius/accounting", async (req, res) => {
 // ENDPOINT: /api/voucher/last
 // Resume the latest voucher for a device (client_mac), preferring:
 // 1) pending delivered-but-not-activated code (Model B)
-// 2) active (not expired) session
+// 2) current Bonus V2 (active, then available)
+// 3) normal active (not expired) session
 // Includes plan metadata for nicer display (Option 2).
 // ---------------------------------------------------------------------------
 app.get("/api/voucher/last", async (req, res) => {
@@ -22611,7 +23122,7 @@ app.get("/api/voucher/last", async (req, res) => {
 
     const nowIso = new Date().toISOString();
     const selectCols =
-      "voucher_code,plan_id,status,created_at,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,mvola_phone,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)";
+      "id,voucher_code,plan_id,status,created_at,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,mvola_phone,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)";
 
     const pick = async (q) => {
       const { data, error } = await q;
@@ -22633,7 +23144,66 @@ app.get("/api/voucher/last", async (req, res) => {
     if (ap_mac) row = await pick(qPending.eq("ap_mac", ap_mac));
     if (!row) row = await pick(qPending);
 
-    // Else active not expired
+    // Else current Bonus V2 (active first, then available). The original
+    // voucher row stays terminal by design, so it cannot be discovered by the
+    // normal active-session query below.
+    if (!row) {
+      let recentQuery = supabase
+        .from("voucher_sessions")
+        .select(selectCols)
+        .eq("client_mac", client_mac)
+        .order("created_at", { ascending: false })
+        .limit(20);
+      if (ap_mac) recentQuery = recentQuery.eq("ap_mac", ap_mac);
+
+      const { data: recentRows, error: recentErr } = await recentQuery;
+      if (!recentErr && Array.isArray(recentRows) && recentRows.length) {
+        const recentIds = recentRows.map((item) => item?.id).filter(Boolean);
+        if (recentIds.length) {
+          const { data: bonusRows, error: bonusErr } = await supabase
+            .from("vw_voucher_bonus_truth")
+            .select(
+              "voucher_session_id,run_id,stored_status,effective_status,can_activate,can_authorize,prepared_at,started_at,expires_at,updated_at"
+            )
+            .in("voucher_session_id", recentIds)
+            .in("stored_status", ["available", "active"])
+            .order("updated_at", { ascending: false });
+
+          if (!bonusErr && Array.isArray(bonusRows)) {
+            const activeBonus = bonusRows.find((item) =>
+              String(item?.stored_status || "").toLowerCase() === "active" &&
+              String(item?.effective_status || "").toLowerCase() === "active" &&
+              item?.can_authorize === true
+            );
+            const availableBonus = bonusRows.find((item) =>
+              String(item?.stored_status || "").toLowerCase() === "available" &&
+              item?.can_activate === true
+            );
+            const currentBonus = activeBonus || availableBonus || null;
+
+            if (currentBonus) {
+              const sourceRow = recentRows.find(
+                (item) => String(item?.id || "") === String(currentBonus.voucher_session_id || "")
+              );
+              if (sourceRow) {
+                row = {
+                  ...sourceRow,
+                  status: activeBonus ? "active" : "pending",
+                  started_at: currentBonus.started_at || sourceRow.started_at || null,
+                  expires_at: currentBonus.expires_at || sourceRow.expires_at || null,
+                  bonus_v2: serializeBonusV2({
+                    ...currentBonus,
+                    state: currentBonus.stored_status,
+                  }),
+                };
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Else normal active not expired
     if (!row) {
       let qActive = base
         .eq("status", "active")
@@ -22659,6 +23229,7 @@ app.get("/api/voucher/last", async (req, res) => {
       started_at: row.started_at,
       expires_at: row.expires_at,
       plan,
+      bonus_v2: row.bonus_v2 || null,
     });
   } catch (e) {
     console.error("/api/voucher/last error:", e?.message || e);
@@ -22675,13 +23246,51 @@ async function getBlockingVoucherForClient({ client_mac, ap_mac = null }) {
   try {
     const nowIso = new Date().toISOString();
     const selectCols =
-      "voucher_code,plan_id,status,created_at,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,mvola_phone,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)";
+      "id,voucher_code,plan_id,status,created_at,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,mvola_phone,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)";
 
     const pick = async (q) => {
       const { data, error } = await q;
       if (error || !data || !data.length) return null;
       return data[0];
     };
+
+    // P2-A3.2: an active Bonus V2 must block a new purchase even though the
+    // original voucher_sessions row deliberately remains used/expired.
+    const { data: recentSessions, error: recentErr } = await supabase
+      .from("voucher_sessions")
+      .select(selectCols)
+      .eq("client_mac", client_mac)
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    if (!recentErr && Array.isArray(recentSessions) && recentSessions.length) {
+      const ids = recentSessions.map((r) => r?.id).filter(Boolean);
+      if (ids.length) {
+        const { data: bonusRows, error: bonusErr } = await supabase
+          .from("vw_voucher_bonus_truth")
+          .select("voucher_session_id,stored_status,effective_status,can_authorize,expires_at")
+          .in("voucher_session_id", ids)
+          .eq("stored_status", "active");
+
+        if (!bonusErr && Array.isArray(bonusRows)) {
+          const activeSessionId = bonusRows.find((r) =>
+            String(r?.effective_status || "").toLowerCase() === "active" &&
+            r?.can_authorize === true
+          )?.voucher_session_id;
+
+          if (activeSessionId) {
+            const row = recentSessions.find((r) => String(r?.id) === String(activeSessionId));
+            if (row) {
+              return {
+                ...row,
+                status: "active",
+                bonus_v2_active: true,
+              };
+            }
+          }
+        }
+      }
+    }
 
     const base = supabase.from("voucher_sessions").select(selectCols).eq("client_mac", client_mac);
 
@@ -22768,131 +23377,204 @@ async function getFreePlanLastUse({ client_mac, plan_id }) {
 }
 
 // ------------------------------------------------------------
-// ADMIN: Voucher bonus override (time/data bonuses)
-// Table: voucher_bonus_overrides (voucher_session_id) -> bonus_seconds, bonus_bytes
+// P2-A3.2 — ADMIN BONUS V2
+// Compatibility URL retained for the current clients.js.
+// Source of truth: voucher_bonus_runs / atomic Bonus V2 RPCs.
 // ------------------------------------------------------------
 
-// GET current bonus
+function bonusV2AdminItem(voucherSessionId, bonus) {
+  const legacy = bonusV2LegacyFields(bonus);
+  return {
+    voucher_session_id: voucherSessionId,
+    bonus_seconds: legacy.bonus_seconds,
+    bonus_bytes: legacy.bonus_bytes,
+    note: bonus?.note || null,
+    updated_at: bonus?.updated_at || null,
+    updated_by: bonus?.prepared_by || bonus?.activated_by || null,
+    state: bonus?.state || null,
+    effective_state: bonus?.effective_state || null,
+    can_activate: bonus?.can_activate === true,
+    can_authorize: bonus?.can_authorize === true,
+    item_type: "bonus_v2",
+    bonus: serializeBonusV2(bonus),
+  };
+}
+
+// GET current Bonus V2 truth.
 // /api/admin/voucher-bonus-overrides?voucher_session_id=...
 app.get("/api/admin/voucher-bonus-overrides", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
     const voucher_session_id = String(req.query.voucher_session_id || "").trim();
-    if (!voucher_session_id) return res.status(400).json({ error: "voucher_session_id is required" });
+    if (!UUID_V1_TO_V5_RE.test(voucher_session_id)) {
+      return res.status(400).json({ error: "voucher_session_id_invalid" });
+    }
 
     if (!await loadVoucherSessionForAdminScope(req, res, voucher_session_id, "id,pool_id")) return;
 
-    const item = await getVoucherBonusOverride({ voucher_session_id });
+    const truth = await loadVoucherBonusV2Truth({
+      voucherSessionId: voucher_session_id,
+      includeHistory: true,
+    });
+
     return res.json({
-      item: {
-        voucher_session_id,
-        bonus_seconds: toSafeInt(item.bonus_seconds),
-        bonus_bytes: toSafeInt(item.bonus_bytes),
-        note: parseBonusMeta(item.note).userNote || null,
-        updated_at: item.updated_at || null,
-        updated_by: item.updated_by || null,
-      }
+      item: bonusV2AdminItem(voucher_session_id, truth.bonus),
+      history: truth.history || [],
     });
   } catch (e) {
-    return res.status(500).json({ error: String(e.message || e) });
+    return res.status(500).json({
+      error: bonusV2KnownErrorCode(e, "bonus_truth_failed")
+    });
   }
 });
 
-// UPSERT bonus
-// POST /api/admin/voucher-bonus-overrides
-// body: { voucher_session_id, add_minutes, add_mb, unlimited_data, note }  // unlimited_data=true => bonus_bytes=-1
-// - We store CURRENT totals (bonus_seconds, bonus_bytes) for this voucher_session_id
-// - New bonus REPLACES previous bonus (no accumulation, no history)
-app.post("/api/admin/voucher-bonus-overrides", requireAdmin, async (req, res) => {
-  try {
-    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
-
-    const body = req.body || {};
-    const voucher_session_id = String(body.voucher_session_id || "").trim();
-    if (!voucher_session_id) {
-      return res.status(400).json({ error: "voucher_session_id is required" });
-    }
-
-    if (!await loadVoucherSessionForAdminScope(req, res, voucher_session_id, "id,pool_id")) return;
-
-    // Bonus policy (System 3): allow bonus ONLY when voucher is expired or used (never pending/active)
+// Prepare or atomically replace an AVAILABLE Bonus V2.
+// Current frontend body remains supported:
+// { voucher_session_id, add_minutes, add_mb, unlimited_data, note, request_id? }
+app.post(
+  "/api/admin/voucher-bonus-overrides",
+  requireAdmin,
+  requireSuperadmin,
+  async (req, res) => {
     try {
-      const { data: tRow, error: tErr } = await supabase
-        .from("vw_voucher_sessions_truth")
-        .select("status,truth_status")
-        .eq("id", voucher_session_id)
-        .maybeSingle();
+      if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-      if (tErr) throw tErr;
+      const body = req.body || {};
+      const voucher_session_id = String(body.voucher_session_id || "").trim();
+      if (!UUID_V1_TO_V5_RE.test(voucher_session_id)) {
+        return res.status(400).json({ error: "voucher_session_id_invalid" });
+      }
 
-      const st = String(tRow?.status || tRow?.truth_status || "").toLowerCase();
-      if (st === "pending" || st === "active") {
-        return res.status(400).json({ error: "bonus_only_for_expired_or_used" });
+      if (!await loadVoucherSessionForAdminScope(req, res, voucher_session_id, "id,pool_id")) return;
+
+      const add_minutes = Number(body.add_minutes ?? 0);
+      const add_mb = Number(body.add_mb ?? 0);
+      const unlimited_data = body.unlimited_data === true;
+      const note = String(body.note || "").trim() || null;
+
+      if (
+        !Number.isFinite(add_minutes) ||
+        add_minutes <= 0 ||
+        add_minutes > 7 * 24 * 60
+      ) {
+        return res.status(400).json({
+          error: "bonus_duration_required",
+          message: "La durée du bonus doit être comprise entre 1 minute et 7 jours."
+        });
       }
-      if (st !== "expired" && st !== "used") {
-        return res.status(400).json({ error: "invalid_voucher_status_for_bonus" });
+
+      if (!unlimited_data) {
+        if (
+          !Number.isFinite(add_mb) ||
+          add_mb <= 0 ||
+          add_mb > 102400
+        ) {
+          return res.status(400).json({
+            error: "bonus_data_required",
+            message: "La data du bonus doit être supérieure à 0, ou illimitée."
+          });
+        }
       }
+
+      if (note && [...note].length > 2000) {
+        return res.status(400).json({ error: "bonus_note_too_long" });
+      }
+
+      const durationSeconds = Math.floor(add_minutes * 60);
+      const totalBytes = unlimited_data
+        ? null
+        : Math.floor(add_mb * 1024 * 1024);
+      const requestId = bonusV2RequestId(body.request_id || body.requestId || null);
+
+      const prepared = await prepareVoucherBonusV2({
+        voucherSessionId: voucher_session_id,
+        requestId,
+        durationSeconds,
+        totalBytes,
+        note,
+        actor: req.admin?.email || req.admin?.username || "superadmin",
+      });
+
+      return res.json({
+        ok: true,
+        outcome: prepared.outcome || "prepared",
+        request_id: requestId,
+        item: bonusV2AdminItem(voucher_session_id, prepared.bonus),
+        bonus: prepared.bonus,
+      });
     } catch (e) {
-      console.error("BONUS STATUS CHECK ERROR", e?.message || e);
-      return res.status(500).json({ error: "status_check_failed" });
+      const code = e?.publicCode || bonusV2KnownErrorCode(e, "bonus_prepare_failed");
+      const httpStatus =
+        code === "request_id_invalid" ||
+        code === "bonus_duration_invalid" ||
+        code === "bonus_data_invalid" ||
+        code === "bonus_note_too_long"
+          ? 400
+          : code === "voucher_not_terminal" ||
+            code === "legacy_bonus_session_active" ||
+            code === "active_bonus_cannot_be_cancelled" ||
+            code === "bonus_already_active"
+            ? 409
+            : code === "voucher_session_not_found"
+              ? 404
+              : 500;
+
+      return res.status(httpStatus).json({ error: code });
     }
-
-    const add_minutes = Number(body.add_minutes ?? 0);
-    const add_mb = Number(body.add_mb ?? 0);
-    const unlimited_data = (body.unlimited_data === true);
-    const disable_unlimited = (body.unlimited_data === false);
-    const note = (body.note || "").toString().trim() || null;
-
-    if (!Number.isFinite(add_minutes) || add_minutes < 0 || add_minutes > 7 * 24 * 60) {
-      return res.status(400).json({ error: "add_minutes must be between 0 and 10080 (7 days)" });
-    }
-
-    if (!unlimited_data) {
-      if (!Number.isFinite(add_mb) || add_mb < 0 || add_mb > 102400) {
-        return res.status(400).json({ error: "add_mb must be between 0 and 102400" });
-      }
-    }
-
-    const add_seconds = Math.floor(add_minutes * 60);
-    const add_bytes = unlimited_data ? 0 : Math.floor(add_mb * 1024 * 1024);
-
-    // BONUS SESSION RULE:
-    // A new admin bonus REPLACES the previous current bonus.
-    // Keep the row, but reset current values first so the RPC effectively sets the new bonus on top of 0.
-    const { error: resetErr } = await supabase
-      .from("voucher_bonus_overrides")
-      .update({
-        bonus_seconds: 0,
-        bonus_bytes: 0,
-        note: null,
-        updated_at: new Date().toISOString(),
-        updated_by: req.admin?.email || null,
-      })
-      .eq("voucher_session_id", voucher_session_id);
-
-    if (resetErr) {
-      return res.status(500).json({ error: resetErr.message });
-    }
-
-    // Atomic DB transaction (RPC): write current bonus + any DB-side side effects already implemented there
-    const { data: rpcData, error: rpcErr } = await supabase.rpc("fn_add_voucher_bonus", {
-      p_voucher_session_id: voucher_session_id,
-      p_add_seconds: add_seconds,
-      p_add_bytes: add_bytes,
-      p_set_unlimited: unlimited_data === true,
-      p_clear_unlimited: disable_unlimited === true,
-      p_note: note,
-      p_updated_by: req.admin?.email || null,
-    });
-
-    if (rpcErr) return res.status(500).json({ error: rpcErr.message });
-
-    const item = Array.isArray(rpcData) ? rpcData[0] : rpcData;
-    return res.json({ ok: true, item });
-  } catch (e) {
-    return res.status(500).json({ error: String(e.message || e) });
   }
-});
+);
+
+// Cancel an AVAILABLE Bonus V2. Active runs cannot be cancelled.
+app.delete(
+  "/api/admin/voucher-bonus-overrides",
+  requireAdmin,
+  requireSuperadmin,
+  async (req, res) => {
+    try {
+      if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+      const body = req.body || {};
+      const voucher_session_id = String(
+        body.voucher_session_id || req.query.voucher_session_id || ""
+      ).trim();
+
+      if (!UUID_V1_TO_V5_RE.test(voucher_session_id)) {
+        return res.status(400).json({ error: "voucher_session_id_invalid" });
+      }
+
+      if (!await loadVoucherSessionForAdminScope(req, res, voucher_session_id, "id,pool_id")) return;
+
+      const requestId = bonusV2RequestId(
+        body.request_id || body.requestId || req.query.request_id || null
+      );
+      const note = String(body.note || "").trim() || null;
+
+      const cancelled = await cancelVoucherBonusV2({
+        voucherSessionId: voucher_session_id,
+        requestId,
+        actor: req.admin?.email || req.admin?.username || "superadmin",
+        note,
+      });
+
+      return res.json({
+        ok: true,
+        outcome: cancelled.outcome || "cancelled",
+        request_id: requestId,
+        item: bonusV2AdminItem(voucher_session_id, cancelled.bonus),
+        bonus: cancelled.bonus,
+      });
+    } catch (e) {
+      const code = e?.publicCode || bonusV2KnownErrorCode(e, "bonus_cancel_failed");
+      const httpStatus =
+        code === "request_id_invalid" ? 400 :
+        code === "active_bonus_cannot_be_cancelled" ? 409 :
+        code === "voucher_session_not_found" ? 404 :
+        500;
+      return res.status(httpStatus).json({ error: code });
+    }
+  }
+);
 
 // Portal pre-check to show message immediately (before MVola input) when free plan already used.
 // Fail-open on errors (never break production).
@@ -24656,5 +25338,6 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server started at ${now} on port ${PORT}`);
   console.log(`[INFO] Endpoint ready: POST /api/send-payment`);
   startMvolaRecoveryJob();
-  startBonusCleanupJob();
+  // P2-A3.2: legacy Bonus cleanup is intentionally not started after the
+  // atomic Bonus V2 cutover. The function remains dormant for rollback only.
 });
