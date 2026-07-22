@@ -4567,3 +4567,18 @@ body.rz-admin-shell .rz-since-btn:disabled {
   opacity: 0.62;
   line-height: 1.35;
 }
+
+/* P2-A3.3.2 — stable live counters (no column jump while seconds change). */
+.rz-live-countdown,
+#table [data-col="remaining"],
+#table [data-col="data-remaining"] {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  white-space: nowrap;
+}
+#table [data-col="remaining"] {
+  min-width: 118px;
+}
+#table [data-col="data-remaining"] {
+  min-width: 96px;
+}

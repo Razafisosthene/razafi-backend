@@ -180,6 +180,41 @@ function bonusV2Number(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function monotonicNowMs() {
+  try {
+    if (typeof performance !== "undefined" && typeof performance.now === "function") {
+      return performance.now();
+    }
+  } catch (_) {}
+  return Date.now();
+}
+
+function syncCountdownAnchor(target, seconds) {
+  if (!target || typeof target !== "object") return;
+  const value = Math.max(0, Math.floor(bonusV2Number(seconds, 0)));
+  target.__rzCountdownSeconds = value;
+  target.__rzCountdownSyncedAt = monotonicNowMs();
+}
+
+function readCountdownAnchor(target, fallbackSeconds = 0) {
+  if (!target || typeof target !== "object") {
+    return Math.max(0, Math.floor(bonusV2Number(fallbackSeconds, 0)));
+  }
+  const anchor = Number(target.__rzCountdownSeconds);
+  const syncedAt = Number(target.__rzCountdownSyncedAt);
+  if (Number.isFinite(anchor) && Number.isFinite(syncedAt)) {
+    const elapsed = Math.max(0, Math.floor((monotonicNowMs() - syncedAt) / 1000));
+    return Math.max(0, Math.floor(anchor) - elapsed);
+  }
+  return Math.max(0, Math.floor(bonusV2Number(fallbackSeconds, 0)));
+}
+
+function syncBonusV2Countdown(bonus) {
+  if (bonusV2State(bonus) === "active") {
+    syncCountdownAnchor(bonus, bonus?.remaining_seconds);
+  }
+}
+
 function bonusV2State(bonus) {
   return String(bonus?.effective_state || bonus?.state || "none").trim().toLowerCase() || "none";
 }
@@ -204,9 +239,8 @@ function bonusV2EndReasonLabel(reason) {
 
 function bonusV2RemainingSeconds(bonus) {
   if (!bonus) return 0;
-  if (bonusV2State(bonus) === "active" && bonus.expires_at) {
-    const expiresMs = new Date(bonus.expires_at).getTime();
-    if (Number.isFinite(expiresMs)) return Math.max(0, Math.floor((expiresMs - Date.now()) / 1000));
+  if (bonusV2State(bonus) === "active") {
+    return readCountdownAnchor(bonus, bonus?.remaining_seconds);
   }
   return Math.max(0, bonusV2Number(bonus.remaining_seconds, 0));
 }
@@ -248,11 +282,32 @@ function bonusV2ChipHtml(bonus) {
   return ` <span class="rz-bonus-v2-chip" title="${esc(cfg.title)}" style="font-size:12px; padding:2px 6px; border-radius:999px; border:1px solid rgba(13,110,253,.35); background:rgba(13,110,253,.08); white-space:nowrap;">${esc(cfg.text)}</span>`;
 }
 
+function itemHasActiveAccess(it) {
+  return normStatus(it?.status || it?.truth_status) === "active" || bonusV2State(getBonusV2(it)) === "active";
+}
+
+function syncVoucherCountdown(it) {
+  if (!it || typeof it !== "object") return;
+  if (normStatus(it?.status || it?.truth_status) === "active" && bonusV2State(getBonusV2(it)) !== "active") {
+    syncCountdownAnchor(it, it?.remaining_seconds);
+  }
+}
+
+function voucherRemainingSeconds(it) {
+  if (normStatus(it?.status || it?.truth_status) !== "active") return 0;
+  return readCountdownAnchor(it, it?.remaining_seconds);
+}
+
 function bonusV2RowTime(it, bonus) {
   const state = bonusV2State(bonus);
   if (state === "active") return fmtRemaining(bonusV2RemainingSeconds(bonus));
   if (state === "available") return `${fmtRemaining(bonusV2Number(bonus?.duration_seconds, 0))} (à activer)`;
-  return fmtRemaining(it?.remaining_seconds);
+
+  const status = normStatus(it?.status || it?.truth_status);
+  if (status === "active") return fmtRemaining(voucherRemainingSeconds(it));
+  if (status === "pending") return "Non démarré";
+  if (status === "used" || status === "expired") return "0 s";
+  return it?.remaining_seconds == null ? "—" : fmtRemaining(it.remaining_seconds);
 }
 
 function bonusV2RowData(it, bonus) {
@@ -390,6 +445,7 @@ function updateBonusV2Card(sessionId, bonus) {
 function startBonusV2LiveRefresh(sessionId, initialBonus) {
   stopBonusV2LiveRefresh();
   bonusV2LiveSnapshot = initialBonus || null;
+  syncBonusV2Countdown(bonusV2LiveSnapshot);
   updateBonusV2Card(sessionId, bonusV2LiveSnapshot);
   if (bonusV2State(bonusV2LiveSnapshot) !== "active") return;
 
@@ -407,6 +463,7 @@ function startBonusV2LiveRefresh(sessionId, initialBonus) {
       const fresh = await fetchJSON(`/api/admin/voucher-sessions/${encodeURIComponent(sessionId)}`);
       if (generation !== bonusV2RefreshGeneration || String(currentDetailId) !== String(sessionId)) return;
       bonusV2LiveSnapshot = getBonusV2(fresh?.item);
+      syncBonusV2Countdown(bonusV2LiveSnapshot);
       updateBonusV2Card(sessionId, bonusV2LiveSnapshot);
       if (bonusV2State(bonusV2LiveSnapshot) !== "active") {
         const terminalSnapshot = bonusV2LiveSnapshot;
@@ -430,6 +487,26 @@ let debounceTimer = null;
 let lastItems = [];
 let clientsRequestGeneration = 0;
 let clientsAbortController = null;
+
+// P2-A3.3.2 — one lightweight live loop for the whole visible table.
+// Time is animated locally every second; backend truth is re-read silently
+// every 15 seconds. The table DOM is never rebuilt by this automatic refresh.
+const CLIENTS_LIVE_SYNC_MS = 15000;
+let clientsLiveClockTimer = null;
+let clientsLiveSyncTimer = null;
+let clientsLiveSyncBusy = false;
+let clientsLiveGeneration = 0;
+let clientsZeroSyncQueued = false;
+
+function stopClientsLiveRefresh() {
+  clientsLiveGeneration += 1;
+  if (clientsLiveClockTimer) clearInterval(clientsLiveClockTimer);
+  if (clientsLiveSyncTimer) clearInterval(clientsLiveSyncTimer);
+  clientsLiveClockTimer = null;
+  clientsLiveSyncTimer = null;
+  clientsLiveSyncBusy = false;
+  clientsZeroSyncQueued = false;
+}
 
 function invalidateActiveClientsRequest() {
   clientsRequestGeneration += 1;
@@ -752,8 +829,9 @@ function renderLiveClientLabel(it) {
   `;
   }
 
-  const isActiveVoucher = normStatus(it?.status) === "active";
-  const isOnline = isActiveVoucher && (it?.is_online === true || normStatus(it?.live_status) === "online");
+  // The backend already combines normal voucher access and Bonus V2 access.
+  // Never gate the real network state on the original voucher status here.
+  const isOnline = it?.is_online === true || normStatus(it?.live_status) === "online";
   const dot = isOnline ? "🟢" : "⚫";
   const title = isOnline ? "Connecté" : "Hors ligne";
 
@@ -818,13 +896,15 @@ function renderTable(items) {
     const apDisplay = it.ap_name || it.ap_mac || "—";
 
     const clientCell = renderLiveClientLabel(it);
-const rowBonus = getBonusV2(it);
+    const rowBonus = getBonusV2(it);
+    syncBonusV2Countdown(rowBonus);
+    syncVoucherCountdown(it);
     const bonusChip = bonusV2ChipHtml(rowBonus);
     const rowTimeRemaining = bonusV2RowTime(it, rowBonus);
     const rowDataRemaining = bonusV2RowData(it, rowBonus);
     const rowExpiresAt = bonusV2RowExpires(it, rowBonus);
 tr.innerHTML = `
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${clientCell}</td>
+      <td data-col="client" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${clientCell}</td>
 
       <!-- ✅ status now follows backend truth + usable bonus state -->
       <td data-col="status" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);"><span data-role="base-status">${esc(it.status || "—")}</span>${bonusChip}</td>
@@ -855,6 +935,145 @@ tr.innerHTML = `
     tr.addEventListener("click", () => openDetail(it.id));
     tbody.appendChild(tr);
   }
+}
+
+
+function updateModalLiveFields(it) {
+  if (!it || String(currentDetailId || "") !== String(it.id || "")) return;
+  const unknown =
+    it?.is_online === null ||
+    it?.is_online === undefined ||
+    normStatus(it?.live_status) === "unknown";
+  const online = it?.is_online === true || normStatus(it?.live_status) === "online";
+  const connectionEl = document.getElementById(`modalLiveStatus_${it.id}`);
+  if (connectionEl) {
+    connectionEl.textContent = unknown ? "⚪ Statut live indisponible" : (online ? "🟢 Connecté" : "⚫ Hors ligne");
+  }
+  const signalEl = document.getElementById(`modalLiveSignal_${it.id}`);
+  if (signalEl) signalEl.textContent = fmtDate(it?.live_status_updated_at);
+  const remainingEl = document.getElementById(`modalEffectiveRemaining_${it.id}`);
+  if (remainingEl) remainingEl.textContent = bonusV2RowTime(it, getBonusV2(it));
+}
+
+function updateVisibleClientRow(it) {
+  const tr = document.querySelector(`tr[data-id="${CSS.escape(String(it?.id || ""))}"]`);
+  if (!tr) return;
+
+  const clientCell = tr.querySelector('[data-col="client"]');
+  if (clientCell) clientCell.innerHTML = renderLiveClientLabel(it);
+
+  const statusCell = tr.querySelector('[data-col="status"]');
+  if (statusCell) {
+    const baseStatus = statusCell.querySelector('[data-role="base-status"]');
+    if (baseStatus) baseStatus.textContent = it?.status || "—";
+    statusCell.querySelectorAll(".rz-bonus-v2-chip").forEach((el) => el.remove());
+    statusCell.insertAdjacentHTML("beforeend", bonusV2ChipHtml(getBonusV2(it)));
+  }
+
+  const timeCell = tr.querySelector('[data-col="remaining"]');
+  if (timeCell) timeCell.textContent = bonusV2RowTime(it, getBonusV2(it));
+  const dataCell = tr.querySelector('[data-col="data-remaining"]');
+  if (dataCell) dataCell.textContent = bonusV2RowData(it, getBonusV2(it));
+  const expiresCell = tr.querySelector('[data-col="expires"]');
+  if (expiresCell) expiresCell.textContent = fmtDate(bonusV2RowExpires(it, getBonusV2(it)));
+
+  updateModalLiveFields(it);
+}
+
+function queueClientsZeroSync() {
+  if (clientsZeroSyncQueued || clientsLiveSyncBusy || document.hidden) return;
+  clientsZeroSyncQueued = true;
+  setTimeout(() => {
+    clientsZeroSyncQueued = false;
+    syncVisibleClientsLive({ force: true }).catch(() => {});
+  }, 250);
+}
+
+function updateVisibleCountdowns() {
+  let reachedZero = false;
+  for (const it of lastItems || []) {
+    const bonus = getBonusV2(it);
+    const wasActive = bonusV2State(bonus) === "active" || normStatus(it?.status || it?.truth_status) === "active";
+    const label = bonusV2RowTime(it, bonus);
+    const tr = document.querySelector(`tr[data-id="${CSS.escape(String(it?.id || ""))}"]`);
+    const timeCell = tr?.querySelector('[data-col="remaining"]');
+    if (timeCell) timeCell.textContent = label;
+    const modalTime = document.getElementById(`modalEffectiveRemaining_${it.id}`);
+    if (modalTime) modalTime.textContent = label;
+
+    if (wasActive) {
+      const remaining = bonusV2State(bonus) === "active"
+        ? bonusV2RemainingSeconds(bonus)
+        : voucherRemainingSeconds(it);
+      if (remaining <= 0 && it.__rzZeroSyncDone !== true) {
+        it.__rzZeroSyncDone = true;
+        reachedZero = true;
+      }
+    }
+  }
+  if (reachedZero) queueClientsZeroSync();
+}
+
+async function syncVisibleClientsLive({ force = false } = {}) {
+  if (clientsLiveSyncBusy) return;
+  if (!force && document.hidden) return;
+  const ids = (lastItems || []).map((it) => String(it?.id || "")).filter(Boolean);
+  if (!ids.length) return;
+
+  const generation = clientsLiveGeneration;
+  clientsLiveSyncBusy = true;
+  try {
+    const data = await fetchJSON("/api/admin/clients/live-snapshot", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    if (generation !== clientsLiveGeneration) return;
+
+    const snapshotById = new Map(
+      (Array.isArray(data?.items) ? data.items : [])
+        .map((item) => [String(item?.id || ""), item])
+        .filter(([id]) => id)
+    );
+
+    for (const it of lastItems || []) {
+      const snapshot = snapshotById.get(String(it?.id || ""));
+      if (!snapshot) continue;
+      Object.assign(it, snapshot);
+      const bonus = getBonusV2(it);
+      syncBonusV2Countdown(bonus);
+      syncVoucherCountdown(it);
+      const syncedRemaining = bonusV2State(bonus) === "active"
+        ? bonusV2RemainingSeconds(bonus)
+        : (normStatus(it?.status || it?.truth_status) === "active" ? voucherRemainingSeconds(it) : null);
+      it.__rzZeroSyncDone = syncedRemaining !== null && syncedRemaining <= 0;
+      updateVisibleClientRow(it);
+
+      if (String(currentDetailId || "") === String(it.id || "") && bonusV2LiveSnapshot?.run_id === bonus?.run_id) {
+        bonusV2LiveSnapshot = bonus;
+        updateBonusV2Card(it.id, bonusV2LiveSnapshot);
+      }
+    }
+  } catch (e) {
+    // Silent automatic refresh: retain the last confirmed values and retry.
+    console.warn("[clients] live snapshot failed", e?.message || e);
+  } finally {
+    clientsLiveSyncBusy = false;
+  }
+}
+
+function startClientsLiveRefresh() {
+  stopClientsLiveRefresh();
+  const generation = clientsLiveGeneration;
+  updateVisibleCountdowns();
+  clientsLiveClockTimer = setInterval(() => {
+    if (generation !== clientsLiveGeneration) return;
+    updateVisibleCountdowns();
+  }, 1000);
+  clientsLiveSyncTimer = setInterval(() => {
+    if (generation !== clientsLiveGeneration) return;
+    syncVisibleClientsLive().catch(() => {});
+  }, CLIENTS_LIVE_SYNC_MS);
 }
 
 // -------------------------
@@ -922,6 +1141,7 @@ async function loadClients() {
     lastTotal = Number(data.total || 0);
     renderSummary(data.summary || {});
     renderTable(data.items || []);
+    startClientsLiveRefresh();
 
     // P0.1 FIX (audit correction 2): when live status is unavailable and the
     // Connectés/Hors ligne filter is selected, say so — an empty table here is
@@ -1073,7 +1293,6 @@ async function openDetail(id) {
     // /api/admin/clients is the enriched live source; /api/admin/voucher-sessions/:id
     // may not always include the same live fields.
     const modalLiveSource = rowItem || it || {};
-    const modalStatus = normStatus(rowItem?.status || it?.status);
     // P0.2 FIX (defect 1, consistency): the modal's "Connexion" row follows the
     // same rule as the table — unknown live status is never shown as "Hors ligne".
     const modalLiveUnknown =
@@ -1081,15 +1300,14 @@ async function openDetail(id) {
       modalLiveSource?.is_online === undefined ||
       normStatus(modalLiveSource?.live_status) === "unknown";
     const modalIsOnline =
-      modalStatus === "active" &&
-      (modalLiveSource?.is_online === true || normStatus(modalLiveSource?.live_status) === "online");
+      modalLiveSource?.is_online === true || normStatus(modalLiveSource?.live_status) === "online";
     const modalLiveUpdatedAt = modalLiveSource?.live_status_updated_at || it?.live_status_updated_at || null;
 
     const rows = [
       ["Nom appareil", it.client_name || rowItem?.client_name || "—"],
       ["MAC client", it.client_mac || rowItem?.client_mac],
-      ["Connexion", modalLiveUnknown ? "⚪ Statut live indisponible" : (modalIsOnline ? "🟢 Connecté" : "⚫ Hors ligne")],
-      ["Dernier signal", fmtDate(modalLiveUpdatedAt)],
+      ["Connexion", modalLiveUnknown ? "⚪ Statut live indisponible" : (modalIsOnline ? "🟢 Connecté" : "⚫ Hors ligne"), `modalLiveStatus_${it.id}`],
+      ["Dernier signal", fmtDate(modalLiveUpdatedAt), `modalLiveSignal_${it.id}`],
       ["AP", it.ap_name || rowItem?.ap_name || "—"],
       ["Pool", poolDisplayName(rowItem || it)],
       ["Statut", it.status || "—"],
@@ -1101,7 +1319,7 @@ async function openDetail(id) {
       ["Activé", fmtDate(it.activated_at)],
       ["Démarré", fmtDate(it.started_at)],
       ["Expiration", fmtDate(it.expires_at)],
-      ["Temps restant", fmtRemaining(it.remaining_seconds)],
+      ["Temps restant", bonusV2RowTime(rowItem || it, getBonusV2(rowItem || it)), `modalEffectiveRemaining_${it.id}`],
       ["Plan", it.plans?.name || it.plan_name],
       ["Prix", (it.plans?.price_ar ?? it.plan_price)],
       ["Durée", fmtDurationMinutes(it.plans?.duration_minutes)],
@@ -1114,10 +1332,10 @@ async function openDetail(id) {
       ["Appareils max", it.plans?.max_devices],
     ];
 
-    detail.innerHTML = rows.map(([k,v]) => `
+    detail.innerHTML = rows.map(([k,v,valueId]) => `
       <div class="rz-detail-card">
         <div class="rz-detail-label">${esc(k)}</div>
-        <div class="rz-detail-value">${esc(v ?? "—")}</div>
+        <div${valueId ? ` id="${esc(valueId)}"` : ""} class="rz-detail-value${k === "Temps restant" ? " rz-live-countdown" : ""}">${esc(v ?? "—")}</div>
       </div>
     `).join("");
 
@@ -1683,6 +1901,15 @@ function wireUI() {
       loadClients().catch(showTopError);
     }
   };
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      updateVisibleCountdowns();
+      syncVisibleClientsLive({ force: true }).catch(() => {});
+    }
+  });
+
+  window.addEventListener("beforeunload", stopClientsLiveRefresh, { once: true });
 
   document.getElementById("closeModalBtn").onclick = closeModal;
   document.getElementById("closeModalBtn2").onclick = closeModal;
