@@ -10765,6 +10765,25 @@ function normalizeLiveMac(mac) {
   return String(m || "").toUpperCase();
 }
 
+function readAdminClientSnapshotIds(body, { max = 200 } = {}) {
+  const raw = body?.ids;
+  if (!Array.isArray(raw)) throw makeRequestValidationError("ids_invalid");
+  if (raw.length < 1 || raw.length > max) throw makeRequestValidationError("ids_invalid");
+
+  const out = [];
+  const seen = new Set();
+  for (const value of raw) {
+    if (typeof value !== "string") throw makeRequestValidationError("ids_invalid");
+    const id = value.trim().toLowerCase();
+    if (!UUID_V1_TO_V5_RE.test(id)) throw makeRequestValidationError("ids_invalid");
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  if (!out.length) throw makeRequestValidationError("ids_invalid");
+  return out;
+}
+
 // GET /api/admin/clients?status=all|active|pending|expired&search=&limit=200&offset=0
 app.get("/api/admin/clients", requireAdmin, async (req, res) => {
   try {
@@ -10908,11 +10927,38 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
     // The accounting query is keyed by the scoped NAS IDs (a handful of short
     // values) instead of an `.in()` list of up to 1000 MACs, which could exceed
     // HTTP/PostgREST URL limits.
-    const LIVE_SCAN_MAX = 1000;  // active-voucher scan cap (disclosed via live_scan_truncated)
+    const LIVE_SCAN_MAX = 1000;  // active-access scan cap (normal vouchers + Bonus V2)
     const LIVE_ROWS_MAX = 2000;  // recent accounting rows cap (disclosed via live_scan_truncated)
+    const ACTIVE_BONUS_SCAN_MAX = 500;
 
-    let activeScopeRows = [];
-    let liveScanTruncated = false;
+    // P2-A3.3.2: an active Bonus V2 is an active network access even when the
+    // original voucher is terminal. Load those session ids before computing the
+    // live scope so Connectés/Hors ligne and row dots use network truth rather
+    // than the original voucher's commercial status.
+    let activeBonusSessionIds = new Set();
+    let activeBonusScanTruncated = false;
+    {
+      const { data: activeBonusRows, error: activeBonusErr } = await supabase
+        .from("vw_voucher_bonus_truth")
+        .select("voucher_session_id")
+        .eq("stored_status", "active")
+        .eq("effective_status", "active")
+        .eq("can_authorize", true)
+        .limit(ACTIVE_BONUS_SCAN_MAX + 1);
+      if (activeBonusErr) return res.status(500).json({ error: activeBonusErr.message });
+      const rowsArr = Array.isArray(activeBonusRows) ? activeBonusRows : [];
+      activeBonusScanTruncated = rowsArr.length > ACTIVE_BONUS_SCAN_MAX;
+      activeBonusSessionIds = new Set(
+        rowsArr.slice(0, ACTIVE_BONUS_SCAN_MAX)
+          .map((r) => String(r?.voucher_session_id || "").trim())
+          .filter(Boolean)
+      );
+    }
+
+    let normalActiveScopeRows = [];
+    let bonusAccessScopeRows = [];
+    let bonusAccessCount = 0;
+
     if (cActive > 0) {
       let aq = supabase
         .from("vw_voucher_sessions_truth")
@@ -10925,9 +10971,40 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
       aq = applyCommonFilters(aq);
       const { data: aRows, error: aErr } = await aq;
       if (aErr) return res.status(500).json({ error: aErr.message });
-      activeScopeRows = aRows || [];
-      liveScanTruncated = cActive > activeScopeRows.length;
+      normalActiveScopeRows = aRows || [];
     }
+
+    const activeBonusIds = Array.from(activeBonusSessionIds);
+    if (activeBonusIds.length) {
+      let bq = supabase
+        .from("vw_voucher_sessions_truth")
+        .select(liveMode ? CLIENTS_SELECT_COLUMNS : "id, client_mac, pool_id", { count: "exact" })
+        .in("id", activeBonusIds)
+        .neq("truth_status", "active")
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(LIVE_SCAN_MAX);
+      bq = applyCommonFilters(bq);
+      const { data: bRows, error: bErr, count: bCount } = await bq;
+      if (bErr) return res.status(500).json({ error: bErr.message });
+      bonusAccessScopeRows = bRows || [];
+      bonusAccessCount = Number(bCount || 0);
+    }
+
+    const activeScopeRows = [];
+    const activeScopeSeen = new Set();
+    for (const row of [...normalActiveScopeRows, ...bonusAccessScopeRows]) {
+      const id = String(row?.id || "");
+      if (!id || activeScopeSeen.has(id)) continue;
+      activeScopeSeen.add(id);
+      activeScopeRows.push(row);
+    }
+
+    const activeAccessCount = cActive + bonusAccessCount;
+    let liveScanTruncated =
+      activeBonusScanTruncated ||
+      cActive > normalActiveScopeRows.length ||
+      bonusAccessCount > bonusAccessScopeRows.length;
 
     // P0.2 FIX (defect 2): the pool→NAS mapping is part of the live-status
     // dependency. Declared here because a mapping failure — or an active
@@ -11122,7 +11199,7 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         if (isVoucherOnline(resolveVoucherNas(r), r?.client_mac)) n += 1;
       }
       cOnline = n;
-      cOffline = Math.max(0, cActive - n);
+      cOffline = Math.max(0, activeAccessCount - n);
     }
 
     // ------------------------------
@@ -11217,14 +11294,16 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
         continue;
       }
 
-      const isActiveVoucher = String(it?.truth_status || it?.status || "").toLowerCase() === "active";
+      const isAccessActive =
+        String(it?.truth_status || it?.status || "").toLowerCase() === "active" ||
+        activeBonusSessionIds.has(String(it?.id || ""));
       const poolNas =
         String(it?.pool_nas_id || "").trim() ||
         String(poolNasById[String(it?.pool_id || "")] || "").trim();
       const key = liveKeyForVoucher(poolNas, it?.client_mac);
       const row = key ? (latestByKey[key] || null) : null;
       const isOnline = !!(
-        isActiveVoucher &&
+        isAccessActive &&
         row &&
         String(row?.acct_status_type || "").toLowerCase() === "interim-update"
       );
@@ -11481,6 +11560,202 @@ app.get("/api/admin/clients", requireAdmin, async (req, res) => {
   } catch (e) {
     if (sendRequestValidationError(res, e)) return;
     res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+
+// P2-A3.3.2 — lightweight, silent live snapshot for the rows currently visible
+// in Admin Clients. This endpoint never rebuilds the list and never mutates data.
+app.post("/api/admin/clients/live-snapshot", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const ids = readAdminClientSnapshotIds(req.body, { max: 200 });
+    let query = supabase
+      .from("vw_voucher_sessions_truth")
+      .select(`
+        id,
+        status,
+        truth_status,
+        remaining_seconds,
+        client_mac,
+        pool_id,
+        expires_at,
+        data_total_bytes,
+        data_used_bytes,
+        data_remaining_bytes,
+        data_total_human,
+        data_used_human,
+        data_remaining_human,
+        pool:internet_pools ( id, radius_nas_id )
+      `)
+      .in("id", ids);
+
+    if (!req.admin?.is_superadmin) {
+      const allowedPools = Array.isArray(req.admin?.pool_ids) ? req.admin.pool_ids : [];
+      if (!allowedPools.length) return res.status(403).json({ error: "no_pools_assigned" });
+      query = query.in("pool_id", allowedPools);
+    }
+
+    const { data: sessionRows, error: sessionErr } = await query;
+    if (sessionErr) return res.status(500).json({ error: sessionErr.message });
+    const sessions = Array.isArray(sessionRows) ? sessionRows : [];
+    const scopedIds = sessions.map((r) => String(r?.id || "")).filter(Boolean);
+
+    let bonusBySessionId = {};
+    if (scopedIds.length) {
+      const { data: bonusRows, error: bonusErr } = await supabase
+        .from("vw_voucher_bonus_truth")
+        .select(`
+          voucher_session_id,
+          run_id,
+          stored_status,
+          effective_status,
+          due_reason,
+          can_activate,
+          can_authorize,
+          duration_seconds,
+          total_bytes,
+          data_unlimited,
+          baseline_used_bytes,
+          accounting_cutoff_at,
+          current_used_bytes,
+          consumed_bytes,
+          remaining_bytes,
+          remaining_seconds,
+          time_due,
+          data_due,
+          prepared_at,
+          started_at,
+          expires_at,
+          ended_at,
+          ended_reason,
+          note,
+          prepared_by,
+          activated_by,
+          activated_client_mac,
+          activated_nas_id,
+          coa_status,
+          coa_request_id,
+          coa_reason,
+          coa_attempts,
+          coa_last_attempt_at,
+          coa_next_retry_at,
+          coa_succeeded_at,
+          coa_last_error,
+          total_human,
+          consumed_human,
+          remaining_human,
+          created_at,
+          updated_at
+        `)
+        .in("voucher_session_id", scopedIds)
+        .order("created_at", { ascending: false })
+        .limit(1000);
+      if (bonusErr) return res.status(500).json({ error: bonusErr.message });
+
+      for (const row of bonusRows || []) {
+        const sessionId = String(row?.voucher_session_id || "").trim();
+        if (!sessionId || bonusBySessionId[sessionId]) continue;
+        bonusBySessionId[sessionId] = serializeBonusV2({
+          ...row,
+          state: row.stored_status,
+          effective_state: row.effective_status,
+        });
+      }
+    }
+
+    let liveStatusAvailable = true;
+    let latestByKey = {};
+    const nasIds = Array.from(new Set(
+      sessions.map((r) => String(r?.pool?.radius_nas_id || "").trim()).filter(Boolean)
+    ));
+
+    if (sessions.some((r) => !String(r?.pool?.radius_nas_id || "").trim())) {
+      liveStatusAvailable = false;
+    } else if (nasIds.length) {
+      const { data: liveRows, error: liveErr } = await supabase
+        .from("radius_acct_sessions")
+        .select("client_mac,calling_station_id,acct_status_type,updated_at,nas_id")
+        .in("nas_id", nasIds)
+        .gte("updated_at", getUtcCutoffIso(2))
+        .order("updated_at", { ascending: false })
+        .limit(2000);
+
+      if (liveErr) {
+        console.error("ADMIN CLIENTS LIVE SNAPSHOT: accounting lookup failed:", liveErr?.message || liveErr);
+        liveStatusAvailable = false;
+      } else {
+        for (const row of liveRows || []) {
+          const mac = normalizeLiveMac(row?.client_mac || row?.calling_station_id);
+          const nas = String(row?.nas_id || "").trim();
+          if (!mac || !nas) continue;
+          const key = `${nas}|${mac}`;
+          if (!latestByKey[key]) latestByKey[key] = row;
+        }
+      }
+    }
+
+    const items = sessions.map((row) => {
+      const id = String(row?.id || "");
+      const bonus = bonusBySessionId[id] || null;
+      const bonusActive =
+        String(bonus?.effective_state || bonus?.state || "").toLowerCase() === "active" &&
+        bonus?.can_authorize === true;
+      const accessActive =
+        String(row?.truth_status || row?.status || "").toLowerCase() === "active" ||
+        bonusActive;
+
+      let isOnline = null;
+      let liveStatus = "unknown";
+      let liveStatusUpdatedAt = null;
+      if (liveStatusAvailable) {
+        const nas = String(row?.pool?.radius_nas_id || "").trim();
+        const mac = normalizeLiveMac(row?.client_mac);
+        const live = nas && mac ? (latestByKey[`${nas}|${mac}`] || null) : null;
+        isOnline = !!(
+          accessActive &&
+          live &&
+          String(live?.acct_status_type || "").toLowerCase() === "interim-update"
+        );
+        liveStatus = isOnline ? "online" : "offline";
+        liveStatusUpdatedAt = live?.updated_at || null;
+      }
+
+      return {
+        id,
+        stored_status: row?.status || null,
+        truth_status: row?.truth_status || null,
+        status: row?.truth_status || row?.status || null,
+        remaining_seconds:
+          (row?.remaining_seconds === 0 || row?.remaining_seconds)
+            ? Number(row.remaining_seconds)
+            : null,
+        expires_at: row?.expires_at || null,
+        data_total_bytes: row?.data_total_bytes ?? null,
+        data_used_bytes: row?.data_used_bytes ?? null,
+        data_remaining_bytes: row?.data_remaining_bytes ?? null,
+        data_total_human: row?.data_total_human ?? null,
+        data_used_human: row?.data_used_human ?? null,
+        data_remaining_human: row?.data_remaining_human ?? null,
+        bonus_v2: bonus,
+        is_online: isOnline,
+        live_status: liveStatus,
+        live_status_label: isOnline === null ? "Statut inconnu" : (isOnline ? "Connecté" : "Hors ligne"),
+        live_status_updated_at: liveStatusUpdatedAt,
+      };
+    });
+
+    return res.json({
+      ok: true,
+      snapshot_at: new Date().toISOString(),
+      live_status_available: liveStatusAvailable,
+      items,
+    });
+  } catch (e) {
+    if (sendRequestValidationError(res, e)) return;
+    console.error("ADMIN CLIENTS LIVE SNAPSHOT ERROR", e?.message || e);
+    return res.status(500).json({ error: "live_snapshot_failed" });
   }
 });
 
