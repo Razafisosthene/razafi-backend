@@ -1184,11 +1184,13 @@
     } catch (_) {}
   }
 
-  function syncVoucherCompactUx({ status = "none", canUse = false, code = "" } = {}) {
+  function syncVoucherCompactUx({ status = "none", canUse = false, code = "", bonusState = "none" } = {}) {
     bindVoucherDetailsToggle();
 
     const s = String(status || "").toLowerCase();
     const hasCode = !!String(code || "").trim();
+    const normalizedBonusState = String(bonusState || "none").toLowerCase();
+    const hasFinishedBonus = normalizedBonusState === "finished";
     const isFinished = (s === "used" || s === "expired") && !canUse;
 
     // copyBtn is now outside .voucher-actions, inside the collapsible area.
@@ -1202,7 +1204,7 @@
     // (the toggle button label already communicates this)
     var hasVoucherMsgEl = document.getElementById("hasVoucherMsg");
     if (hasVoucherMsgEl) {
-      hasVoucherMsgEl.style.display = isFinished ? "none" : "";
+      hasVoucherMsgEl.style.display = (isFinished && !hasFinishedBonus) ? "none" : "";
     }
 
     // Keep banner hidden until toggle opens — setVoucherDetailsOpen handles it
@@ -1212,7 +1214,9 @@
     if (voucherDetailsTitle) {
       voucherDetailsTitle.classList.toggle("hidden", isFinished || !hasCode);
       voucherDetailsTitle.style.display = (isFinished || !hasCode) ? "none" : "";
-      voucherDetailsTitle.textContent = "Détails du forfait acheté";
+      voucherDetailsTitle.textContent = (normalizedBonusState === "available" || normalizedBonusState === "active")
+        ? "Détails du bonus"
+        : "Détails du forfait acheté";
     }
 
     if (voucherDetailsToggle) {
@@ -1724,6 +1728,128 @@
     }
   }
 
+
+
+  // ------------------------------------------------------------
+  // P2-A3.3 — canonical Bonus V2 portal presentation + live refresh
+  // ------------------------------------------------------------
+  function portalBonusNumber(value, fallback = 0) {
+    if (value === null || value === undefined || value === "") return fallback;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function portalBonusState(bonus) {
+    return String(bonus?.effective_state || bonus?.state || "none").trim().toLowerCase() || "none";
+  }
+
+  function formatPortalBonusSeconds(seconds) {
+    let value = Math.max(0, Math.floor(portalBonusNumber(seconds, 0)));
+    const days = Math.floor(value / 86400);
+    value %= 86400;
+    const hours = Math.floor(value / 3600);
+    value %= 3600;
+    const mins = Math.floor(value / 60);
+    const secs = value % 60;
+    const parts = [];
+    if (days) parts.push(`${days}j`);
+    if (hours || days) parts.push(`${hours}h`);
+    if (mins || hours || days) parts.push(`${mins}min`);
+    parts.push(`${secs}s`);
+    return parts.join(" ");
+  }
+
+  function formatPortalBonusBytes(value) {
+    const bytes = Math.max(0, portalBonusNumber(value, 0));
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let amount = bytes;
+    let unit = 0;
+    while (amount >= 1024 && unit < units.length - 1) {
+      amount /= 1024;
+      unit += 1;
+    }
+    const digits = amount >= 100 || unit === 0 ? 0 : amount >= 10 ? 1 : 2;
+    return `${amount.toFixed(digits)} ${units[unit]}`;
+  }
+
+  function portalBonusRemainingSeconds(bonus) {
+    if (portalBonusState(bonus) === "active" && bonus?.expires_at) {
+      const expiresMs = new Date(bonus.expires_at).getTime();
+      if (Number.isFinite(expiresMs)) return Math.max(0, Math.floor((expiresMs - Date.now()) / 1000));
+    }
+    return Math.max(0, portalBonusNumber(bonus?.remaining_seconds, 0));
+  }
+
+  function portalBonusTotalHuman(bonus) {
+    if (!bonus) return "—";
+    if (bonus.data_unlimited === true) return "Illimité";
+    return bonus.total_human || formatPortalBonusBytes(bonus.total_bytes);
+  }
+
+  function portalBonusRemainingHuman(bonus) {
+    if (!bonus) return "—";
+    if (bonus.data_unlimited === true) return "Illimité";
+    return bonus.remaining_human || formatPortalBonusBytes(bonus.remaining_bytes);
+  }
+
+  function portalBonusConsumedHuman(bonus) {
+    if (!bonus) return "—";
+    return bonus.consumed_human || formatPortalBonusBytes(bonus.consumed_bytes);
+  }
+
+  function portalBonusEndReasonLabel(reason) {
+    const value = String(reason || "").trim().toLowerCase();
+    if (value === "data") return "data épuisée";
+    if (value === "time") return "durée écoulée";
+    if (value === "both") return "data et durée épuisées";
+    if (value === "cancelled") return "bonus annulé";
+    return value || "terminé";
+  }
+
+  let portalBonusPollTimer = null;
+  let portalBonusClockTimer = null;
+  let portalBonusPollBusy = false;
+  let portalBonusLiveSnapshot = null;
+
+  function stopPortalBonusLiveRefresh() {
+    if (portalBonusPollTimer) clearInterval(portalBonusPollTimer);
+    if (portalBonusClockTimer) clearInterval(portalBonusClockTimer);
+    portalBonusPollTimer = null;
+    portalBonusClockTimer = null;
+    portalBonusPollBusy = false;
+    portalBonusLiveSnapshot = null;
+  }
+
+  function renderPortalBonusClock() {
+    if (portalBonusState(portalBonusLiveSnapshot) !== "active") return;
+    const seconds = portalBonusRemainingSeconds(portalBonusLiveSnapshot);
+    if (timeLeftEl) timeLeftEl.textContent = formatPortalBonusSeconds(seconds);
+  }
+
+  function syncPortalBonusLiveRefresh(bonus) {
+    const state = portalBonusState(bonus);
+    portalBonusLiveSnapshot = bonus || null;
+    if (state !== "active") {
+      stopPortalBonusLiveRefresh();
+      return;
+    }
+
+    renderPortalBonusClock();
+    if (!portalBonusClockTimer) {
+      portalBonusClockTimer = setInterval(renderPortalBonusClock, 1000);
+    }
+    if (!portalBonusPollTimer) {
+      portalBonusPollTimer = setInterval(async () => {
+        if (portalBonusPollBusy || document.hidden) return;
+        portalBonusPollBusy = true;
+        try {
+          await fetchPortalStatus({ quiet: true });
+        } finally {
+          portalBonusPollBusy = false;
+        }
+      }, 8000);
+    }
+  }
   function applyPortalStatus(j) {
     const status = String(j?.status || "none").toLowerCase();
     portalTruthStatus = status;
@@ -1747,41 +1873,47 @@ try {
     const sess = j?.session || {};
     const ui = j?.ui || {};
 
-// Bonus (UX follows backend truth ONLY)
-const bonusSeconds = Number(sess?.bonus_seconds || 0);
-const bonusBytes = Number(sess?.bonus_bytes || 0);
+// Bonus V2 — canonical object returned by P2-A3.2 backend.
+const bonus = (j?.bonus && typeof j.bonus === "object") ? j.bonus : null;
+const bonusState = portalBonusState(bonus);
+const bonusAvailable = bonusState === "available" && bonus?.can_activate === true;
+const bonusModeActive = bonusState === "active" && bonus?.can_authorize === true;
+const bonusFinished = bonusState === "finished";
+const hasBonus = !!bonus;
+const hasUsableBonus = bonusAvailable;
 
-const hasTimeBonus = bonusSeconds > 0;
-const hasDataBonus = (bonusBytes === -1 || bonusBytes > 0);
+const bonusSeconds = bonusAvailable
+  ? portalBonusNumber(bonus?.duration_seconds, 0)
+  : bonusModeActive
+    ? portalBonusRemainingSeconds(bonus)
+    : 0;
+const bonusBytes = bonus?.data_unlimited === true && (bonusAvailable || bonusModeActive)
+  ? -1
+  : bonusAvailable
+    ? portalBonusNumber(bonus?.total_bytes, 0)
+    : bonusModeActive
+      ? portalBonusNumber(bonus?.remaining_bytes, 0)
+      : 0;
 
-// Informational only: a bonus record may still exist
-const hasBonus =
-  (sess && (sess.has_bonus === true)) ||
-  hasTimeBonus ||
-  hasDataBonus;
-
-// IMPORTANT: do NOT recompute usability on frontend.
-// Backend is the single source of truth.
-const hasUsableBonus = !!(sess && sess.has_usable_bonus === true);
-const bonusModeActive = !!(sess && sess.bonus_mode_active === true);
-
-// Assistant bridge: keep module-level tracker in sync (no bonus code exposed).
+// Assistant bridge: "usable" means available for activation, never inferred locally.
 try { _rzAssistLastUsableBonus = hasUsableBonus; } catch (_) {}
 
-// Bonus badges (optional elements in index.html)
+// Bonus badges
 try {
   const bMain = document.getElementById("bonusBadgeMain");
   const bMini = document.getElementById("bonusBadgeMini");
-
-  const show = bonusModeActive || (hasUsableBonus && (status === "expired" || status === "used"));
+  const show = bonusAvailable || bonusModeActive || bonusFinished;
 
   if (bMain) {
-    bMain.textContent = bonusModeActive ? "🎁 BONUS EN COURS" : "🎁 BONUS DISPONIBLE";
+    bMain.textContent = bonusModeActive
+      ? "🎁 BONUS EN COURS"
+      : bonusAvailable
+        ? "🎁 BONUS DISPONIBLE"
+        : "✅ BONUS TERMINÉ";
     bMain.classList.toggle("hidden", !show);
   }
 
   if (bMini) {
-    // Public UX: the main bonus badge is enough. Keep the code line clean.
     bMini.textContent = "";
     bMini.classList.add("hidden");
   }
@@ -1843,10 +1975,13 @@ function buildBonusCompactLine(sec, bytes) {
   }
 }
 
-const bonusCompact =
-  (sess && typeof sess.bonus_compact === "string" && sess.bonus_compact.trim())
-    ? String(sess.bonus_compact).trim()
-    : buildBonusCompactLine(bonusSeconds, bonusBytes);
+const bonusCompact = bonusModeActive
+  ? `Bonus en cours · ${formatPortalBonusSeconds(portalBonusRemainingSeconds(bonus))} restantes · ${portalBonusRemainingHuman(bonus)} restants`
+  : bonusAvailable
+    ? `Bonus : ${formatPortalBonusSeconds(bonus?.duration_seconds)} · ${portalBonusTotalHuman(bonus)}`
+    : bonusFinished
+      ? `Bonus terminé · ${portalBonusEndReasonLabel(bonus?.ended_reason)}`
+      : buildBonusCompactLine(bonusSeconds, bonusBytes);
 
 // Ensure a dedicated bonus line exists under the main message (premium UX)
 function setBonusLine(text) {
@@ -1874,36 +2009,36 @@ function setBonusLine(text) {
   } catch (_) {}
 }
 
-const showBonusChip = bonusModeActive || (hasUsableBonus && (status === "expired" || status === "used"));
+const showBonusChip = bonusAvailable || bonusModeActive || bonusFinished;
 
 if (hasMsg) {
-  if (status === "pending") hasMsg.textContent = "Votre code est prêt";
-  else if (status === "active" && bonusModeActive) hasMsg.textContent = "Bonus en cours";
+  if (bonusModeActive) hasMsg.textContent = "Bonus en cours";
+  else if (bonusAvailable) hasMsg.textContent = "Bonus offert";
+  else if (bonusFinished) hasMsg.textContent = "Bonus terminé";
+  else if (status === "pending") hasMsg.textContent = "Votre code est prêt";
   else if (status === "active") hasMsg.textContent = "Votre connexion actuelle";
-  else if ((status === "used" || status === "expired") && hasUsableBonus && canUse) hasMsg.textContent = "Bonus offert";
   else if (status === "used" || status === "expired") hasMsg.textContent = "Votre dernière consommation";
   else hasMsg.textContent = "Vérification…";
 }
 
 if (accessMsg) {
-  if (status === "pending") {
+  if (bonusModeActive) {
+    accessMsg.textContent = "Votre bonus est en cours d’utilisation. Le temps et la data restants sont actualisés automatiquement.";
+  } else if (bonusAvailable && canUse) {
+    accessMsg.textContent = "Un bonus a été ajouté à votre code. Cliquez « Activer le bonus » pour vous reconnecter.";
+  } else if (bonusFinished) {
+    accessMsg.textContent = `Votre bonus est terminé : ${portalBonusEndReasonLabel(bonus?.ended_reason)}. Choisissez un forfait ci-dessous pour continuer votre connexion.`;
+  } else if (status === "pending") {
     accessMsg.textContent = "Cliquez « Utiliser ce code » pour démarrer votre forfait RAZAFI.";
-  } else if (status === "active" && bonusModeActive) {
-    accessMsg.textContent = "Votre bonus est en cours d’utilisation.";
   } else if (status === "active") {
     accessMsg.textContent = "Connexion active. Si la page revient ici, cliquez « Continuer » pour rester connecté.";
   } else if (status === "used" || status === "expired") {
-    if (hasUsableBonus && canUse) {
-      accessMsg.textContent = "Un bonus a été ajouté à votre code. Cliquez « Réactiver ce code » pour vous reconnecter.";
-    } else {
-      accessMsg.textContent = "Votre forfait est terminé. Choisissez un forfait ci-dessous pour continuer votre connexion.";
-    }
+    accessMsg.textContent = "Votre forfait est terminé. Choisissez un forfait ci-dessous pour continuer votre connexion.";
   } else {
     accessMsg.textContent = "Vérification de votre accès en cours…";
   }
 }
 
-// Bonus line (compact)
 setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
 
     // Plan details
@@ -1917,23 +2052,32 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
     setText(planSpeedEl, speedHuman || "—");
     setText(planMaxDevicesEl, plan.max_devices ?? plan.maxDevices ?? "—");
 
-    // Public UX: hide irrelevant rows instead of showing empty "—" values.
-    const showTimeLeft = status === "active" || status === "pending";
-    const showDataLeft = status === "active" || status === "pending";
-    const showExpires = status === "used" || status === "expired";
-    const showUsed = status === "used" || status === "expired";
+    // Public UX: canonical Bonus V2 values override only while available/active/finished.
+    const showTimeLeft = status === "active" || status === "pending" || bonusAvailable;
+    const showDataLeft = status === "active" || status === "pending" || bonusAvailable;
+    const showExpires = status === "used" || status === "expired" || bonusFinished;
+    const showUsed = status === "used" || status === "expired" || bonusFinished;
 
     if (rowTimeLeft) rowTimeLeft.classList.toggle("hidden", !showTimeLeft);
     if (rowDataLeft) rowDataLeft.classList.toggle("hidden", !showDataLeft);
     if (rowExpiresAt) rowExpiresAt.classList.toggle("hidden", !showExpires);
     if (rowDataUsed) rowDataUsed.classList.toggle("hidden", !showUsed);
+    if (rowExpiresAt && rowExpiresAt.firstChild) {
+      rowExpiresAt.firstChild.nodeValue = bonusFinished ? "🏁 Bonus terminé le : " : "📆 Expiré le : ";
+    }
 
-    // Session: expires_at (shown only for previous/finished consumption)
-    if (showExpires) setText(expiresAtEl, sess.expires_at_human || (sess.expires_at ? fmtDateTimeMG(sess.expires_at) : ""), "—");
-    else setText(expiresAtEl, "—");
+    if (showExpires) {
+      const terminalAt = bonusFinished ? bonus?.ended_at : null;
+      setText(expiresAtEl, terminalAt ? fmtDateTimeMG(terminalAt) : (sess.expires_at_human || (sess.expires_at ? fmtDateTimeMG(sess.expires_at) : "")), "—");
+    } else {
+      setText(expiresAtEl, "—");
+    }
 
-    // Time left
-    if (showTimeLeft && status === "active") {
+    if (bonusModeActive) {
+      setText(timeLeftEl, formatPortalBonusSeconds(portalBonusRemainingSeconds(bonus)));
+    } else if (bonusAvailable) {
+      setText(timeLeftEl, formatPortalBonusSeconds(bonus?.duration_seconds));
+    } else if (showTimeLeft && status === "active") {
       setText(timeLeftEl, formatRemainingFromExpires(sess.expires_at) || "—");
     } else if (showTimeLeft && status === "pending") {
       setText(timeLeftEl, durMin != null ? formatDuration(Number(durMin)) : "—");
@@ -1941,8 +2085,11 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
       setText(timeLeftEl, "—");
     }
 
-    // Data remaining
-    if (showDataLeft && status === "active") {
+    if (bonusModeActive) {
+      setText(dataLeftEl, portalBonusRemainingHuman(bonus));
+    } else if (bonusAvailable) {
+      setText(dataLeftEl, portalBonusTotalHuman(bonus));
+    } else if (showDataLeft && status === "active") {
       setText(dataLeftEl, unlimited ? "Illimité" : (sess.data_remaining_human || "—"));
     } else if (showDataLeft && status === "pending") {
       setText(dataLeftEl, unlimited ? "Illimité" : (plan.data_total_human || "—"));
@@ -1950,8 +2097,11 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
       setText(dataLeftEl, "—");
     }
 
-    // Data used over total (shown only for previous/finished consumption)
-    if (showUsed) {
+    if (bonusFinished) {
+      const used = portalBonusConsumedHuman(bonus);
+      const total = portalBonusTotalHuman(bonus);
+      setText(dataUsedEl, `${used} / ${total}`);
+    } else if (showUsed) {
       const used = sess.data_used_human || "";
       const total = unlimited ? "Illimité" : (plan.data_total_human || "—");
       setText(dataUsedEl, used ? `${used} / ${total}` : `— / ${total}`);
@@ -1967,7 +2117,9 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
     if (useBtn) {
       // Label depends on status (user-friendly)
       let label = "Utiliser ce code";
-      if (status === "active") label = "Continuer";
+      if (bonusModeActive) label = "Continuer";
+      else if (bonusAvailable && canUse) label = "Activer le bonus";
+      else if (status === "active") label = "Continuer";
       else if ((status === "used" || status === "expired") && canUse) label = "Réactiver ce code";
       else if (status === "pending") label = "Utiliser ce code";
 
@@ -1976,8 +2128,9 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
       useBtn.disabled = !canUse;
       useBtn.style.display = canUse ? "" : "none";
     }
-    syncVoucherCompactUx({ status, canUse, code });
+    syncVoucherCompactUx({ status, canUse, code, bonusState });
     syncMagicCodeFocusMode({ status, canUse, code, hasUsableBonus, bonusModeActive });
+    syncPortalBonusLiveRefresh(bonus);
 
     // Persist last code (fallback for captive quirks)
     if (code) {
@@ -3131,7 +3284,7 @@ function saturationLabel(pct) {
   }
 
 
-  async function fetchPortalStatus() {
+  async function fetchPortalStatus({ quiet = false } = {}) {
     try {
       const qp = new URLSearchParams();
       if (clientMac) qp.set("client_mac", clientMac);
@@ -3143,7 +3296,7 @@ function saturationLabel(pct) {
       }
 
       const url = apiUrl("/api/portal/status?" + qp.toString());
-      const r = await fetch(url, { method: "GET" });
+      const r = await fetch(url, { method: "GET", cache: "no-store" });
       const j = await r.json().catch(() => ({}));
 
       if (!r.ok || !j?.ok) throw new Error(j?.error || "portal_status_failed");
@@ -3151,7 +3304,7 @@ function saturationLabel(pct) {
       renderPortalAnnouncement(j.portal_announcement);
       return true;
     } catch (e) {
-      console.warn("[RAZAFI] portal status fetch failed", e?.message || e);
+      if (!quiet) console.warn("[RAZAFI] portal status fetch failed", e?.message || e);
       return false;
     }
   }

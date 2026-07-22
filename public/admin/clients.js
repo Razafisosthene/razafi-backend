@@ -29,7 +29,19 @@ function humanizeApiError(err) {
     limit_invalid: "La pagination demandée n’est pas valide.",
     offset_invalid: "La pagination demandée n’est pas valide.",
     plan_id_invalid: "Le forfait sélectionné n’est pas valide.",
-    pool_id_invalid: "Le pool sélectionné n’est pas valide."
+    pool_id_invalid: "Le pool sélectionné n’est pas valide.",
+    voucher_session_id_invalid: "Le voucher sélectionné n’est pas valide.",
+    bonus_duration_required: "La durée du bonus doit être comprise entre 1 minute et 7 jours.",
+    bonus_data_required: "La data du bonus doit être supérieure à 0, ou illimitée.",
+    bonus_duration_invalid: "La durée du bonus n’est pas valide.",
+    bonus_data_invalid: "La data du bonus n’est pas valide.",
+    voucher_not_terminal: "Le bonus peut être préparé uniquement pour un voucher utilisé ou expiré.",
+    legacy_bonus_session_active: "Une ancienne session bonus est encore active pour ce voucher.",
+    bonus_already_active: "Ce bonus est déjà en cours d’utilisation.",
+    active_bonus_cannot_be_cancelled: "Un bonus en cours ne peut pas être annulé.",
+    bonus_not_available: "Aucun bonus disponible ne peut être activé.",
+    bonus_prepare_failed: "Le bonus n’a pas pu être préparé.",
+    bonus_cancel_failed: "Le bonus n’a pas pu être annulé."
   };
   return messages[code] || code || "Une erreur est survenue.";
 }
@@ -141,6 +153,277 @@ function computeQuota(it) {
     usedHuman,
     remainingHuman
   };
+}
+
+
+// --------------------------------------------------
+// P2-A3.3 — Bonus V2 frontend helpers
+// Canonical source: item.bonus_v2 / item.bonus.bonus_v2.
+// Legacy bonus_seconds/bonus_bytes are never used to infer V2 state.
+// --------------------------------------------------
+function getBonusV2(it) {
+  const candidates = [
+    it?.bonus_v2,
+    it?.bonus?.bonus_v2,
+    it?.bonus?.bonus,
+    (it?.bonus && it.bonus.item_type === "bonus_v2") ? it.bonus : null,
+  ];
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === "object" && candidate.run_id) return candidate;
+  }
+  return null;
+}
+
+function bonusV2Number(value, fallback = 0) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function bonusV2State(bonus) {
+  return String(bonus?.effective_state || bonus?.state || "none").trim().toLowerCase() || "none";
+}
+
+function bonusV2StatusLabel(bonus) {
+  const state = bonusV2State(bonus);
+  if (state === "available") return "🎁 Bonus disponible";
+  if (state === "active") return "🟢 Bonus en cours";
+  if (state === "finished") return "✅ Bonus terminé";
+  if (state === "cancelled") return "⛔ Bonus annulé";
+  return "Aucun bonus V2";
+}
+
+function bonusV2EndReasonLabel(reason) {
+  const value = String(reason || "").trim().toLowerCase();
+  if (value === "data") return "Data épuisée";
+  if (value === "time") return "Durée écoulée";
+  if (value === "both") return "Data et durée épuisées";
+  if (value === "cancelled") return "Annulé";
+  return value ? value : "—";
+}
+
+function bonusV2RemainingSeconds(bonus) {
+  if (!bonus) return 0;
+  if (bonusV2State(bonus) === "active" && bonus.expires_at) {
+    const expiresMs = new Date(bonus.expires_at).getTime();
+    if (Number.isFinite(expiresMs)) return Math.max(0, Math.floor((expiresMs - Date.now()) / 1000));
+  }
+  return Math.max(0, bonusV2Number(bonus.remaining_seconds, 0));
+}
+
+function bonusV2TotalHuman(bonus) {
+  if (!bonus) return "—";
+  if (bonus.data_unlimited === true) return "Illimité";
+  return bonus.total_human || fmtBytes(bonusV2Number(bonus.total_bytes, 0));
+}
+
+function bonusV2ConsumedHuman(bonus) {
+  if (!bonus) return "—";
+  return bonus.consumed_human || fmtBytes(bonusV2Number(bonus.consumed_bytes, 0));
+}
+
+function bonusV2RemainingHuman(bonus) {
+  if (!bonus) return "—";
+  if (bonus.data_unlimited === true) return "Illimité";
+  return bonus.remaining_human || fmtBytes(bonusV2Number(bonus.remaining_bytes, 0));
+}
+
+function bonusV2Percent(consumed, total) {
+  const totalN = bonusV2Number(total, 0);
+  const consumedN = Math.max(0, bonusV2Number(consumed, 0));
+  if (totalN <= 0) return 0;
+  return Math.max(0, Math.min(100, (consumedN / totalN) * 100));
+}
+
+function bonusV2ChipHtml(bonus) {
+  const state = bonusV2State(bonus);
+  const configs = {
+    available: { text: "🎁 Bonus dispo", title: "Bonus disponible — en attente d’activation" },
+    active: { text: "🎁 Bonus en cours", title: "Bonus en cours d’utilisation" },
+    finished: { text: "✅ Bonus terminé", title: `Bonus terminé — ${bonusV2EndReasonLabel(bonus?.ended_reason)}` },
+    cancelled: { text: "⛔ Bonus annulé", title: "Bonus annulé" },
+  };
+  const cfg = configs[state];
+  if (!cfg) return "";
+  return ` <span class="rz-bonus-v2-chip" title="${esc(cfg.title)}" style="font-size:12px; padding:2px 6px; border-radius:999px; border:1px solid rgba(13,110,253,.35); background:rgba(13,110,253,.08); white-space:nowrap;">${esc(cfg.text)}</span>`;
+}
+
+function bonusV2RowTime(it, bonus) {
+  const state = bonusV2State(bonus);
+  if (state === "active") return fmtRemaining(bonusV2RemainingSeconds(bonus));
+  if (state === "available") return `${fmtRemaining(bonusV2Number(bonus?.duration_seconds, 0))} (à activer)`;
+  return fmtRemaining(it?.remaining_seconds);
+}
+
+function bonusV2RowData(it, bonus) {
+  const state = bonusV2State(bonus);
+  if (state === "active") return bonusV2RemainingHuman(bonus);
+  if (state === "available") return `${bonusV2TotalHuman(bonus)} (à activer)`;
+  return computeQuota(it).remainingHuman || "—";
+}
+
+function bonusV2RowExpires(it, bonus) {
+  return bonusV2State(bonus) === "active" ? bonus?.expires_at : it?.expires_at;
+}
+
+function bonusV2DomId(prefix, sessionId) {
+  return `${prefix}_${String(sessionId || "").replace(/[^A-Za-z0-9_-]/g, "_")}`;
+}
+
+let bonusV2PollTimer = null;
+let bonusV2ClockTimer = null;
+let bonusV2RefreshGeneration = 0;
+let bonusV2PollInFlight = false;
+let bonusV2LiveSnapshot = null;
+
+function stopBonusV2LiveRefresh() {
+  bonusV2RefreshGeneration += 1;
+  if (bonusV2PollTimer) clearInterval(bonusV2PollTimer);
+  if (bonusV2ClockTimer) clearInterval(bonusV2ClockTimer);
+  bonusV2PollTimer = null;
+  bonusV2ClockTimer = null;
+  bonusV2PollInFlight = false;
+  bonusV2LiveSnapshot = null;
+}
+
+function setBonusV2Text(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value == null || value === "" ? "—" : String(value);
+}
+
+function setBonusV2Width(id, percent) {
+  const el = document.getElementById(id);
+  if (el) el.style.width = `${Math.max(0, Math.min(100, Number(percent) || 0)).toFixed(1)}%`;
+}
+
+function updateRowBonusV2(sessionId, bonus) {
+  const tr = document.querySelector(`tr[data-id="${CSS.escape(String(sessionId))}"]`);
+  if (!tr) return;
+
+  const statusCell = tr.querySelector('[data-col="status"]');
+  if (statusCell) {
+    statusCell.querySelectorAll(".rz-bonus-v2-chip").forEach((el) => el.remove());
+    statusCell.insertAdjacentHTML("beforeend", bonusV2ChipHtml(bonus));
+  }
+
+  const rowItem = Array.isArray(lastItems) ? lastItems.find((x) => String(x.id) === String(sessionId)) : null;
+  if (rowItem) rowItem.bonus_v2 = bonus || null;
+
+  const timeCell = tr.querySelector('[data-col="remaining"]');
+  if (timeCell) timeCell.textContent = bonusV2RowTime(rowItem || {}, bonus);
+  const dataCell = tr.querySelector('[data-col="data-remaining"]');
+  if (dataCell) dataCell.textContent = bonusV2RowData(rowItem || {}, bonus);
+  const expiresCell = tr.querySelector('[data-col="expires"]');
+  if (expiresCell) expiresCell.textContent = fmtDate(bonusV2RowExpires(rowItem || {}, bonus));
+}
+
+function updateBonusV2Card(sessionId, bonus) {
+  const state = bonusV2State(bonus);
+  const remainingSeconds = state === "available"
+    ? Math.max(0, bonusV2Number(bonus?.duration_seconds, 0))
+    : bonusV2RemainingSeconds(bonus);
+  const totalSeconds = Math.max(0, bonusV2Number(bonus?.duration_seconds, 0));
+  const elapsedSeconds = state === "available" ? 0 : Math.max(0, totalSeconds - remainingSeconds);
+  const timePct = bonusV2Percent(elapsedSeconds, totalSeconds);
+  const dataPct = bonus?.data_unlimited === true
+    ? 0
+    : bonusV2Percent(bonus?.consumed_bytes, bonus?.total_bytes);
+
+  setBonusV2Text(bonusV2DomId("bonusV2Status", sessionId), bonusV2StatusLabel(bonus));
+  setBonusV2Text(bonusV2DomId("bonusV2Duration", sessionId), bonus ? fmtRemaining(totalSeconds) : "—");
+  setBonusV2Text(bonusV2DomId("bonusV2TimeRemaining", sessionId), bonus ? fmtRemaining(remainingSeconds) : "—");
+  setBonusV2Text(bonusV2DomId("bonusV2DataTotal", sessionId), bonusV2TotalHuman(bonus));
+  setBonusV2Text(bonusV2DomId("bonusV2DataUsed", sessionId), bonusV2ConsumedHuman(bonus));
+  setBonusV2Text(bonusV2DomId("bonusV2DataRemaining", sessionId), bonusV2RemainingHuman(bonus));
+  setBonusV2Text(
+    bonusV2DomId("bonusV2Reason", sessionId),
+    state === "finished" ? bonusV2EndReasonLabel(bonus?.ended_reason) : (state === "cancelled" ? "Annulé" : "—")
+  );
+  setBonusV2Text(bonusV2DomId("bonusV2Started", sessionId), bonus?.started_at ? fmtDate(bonus.started_at) : "—");
+  setBonusV2Text(bonusV2DomId("bonusV2Ended", sessionId), bonus?.ended_at ? fmtDate(bonus.ended_at) : "—");
+  setBonusV2Text(bonusV2DomId("bonusV2Updated", sessionId), bonus?.updated_at ? `Actualisé ${fmtDate(bonus.updated_at)}` : "");
+  setBonusV2Text(bonusV2DomId("bonusV2NoteValue", sessionId), bonus?.note || "—");
+
+  setBonusV2Width(bonusV2DomId("bonusV2TimeFill", sessionId), timePct);
+  setBonusV2Width(bonusV2DomId("bonusV2DataFill", sessionId), dataPct);
+  setBonusV2Text(bonusV2DomId("bonusV2TimePct", sessionId), `${timePct.toFixed(1)} %`);
+  setBonusV2Text(bonusV2DomId("bonusV2DataPct", sessionId), bonus?.data_unlimited === true ? "Illimité" : `${dataPct.toFixed(1)} %`);
+
+  const timeProgress = document.getElementById(bonusV2DomId("bonusV2TimeProgress", sessionId));
+  if (timeProgress) timeProgress.style.display = state === "active" ? "" : "none";
+  const dataProgress = document.getElementById(bonusV2DomId("bonusV2DataProgress", sessionId));
+  if (dataProgress) dataProgress.style.display = (state === "active" || state === "finished") && bonus?.data_unlimited !== true ? "" : "none";
+  const terminal = document.getElementById(bonusV2DomId("bonusV2Terminal", sessionId));
+  if (terminal) terminal.style.display = (state === "finished" || state === "cancelled") ? "" : "none";
+
+  const editable = !window.__IS_READONLY && state !== "active";
+  const controls = ["bonusDay", "bonusHour", "bonusMin", "bonusGb", "bonusUnlimited", "bonusNote"]
+    .map((prefix) => document.getElementById(`${prefix}_${sessionId}`))
+    .filter(Boolean);
+  for (const el of controls) el.disabled = !editable;
+
+  const addBtn = document.getElementById(`bonusBtn_${sessionId}`);
+  if (addBtn) {
+    addBtn.disabled = !editable;
+    addBtn.textContent = window.__IS_READONLY
+      ? "Lecture seule"
+      : state === "active"
+        ? "Bonus en cours"
+        : state === "available"
+          ? "Remplacer le bonus"
+          : "Préparer le bonus";
+  }
+
+  const cancelBtn = document.getElementById(`bonusCancelBtn_${sessionId}`);
+  if (cancelBtn) {
+    cancelBtn.style.display = (!window.__IS_READONLY && state === "available") ? "" : "none";
+    cancelBtn.disabled = window.__IS_READONLY || state !== "available";
+  }
+
+  const gbEl = document.getElementById(`bonusGb_${sessionId}`);
+  const unlimitedEl = document.getElementById(`bonusUnlimited_${sessionId}`);
+  if (gbEl && unlimitedEl && editable) gbEl.disabled = !!unlimitedEl.checked;
+
+  updateRowBonusV2(sessionId, bonus);
+}
+
+function startBonusV2LiveRefresh(sessionId, initialBonus) {
+  stopBonusV2LiveRefresh();
+  bonusV2LiveSnapshot = initialBonus || null;
+  updateBonusV2Card(sessionId, bonusV2LiveSnapshot);
+  if (bonusV2State(bonusV2LiveSnapshot) !== "active") return;
+
+  const generation = bonusV2RefreshGeneration;
+  bonusV2ClockTimer = setInterval(() => {
+    if (generation !== bonusV2RefreshGeneration || String(currentDetailId) !== String(sessionId)) return;
+    updateBonusV2Card(sessionId, bonusV2LiveSnapshot);
+  }, 1000);
+
+  bonusV2PollTimer = setInterval(async () => {
+    if (generation !== bonusV2RefreshGeneration || String(currentDetailId) !== String(sessionId)) return;
+    if (bonusV2PollInFlight || document.hidden) return;
+    bonusV2PollInFlight = true;
+    try {
+      const fresh = await fetchJSON(`/api/admin/voucher-sessions/${encodeURIComponent(sessionId)}`);
+      if (generation !== bonusV2RefreshGeneration || String(currentDetailId) !== String(sessionId)) return;
+      bonusV2LiveSnapshot = getBonusV2(fresh?.item);
+      updateBonusV2Card(sessionId, bonusV2LiveSnapshot);
+      if (bonusV2State(bonusV2LiveSnapshot) !== "active") {
+        const terminalSnapshot = bonusV2LiveSnapshot;
+        stopBonusV2LiveRefresh();
+        const msg = document.getElementById(`bonusMsg_${sessionId}`);
+        if (msg) {
+          msg.style.display = "block";
+          msg.style.color = "#198754";
+          msg.textContent = `Bonus terminé — ${bonusV2EndReasonLabel(terminalSnapshot?.ended_reason)}.`;
+        }
+      }
+    } catch (_) {
+      // Fail-open: keep the last confirmed snapshot and retry on the next interval.
+    } finally {
+      bonusV2PollInFlight = false;
+    }
+  }, 5000);
 }
 
 let debounceTimer = null;
@@ -535,28 +818,16 @@ function renderTable(items) {
     const apDisplay = it.ap_name || it.ap_mac || "—";
 
     const clientCell = renderLiveClientLabel(it);
-const rowStatus = normStatus(it.status);
-    const rowBonusSeconds = toNum(it.bonus_seconds, 0);
-    const rowBonusBytes = Number(v(it.bonus_bytes ?? 0));
-
-    const rowHasUsableBonus =
-      !!it.has_usable_bonus ||
-      (rowBonusSeconds > 0 && (rowBonusBytes === -1 || rowBonusBytes > 0));
-
-    const rowBonusModeActive =
-      !!it.bonus_mode_active ||
-      (rowStatus === "active" && rowHasUsableBonus);
-
-    const bonusChip = rowBonusModeActive
-      ? ' <span title="Bonus en cours" style="font-size:12px; padding:2px 6px; border-radius:999px; border:1px solid rgba(13,110,253,.35); background:rgba(13,110,253,.08);">🎁 Bonus en cours</span>'
-      : ((rowHasUsableBonus && (rowStatus === "expired" || rowStatus === "used"))
-          ? ' <span title="Bonus disponible" style="font-size:12px; padding:2px 6px; border-radius:999px; border:1px solid rgba(13,110,253,.35); background:rgba(13,110,253,.08);">🎁 Bonus dispo</span>'
-          : "");
+const rowBonus = getBonusV2(it);
+    const bonusChip = bonusV2ChipHtml(rowBonus);
+    const rowTimeRemaining = bonusV2RowTime(it, rowBonus);
+    const rowDataRemaining = bonusV2RowData(it, rowBonus);
+    const rowExpiresAt = bonusV2RowExpires(it, rowBonus);
 tr.innerHTML = `
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${clientCell}</td>
 
       <!-- ✅ status now follows backend truth + usable bonus state -->
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.status || "—")}${bonusChip}</td>
+      <td data-col="status" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);"><span data-role="base-status">${esc(it.status || "—")}</span>${bonusChip}</td>
 
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
 
@@ -574,11 +845,11 @@ tr.innerHTML = `
       <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(poolDisplayName(it))}</td>
 
       <!-- ✅ remaining_seconds now is DB truth (view); display time remaining -->
-      <td data-col="remaining" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtRemaining(it.remaining_seconds))}</td>
+      <td data-col="remaining" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(rowTimeRemaining)}</td>
 
       <!-- ✅ data remaining (human) -->
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(computeQuota(it).remainingHuman || "—")}</td>
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(it.expires_at))}</td>
+      <td data-col="data-remaining" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(rowDataRemaining)}</td>
+      <td data-col="expires" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(rowExpiresAt))}</td>
     `;
 
     tr.addEventListener("click", () => openDetail(it.id));
@@ -764,6 +1035,7 @@ function updateRowRemaining(sessionId, remainingSeconds) {
 }
 
 async function openDetail(id) {
+  stopBonusV2LiveRefresh();
   currentDetailId = id;
   const modal = document.getElementById("modal");
   const detail = document.getElementById("detail");
@@ -1067,7 +1339,7 @@ async function openDetail(id) {
 
 
 // --------------------------------------------------
-// Voucher bonus (time/data) — by voucher_session_id
+// P2-A3.3 — Voucher Bonus V2 (canonical read + live progression)
 // --------------------------------------------------
 try {
   const sessionId = it.id;
@@ -1079,119 +1351,90 @@ try {
   const unlId = `bonusUnlimited_${sessionId}`;
   const noteId = `bonusNote_${sessionId}`;
   const btnId = `bonusBtn_${sessionId}`;
+  const cancelBtnId = `bonusCancelBtn_${sessionId}`;
   const msgId = `bonusMsg_${sessionId}`;
-  const curId = `bonusCur_${sessionId}`;
-
-  // Current bonus MUST follow the same enriched admin data already used by the table.
-  // Do NOT read the raw bonus endpoint here; it can drift from the effective UI truth.
-const curSec = Number(rowItem?.bonus_seconds || 0);
-const curBytes = Number(rowItem?.bonus_bytes || 0);
-
-  function formatCurrentBonusLine(sec, bytes) {
-    const s = Number(sec || 0) || 0;
-    const b = Number(bytes || 0) || 0;
-    const parts = [];
-
-    if (s > 0) {
-      const totalMin = Math.floor(s / 60);
-      const days = Math.floor(totalMin / (24 * 60));
-      const remDay = totalMin % (24 * 60);
-      const hours = Math.floor(remDay / 60);
-      const mins = remDay % 60;
-      const timeParts = [];
-      if (days > 0) timeParts.push(`${days}j`);
-      if (hours > 0) timeParts.push(`${hours}h`);
-      if (mins > 0 || (!days && !hours)) timeParts.push(`${mins}min`);
-      parts.push(timeParts.join(' '));
-    }
-
-    if (b === -1) {
-      parts.push('∞');
-    } else if (b > 0) {
-      const gb = b / (1024 ** 3);
-      if (gb >= 1) {
-        const v = Math.round(gb * 10) / 10;
-        parts.push((v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)) + ' GB');
-      } else {
-        const mb = Math.round(b / (1024 ** 2));
-        parts.push(mb + ' MB');
-      }
-    }
-
-    return parts.length ? parts.join(' · ') : 'Aucun bonus actif';
-  }
+  const initialBonus = getBonusV2(it) || getBonusV2(rowItem);
 
   detail.insertAdjacentHTML("beforeend", `
     <div id="${blockId}" class="rz-client-editor-card rz-client-bonus-card">
-      <div class="rz-client-editor-row">
+      <div class="rz-client-editor-row" style="align-items:flex-start;">
+        <div style="flex:1 1 100%; min-width:0;">
+          <div class="rz-client-editor-label">Bonus V2</div>
+          <div id="${bonusV2DomId("bonusV2Status", sessionId)}" class="rz-client-editor-current">—</div>
+          <div id="${bonusV2DomId("bonusV2Updated", sessionId)}" class="subtitle" style="margin-top:4px;"></div>
+
+          <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-top:12px;">
+            <div class="rz-detail-card"><div class="rz-detail-label">Durée totale</div><div id="${bonusV2DomId("bonusV2Duration", sessionId)}" class="rz-detail-value">—</div></div>
+            <div class="rz-detail-card"><div class="rz-detail-label">Temps restant</div><div id="${bonusV2DomId("bonusV2TimeRemaining", sessionId)}" class="rz-detail-value">—</div></div>
+            <div class="rz-detail-card"><div class="rz-detail-label">Data totale</div><div id="${bonusV2DomId("bonusV2DataTotal", sessionId)}" class="rz-detail-value">—</div></div>
+            <div class="rz-detail-card"><div class="rz-detail-label">Data utilisée</div><div id="${bonusV2DomId("bonusV2DataUsed", sessionId)}" class="rz-detail-value">—</div></div>
+            <div class="rz-detail-card"><div class="rz-detail-label">Data restante</div><div id="${bonusV2DomId("bonusV2DataRemaining", sessionId)}" class="rz-detail-value">—</div></div>
+            <div class="rz-detail-card"><div class="rz-detail-label">Note</div><div id="${bonusV2DomId("bonusV2NoteValue", sessionId)}" class="rz-detail-value">—</div></div>
+          </div>
+
+          <div id="${bonusV2DomId("bonusV2TimeProgress", sessionId)}" class="rz-progress-block" style="display:none;">
+            <div class="rz-progress-top"><span>Progression du temps</span><span id="${bonusV2DomId("bonusV2TimePct", sessionId)}">0 %</span></div>
+            <div class="rz-progress-track"><div id="${bonusV2DomId("bonusV2TimeFill", sessionId)}" class="rz-progress-fill" style="width:0%;"></div></div>
+          </div>
+
+          <div id="${bonusV2DomId("bonusV2DataProgress", sessionId)}" class="rz-progress-block" style="display:none;">
+            <div class="rz-progress-top"><span>Progression de la data</span><span id="${bonusV2DomId("bonusV2DataPct", sessionId)}">0 %</span></div>
+            <div class="rz-progress-track"><div id="${bonusV2DomId("bonusV2DataFill", sessionId)}" class="rz-progress-fill" style="width:0%;"></div></div>
+          </div>
+
+          <div id="${bonusV2DomId("bonusV2Terminal", sessionId)}" style="display:none; margin-top:12px; padding:12px; border-radius:16px; background:rgba(15,23,42,.04);">
+            <div><strong>Raison de fin :</strong> <span id="${bonusV2DomId("bonusV2Reason", sessionId)}">—</span></div>
+            <div class="subtitle" style="margin-top:5px;">Démarré : <span id="${bonusV2DomId("bonusV2Started", sessionId)}">—</span> · Terminé : <span id="${bonusV2DomId("bonusV2Ended", sessionId)}">—</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rz-client-editor-controls rz-client-bonus-controls" style="margin-top:16px;">
         <div>
-          <div class="rz-client-editor-label">Bonus</div>
-
-          <div id="${curId}" class="rz-client-editor-current">
-            Bonus actuel : <b>${esc(formatCurrentBonusLine(curSec, curBytes))}</b>
-          </div>
+          <div class="rz-client-editor-label">+ Jours</div>
+          <input id="${dayId}" type="number" min="0" step="1" value="0" class="rz-client-editor-input rz-client-editor-input-mini" />
         </div>
-
-        <div class="rz-client-editor-controls rz-client-bonus-controls">
-          <div>
-            <div class="rz-client-editor-label">+ Jours</div>
-            <input id="${dayId}" type="number" min="0" step="1" value="0" class="rz-client-editor-input rz-client-editor-input-mini" />
-          </div>
-          <div>
-            <div class="rz-client-editor-label">+ Heures</div>
-            <input id="${hourId}" type="number" min="0" step="1" value="0" class="rz-client-editor-input rz-client-editor-input-mini" />
-          </div>
-          <div>
-            <div class="rz-client-editor-label">+ Minutes</div>
-            <input id="${minId}" type="number" min="0" step="1" value="0" class="rz-client-editor-input rz-client-editor-input-mini" />
-          </div>
-          <div>
-            <div class="rz-client-editor-label">+ Go</div>
-            <input id="${gbId}" type="number" min="0" step="1" value="0" class="rz-client-editor-input rz-client-editor-input-mini" />
-            <label class="rz-client-checkline">
-              <input type="checkbox" id="${unlId}" />
-              <span>Data illimité</span>
-            </label>
-          </div>
-          <div class="rz-client-editor-note">
-            <div class="rz-client-editor-label">Note</div>
-            <input id="${noteId}" type="text" placeholder="ex: goodwill / compensation" class="rz-client-editor-input" />
-          </div>
-          <button id="${btnId}" type="button" class="rz-client-editor-btn">Ajouter</button>
+        <div>
+          <div class="rz-client-editor-label">+ Heures</div>
+          <input id="${hourId}" type="number" min="0" max="23" step="1" value="0" class="rz-client-editor-input rz-client-editor-input-mini" />
         </div>
+        <div>
+          <div class="rz-client-editor-label">+ Minutes</div>
+          <input id="${minId}" type="number" min="0" max="59" step="1" value="0" class="rz-client-editor-input rz-client-editor-input-mini" />
+        </div>
+        <div>
+          <div class="rz-client-editor-label">+ Go</div>
+          <input id="${gbId}" type="number" min="0" step="0.1" value="0" class="rz-client-editor-input rz-client-editor-input-mini" />
+          <label class="rz-client-checkline"><input type="checkbox" id="${unlId}" /><span>Data illimitée</span></label>
+        </div>
+        <div class="rz-client-editor-note">
+          <div class="rz-client-editor-label">Note</div>
+          <input id="${noteId}" type="text" maxlength="2000" placeholder="Ex. compensation" class="rz-client-editor-input" />
+        </div>
+        <button id="${btnId}" type="button" class="rz-client-editor-btn">Préparer le bonus</button>
+      </div>
+
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px;">
+        <button id="${cancelBtnId}" type="button" class="danger" style="display:none; width:auto;">Annuler le bonus disponible</button>
+        <span class="subtitle">La durée et la data sont obligatoires. Le bonus se termine au premier seuil atteint.</span>
       </div>
       <div id="${msgId}" class="subtitle" style="display:none; margin-top:8px;"></div>
     </div>
   `);
 
   const btn = document.getElementById(btnId);
+  const cancelBtn = document.getElementById(cancelBtnId);
   const msg = document.getElementById(msgId);
   const blockEl = document.getElementById(blockId);
-
-  // Read-only UX: allow viewing current bonus, but disable edits
-  if (window.__IS_READONLY) {
-    const dayEl = document.getElementById(dayId);
-    const hourEl = document.getElementById(hourId);
-    const minEl = document.getElementById(minId);
-    const gbEl0 = document.getElementById(gbId);
-    const unlEl0 = document.getElementById(unlId);
-    const noteEl = document.getElementById(noteId);
-
-    if (btn) { btn.disabled = true; btn.textContent = "Lecture seule"; }
-    for (const el of [dayEl, hourEl, minEl, gbEl0, unlEl0, noteEl]) {
-      if (el) el.disabled = true;
-    }
-  }
-
-
-  // UX: if "Data illimité" is checked, disable the +Go input to avoid confusion.
   const gbEl = document.getElementById(gbId);
   const unlEl = document.getElementById(unlId);
+
   if (gbEl && unlEl) {
     const syncUnlimitedUx = () => {
-      const on = !!unlEl.checked;
-      gbEl.disabled = on;
-      if (on) gbEl.value = "0";
+      if (unlEl.checked) gbEl.value = "0";
+      if (!window.__IS_READONLY && bonusV2State(bonusV2LiveSnapshot || initialBonus) !== "active") {
+        gbEl.disabled = !!unlEl.checked;
+      }
     };
     unlEl.addEventListener("change", syncUnlimitedUx);
     syncUnlimitedUx();
@@ -1199,8 +1442,8 @@ const curBytes = Number(rowItem?.bonus_bytes || 0);
 
   if (btn) {
     btn.onclick = async () => {
-      // Guard: if a JS error happens, show it in the modal (otherwise it looks like "nothing happens").
       try {
+        if (window.__IS_READONLY) return;
         const days = Number(document.getElementById(dayId)?.value ?? 0);
         const hours = Number(document.getElementById(hourId)?.value ?? 0);
         const mins = Number(document.getElementById(minId)?.value ?? 0);
@@ -1208,29 +1451,21 @@ const curBytes = Number(rowItem?.bonus_bytes || 0);
         const unlimited_data = !!document.getElementById(unlId)?.checked;
         const note = String(document.getElementById(noteId)?.value ?? "").trim();
 
-      if (!Number.isFinite(days) || days < 0) return alert("Jours doit être supérieur ou égal à 0");
-      if (!Number.isFinite(hours) || hours < 0) return alert("Heures doit être supérieur ou égal à 0");
-      if (!Number.isFinite(mins) || mins < 0) return alert("Minutes doit être supérieur ou égal à 0");
-      if (!Number.isFinite(gb) || gb < 0) return alert("Go doit être supérieur ou égal à 0");
-
-      if (hours > 23) return alert("Heures doit être entre 0 et 23");
-      if (mins > 59) return alert("Minutes doit être entre 0 et 59");
+        if (!Number.isFinite(days) || days < 0) return alert("Jours doit être supérieur ou égal à 0.");
+        if (!Number.isFinite(hours) || hours < 0 || hours > 23) return alert("Heures doit être entre 0 et 23.");
+        if (!Number.isFinite(mins) || mins < 0 || mins > 59) return alert("Minutes doit être entre 0 et 59.");
+        if (!Number.isFinite(gb) || gb < 0) return alert("Go doit être supérieur ou égal à 0.");
 
         const add_minutes = (days * 1440) + (hours * 60) + mins;
         const add_mb = unlimited_data ? 0 : (gb * 1024);
-
-        if (add_minutes === 0 && add_mb === 0 && !unlimited_data) {
-          return alert("Ajoutez une durée et/ou une data bonus, ou cochez Data illimité.");
-        }
+        if (add_minutes <= 0) return alert("Ajoutez une durée comprise entre 1 minute et 7 jours.");
+        if (!unlimited_data && add_mb <= 0) return alert("Ajoutez une quantité de data supérieure à 0, ou cochez Data illimitée.");
 
         const prevText = btn.textContent;
         btn.disabled = true;
-        btn.textContent = "Enregistrement...";
-
-        if (window.__IS_READONLY) return;
-
+        btn.textContent = "Enregistrement…";
         try {
-          await fetchJSON("/api/admin/voucher-bonus-overrides", {
+          const saved = await fetchJSON("/api/admin/voucher-bonus-overrides", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -1242,22 +1477,22 @@ const curBytes = Number(rowItem?.bonus_bytes || 0);
             })
           });
 
+          const savedBonus = getBonusV2(saved?.item) || saved?.bonus || saved?.item?.bonus || null;
+          bonusV2LiveSnapshot = savedBonus;
+          updateBonusV2Card(sessionId, savedBonus);
           if (msg) {
             msg.style.display = "block";
             msg.style.color = "#198754";
-            msg.textContent = "Bonus ajouté ✅";
+            msg.textContent = "Bonus disponible — prêt à être activé par le client ✅";
           }
-
           flashUpdatedRowAndBlock({ sessionId, blockEl });
-
-          // Refresh modal + table so you immediately see new remaining/status
           try { await loadClients(); } catch (_) {}
           try { await openDetail(sessionId); } catch (_) {}
         } catch (e) {
           if (msg) {
             msg.style.display = "block";
             msg.style.color = "#d9534f";
-            msg.textContent = e?.message || String(e);
+            msg.textContent = humanizeApiError(e);
           }
         } finally {
           btn.disabled = false;
@@ -1267,14 +1502,49 @@ const curBytes = Number(rowItem?.bonus_bytes || 0);
         if (msg) {
           msg.style.display = "block";
           msg.style.color = "#d9534f";
-          msg.textContent = err?.message || String(err);
-        } else {
-          alert(err?.message || String(err));
+          msg.textContent = humanizeApiError(err);
         }
       }
     };
   }
-} catch (_) {}
+
+  if (cancelBtn) {
+    cancelBtn.onclick = async () => {
+      if (window.__IS_READONLY) return;
+      if (!confirm("Annuler ce bonus disponible ?")) return;
+      cancelBtn.disabled = true;
+      try {
+        const cancelled = await fetchJSON("/api/admin/voucher-bonus-overrides", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ voucher_session_id: sessionId })
+        });
+        const cancelledBonus = getBonusV2(cancelled?.item) || cancelled?.bonus || cancelled?.item?.bonus || null;
+        bonusV2LiveSnapshot = cancelledBonus;
+        updateBonusV2Card(sessionId, cancelledBonus);
+        if (msg) {
+          msg.style.display = "block";
+          msg.style.color = "#198754";
+          msg.textContent = "Bonus annulé.";
+        }
+        try { await loadClients(); } catch (_) {}
+      } catch (e) {
+        if (msg) {
+          msg.style.display = "block";
+          msg.style.color = "#d9534f";
+          msg.textContent = humanizeApiError(e);
+        }
+      } finally {
+        cancelBtn.disabled = false;
+      }
+    };
+  }
+
+  startBonusV2LiveRefresh(sessionId, initialBonus);
+} catch (e) {
+  console.error("BONUS V2 ADMIN UI ERROR", e);
+}
+
 
   } catch (e) {
     modalErr.style.display = "block";
@@ -1312,6 +1582,7 @@ async function deleteCurrent() {
 // Modal controls
 // -------------------------
 function closeModal() {
+  stopBonusV2LiveRefresh();
   const modal = document.getElementById("modal");
   if (modal) {
     modal.style.display = "none";
