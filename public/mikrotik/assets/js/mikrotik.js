@@ -1739,6 +1739,34 @@
     return Number.isFinite(n) ? n : fallback;
   }
 
+  function portalMonotonicNowMs() {
+    try {
+      if (typeof performance !== "undefined" && typeof performance.now === "function") {
+        return performance.now();
+      }
+    } catch (_) {}
+    return Date.now();
+  }
+
+  function syncPortalCountdownAnchor(target, seconds) {
+    if (!target || typeof target !== "object") return;
+    target.__rzCountdownSeconds = Math.max(0, Math.floor(portalBonusNumber(seconds, 0)));
+    target.__rzCountdownSyncedAt = portalMonotonicNowMs();
+  }
+
+  function readPortalCountdownAnchor(target, fallbackSeconds = 0) {
+    if (!target || typeof target !== "object") {
+      return Math.max(0, Math.floor(portalBonusNumber(fallbackSeconds, 0)));
+    }
+    const anchor = Number(target.__rzCountdownSeconds);
+    const syncedAt = Number(target.__rzCountdownSyncedAt);
+    if (Number.isFinite(anchor) && Number.isFinite(syncedAt)) {
+      const elapsed = Math.max(0, Math.floor((portalMonotonicNowMs() - syncedAt) / 1000));
+      return Math.max(0, Math.floor(anchor) - elapsed);
+    }
+    return Math.max(0, Math.floor(portalBonusNumber(fallbackSeconds, 0)));
+  }
+
   function portalBonusState(bonus) {
     return String(bonus?.effective_state || bonus?.state || "none").trim().toLowerCase() || "none";
   }
@@ -1773,11 +1801,14 @@
   }
 
   function portalBonusRemainingSeconds(bonus) {
-    if (portalBonusState(bonus) === "active" && bonus?.expires_at) {
-      const expiresMs = new Date(bonus.expires_at).getTime();
-      if (Number.isFinite(expiresMs)) return Math.max(0, Math.floor((expiresMs - Date.now()) / 1000));
+    if (portalBonusState(bonus) === "active") {
+      return readPortalCountdownAnchor(bonus, bonus?.remaining_seconds);
     }
     return Math.max(0, portalBonusNumber(bonus?.remaining_seconds, 0));
+  }
+
+  function portalSessionRemainingSeconds(session) {
+    return readPortalCountdownAnchor(session, session?.remaining_seconds);
   }
 
   function portalBonusTotalHuman(bonus) {
@@ -1810,6 +1841,8 @@
   let portalBonusClockTimer = null;
   let portalBonusPollBusy = false;
   let portalBonusLiveSnapshot = null;
+  let portalSessionLiveSnapshot = null;
+  let portalLiveStatus = "none";
 
   function stopPortalBonusLiveRefresh() {
     if (portalBonusPollTimer) clearInterval(portalBonusPollTimer);
@@ -1818,18 +1851,33 @@
     portalBonusClockTimer = null;
     portalBonusPollBusy = false;
     portalBonusLiveSnapshot = null;
+    portalSessionLiveSnapshot = null;
+    portalLiveStatus = "none";
   }
 
   function renderPortalBonusClock() {
-    if (portalBonusState(portalBonusLiveSnapshot) !== "active") return;
-    const seconds = portalBonusRemainingSeconds(portalBonusLiveSnapshot);
-    if (timeLeftEl) timeLeftEl.textContent = formatPortalBonusSeconds(seconds);
+    if (!timeLeftEl) return;
+    if (portalBonusState(portalBonusLiveSnapshot) === "active") {
+      timeLeftEl.textContent = formatPortalBonusSeconds(portalBonusRemainingSeconds(portalBonusLiveSnapshot));
+      return;
+    }
+    if (portalLiveStatus === "active" && portalSessionLiveSnapshot) {
+      timeLeftEl.textContent = formatPortalBonusSeconds(portalSessionRemainingSeconds(portalSessionLiveSnapshot));
+    }
   }
 
-  function syncPortalBonusLiveRefresh(bonus) {
-    const state = portalBonusState(bonus);
+  function syncPortalBonusLiveRefresh(bonus, status, session) {
+    const bonusState = portalBonusState(bonus);
+    const normalActive = String(status || "").toLowerCase() === "active" && bonusState !== "active";
+
     portalBonusLiveSnapshot = bonus || null;
-    if (state !== "active") {
+    portalSessionLiveSnapshot = session || null;
+    portalLiveStatus = String(status || "none").toLowerCase();
+
+    if (bonusState === "active") syncPortalCountdownAnchor(portalBonusLiveSnapshot, bonus?.remaining_seconds);
+    if (normalActive) syncPortalCountdownAnchor(portalSessionLiveSnapshot, session?.remaining_seconds);
+
+    if (bonusState !== "active" && !normalActive) {
       stopPortalBonusLiveRefresh();
       return;
     }
@@ -1879,6 +1927,8 @@ const bonusState = portalBonusState(bonus);
 const bonusAvailable = bonusState === "available" && bonus?.can_activate === true;
 const bonusModeActive = bonusState === "active" && bonus?.can_authorize === true;
 const bonusFinished = bonusState === "finished";
+if (bonusModeActive) syncPortalCountdownAnchor(bonus, bonus?.remaining_seconds);
+if (status === "active" && !bonusModeActive) syncPortalCountdownAnchor(sess, sess?.remaining_seconds);
 const hasBonus = !!bonus;
 const hasUsableBonus = bonusAvailable;
 
@@ -2078,7 +2128,7 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
     } else if (bonusAvailable) {
       setText(timeLeftEl, formatPortalBonusSeconds(bonus?.duration_seconds));
     } else if (showTimeLeft && status === "active") {
-      setText(timeLeftEl, formatRemainingFromExpires(sess.expires_at) || "—");
+      setText(timeLeftEl, formatPortalBonusSeconds(portalSessionRemainingSeconds(sess)) || "—");
     } else if (showTimeLeft && status === "pending") {
       setText(timeLeftEl, durMin != null ? formatDuration(Number(durMin)) : "—");
     } else {
@@ -2130,7 +2180,7 @@ setBonusLine((showBonusChip && bonusCompact) ? bonusCompact : "");
     }
     syncVoucherCompactUx({ status, canUse, code, bonusState });
     syncMagicCodeFocusMode({ status, canUse, code, hasUsableBonus, bonusModeActive });
-    syncPortalBonusLiveRefresh(bonus);
+    syncPortalBonusLiveRefresh(bonus, status, sess);
 
     // Persist last code (fallback for captive quirks)
     if (code) {
@@ -3308,6 +3358,13 @@ function saturationLabel(pct) {
       return false;
     }
   }
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && (portalLiveStatus === "active" || portalBonusState(portalBonusLiveSnapshot) === "active")) {
+      renderPortalBonusClock();
+      fetchPortalStatus({ quiet: true }).catch(() => {});
+    }
+  });
 
   // Build the payment method buttons for a plan card from the current pool's
   // active payment_methods. MVola reuses the existing .choose-plan-btn class
