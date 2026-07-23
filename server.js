@@ -10683,8 +10683,27 @@ app.patch("/api/admin/users/:id", requireAdmin, requireSuperadmin, async (req, r
     if (error) return res.status(500).json({ error: error.message });
     if (!data) return res.status(404).json({ error: "not_found" });
 
-    // Invalidate cache so the change takes effect immediately (no stale 45 s window)
-    if (patch.is_active === false || patch.role !== undefined || patch.email !== undefined) {
+    // A password reset is a security boundary: revoke every existing session for
+    // the target user, clear all cached identities and force a fresh login.
+    if (patch.password_hash !== undefined) {
+      const revokedAt = new Date().toISOString();
+      const { error: revokeErr } = await supabase
+        .from("admin_sessions")
+        .update({ revoked_at: revokedAt })
+        .eq("admin_user_id", id)
+        .is("revoked_at", null);
+
+      if (revokeErr) {
+        console.error("ADMIN PASSWORD SESSION REVOCATION ERROR", id, revokeErr);
+        return res.status(500).json({ error: "session_revocation_failed" });
+      }
+
+      clearCachedAdminSessionsByUserId(id);
+      if (id === req.admin.id) {
+        res.clearCookie(ADMIN_COOKIE_NAME, adminCookieOptions());
+      }
+    } else if (patch.is_active === false || patch.role !== undefined || patch.email !== undefined) {
+      // Invalidate cache so non-password account changes take effect immediately.
       clearCachedAdminSessionsByUserId(id);
     }
 
@@ -12789,18 +12808,24 @@ async function sendBlockedDeviceAgentCommand(poolId, macAddress, action = "block
   const result = await resp.json().catch(() => ({}));
 
   if (!resp.ok || !result.ok) {
-    throw new Error(result.error || `blocked_device_${mode}_agent_failed_${resp.status}`);
+    // Do not propagate the agent's raw error payload to Admin API clients.
+    throw new Error(`blocked_device_${mode}_agent_failed_${resp.status}`);
   }
 
+  // Return only the public, non-sensitive fields needed by the sync summary.
+  // Router credentials, internal agent URLs and the raw agent payload must never
+  // be serialized into an Admin API response.
   return {
     ok: true,
     mode,
-    pool,
-    router,
     status: resp.status,
-    agent_url: agentUrl,
     mac_address: String(mac).toUpperCase(),
-    ...result,
+    blocked: result.blocked === true,
+    unblocked: result.unblocked === true,
+    added_count: result.added_count ?? null,
+    removed_count: result.removed_count ?? null,
+    unblocked_count: result.unblocked_count ?? null,
+    disconnected_count: result.disconnected_count ?? null,
   };
 }
 
@@ -12837,7 +12862,7 @@ async function disconnectBlockedMacsFromRouter(api, macs) {
 }
 
 async function syncBlockedDevicesPool(poolId) {
-  const { pool, router } = await getRouterForPool(poolId);
+  const { pool } = await getRouterForPool(poolId);
 
   const { data: devices, error: dErr } = await supabase
     .from("blocked_devices")
@@ -12908,8 +12933,6 @@ async function syncBlockedDevicesPool(poolId) {
     pool_place: cleanOptionalText(pool.name, 120),
     pool_nas_id: cleanOptionalText(pool.radius_nas_id, 120),
     nas_id: pool.radius_nas_id || null,
-    router_name: router.display_name || null,
-    router_host: router.api_host,
     active_count: activeDevices.length,
     inactive_count: inactiveDevices.length,
     added_count,
