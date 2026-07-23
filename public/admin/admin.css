@@ -4582,3 +4582,26 @@ body.rz-admin-shell .rz-since-btn:disabled {
 #table [data-col="data-remaining"] {
   min-width: 96px;
 }
+
+/* ================================================================== */
+/* Clients — compact main-list columns                                 */
+/* Scope: presentation only. Modal, APIs, filters and live logic stay  */
+/* unchanged. Hidden columns remain present in the table DOM.          */
+/* ================================================================== */
+.rz-clients-shell .rz-client-col-hidden {
+  display: none !important;
+}
+
+.rz-clients-shell table {
+  min-width: 920px !important;
+}
+
+@media (max-width: 700px) {
+  .rz-clients-shell .rz-client-col-secondary {
+    display: none !important;
+  }
+
+  .rz-clients-shell table {
+    min-width: 720px !important;
+  }
+}

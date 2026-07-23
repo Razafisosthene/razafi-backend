@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>RAZAFI Admin — Clients</title>
-  <link rel="stylesheet" href="/admin/admin.css?v=p2-a3-3-2" />
+  <link rel="stylesheet" href="/admin/admin.css?v=p2-a3-3-2-clients-columns-1" />
 </head>
 <body class="rz-admin-shell">
   <div class="login-container">
@@ -55,22 +55,22 @@
       <div id="liveNotice" class="subtitle" style="display:none; margin-top:8px;"></div>
 
       <div class="table-wrap">
-        <table id="table" style="width:100%; border-collapse: collapse; min-width: 1140px;">
+        <table id="table" style="width:100%; border-collapse: collapse; min-width: 920px;">
           <thead>
             <tr style="text-align:left;">
               <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Client</th>
               <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Statut</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">MVola</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Paiement</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Code</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Plan</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Prix</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Débit</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">AP</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Pool</th>
               <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Temps restant</th>
               <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Data restante</th>
-              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Expiration</th>
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Pool</th>
+              <th style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Paiement</th>
+              <th class="rz-client-col-secondary" style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Plan</th>
+              <th class="rz-client-col-secondary" style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Débit</th>
+              <th class="rz-client-col-hidden" style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">MVola</th>
+              <th class="rz-client-col-hidden" style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Code</th>
+              <th class="rz-client-col-hidden" style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Prix</th>
+              <th class="rz-client-col-hidden" style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">AP</th>
+              <th class="rz-client-col-hidden" style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.12);">Expiration</th>
             </tr>
           </thead>
           <tbody id="tbody"></tbody>
@@ -118,6 +118,6 @@
 
   <!-- NEW shared drawer -->
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="./clients.js?v=p2-a3-3-2"></script>
+  <script src="./clients.js?v=p2-a3-3-2-clients-columns-1"></script>
 </body>
 </html>

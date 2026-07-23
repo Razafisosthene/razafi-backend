@@ -903,33 +903,37 @@ function renderTable(items) {
     const rowTimeRemaining = bonusV2RowTime(it, rowBonus);
     const rowDataRemaining = bonusV2RowData(it, rowBonus);
     const rowExpiresAt = bonusV2RowExpires(it, rowBonus);
+    const paymentProvider = it.payment_provider_label || "—";
+    const paymentPrice = it.plan_price == null ? "—" : `${it.plan_price} Ar`;
+    const paymentDisplay = `${paymentProvider} · ${paymentPrice}`;
 tr.innerHTML = `
       <td data-col="client" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${clientCell}</td>
 
       <!-- ✅ status now follows backend truth + usable bonus state -->
       <td data-col="status" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);"><span data-role="base-status">${esc(it.status || "—")}</span>${bonusChip}</td>
 
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
-
-      <!-- ✅ Payment mode (display-only, from backend enrichment) -->
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.payment_provider_label || "—")}</td>
-
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || "—")}</td>
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_price ?? "—")}</td>
-
-      <!-- ✅ Speed limit (plans.mikrotik_rate_limit → "7 Mbps", raw "7M/7M" fallback) -->
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_speed_human || it.plan_rate_limit || "—")}</td>
-
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(apDisplay)}</td>
-      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(poolDisplayName(it))}</td>
-
       <!-- ✅ remaining_seconds now is DB truth (view); display time remaining -->
       <td data-col="remaining" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(rowTimeRemaining)}</td>
 
       <!-- ✅ data remaining (human) -->
       <td data-col="data-remaining" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(rowDataRemaining)}</td>
-      <td data-col="expires" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(rowExpiresAt))}</td>
+
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(poolDisplayName(it))}</td>
+
+      <!-- ✅ Payment mode + price grouped for the compact main list. -->
+      <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(paymentDisplay)}</td>
+
+      <td class="rz-client-col-secondary" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
+
+      <!-- ✅ Speed limit (plans.mikrotik_rate_limit → "7 Mbps", raw "7M/7M" fallback) -->
+      <td class="rz-client-col-secondary" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_speed_human || it.plan_rate_limit || "—")}</td>
+
+      <!-- Kept in the DOM for compatibility; hidden only in the main list. -->
+      <td class="rz-client-col-hidden" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.mvola_phone || "—")}</td>
+      <td class="rz-client-col-hidden" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || "—")}</td>
+      <td class="rz-client-col-hidden" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.plan_price ?? "—")}</td>
+      <td class="rz-client-col-hidden" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(apDisplay)}</td>
+      <td class="rz-client-col-hidden" data-col="expires" style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(fmtDate(rowExpiresAt))}</td>
     `;
 
     tr.addEventListener("click", () => openDetail(it.id));
