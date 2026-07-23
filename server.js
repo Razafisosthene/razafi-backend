@@ -18452,6 +18452,7 @@ function normalizeSimulatorCreateVisibility(body = {}) {
   const action = String(body.action || body.create_action || "create_hidden").trim().toLowerCase();
   if (body.is_visible !== undefined) return toBool(body.is_visible) === true;
   if (body.visible !== undefined) return toBool(body.visible) === true;
+  if (body.publish !== undefined) return toBool(body.publish) === true;
   return action === "create_and_publish" || action === "publish" || action === "create_visible";
 }
 
