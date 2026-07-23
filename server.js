@@ -2293,6 +2293,7 @@ async function buildReturningUserPlanContext({ clientMac, poolId }) {
       .eq("is_active",  true)
       .eq("is_visible", true)
       .eq("system",     "mikrotik")      // only suggest plans for the same system
+      .eq("plan_source", "standard")
       .order("sort_order", { ascending: true, nullsFirst: false })
       .order("price_ar",   { ascending: true });
 
@@ -9239,6 +9240,13 @@ const USER_LANGUAGE = "FR";
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+// PP-2 — dedicated secret used only to pseudonymize a client device for
+// personalized-plan quotes. The public feature fails closed until configured.
+const PERSONALIZED_PLAN_DEVICE_HASH_SECRET = String(
+  process.env.PERSONALIZED_PLAN_DEVICE_HASH_SECRET || ""
+);
+const PERSONALIZED_QUOTE_TOKEN_BYTES = 32;
+
 // Google Sign-In (admin auth V2 - optional, backward-compatible)
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || ""; // reserved for future OAuth-code flow
@@ -9372,6 +9380,30 @@ const assistantLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => ipKeyGenerator(req),
+});
+
+// PP-2: two complementary limits. The IP-wide ceiling prevents a caller from
+// bypassing the per-device bucket by rotating fake MAC addresses, while the
+// device bucket remains generous enough for normal quote adjustments.
+const personalizedQuoteIpLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 120,
+  message: { ok: false, error: "personalized_quote_rate_limited", message: "Trop de simulations. Réessayez dans quelques minutes." },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req),
+});
+
+const personalizedQuoteLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 30,
+  message: { ok: false, error: "personalized_quote_rate_limited", message: "Trop de simulations. Réessayez dans quelques minutes." },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const rawMac = String(req.body?.client_mac || req.body?.clientMac || "").toUpperCase().replace(/[^0-9A-F]/g, "").slice(0, 12);
+    return `${ipKeyGenerator(req)}:${rawMac || "no-device"}`;
+  },
 });
 
 // Apply to routes
@@ -15398,7 +15430,7 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
     if (nas_id) {
       const { data: poolRow, error: poolRowErr } = await supabase
         .from("internet_pools")
-        .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,${POOL_BRANDING_SELECT}`)
+        .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,personalized_plans_enabled,${POOL_BRANDING_SELECT}`)
         .eq("radius_nas_id", nas_id)
         .maybeSingle();
 
@@ -15436,6 +15468,7 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
           brand_name: null,
           branding_logo_url: null,
           display_name: null,
+          personalized_plans_enabled: false,
           contact_phone: DEFAULT_SUPPORT_PHONE,
           pool_capacity_max: null,
           pool_active_clients: 0,
@@ -15450,7 +15483,7 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
 
       const { data: poolRow, error: poolErr } = await supabase
         .from("internet_pools")
-        .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,${POOL_BRANDING_SELECT}`)
+        .select(`id,name,capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,personalized_plans_enabled,${POOL_BRANDING_SELECT}`)
         .eq("id", pool_id)
         .maybeSingle();
 
@@ -15472,6 +15505,7 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
         brand_name: null,
         branding_logo_url: null,
         display_name: null,
+        personalized_plans_enabled: false,
         contact_phone: DEFAULT_SUPPORT_PHONE,
         pool_capacity_max: null,
         pool_active_clients: 0,
@@ -15539,6 +15573,7 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
         brand_name: cleanOptionalText(pool?.brand_name, 120),
         branding_logo_url: cleanOptionalText(pool?.branding_logo_url, 2000),
         display_name: buildPoolDisplayName(pool),
+        personalized_plans_enabled: pool?.personalized_plans_enabled === true,
         contact_phone: pool?.contact_phone || DEFAULT_SUPPORT_PHONE,
 
         // old keys
@@ -15623,6 +15658,7 @@ app.get("/api/portal/context", normalizeApMac, async (req, res) => {
       nas_id,
       pool_id,
       pool_name: pool?.name ?? null,
+      personalized_plans_enabled: pool?.personalized_plans_enabled === true,
       contact_phone: pool?.contact_phone || DEFAULT_SUPPORT_PHONE,
 
       // old keys
@@ -15730,7 +15766,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     if (nas_id) {
       const { data: poolRow, error: poolRowErr } = await supabase
         .from("internet_pools")
-        .select(`id,name,system,radius_nas_id,payment_methods,${POOL_ANNOUNCEMENT_SELECT}`)
+        .select(`id,name,system,radius_nas_id,payment_methods,personalized_plans_enabled,${POOL_ANNOUNCEMENT_SELECT}`)
         .eq("radius_nas_id", nas_id)
         .maybeSingle();
 
@@ -15769,7 +15805,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     if (!pool) {
       const { data: poolDb, error: poolErr } = await supabase
         .from("internet_pools")
-        .select(`id,name,system,radius_nas_id,payment_methods,${POOL_ANNOUNCEMENT_SELECT}`)
+        .select(`id,name,system,radius_nas_id,payment_methods,personalized_plans_enabled,${POOL_ANNOUNCEMENT_SELECT}`)
         .eq("id", pool_id)
         .maybeSingle();
 
@@ -15792,6 +15828,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
       .eq("is_active", true)
       .eq("is_visible", true)
       .eq("system", "mikrotik")
+      .eq("plan_source", "standard")
       .eq("pool_id", pool_id)
       .order("sort_order", { ascending: true })
       .order("updated_at", { ascending: false });
@@ -15880,6 +15917,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
       ok:                   true,
       // ap_mac and pool_id removed — not needed by portal UI
       pool_name:            pool?.name ?? null,
+      personalized_plans_enabled: pool?.personalized_plans_enabled === true,
       portal_announcement:  serializePortalAnnouncement(pool),
       plans:                publicPlans,
       payment_methods:        normalizedPaymentMethods,   // e.g. { mvola: true, orange_money: false, ... }
@@ -16366,7 +16404,8 @@ app.get("/api/admin/plans", requireAdmin, async (req, res) => {
 
     let query = supabase
       .from("plans")
-      .select("*", { count: "exact" });
+      .select("*", { count: "exact" })
+      .eq("plan_source", "standard");
 
     if (qPattern) query = query.ilike("name", `%${qPattern}%`);
     if (active === "1") query = query.eq("is_active", true);
@@ -16868,7 +16907,7 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
 
     let query = supabase
       .from("internet_pools")
-      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,payment_methods,${POOL_ANNOUNCEMENT_SELECT}`, { count: "exact" });
+      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,payment_methods,personalized_plans_enabled,${POOL_ANNOUNCEMENT_SELECT}`, { count: "exact" });
 
     // 🔐 Pool scoping (server-side): pool assignments OR business owner
     if (!req.admin?.is_superadmin) {
@@ -17067,7 +17106,7 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
     const { data, error } = await supabase
       .from("internet_pools")
       .insert(payload)
-      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,payment_methods,${POOL_ANNOUNCEMENT_SELECT}`)
+      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,payment_methods,personalized_plans_enabled,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -17134,6 +17173,17 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
         return res.status(400).json({ error: "free_access_limit_invalid" });
       }
       updates.free_access_limit = Math.round(free_access_limit);
+    }
+
+    // PP-2: activation is strictly per pool and Superadmin-only.
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "personalized_plans_enabled")) {
+      if (!isSuperadmin) return res.status(403).json({ error: "superadmin_only" });
+      const enabled = toBool(req.body.personalized_plans_enabled);
+      if (enabled === null) return res.status(400).json({ error: "personalized_plans_enabled_invalid" });
+      if (enabled === true && String(currentPool?.system || "").toLowerCase() !== "mikrotik") {
+        return res.status(409).json({ error: "personalized_plans_require_mikrotik_pool" });
+      }
+      updates.personalized_plans_enabled = enabled;
     }
 
     // Optional: contact phone (nullable, can be cleared)
@@ -17264,7 +17314,7 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       .from("internet_pools")
       .update(updates)
       .eq("id", id)
-      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,payment_methods,${POOL_ANNOUNCEMENT_SELECT}`)
+      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,payment_methods,personalized_plans_enabled,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -17326,7 +17376,7 @@ app.post("/api/admin/pools/:id/logo", requireAdmin, async (req, res) => {
       .from("internet_pools")
       .update({ branding_logo_url: publicUrl })
       .eq("id", id)
-      .select(`id,name,${POOL_BRANDING_SELECT},contact_phone,system,owner_admin_user_id,payment_methods,${POOL_ANNOUNCEMENT_SELECT}`)
+      .select(`id,name,${POOL_BRANDING_SELECT},contact_phone,system,owner_admin_user_id,payment_methods,personalized_plans_enabled,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -17377,7 +17427,7 @@ app.delete("/api/admin/pools/:id/logo", requireAdmin, async (req, res) => {
       .from("internet_pools")
       .update({ branding_logo_url: null })
       .eq("id", id)
-      .select(`id,name,${POOL_BRANDING_SELECT},contact_phone,system,owner_admin_user_id,payment_methods,${POOL_ANNOUNCEMENT_SELECT}`)
+      .select(`id,name,${POOL_BRANDING_SELECT},contact_phone,system,owner_admin_user_id,payment_methods,personalized_plans_enabled,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -17977,6 +18027,616 @@ function validatePlanSimulatorInput({ type, data_gb, duration_minutes, speed_mbp
   };
 }
 
+
+// =============================================================================
+// PP-2 — Personalized plan backend security helpers
+// =============================================================================
+const PERSONALIZED_CONFIG_REQUIRED_KEYS = Object.freeze([
+  "allowed_speeds_mbps",
+  "max_data_gb",
+  "max_duration_days",
+  "max_speed_mbps",
+  "minimum_price_ar",
+  "price_tolerance_pct",
+  "realistic_usage_factor_pct",
+  "warning_usage_factor_pct",
+  "personalized_markup_pct",
+  "personalized_quote_ttl_minutes",
+  "personalized_min_duration_minutes",
+  "personalized_duration_step_minutes",
+  "personalized_min_data_mb",
+  "personalized_data_step_mb",
+  "personalized_min_price_ar",
+  "personalized_max_price_ar",
+  "personalized_allowed_types",
+  "personalized_rounding",
+  "personalized_quote_retention_days",
+]);
+
+const PERSONALIZED_QUOTE_PUBLIC_SELECT = [
+  "id",
+  "pool_id",
+  "device_hash",
+  "plan_type",
+  "duration_minutes",
+  "data_mb",
+  "speed_mbps",
+  "base_price_ar",
+  "markup_pct",
+  "markup_amount_ar",
+  "final_price_ar",
+  "pricing_config_version_id",
+  "pricing_config_hash",
+  "status",
+  "expires_at",
+  "transaction_id",
+  "technical_plan_id",
+  "created_at",
+  "updated_at",
+].join(",");
+
+function makePersonalizedPlanError(code, httpStatus = 400, details = null) {
+  const err = new Error(String(code || "personalized_plan_error"));
+  err.publicCode = String(code || "personalized_plan_error");
+  err.httpStatus = Number(httpStatus) || 400;
+  err.publicDetails = details;
+  err.isPersonalizedPlanError = true;
+  return err;
+}
+
+function sendPersonalizedPlanError(res, err) {
+  if (!err?.isPersonalizedPlanError) return false;
+  const payload = {
+    ok: false,
+    error: err.publicCode || "personalized_plan_error",
+  };
+  if (err.publicDetails && typeof err.publicDetails === "object") {
+    Object.assign(payload, err.publicDetails);
+  }
+  res.status(err.httpStatus || 400).json(payload);
+  return true;
+}
+
+function assertPersonalizedDeviceHashSecret() {
+  if (Buffer.byteLength(PERSONALIZED_PLAN_DEVICE_HASH_SECRET, "utf8") < 32) {
+    throw makePersonalizedPlanError("personalized_device_hash_secret_unavailable", 503);
+  }
+}
+
+function normalizePersonalizedQuoteToken(raw) {
+  const token = String(raw || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(token)) return null;
+  return token;
+}
+
+function createPersonalizedQuoteToken() {
+  return crypto.randomBytes(PERSONALIZED_QUOTE_TOKEN_BYTES).toString("hex");
+}
+
+function personalizedQuoteTokenHash(token) {
+  return crypto.createHash("sha256").update(String(token || ""), "utf8").digest("hex");
+}
+
+function personalizedDeviceHash({ poolId, clientMac }) {
+  assertPersonalizedDeviceHashSecret();
+  const pool = String(poolId || "").trim().toLowerCase();
+  const mac = normalizeMacColon(clientMac);
+  if (!UUID_V1_TO_V5_RE.test(pool) || !mac) {
+    throw makePersonalizedPlanError("personalized_device_identity_invalid", 400);
+  }
+  return crypto
+    .createHmac("sha256", PERSONALIZED_PLAN_DEVICE_HASH_SECRET)
+    .update(`${pool}|${mac}`, "utf8")
+    .digest("hex");
+}
+
+function readRequiredPersonalizedNumber(settings, key, { integer = false, min = null, max = null } = {}) {
+  if (!settings || !Object.prototype.hasOwnProperty.call(settings, key)) {
+    throw makePersonalizedPlanError("personalized_pricing_config_incomplete", 503);
+  }
+  const value = Number(settings[key]);
+  if (!Number.isFinite(value) || (integer && !Number.isInteger(value))) {
+    throw makePersonalizedPlanError("personalized_pricing_config_invalid", 503);
+  }
+  const out = value;
+  if (min !== null && out < min) throw makePersonalizedPlanError("personalized_pricing_config_invalid", 503);
+  if (max !== null && out > max) throw makePersonalizedPlanError("personalized_pricing_config_invalid", 503);
+  return out;
+}
+
+function parsePersonalizedSettingsStrict(rawSettings) {
+  if (!rawSettings || typeof rawSettings !== "object" || Array.isArray(rawSettings)) {
+    throw makePersonalizedPlanError("personalized_pricing_config_incomplete", 503);
+  }
+  for (const key of PERSONALIZED_CONFIG_REQUIRED_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(rawSettings, key)) {
+      throw makePersonalizedPlanError("personalized_pricing_config_incomplete", 503);
+    }
+  }
+
+  const rawAllowedSpeeds = rawSettings.allowed_speeds_mbps;
+  const rawAllowedTypes = rawSettings.personalized_allowed_types;
+  if (!Array.isArray(rawAllowedSpeeds) || !rawAllowedSpeeds.length ||
+      !Array.isArray(rawAllowedTypes) || !rawAllowedTypes.length) {
+    throw makePersonalizedPlanError("personalized_pricing_config_invalid", 503);
+  }
+
+  const allowedSpeeds = rawAllowedSpeeds.map((value) => {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw makePersonalizedPlanError("personalized_pricing_config_invalid", 503);
+    }
+    return Math.round(n * 100) / 100;
+  });
+  const allowedTypes = rawAllowedTypes.map((value) => {
+    const normalized = normalizePlanSimulatorType(value);
+    if (!normalized) {
+      throw makePersonalizedPlanError("personalized_pricing_config_invalid", 503);
+    }
+    return normalized;
+  });
+
+  const settings = normalizePlanSimulatorSettingsObject(rawSettings);
+  const strict = {
+    allowed_speeds_mbps: Array.from(new Set(allowedSpeeds)),
+    allowed_types: Array.from(new Set(allowedTypes)),
+    max_data_gb: readRequiredPersonalizedNumber(rawSettings, "max_data_gb", { min: 1 }),
+    max_duration_days: readRequiredPersonalizedNumber(rawSettings, "max_duration_days", { min: 1 }),
+    max_speed_mbps: readRequiredPersonalizedNumber(rawSettings, "max_speed_mbps", { min: 1 }),
+    minimum_price_ar: readRequiredPersonalizedNumber(rawSettings, "minimum_price_ar", { integer: true, min: 0 }),
+    price_tolerance_pct: readRequiredPersonalizedNumber(rawSettings, "price_tolerance_pct", { min: 0, max: 100 }),
+    realistic_usage_factor_pct: readRequiredPersonalizedNumber(rawSettings, "realistic_usage_factor_pct", { min: 10, max: 100 }),
+    warning_usage_factor_pct: readRequiredPersonalizedNumber(rawSettings, "warning_usage_factor_pct", { min: 10, max: 150 }),
+    markup_pct: readRequiredPersonalizedNumber(rawSettings, "personalized_markup_pct", { min: 0, max: 1000 }),
+    quote_ttl_minutes: readRequiredPersonalizedNumber(rawSettings, "personalized_quote_ttl_minutes", { integer: true, min: 1, max: 1440 }),
+    min_duration_minutes: readRequiredPersonalizedNumber(rawSettings, "personalized_min_duration_minutes", { integer: true, min: 1 }),
+    duration_step_minutes: readRequiredPersonalizedNumber(rawSettings, "personalized_duration_step_minutes", { integer: true, min: 1 }),
+    min_data_mb: readRequiredPersonalizedNumber(rawSettings, "personalized_min_data_mb", { integer: true, min: 1 }),
+    data_step_mb: readRequiredPersonalizedNumber(rawSettings, "personalized_data_step_mb", { integer: true, min: 1 }),
+    min_price_ar: readRequiredPersonalizedNumber(rawSettings, "personalized_min_price_ar", { integer: true, min: 0 }),
+    max_price_ar: readRequiredPersonalizedNumber(rawSettings, "personalized_max_price_ar", { integer: true, min: 1 }),
+    rounding: String(rawSettings.personalized_rounding || "").trim(),
+    retention_days: readRequiredPersonalizedNumber(rawSettings, "personalized_quote_retention_days", { integer: true, min: 1, max: 3650 }),
+  };
+
+  if (strict.max_price_ar < Math.max(strict.minimum_price_ar, strict.min_price_ar) ||
+      strict.warning_usage_factor_pct < strict.realistic_usage_factor_pct ||
+      strict.allowed_speeds_mbps.some((speed) => speed > strict.max_speed_mbps)) {
+    throw makePersonalizedPlanError("personalized_pricing_config_invalid", 503);
+  }
+  if (strict.rounding !== "ceil_100") {
+    throw makePersonalizedPlanError("personalized_pricing_config_invalid", 503);
+  }
+
+  return { common: settings, personalized: strict };
+}
+
+function parsePersonalizedPricingSnapshotStrict({ settingsSnapshot, referencesSnapshot }) {
+  const parsed = parsePersonalizedSettingsStrict(settingsSnapshot);
+  const rawReferences = Array.isArray(referencesSnapshot) ? referencesSnapshot : [];
+  const normalizedReferences = rawReferences.map(normalizePlanSimulatorReferenceRow);
+
+  if (!normalizedReferences.length || normalizedReferences.some((r) => !r)) {
+    throw makePersonalizedPlanError("personalized_pricing_references_invalid", 503);
+  }
+
+  const references = normalizedReferences.filter((r) => r.is_active !== false);
+  if (!references.length) {
+    throw makePersonalizedPlanError("personalized_pricing_references_invalid", 503);
+  }
+  if (!references.some((r) => r.type === "data") || !references.some((r) => r.type === "unlimited")) {
+    throw makePersonalizedPlanError("personalized_pricing_references_incomplete", 503);
+  }
+
+  return {
+    settings: parsed.common,
+    personalized: parsed.personalized,
+    references,
+    settings_snapshot: settingsSnapshot,
+    references_snapshot: rawReferences,
+  };
+}
+
+async function getActivePersonalizedPricingConfigFailClosed() {
+  if (!supabase) throw makePersonalizedPlanError("supabase_not_configured", 503);
+
+  const { data, error } = await supabase
+    .from("plan_pricing_config_versions")
+    .select("id,version_no,status,settings_snapshot,references_snapshot,config_hash,activated_at")
+    .eq("status", "active")
+    .maybeSingle();
+
+  if (error || !data) {
+    console.error("PERSONALIZED ACTIVE CONFIG LOAD ERROR", error?.message || "active_version_missing");
+    throw makePersonalizedPlanError("personalized_pricing_config_unavailable", 503);
+  }
+  if (!UUID_V1_TO_V5_RE.test(String(data.id || "")) || !/^[0-9a-f]{64}$/.test(String(data.config_hash || ""))) {
+    throw makePersonalizedPlanError("personalized_pricing_config_invalid", 503);
+  }
+
+  const parsed = parsePersonalizedPricingSnapshotStrict({
+    settingsSnapshot: data.settings_snapshot,
+    referencesSnapshot: data.references_snapshot,
+  });
+
+  return {
+    id: String(data.id),
+    version_no: Number(data.version_no),
+    config_hash: String(data.config_hash),
+    activated_at: data.activated_at || null,
+    ...parsed,
+  };
+}
+
+async function resolvePersonalizedPoolByNasId(nasId, { requireEnabled = false } = {}) {
+  const cleanNasId = String(nasId || "").trim();
+  if (!cleanNasId || cleanNasId.length > 160) {
+    throw makePersonalizedPlanError("nas_id_required", 400);
+  }
+  if (!supabase) throw makePersonalizedPlanError("supabase_not_configured", 503);
+
+  const { data, error } = await supabase
+    .from("internet_pools")
+    .select("id,name,brand_name,system,radius_nas_id,capacity_max,contact_phone,payment_methods,personalized_plans_enabled")
+    .eq("radius_nas_id", cleanNasId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("PERSONALIZED POOL LOAD ERROR", error);
+    throw makePersonalizedPlanError("personalized_pool_unavailable", 503);
+  }
+  if (!data?.id) throw makePersonalizedPlanError("pool_not_found_for_nas_id", 404);
+  if (String(data.system || "").toLowerCase() !== "mikrotik") {
+    throw makePersonalizedPlanError("pool_not_mikrotik", 409);
+  }
+  if (requireEnabled && data.personalized_plans_enabled !== true) {
+    throw makePersonalizedPlanError("personalized_plans_not_enabled_for_pool", 409);
+  }
+  return data;
+}
+
+function validatePersonalizedQuoteChoice({ type, durationMinutes, dataMb, speedMbps, config }) {
+  const normalizedType = normalizePlanSimulatorType(type);
+  const p = config.personalized;
+  const duration = Number(durationMinutes);
+  const speed = Number(speedMbps);
+  const data = dataMb === null || dataMb === undefined || dataMb === "" ? null : Number(dataMb);
+
+  if (!normalizedType || !p.allowed_types.includes(normalizedType)) {
+    throw makePersonalizedPlanError("personalized_plan_type_not_allowed", 400);
+  }
+  if (!Number.isInteger(duration) || duration < p.min_duration_minutes) {
+    throw makePersonalizedPlanError("personalized_duration_not_allowed", 400);
+  }
+  if ((duration - p.min_duration_minutes) % p.duration_step_minutes !== 0) {
+    throw makePersonalizedPlanError("personalized_duration_not_allowed", 400);
+  }
+  const maxDurationMinutes = Math.round(p.max_duration_days * 1440);
+  if (duration > maxDurationMinutes) {
+    throw makePersonalizedPlanError("personalized_duration_not_allowed", 400);
+  }
+
+  let normalizedDataMb = null;
+  if (normalizedType === "data") {
+    if (!Number.isInteger(data) || data < p.min_data_mb) {
+      throw makePersonalizedPlanError("personalized_data_not_allowed", 400);
+    }
+    if ((data - p.min_data_mb) % p.data_step_mb !== 0) {
+      throw makePersonalizedPlanError("personalized_data_not_allowed", 400);
+    }
+    if (data > Math.round(p.max_data_gb * 1024)) {
+      throw makePersonalizedPlanError("personalized_data_not_allowed", 400);
+    }
+    normalizedDataMb = data;
+  } else if (data !== null) {
+    throw makePersonalizedPlanError("personalized_unlimited_data_must_be_empty", 400);
+  }
+
+  const normalizedSpeed = Math.round(speed * 100) / 100;
+  if (!Number.isFinite(normalizedSpeed) || normalizedSpeed <= 0 || normalizedSpeed > p.max_speed_mbps) {
+    throw makePersonalizedPlanError("personalized_speed_not_allowed", 400);
+  }
+  if (!p.allowed_speeds_mbps.some((v) => Math.abs(Number(v) - normalizedSpeed) < 0.001)) {
+    throw makePersonalizedPlanError("personalized_speed_not_allowed", 400);
+  }
+
+  const dataGb = normalizedType === "data" ? Math.round((normalizedDataMb / 1024) * 1000) / 1000 : null;
+  const simulatorValidation = validatePlanSimulatorInput({
+    type: normalizedType,
+    data_gb: dataGb,
+    duration_minutes: duration,
+    speed_mbps: normalizedSpeed,
+    settings: config.settings,
+  });
+
+  if (simulatorValidation.status === "blocked") {
+    throw makePersonalizedPlanError("personalized_plan_combination_blocked", 400, {
+      reasons: simulatorValidation.errors || [],
+    });
+  }
+
+  return {
+    type: normalizedType,
+    duration_minutes: duration,
+    data_mb: normalizedDataMb,
+    data_gb: dataGb,
+    speed_mbps: normalizedSpeed,
+    warnings: simulatorValidation.warnings || [],
+  };
+}
+
+function buildPersonalizedPlanName(quoteLike = {}) {
+  const type = normalizePlanSimulatorType(quoteLike.plan_type || quoteLike.type);
+  const duration = planSimulatorDurationLabel(Number(quoteLike.duration_minutes || 0));
+  const speed = Number(quoteLike.speed_mbps);
+  const speedLabel = Number.isFinite(speed)
+    ? `${Number.isInteger(speed) ? Math.trunc(speed) : speed}M`
+    : "";
+  if (type === "unlimited") {
+    return ["Illimité", duration, speedLabel].filter(Boolean).join(" ").slice(0, 80);
+  }
+  const dataMb = Number(quoteLike.data_mb || 0);
+  const dataGb = dataMb > 0 ? dataMb / 1024 : 0;
+  const dataLabel = dataGb > 0
+    ? `${Number.isInteger(dataGb) ? dataGb.toFixed(0) : String(Math.round(dataGb * 10) / 10)} Go`
+    : "Data";
+  return [dataLabel, duration, speedLabel].filter(Boolean).join(" ").slice(0, 80);
+}
+
+async function loadPersonalizedQuoteByTokenIdentity({ tokenHash, poolId, deviceHash }) {
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("personalized_plan_quotes")
+    .select(PERSONALIZED_QUOTE_PUBLIC_SELECT)
+    .eq("token_hash", tokenHash)
+    .eq("pool_id", poolId)
+    .eq("device_hash", deviceHash)
+    .maybeSingle();
+  if (error) {
+    console.error("PERSONALIZED QUOTE LOOKUP ERROR", error);
+    throw makePersonalizedPlanError("personalized_quote_unavailable", 503);
+  }
+  return data || null;
+}
+
+
+async function updateTransactionPreservingMetadata({ requestRef, patch = {}, metadataPatch = {} }) {
+  if (!supabase || !requestRef) return null;
+  const { data: current, error: readError } = await supabase
+    .from("transactions")
+    .select("metadata")
+    .eq("request_ref", requestRef)
+    .maybeSingle();
+  if (readError) throw readError;
+  const base = current?.metadata && typeof current.metadata === "object" ? current.metadata : {};
+  const { data, error } = await supabase
+    .from("transactions")
+    .update({ ...patch, metadata: { ...base, ...metadataPatch } })
+    .eq("request_ref", requestRef)
+    .select("id,request_ref,status,metadata")
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
+async function findTransactionForPersonalizedQuote(quoteId) {
+  const cleanQuoteId = String(quoteId || "").trim().toLowerCase();
+  if (!supabase || !UUID_V1_TO_V5_RE.test(cleanQuoteId)) return null;
+  try {
+    const { data: quote, error: quoteError } = await supabase
+      .from("personalized_plan_quotes")
+      .select("transaction_id")
+      .eq("id", cleanQuoteId)
+      .maybeSingle();
+    if (quoteError || !quote?.transaction_id) {
+      if (quoteError) console.error("PERSONALIZED QUOTE TRANSACTION LINK ERROR", quoteError);
+      return null;
+    }
+
+    const { data, error } = await supabase
+      .from("transactions")
+      .select("id,request_ref,status,server_correlation_id,metadata,created_at")
+      .eq("id", quote.transaction_id)
+      .maybeSingle();
+    if (error) {
+      console.error("PERSONALIZED QUOTE TRANSACTION LOOKUP ERROR", error);
+      return null;
+    }
+    return data || null;
+  } catch (e) {
+    console.error("PERSONALIZED QUOTE TRANSACTION LOOKUP EX", e?.message || e);
+    return null;
+  }
+}
+
+async function transitionPersonalizedQuote({ quoteId, expectedStatus, newStatus, transactionId = null, technicalPlanId = null, logLabel = "" }) {
+  if (!supabase || !UUID_V1_TO_V5_RE.test(String(quoteId || ""))) return null;
+  try {
+    const { data, error } = await supabase.rpc("fn_personalized_quote_transition", {
+      p_quote_id: quoteId,
+      p_expected_status: expectedStatus,
+      p_new_status: newStatus,
+      p_transaction_id: transactionId || null,
+      p_technical_plan_id: technicalPlanId || null,
+    });
+    if (error) {
+      console.error("PERSONALIZED QUOTE TRANSITION ERROR", {
+        logLabel: logLabel || null,
+        quoteId,
+        expectedStatus,
+        newStatus,
+        code: error.code || null,
+        message: error.message || null,
+      });
+      return null;
+    }
+    return Array.isArray(data) && data.length ? data[0] : null;
+  } catch (e) {
+    console.error("PERSONALIZED QUOTE TRANSITION EX", {
+      logLabel: logLabel || null,
+      quoteId,
+      expectedStatus,
+      newStatus,
+      message: e?.message || e,
+    });
+    return null;
+  }
+}
+
+async function cancelPersonalizedQuoteBestEffort(context, transactionId = null, reason = "payment_cancelled") {
+  if (!context?.quote_id) return null;
+  const changed = await transitionPersonalizedQuote({
+    quoteId: context.quote_id,
+    expectedStatus: "payment_started",
+    newStatus: "cancelled",
+    transactionId: transactionId || null,
+    technicalPlanId: context.technical_plan_id || null,
+    logLabel: reason,
+  });
+  return changed;
+}
+
+function personalizedQuoteIdFromMetadata(metadata) {
+  const id = String(metadata?.personalized_quote_id || "").trim().toLowerCase();
+  return UUID_V1_TO_V5_RE.test(id) ? id : null;
+}
+
+async function reconcilePersonalizedQuoteForTransaction({ transaction, targetStatus, technicalPlanId = null, reason = "" }) {
+  const quoteId = personalizedQuoteIdFromMetadata(transaction?.metadata);
+  const txId = UUID_V1_TO_V5_RE.test(String(transaction?.id || "")) ? String(transaction.id) : null;
+  if (!quoteId || !txId) return null;
+
+  if (targetStatus === "completed") {
+    return transitionPersonalizedQuote({
+      quoteId,
+      expectedStatus: "payment_started",
+      newStatus: "completed",
+      transactionId: txId,
+      technicalPlanId: technicalPlanId || transaction?.metadata?.plan_id || null,
+      logLabel: reason || "payment_completed",
+    });
+  }
+  if (targetStatus === "cancelled") {
+    return transitionPersonalizedQuote({
+      quoteId,
+      expectedStatus: "payment_started",
+      newStatus: "cancelled",
+      transactionId: txId,
+      technicalPlanId: technicalPlanId || transaction?.metadata?.plan_id || null,
+      logLabel: reason || "payment_cancelled",
+    });
+  }
+  return null;
+}
+
+async function ensurePersonalizedQuoteActivatedByTransaction({ transactionId, technicalPlanId = null, reason = "voucher_activated" }) {
+  const txId = String(transactionId || "").trim().toLowerCase();
+  if (!supabase || !UUID_V1_TO_V5_RE.test(txId)) return null;
+
+  try {
+    const { data: quote, error } = await supabase
+      .from("personalized_plan_quotes")
+      .select("id,status,technical_plan_id")
+      .eq("transaction_id", txId)
+      .maybeSingle();
+    if (error || !quote?.id) return null;
+
+    if (quote.status === "payment_started") {
+      await transitionPersonalizedQuote({
+        quoteId: quote.id,
+        expectedStatus: "payment_started",
+        newStatus: "completed",
+        transactionId: txId,
+        technicalPlanId: technicalPlanId || quote.technical_plan_id || null,
+        logLabel: `${reason}_repair_completed`,
+      });
+    }
+
+    return transitionPersonalizedQuote({
+      quoteId: quote.id,
+      expectedStatus: "completed",
+      newStatus: "activated",
+      transactionId: txId,
+      technicalPlanId: technicalPlanId || quote.technical_plan_id || null,
+      logLabel: reason,
+    });
+  } catch (e) {
+    console.error("PERSONALIZED QUOTE ACTIVATE RECONCILE EX", e?.message || e);
+    return null;
+  }
+}
+
+function mapPersonalizedRpcError(error, fallbackCode = "personalized_backend_error") {
+  const text = [error?.message, error?.details, error?.hint].filter(Boolean).join(" ");
+  const known = [
+    ["personalized_plans_disabled_or_pool_invalid", 409],
+    ["personalized_pricing_config_unavailable", 503],
+    ["personalized_pricing_config_incomplete", 503],
+    ["personalized_pricing_settings_invalid", 503],
+    ["personalized_pricing_config_changed", 409],
+    ["personalized_pricing_config_identity_invalid", 503],
+    ["personalized_pricing_references_invalid", 503],
+    ["personalized_pricing_references_incomplete", 503],
+    ["personalized_quote_hash_invalid", 400],
+    ["personalized_quote_snapshot_invalid", 400],
+    ["personalized_plan_type_not_allowed", 400],
+    ["personalized_duration_not_allowed", 400],
+    ["personalized_data_not_allowed", 400],
+    ["personalized_unlimited_data_must_be_null", 400],
+    ["personalized_speed_not_allowed", 400],
+    ["personalized_base_price_invalid", 400],
+    ["personalized_price_above_maximum", 400],
+    ["personalized_quote_pricing_version_mismatch", 409],
+    ["personalized_technical_hash_collision_or_plan_mismatch", 500],
+    ["personalized_quote_already_consumed", 409],
+    ["personalized_quote_not_found_or_expired", 404],
+    ["personalized_payment_transaction_invalid", 400],
+    ["personalized_payment_request_ref_invalid", 400],
+    ["personalized_payment_phone_invalid", 400],
+    ["personalized_payment_provider_invalid", 400],
+    ["personalized_payment_metadata_invalid", 400],
+  ];
+  for (const [code, status] of known) {
+    if (text.includes(code)) return makePersonalizedPlanError(code, status);
+  }
+  return makePersonalizedPlanError(fallbackCode, 500);
+}
+
+function sanitizePersonalizedTransactionMetadataForPublic(metadata) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return metadata;
+  const isPersonalized = metadata.personalized === true || String(metadata.source || "") === "portal_personalized";
+  if (!isPersonalized) return metadata;
+
+  const safe = { ...metadata };
+  for (const key of [
+    "personalized_quote_id",
+    "pricing_config_version_id",
+    "pricing_config_hash",
+    "plan_id",
+    "pool_id",
+    "client_mac",
+    "ap_mac",
+  ]) {
+    delete safe[key];
+  }
+  return safe;
+}
+
+async function getActivePricingVersionSummary() {
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("plan_pricing_config_versions")
+    .select("id,version_no,status,config_hash,created_at,created_by,activated_at,activated_by,note")
+    .eq("status", "active")
+    .maybeSingle();
+  if (error) {
+    console.error("PRICING ACTIVE VERSION SUMMARY ERROR", error);
+    return null;
+  }
+  return data || null;
+}
+
+
 // Duplicate protection used by current Plans panel and later simulator creation.
 function normalizePlanDuplicateDataMb(value) {
   if (value === null || value === undefined || value === "") return null;
@@ -18015,6 +18675,7 @@ async function findDuplicatePlanTechnical({ system, pool_id, duration_minutes, d
     .from("plans")
     .select("id,name,pool_id,system,duration_minutes,data_mb,mikrotik_rate_limit")
     .eq("system", cleanSystem)
+    .eq("plan_source", "standard")
     .eq("duration_minutes", cleanDurationMinutes)
     .limit(1);
 
@@ -18133,10 +18794,13 @@ function validatePlanSimulatorConfigPayload(body = {}, currentSettings = PLAN_SI
 }
 
 // GET /api/admin/plan-simulator/config
-// Superadmin only. Returns full calculator settings and pricing references.
+// Superadmin only. Returns the active projection plus immutable version metadata.
 app.get("/api/admin/plan-simulator/config", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
-    const cfg = await getPlanSimulatorConfig({ includeInactiveReferences: true });
+    const [cfg, activeVersion] = await Promise.all([
+      getPlanSimulatorConfig({ includeInactiveReferences: true }),
+      getActivePricingVersionSummary(),
+    ]);
     const references = (cfg.references || [])
       .map(serializePlanSimulatorReference)
       .filter(Boolean)
@@ -18147,6 +18811,7 @@ app.get("/api/admin/plan-simulator/config", requireAdmin, requireSuperadmin, asy
       settings: publicPlanSimulatorSettings(cfg.settings),
       references,
       source: cfg.source,
+      active_version: activeVersion,
     });
   } catch (e) {
     console.error("PLAN SIMULATOR CONFIG GET ERROR", e?.message || e);
@@ -18155,65 +18820,76 @@ app.get("/api/admin/plan-simulator/config", requireAdmin, requireSuperadmin, asy
 });
 
 // PUT /api/admin/plan-simulator/config
-// Superadmin only. Updates settings and, optionally, the full references list.
+// PP-2: creates an immutable version and activates it atomically. The browser
+// never writes the two projection tables independently anymore.
 app.put("/api/admin/plan-simulator/config", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ ok: false, error: "supabase_not_configured" });
 
-    const currentCfg = await getPlanSimulatorConfig({ includeInactiveReferences: true });
-    const { settings, references } = validatePlanSimulatorConfigPayload(req.body || {}, currentCfg.settings);
-    const nowIso = new Date().toISOString();
+    const active = await getActivePersonalizedPricingConfigFailClosed();
+    const { settings, references } = validatePlanSimulatorConfigPayload(req.body || {}, active.settings);
     const updatedBy = req.admin?.email || req.admin?.id || null;
 
-    const settingRows = Object.entries(settings).map(([key, value]) => ({
-      key,
-      value,
-      updated_at: nowIso,
-      updated_by: updatedBy,
-    }));
+    // Preserve the personalized_* keys and any future versioned keys that the
+    // current simulator UI does not edit yet.
+    const settingsSnapshot = {
+      ...(active.settings_snapshot || {}),
+      ...settings,
+    };
 
-    const { error: settingsErr } = await supabase
-      .from("plan_simulator_settings")
-      .upsert(settingRows, { onConflict: "key" });
+    const referencesSnapshot = Array.isArray(references)
+      ? references.map((r, idx) => ({
+          key: r.key,
+          label: r.label || suggestPlanSimulatorName(r),
+          type: r.type,
+          duration_minutes: r.duration_minutes,
+          data_gb: r.type === "data" ? r.data_gb : null,
+          speed_mbps: r.speed_mbps,
+          price_ar: r.price_ar,
+          is_active: r.is_active !== false,
+          sort_order: Number.isFinite(Number(r.sort_order)) ? Number(r.sort_order) : idx + 1,
+        }))
+      : (active.references_snapshot || []);
 
-    if (settingsErr) {
-      console.error("PLAN SIMULATOR SETTINGS UPSERT ERROR", settingsErr);
-      return res.status(500).json({ ok: false, error: "settings_update_failed", details: settingsErr.message });
-    }
+    // Never activate a configuration that would make the public personalized
+    // calculator fail closed. This also validates every active reference row.
+    parsePersonalizedPricingSnapshotStrict({
+      settingsSnapshot,
+      referencesSnapshot,
+    });
 
-    if (Array.isArray(references)) {
-      const refRows = references.map((r, idx) => ({
-        key: r.key,
-        label: r.label || suggestPlanSimulatorName(r),
-        type: r.type,
-        duration_minutes: r.duration_minutes,
-        data_gb: r.type === "data" ? r.data_gb : null,
-        speed_mbps: r.speed_mbps,
-        price_ar: r.price_ar,
-        is_active: r.is_active !== false,
-        sort_order: Number.isFinite(Number(r.sort_order)) ? Number(r.sort_order) : idx + 1,
-        updated_at: nowIso,
-        updated_by: updatedBy,
-      }));
-
-      const { error: refsErr } = await supabase
-        .from("plan_simulator_references")
-        .upsert(refRows, { onConflict: "key" });
-
-      if (refsErr) {
-        console.error("PLAN SIMULATOR REFERENCES UPSERT ERROR", refsErr);
-        return res.status(500).json({ ok: false, error: "references_update_failed", details: refsErr.message });
+    const note = cleanOptionalText(req.body?.note, 500) || "Configuration enregistrée depuis le simulateur Admin";
+    const { data: versionRows, error: versionErr } = await supabase.rpc(
+      "fn_plan_pricing_config_create_version",
+      {
+        p_settings: settingsSnapshot,
+        p_references: referencesSnapshot,
+        p_created_by: updatedBy,
+        p_note: note,
+        p_activate: true,
       }
+    );
+
+    if (versionErr) {
+      const msg = String(versionErr.message || "");
+      console.error("PLAN SIMULATOR VERSION SAVE ERROR", versionErr);
+      if (msg.includes("Could not find the function") || versionErr.code === "PGRST202") {
+        return res.status(503).json({ ok: false, error: "pp2_db_support_missing" });
+      }
+      return res.status(500).json({ ok: false, error: "pricing_version_save_failed" });
     }
 
+    const savedVersion = Array.isArray(versionRows) && versionRows.length ? versionRows[0] : null;
     const cfg = await getPlanSimulatorConfig({ includeInactiveReferences: true });
     return res.json({
       ok: true,
       settings: publicPlanSimulatorSettings(cfg.settings),
       references: (cfg.references || []).map(serializePlanSimulatorReference).filter(Boolean),
       source: cfg.source,
+      active_version: savedVersion || await getActivePricingVersionSummary(),
     });
   } catch (e) {
+    if (sendPersonalizedPlanError(res, e)) return;
     console.error("PLAN SIMULATOR CONFIG PUT ERROR", e?.message || e);
     return res.status(e?.status || 500).json({
       ok: false,
@@ -18222,6 +18898,230 @@ app.put("/api/admin/plan-simulator/config", requireAdmin, requireSuperadmin, asy
   }
 });
 
+// Version history is backend-ready for the future PP-3 interface.
+app.get("/api/admin/plan-simulator/versions", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ ok: false, error: "supabase_not_configured" });
+    const { limit, offset } = readStrictPagination(req.query, { defaultLimit: 30, maxLimit: 100 });
+    const { data, error, count } = await supabase
+      .from("plan_pricing_config_versions")
+      .select("id,version_no,status,config_hash,created_at,created_by,activated_at,activated_by,note", { count: "exact" })
+      .order("version_no", { ascending: false })
+      .range(offset, offset + limit - 1);
+    if (error) {
+      console.error("PLAN SIMULATOR VERSIONS LIST ERROR", error);
+      return res.status(500).json({ ok: false, error: "db_error" });
+    }
+    return res.json({ ok: true, versions: data || [], total: count ?? (data || []).length });
+  } catch (e) {
+    if (sendRequestValidationError(res, e)) return;
+    console.error("PLAN SIMULATOR VERSIONS LIST EX", e);
+    return res.status(500).json({ ok: false, error: "internal_error" });
+  }
+});
+
+app.post("/api/admin/plan-simulator/versions/:id/activate", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ ok: false, error: "supabase_not_configured" });
+    const versionId = readOptionalUuidValue(req.params?.id, "version_id");
+    if (!versionId) return res.status(400).json({ ok: false, error: "version_id_required" });
+    const { data: targetVersion, error: targetErr } = await supabase
+      .from("plan_pricing_config_versions")
+      .select("id,settings_snapshot,references_snapshot,config_hash")
+      .eq("id", versionId)
+      .maybeSingle();
+    if (targetErr) {
+      console.error("PLAN SIMULATOR VERSION VALIDATE LOAD ERROR", targetErr);
+      return res.status(500).json({ ok: false, error: "db_error" });
+    }
+    if (!targetVersion?.id) {
+      return res.status(404).json({ ok: false, error: "pricing_config_version_not_found" });
+    }
+    try {
+      parsePersonalizedPricingSnapshotStrict({
+        settingsSnapshot: targetVersion.settings_snapshot,
+        referencesSnapshot: targetVersion.references_snapshot,
+      });
+    } catch (validationErr) {
+      console.error("PLAN SIMULATOR VERSION VALIDATE ERROR", validationErr?.publicCode || validationErr?.message || validationErr);
+      return res.status(409).json({ ok: false, error: "pricing_config_version_invalid" });
+    }
+
+    const activatedBy = req.admin?.email || req.admin?.id || null;
+    const { data, error } = await supabase.rpc("fn_plan_pricing_config_activate", {
+      p_version_id: versionId,
+      p_activated_by: activatedBy,
+    });
+    if (error) {
+      console.error("PLAN SIMULATOR VERSION ACTIVATE ERROR", error);
+      const status = String(error.message || "").includes("pricing_config_version_not_found") ? 404 : 500;
+      return res.status(status).json({ ok: false, error: status === 404 ? "pricing_config_version_not_found" : "pricing_config_activate_failed" });
+    }
+    return res.json({ ok: true, active_version: Array.isArray(data) ? data[0] || null : data || null });
+  } catch (e) {
+    if (sendRequestValidationError(res, e)) return;
+    console.error("PLAN SIMULATOR VERSION ACTIVATE EX", e);
+    return res.status(500).json({ ok: false, error: "internal_error" });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// PUBLIC — Personalized plan options and secure quote
+// ---------------------------------------------------------------------------
+app.get("/api/portal/personalized-plan/options", lightLimiter, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const nasId = String(req.query?.nas_id || req.query?.nasId || "").trim();
+    const pool = await resolvePersonalizedPoolByNasId(nasId, { requireEnabled: false });
+
+    if (pool.personalized_plans_enabled !== true) {
+      return res.json({ ok: true, enabled: false });
+    }
+
+    assertPersonalizedDeviceHashSecret();
+    const config = await getActivePersonalizedPricingConfigFailClosed();
+    const p = config.personalized;
+    return res.json({
+      ok: true,
+      enabled: true,
+      currency: "Ar",
+      allowed_types: p.allowed_types,
+      allowed_speeds_mbps: p.allowed_speeds_mbps,
+      duration: {
+        min_minutes: p.min_duration_minutes,
+        max_minutes: Math.round(p.max_duration_days * 1440),
+        step_minutes: p.duration_step_minutes,
+      },
+      data: {
+        min_mb: p.min_data_mb,
+        max_mb: Math.round(p.max_data_gb * 1024),
+        step_mb: p.data_step_mb,
+      },
+      quote_ttl_minutes: p.quote_ttl_minutes,
+      pricing_version: config.version_no,
+    });
+  } catch (e) {
+    if (sendPersonalizedPlanError(res, e)) return;
+    console.error("PERSONALIZED OPTIONS ERROR", e?.message || e);
+    return res.status(500).json({ ok: false, error: "internal_error" });
+  }
+});
+
+app.post("/api/portal/personalized-plan/quote", personalizedQuoteIpLimiter, personalizedQuoteLimiter, async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.set("Pragma", "no-cache");
+  try {
+    if (!ensureSupabase(res)) return;
+    assertPersonalizedDeviceHashSecret();
+
+    const body = req.body || {};
+    const forbiddenQuoteFields = [
+      "plan", "plan_id", "planId", "amount", "amount_ar", "price", "price_ar",
+      "base_price_ar", "markup_pct", "markup_amount_ar", "final_price_ar",
+    ];
+    const suppliedForbiddenQuoteField = forbiddenQuoteFields.find(
+      (key) => Object.prototype.hasOwnProperty.call(body, key)
+    );
+    if (suppliedForbiddenQuoteField) {
+      throw makePersonalizedPlanError("personalized_quote_payload_invalid", 400, {
+        field: suppliedForbiddenQuoteField,
+      });
+    }
+
+    const nasId = String(body.nas_id || body.nasId || "").trim();
+    const clientMac = normalizeMacColon(body.client_mac || body.clientMac || body.clientMAC || "");
+    if (!clientMac) throw makePersonalizedPlanError("client_mac_invalid", 400);
+
+    const pool = await resolvePersonalizedPoolByNasId(nasId, { requireEnabled: true });
+    const config = await getActivePersonalizedPricingConfigFailClosed();
+    const choice = validatePersonalizedQuoteChoice({
+      type: body.type || body.plan_type || body.planType,
+      durationMinutes: body.duration_minutes ?? body.durationMinutes,
+      dataMb: body.data_mb ?? body.dataMb,
+      speedMbps: body.speed_mbps ?? body.speedMbps,
+      config,
+    });
+
+    const pricing = calculateSuggestedPlanPrice({
+      type: choice.type,
+      data_gb: choice.data_gb,
+      duration_minutes: choice.duration_minutes,
+      speed_mbps: choice.speed_mbps,
+      settings: config.settings,
+      references: config.references,
+    });
+    const basePriceAr = Number(pricing?.recommended_price_ar || 0);
+    if (!Number.isInteger(basePriceAr) || basePriceAr <= 0) {
+      throw makePersonalizedPlanError("personalized_price_calculation_failed", 503);
+    }
+
+    const deviceHash = personalizedDeviceHash({ poolId: pool.id, clientMac });
+    const calculationSnapshot = {
+      engine: "plan_simulator_v1",
+      input: {
+        type: choice.type,
+        duration_minutes: choice.duration_minutes,
+        data_mb: choice.data_mb,
+        data_gb: choice.data_gb,
+        speed_mbps: choice.speed_mbps,
+      },
+      base_price_ar: basePriceAr,
+      exact_reference_key: pricing?.exact_reference?.key || null,
+      nearest_reference_key: pricing?.nearest_reference?.key || null,
+      warnings: choice.warnings || [],
+      pricing_version_no: config.version_no,
+    };
+
+    let clearToken = null;
+    let quote = null;
+    for (let attempt = 0; attempt < 3 && !quote; attempt += 1) {
+      clearToken = createPersonalizedQuoteToken();
+      const tokenHash = personalizedQuoteTokenHash(clearToken);
+      const { data, error } = await supabase.rpc("fn_personalized_quote_create_bound", {
+        p_token_hash: tokenHash,
+        p_pool_id: pool.id,
+        p_device_hash: deviceHash,
+        p_plan_type: choice.type,
+        p_duration_minutes: choice.duration_minutes,
+        p_data_mb: choice.data_mb,
+        p_speed_mbps: choice.speed_mbps,
+        p_base_price_ar: basePriceAr,
+        p_expected_config_version_id: config.id,
+        p_expected_config_hash: config.config_hash,
+        p_calculation_snapshot: calculationSnapshot,
+      });
+      if (error) {
+        if (error.code === "23505" && attempt < 2) continue;
+        throw mapPersonalizedRpcError(error, "personalized_quote_create_failed");
+      }
+      quote = Array.isArray(data) && data.length ? data[0] : null;
+    }
+
+    if (!quote || !clearToken) {
+      throw makePersonalizedPlanError("personalized_quote_create_failed", 500);
+    }
+
+    return res.status(201).json({
+      ok: true,
+      quote_token: clearToken,
+      quote: {
+        type: quote.plan_type,
+        duration_minutes: Number(quote.duration_minutes),
+        data_mb: quote.data_mb === null ? null : Number(quote.data_mb),
+        speed_mbps: Number(quote.speed_mbps),
+        final_price_ar: Number(quote.final_price_ar),
+        currency: "Ar",
+        expires_at: quote.expires_at,
+        plan_name: buildPersonalizedPlanName(quote),
+        pricing_version: config.version_no,
+      },
+    });
+  } catch (e) {
+    if (sendPersonalizedPlanError(res, e)) return;
+    console.error("PERSONALIZED QUOTE ERROR", e?.message || e);
+    return res.status(500).json({ ok: false, error: "internal_error" });
+  }
+});
 
 function normalizePlanSimulatorFinalName(value, fallback = "") {
   const s = String(value || fallback || "")
@@ -18248,6 +19148,7 @@ async function getVisiblePlanCountForSimulator({ pool_id, type }) {
     .from("plans")
     .select("id", { count: "exact", head: true })
     .eq("system", "mikrotik")
+    .eq("plan_source", "standard")
     .eq("pool_id", cleanPoolId)
     .eq("is_visible", true)
     .eq("is_active", true);
@@ -18290,6 +19191,7 @@ async function getTotalPlanCountForSimulator({ pool_id }) {
     .from("plans")
     .select("id", { count: "exact", head: true })
     .eq("system", "mikrotik")
+    .eq("plan_source", "standard")
     .eq("pool_id", cleanPoolId)
     .eq("is_active", true);
 
@@ -18367,7 +19269,7 @@ async function buildPlanSimulatorAssistant({ pool_id, technical, pricing, settin
   try {
     const [{ data: pool }, { data: plans, error }] = await Promise.all([
       supabase.from("internet_pools").select("id,name,brand_name").eq("id", cleanPoolId).maybeSingle(),
-      supabase.from("plans").select("id,name,price_ar,duration_minutes,duration_seconds,duration_hours,data_mb,is_visible,is_active,created_at,updated_at,mikrotik_rate_limit").eq("system", "mikrotik").eq("pool_id", cleanPoolId).eq("is_active", true).order("created_at", { ascending: false }),
+      supabase.from("plans").select("id,name,price_ar,duration_minutes,duration_seconds,duration_hours,data_mb,is_visible,is_active,created_at,updated_at,mikrotik_rate_limit").eq("system", "mikrotik").eq("plan_source", "standard").eq("pool_id", cleanPoolId).eq("is_active", true).order("created_at", { ascending: false }),
     ]);
 
     if (error) throw error;
@@ -18571,6 +19473,7 @@ app.post("/api/admin/plan-simulator/create-plan", requireAdmin, async (req, res)
       auto_hide_when_limit_reached: false,
       sales_limit: null,
       mikrotik_rate_limit,
+      plan_source: "standard",
     };
 
     try {
@@ -18837,6 +19740,7 @@ const payload = {
       auto_hide_when_limit_reached: auto_hide_when_limit_reached ?? false,
       sales_limit,
       mikrotik_rate_limit: system === "mikrotik" ? (mikrotik_rate_limit || null) : null,
+      plan_source: "standard",
     };
 
     try {
@@ -18900,7 +19804,7 @@ app.post("/api/admin/plans/:id/duplicate", requireAdmin, async (req, res) => {
 
     const { data: sourcePlan, error: sourceErr } = await supabase
       .from("plans")
-      .select("id,name,price_ar,duration_hours,data_mb,max_devices,is_active,is_visible,sort_order,duration_minutes,system,duration_seconds,mikrotik_rate_limit,auto_hide_when_limit_reached,sales_limit,pool_id")
+      .select("id,name,price_ar,duration_hours,data_mb,max_devices,is_active,is_visible,sort_order,duration_minutes,system,duration_seconds,mikrotik_rate_limit,auto_hide_when_limit_reached,sales_limit,pool_id,plan_source")
       .eq("id", sourceId)
       .maybeSingle();
 
@@ -18909,6 +19813,7 @@ app.post("/api/admin/plans/:id/duplicate", requireAdmin, async (req, res) => {
       return res.status(500).json({ error: "db_error" });
     }
     if (!sourcePlan) return res.status(404).json({ error: "plan_not_found" });
+    if (sourcePlan.plan_source !== "standard") return res.status(409).json({ error: "personalized_technical_plan_protected" });
 
     const sourcePoolId = String(sourcePlan.pool_id || "").trim();
     if (!sourcePoolId) return res.status(400).json({ error: "source_pool_required" });
@@ -18982,6 +19887,7 @@ app.post("/api/admin/plans/:id/duplicate", requireAdmin, async (req, res) => {
       auto_hide_when_limit_reached: sourcePlan.auto_hide_when_limit_reached,
       sales_limit: sourcePlan.sales_limit,
       pool_id: targetPoolId,
+      plan_source: "standard",
     }));
 
     const { data: inserted, error: insertErr } = await supabase
@@ -19010,7 +19916,7 @@ app.patch("/api/admin/plans/:id", requireAdmin, async (req, res) => {
 // Load existing plan to enforce invariants (system is immutable)
 const { data: existingPlan, error: existingErr } = await supabase
   .from("plans")
-  .select("id, system, pool_id, duration_hours, duration_minutes, duration_seconds, data_mb, mikrotik_rate_limit")
+  .select("id, system, pool_id, duration_hours, duration_minutes, duration_seconds, data_mb, mikrotik_rate_limit, plan_source")
   .eq("id", id)
   .maybeSingle();
 
@@ -19019,6 +19925,7 @@ if (existingErr) {
   return res.status(500).json({ error: "db_error" });
 }
 if (!existingPlan) return res.status(404).json({ error: "not_found" });
+if (existingPlan.plan_source !== "standard") return res.status(409).json({ error: "personalized_technical_plan_protected" });
 
 // Phase 2A: owners/business operators may only show/hide plans from their own pools.
 // They cannot change price, duration, data, speed, active status, sales limit, or pool.
@@ -19252,11 +20159,12 @@ app.post("/api/admin/plans/:id/toggle", requireAdmin, async (req, res) => {
     // fetch current + pool_id (defense-in-depth pool scope)
     const { data: cur, error: curErr } = await supabase
       .from("plans")
-      .select("id,is_active,pool_id")
+      .select("id,is_active,pool_id,plan_source")
       .eq("id", id)
       .single();
 
     if (curErr || !cur) return res.status(404).json({ error: "plan not found" });
+    if (cur.plan_source !== "standard") return res.status(409).json({ error: "personalized_technical_plan_protected" });
     if (!requirePoolScopeForAdmin(req, res, cur.pool_id)) return;
 
     const next = desired ?? !cur.is_active;
@@ -19946,6 +20854,7 @@ async function pollTransactionStatus({
   let metaClientMac = null;
   let metaApMac = null;
   let txPhone = phone || null;
+  let isPersonalizedTx = false;
 
   while (Date.now() - start < timeoutMs && (!maxAttemptCount || attempt < maxAttemptCount)) {
     attempt++;
@@ -20005,11 +20914,21 @@ async function pollTransactionStatus({
           }
 
           const baseMeta = tx?.metadata && typeof tx.metadata === "object" ? tx.metadata : {};
+          isPersonalizedTx = baseMeta.personalized === true || String(baseMeta.source || "") === "portal_personalized";
           metaPlanId = (baseMeta.plan_id || null);
           metaPoolId = (baseMeta.pool_id || null);
           metaClientMac = (baseMeta.client_mac || null);
           metaApMac = (baseMeta.ap_mac || null);
           txPhone = tx?.phone || baseMeta.phone || txPhone;
+
+          // PP-2 lifecycle: payment is financially completed as soon as MVola
+          // confirms it, even if voucher generation later needs recovery.
+          await reconcilePersonalizedQuoteForTransaction({
+            transaction: tx,
+            targetStatus: "completed",
+            technicalPlanId: metaPlanId || null,
+            reason: "mvola_completed",
+          });
 
           // NEW system audit: MVola completed (will generate voucher if NEW)
           await insertAudit({
@@ -20266,10 +21185,19 @@ async function pollTransactionStatus({
             metadata: { error: truncate(err?.message || err, 2000), serverCorrelationId },
           });
           try {
-            await supabase
-              .from("transactions")
-              .update({ status: "failed", metadata: { error: truncate(err?.message || err, 2000), updated_at_local: toISOStringMG(new Date()) } })
-              .eq("request_ref", requestRef);
+            await updateTransactionPreservingMetadata({
+              requestRef,
+              // Personalized payments stay recoverable by the existing pending-payment
+              // reconciler after MVola has already confirmed the charge. Standard
+              // payments preserve their historical failure behavior.
+              patch: { status: isPersonalizedTx ? "pending" : "failed" },
+              metadataPatch: {
+                error: truncate(err?.message || err, 2000),
+                voucher_generation_error: true,
+                recovery_required: isPersonalizedTx,
+                updated_at_local: toISOStringMG(new Date()),
+              },
+            });
           } catch (_) {}
 
           // tx/baseMeta are scoped to the try block above and are not available
@@ -20322,10 +21250,14 @@ async function pollTransactionStatus({
         });
         try {
           if (supabase) {
-            await supabase
-              .from("transactions")
-              .update({ status: "failed", metadata: { mvolaResponse: truncate(sanitizeMvolaLogPayload(sdata), 2000), updated_at_local: toISOStringMG(new Date()) } })
-              .eq("request_ref", requestRef);
+            await updateTransactionPreservingMetadata({
+              requestRef,
+              patch: { status: "failed" },
+              metadataPatch: {
+                mvolaResponse: truncate(sanitizeMvolaLogPayload(sdata), 2000),
+                updated_at_local: toISOStringMG(new Date()),
+              },
+            });
 
         // NEW system audit: MVola failed/rejected/declined
         let txId = null;
@@ -20350,6 +21282,12 @@ async function pollTransactionStatus({
             metaPoolId = baseMeta.pool_id || null;
             metaClientMac = baseMeta.client_mac || null;
             metaApMac = baseMeta.ap_mac || null;
+            await reconcilePersonalizedQuoteForTransaction({
+              transaction: tx,
+              targetStatus: "cancelled",
+              technicalPlanId: metaPlanId || null,
+              reason: `mvola_${statusRaw}`,
+            });
           }
         } catch (_) {}
 
@@ -20475,10 +21413,11 @@ async function pollTransactionStatus({
   console.error("⏰ Polling timeout for", requestRef, serverCorrelationId);
   try {
     if (supabase) {
-      await supabase
-        .from("transactions")
-        .update({ status: "timeout", metadata: { note: "poll_timeout", updated_at_local: toISOStringMG(new Date()) } })
-        .eq("request_ref", requestRef);
+      await updateTransactionPreservingMetadata({
+        requestRef,
+        patch: { status: "timeout" },
+        metadataPatch: { note: "poll_timeout", updated_at_local: toISOStringMG(new Date()) },
+      });
 
     // NEW system audit: MVola poll timeout
     let txId = null;
@@ -21376,7 +22315,7 @@ app.post("/api/voucher/activate", async (req, res) => {
     const { data: session, error: sErr } = await supabase
       .from("voucher_sessions")
       .select(
-        "id,voucher_code,plan_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,is_bonus_session,data_used_bytes,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)"
+        "id,voucher_code,plan_id,transaction_id,status,delivered_at,activated_at,started_at,expires_at,client_mac,ap_mac,is_bonus_session,data_used_bytes,plans(id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices)"
       )
       .eq("voucher_code", voucher_code)
       .eq("client_mac", client_mac)
@@ -21520,6 +22459,12 @@ app.post("/api/voucher/activate", async (req, res) => {
         });
       }
 
+      await ensurePersonalizedQuoteActivatedByTransaction({
+        transactionId: session.transaction_id,
+        technicalPlanId: session.plan_id,
+        reason: "voucher_activate_already_active",
+      });
+
       return res.json({
         ok: true,
         already_active: true,
@@ -21590,6 +22535,11 @@ app.post("/api/voucher/activate", async (req, res) => {
           .maybeSingle();
 
         if (reread?.status === "active") {
+          await ensurePersonalizedQuoteActivatedByTransaction({
+            transactionId: session.transaction_id,
+            technicalPlanId: session.plan_id,
+            reason: "voucher_activate_race_already_active",
+          });
           return res.json({
             ok: true,
             already_active: true,
@@ -21601,6 +22551,12 @@ app.post("/api/voucher/activate", async (req, res) => {
 
         return res.status(409).json({ error: "voucher_already_activated" });
       }
+
+      await ensurePersonalizedQuoteActivatedByTransaction({
+        transactionId: session.transaction_id,
+        technicalPlanId: session.plan_id,
+        reason: "voucher_activate_success",
+      });
 
       return res.json({
         ok: true,
@@ -22163,7 +23119,7 @@ let error = null;
 try {
   const r1 = await supabase
     .from("vw_voucher_sessions_truth")
-    .select("id,voucher_code,status,truth_status,client_mac,pool_id,plan_id,mvola_phone,data_used_bytes,expires_at,activated_at,started_at,created_at,is_bonus_session")
+    .select("id,voucher_code,status,truth_status,client_mac,pool_id,plan_id,transaction_id,mvola_phone,data_used_bytes,expires_at,activated_at,started_at,created_at,is_bonus_session")
     .ilike("voucher_code", username)
     .order("created_at", { ascending: false })
     .limit(1);
@@ -22177,7 +23133,7 @@ try {
 if (error || !rows || !rows.length) {
   const r2 = await supabase
     .from("voucher_sessions")
-    .select("id,voucher_code,status,client_mac,pool_id,plan_id,mvola_phone,data_used_bytes,expires_at,activated_at,started_at,created_at,is_bonus_session")
+    .select("id,voucher_code,status,client_mac,pool_id,plan_id,transaction_id,mvola_phone,data_used_bytes,expires_at,activated_at,started_at,created_at,is_bonus_session")
     .ilike("voucher_code", username)
     .order("created_at", { ascending: false })
     .limit(1);
@@ -22787,6 +23743,12 @@ const bonusBytes = 0;
     if (selectedRateLimit) {
       replyExtra["reply:Mikrotik-Rate-Limit"] = selectedRateLimit;
     }
+
+    await ensurePersonalizedQuoteActivatedByTransaction({
+      transactionId: session.transaction_id,
+      technicalPlanId: session.plan_id,
+      reason: "radius_authorize_accept",
+    });
 
     return sendAccept(username, remainingSeconds, {
       entity_type: "voucher_session",
@@ -23914,9 +24876,33 @@ app.get("/api/free-plan/check", async (req, res) => {
 // ---------------------------------------------------------------------------
 // ENDPOINT: /api/send-payment
 // ---------------------------------------------------------------------------
-app.post("/api/send-payment", async (req, res) => {
+async function handleSendPayment(req, res) {
   const body = req.body || {};
   const correlationId = crypto.randomUUID();
+  const isPersonalizedPayment = req.path === "/api/portal/personalized-plan/pay";
+
+  if (isPersonalizedPayment) {
+    res.set("Cache-Control", "no-store");
+    res.set("Pragma", "no-cache");
+    const forbiddenClientPricingFields = [
+      "plan", "plan_id", "planId", "amount", "amount_ar", "price", "price_ar"
+    ];
+    const suppliedForbiddenField = forbiddenClientPricingFields.find(
+      (key) => Object.prototype.hasOwnProperty.call(body, key)
+    );
+    if (suppliedForbiddenField) {
+      return res.status(400).json({
+        ok: false,
+        error: "personalized_payment_payload_invalid",
+        field: suppliedForbiddenField,
+      });
+    }
+  } else if (body.quote_token || body.quoteToken) {
+    return res.status(400).json({
+      ok: false,
+      error: "personalized_quote_requires_dedicated_payment_route",
+    });
+  }
 
   const rawPaymentProvider = (
     body.rawPaymentProvider ||
@@ -23960,34 +24946,67 @@ app.post("/api/send-payment", async (req, res) => {
     null
   );
 
-  const client_mac = normalizeMacColon(client_mac_raw) || (client_mac_raw ? String(client_mac_raw).trim() : null);
+  const normalizedClientMac = normalizeMacColon(client_mac_raw);
+  const client_mac = normalizedClientMac || (client_mac_raw ? String(client_mac_raw).trim() : null);
 
-  const plan_id_from_client = (
+  let plan_id_from_client = (
     body.plan_id ||
     body.planId ||
     null
   )?.toString().trim() || null;
 
-  const planIdForSession = plan_id_from_client; // used for transactions.metadata.plan_id (NEW system)
+  let planIdForSession = plan_id_from_client; // used for transactions.metadata.plan_id (NEW system)
 
   // System 3 (MikroTik) can send nas_id; when present we MUST resolve pool from internet_pools.radius_nas_id
   const nas_id = (body.nas_id || body.nasId || body["NAS-Identifier"] || "").toString().trim() || null;
 
   let pool_id = null;
+  let resolvedPoolRow = null;
 
   let phone = (body.phone || "").trim();
-  const plan = body.plan;
+  let plan = body.plan;
+  let requestRef = null;
+  let txId = null;
+  let personalizedContext = null;
 
-  if (!phone || !plan) {
-    console.warn("⚠️ Mauvais appel /api/send-payment — phone ou plan manquant.", {
+  const abortPersonalizedReservation = async (reason) => {
+    if (!isPersonalizedPayment || !personalizedContext) return;
+    await cancelPersonalizedQuoteBestEffort(personalizedContext, txId, reason);
+    try {
+      if (supabase && txId) {
+        await supabase.from("transactions").update({ status: "failed" }).eq("id", txId);
+      }
+    } catch (_) {}
+  };
+
+  if (!phone || (!isPersonalizedPayment && !plan)) {
+    console.warn("⚠️ Mauvais appel paiement — champs requis manquants.", {
+      route: req.path,
       body_keys: Object.keys(body || {}),
       has_phone: !!body?.phone,
       has_plan: !!body?.plan,
     });
     return res.status(400).json({
-      error: "Champs manquants. Le corps de la requête doit être en JSON avec 'phone' et 'plan'.",
-      exemple: { phone: "0340123456", plan: "5000" }
+      error: isPersonalizedPayment
+        ? "phone_required"
+        : "Champs manquants. Le corps de la requête doit être en JSON avec 'phone' et 'plan'.",
+      ...(isPersonalizedPayment ? {} : { exemple: { phone: "0340123456", plan: "5000" } }),
     });
+  }
+
+  if (isPersonalizedPayment) {
+    if (!normalizedClientMac) {
+      return res.status(400).json({ ok: false, error: "client_mac_invalid" });
+    }
+    if (!nas_id) {
+      return res.status(400).json({ ok: false, error: "nas_id_required" });
+    }
+    try {
+      assertPersonalizedDeviceHashSecret();
+    } catch (e) {
+      if (sendPersonalizedPlanError(res, e)) return;
+      throw e;
+    }
   }
 
   // Validate phone server-side (defense in depth)
@@ -24042,7 +25061,12 @@ try {
       });
     }
   }
-} catch (_) {}
+} catch (e) {
+  if (isPersonalizedPayment) {
+    console.error("PERSONALIZED EXISTING VOUCHER CHECK ERROR", e?.message || e);
+    return res.status(503).json({ ok: false, error: "existing_voucher_check_unavailable" });
+  }
+}
 
 // Resolve pool_id (System 3: by nas_id mandatory when provided; legacy: by ap_mac)
 // Fail-open only for legacy paths. For System 3 (nas_id present), fail-closed (stop before payment) if pool not found.
@@ -24052,7 +25076,7 @@ if (supabase) {
     if (nas_id) {
       const { data: poolRow, error: poolErr } = await supabase
         .from("internet_pools")
-        .select("id,name,capacity_max,system,radius_nas_id")
+        .select("id,name,capacity_max,system,radius_nas_id,payment_methods,personalized_plans_enabled")
         .eq("radius_nas_id", nas_id)
         .maybeSingle();
 
@@ -24066,6 +25090,24 @@ if (supabase) {
       }
 
       pool_id = poolRow.id;
+      resolvedPoolRow = poolRow;
+
+      if (isPersonalizedPayment && poolRow.personalized_plans_enabled !== true) {
+        return res.status(409).json({
+          ok: false,
+          error: "personalized_plans_not_enabled_for_pool",
+        });
+      }
+      if (isPersonalizedPayment) {
+        const poolPaymentMethods = normalizePaymentMethods(poolRow.payment_methods);
+        if (poolPaymentMethods[paymentProvider] !== true) {
+          return res.status(409).json({
+            ok: false,
+            error: "payment_provider_disabled_for_pool",
+            provider: paymentProvider,
+          });
+        }
+      }
     }
 
     // Legacy: pool resolution from AP MAC (System 1/2)
@@ -24090,6 +25132,10 @@ if (supabase) {
         .select("id,name,capacity_max,radius_nas_id")
         .eq("id", pool_id)
         .maybeSingle();
+
+      if (isPersonalizedPayment && (poolErr || !pool?.id)) {
+        return res.status(503).json({ ok: false, error: "personalized_pool_unavailable" });
+      }
 
       const capacity_max = (pool?.capacity_max === null || pool?.capacity_max === undefined)
         ? null
@@ -24160,8 +25206,154 @@ if (supabase) {
       }
     }
   } catch (e) {
-    // Fail-open for legacy only; for System 3 (nas_id), we prefer to stop (but we can't reliably distinguish here if exception thrown).
     console.error("SEND-PAYMENT POOL CHECK EX", e?.message || e);
+    if (isPersonalizedPayment) {
+      return res.status(503).json({ ok: false, error: "personalized_pool_unavailable" });
+    }
+    // Legacy/standard behavior remains fail-open for unexpected pool-check errors.
+  }
+}
+
+// Personalized payments reserve the quote, transaction and hidden technical
+// plan in one PostgreSQL transaction before MVola is called. The browser never
+// supplies the plan or the amount.
+if (isPersonalizedPayment) {
+  try {
+    const quoteToken = normalizePersonalizedQuoteToken(body.quote_token || body.quoteToken);
+    if (!quoteToken) throw makePersonalizedPlanError("personalized_quote_token_invalid", 400);
+    if (!pool_id || !resolvedPoolRow?.id) throw makePersonalizedPlanError("personalized_pool_unavailable", 503);
+
+    const tokenHash = personalizedQuoteTokenHash(quoteToken);
+    const deviceHash = personalizedDeviceHash({ poolId: pool_id, clientMac: normalizedClientMac });
+    const quoteBeforeStart = await loadPersonalizedQuoteByTokenIdentity({
+      tokenHash,
+      poolId: pool_id,
+      deviceHash,
+    });
+
+    if (!quoteBeforeStart) {
+      throw makePersonalizedPlanError("personalized_quote_not_found", 404);
+    }
+
+    const quoteExpiresAtMs = Date.parse(String(quoteBeforeStart.expires_at || ""));
+    if (quoteBeforeStart.status === "quoted" && Number.isFinite(quoteExpiresAtMs) && quoteExpiresAtMs <= Date.now()) {
+      await transitionPersonalizedQuote({
+        quoteId: quoteBeforeStart.id,
+        expectedStatus: "quoted",
+        newStatus: "expired",
+        logLabel: "payment_quote_expired",
+      });
+      return res.status(410).json({ ok: false, error: "personalized_quote_expired" });
+    }
+
+    if (quoteBeforeStart.status !== "quoted") {
+      if (quoteBeforeStart.status === "expired") {
+        return res.status(410).json({ ok: false, error: "personalized_quote_expired" });
+      }
+      const existingTx = await findTransactionForPersonalizedQuote(quoteBeforeStart.id);
+      return res.status(409).json({
+        ok: false,
+        error: "personalized_quote_already_consumed",
+        quote_status: quoteBeforeStart.status,
+        requestRef: existingTx?.request_ref || null,
+        payment_status: existingTx?.status || null,
+      });
+    }
+
+    const requestedPlanName = buildPersonalizedPlanName(quoteBeforeStart);
+    const initialMetadata = {
+      source: "portal_personalized",
+      personalized: true,
+      personalized_quote_id: quoteBeforeStart.id,
+      pricing_config_version_id: quoteBeforeStart.pricing_config_version_id,
+      pricing_config_hash: quoteBeforeStart.pricing_config_hash,
+      pool_id,
+      client_mac: normalizedClientMac,
+      ap_mac: ap_mac || null,
+      amount_source: "personalized_quote.final_price_ar",
+      created_at_local: toISOStringMG(new Date()),
+    };
+
+    // A quote-concurrency conflict must not be retried. A purely random UUID or
+    // requestRef collision is safe to retry because the RPC transaction rolled
+    // back and no transaction is linked to this quote.
+    let startRows = null;
+    let startErr = null;
+    for (let reservationAttempt = 0; reservationAttempt < 3; reservationAttempt += 1) {
+      requestRef = `RAZAFI_${crypto.randomBytes(6).toString("hex").toUpperCase()}`;
+      txId = crypto.randomUUID();
+
+      const result = await supabase.rpc(
+        "fn_personalized_quote_start_payment",
+        {
+          p_token_hash: tokenHash,
+          p_pool_id: pool_id,
+          p_device_hash: deviceHash,
+          p_plan_name: requestedPlanName,
+          p_transaction_id: txId,
+          p_request_ref: requestRef,
+          p_phone: phone,
+          p_provider: paymentProvider,
+          p_metadata: initialMetadata,
+        }
+      );
+
+      startRows = result.data;
+      startErr = result.error;
+      if (!startErr) break;
+
+      if (startErr.code === "23505") {
+        const existingTx = await findTransactionForPersonalizedQuote(quoteBeforeStart.id);
+        if (existingTx) {
+          return res.status(409).json({
+            ok: false,
+            error: "personalized_quote_already_consumed",
+            quote_status: "payment_started",
+            requestRef: existingTx.request_ref || null,
+            payment_status: existingTx.status || null,
+          });
+        }
+        if (reservationAttempt < 2) continue;
+      }
+      break;
+    }
+
+    if (startErr) {
+      throw mapPersonalizedRpcError(startErr, "personalized_payment_start_failed");
+    }
+
+    const started = Array.isArray(startRows) && startRows.length ? startRows[0] : null;
+    if (!started?.quote_id || !started?.technical_plan_id || !started?.transaction_id) {
+      const existingTx = await findTransactionForPersonalizedQuote(quoteBeforeStart.id);
+      if (existingTx) {
+        return res.status(409).json({
+          ok: false,
+          error: "personalized_quote_already_consumed",
+          quote_status: "payment_started",
+          requestRef: existingTx.request_ref || null,
+          payment_status: existingTx.status || null,
+        });
+      }
+      throw makePersonalizedPlanError("personalized_payment_start_failed", 409);
+    }
+
+    plan_id_from_client = String(started.technical_plan_id);
+    planIdForSession = plan_id_from_client;
+    plan = String(started.plan_name || requestedPlanName || "Forfait personnalisé");
+    txId = String(started.transaction_id);
+    requestRef = String(started.request_ref || requestRef);
+    personalizedContext = {
+      quote_id: String(started.quote_id),
+      technical_plan_id: plan_id_from_client,
+      transaction_id: txId,
+      final_price_ar: Number(started.final_price_ar),
+      pricing_config_version_id: String(started.pricing_config_version_id),
+      pricing_config_hash: String(started.pricing_config_hash),
+    };
+  } catch (e) {
+    if (sendPersonalizedPlanError(res, e)) return;
+    console.error("PERSONALIZED PAYMENT START ERROR", e?.message || e);
+    return res.status(500).json({ ok: false, error: "personalized_payment_start_failed" });
   }
 }
 
@@ -24173,13 +25365,27 @@ try {
   if (supabase && plan_id_from_client) {
     const { data: pRow, error: pErr } = await supabase
       .from("plans")
-      .select("id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices,pool_id,system,is_active,is_visible")
+      .select("id,name,price_ar,duration_minutes,duration_hours,data_mb,max_devices,pool_id,system,is_active,is_visible,plan_source,technical_hash,personalized_spec")
       .eq("id", plan_id_from_client)
       .maybeSingle();
     if (!pErr && pRow) planRowFromDb = pRow;
   }
 } catch (_) {
   planRowFromDb = null;
+}
+
+// PP-2 security invariant: hidden technical plans can only be purchased through
+// the dedicated quote-token route, even if a caller omits nas_id to try the
+// legacy branch.
+if (!isPersonalizedPayment && planRowFromDb) {
+  const loadedPlanSource = String(planRowFromDb.plan_source || "standard").trim().toLowerCase();
+  if (loadedPlanSource !== "standard") {
+    return res.status(409).json({
+      ok: false,
+      error: "personalized_plan_requires_quote",
+      plan_id: plan_id_from_client,
+    });
+  }
 }
 
 // SECURITY PATCH C: System 3 (nas_id present) must fail closed before MVola if the
@@ -24191,9 +25397,11 @@ if (nas_id) {
     return res.status(400).json({ ok: false, error: "plan_id_required_for_nas_id", nas_id });
   }
   if (!planRowFromDb) {
+    await abortPersonalizedReservation("technical_plan_not_found");
     return res.status(404).json({ ok: false, error: "plan_not_found", plan_id: plan_id_from_client });
   }
   if (!pool_id || String(planRowFromDb.pool_id || "") !== String(pool_id)) {
+    await abortPersonalizedReservation("technical_plan_pool_mismatch");
     return res.status(400).json({
       ok: false,
       error: "plan_pool_mismatch",
@@ -24202,15 +25410,38 @@ if (nas_id) {
     });
   }
   if (planRowFromDb.system && String(planRowFromDb.system).toLowerCase() !== "mikrotik") {
+    await abortPersonalizedReservation("technical_plan_wrong_system");
     return res.status(400).json({ ok: false, error: "plan_wrong_system", plan_id: plan_id_from_client });
   }
   if (planRowFromDb.is_active === false) {
+    await abortPersonalizedReservation("technical_plan_inactive");
     return res.status(409).json({ ok: false, error: "plan_inactive", plan_id: plan_id_from_client });
   }
-  if (planRowFromDb.is_visible === false) {
-    return res.status(409).json({ ok: false, error: "plan_not_visible", plan_id: plan_id_from_client });
+
+  const planSource = String(planRowFromDb.plan_source || "standard").toLowerCase();
+  if (isPersonalizedPayment) {
+    const personalizedPlanMismatch =
+      planSource !== "personalized" ||
+      planRowFromDb.is_visible !== false ||
+      !personalizedContext ||
+      String(planRowFromDb.id) !== String(personalizedContext.technical_plan_id) ||
+      Number(planRowFromDb.price_ar) !== Number(personalizedContext.final_price_ar);
+
+    if (personalizedPlanMismatch) {
+      await abortPersonalizedReservation("technical_plan_validation_failed");
+      return res.status(500).json({ ok: false, error: "personalized_technical_plan_invalid" });
+    }
+  } else {
+    if (planSource !== "standard") {
+      return res.status(409).json({ ok: false, error: "personalized_plan_requires_quote", plan_id: plan_id_from_client });
+    }
+    if (planRowFromDb.is_visible === false) {
+      return res.status(409).json({ ok: false, error: "plan_not_visible", plan_id: plan_id_from_client });
+    }
   }
+
   if (planRowFromDb.price_ar === undefined || planRowFromDb.price_ar === null || !Number.isFinite(Number(planRowFromDb.price_ar))) {
+    await abortPersonalizedReservation("technical_plan_price_unavailable");
     return res.status(500).json({ ok: false, error: "plan_price_unavailable", plan_id: plan_id_from_client });
   }
 }
@@ -24219,7 +25450,7 @@ if (nas_id) {
 // Sales-limit pre-check before MVola payment or free voucher creation.
 // This closes the stale-page/API gap after /api/mikrotik/plans already hid a full plan.
 try {
-  if (supabase && plan_id_from_client && pool_id) {
+  if (!isPersonalizedPayment && supabase && plan_id_from_client && pool_id) {
     const availability = await checkPlanSalesLimitAvailability({
       plan_id: plan_id_from_client,
       pool_id,
@@ -24266,7 +25497,9 @@ try {
     const dbAmount = Number(planRowFromDb.price_ar);
     if (Number.isFinite(dbAmount)) {
       amount = Math.trunc(dbAmount);
-      amountSource = "plans.price_ar";
+      amountSource = isPersonalizedPayment
+        ? "personalized_quote.final_price_ar"
+        : "plans.price_ar";
     }
   }
 
@@ -24305,11 +25538,19 @@ try {
 
   amount = Math.trunc(Number(amount));
 
-  
+  if (isPersonalizedPayment) {
+    if (!personalizedContext || amount !== Math.trunc(Number(personalizedContext.final_price_ar))) {
+      await abortPersonalizedReservation("personalized_amount_mismatch");
+      return res.status(500).json({ ok: false, error: "personalized_amount_mismatch" });
+    }
+    if (amount <= 0) {
+      await abortPersonalizedReservation("personalized_amount_not_positive");
+      return res.status(500).json({ ok: false, error: "personalized_amount_invalid" });
+    }
+  }
 
-
-  const requestRef = `RAZAFI_${crypto.randomBytes(6).toString("hex").toUpperCase()}`;
-  const txId = crypto.randomUUID();
+  requestRef = requestRef || `RAZAFI_${crypto.randomBytes(6).toString("hex").toUpperCase()}`;
+  txId = txId || crypto.randomUUID();
 
 
   // FREE PLAN FLOW: amount === 0 => generate voucher immediately (no MVola)
@@ -24420,9 +25661,14 @@ const { error: vsErr } = await supabase
   const apMacForSession = ap_mac || null;
 
   try {
-    // insert initial transaction row with Madagascar local created timestamp in metadata
+    // Standard payments keep the historical insert path. Personalized payments
+    // were already inserted atomically with the quote reservation by the RPC.
     const metadataForInsert = {
-      source: "portal",
+      source: isPersonalizedPayment ? "portal_personalized" : "portal",
+      personalized: isPersonalizedPayment || undefined,
+      personalized_quote_id: personalizedContext?.quote_id || undefined,
+      pricing_config_version_id: personalizedContext?.pricing_config_version_id || undefined,
+      pricing_config_hash: personalizedContext?.pricing_config_hash || undefined,
       created_at_local: toISOStringMG(new Date()),
       plan_id: planIdForSession,
       pool_id: pool_id || null,
@@ -24431,7 +25677,7 @@ const { error: vsErr } = await supabase
       amount_source: amountSource,
     };
 
-    if (supabase) {
+    if (supabase && !isPersonalizedPayment) {
       await supabase.from("transactions").insert([{
         id: txId,
         phone,
@@ -24444,7 +25690,9 @@ const { error: vsErr } = await supabase
         provider: paymentProvider,
         metadata: metadataForInsert,
       }]);
+    }
 
+    if (supabase) {
       // NEW system audit: payment initiated
       await insertAudit({
         event_type: "payment_initiated",
@@ -24459,13 +25707,23 @@ const { error: vsErr } = await supabase
         ap_mac: apMacForSession || null,
         pool_id: pool_id || null,
         plan_id: planIdForSession || null,
-        message: "MVola payment initiated (NEW system)",
-        metadata: { amount, plan, amount_source: amountSource, correlationId }
+        message: isPersonalizedPayment
+          ? "Personalized MVola payment initiated"
+          : "MVola payment initiated (NEW system)",
+        metadata: {
+          amount,
+          plan,
+          amount_source: amountSource,
+          correlationId,
+          personalized_quote_id: personalizedContext?.quote_id || null,
+        }
       });
-
     }
   } catch (dbErr) {
-    console.error("⚠️ Warning: unable to insert initial transaction row:", dbErr?.message || dbErr);
+    // For personalized payments the quote/plan/transaction were already
+    // persisted atomically by PostgreSQL. A best-effort audit failure must not
+    // cancel a valid reservation or block the MVola request.
+    console.error("⚠️ Warning: unable to persist initial payment audit:", dbErr?.message || dbErr);
   }
 
   console.info("💵 SEND-PAYMENT amount resolved", {
@@ -24558,6 +25816,7 @@ const { error: vsErr } = await supabase
       requestRef,
       serverCorrelationId,
       verificationTimeoutMs: MVOLA_VERIFICATION_TIMEOUT_MS,
+      personalized: isPersonalizedPayment || undefined,
       mvola: data,
     });
 
@@ -24579,6 +25838,9 @@ const { error: vsErr } = await supabase
     return;
   } catch (err) {
     const mapped = mapMvolaInitiateError(err);
+    if (isPersonalizedPayment) {
+      await abortPersonalizedReservation("mvola_initiate_failed");
+    }
     console.error("❌ MVola a rejeté la requête", {
       raw: truncate(err.response?.data || err?.message || err, 500),
       mapped,
@@ -24607,17 +25869,26 @@ const { error: vsErr } = await supabase
     });
     try {
       if (supabase) {
+        let failedMetadata = {
+          error: truncate(err.response?.data || err?.message, 2000),
+          mapped_type: mapped.type,
+          mapped_transient: !!mapped.transient,
+          updated_at_local: toISOStringMG(new Date()),
+        };
+        if (isPersonalizedPayment) {
+          const { data: txBeforeFailure } = await supabase
+            .from("transactions")
+            .select("metadata")
+            .eq("request_ref", requestRef)
+            .maybeSingle();
+          const base = txBeforeFailure?.metadata && typeof txBeforeFailure.metadata === "object"
+            ? txBeforeFailure.metadata
+            : {};
+          failedMetadata = { ...base, ...failedMetadata };
+        }
         await supabase
           .from("transactions")
-          .update({
-            status: "failed",
-            metadata: {
-              error: truncate(err.response?.data || err?.message, 2000),
-              mapped_type: mapped.type,
-              mapped_transient: !!mapped.transient,
-              updated_at_local: toISOStringMG(new Date()),
-            },
-          })
+          .update({ status: "failed", metadata: failedMetadata })
           .eq("request_ref", requestRef);
       }
     } catch (dbErr) {
@@ -24647,7 +25918,10 @@ const { error: vsErr } = await supabase
       details: mapped.type,
     });
   }
-});
+}
+
+app.post("/api/send-payment", handleSendPayment);
+app.post("/api/portal/personalized-plan/pay", speedLimiter, paymentLimiter, handleSendPayment);
 // ---------------------------------------------------------------------------
 // PART 3 / 3
 // Transaction fetch, history endpoints, and server start
@@ -24665,7 +25939,7 @@ app.get("/api/tx/:requestRef", txStatusLimiter, async (req, res) => {
 
     const { data, error } = await supabase
       .from("transactions")
-      .select("request_ref, phone, amount, currency, plan, status, voucher, transaction_reference, server_correlation_id, metadata, created_at, updated_at")
+      .select("id, request_ref, phone, amount, currency, plan, status, voucher, transaction_reference, server_correlation_id, metadata, created_at, updated_at")
       .eq("request_ref", requestRef)
       .limit(1)
       .single();
@@ -24674,6 +25948,23 @@ app.get("/api/tx/:requestRef", txStatusLimiter, async (req, res) => {
     if (error) {
       console.error("Supabase error fetching transaction:", error);
       return res.status(500).json({ error: "db error" });
+    }
+
+    const normalizedTxStatus = String(data?.status || "").trim().toLowerCase();
+    if (normalizedTxStatus === "completed") {
+      await reconcilePersonalizedQuoteForTransaction({
+        transaction: data,
+        targetStatus: "completed",
+        technicalPlanId: data?.metadata?.plan_id || null,
+        reason: "tx_status_fetch_completed",
+      });
+    } else if (["failed", "rejected", "declined", "cancelled"].includes(normalizedTxStatus)) {
+      await reconcilePersonalizedQuoteForTransaction({
+        transaction: data,
+        targetStatus: "cancelled",
+        technicalPlanId: data?.metadata?.plan_id || null,
+        reason: "tx_status_fetch_failed",
+      });
     }
 
     const row = { ...data, phone: maskPhone(data.phone) };
@@ -24730,7 +26021,10 @@ app.get("/api/tx/:requestRef", txStatusLimiter, async (req, res) => {
     } catch (e) {
       console.error("deliver_code_ok audit failed:", e?.message || e);
     }
-    return res.json({ ok: true, transaction: row });
+    const responseRow = { ...row };
+    responseRow.metadata = sanitizePersonalizedTransactionMetadataForPublic(responseRow.metadata);
+    delete responseRow.id;
+    return res.json({ ok: true, transaction: responseRow });
   } catch (e) {
     console.error("Error in /api/tx/:", e?.message || e);
 
