@@ -11,7 +11,7 @@
   <link rel="icon" type="image/svg+xml" href="assets/img/favicon.svg" />
   <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png" />
 
-  <link rel="stylesheet" href="assets/css/style.css?v=pp3-definitif-1" />
+  <link rel="stylesheet" href="assets/css/style.css?v=pp3-catalog-mode-1" />
     <style>
     /* =========================================================
        RAZAFI Portal – Apple-inspired Phase 1
@@ -283,6 +283,7 @@
       gap:12px;
       margin:0 4px 6px;
       min-width:0;
+      flex-wrap:nowrap;
     }
     .section-title-ios{
       margin:0;
@@ -344,6 +345,13 @@
       color:#111827;
       box-shadow:none;
     }
+    @media (max-width:520px){
+      body.personalized-feature-enabled .plans-heading-row{flex-wrap:wrap;}
+      body.personalized-feature-enabled .plan-filters{
+        flex:1 0 100%;
+        justify-content:flex-start;
+      }
+    }
     @media (max-width:360px){
       .plans-heading-row{gap:8px;}
       .plan-filter-btn{min-height:32px;padding:0 12px;font-size:13px;}
@@ -351,16 +359,18 @@
 
     /* Price sort button */
     #priceSortBtn{
-      flex:0 0 auto;
+      flex:0 0 34px;
+      width:34px;
+      min-width:34px;
       border:0;
       border-radius:999px;
       min-height:34px;
-      padding:0 14px;
+      padding:0;
       background:rgba(118,118,128,.12);
       color:#374151;
-      font-size:13px;
-      font-weight:850;
-      letter-spacing:-.01em;
+      font-size:17px;
+      font-weight:900;
+      line-height:1;
       cursor:pointer;
       -webkit-tap-highlight-color:transparent;
       transition:transform .12s ease,background .16s ease,color .16s ease;
@@ -368,6 +378,15 @@
     }
     #priceSortBtn:active{transform:scale(.97);}
     body.theme-dark #priceSortBtn{background:rgba(255,255,255,.09);color:#d1d5db;}
+
+
+    body.personalized-builder-mode .plans-shell,
+    body.personalized-builder-mode #durationFilterBar{
+      display:none!important;
+    }
+    body.personalized-builder-mode .portal-footer{
+      padding-bottom:calc(18px + env(safe-area-inset-bottom,0px))!important;
+    }
 
     .plans-grid{gap:14px!important;}
 
@@ -733,16 +752,7 @@
     </section>
 
     <!-- ========= PLAN PERSONNALISÉ (PP-3, activé par pool) ========= -->
-    <section id="personalizedPlanSection" class="personalized-plan-section hidden" aria-labelledby="personalizedPlanTitle">
-      <button id="personalizedPlanToggle" type="button" class="personalized-plan-entry" aria-expanded="false" aria-controls="personalizedPlanBuilder">
-        <span class="personalized-plan-entry-icon" aria-hidden="true">✨</span>
-        <span class="personalized-plan-entry-copy">
-          <strong id="personalizedPlanTitle">Créer mon forfait</strong>
-          <small>Choisissez la durée, la data et la vitesse.</small>
-        </span>
-        <span class="personalized-plan-entry-chevron" aria-hidden="true">›</span>
-      </button>
-
+    <section id="personalizedPlanSection" class="personalized-plan-section hidden" aria-label="Créer un forfait personnalisé">
       <div id="personalizedPlanBuilder" class="personalized-plan-builder hidden">
         <div id="personalizedPlanCard" class="card personalized-plan-card"
              data-plan-id=""
@@ -754,11 +764,14 @@
              data-plan-devices="1"
              data-plan-speed="">
           <div class="personalized-plan-head">
-            <div>
+            <button id="personalizedPlanClose" type="button" class="personalized-plan-close" aria-label="Voir les forfaits standards">
+              <span aria-hidden="true">←</span>
+              <span>Voir les forfaits standards</span>
+            </button>
+            <div class="personalized-plan-heading">
               <div class="personalized-plan-kicker">Forfait sur mesure</div>
               <h3>Composez votre connexion</h3>
             </div>
-            <button id="personalizedPlanClose" type="button" class="personalized-plan-close" aria-label="Fermer">×</button>
           </div>
 
           <div id="personalizedPlanConfig" class="personalized-plan-config">
@@ -880,14 +893,18 @@
     <!-- ========= PLANS ========= -->
     <section class="plans-shell">
       <div class="plans-sticky-head">
-        <p class="section-subtitle-ios">Choisissez un forfait, puis payez.</p>
+        <p id="plansSubtitle" class="section-subtitle-ios">Choisissez un forfait, puis payez.</p>
         <div class="plans-heading-row">
-          <button type="button" id="priceSortBtn" aria-label="Trier par prix" title="Trier par prix">Prix ↑</button>
+          <button id="personalizedPlanToggle" type="button" class="personalized-plan-entry hidden" aria-expanded="false" aria-controls="personalizedPlanBuilder">
+            <span class="personalized-plan-entry-icon" aria-hidden="true">✨</span>
+            <span id="personalizedPlanTitle">Créer mon forfait</span>
+          </button>
 
-          <div id="planFilters" class="plan-filters" role="tablist" aria-label="Filtrer les forfaits">
+          <div id="planFilters" class="plan-filters" role="group" aria-label="Filtrer et trier les forfaits">
             <button type="button" class="plan-filter-btn active" data-plan-filter="all" aria-pressed="true">Tous</button>
             <button type="button" class="plan-filter-btn" data-plan-filter="data" aria-pressed="false">Data</button>
             <button type="button" class="plan-filter-btn" data-plan-filter="unlimited" aria-pressed="false">Illimité</button>
+            <button type="button" id="priceSortBtn" aria-label="Prix décroissant, cliquer pour trier par prix croissant" title="Prix décroissant, cliquer pour trier par prix croissant">↓</button>
           </div>
         </div>
       </div>
@@ -1047,7 +1064,7 @@
       }
     });
   </script>
-  <script src="assets/js/mikrotik.js?v=pp3-definitif-1" defer></script>
+  <script src="assets/js/mikrotik.js?v=pp3-catalog-mode-1" defer></script>
 
 </body>
 </html>

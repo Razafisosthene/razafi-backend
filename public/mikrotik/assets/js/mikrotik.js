@@ -2738,7 +2738,7 @@ function submitToLoginUrl(code, ev) {
   const planFilters = $("planFilters");
   let activePlanFilter = "all";
   let activeDurationFilter = "all"; // NEW: duration filter state
-  let activePriceSortOrder = "asc"; // NEW: "asc" = Prix↑ (low→high), "desc" = Prix↓ (high→low)
+  let activePriceSortOrder = "desc"; // "desc" = ↓ (high→low), "asc" = ↑ (low→high)
 
   // -------- Duration bucket helper --------
   // Maps plan duration_minutes → UI bucket: "1H" | "1J" | "7J" | "30J"
@@ -2830,7 +2830,13 @@ function submitToLoginUrl(code, ev) {
   function updatePriceSortButton() {
     var btn = document.getElementById("priceSortBtn");
     if (!btn) return;
-    btn.textContent = activePriceSortOrder === "asc" ? "Prix ↑" : "Prix ↓";
+    const isAscending = activePriceSortOrder === "asc";
+    const label = isAscending
+      ? "Prix croissant, cliquer pour trier par prix décroissant"
+      : "Prix décroissant, cliquer pour trier par prix croissant";
+    btn.textContent = isAscending ? "↑" : "↓";
+    btn.setAttribute("aria-label", label);
+    btn.setAttribute("title", label);
   }
 
   function applyPriceSort() {
@@ -2898,6 +2904,7 @@ function submitToLoginUrl(code, ev) {
   let personalizedQuoteTimerId = null;
   let personalizedPaymentStarted = false;
   let personalizedFeatureBound = false;
+  let personalizedFeatureAvailable = false;
 
   function getActivePaymentMethodKeys() {
     return PAYMENT_METHOD_ORDER.filter((k) => currentPaymentMethods && currentPaymentMethods[k] === true);
@@ -2907,11 +2914,17 @@ function submitToLoginUrl(code, ev) {
   // is active for the current pool. Removes the old hardcoded MVola-only copy.
   function updatePaymentMethodsSubtitle() {
     try {
-      const subtitle = document.querySelector(".section-subtitle-ios");
+      const subtitle = document.getElementById("plansSubtitle") || document.querySelector(".section-subtitle-ios");
       if (!subtitle) return;
-      subtitle.textContent = currentActivePaymentMethods.length
-        ? "Choisissez un forfait, puis payez."
-        : "Paiement temporairement indisponible pour ce WiFi.";
+      if (portalPreviewState.active) {
+        subtitle.textContent = "Aperçu en lecture seule du portail client.";
+      } else if (!currentActivePaymentMethods.length) {
+        subtitle.textContent = "Paiement temporairement indisponible pour ce WiFi.";
+      } else {
+        subtitle.textContent = personalizedFeatureAvailable
+          ? "Choisissez ou créez un forfait, puis payez."
+          : "Choisissez un forfait, puis payez.";
+      }
     } catch (_) {}
   }
 
@@ -3682,16 +3695,36 @@ function saturationLabel(pct) {
     personalizedQuoteTimerId = window.setInterval(update, 1000);
   }
 
-  function setPersonalizedBuilderOpen(open) {
+  function setPersonalizedBuilderOpen(open, { restoreScroll = true } = {}) {
     const el = personalizedEls();
     if (!el.section || !el.builder || !el.toggle) return;
-    el.builder.classList.toggle("hidden", !open);
-    el.toggle.setAttribute("aria-expanded", open ? "true" : "false");
-    if (open) {
-      window.setTimeout(() => {
-        try { el.card?.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (_) {}
-      }, 80);
+    const shouldOpen = !!open && personalizedFeatureAvailable;
+    el.section.classList.toggle("hidden", !shouldOpen);
+    el.builder.classList.toggle("hidden", !shouldOpen);
+    el.toggle.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+    document.body.classList.toggle("personalized-builder-mode", shouldOpen);
+    if (shouldOpen) applyPersonalizedStateLocks();
+
+    window.setTimeout(() => {
+      try {
+        if (shouldOpen) el.card?.scrollIntoView({ behavior: "smooth", block: "start" });
+        else if (restoreScroll) el.toggle?.scrollIntoView({ behavior: "smooth", block: "center" });
+      } catch (_) {}
+    }, 80);
+  }
+
+  function setPersonalizedFeatureVisibility(visible) {
+    const el = personalizedEls();
+    personalizedFeatureAvailable = !!visible;
+    el.toggle?.classList.toggle("hidden", !personalizedFeatureAvailable);
+    document.body.classList.toggle("personalized-feature-enabled", personalizedFeatureAvailable);
+    if (!personalizedFeatureAvailable) {
+      el.section?.classList.add("hidden");
+      el.builder?.classList.add("hidden");
+      el.toggle?.setAttribute("aria-expanded", "false");
+      document.body.classList.remove("personalized-builder-mode");
     }
+    updatePaymentMethodsSubtitle();
   }
 
   function applyPersonalizedStateLocks() {
@@ -4063,7 +4096,7 @@ function saturationLabel(pct) {
     if (!el.section) return;
     const shouldAttempt = personalizedPlansEnabled && !portalPreviewState.active && !!nasId && !!clientMac;
     if (!shouldAttempt) {
-      el.section.classList.add("hidden");
+      setPersonalizedFeatureVisibility(false);
       personalizedOptions = null;
       personalizedPaymentStarted = false;
       invalidatePersonalizedQuote();
@@ -4087,13 +4120,13 @@ function saturationLabel(pct) {
       syncPersonalizedInputRules();
       bindPersonalizedPlanFeature();
       renderPersonalizedPaymentMethods();
-      el.section.classList.remove("hidden");
+      setPersonalizedFeatureVisibility(true);
       applyPersonalizedStateLocks();
     } catch (error) {
       personalizedOptions = null;
       personalizedPaymentStarted = false;
       invalidatePersonalizedQuote();
-      el.section.classList.add("hidden");
+      setPersonalizedFeatureVisibility(false);
       console.warn("[RAZAFI] personalized plan options unavailable", error?.message || error);
     }
   }
@@ -4314,9 +4347,9 @@ function saturationLabel(pct) {
         currentPaymentMethods = { mvola: true, orange_money: false, airtel_money: false, visa: false };
       }
       currentActivePaymentMethods = getActivePaymentMethodKeys();
-      updatePaymentMethodsSubtitle();
       personalizedPlansEnabled = data?.personalized_plans_enabled === true;
       await configurePersonalizedPlanFeature();
+      updatePaymentMethodsSubtitle();
 
       // G.2: save opaque history token from server (closure variable only)
       // Never stored in localStorage, sessionStorage, DOM, window, or URL.
