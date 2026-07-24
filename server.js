@@ -20391,6 +20391,11 @@ function nowMGDate() {
 // ---------------------------------------------------------------------------
 let tokenCache = { access_token: null, expires_at: 0 };
 
+function clearMvolaTokenCache() {
+  tokenCache.access_token = null;
+  tokenCache.expires_at = 0;
+}
+
 async function fetchNewToken() {
   if (!MVOLA_CLIENT_ID || !MVOLA_CLIENT_SECRET) {
     throw new Error("MVOLA credentials missing");
@@ -20719,8 +20724,14 @@ function getMvolaErrorInfo(err) {
   const code = String(data?.code || data?.errorCode || "").trim();
   const type = String(data?.type || "").trim();
   const message = String(data?.message || data?.error || err?.message || "").trim();
-  const description = String(data?.description || "").trim();
-  const rawText = [code, type, message, description].join(" ").toLowerCase();
+  const description = String(data?.description || data?.errorDescription || "").trim();
+  const errorParameters = Array.isArray(data?.errorParameters) ? data.errorParameters : [];
+  const mmErrorCode = String(
+    errorParameters.find(
+      (item) => String(item?.key || "").trim().toLowerCase() === "mmerrorcode"
+    )?.value || ""
+  ).trim();
+  const rawText = [code, type, message, description, mmErrorCode].join(" ").toLowerCase();
   const isNetwork =
     !err?.response ||
     err?.code === "ECONNABORTED" ||
@@ -20728,7 +20739,7 @@ function getMvolaErrorInfo(err) {
     err?.code === "ECONNRESET" ||
     err?.code === "ENOTFOUND" ||
     err?.code === "EAI_AGAIN";
-  return { data, code, type, message, description, rawText, isNetwork };
+  return { data, code, type, message, description, mmErrorCode, rawText, isNetwork };
 }
 
 function mapMvolaInitiateError(err) {
@@ -20752,6 +20763,40 @@ function mapMvolaInitiateError(err) {
   if (responseStatus === 404 && emptyResponseBody) {
     return {
       type: "TEMPORARY_PROVIDER_ERROR",
+      transient: true,
+      httpStatus: 503,
+      userMessage: "Service MVola temporairement indisponible. Réessayez dans quelques instants.",
+    };
+  }
+
+  // MVola intermittently fails before creating a MerchantPay transaction with
+  // mmErrorCode 4002 / "Error in getting user language". No provider
+  // correlation id is returned in this signature, so allow the existing single
+  // controlled retry instead of classifying it as a permanent client error.
+  const userLanguageLookupFailure =
+    info.mmErrorCode === "4002" ||
+    info.rawText.includes("error in getting user language");
+
+  if (userLanguageLookupFailure) {
+    return {
+      type: "TEMPORARY_PROVIDER_ERROR",
+      transient: true,
+      httpStatus: 503,
+      userMessage: "Service MVola temporairement indisponible. Réessayez dans quelques instants.",
+    };
+  }
+
+  // A cached bearer token can occasionally be rejected by the MVola gateway.
+  // Mark this exact signature transient; the initiate helper clears the token
+  // cache before its one and only retry, forcing a fresh OAuth token.
+  const invalidBearerToken =
+    info.code === "900901" ||
+    info.rawText.includes("invalid jwt token") ||
+    info.rawText.includes("correct security credentials");
+
+  if (invalidBearerToken) {
+    return {
+      type: "MVOLA_TOKEN_INVALID",
       transient: true,
       httpStatus: 503,
       userMessage: "Service MVola temporairement indisponible. Réessayez dans quelques instants.",
@@ -20832,12 +20877,17 @@ async function initiateMvolaPaymentWithRetry({ payload, requestRef, phone, amoun
     const data = await doAttempt(1, correlationId);
     return { data, usedRetry: false };
   } catch (err1) {
-    if (!shouldRetryMvolaInitiate(err1)) throw err1;
+    const mapped = mapMvolaInitiateError(err1);
+    if (!mapped.transient) throw err1;
+
+    if (mapped.type === "MVOLA_TOKEN_INVALID") {
+      clearMvolaTokenCache();
+    }
 
     console.warn("⚠️ MVola initiate transient failure; retrying once", {
       requestRef,
       correlationId,
-      mapped: mapMvolaInitiateError(err1),
+      mapped,
       raw: err1?.response?.data || err1?.message || err1,
     });
 
