@@ -1504,3 +1504,266 @@ body.theme-dark #rzAssistSend {
 /* ============================================================
    END RAZAFI PORTAL ASSISTANT — Widget V1
    ============================================================ */
+
+
+/* ============================================================
+   PP-3 — PLAN PERSONNALISÉ DÉFINITIF
+   Visible uniquement lorsque personalized_plans_enabled=true.
+   ============================================================ */
+.personalized-plan-section {
+  margin-top: 18px;
+  animation: razafiFadeUp .38s ease both;
+}
+.personalized-plan-entry {
+  width: 100%;
+  margin: 0;
+  padding: 15px 16px;
+  border: 1px solid rgba(17,24,39,.08);
+  border-radius: 24px;
+  background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(247,248,250,.90));
+  color: #111827;
+  box-shadow: 0 14px 32px rgba(15,23,42,.08);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.personalized-plan-entry:active { transform: scale(.994); }
+.personalized-plan-entry-icon {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  border-radius: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(17,24,39,.075);
+  font-size: 20px;
+}
+.personalized-plan-entry-copy { min-width: 0; flex: 1 1 auto; }
+.personalized-plan-entry-copy strong {
+  display: block;
+  font-size: 16px;
+  line-height: 1.2;
+  font-weight: 900;
+  letter-spacing: -.02em;
+}
+.personalized-plan-entry-copy small {
+  display: block;
+  margin-top: 3px;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.personalized-plan-entry-chevron {
+  flex: 0 0 auto;
+  font-size: 28px;
+  line-height: 1;
+  color: rgba(17,24,39,.42);
+  transition: transform .18s ease;
+}
+.personalized-plan-entry[aria-expanded="true"] .personalized-plan-entry-chevron { transform: rotate(90deg); }
+.personalized-plan-builder { margin-top: 12px; }
+.personalized-plan-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 28px;
+  border: 1px solid rgba(17,24,39,.075);
+  box-shadow: 0 18px 42px rgba(15,23,42,.10);
+}
+.personalized-plan-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.personalized-plan-kicker {
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 850;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.personalized-plan-head h3 {
+  margin: 4px 0 0;
+  color: #111827;
+  font-size: 21px;
+  line-height: 1.15;
+  font-weight: 950;
+  letter-spacing: -.035em;
+}
+.personalized-plan-close {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(17,24,39,.07);
+  color: #4b5563;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+.personalized-plan-config {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: 13px;
+}
+.personalized-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.personalized-field-wide { grid-column: 1 / -1; }
+.personalized-label {
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 850;
+}
+.personalized-plan-card input,
+.personalized-plan-card select {
+  width: 100%;
+  min-height: 46px;
+  margin: 0;
+  border: 1px solid rgba(17,24,39,.13);
+  border-radius: 15px;
+  background: rgba(255,255,255,.88);
+  color: #111827;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 750;
+  box-sizing: border-box;
+}
+.personalized-plan-card input { padding: 10px 12px; }
+.personalized-plan-card select { padding: 10px 36px 10px 12px; }
+.personalized-inline-input { display: grid; grid-template-columns: minmax(0,1fr) minmax(112px,.7fr); gap: 8px; }
+.personalized-inline-input-unit { grid-template-columns: minmax(0,1fr) 54px; }
+.personalized-unit {
+  min-height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 15px;
+  background: rgba(17,24,39,.06);
+  color: #374151;
+  font-weight: 900;
+}
+.personalized-segmented {
+  display: grid;
+  grid-template-columns: repeat(2,minmax(0,1fr));
+  gap: 5px;
+  padding: 5px;
+  border-radius: 17px;
+  background: rgba(118,118,128,.11);
+}
+.personalized-type-btn {
+  min-height: 42px;
+  margin: 0;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: #4b5563;
+  font-size: 14px;
+  font-weight: 850;
+  cursor: pointer;
+}
+.personalized-type-btn.active {
+  background: #fff;
+  color: #111827;
+  box-shadow: 0 2px 9px rgba(15,23,42,.10);
+}
+.personalized-hint { color: #737b88; font-size: 11px; line-height: 1.35; font-weight: 650; }
+.personalized-error {
+  grid-column: 1 / -1;
+  padding: 10px 12px;
+  border-radius: 15px;
+  border: 1px solid rgba(220,38,38,.18);
+  background: rgba(220,38,38,.07);
+  color: #a51d1d;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.4;
+}
+.personalized-quote-btn { grid-column: 1 / -1; margin: 1px 0 0; }
+.personalized-quote-panel {
+  margin-top: 17px;
+  padding-top: 17px;
+  border-top: 1px solid rgba(17,24,39,.08);
+}
+.personalized-quote-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.personalized-quote-label { color: #6b7280; font-size: 12px; font-weight: 800; }
+#personalizedQuoteName { display: block; margin-top: 3px; font-size: 17px; color: #111827; line-height: 1.25; }
+.personalized-quote-price { flex: 0 0 auto; font-size: 24px; line-height: 1; font-weight: 950; letter-spacing: -.04em; color: #111827; }
+.personalized-quote-specs {
+  margin-top: 13px;
+  padding: 11px 12px;
+  border-radius: 16px;
+  background: rgba(17,24,39,.055);
+  color: #374151;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.45;
+}
+.personalized-quote-expiry { margin-top: 9px; color: #6b7280; font-size: 12px; font-weight: 700; }
+.personalized-payment-block { margin-top: 17px; }
+.personalized-payment-methods { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; margin-top: 9px; }
+.personalized-payment-methods .payment-method-btn { width: 100%; min-width: 0; margin: 0; }
+.personalized-payment-methods .payment-method-selected {
+  outline: 3px solid rgba(17,24,39,.16);
+  outline-offset: 2px;
+}
+.personalized-payment-form { margin-top: 14px; }
+.personalized-plan-card.processing .personalized-plan-config,
+.personalized-plan-card.processing .personalized-quote-top,
+.personalized-plan-card.processing .personalized-quote-specs,
+.personalized-plan-card.processing .personalized-quote-expiry,
+.personalized-plan-card.processing .personalized-payment-block { opacity: .48; }
+body.theme-dark .personalized-plan-entry,
+body.theme-dark .personalized-plan-card {
+  background: linear-gradient(180deg,rgba(31,31,34,.96),rgba(22,22,24,.96));
+  border-color: rgba(255,255,255,.09);
+  color: #f5f5f7;
+}
+body.theme-dark .personalized-plan-entry-icon,
+body.theme-dark .personalized-plan-close,
+body.theme-dark .personalized-unit,
+body.theme-dark .personalized-quote-specs { background: rgba(255,255,255,.08); }
+body.theme-dark .personalized-plan-entry-copy strong,
+body.theme-dark .personalized-plan-head h3,
+body.theme-dark #personalizedQuoteName,
+body.theme-dark .personalized-quote-price { color: #f5f5f7; }
+body.theme-dark .personalized-plan-entry-copy small,
+body.theme-dark .personalized-plan-kicker,
+body.theme-dark .personalized-label,
+body.theme-dark .personalized-hint,
+body.theme-dark .personalized-quote-label,
+body.theme-dark .personalized-quote-expiry { color: #a8adb7; }
+body.theme-dark .personalized-plan-card input,
+body.theme-dark .personalized-plan-card select {
+  border-color: rgba(255,255,255,.12);
+  background: rgba(255,255,255,.07);
+  color: #f5f5f7;
+}
+body.theme-dark .personalized-unit,
+body.theme-dark .personalized-quote-specs { color: #e5e7eb; }
+body.theme-dark .personalized-segmented { background: rgba(255,255,255,.08); }
+body.theme-dark .personalized-type-btn { color: #a8adb7; }
+body.theme-dark .personalized-type-btn.active { background: rgba(255,255,255,.14); color: #fff; box-shadow: none; }
+@media (max-width: 620px) {
+  .personalized-plan-config { grid-template-columns: 1fr; }
+  .personalized-field-wide,
+  .personalized-error,
+  .personalized-quote-btn { grid-column: 1; }
+  .personalized-payment-methods { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .personalized-quote-top { align-items: center; }
+}
+@media (max-width: 390px) {
+  .personalized-plan-entry { padding: 13px 14px; border-radius: 21px; }
+  .personalized-plan-card { padding: 16px !important; border-radius: 24px; }
+  .personalized-inline-input { grid-template-columns: minmax(0,1fr) 108px; }
+}
+/* ============================================================
+   END PP-3
+   ============================================================ */

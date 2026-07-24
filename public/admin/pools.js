@@ -385,6 +385,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     const share = ownerShare(p);
     const freeLimit = Number.isFinite(Number(p.free_access_limit)) ? Number(p.free_access_limit) : 5;
     const ann = announcementState(p);
+    const system = String(p.system || "portal").toLowerCase();
+    const personalizedEnabled =
+      p.personalized_plans_enabled === true ||
+      String(p.personalized_plans_enabled).toLowerCase() === "true";
 
     return `
       <button type="button" class="rz-pool-card" data-poolcard="${esc(pid)}">
@@ -400,6 +404,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           <span class="rz-pill">Part propriétaire : <strong>${esc(share)}%</strong></span>
           <span class="rz-pill">Accès gratuit : <strong>${esc(freeLimit)} max</strong></span>
           <span class="rz-pill ${ann.active ? "rz-pill-ok" : "rz-pill-muted"}">Annonce portail : <strong>${ann.active ? "Actif" : "Inactif"}</strong></span>
+          ${system === "mikrotik" ? `<span class="rz-pill ${personalizedEnabled ? "rz-pill-ok" : "rz-pill-muted"}">Plan personnalisé : <strong>${personalizedEnabled ? "Actif" : "Inactif"}</strong></span>` : ""}
         </div>
       </button>
     `;
@@ -496,6 +501,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     const payOrange = pm.orange_money === true;
     const payAirtel = pm.airtel_money === true;
     const payVisa = pm.visa === true;
+    const personalizedEnabled =
+      p.personalized_plans_enabled === true ||
+      String(p.personalized_plans_enabled).toLowerCase() === "true";
 
     const stats = liveStatsByPool[pid] || null;
     const liveClients = stats ? toNum(stats.active_clients, 0) : 0;
@@ -607,6 +615,32 @@ document.addEventListener("DOMContentLoaded", async () => {
           </div>
           <div id="modalAnnPreview" class="rz-ann-preview ${annMessage ? "" : "is-empty"}">${esc(annMessage || "Aperçu : aucun message affiché sur le portail.")}</div>
         </div>
+
+        ${isMikrotik ? `
+          <div class="rz-modal-section">
+            <div class="rz-modal-section-title">Plan personnalisé</div>
+            <label class="rz-pp-toggle-card ${personalizedEnabled ? "is-on" : ""} ${canManageAll ? "" : "is-readonly"}">
+              <input
+                type="checkbox"
+                id="modalPersonalizedPlans"
+                ${personalizedEnabled ? "checked" : ""}
+                ${canManageAll ? "" : "disabled"}
+                aria-describedby="modalPersonalizedPlansNote"
+              />
+              <span class="rz-pp-toggle-icon" aria-hidden="true">✨</span>
+              <span class="rz-pp-toggle-copy">
+                <strong>Créer mon forfait</strong>
+                <small>${personalizedEnabled ? "Disponible sur le portail de ce pool" : "Masqué sur le portail de ce pool"}</small>
+              </span>
+              <span class="rz-pp-toggle-switch" aria-hidden="true"></span>
+            </label>
+            <div id="modalPersonalizedPlansNote" class="rz-pay-methods-note">
+              ${canManageAll
+                ? "Activation par pool. Les prix restent calculés et validés par le serveur."
+                : "Statut en lecture seule. Seul le Superadmin peut activer ou désactiver cette fonction."}
+            </div>
+          </div>
+        ` : ``}
 
         <div class="rz-modal-section">
           <div class="rz-modal-section-title">Modes de paiement du portail</div>
@@ -734,6 +768,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     logoChooseBtn?.addEventListener("click", () => logoFile?.click());
     logoFile?.addEventListener("change", () => uploadPoolLogo(pid, logoFile));
     logoDeleteBtn?.addEventListener("click", () => deletePoolLogo(pid));
+
+    const personalizedToggle = $id("modalPersonalizedPlans");
+    personalizedToggle?.addEventListener("change", () => {
+      const card = personalizedToggle.closest(".rz-pp-toggle-card");
+      card?.classList.toggle("is-on", !!personalizedToggle.checked);
+      const status = card?.querySelector(".rz-pp-toggle-copy small");
+      if (status) {
+        status.textContent = personalizedToggle.checked
+          ? "Disponible sur le portail de ce pool"
+          : "Masqué sur le portail de ce pool";
+      }
+    });
 
     // Payment method toggles: keep the card's on/off visual state in sync with its checkbox.
     ["modalPayMvola", "modalPayOrange", "modalPayAirtel", "modalPayVisa"].forEach((id) => {
@@ -867,6 +913,12 @@ document.addEventListener("DOMContentLoaded", async () => {
         airtel_money: !!$id("modalPayAirtel")?.checked,
         visa: !!$id("modalPayVisa")?.checked,
       };
+
+      const isMikrotikPool = String(p.system || "portal").toLowerCase() === "mikrotik";
+      const personalizedToggle = $id("modalPersonalizedPlans");
+      if (isMikrotikPool && personalizedToggle) {
+        payload.personalized_plans_enabled = !!personalizedToggle.checked;
+      }
     }
 
     if (canManageAll) {

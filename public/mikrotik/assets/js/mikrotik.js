@@ -1165,6 +1165,7 @@
       const shouldFocus = hasCode && !!canUse && !bonusModeActive && !isBonusOffer && (s === "pending" || s === "active");
 
       const selectors = [
+        "#personalizedPlanSection",
         ".plans-shell",
         "#durationFilterBar",
         "#portalAnnouncementCard",
@@ -1540,6 +1541,7 @@
   function applyPortalPreviewModeToPlans() {
     if (!portalPreviewState.active) return;
     ensurePortalPreviewStyle();
+    try { document.getElementById("personalizedPlanSection")?.classList.add("hidden"); } catch (_) {}
     getPlanCards().forEach((card) => {
       card.classList.add("plan-card-preview");
 
@@ -2877,6 +2879,26 @@ function submitToLoginUrl(code, ev) {
   let currentPaymentMethods = { mvola: true, orange_money: false, airtel_money: false, visa: false };
   let currentActivePaymentMethods = ["mvola"];
 
+  // PAY-0 minimal: one provider registry shared by the personalized-plan UI.
+  // A method is rendered only when it is both enabled for the pool and marked
+  // operational here. Future PAY-1/2/3 phases only need to activate their
+  // adapter without rebuilding PP-3.
+  const PERSONALIZED_PAYMENT_PROVIDERS = {
+    mvola:        { operational: true,  label: "MVola" },
+    orange_money: { operational: false, label: "Orange Money" },
+    airtel_money: { operational: false, label: "Airtel Money" },
+    visa:         { operational: false, label: "Visa" },
+  };
+
+  let personalizedPlansEnabled = false;
+  let personalizedOptions = null;
+  let personalizedQuoteToken = null; // closure only: never DOM/storage/URL/window
+  let personalizedQuote = null;
+  let personalizedQuoteExpiresAtMs = 0;
+  let personalizedQuoteTimerId = null;
+  let personalizedPaymentStarted = false;
+  let personalizedFeatureBound = false;
+
   function getActivePaymentMethodKeys() {
     return PAYMENT_METHOD_ORDER.filter((k) => currentPaymentMethods && currentPaymentMethods[k] === true);
   }
@@ -3228,6 +3250,7 @@ function saturationLabel(pct) {
   }
 
   function applyPoolFullLockToPlans() {
+    try { applyPersonalizedStateLocks(); } catch (_) {}
     if (!poolIsFull) return;
 
     const planCards = getPlanCards();
@@ -3365,6 +3388,719 @@ function saturationLabel(pct) {
       fetchPortalStatus({ quiet: true }).catch(() => {});
     }
   });
+
+
+  // ============================================================
+  // PP-3 — Definitive personalized-plan client journey
+  // ============================================================
+  function personalizedEls() {
+    return {
+      section: document.getElementById("personalizedPlanSection"),
+      toggle: document.getElementById("personalizedPlanToggle"),
+      builder: document.getElementById("personalizedPlanBuilder"),
+      card: document.getElementById("personalizedPlanCard"),
+      close: document.getElementById("personalizedPlanClose"),
+      config: document.getElementById("personalizedPlanConfig"),
+      typeTabs: document.getElementById("personalizedTypeTabs"),
+      durationValue: document.getElementById("personalizedDurationValue"),
+      durationUnit: document.getElementById("personalizedDurationUnit"),
+      durationHint: document.getElementById("personalizedDurationHint"),
+      dataField: document.getElementById("personalizedDataField"),
+      dataValue: document.getElementById("personalizedDataValue"),
+      dataHint: document.getElementById("personalizedDataHint"),
+      speed: document.getElementById("personalizedSpeed"),
+      error: document.getElementById("personalizedConfigError"),
+      quoteBtn: document.getElementById("personalizedQuoteBtn"),
+      quotePanel: document.getElementById("personalizedQuotePanel"),
+      quoteName: document.getElementById("personalizedQuoteName"),
+      quotePrice: document.getElementById("personalizedQuotePrice"),
+      quoteSpecs: document.getElementById("personalizedQuoteSpecs"),
+      quoteCountdown: document.getElementById("personalizedQuoteCountdown"),
+      methods: document.getElementById("personalizedPaymentMethods"),
+      methodsUnavailable: document.getElementById("personalizedPaymentUnavailable"),
+      paymentForm: document.getElementById("personalizedPaymentForm"),
+      phone: document.getElementById("personalizedMvolaInput"),
+      payBtn: document.getElementById("personalizedPayBtn"),
+      cancelBtn: document.getElementById("personalizedPaymentCancel"),
+      confirmWrap: document.querySelector("#personalizedPlanCard .pay-confirm"),
+      confirmBtn: document.getElementById("personalizedConfirmBtn"),
+      confirmCancelBtn: document.getElementById("personalizedConfirmCancel"),
+      summary: document.querySelector("#personalizedPlanCard .pay-summary"),
+    };
+  }
+
+  function setPersonalizedError(message) {
+    const el = personalizedEls().error;
+    if (!el) return;
+    const text = String(message || "").trim();
+    el.textContent = text;
+    el.classList.toggle("hidden", !text);
+  }
+
+  function clearPersonalizedQuoteTimer() {
+    if (personalizedQuoteTimerId) window.clearInterval(personalizedQuoteTimerId);
+    personalizedQuoteTimerId = null;
+  }
+
+  function personalizedQuoteIsUsable() {
+    return !!(
+      personalizedQuoteToken &&
+      /^[0-9a-f]{64}$/i.test(String(personalizedQuoteToken)) &&
+      personalizedQuote &&
+      Number.isFinite(personalizedQuoteExpiresAtMs) &&
+      personalizedQuoteExpiresAtMs > Date.now() &&
+      !personalizedPaymentStarted
+    );
+  }
+
+  function resetPersonalizedPaymentUi({ keepPhone = false } = {}) {
+    const el = personalizedEls();
+    if (!el.card) return;
+    try { setProcessing(el.card, false); } catch (_) {}
+    el.paymentForm?.classList.add("hidden");
+    el.confirmWrap?.classList.add("hidden");
+    el.methods?.querySelectorAll(".pp-payment-method-btn").forEach((btn) => {
+      btn.classList.remove("payment-method-selected");
+      btn.setAttribute("aria-pressed", "false");
+    });
+    if (el.phone && !keepPhone) el.phone.value = "";
+    const hint = el.card.querySelector(".phone-hint");
+    if (hint) {
+      hint.textContent = "";
+      hint.classList.remove("hint-ok", "hint-error");
+    }
+    if (el.payBtn) el.payBtn.disabled = true;
+  }
+
+  function invalidatePersonalizedQuote({ message = "", hidePanel = true } = {}) {
+    if (personalizedPaymentStarted) return;
+    clearPersonalizedQuoteTimer();
+    personalizedQuoteToken = null;
+    personalizedQuote = null;
+    personalizedQuoteExpiresAtMs = 0;
+    const el = personalizedEls();
+    if (el.card) {
+      el.card.setAttribute("data-plan-id", "");
+      el.card.setAttribute("data-plan-name", "Forfait personnalisé");
+      el.card.setAttribute("data-plan-price", "");
+      el.card.setAttribute("data-plan-duration", "");
+      el.card.setAttribute("data-plan-data", "");
+      el.card.setAttribute("data-plan-unlimited", "1");
+      el.card.setAttribute("data-plan-speed", "");
+    }
+    resetPersonalizedPaymentUi();
+    if (hidePanel) el.quotePanel?.classList.add("hidden");
+    if (el.quoteCountdown) el.quoteCountdown.textContent = "—";
+    if (message) setPersonalizedError(message);
+  }
+
+  function personalizedType() {
+    const active = personalizedEls().typeTabs?.querySelector(".personalized-type-btn.active");
+    return String(active?.getAttribute("data-personalized-type") || "unlimited");
+  }
+
+  function formatPersonalizedStepMinutes(minutes) {
+    const m = Number(minutes || 0);
+    if (!Number.isFinite(m) || m <= 0) return "";
+    if (m % 1440 === 0) return `${m / 1440} jour${m / 1440 > 1 ? "s" : ""}`;
+    if (m % 60 === 0) return `${m / 60} heure${m / 60 > 1 ? "s" : ""}`;
+    return `${m} minutes`;
+  }
+
+  function syncPersonalizedInputRules() {
+    if (!personalizedOptions) return;
+    const el = personalizedEls();
+    const isData = personalizedType() === "data";
+    el.dataField?.classList.toggle("hidden", !isData);
+
+    const duration = personalizedOptions.duration || {};
+    const factor = String(el.durationUnit?.value || "hours") === "days" ? 1440 : 60;
+    const minValue = Math.max(Number(duration.min_minutes || 60) / factor, factor === 1440 ? (1 / 24) : 1);
+    const maxValue = Math.max(minValue, Number(duration.max_minutes || 43200) / factor);
+    if (el.durationValue) {
+      el.durationValue.min = String(Math.round(minValue * 100000) / 100000);
+      el.durationValue.max = String(Math.round(maxValue * 100000) / 100000);
+      el.durationValue.step = "any";
+      const current = Number(el.durationValue.value);
+      if (!Number.isFinite(current) || current < minValue || current > maxValue) {
+        el.durationValue.value = String(factor === 1440 ? Math.max(1, Math.ceil(minValue)) : Math.max(1, Math.ceil(minValue)));
+      }
+    }
+    if (el.durationHint) {
+      el.durationHint.textContent = `De ${formatDuration(Number(duration.min_minutes || 60))} à ${formatDuration(Number(duration.max_minutes || 43200))}, par pas de ${formatPersonalizedStepMinutes(duration.step_minutes || 60)}.`;
+    }
+
+    const data = personalizedOptions.data || {};
+    const minGb = Number(data.min_mb || 512) / 1024;
+    const maxGb = Number(data.max_mb || 102400) / 1024;
+    const stepGb = Number(data.step_mb || 512) / 1024;
+    if (el.dataValue) {
+      el.dataValue.min = String(minGb);
+      el.dataValue.max = String(maxGb);
+      el.dataValue.step = String(stepGb);
+      const current = Number(el.dataValue.value);
+      if (!Number.isFinite(current) || current < minGb || current > maxGb) {
+        el.dataValue.value = String(Math.max(minGb, 1));
+      }
+    }
+    if (el.dataHint) {
+      el.dataHint.textContent = `De ${formatData(Number(data.min_mb || 512))} à ${formatData(Number(data.max_mb || 102400))}, par pas de ${formatData(Number(data.step_mb || 512))}.`;
+    }
+  }
+
+  function readPersonalizedChoice() {
+    if (!personalizedOptions) throw new Error("personalized_options_unavailable");
+    const el = personalizedEls();
+    const type = personalizedType();
+    const durationRaw = Number(el.durationValue?.value);
+    const durationFactor = String(el.durationUnit?.value || "hours") === "days" ? 1440 : 60;
+    const exactDuration = durationRaw * durationFactor;
+    const durationMinutes = Math.round(exactDuration);
+    const duration = personalizedOptions.duration || {};
+
+    if (!Number.isFinite(durationRaw) || durationRaw <= 0 || Math.abs(exactDuration - durationMinutes) > 0.001) {
+      throw new Error("personalized_duration_not_allowed");
+    }
+    if (
+      durationMinutes < Number(duration.min_minutes || 0) ||
+      durationMinutes > Number(duration.max_minutes || 0) ||
+      (durationMinutes - Number(duration.min_minutes || 0)) % Number(duration.step_minutes || 1) !== 0
+    ) {
+      throw new Error("personalized_duration_not_allowed");
+    }
+
+    let dataMb = null;
+    if (type === "data") {
+      const dataGb = Number(el.dataValue?.value);
+      const exactDataMb = dataGb * 1024;
+      dataMb = Math.round(exactDataMb);
+      const data = personalizedOptions.data || {};
+      if (!Number.isFinite(dataGb) || dataGb <= 0 || Math.abs(exactDataMb - dataMb) > 0.001) {
+        throw new Error("personalized_data_not_allowed");
+      }
+      if (
+        dataMb < Number(data.min_mb || 0) ||
+        dataMb > Number(data.max_mb || 0) ||
+        (dataMb - Number(data.min_mb || 0)) % Number(data.step_mb || 1) !== 0
+      ) {
+        throw new Error("personalized_data_not_allowed");
+      }
+    }
+
+    const speedMbps = Number(el.speed?.value);
+    if (!Array.isArray(personalizedOptions.allowed_speeds_mbps) ||
+        !personalizedOptions.allowed_speeds_mbps.some((value) => Math.abs(Number(value) - speedMbps) < 0.001)) {
+      throw new Error("personalized_speed_not_allowed");
+    }
+
+    return {
+      type,
+      duration_minutes: durationMinutes,
+      data_mb: dataMb,
+      speed_mbps: speedMbps,
+    };
+  }
+
+  function personalizedFriendlyError(code) {
+    const c = String(code || "").trim();
+    const messages = {
+      personalized_options_unavailable: "La configuration des forfaits personnalisés est momentanément indisponible.",
+      personalized_duration_not_allowed: "Choisissez une durée conforme aux limites indiquées.",
+      personalized_data_not_allowed: "Choisissez un volume data conforme aux limites indiquées.",
+      personalized_speed_not_allowed: "Choisissez une vitesse proposée.",
+      personalized_plan_combination_blocked: "Cette combinaison n’est pas disponible. Modifiez la durée, la data ou la vitesse.",
+      personalized_quote_expired: "Ce prix a expiré. Calculez un nouveau prix avant de payer.",
+      personalized_quote_not_found: "Ce devis n’est plus disponible. Calculez un nouveau prix.",
+      personalized_quote_already_consumed: "Ce devis a déjà été utilisé pour un paiement.",
+      personalized_plans_not_enabled_for_pool: "Les forfaits personnalisés ne sont plus activés pour ce WiFi.",
+      personalized_pool_unavailable: "Ce WiFi est momentanément indisponible pour les forfaits personnalisés.",
+      payment_provider_disabled_for_pool: "Ce moyen de paiement est désactivé pour ce WiFi.",
+      personalized_payment_start_failed: "Le paiement n’a pas pu être préparé. Calculez un nouveau prix.",
+      personalized_quote_payload_invalid: "Le devis n’a pas pu être calculé.",
+      personalized_payment_payload_invalid: "La demande de paiement n’est pas valide.",
+    };
+    return messages[c] || "Une erreur est survenue. Veuillez réessayer.";
+  }
+
+  function renderPersonalizedPaymentMethods() {
+    const el = personalizedEls();
+    if (!el.methods) return;
+    const available = PAYMENT_METHOD_ORDER.filter((key) =>
+      currentPaymentMethods?.[key] === true && PERSONALIZED_PAYMENT_PROVIDERS[key]?.operational === true
+    );
+    el.methods.innerHTML = available.map((key) => {
+      const meta = PAYMENT_METHOD_META[key];
+      if (!meta) return "";
+      return `<button type="button" class="payment-method-btn pp-payment-method-btn" data-pp-provider="${escapeHtml(key)}" aria-pressed="false" aria-label="Payer avec ${escapeHtml(meta.label)}"><img src="${escapeHtml(meta.logo)}" alt="${escapeHtml(meta.label)}" class="payment-method-logo"></button>`;
+    }).join("");
+    el.methodsUnavailable?.classList.toggle("hidden", available.length > 0);
+    el.methods.querySelectorAll(".pp-payment-method-btn").forEach(addPaymentButtonPressFeedback);
+  }
+
+  function renderPersonalizedQuote() {
+    if (!personalizedQuote) return;
+    const el = personalizedEls();
+    const q = personalizedQuote;
+    const isUnlimited = String(q.type || "") === "unlimited";
+    const dataText = isUnlimited ? "Illimité" : formatData(Number(q.data_mb));
+    const speedText = `${Number(q.speed_mbps)} Mbps`;
+
+    if (el.card) {
+      el.card.setAttribute("data-plan-name", String(q.plan_name || "Forfait personnalisé"));
+      el.card.setAttribute("data-plan-price", String(q.final_price_ar || ""));
+      el.card.setAttribute("data-plan-duration", String(q.duration_minutes || ""));
+      el.card.setAttribute("data-plan-data", isUnlimited ? "" : String(q.data_mb || ""));
+      el.card.setAttribute("data-plan-unlimited", isUnlimited ? "1" : "0");
+      el.card.setAttribute("data-plan-devices", "1");
+      el.card.setAttribute("data-plan-speed", speedText);
+    }
+    if (el.quoteName) el.quoteName.textContent = String(q.plan_name || "Forfait personnalisé");
+    if (el.quotePrice) el.quotePrice.textContent = formatAr(Number(q.final_price_ar));
+    if (el.quoteSpecs) {
+      el.quoteSpecs.textContent = `⏳ ${formatDuration(Number(q.duration_minutes))} · 📦 ${dataText} · 🚀 ${speedText}`;
+    }
+    el.quotePanel?.classList.remove("hidden");
+    renderPersonalizedPaymentMethods();
+  }
+
+  function startPersonalizedQuoteCountdown() {
+    clearPersonalizedQuoteTimer();
+    const el = personalizedEls();
+    const update = function () {
+      const remaining = Math.max(0, personalizedQuoteExpiresAtMs - Date.now());
+      if (remaining <= 0) {
+        personalizedPaymentStarted = false;
+        invalidatePersonalizedQuote({ message: "Ce prix a expiré. Cliquez sur « Voir mon prix » pour créer un nouveau devis." });
+        return;
+      }
+      const totalSeconds = Math.ceil(remaining / 1000);
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      if (el.quoteCountdown) el.quoteCountdown.textContent = `${minutes}:${String(seconds).padStart(2, "0")}`;
+    };
+    update();
+    personalizedQuoteTimerId = window.setInterval(update, 1000);
+  }
+
+  function setPersonalizedBuilderOpen(open) {
+    const el = personalizedEls();
+    if (!el.section || !el.builder || !el.toggle) return;
+    el.builder.classList.toggle("hidden", !open);
+    el.toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) {
+      window.setTimeout(() => {
+        try { el.card?.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (_) {}
+      }, 80);
+    }
+  }
+
+  function applyPersonalizedStateLocks() {
+    const el = personalizedEls();
+    if (!el.card || el.section?.classList.contains("hidden")) return;
+    const unavailable = poolIsFull || portalPreviewState.active || !personalizedPlansEnabled;
+    el.card.querySelectorAll("input,select,button").forEach((node) => {
+      const mayExitUnavailableBuilder =
+        !personalizedPaymentStarted &&
+        unavailable &&
+        (node === el.close || node === el.cancelBtn);
+      if ((personalizedPaymentStarted || unavailable) && !mayExitUnavailableBuilder) {
+        node.setAttribute("disabled", "disabled");
+      } else {
+        node.removeAttribute("disabled");
+      }
+    });
+    if (!personalizedPaymentStarted && !unavailable) {
+      try { updatePayButtonState(el.card); } catch (_) {}
+    }
+    if (poolIsFull) setPersonalizedError("Réseau momentanément saturé. La création et le paiement sont temporairement indisponibles.");
+    else if (!personalizedPaymentStarted && String(el.error?.textContent || "").includes("saturé")) setPersonalizedError("");
+  }
+
+  async function createPersonalizedQuote() {
+    const el = personalizedEls();
+    if (!el.quoteBtn || !el.card) return;
+    if (portalPreviewState.active) return;
+    if (poolIsFull) {
+      setPersonalizedError("Réseau momentanément saturé. Réessayez plus tard.");
+      return;
+    }
+    if (purchaseLockedByVoucher && currentVoucherCode) {
+      showToast(toastOnPlanClick || "⚠️ Vous avez déjà un code en attente ou actif.", "warning", 7500);
+      try { focusVoucherBlock(); } catch (_) {}
+      return;
+    }
+    if (!nasId || !clientMac) {
+      setPersonalizedError("Impossible d’identifier cet appareil sur ce WiFi.");
+      return;
+    }
+
+    let choice;
+    try {
+      choice = readPersonalizedChoice();
+    } catch (error) {
+      setPersonalizedError(personalizedFriendlyError(error?.message));
+      return;
+    }
+
+    invalidatePersonalizedQuote();
+    setPersonalizedError("");
+    const oldLabel = el.quoteBtn.textContent;
+    el.quoteBtn.disabled = true;
+    el.quoteBtn.textContent = "Calcul du prix…";
+
+    try {
+      const response = await fetch(apiUrl("/api/portal/personalized-plan/quote"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          nas_id: nasId,
+          client_mac: clientMac,
+          type: choice.type,
+          duration_minutes: choice.duration_minutes,
+          data_mb: choice.data_mb,
+          speed_mbps: choice.speed_mbps,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.ok || !data?.quote_token || !data?.quote) {
+        const error = new Error(data?.error || "personalized_quote_failed");
+        error.details = data;
+        throw error;
+      }
+
+      const token = String(data.quote_token || "").trim();
+      if (!/^[0-9a-f]{64}$/i.test(token)) throw new Error("personalized_quote_invalid");
+      const expiresAtMs = Date.parse(String(data.quote.expires_at || ""));
+      if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) throw new Error("personalized_quote_expired");
+
+      personalizedQuoteToken = token;
+      personalizedQuote = data.quote;
+      personalizedQuoteExpiresAtMs = expiresAtMs;
+      personalizedPaymentStarted = false;
+      renderPersonalizedQuote();
+      startPersonalizedQuoteCountdown();
+      try { el.quotePanel?.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (_) {}
+    } catch (error) {
+      invalidatePersonalizedQuote();
+      setPersonalizedError(personalizedFriendlyError(error?.message));
+    } finally {
+      el.quoteBtn.disabled = false;
+      el.quoteBtn.textContent = oldLabel || "Voir mon prix";
+      applyPersonalizedStateLocks();
+    }
+  }
+
+  function openPersonalizedPayment(provider) {
+    const el = personalizedEls();
+    const key = String(provider || "");
+    if (!personalizedQuoteIsUsable()) {
+      setPersonalizedError("Ce prix n’est plus disponible. Calculez un nouveau prix.");
+      return;
+    }
+    if (!isTermsAccepted()) {
+      showTermsError();
+      return;
+    }
+    hideTermsError();
+    if (poolIsFull || (purchaseLockedByVoucher && currentVoucherCode)) {
+      if (purchaseLockedByVoucher) try { focusVoucherBlock(); } catch (_) {}
+      showToast(poolIsFull ? "⚠️ Réseau saturé. Achat impossible pour le moment." : "⚠️ Vous avez déjà un code en attente ou actif.", "warning", 7000);
+      return;
+    }
+    if (currentPaymentMethods?.[key] !== true || PERSONALIZED_PAYMENT_PROVIDERS[key]?.operational !== true) {
+      showToast("Ce moyen de paiement n’est pas encore disponible.", "info", 4500);
+      return;
+    }
+    if (key !== "mvola") {
+      showToast("Ce moyen de paiement sera activé prochainement.", "info", 4500);
+      return;
+    }
+
+    el.methods?.querySelectorAll(".pp-payment-method-btn").forEach((btn) => {
+      const selected = btn.getAttribute("data-pp-provider") === key;
+      btn.classList.toggle("payment-method-selected", selected);
+      btn.setAttribute("aria-pressed", selected ? "true" : "false");
+    });
+    el.paymentForm?.classList.remove("hidden");
+    enterPaymentFocusMode(el.card);
+    scrollPaymentFormIntoView(el.card, 120);
+    try { el.phone?.focus({ preventScroll: true }); } catch (_) { try { el.phone?.focus(); } catch (_) {} }
+    scrollPaymentFormIntoView(el.card, 420);
+    updatePayButtonState(el.card);
+  }
+
+  async function runPersonalizedPayment() {
+    const el = personalizedEls();
+    if (!el.card || personalizedPaymentStarted) return;
+    if (!isTermsAccepted()) {
+      showTermsError();
+      return;
+    }
+    if (!personalizedQuoteIsUsable()) {
+      invalidatePersonalizedQuote({ message: "Ce prix a expiré. Calculez un nouveau prix." });
+      return;
+    }
+    const normalized = normalizeMvolaNumber(el.phone?.value || "");
+    if (!normalized.isMvola) {
+      showToast("❌ Numéro MVola invalide. Entrez 034xxxxxxx ou +26134xxxxxxx.", "error");
+      updatePayButtonState(el.card);
+      return;
+    }
+
+    el.confirmWrap?.classList.add("hidden");
+    personalizedPaymentStarted = true;
+    clearPersonalizedQuoteTimer();
+    setPersonalizedError("");
+    showToast("📲 Une demande MVola va être envoyée sur votre téléphone.", "info", 5200);
+    setProcessing(el.card, true);
+
+    let invalidateAfter = false;
+    let keepLockedAfter = false;
+    try {
+      const response = await fetch(apiUrl("/api/portal/personalized-plan/pay"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          quote_token: personalizedQuoteToken,
+          nas_id: nasId,
+          client_mac: clientMac,
+          phone: normalized.cleaned,
+          paymentProvider: "mvola",
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (response.status === 409 && data && (data.code || data.voucher_code)) {
+        const existingCode = String(data.code || data.voucher_code || "").trim();
+        if (existingCode) {
+          await refreshPortalAfterNewCode({ phone: normalized.cleaned, code: existingCode, receiptMeta: personalizedQuote });
+          showToast("⚠️ Vous avez déjà un code en attente ou actif.", "warning", 7500);
+          return;
+        }
+      }
+
+      let paymentRequestRef = "";
+      if (response.status === 409 && data?.error === "personalized_quote_already_consumed" && data?.requestRef) {
+        paymentRequestRef = String(data.requestRef || "").trim();
+      } else if (!response.ok || !data?.ok) {
+        const error = new Error(data?.error || data?.message || "personalized_payment_failed");
+        error.userMessage = data?.message || null;
+        error.httpStatus = response.status;
+        throw error;
+      } else {
+        paymentRequestRef = String(data?.requestRef || data?.request_ref || "").trim();
+      }
+
+      if (!paymentRequestRef) throw new Error("request_ref_missing");
+      const verificationTimeoutMs = normalizeMvolaVerificationTimeoutMs(
+        data?.verificationTimeoutMs ?? data?.verification_timeout_ms
+      );
+      updateProcessingMessage(el.card, "📲 Demande envoyée à MVola", "Vérifiez votre téléphone et entrez votre PIN si MVola vous le demande.");
+      startPaymentVerificationProgress(el.card, verificationTimeoutMs);
+      showToast("📲 Demande MVola envoyée. Vérifiez votre téléphone.", "success", 5200);
+
+      const pollResult = await pollDernierCode(normalized.cleaned, {
+        timeoutMs: verificationTimeoutMs,
+        baselineCode: null,
+        requestRef: paymentRequestRef,
+        clientMac: clientMac || null,
+      });
+
+      if (!pollResult || pollResult.outcome !== "success" || !pollResult.code) {
+        clearProcessingWaitMessages(el.card);
+        if (pollResult?.outcome === "failed") {
+          updateProcessingMessage(el.card, "❌ Paiement non validé par MVola", "MVola n’a pas confirmé ce paiement. Vous pourrez recalculer un nouveau prix.");
+          showToast("❌ Paiement non validé par MVola.", "error", 7500);
+          invalidateAfter = true;
+        } else {
+          keepLockedAfter = true;
+          const isNetwork = pollResult?.outcome === "network_error";
+          updateProcessingMessage(
+            el.card,
+            isNetwork ? "⚠️ Vérification interrompue" : "⏱️ Confirmation MVola non reçue",
+            "Le paiement peut encore être en cours. Ne payez pas une deuxième fois si votre solde a été débité."
+          );
+          showToast("⚠️ Le paiement peut encore être en cours. Ne payez pas une deuxième fois si votre solde a été débité.", "warning", 9500);
+        }
+        return;
+      }
+
+      completePaymentProgress(el.card);
+      const code = String(pollResult.code || "").trim();
+      const receiptMeta = {
+        planName: personalizedQuote?.plan_name || "Forfait personnalisé",
+        durationMinutes: personalizedQuote?.duration_minutes || null,
+        maxDevices: 1,
+        speed_human: personalizedQuote?.speed_mbps ? `${personalizedQuote.speed_mbps} Mbps` : null,
+      };
+      clearProcessingWaitMessages(el.card);
+      await refreshPortalAfterNewCode({ phone: normalized.cleaned, code, receiptMeta });
+      personalizedQuoteToken = null;
+      personalizedQuote = null;
+      personalizedQuoteExpiresAtMs = 0;
+      showToast("🎉 Code reçu ! Cliquez « Utiliser ce code » pour vous connecter.", "success", 6500);
+    } catch (error) {
+      console.error("[RAZAFI] personalized payment error", error);
+      const isNetworkError = String(error?.name || "") === "TypeError" || /failed to fetch|network|connexion/i.test(String(error?.message || ""));
+      if (isNetworkError || String(error?.message || "") === "request_ref_missing") {
+        keepLockedAfter = true;
+        updateProcessingMessage(el.card, "⚠️ Impossible de confirmer l’envoi", "La demande peut avoir été reçue. Si votre solde a été débité, ne payez pas une deuxième fois.");
+        showToast("⚠️ Impossible de confirmer l’envoi. Si votre solde a été débité, ne payez pas une deuxième fois.", "warning", 9500);
+      } else {
+        invalidateAfter = true;
+        const friendly = error?.userMessage || personalizedFriendlyError(error?.message);
+        updateProcessingMessage(el.card, "❌ Demande MVola non acceptée", friendly);
+        showToast("❌ " + friendly, "error", 8000);
+      }
+    } finally {
+      setProcessing(el.card, false);
+      if (invalidateAfter) {
+        personalizedPaymentStarted = false;
+        invalidatePersonalizedQuote({ message: "Le paiement n’a pas été lancé. Calculez un nouveau prix avant de réessayer." });
+        exitPaymentFocusMode();
+      } else if (keepLockedAfter) {
+        personalizedPaymentStarted = true;
+        setPersonalizedError(
+          "La confirmation MVola reste incertaine. Ne lancez pas un deuxième paiement si votre solde a été débité. Contactez l’assistance si nécessaire."
+        );
+        applyPersonalizedStateLocks();
+      } else {
+        personalizedPaymentStarted = false;
+      }
+    }
+  }
+
+  function bindPersonalizedPlanFeature() {
+    if (personalizedFeatureBound) return;
+    const el = personalizedEls();
+    if (!el.section || !el.card) return;
+    personalizedFeatureBound = true;
+
+    el.toggle?.addEventListener("click", () => {
+      if (portalPreviewState.active || poolIsFull) {
+        if (poolIsFull) showToast("⚠️ Réseau saturé. Création temporairement indisponible.", "warning", 6500);
+        return;
+      }
+      setPersonalizedBuilderOpen(el.builder?.classList.contains("hidden"));
+    });
+    el.close?.addEventListener("click", () => {
+      if (el.card.classList.contains("processing") || personalizedPaymentStarted) return;
+      resetPersonalizedPaymentUi();
+      exitPaymentFocusMode();
+      setPersonalizedBuilderOpen(false);
+    });
+
+    el.typeTabs?.querySelectorAll(".personalized-type-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (personalizedPaymentStarted) return;
+        el.typeTabs.querySelectorAll(".personalized-type-btn").forEach((other) => {
+          const active = other === btn;
+          other.classList.toggle("active", active);
+          other.setAttribute("aria-checked", active ? "true" : "false");
+        });
+        invalidatePersonalizedQuote();
+        setPersonalizedError("");
+        syncPersonalizedInputRules();
+      });
+    });
+
+    [el.durationValue, el.durationUnit, el.dataValue, el.speed].forEach((input) => {
+      input?.addEventListener("change", () => {
+        if (personalizedPaymentStarted) return;
+        invalidatePersonalizedQuote();
+        setPersonalizedError("");
+        syncPersonalizedInputRules();
+      });
+      input?.addEventListener("input", () => {
+        if (personalizedPaymentStarted) return;
+        if (personalizedQuoteToken) invalidatePersonalizedQuote();
+        setPersonalizedError("");
+      });
+    });
+
+    el.quoteBtn?.addEventListener("click", createPersonalizedQuote);
+    el.methods?.addEventListener("click", (event) => {
+      const btn = event.target?.closest?.(".pp-payment-method-btn");
+      if (!btn) return;
+      event.preventDefault();
+      openPersonalizedPayment(btn.getAttribute("data-pp-provider"));
+    });
+    el.phone?.addEventListener("input", () => {
+      if (el.card.classList.contains("processing") || personalizedPaymentStarted) return;
+      updatePayButtonState(el.card);
+    });
+    el.payBtn?.addEventListener("click", () => {
+      if (!personalizedQuoteIsUsable()) {
+        invalidatePersonalizedQuote({ message: "Ce prix a expiré. Calculez un nouveau prix." });
+        return;
+      }
+      if (!isTermsAccepted()) {
+        showTermsError();
+        return;
+      }
+      const normalized = normalizeMvolaNumber(el.phone?.value || "");
+      if (!normalized.isMvola) {
+        updatePayButtonState(el.card);
+        showToast("❌ Numéro MVola invalide.", "error");
+        return;
+      }
+      if (el.summary) el.summary.innerHTML = buildPlanSummary(el.card);
+      el.confirmWrap?.classList.remove("hidden");
+      try { el.confirmWrap?.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (_) {}
+    });
+    el.confirmCancelBtn?.addEventListener("click", () => el.confirmWrap?.classList.add("hidden"));
+    el.cancelBtn?.addEventListener("click", () => {
+      if (el.card.classList.contains("processing") || personalizedPaymentStarted) return;
+      resetPersonalizedPaymentUi();
+      exitPaymentFocusMode();
+      showToast("Votre prix reste réservé jusqu’à son expiration.", "info", 4500);
+    });
+    el.confirmBtn?.addEventListener("click", runPersonalizedPayment);
+  }
+
+  async function configurePersonalizedPlanFeature() {
+    const el = personalizedEls();
+    if (!el.section) return;
+    const shouldAttempt = personalizedPlansEnabled && !portalPreviewState.active && !!nasId && !!clientMac;
+    if (!shouldAttempt) {
+      el.section.classList.add("hidden");
+      personalizedOptions = null;
+      personalizedPaymentStarted = false;
+      invalidatePersonalizedQuote();
+      return;
+    }
+
+    try {
+      const response = await fetch(apiUrl(`/api/portal/personalized-plan/options?nas_id=${encodeURIComponent(nasId)}`), {
+        method: "GET",
+        cache: "no-store",
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.ok || data.enabled !== true) throw new Error(data?.error || "personalized_options_unavailable");
+      personalizedOptions = data;
+
+      if (el.speed) {
+        el.speed.innerHTML = (data.allowed_speeds_mbps || []).map((speed) =>
+          `<option value="${escapeHtml(String(speed))}">${escapeHtml(String(speed))} Mbps</option>`
+        ).join("");
+      }
+      syncPersonalizedInputRules();
+      bindPersonalizedPlanFeature();
+      renderPersonalizedPaymentMethods();
+      el.section.classList.remove("hidden");
+      applyPersonalizedStateLocks();
+    } catch (error) {
+      personalizedOptions = null;
+      personalizedPaymentStarted = false;
+      invalidatePersonalizedQuote();
+      el.section.classList.add("hidden");
+      console.warn("[RAZAFI] personalized plan options unavailable", error?.message || error);
+    }
+  }
+
+  // ============================================================
+  // END PP-3
+  // ============================================================
 
   // Build the payment method buttons for a plan card from the current pool's
   // active payment_methods. MVola reuses the existing .choose-plan-btn class
@@ -3579,6 +4315,8 @@ function saturationLabel(pct) {
       }
       currentActivePaymentMethods = getActivePaymentMethodKeys();
       updatePaymentMethodsSubtitle();
+      personalizedPlansEnabled = data?.personalized_plans_enabled === true;
+      await configurePersonalizedPlanFeature();
 
       // G.2: save opaque history token from server (closure variable only)
       // Never stored in localStorage, sessionStorage, DOM, window, or URL.
@@ -4141,7 +4879,11 @@ function saturationLabel(pct) {
       body.razafi-payment-focus #portalAnnouncementCard { display: none !important; }
       body.razafi-payment-focus .terms-card { display: none !important; }
       body.razafi-payment-focus .portal-footer { display: none !important; }
+      body.razafi-payment-focus .personalized-plan-section { display: none !important; }
       body.razafi-payment-focus .plan-card:not(.razafi-payment-focus-target) { display: none !important; }
+      body.razafi-payment-focus.razafi-personalized-payment-focus .plans-shell { display: none !important; }
+      body.razafi-payment-focus.razafi-personalized-payment-focus .personalized-plan-section { display: block !important; }
+      body.razafi-payment-focus.razafi-personalized-payment-focus .personalized-plan-entry { display: none !important; }
     `;
     document.head.appendChild(st);
   }
@@ -4150,16 +4892,18 @@ function saturationLabel(pct) {
     try {
       if (!selectedCard) return;
       ensurePaymentFocusStyle();
+      const isPersonalized = selectedCard.id === "personalizedPlanCard" || !!selectedCard.closest?.("#personalizedPlanSection");
       getPlanCards().forEach(function (card) {
-        card.classList.toggle("razafi-payment-focus-target", card === selectedCard);
+        card.classList.toggle("razafi-payment-focus-target", !isPersonalized && card === selectedCard);
       });
+      document.body.classList.toggle("razafi-personalized-payment-focus", isPersonalized);
       document.body.classList.add("razafi-payment-focus");
     } catch (_) {}
   }
 
   function exitPaymentFocusMode() {
     try {
-      document.body.classList.remove("razafi-payment-focus");
+      document.body.classList.remove("razafi-payment-focus", "razafi-personalized-payment-focus");
       getPlanCards().forEach(function (card) {
         card.classList.remove("razafi-payment-focus-target");
       });
@@ -4170,6 +4914,9 @@ function saturationLabel(pct) {
     getPlanCards().forEach((card) => {
       resetCardPaymentState(card);
     });
+    try {
+      if (!personalizedPaymentStarted) resetPersonalizedPaymentUi();
+    } catch (_) {}
     try { exitPaymentFocusMode(); } catch (_) {}
   }
 

@@ -20734,6 +20734,30 @@ function getMvolaErrorInfo(err) {
 function mapMvolaInitiateError(err) {
   const info = getMvolaErrorInfo(err);
 
+  // MVola intermittently returns HTTP 404 with an entirely empty body on the
+  // valid production MerchantPay route. Treat only this very narrow signature
+  // as transient so the existing initiate helper performs one controlled retry.
+  // Any non-empty 404 remains a permanent/unknown error.
+  const responseStatus = Number(err?.response?.status || 0);
+  const responseBody = err?.response?.data;
+  const emptyResponseBody =
+    responseBody === null ||
+    responseBody === undefined ||
+    responseBody === "" ||
+    (Buffer.isBuffer(responseBody) && responseBody.length === 0) ||
+    (typeof responseBody === "object" &&
+      !Buffer.isBuffer(responseBody) &&
+      Object.keys(responseBody).length === 0);
+
+  if (responseStatus === 404 && emptyResponseBody) {
+    return {
+      type: "TEMPORARY_PROVIDER_ERROR",
+      transient: true,
+      httpStatus: 503,
+      userMessage: "Service MVola temporairement indisponible. Réessayez dans quelques instants.",
+    };
+  }
+
   // MVola/provider temporary throttling. Example returned by MVola:
   // { code: "900802", message: "Message throttled out", nextAccessTime: "..." }
   // Treat this as provider-side cooldown, not as a permanent client/payment error.

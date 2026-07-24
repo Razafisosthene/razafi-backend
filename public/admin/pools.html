@@ -255,6 +255,74 @@
       white-space:pre-wrap;
     }
     .rz-ann-preview.is-empty{color:#6b7280;background:rgba(17,24,39,.045);border-color:rgba(17,24,39,.06);}
+    .rz-pp-toggle-card{
+      position:relative;
+      display:flex;
+      align-items:center;
+      gap:12px;
+      min-height:76px;
+      padding:13px 14px;
+      border-radius:22px;
+      border:1px solid rgba(17,24,39,.10);
+      background:rgba(17,24,39,.035);
+      cursor:pointer;
+      transition:border-color .18s ease,background .18s ease,box-shadow .18s ease;
+    }
+    .rz-pp-toggle-card.is-on{
+      border-color:rgba(25,135,84,.30);
+      background:rgba(25,135,84,.075);
+      box-shadow:0 10px 24px rgba(25,135,84,.08);
+    }
+    .rz-pp-toggle-card.is-readonly{cursor:default;opacity:.86;}
+    .rz-pp-toggle-card input{
+      position:absolute;
+      width:1px;
+      height:1px;
+      opacity:0;
+      pointer-events:none;
+    }
+    .rz-pp-toggle-card:focus-within{
+      outline:3px solid rgba(13,110,253,.20);
+      outline-offset:2px;
+    }
+    .rz-pp-toggle-icon{
+      flex:0 0 42px;
+      width:42px;
+      height:42px;
+      display:grid;
+      place-items:center;
+      border-radius:15px;
+      background:rgba(17,24,39,.07);
+      font-size:20px;
+    }
+    .rz-pp-toggle-card.is-on .rz-pp-toggle-icon{background:rgba(25,135,84,.14);}
+    .rz-pp-toggle-copy{display:flex;flex:1;min-width:0;flex-direction:column;gap:3px;}
+    .rz-pp-toggle-copy strong{font-size:14px;font-weight:950;color:#111827;}
+    .rz-pp-toggle-copy small{font-size:12px;font-weight:750;color:var(--rz-muted,#6b7280);line-height:1.3;}
+    .rz-pp-toggle-switch{
+      position:relative;
+      flex:0 0 46px;
+      width:46px;
+      height:28px;
+      border-radius:999px;
+      background:rgba(107,114,128,.30);
+      transition:background .18s ease;
+    }
+    .rz-pp-toggle-switch::after{
+      content:"";
+      position:absolute;
+      top:3px;
+      left:3px;
+      width:22px;
+      height:22px;
+      border-radius:50%;
+      background:#fff;
+      box-shadow:0 2px 8px rgba(17,24,39,.22);
+      transition:transform .18s ease;
+    }
+    .rz-pp-toggle-card.is-on .rz-pp-toggle-switch{background:#198754;}
+    .rz-pp-toggle-card.is-on .rz-pp-toggle-switch::after{transform:translateX(18px);}
+
     .rz-tech-toggle{
       width:100%;
       border:0;
@@ -495,6 +563,6 @@
 
   <!-- NEW shared drawer -->
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="/admin/pools.js?v=admin-wide-2"></script>
+  <script src="/admin/pools.js?v=pp3-toggle-1"></script>
 </body>
 </html>

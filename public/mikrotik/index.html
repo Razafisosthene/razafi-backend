@@ -11,7 +11,7 @@
   <link rel="icon" type="image/svg+xml" href="assets/img/favicon.svg" />
   <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png" />
 
-  <link rel="stylesheet" href="assets/css/style.css?v=mvola-progress-1" />
+  <link rel="stylesheet" href="assets/css/style.css?v=pp3-definitif-1" />
     <style>
     /* =========================================================
        RAZAFI Portal – Apple-inspired Phase 1
@@ -732,6 +732,151 @@
       </div>
     </section>
 
+    <!-- ========= PLAN PERSONNALISÉ (PP-3, activé par pool) ========= -->
+    <section id="personalizedPlanSection" class="personalized-plan-section hidden" aria-labelledby="personalizedPlanTitle">
+      <button id="personalizedPlanToggle" type="button" class="personalized-plan-entry" aria-expanded="false" aria-controls="personalizedPlanBuilder">
+        <span class="personalized-plan-entry-icon" aria-hidden="true">✨</span>
+        <span class="personalized-plan-entry-copy">
+          <strong id="personalizedPlanTitle">Créer mon forfait</strong>
+          <small>Choisissez la durée, la data et la vitesse.</small>
+        </span>
+        <span class="personalized-plan-entry-chevron" aria-hidden="true">›</span>
+      </button>
+
+      <div id="personalizedPlanBuilder" class="personalized-plan-builder hidden">
+        <div id="personalizedPlanCard" class="card personalized-plan-card"
+             data-plan-id=""
+             data-plan-name="Forfait personnalisé"
+             data-plan-price=""
+             data-plan-duration=""
+             data-plan-data=""
+             data-plan-unlimited="1"
+             data-plan-devices="1"
+             data-plan-speed="">
+          <div class="personalized-plan-head">
+            <div>
+              <div class="personalized-plan-kicker">Forfait sur mesure</div>
+              <h3>Composez votre connexion</h3>
+            </div>
+            <button id="personalizedPlanClose" type="button" class="personalized-plan-close" aria-label="Fermer">×</button>
+          </div>
+
+          <div id="personalizedPlanConfig" class="personalized-plan-config">
+            <div class="personalized-field personalized-field-wide">
+              <span class="personalized-label">Type de forfait</span>
+              <div id="personalizedTypeTabs" class="personalized-segmented" role="radiogroup" aria-label="Type de forfait">
+                <button type="button" class="personalized-type-btn active" data-personalized-type="unlimited" role="radio" aria-checked="true">♾️ Illimité</button>
+                <button type="button" class="personalized-type-btn" data-personalized-type="data" role="radio" aria-checked="false">📊 Data</button>
+              </div>
+            </div>
+
+            <div class="personalized-field">
+              <label class="personalized-label" for="personalizedDurationValue">Durée</label>
+              <div class="personalized-inline-input">
+                <input id="personalizedDurationValue" type="number" min="1" step="1" value="1" inputmode="numeric" aria-describedby="personalizedDurationHint">
+                <select id="personalizedDurationUnit" aria-label="Unité de durée">
+                  <option value="hours">heure(s)</option>
+                  <option value="days">jour(s)</option>
+                </select>
+              </div>
+              <small id="personalizedDurationHint" class="personalized-hint"></small>
+            </div>
+
+            <div id="personalizedDataField" class="personalized-field hidden">
+              <label class="personalized-label" for="personalizedDataValue">Volume data</label>
+              <div class="personalized-inline-input personalized-inline-input-unit">
+                <input id="personalizedDataValue" type="number" min="0.5" step="0.5" value="1" inputmode="decimal" aria-describedby="personalizedDataHint">
+                <span class="personalized-unit">Go</span>
+              </div>
+              <small id="personalizedDataHint" class="personalized-hint"></small>
+            </div>
+
+            <div class="personalized-field">
+              <label class="personalized-label" for="personalizedSpeed">Vitesse</label>
+              <select id="personalizedSpeed"></select>
+              <small class="personalized-hint">Vitesse maximale appliquée à votre code.</small>
+            </div>
+
+            <div id="personalizedConfigError" class="personalized-error hidden" role="alert" aria-live="polite"></div>
+
+            <button id="personalizedQuoteBtn" type="button" class="primary-btn personalized-quote-btn">Voir mon prix</button>
+          </div>
+
+          <div id="personalizedQuotePanel" class="personalized-quote-panel hidden" aria-live="polite">
+            <div class="personalized-quote-top">
+              <div>
+                <div class="personalized-quote-label">Votre forfait</div>
+                <strong id="personalizedQuoteName">—</strong>
+              </div>
+              <div id="personalizedQuotePrice" class="personalized-quote-price">—</div>
+            </div>
+            <div id="personalizedQuoteSpecs" class="personalized-quote-specs"></div>
+            <div class="personalized-quote-expiry">Prix réservé pendant <strong id="personalizedQuoteCountdown">—</strong>.</div>
+
+            <div class="personalized-payment-block">
+              <div class="personalized-label">Choisissez votre moyen de paiement</div>
+              <div id="personalizedPaymentMethods" class="personalized-payment-methods"></div>
+              <div id="personalizedPaymentUnavailable" class="personalized-hint hidden">Aucun moyen de paiement n’est disponible pour le moment.</div>
+            </div>
+
+            <div id="personalizedPaymentForm" class="plan-payment personalized-payment-form hidden" aria-live="polite">
+              <h5>Paiement MVola</h5>
+
+              <label for="personalizedMvolaInput">Numéro MVola payeur</label>
+              <input id="personalizedMvolaInput" class="mvola-input" type="tel"
+                     placeholder="0341234567 ou +26134xxxxxxx"
+                     inputmode="numeric" autocomplete="tel">
+              <div class="phone-hint muted small"></div>
+
+              <button id="personalizedPayBtn" type="button" class="primary-btn pay-btn" disabled>Continuer</button>
+              <button id="personalizedPaymentCancel" type="button" class="secondary-btn cancel-btn">Annuler</button>
+
+              <div class="pay-confirm hidden" role="dialog" aria-label="Confirmation paiement personnalisé">
+                <div class="pay-confirm-inner">
+                  <h6>Confirmer le paiement</h6>
+                  <div class="pay-summary"></div>
+                  <div class="pay-confirm-actions">
+                    <button id="personalizedConfirmBtn" type="button" class="primary-btn confirm-btn">Confirmer le paiement</button>
+                    <button id="personalizedConfirmCancel" type="button" class="secondary-btn confirm-cancel-btn">Annuler</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="processing-overlay hidden">
+                <div class="processing-card">
+                  <div class="processing-main">
+                    <div class="spinner" aria-hidden="true"></div>
+                    <div class="processing-text">
+                      <div class="processing-title">📡 Connexion avec MVola…</div>
+                      <div class="processing-sub">Envoi sécurisé de la demande. Gardez cette page ouverte.</div>
+                    </div>
+                  </div>
+                  <div class="payment-progress">
+                    <div class="payment-progress-track is-indeterminate" role="progressbar"
+                         aria-label="Envoi de la demande MVola" aria-valuemin="0" aria-valuemax="100"
+                         aria-valuetext="Envoi de la demande MVola">
+                      <div class="payment-progress-fill"></div>
+                    </div>
+                    <div class="payment-progress-meta">
+                      <span class="payment-progress-label">Connexion sécurisée avec MVola</span>
+                      <span class="payment-progress-elapsed" aria-hidden="true"></span>
+                    </div>
+                    <p class="payment-progress-note">Ne fermez pas cette page.</p>
+                  </div>
+                  <div class="processing-sr-status sr-only" aria-live="polite" aria-atomic="true"></div>
+                </div>
+              </div>
+
+              <div class="mvola-badge">
+                <span class="secure-text">🔒 Paiement sécurisé via</span>
+                <img src="assets/img/mvola.png" alt="MVola">
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ========= PLANS ========= -->
     <section class="plans-shell">
       <div class="plans-sticky-head">
@@ -902,7 +1047,7 @@
       }
     });
   </script>
-  <script src="assets/js/mikrotik.js?v=p2-a3-3-2" defer></script>
+  <script src="assets/js/mikrotik.js?v=pp3-definitif-1" defer></script>
 
 </body>
 </html>
