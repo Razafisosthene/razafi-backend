@@ -408,6 +408,12 @@ input[type="tel"] {
   display: block;
 }
 
+/* PP-3: personalized payment form is not inside a standard .plan-card.
+   JavaScript controls visibility with the existing .hidden class. */
+.personalized-plan-card .personalized-payment-form:not(.hidden) {
+  display: block;
+}
+
 
 /* ===============================
    A + D POLISH (Plan cards + Mobile)
