@@ -1584,15 +1584,30 @@ body.theme-dark #rzAssistSend {
   font-weight: 950;
   letter-spacing: -.035em;
 }
+.personalized-return-slot {
+  grid-column: 1 / -1;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.personalized-return-slot.hidden { display: none !important; }
+.personalized-return-slot-config { margin-top: 2px; }
+.personalized-return-slot-quote {
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid rgba(17,24,39,.08);
+}
 .personalized-plan-close {
-  width: auto;
-  min-height: 34px;
+  width: 100%;
+  min-height: 44px;
   margin: 0;
-  padding: 0 12px;
-  border: 0;
+  padding: 0 15px;
+  border: 1px solid rgba(17,24,39,.08);
   border-radius: 999px;
-  background: rgba(17,24,39,.07);
+  background: rgba(118,118,128,.10);
   color: #374151;
+  box-shadow: 0 8px 22px rgba(15,23,42,.055);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1602,9 +1617,12 @@ body.theme-dark #rzAssistSend {
   font-weight: 850;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
-  transition: transform .12s ease, opacity .16s ease;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  transition: transform .12s ease, opacity .16s ease, background .16s ease, box-shadow .16s ease;
 }
-.personalized-plan-close:active { transform: scale(.97); }
+.personalized-plan-close:active { transform: scale(.985); }
+.personalized-plan-close.hidden { display: none !important; }
 .personalized-plan-config {
   display: grid;
   grid-template-columns: repeat(2, minmax(0,1fr));
@@ -1728,7 +1746,12 @@ body.theme-dark .personalized-plan-card {
 body.theme-dark .personalized-plan-close,
 body.theme-dark .personalized-unit,
 body.theme-dark .personalized-quote-specs { background: rgba(255,255,255,.08); }
-body.theme-dark .personalized-plan-close { color: #e5e7eb; }
+body.theme-dark .personalized-return-slot-quote { border-top-color: rgba(255,255,255,.09); }
+body.theme-dark .personalized-plan-close {
+  color: #e5e7eb;
+  border-color: rgba(255,255,255,.09);
+  box-shadow: 0 10px 26px rgba(0,0,0,.20);
+}
 body.theme-dark .personalized-plan-head h3,
 body.theme-dark #personalizedQuoteName,
 body.theme-dark .personalized-quote-price { color: #f5f5f7; }

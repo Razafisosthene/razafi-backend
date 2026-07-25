@@ -11,7 +11,7 @@
   <link rel="icon" type="image/svg+xml" href="assets/img/favicon.svg" />
   <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png" />
 
-  <link rel="stylesheet" href="assets/css/style.css?v=pp3-catalog-mode-1" />
+  <link rel="stylesheet" href="assets/css/style.css?v=pp3-builder-refinement-1" />
     <style>
     /* =========================================================
        RAZAFI Portal – Apple-inspired Phase 1
@@ -381,7 +381,9 @@
 
 
     body.personalized-builder-mode .plans-shell,
-    body.personalized-builder-mode #durationFilterBar{
+    body.personalized-builder-mode #durationFilterBar,
+    body.personalized-builder-mode #portalAnnouncementCard,
+    body.personalized-builder-mode .terms-card{
       display:none!important;
     }
     body.personalized-builder-mode .portal-footer{
@@ -764,10 +766,6 @@
              data-plan-devices="1"
              data-plan-speed="">
           <div class="personalized-plan-head">
-            <button id="personalizedPlanClose" type="button" class="personalized-plan-close" aria-label="Voir les forfaits standards">
-              <span aria-hidden="true">←</span>
-              <span>Voir les forfaits standards</span>
-            </button>
             <div class="personalized-plan-heading">
               <div class="personalized-plan-kicker">Forfait sur mesure</div>
               <h3>Composez votre connexion</h3>
@@ -813,6 +811,13 @@
             <div id="personalizedConfigError" class="personalized-error hidden" role="alert" aria-live="polite"></div>
 
             <button id="personalizedQuoteBtn" type="button" class="primary-btn personalized-quote-btn">Voir mon prix</button>
+
+            <div id="personalizedReturnBeforeQuote" class="personalized-return-slot personalized-return-slot-config">
+              <button id="personalizedPlanClose" type="button" class="personalized-plan-close" aria-label="Voir les forfaits standards">
+                <span aria-hidden="true">←</span>
+                <span>Voir les forfaits standards</span>
+              </button>
+            </div>
           </div>
 
           <div id="personalizedQuotePanel" class="personalized-quote-panel hidden" aria-live="polite">
@@ -831,6 +836,8 @@
               <div id="personalizedPaymentMethods" class="personalized-payment-methods"></div>
               <div id="personalizedPaymentUnavailable" class="personalized-hint hidden">Aucun moyen de paiement n’est disponible pour le moment.</div>
             </div>
+
+            <div id="personalizedReturnAfterMethods" class="personalized-return-slot personalized-return-slot-quote hidden"></div>
 
             <div id="personalizedPaymentForm" class="plan-payment personalized-payment-form hidden" aria-live="polite">
               <h5>Paiement MVola</h5>
@@ -1064,7 +1071,7 @@
       }
     });
   </script>
-  <script src="assets/js/mikrotik.js?v=pp3-catalog-mode-1" defer></script>
+  <script src="assets/js/mikrotik.js?v=pp3-builder-refinement-1" defer></script>
 
 </body>
 </html>

@@ -3413,6 +3413,8 @@ function saturationLabel(pct) {
       builder: document.getElementById("personalizedPlanBuilder"),
       card: document.getElementById("personalizedPlanCard"),
       close: document.getElementById("personalizedPlanClose"),
+      returnBeforeQuote: document.getElementById("personalizedReturnBeforeQuote"),
+      returnAfterMethods: document.getElementById("personalizedReturnAfterMethods"),
       config: document.getElementById("personalizedPlanConfig"),
       typeTabs: document.getElementById("personalizedTypeTabs"),
       durationValue: document.getElementById("personalizedDurationValue"),
@@ -3466,6 +3468,29 @@ function saturationLabel(pct) {
     );
   }
 
+  function syncPersonalizedReturnButton() {
+    const el = personalizedEls();
+    if (!el.close) return;
+
+    const quoteVisible = !!(
+      personalizedQuote &&
+      el.quotePanel &&
+      !el.quotePanel.classList.contains("hidden")
+    );
+    const paymentOpen = !!(
+      el.paymentForm &&
+      !el.paymentForm.classList.contains("hidden")
+    );
+    const target = quoteVisible ? el.returnAfterMethods : el.returnBeforeQuote;
+
+    if (target && el.close.parentElement !== target) target.appendChild(el.close);
+
+    const hideReturn = paymentOpen || personalizedPaymentStarted;
+    el.close.classList.toggle("hidden", hideReturn);
+    el.returnBeforeQuote?.classList.toggle("hidden", quoteVisible || hideReturn);
+    el.returnAfterMethods?.classList.toggle("hidden", !quoteVisible || hideReturn);
+  }
+
   function resetPersonalizedPaymentUi({ keepPhone = false } = {}) {
     const el = personalizedEls();
     if (!el.card) return;
@@ -3483,6 +3508,7 @@ function saturationLabel(pct) {
       hint.classList.remove("hint-ok", "hint-error");
     }
     if (el.payBtn) el.payBtn.disabled = true;
+    syncPersonalizedReturnButton();
   }
 
   function invalidatePersonalizedQuote({ message = "", hidePanel = true } = {}) {
@@ -3504,6 +3530,7 @@ function saturationLabel(pct) {
     resetPersonalizedPaymentUi();
     if (hidePanel) el.quotePanel?.classList.add("hidden");
     if (el.quoteCountdown) el.quoteCountdown.textContent = "—";
+    syncPersonalizedReturnButton();
     if (message) setPersonalizedError(message);
   }
 
@@ -3518,6 +3545,14 @@ function saturationLabel(pct) {
     if (m % 1440 === 0) return `${m / 1440} jour${m / 1440 > 1 ? "s" : ""}`;
     if (m % 60 === 0) return `${m / 60} heure${m / 60 > 1 ? "s" : ""}`;
     return `${m} minutes`;
+  }
+
+  function formatPersonalizedRangeGb(megabytes) {
+    const gb = Number(megabytes || 0) / 1024;
+    if (!Number.isFinite(gb) || gb < 0) return "—";
+    const rounded = Math.round(gb * 100) / 100;
+    const text = Number.isInteger(rounded) ? String(Math.trunc(rounded)) : String(rounded).replace(".", ",");
+    return `${text} Go`;
   }
 
   function syncPersonalizedInputRules() {
@@ -3540,7 +3575,7 @@ function saturationLabel(pct) {
       }
     }
     if (el.durationHint) {
-      el.durationHint.textContent = `De ${formatDuration(Number(duration.min_minutes || 60))} à ${formatDuration(Number(duration.max_minutes || 43200))}, par pas de ${formatPersonalizedStepMinutes(duration.step_minutes || 60)}.`;
+      el.durationHint.textContent = `De ${formatDuration(Number(duration.min_minutes || 60))} à ${formatDuration(Number(duration.max_minutes || 43200))}`;
     }
 
     const data = personalizedOptions.data || {};
@@ -3557,7 +3592,7 @@ function saturationLabel(pct) {
       }
     }
     if (el.dataHint) {
-      el.dataHint.textContent = `De ${formatData(Number(data.min_mb || 512))} à ${formatData(Number(data.max_mb || 102400))}, par pas de ${formatData(Number(data.step_mb || 512))}.`;
+      el.dataHint.textContent = `De ${formatPersonalizedRangeGb(Number(data.min_mb || 512))} à ${formatPersonalizedRangeGb(Number(data.max_mb || 102400))}`;
     }
   }
 
@@ -3674,6 +3709,7 @@ function saturationLabel(pct) {
     }
     el.quotePanel?.classList.remove("hidden");
     renderPersonalizedPaymentMethods();
+    syncPersonalizedReturnButton();
   }
 
   function startPersonalizedQuoteCountdown() {
@@ -3703,6 +3739,7 @@ function saturationLabel(pct) {
     el.builder.classList.toggle("hidden", !shouldOpen);
     el.toggle.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
     document.body.classList.toggle("personalized-builder-mode", shouldOpen);
+    syncPersonalizedReturnButton();
     if (shouldOpen) applyPersonalizedStateLocks();
 
     window.setTimeout(() => {
@@ -3724,6 +3761,7 @@ function saturationLabel(pct) {
       el.toggle?.setAttribute("aria-expanded", "false");
       document.body.classList.remove("personalized-builder-mode");
     }
+    syncPersonalizedReturnButton();
     updatePaymentMethodsSubtitle();
   }
 
@@ -3855,6 +3893,7 @@ function saturationLabel(pct) {
       btn.setAttribute("aria-pressed", selected ? "true" : "false");
     });
     el.paymentForm?.classList.remove("hidden");
+    syncPersonalizedReturnButton();
     enterPaymentFocusMode(el.card);
     scrollPaymentFormIntoView(el.card, 120);
     try { el.phone?.focus({ preventScroll: true }); } catch (_) { try { el.phone?.focus(); } catch (_) {} }
@@ -4000,6 +4039,7 @@ function saturationLabel(pct) {
       } else {
         personalizedPaymentStarted = false;
       }
+      syncPersonalizedReturnButton();
     }
   }
 
@@ -4014,7 +4054,12 @@ function saturationLabel(pct) {
         if (poolIsFull) showToast("⚠️ Réseau saturé. Création temporairement indisponible.", "warning", 6500);
         return;
       }
-      setPersonalizedBuilderOpen(el.builder?.classList.contains("hidden"));
+      const opening = el.builder?.classList.contains("hidden");
+      if (opening && !isTermsAccepted()) {
+        showTermsError();
+        return;
+      }
+      setPersonalizedBuilderOpen(opening);
     });
     el.close?.addEventListener("click", () => {
       if (el.card.classList.contains("processing") || personalizedPaymentStarted) return;
