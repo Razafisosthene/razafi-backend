@@ -3927,6 +3927,7 @@ function saturationLabel(pct) {
     setProcessing(el.card, true);
 
     let invalidateAfter = false;
+    let invalidateMessage = "Le paiement n’a pas été lancé. Calculez un nouveau prix avant de réessayer.";
     let keepLockedAfter = false;
     try {
       const response = await fetch(apiUrl("/api/portal/personalized-plan/pay"), {
@@ -3983,6 +3984,7 @@ function saturationLabel(pct) {
         if (pollResult?.outcome === "failed") {
           updateProcessingMessage(el.card, "❌ Paiement non validé par MVola", "MVola n’a pas confirmé ce paiement. Vous pourrez recalculer un nouveau prix.");
           showToast("❌ Paiement non validé par MVola.", "error", 7500);
+          invalidateMessage = "Paiement non validé par MVola. Aucun code n’a été généré. Cliquez sur « Voir mon prix » pour réessayer.";
           invalidateAfter = true;
         } else {
           keepLockedAfter = true;
@@ -4028,7 +4030,7 @@ function saturationLabel(pct) {
       setProcessing(el.card, false);
       if (invalidateAfter) {
         personalizedPaymentStarted = false;
-        invalidatePersonalizedQuote({ message: "Le paiement n’a pas été lancé. Calculez un nouveau prix avant de réessayer." });
+        invalidatePersonalizedQuote({ message: invalidateMessage });
         exitPaymentFocusMode();
       } else if (keepLockedAfter) {
         personalizedPaymentStarted = true;
