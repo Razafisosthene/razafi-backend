@@ -3103,6 +3103,9 @@ const ASSISTANT_FORBIDDEN_LIVE_KEYS = new Set([
   "radius_nas_id", "mikrotik_ip", "router_credentials", "admin_session",
   "supabase_key", "platform_share_pct", "platform_total_ar",
   "mvola_phone", "ap_mac",
+  // Assistant PP: never accept or echo quote/device/config identities.
+  "quote_token", "token_hash", "device_hash", "quote_id", "pool_id",
+  "config_hash", "pricing_config_version_id", "technical_plan_id",
 ]);
 
 // Safe live_data_keys per context.
@@ -3133,6 +3136,9 @@ const ASSISTANT_ALLOWED_LIVE_KEYS = {
     "portal_status_label",   // safe human label for portal status
     "page_context",          // "portal" (static string)
     "ui_context_version",    // "G.3B.1" (static version string)
+    // Assistant PP: one deeply-sanitized UI-state object. Trusted pricing config
+    // is injected server-side later; the browser never supplies config authority.
+    "personalized_plan_context",
   ]),
   admin_owner: new Set([
     "plans", "revenue", "clients", "pools", "pool_percent",
@@ -3297,6 +3303,216 @@ function normalizeAssistantContext(raw) {
   return null;
 }
 
+
+// =============================================================================
+// ASSISTANT PP — safe context sanitation and trusted server enrichment
+// =============================================================================
+const ASSISTANT_PP_PORTAL_STATES = new Set([
+  "disabled", "unavailable", "builder_closed", "builder_open", "quote_ready",
+  "quote_expired", "payment_form_visible", "confirmation_visible",
+  "payment_in_progress", "payment_uncertain",
+]);
+
+const ASSISTANT_PP_ALLOWED_TYPES = new Set(["data", "unlimited"]);
+const ASSISTANT_PP_ALLOWED_ROUNDING = new Set(["ceil_100"]);
+const ASSISTANT_PP_OPERATIONAL_PAYMENT_METHODS = Object.freeze(["MVola"]);
+const ASSISTANT_PP_PAYMENT_LABELS = new Set(["MVola", "Orange Money", "Airtel Money", "Visa"]);
+const ASSISTANT_PP_FORBIDDEN_NESTED_KEYS = new Set([
+  "id", "plan_id", "planid", "pool_id", "poolid", "nas_id", "nasid",
+  "mac", "client_mac", "clientmac", "phone", "pin",
+  "voucher", "voucher_code", "vouchercode", "requestref", "request_ref",
+  "transaction_ref", "transactionref", "transaction_id", "transactionid",
+  "router_ip", "routerip", "mikrotik_rate_limit", "mikrotikratelimit", "radius_attr", "radiusattr",
+  "quote_token", "quotetoken", "token", "token_hash", "tokenhash",
+  "device_hash", "devicehash", "quote_id", "quoteid",
+  "config_hash", "confighash", "pricing_config_version_id", "pricingconfigversionid",
+  "technical_plan_id", "technicalplanid", "secret", "api_key", "apikey", "password",
+]);
+
+function assistantPpNormalizedKey(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "");
+}
+
+function assistantPpHasForbiddenNestedKey(value, depth = 0) {
+  if (!value || typeof value !== "object" || depth > 4) return false;
+  if (Array.isArray(value)) {
+    return value.some((item) => assistantPpHasForbiddenNestedKey(item, depth + 1));
+  }
+  for (const [key, nested] of Object.entries(value)) {
+    if (ASSISTANT_PP_FORBIDDEN_NESTED_KEYS.has(assistantPpNormalizedKey(key))) return true;
+    if (assistantPpHasForbiddenNestedKey(nested, depth + 1)) return true;
+  }
+  return false;
+}
+
+function assistantPpSafeNumber(value, { integer = false, min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  const out = integer ? Math.round(n) : Math.round(n * 100) / 100;
+  if (out < min || out > max) return null;
+  return out;
+}
+
+function sanitizePortalPersonalizedPlanContext(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  if (assistantPpHasForbiddenNestedKey(raw)) return null;
+
+  const stateRaw = String(raw.state || "").trim();
+  const state = ASSISTANT_PP_PORTAL_STATES.has(stateRaw) ? stateRaw : "unavailable";
+  const clean = {
+    enabled: raw.enabled === true,
+    available: raw.available === true,
+    state,
+    choice: null,
+    quote: null,
+    quote_seconds_left: 0,
+    payment_methods: [],
+    ui_message: null,
+    context_version: "PP-A.1",
+  };
+
+  if (raw.choice && typeof raw.choice === "object" && !Array.isArray(raw.choice)) {
+    const type = String(raw.choice.type || "").trim().toLowerCase();
+    const duration = assistantPpSafeNumber(raw.choice.duration_minutes, { integer: true, min: 1, max: 525600 });
+    const speed = assistantPpSafeNumber(raw.choice.speed_mbps, { min: 0.01, max: 10000 });
+    const data = raw.choice.data_mb === null || raw.choice.data_mb === undefined
+      ? null
+      : assistantPpSafeNumber(raw.choice.data_mb, { integer: true, min: 1, max: 10_000_000 });
+    if (ASSISTANT_PP_ALLOWED_TYPES.has(type) && duration !== null && speed !== null && (type === "unlimited" || data !== null)) {
+      clean.choice = {
+        type,
+        duration_minutes: duration,
+        data_mb: type === "unlimited" ? null : data,
+        speed_mbps: speed,
+      };
+    }
+  }
+
+  if (raw.quote && typeof raw.quote === "object" && !Array.isArray(raw.quote)) {
+    const planName = typeof raw.quote.plan_name === "string" ? raw.quote.plan_name.trim().slice(0, 120) : "";
+    const price = assistantPpSafeNumber(raw.quote.final_price_ar, { integer: true, min: 1, max: 100_000_000 });
+    const duration = assistantPpSafeNumber(raw.quote.duration_minutes, { integer: true, min: 1, max: 525600 });
+    const speed = assistantPpSafeNumber(raw.quote.speed_mbps, { min: 0.01, max: 10000 });
+    const data = raw.quote.data_mb === null || raw.quote.data_mb === undefined
+      ? null
+      : assistantPpSafeNumber(raw.quote.data_mb, { integer: true, min: 1, max: 10_000_000 });
+    const version = assistantPpSafeNumber(raw.quote.pricing_version, { integer: true, min: 1, max: 1_000_000 });
+    if (planName && price !== null && duration !== null && speed !== null) {
+      clean.quote = {
+        plan_name: planName,
+        final_price_ar: price,
+        currency: "Ar",
+        duration_minutes: duration,
+        data_mb: data,
+        speed_mbps: speed,
+        pricing_version: version,
+      };
+    }
+  }
+
+  clean.quote_seconds_left = assistantPpSafeNumber(raw.quote_seconds_left, {
+    integer: true, min: 0, max: 86400,
+  }) ?? 0;
+
+  if (Array.isArray(raw.payment_methods)) {
+    clean.payment_methods = Array.from(new Set(
+      raw.payment_methods
+        .map((value) => String(value || "").trim())
+        .filter((value) => ASSISTANT_PP_PAYMENT_LABELS.has(value))
+    )).slice(0, 4);
+  }
+
+  if (typeof raw.ui_message === "string") {
+    const msg = raw.ui_message.replace(/[\r\n\t]/g, " ").replace(/\s{2,}/g, " ").trim().slice(0, 240);
+    clean.ui_message = msg || null;
+  }
+
+  return clean;
+}
+
+function buildAssistantPersonalizedPlanRules() {
+  return {
+    activation_scope: "per_pool_superadmin",
+    pricing_authority: "server",
+    newest_quote_only: true,
+    active_quote_scope: "same_device_and_pool",
+    simulation_limit: { max: 30, window_minutes: 10 },
+    technical_plan_visible_in_standard_catalog: false,
+    payment_confirmation_required_before_code: true,
+    assistant_capability: "guide_only",
+  };
+}
+
+function buildAssistantPersonalizedPublicConfig(config) {
+  if (!config || typeof config !== "object") return null;
+  const p = publicPersonalizedSimulatorSettings(config);
+  const allowedTypes = Array.isArray(p.allowed_types)
+    ? p.allowed_types.map((v) => String(v || "").trim()).filter((v) => ASSISTANT_PP_ALLOWED_TYPES.has(v))
+    : [];
+  const speeds = Array.isArray(p.allowed_speeds_mbps)
+    ? p.allowed_speeds_mbps.map((v) => assistantPpSafeNumber(v, { min: 0.01, max: 10000 })).filter((v) => v !== null)
+    : [];
+  if (!allowedTypes.length || !speeds.length) return null;
+  return {
+    allowed_types: Array.from(new Set(allowedTypes)),
+    allowed_speeds_mbps: Array.from(new Set(speeds)),
+    duration: {
+      min_minutes: assistantPpSafeNumber(p.min_duration_minutes, { integer: true, min: 1, max: 525600 }),
+      step_minutes: assistantPpSafeNumber(p.duration_step_minutes, { integer: true, min: 1, max: 525600 }),
+      max_minutes: assistantPpSafeNumber(p.max_duration_minutes, { integer: true, min: 1, max: 525600 }),
+    },
+    data: {
+      min_mb: assistantPpSafeNumber(p.min_data_mb, { integer: true, min: 1, max: 10_000_000 }),
+      step_mb: assistantPpSafeNumber(p.data_step_mb, { integer: true, min: 1, max: 10_000_000 }),
+      max_mb: assistantPpSafeNumber(p.max_data_mb, { integer: true, min: 1, max: 10_000_000 }),
+    },
+    markup_pct: assistantPpSafeNumber(p.markup_pct, { min: 0, max: 1000 }),
+    rounding: ASSISTANT_PP_ALLOWED_ROUNDING.has(String(p.rounding || "")) ? String(p.rounding) : null,
+    min_price_ar: assistantPpSafeNumber(p.min_price_ar, { integer: true, min: 0, max: 100_000_000 }),
+    max_price_ar: assistantPpSafeNumber(p.max_price_ar, { integer: true, min: 1, max: 100_000_000 }),
+    quote_ttl_minutes: assistantPpSafeNumber(p.quote_ttl_minutes, { integer: true, min: 1, max: 1440 }),
+    pricing_version: assistantPpSafeNumber(config.version_no, { integer: true, min: 1, max: 1_000_000 }),
+  };
+}
+
+async function enrichAssistantPersonalizedPlanContext(context, liveData) {
+  const out = liveData && typeof liveData === "object" ? { ...liveData } : {};
+  if (!["portal_user", "platform_prospect"].includes(context)) return out;
+  if (context === "portal_user" && (!out.personalized_plan_context || typeof out.personalized_plan_context !== "object")) return out;
+
+  let trustedConfig = null;
+  try {
+    const active = await getActivePersonalizedPricingConfigFailClosed();
+    trustedConfig = buildAssistantPersonalizedPublicConfig(active);
+  } catch (error) {
+    console.warn("[ASSISTANT PP CONFIG] unavailable (non-fatal):", String(error?.message || error).slice(0, 100));
+  }
+
+  const rules = buildAssistantPersonalizedPlanRules();
+  if (context === "portal_user" && out.personalized_plan_context && typeof out.personalized_plan_context === "object") {
+    out.personalized_plan_context = {
+      ...out.personalized_plan_context,
+      config_available: !!trustedConfig,
+      config: trustedConfig,
+      rules,
+    };
+  }
+
+  if (context === "platform_prospect") {
+    // Server-owned global product context: the browser cannot inject or override it.
+    out.platform_personalized_plan_context = {
+      feature_supported: true,
+      availability_scope: "per_pool",
+      config_available: !!trustedConfig,
+      config: trustedConfig,
+      operational_payment_methods: [...ASSISTANT_PP_OPERATIONAL_PAYMENT_METHODS],
+      rules,
+    };
+  }
+
+  return out;
+}
+
 function sanitizeAssistantLiveData(liveData, context) {
   if (!liveData || typeof liveData !== "object") return {};
   const allowed = ASSISTANT_ALLOWED_LIVE_KEYS[context] || new Set();
@@ -3335,6 +3551,16 @@ function sanitizeAssistantLiveData(liveData, context) {
       }
       safe.selected_plan = spClean;
     }
+  }
+
+  // Assistant PP: deeply sanitize the browser-owned UI state. Trusted pricing
+  // configuration and permanent rules are added later by the server.
+  if ("personalized_plan_context" in safe) {
+    const ppClean = context === "portal_user"
+      ? sanitizePortalPersonalizedPlanContext(safe.personalized_plan_context)
+      : null;
+    if (ppClean) safe.personalized_plan_context = ppClean;
+    else delete safe.personalized_plan_context;
   }
 
   // G.3B: allowlist-only sanitization for string enum fields
@@ -3590,6 +3816,100 @@ function sanitizeAssistantLiveDataKeys(raw, context) {
 // Falls back to null when live_data is absent → caller uses KB/fallback unchanged.
 // ===============================
 
+function detectAssistantPersonalizedPlanIntent(msg, context) {
+  const s = String(msg || "").toLowerCase().trim();
+  if (!s || !["portal_user", "platform_prospect"].includes(context)) return null;
+
+  const explicitPp = (
+    s.includes("forfait personnalisé") || s.includes("forfait personnalise") ||
+    s.includes("plan personnalisé") || s.includes("plan personnalise") ||
+    s.includes("offre personnalisée") || s.includes("offre personnalisee") ||
+    s.includes("forfait sur mesure") || s.includes("plan sur mesure") ||
+    s.includes("créer mon forfait") || s.includes("creer mon forfait") ||
+    s.includes("composer mon forfait") || s.includes("mon propre forfait") ||
+    s.includes("personnaliser mon forfait") || s.includes("personnaliser un forfait") ||
+    s.includes("voir mon prix") || s.includes("devis personnalisé") ||
+    s.includes("devis personnalise") || s.includes("devis pp") ||
+    s.includes("simulation pp") || s.includes("forfait manokana") ||
+    s.includes("mamorona forfait") || s.includes("forfait ho ahy") ||
+    s.includes("personalized plan") || s.includes("personalised plan") ||
+    s.includes("custom plan") || s.includes("build my plan") ||
+    s.includes("create my plan") || s.includes("my own plan") ||
+    /(^|[^a-z0-9])pp([^a-z0-9]|$)/i.test(s)
+  );
+  const choicePhrase = (
+    (s.includes("client") || s.includes("utilisateur") || s.includes("user")) &&
+    (s.includes("choisir") || s.includes("compose") || s.includes("choose")) &&
+    (s.includes("durée") || s.includes("duree") || s.includes("data") || s.includes("vitesse") || s.includes("speed") || s.includes("unlimited") || s.includes("illimité"))
+  );
+  if (!explicitPp && !choicePhrase) return null;
+
+  const prefix = context === "portal_user" ? "portal_pp_" : "platform_pp_";
+  const has = (...terms) => terms.some((term) => s.includes(term));
+
+  if (has("assistant", "peux-tu créer", "peux tu créer", "can you create", "peux-tu payer", "peux tu payer", "can you pay")) {
+    return prefix + "assistant_limits";
+  }
+  if (has("combien de simulation", "limite de simulation", "trop de simulation", "simulation limit", "how many quote", "firy simulation")) {
+    return prefix + "simulation_limit";
+  }
+  if (has("remplace", "ancien devis", "dernier devis", "plus récent", "plus recent", "newest quote", "latest quote", "old quote")) {
+    return context === "portal_user" ? "portal_pp_quote_replacement" : "platform_pp_quote_rules";
+  }
+  if (has("expire", "expiration", "validité", "validite", "combien de temps", "temps restant", "reste valable", "how long", "valid for", "lany daty")) {
+    return context === "portal_user" ? "portal_pp_quote_validity" : "platform_pp_quote_rules";
+  }
+  if (has("payer", "paiement", "mvola", "orange money", "airtel money", "visa", "payment method", "how to pay", "mandoa")) {
+    return prefix + "payment_methods";
+  }
+  if (has("prix", "tarif", "combien", "coûte", "coute", "cost", "how much", "ohatrinona", "voir mon prix", "majoration", "arrondi")) {
+    return context === "portal_user" ? "portal_pp_price" : "platform_pp_pricing";
+  }
+  if (has("actif", "activé", "active", "disponible", "available", "tous les wifi", "chaque pool", "par pool", "désactiver", "desactiver")) {
+    return context === "portal_user" ? "portal_pp_availability" : "platform_pp_pool_activation";
+  }
+  if (has("avantage", "propriétaire", "proprietaire", "owner benefit", "utile au propriétaire")) {
+    return context === "platform_prospect" ? "platform_pp_owner_benefits" : "portal_pp_how_it_works";
+  }
+  if (has("durée", "duree", "data", "illimité", "illimite", "vitesse", "speed", "choisir", "compose", "type")) {
+    return context === "portal_user" ? "portal_pp_rules" : "platform_pp_client_choices";
+  }
+  if (has("où j'en suis", "ou j'en suis", "état", "etat", "current state", "mon devis", "mon choix")) {
+    return context === "portal_user" ? "portal_pp_current_state" : "platform_pp_how_it_works";
+  }
+  if (has("comment", "fonctionne", "marche", "how", "work", "process", "dingana")) {
+    return prefix + "how_it_works";
+  }
+  return context === "portal_user" ? "portal_pp_how_it_works" : "platform_pp_intro";
+}
+
+function resolveAssistantPersonalizedFollowUpIntent({ context, message, thread }) {
+  const previous = String(thread?.last_intent_key || "");
+  const topic = String(thread?.current_topic || "");
+  const prefix = context === "portal_user" ? "portal_pp_" : context === "platform_prospect" ? "platform_pp_" : "";
+  if (!prefix || (!previous.startsWith(prefix) && topic !== "personalized_plan")) return null;
+  const s = String(message || "").toLowerCase().trim();
+  if (!s || s.length > 100) return null;
+  const has = (...terms) => terms.some((term) => s.includes(term));
+  if (has("prix", "combien", "coûte", "coute", "cost", "how much", "ohatrinona", "majoration", "arrondi")) {
+    return context === "portal_user" ? "portal_pp_price" : "platform_pp_pricing";
+  }
+  if (has("payer", "paiement", "mvola", "orange", "airtel", "visa", "payment")) return prefix + "payment_methods";
+  if (has("expire", "valid", "temps", "combien de temps", "how long")) {
+    return context === "portal_user" ? "portal_pp_quote_validity" : "platform_pp_quote_rules";
+  }
+  if (has("simulation", "combien de fois", "limite")) return prefix + "simulation_limit";
+  if (has("actif", "disponible", "pool", "wifi", "désactiver", "desactiver")) {
+    return context === "portal_user" ? "portal_pp_availability" : "platform_pp_pool_activation";
+  }
+  if (has("durée", "duree", "data", "vitesse", "speed", "illimité", "illimite", "choix")) {
+    return context === "portal_user" ? "portal_pp_rules" : "platform_pp_client_choices";
+  }
+  if (has("assistant", "toi", "créer", "creer", "payer à ma place", "pay for me")) return prefix + "assistant_limits";
+  if (has("comment", "et comment", "fonctionne", "marche")) return prefix + "how_it_works";
+  return previous.startsWith(prefix) ? previous : null;
+}
+
 // Detect which dynamic intent applies to a message, as a fallback when KB intent_key
 // does not match a known dynamic key. Keyword patterns are checked against the normalized
 // (lowercased, trimmed) message.
@@ -3597,6 +3917,11 @@ function detectDynamicIntentFromMessage(msg, context) {
   const s = String(msg || "").toLowerCase().trim();
 
   if (context === "portal_user") {
+    // Assistant PP: explicit personalized-plan questions must win over generic
+    // payment_method and plan_list detection. Payment complaints are handled earlier.
+    const ppIntent = detectAssistantPersonalizedPlanIntent(s, context);
+    if (ppIntent) return ppIntent;
+
     // WiFi / pool name
     if (
       s.includes("nom du wifi") || s.includes("nom wifi") || s.includes("s'appelle") ||
@@ -4005,6 +4330,11 @@ function detectDynamicIntentFromMessage(msg, context) {
       s.includes("transaction id")
     ) return "platform_internal_security";
 
+    // Assistant PP commercial knowledge — after security probes, before generic
+    // pricing/client-portal intents so PP questions are never swallowed.
+    const ppIntent = detectAssistantPersonalizedPlanIntent(s, context);
+    if (ppIntent) return ppIntent;
+
     // platform_owner_dashboard — before platform_revenue to capture "voir les revenus dans le dashboard"
     // (prospect asking about the dashboard feature, not about revenue-sharing conditions)
     // Also catches existing owners asking where to log in (so Espace propriétaire may be mentioned)
@@ -4140,6 +4470,226 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData, message) {
     return String(
       ld.display_name || ld.pool_label || ld.pool_name || ld.brand_name || ""
     ).trim();
+  }
+
+
+  function ppContext() {
+    return ld.personalized_plan_context && typeof ld.personalized_plan_context === "object"
+      ? ld.personalized_plan_context
+      : null;
+  }
+
+  function ppFmtAr(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    return `${Math.round(n).toLocaleString("fr-FR").replace(/\u202f/g, "\u00A0")}\u00A0Ar`;
+  }
+
+  function ppFmtDuration(minutes) {
+    const m = Math.max(0, Math.round(Number(minutes) || 0));
+    if (!m) return null;
+    if (m % 1440 === 0) {
+      const d = m / 1440;
+      return lang === "mg" ? `${d} andro` : lang === "en" ? `${d} day${d > 1 ? "s" : ""}` : `${d} jour${d > 1 ? "s" : ""}`;
+    }
+    if (m % 60 === 0) {
+      const h = m / 60;
+      return `${h}h`;
+    }
+    return `${m} min`;
+  }
+
+  function ppFmtData(mb) {
+    const n = Number(mb);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const gb = Math.round((n / 1024) * 100) / 100;
+    return `${Number.isInteger(gb) ? Math.trunc(gb) : String(gb).replace(".", ",")} Go`;
+  }
+
+  function ppRemainingText(seconds) {
+    const s = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (!s) return null;
+    const min = Math.floor(s / 60);
+    const sec = s % 60;
+    if (lang === "mg") return `${min} min ${sec} s eo ho eo`;
+    if (lang === "en") return `about ${min} min ${sec} s`;
+    return `environ ${min} min ${sec} s`;
+  }
+
+  function ppConfigSummary(pp) {
+    const c = pp?.config;
+    if (!pp?.config_available || !c) return null;
+    const types = Array.isArray(c.allowed_types)
+      ? c.allowed_types.map((v) => v === "unlimited" ? t("Illimité", "Illimité", "Unlimited") : "Data").join(" / ")
+      : null;
+    const speeds = Array.isArray(c.allowed_speeds_mbps) ? c.allowed_speeds_mbps.join(", ") + " Mbps" : null;
+    const duration = c.duration || {};
+    const data = c.data || {};
+    const durationLine = duration.min_minutes && duration.max_minutes
+      ? `${ppFmtDuration(duration.min_minutes)}–${ppFmtDuration(duration.max_minutes)}${duration.step_minutes ? ` (${t("pas", "pas", "step")} ${ppFmtDuration(duration.step_minutes)})` : ""}`
+      : null;
+    const dataLine = data.min_mb && data.max_mb
+      ? `${ppFmtData(data.min_mb)}–${ppFmtData(data.max_mb)}${data.step_mb ? ` (${t("pas", "pas", "step")} ${ppFmtData(data.step_mb)})` : ""}`
+      : null;
+    return { types, speeds, durationLine, dataLine };
+  }
+
+  if (String(intent_key || "").startsWith("portal_pp_")) {
+    const pp = ppContext();
+    if (!pp) {
+      return t(
+        "Je ne peux pas vérifier l’état du forfait personnalisé sur cet écran pour le moment.",
+        "Tsy afaka manamarina ny état an'ny forfait personnalisé eto aho amin'izao fotoana izao.",
+        "I cannot verify the personalized-plan status on this screen right now."
+      );
+    }
+    const name = poolLabel();
+    const where = name ? t(`Sur ${name}`, `Eto ${name}`, `On ${name}`) : t("Sur ce WiFi", "Eto amin'ity WiFi ity", "On this WiFi");
+    const state = String(pp.state || "unavailable");
+    const quote = pp.quote && typeof pp.quote === "object" ? pp.quote : null;
+    const config = pp.config_available ? pp.config : null;
+
+    if (intent_key === "portal_pp_availability") {
+      if (!pp.enabled || state === "disabled") return t(
+        `${where}, le forfait personnalisé n’est pas activé. Choisissez un forfait standard affiché.`,
+        `${where}, tsy activé ny forfait personnalisé. Misafidiana forfait standard hita eo.`,
+        `${where}, personalized plans are not enabled. Choose one of the standard plans shown.`
+      );
+      if (!pp.available || state === "unavailable") return t(
+        `${where}, la fonction est activée mais momentanément indisponible. Utilisez un forfait standard ou réessayez plus tard.`,
+        `${where}, activé ilay fonction fa tsy disponible vetivety. Mampiasà forfait standard na andramo indray afaka kelikely.`,
+        `${where}, the feature is enabled but temporarily unavailable. Use a standard plan or try again later.`
+      );
+      if (ld.is_full === true) return t(
+        `${where}, le forfait personnalisé est activé, mais la création et le paiement sont temporairement bloqués car le réseau est saturé.`,
+        `${where}, activé ny forfait personnalisé, fa voasakana vetivety ny création sy paiement satria feno ny réseau.`,
+        `${where}, personalized plans are enabled, but creation and payment are temporarily blocked because the network is saturated.`
+      );
+      return t(
+        `${where}, le forfait personnalisé est disponible. Appuyez sur « Créer mon forfait » pour commencer.`,
+        `${where}, disponible ny forfait personnalisé. Tsindrio « Créer mon forfait » hanombohana.`,
+        `${where}, personalized plans are available. Tap “Créer mon forfait” to begin.`
+      );
+    }
+
+    if (intent_key === "portal_pp_how_it_works") {
+      if (!pp.enabled) return t(
+        `${where}, cette fonction n’est pas activée. Vous pouvez choisir un forfait standard affiché.`,
+        `${where}, tsy activé io fonction io. Afaka misafidy forfait standard hita eo ianao.`,
+        `${where}, this feature is not enabled. You can choose a standard plan shown on the portal.`
+      );
+      return t(
+        "Appuyez sur « Créer mon forfait », choisissez Data ou Illimité, la durée et une vitesse proposée, puis appuyez sur « Voir mon prix ». RAZAFI calcule le prix côté serveur ; après confirmation du paiement, le code reçoit les paramètres choisis.",
+        "Tsindrio « Créer mon forfait », safidio Data na Illimité, durée ary vitesse proposée, avy eo tsindrio « Voir mon prix ». RAZAFI no manao calcul ny prix côté serveur; rehefa confirmé ny paiement dia mahazo ireo paramètres nofidinao ny code.",
+        "Tap “Créer mon forfait”, choose Data or Unlimited, the duration and an offered speed, then tap “Voir mon prix”. RAZAFI calculates the price on the server; after payment confirmation, the code receives the selected settings."
+      );
+    }
+
+    if (intent_key === "portal_pp_current_state") {
+      const map = {
+        disabled: t("PP est désactivé sur ce WiFi.", "Désactivé ny PP eto amin'ity WiFi ity.", "PP is disabled on this WiFi."),
+        unavailable: t("PP est momentanément indisponible.", "Tsy disponible vetivety ny PP.", "PP is temporarily unavailable."),
+        builder_closed: t("Le constructeur est fermé. Appuyez sur « Créer mon forfait ».", "Mikatona ny constructeur. Tsindrio « Créer mon forfait ».", "The builder is closed. Tap “Créer mon forfait”."),
+        builder_open: t("Le constructeur est ouvert. Choisissez vos paramètres puis appuyez sur « Voir mon prix ».", "Misokatra ny constructeur. Safidio ny paramètres dia tsindrio « Voir mon prix ».", "The builder is open. Choose your settings, then tap “Voir mon prix”."),
+        quote_ready: t("Votre devis est prêt et peut être payé pendant le temps affiché.", "Vonona ny devis-nao ary azo aloa mandritra ny fotoana hita eo.", "Your quote is ready and can be paid during the time shown."),
+        quote_expired: t("Le dernier prix a expiré. Appuyez sur « Voir mon prix » pour créer un nouveau devis.", "Lany daty ny prix farany. Tsindrio « Voir mon prix » hamoronana devis vaovao.", "The last price has expired. Tap “Voir mon prix” to create a new quote."),
+        payment_form_visible: t("Le formulaire de paiement PP est ouvert. Saisissez votre numéro dans le formulaire, jamais dans le chat.", "Misokatra ny formulaire paiement PP. Ampidiro ao amin'ny formulaire ny numéro-nao, fa tsy ato amin'ny chat.", "The PP payment form is open. Enter your number in the form, never in the chat."),
+        confirmation_visible: t("Le résumé de confirmation est affiché. Vérifiez-le avant de confirmer.", "Hita ny résumé de confirmation. Hamarino aloha vao confirmer-nao.", "The confirmation summary is displayed. Check it before confirming."),
+        payment_in_progress: t("Le paiement PP est en cours de vérification. Attendez la réponse affichée et ne relancez pas un second paiement.", "Eo am-panamarinana ny paiement PP. Andraso ny réponse hita eo ary aza manao paiement faharoa.", "The PP payment is being verified. Wait for the displayed result and do not start a second payment."),
+        payment_uncertain: t("La confirmation reste incertaine. Si votre solde a été débité, ne payez pas une deuxième fois et contactez l’assistance si nécessaire.", "Mbola tsy mazava ny confirmation. Raha nihena ny solde-nao dia aza mandoa fanindroany ary mifandraisa amin'ny assistance raha ilaina.", "Confirmation is still uncertain. If your balance was debited, do not pay again and contact support if needed."),
+      };
+      const base = map[state] || map.unavailable;
+      if (quote && quote.final_price_ar) {
+        const price = ppFmtAr(quote.final_price_ar);
+        const left = ppRemainingText(pp.quote_seconds_left);
+        return `${base} ${t("Prix affiché", "Prix hita", "Displayed price")} : ${price}${left ? `, ${t("reste", "sisa", "remaining")} ${left}` : ""}.`;
+      }
+      return base;
+    }
+
+    if (intent_key === "portal_pp_price") {
+      if (quote && Number(quote.final_price_ar) > 0 && ["quote_ready", "payment_form_visible", "confirmation_visible", "payment_in_progress", "payment_uncertain"].includes(state)) {
+        const price = ppFmtAr(quote.final_price_ar);
+        const left = ppRemainingText(pp.quote_seconds_left);
+        return t(
+          `Le prix exact affiché pour votre forfait personnalisé est ${price}.${left ? ` Il reste ${left} avant l’expiration du devis.` : ""}`,
+          `Ny prix exact hita amin'ny forfait personnalisé-nao dia ${price}.${left ? ` Mbola ${left} alohan'ny expiration an'ilay devis.` : ""}`,
+          `The exact displayed price for your personalized plan is ${price}.${left ? ` About ${left.replace(/^about /, "")} remains before the quote expires.` : ""}`
+        );
+      }
+      return t(
+        "Je ne dois pas inventer un prix. Choisissez vos paramètres puis appuyez sur « Voir mon prix » pour obtenir le montant exact calculé par RAZAFI.",
+        "Tsy tokony hamorona prix aho. Safidio ny paramètres dia tsindrio « Voir mon prix » hahazoana ny montant exact calculé par RAZAFI.",
+        "I must not invent a price. Choose your settings and tap “Voir mon prix” to get the exact amount calculated by RAZAFI."
+      );
+    }
+
+    if (intent_key === "portal_pp_rules") {
+      const summary = ppConfigSummary(pp);
+      if (!summary) return t(
+        "Les choix autorisés sont affichés directement dans le constructeur. RAZAFI vérifie la durée, la data et la vitesse avant de calculer le prix.",
+        "Hita mivantana ao amin'ny constructeur ny choix autorisés. RAZAFI no manamarina durée, data ary vitesse alohan'ny calcul prix.",
+        "The allowed choices are displayed directly in the builder. RAZAFI validates duration, data, and speed before calculating the price."
+      );
+      return t(
+        `Configuration active : ${summary.types}; vitesses ${summary.speeds}; durée ${summary.durationLine}; data ${summary.dataLine}. Le prix applique une majoration de ${config.markup_pct}% puis l’arrondi ${config.rounding}.`,
+        `Configuration active : ${summary.types}; vitesses ${summary.speeds}; durée ${summary.durationLine}; data ${summary.dataLine}. Ny prix dia mampihatra majoration ${config.markup_pct}% avy eo arrondi ${config.rounding}.`,
+        `Active configuration: ${summary.types}; speeds ${summary.speeds}; duration ${summary.durationLine}; data ${summary.dataLine}. The price applies a ${config.markup_pct}% markup, then ${config.rounding} rounding.`
+      );
+    }
+
+    if (intent_key === "portal_pp_quote_validity") {
+      if (quote && pp.quote_seconds_left > 0) {
+        const left = ppRemainingText(pp.quote_seconds_left);
+        return t(
+          `Votre devis actuel reste payable pendant ${left}. Après expiration, appuyez de nouveau sur « Voir mon prix ».`,
+          `Mbola azo aloa mandritra ny ${left} ny devis-nao. Rehefa lany daty dia tsindrio indray « Voir mon prix ».`,
+          `Your current quote remains payable for ${left}. After it expires, tap “Voir mon prix” again.`
+        );
+      }
+      const ttl = Number(config?.quote_ttl_minutes);
+      return Number.isFinite(ttl) ? t(
+        `Un devis PP est valable ${ttl} minutes selon la configuration active. Après expiration, il faut recalculer le prix.`,
+        `Valable ${ttl} minutes ny devis PP araka ny configuration active. Rehefa lany daty dia mila manao calcul prix vaovao.`,
+        `A PP quote is valid for ${ttl} minutes under the active configuration. After expiry, the price must be recalculated.`
+      ) : t(
+        "La durée de validité est indiquée par le compte à rebours du devis. Après expiration, recalculez le prix.",
+        "Ny compte à rebours no mampiseho ny validité an'ilay devis. Rehefa lany daty dia avereno ny calcul prix.",
+        "The quote countdown shows its validity. After expiry, recalculate the price."
+      );
+    }
+
+    if (intent_key === "portal_pp_quote_replacement") return t(
+      "Pour le même appareil et le même WiFi, un nouveau devis remplace l’ancien. Seul le devis le plus récent reste payable.",
+      "Ho an'ny appareil sy WiFi iray ihany, ny devis vaovao dia manolo ny taloha. Ny devis farany indrindra ihany no azo aloa.",
+      "For the same device and WiFi, a new quote replaces the previous one. Only the newest quote remains payable."
+    );
+
+    if (intent_key === "portal_pp_simulation_limit") return t(
+      "Vous pouvez effectuer jusqu’à 30 simulations par appareil sur une période de 10 minutes. Si la limite est atteinte, attendez quelques minutes avant de réessayer.",
+      "Afaka manao simulation hatramin'ny 30 isaky ny appareil ao anatin'ny 10 minutes ianao. Raha tratra ny limite dia miandrasa minitra vitsivitsy vao manandrana indray.",
+      "You can make up to 30 simulations per device within 10 minutes. If the limit is reached, wait a few minutes before trying again."
+    );
+
+    if (intent_key === "portal_pp_payment_methods") {
+      const methods = Array.isArray(pp.payment_methods) ? pp.payment_methods.filter(Boolean) : [];
+      if (!methods.length) return t(
+        "Aucun moyen de paiement PP n’est actuellement affiché sur ce WiFi. Le devis peut être consulté, mais le paiement n’est pas disponible pour le moment.",
+        "Tsy misy moyen de paiement PP hita eto amin'ity WiFi ity amin'izao. Azo jerena ny devis fa tsy disponible vetivety ny paiement.",
+        "No PP payment method is currently displayed on this WiFi. The quote can be viewed, but payment is unavailable for now."
+      );
+      return t(
+        `Pour le forfait personnalisé, les moyens réellement disponibles ici sont : ${methods.join(", ")}.`,
+        `Ho an'ny forfait personnalisé, ireto no moyens tena disponible eto : ${methods.join(", ")}.`,
+        `For personalized plans, the payment methods actually available here are: ${methods.join(", ")}.`
+      );
+    }
+
+    if (intent_key === "portal_pp_assistant_limits") return t(
+      "Je peux expliquer PP et vous guider selon l’écran, mais je ne peux pas créer le devis, modifier vos choix, lancer le paiement ni confirmer un paiement à votre place.",
+      "Afaka manazava PP sy mitarika anao araka ny écran aho, fa tsy afaka mamorona devis, manova choix, mandefa paiement na confirmer paiement ho anao.",
+      "I can explain PP and guide you based on the screen, but I cannot create the quote, change your choices, start payment, or confirm a payment for you."
+    );
   }
 
   // Network saturation phrase from pool_percent
@@ -6292,6 +6842,11 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
   const DYNAMIC_INTENT_KEYS = new Set([
     "pool_name", "payment_method", "network_status", "plan_list",
     "portal_plan_count_filtered",
+    // Assistant PP — portal client
+    "portal_pp_availability", "portal_pp_how_it_works", "portal_pp_current_state",
+    "portal_pp_price", "portal_pp_rules", "portal_pp_quote_validity",
+    "portal_pp_quote_replacement", "portal_pp_simulation_limit",
+    "portal_pp_payment_methods", "portal_pp_assistant_limits",
     // Phase 3: portal plan advisor
     "portal_plan_advice_general", "portal_plan_advice_social",
     "portal_plan_advice_video", "portal_plan_advice_live_match",
@@ -6316,6 +6871,11 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
     "platform_internal_security",
     "platform_intro", "platform_owner_start", "platform_revenue",
     "platform_compatibility", "platform_pricing", "platform_not_technician",
+    // Assistant PP — public platform prospect
+    "platform_pp_intro", "platform_pp_how_it_works", "platform_pp_client_choices",
+    "platform_pp_pricing", "platform_pp_pool_activation", "platform_pp_quote_rules",
+    "platform_pp_simulation_limit", "platform_pp_payment_methods",
+    "platform_pp_owner_benefits", "platform_pp_assistant_limits",
     // Phase 5C-A: cross-context awareness
     "portal_platform_interest",
     "platform_client_portal", "platform_owner_dashboard",
@@ -6334,12 +6894,26 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
     context === "portal_user" &&
     detectedIntent &&
     (
+      String(detectedIntent).startsWith("portal_pp_") ||
       String(detectedIntent).startsWith("portal_plan_advice_") ||
       detectedIntent === "portal_platform_interest" ||
       detectedIntent === "portal_plan_count_filtered"
     )
   ) {
     resolvedIntent = detectedIntent;
+  } else if (
+    context === "portal_user" &&
+    String(intentKey || "").startsWith("portal_pp_")
+  ) {
+    // Multi-turn PP follow-up: keep the PP topic even if the short fragment is
+    // generically detected as plan_list/payment_method.
+    resolvedIntent = intentKey;
+  } else if (
+    context === "platform_prospect" &&
+    String(intentKey || "").startsWith("platform_pp_") &&
+    !String(detectedIntent || "").startsWith("platform_pp_")
+  ) {
+    resolvedIntent = intentKey;
   } else if (
     context === "platform_prospect" &&
     detectedIntent &&
@@ -6385,10 +6959,37 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
 // Falls back to hardcoded safe text when site_knowledge is absent or incomplete.
 function buildPlatformProspectDynamicAnswer(intent_key, lang, message, liveData) {
   const sk = (liveData && typeof liveData === "object" && typeof liveData.site_knowledge === "object" && liveData.site_knowledge) || null;
+  const pp = (liveData && typeof liveData === "object" && typeof liveData.platform_personalized_plan_context === "object")
+    ? liveData.platform_personalized_plan_context
+    : null;
 
-  // Tri-lingual helper (French primary, English simple fallback)
-  function t(fr, en) {
+  // Tri-lingual helper. Existing two-argument calls keep French as the MG fallback;
+  // Assistant PP cases provide a dedicated natural Malagasy answer.
+  function t(fr, en, mg = null) {
+    if (lang === "mg") return mg || fr;
     return lang === "en" ? en : fr;
+  }
+
+  function ppConfig() {
+    return pp?.config_available && pp?.config && typeof pp.config === "object" ? pp.config : null;
+  }
+
+  function ppFormatDuration(minutes) {
+    const m = Math.max(0, Math.round(Number(minutes) || 0));
+    if (!m) return null;
+    if (m % 1440 === 0) {
+      const d = m / 1440;
+      return lang === "mg" ? `${d} andro` : lang === "en" ? `${d} day${d > 1 ? "s" : ""}` : `${d} jour${d > 1 ? "s" : ""}`;
+    }
+    if (m % 60 === 0) return `${m / 60}h`;
+    return `${m} min`;
+  }
+
+  function ppFormatData(mb) {
+    const n = Number(mb);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const gb = Math.round((n / 1024) * 100) / 100;
+    return `${Number.isInteger(gb) ? Math.trunc(gb) : String(gb).replace(".", ",")} Go`;
   }
 
   // Safe one-liner from site_knowledge field, with fallback
@@ -6410,6 +7011,101 @@ function buildPlatformProspectDynamicAnswer(intent_key, lang, message, liveData)
       return t(
         "La partie technique est configurée par RAZAFI. Pour le propriétaire et les clients, l’objectif est de garder une expérience simple et sécurisée, sans exposer les détails internes.",
         "The technical side is managed by RAZAFI. For owners and clients, the goal is to keep the experience simple and secure — internal details are not exposed."
+      );
+
+    case "platform_pp_intro":
+      return t(
+        "Le forfait personnalisé permet au client de composer son accès WiFi en choisissant Data ou Illimité, une durée et une vitesse autorisée. RAZAFI calcule ensuite le prix automatiquement, puis le client paie et reçoit son code après confirmation.",
+        "A personalized plan lets the client build WiFi access by choosing Data or Unlimited, a duration, and an allowed speed. RAZAFI then calculates the price automatically; after confirmed payment, the client receives a code.",
+        "Ny forfait personnalisé dia ahafahan'ny client misafidy Data na Illimité, durée ary vitesse autorisée. RAZAFI no manao calcul automatique ny prix; rehefa confirmé ny paiement dia mahazo code ny client."
+      );
+
+    case "platform_pp_how_it_works":
+      return t(
+        "Le client ouvre « Créer mon forfait », choisit ses paramètres puis appuie sur « Voir mon prix ». Le calcul est effectué côté serveur selon la configuration active ; après confirmation du paiement, le code applique la durée, la data et la vitesse choisies.",
+        "The client opens “Créer mon forfait”, chooses the settings, and taps “Voir mon prix”. The server calculates the price from the active configuration; after payment confirmation, the code applies the chosen duration, data, and speed.",
+        "Manokatra « Créer mon forfait » ny client, misafidy paramètres ary tsindrio « Voir mon prix ». Côté serveur no manao calcul araka ny configuration active; rehefa confirmé ny paiement dia ampiharina amin'ny code ny durée, data ary vitesse nofidina."
+      );
+
+    case "platform_pp_client_choices": { 
+      const c = ppConfig();
+      if (!c) return t(
+        "Le client peut choisir Data ou Illimité, une durée et une vitesse parmi les valeurs proposées par la configuration active.",
+        "The client can choose Data or Unlimited, a duration, and a speed from the values offered by the active configuration.",
+        "Afaka misafidy Data na Illimité, durée ary vitesse ao amin'ny valeurs proposées par la configuration active ny client."
+      );
+      const types = (c.allowed_types || []).map((v) => v === "unlimited" ? (lang === "en" ? "Unlimited" : "Illimité") : "Data").join(" / ");
+      const speeds = Array.isArray(c.allowed_speeds_mbps) ? c.allowed_speeds_mbps.join(", ") + " Mbps" : "—";
+      const duration = c.duration || {};
+      const data = c.data || {};
+      return t(
+        `La configuration active propose ${types}, des vitesses de ${speeds}, une durée de ${ppFormatDuration(duration.min_minutes)} à ${ppFormatDuration(duration.max_minutes)}, et pour Data de ${ppFormatData(data.min_mb)} à ${ppFormatData(data.max_mb)}. Les pas configurés doivent être respectés.`,
+        `The active configuration offers ${types}, speeds of ${speeds}, durations from ${ppFormatDuration(duration.min_minutes)} to ${ppFormatDuration(duration.max_minutes)}, and Data from ${ppFormatData(data.min_mb)} to ${ppFormatData(data.max_mb)}. Configured steps must be respected.`,
+        `Ny configuration active dia manolotra ${types}, vitesses ${speeds}, durée ${ppFormatDuration(duration.min_minutes)} hatramin'ny ${ppFormatDuration(duration.max_minutes)}, ary Data ${ppFormatData(data.min_mb)} hatramin'ny ${ppFormatData(data.max_mb)}. Tsy maintsy hajaina ny pas configurés.`
+      );
+    }
+
+    case "platform_pp_pricing": { 
+      const c = ppConfig();
+      if (!c) return t(
+        "Le prix n’est jamais choisi par l’assistant ou le navigateur : RAZAFI le calcule côté serveur à partir de la configuration tarifaire active. Le client obtient le montant exact en appuyant sur « Voir mon prix ».",
+        "The assistant or browser never chooses the price: RAZAFI calculates it on the server from the active pricing configuration. The client gets the exact amount by tapping “Voir mon prix”.",
+        "Tsy ny assistant na navigateur no mifidy ny prix: RAZAFI no manao calcul côté serveur araka ny configuration tarifaire active. Tsindrian'ny client « Voir mon prix » hahazoana ny montant exact."
+      );
+      return t(
+        `RAZAFI calcule le prix côté serveur, applique actuellement une majoration PP de ${c.markup_pct}% puis l’arrondi ${c.rounding}. Le prix final reste entre ${Number(c.min_price_ar).toLocaleString("fr-FR")} Ar et ${Number(c.max_price_ar).toLocaleString("fr-FR")} Ar selon la configuration active ; l’assistant ne l’invente jamais.`,
+        `RAZAFI calculates the price on the server, currently applies a ${c.markup_pct}% PP markup, then ${c.rounding} rounding. Under the active configuration, the final price stays between ${Number(c.min_price_ar).toLocaleString("fr-FR")} Ar and ${Number(c.max_price_ar).toLocaleString("fr-FR")} Ar; the assistant never invents it.`,
+        `RAZAFI no manao calcul prix côté serveur, mampihatra majoration PP ${c.markup_pct}% amin'izao, avy eo arrondi ${c.rounding}. Araka ny configuration active, eo anelanelan'ny ${Number(c.min_price_ar).toLocaleString("fr-FR")} Ar sy ${Number(c.max_price_ar).toLocaleString("fr-FR")} Ar ny prix final; tsy mamorona prix mihitsy ny assistant.`
+      );
+    }
+
+    case "platform_pp_pool_activation":
+      return t(
+        "RAZAFI prend en charge PP, mais la fonction est activée séparément pour chaque zone WiFi par le Superadmin. Elle peut donc être disponible dans un pool et désactivée dans un autre.",
+        "RAZAFI supports PP, but the feature is enabled separately for each WiFi zone by the Superadmin. It may therefore be available in one pool and disabled in another.",
+        "Manohana PP i RAZAFI, fa activé séparément isaky ny zone WiFi avy amin'ny Superadmin ilay fonction. Noho izany afaka disponible amin'ny pool iray ary désactivé amin'ny pool hafa izy."
+      );
+
+    case "platform_pp_quote_rules": { 
+      const c = ppConfig();
+      const ttl = Number(c?.quote_ttl_minutes);
+      const validity = Number.isFinite(ttl) ? `${ttl} minutes` : (lang === "en" ? "the time shown on the quote" : "le temps affiché sur le devis");
+      return t(
+        `Le devis reste valable ${validity}. Pour le même appareil et le même pool, un nouveau devis remplace l’ancien : seul le plus récent reste payable.`,
+        `The quote remains valid for ${validity}. For the same device and pool, a new quote replaces the previous one: only the newest remains payable.`,
+        `Valable ${validity} ny devis. Ho an'ny appareil sy pool iray ihany, ny devis vaovao dia manolo ny taloha: ny farany indrindra ihany no azo aloa.`
+      );
+    }
+
+    case "platform_pp_simulation_limit":
+      return t(
+        "Le client peut effectuer jusqu’à 30 simulations par appareil sur une période de 10 minutes. Cette limite protège le service sans gêner un usage normal.",
+        "A client can make up to 30 simulations per device within 10 minutes. This protects the service without affecting normal use.",
+        "Afaka manao simulation hatramin'ny 30 isaky ny appareil ao anatin'ny 10 minutes ny client. Miaro ny service io limite io nefa tsy manelingelina usage normal."
+      );
+
+    case "platform_pp_payment_methods": { 
+      const methods = Array.isArray(pp?.operational_payment_methods) ? pp.operational_payment_methods.filter(Boolean) : [];
+      const list = methods.length ? methods.join(", ") : (lang === "en" ? "no method currently announced" : "aucun moyen actuellement annoncé");
+      return t(
+        `Pour PP, les moyens annoncés doivent correspondre aux intégrations réellement opérationnelles. Actuellement : ${list}. La disponibilité finale dépend aussi des moyens activés dans chaque pool.`,
+        `For PP, announced methods must match integrations that are truly operational. Currently: ${list}. Final availability also depends on the methods enabled for each pool.`,
+        `Ho an'ny PP, ireo moyens lazaina dia tsy maintsy mifanaraka amin'ny intégrations tena opérationnelles. Amin'izao: ${list}. Miankina koa amin'ny moyens activés isaky ny pool ny disponibilité farany.`
+      );
+    }
+
+    case "platform_pp_owner_benefits":
+      return t(
+        "PP élargit le choix sans obliger le propriétaire à créer manuellement chaque combinaison. Le moteur applique une configuration tarifaire contrôlée, tandis que le propriétaire conserve ses forfaits standards et son suivi habituel.",
+        "PP expands client choice without forcing the owner to create every combination manually. The engine applies controlled pricing configuration while the owner keeps standard plans and normal monitoring.",
+        "PP dia manitatra ny choix nefa tsy manery ny propriétaire hamorona combinaison tsirairay. Ny moteur no mampihatra configuration tarifaire contrôlée, ary mitazona ny forfaits standards sy suivi mahazatra ny propriétaire."
+      );
+
+    case "platform_pp_assistant_limits":
+      return t(
+        "L’assistant peut expliquer PP et guider le client, mais il ne calcule pas librement un montant, ne crée pas le devis, ne lance pas le paiement et ne confirme pas un paiement à la place du système.",
+        "The assistant can explain PP and guide the client, but it does not freely calculate an amount, create the quote, start payment, or confirm payment on behalf of the system.",
+        "Afaka manazava PP sy mitarika client ny assistant, fa tsy manao calcul libre ny montant, tsy mamorona devis, tsy mandefa paiement ary tsy confirmer paiement ho solon'ny système."
       );
 
     case "platform_intro": {
@@ -6684,6 +7380,10 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     };
   }
   // ── End Global PIN guard ─────────────────────────────────────────────────
+
+  // Assistant PP: merge server-owned active pricing metadata and permanent PP
+  // rules into the already-sanitized context. Failure is non-fatal.
+  liveData = await enrichAssistantPersonalizedPlanContext(context, liveData);
 
   // Extract follow-up signals from current message and merge into slots
   const followUpSignals = extractAssistantFollowUpSignals(message, context, thread);
@@ -6996,6 +7696,16 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   // Pick best matching intent
   const intent = pickAssistantIntent(rows, message);
 
+  // Assistant PP: explicit detection and short multi-turn fragments override
+  // broad KB matches such as plan_choice/payment_how_to.
+  const detectedIntentForTurn = detectDynamicIntentFromMessage(message, context);
+  const ppFollowUpIntent = resolveAssistantPersonalizedFollowUpIntent({ context, message, thread });
+  const detectedPpIntent = String(detectedIntentForTurn || "").startsWith("portal_pp_") ||
+    String(detectedIntentForTurn || "").startsWith("platform_pp_")
+      ? detectedIntentForTurn
+      : null;
+  const effectiveIntentKey = ppFollowUpIntent || detectedPpIntent || intent?.intent_key || null;
+
   // Select answer in detected language
   const answer = selectAssistantAnswer(intent, lang);
 
@@ -7017,7 +7727,7 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   // Log anonymously (fire-and-forget, real columns only)
   await logAssistantInteraction({
     context,
-    intent_key: intent?.intent_key || null,
+    intent_key: effectiveIntentKey,
     lang,
     escalated,
     pool_id: pool_id || null,
@@ -7037,7 +7747,7 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   // Returns null when live_data is absent or intent is not recognized → falls through to KB/fallback.
   const dynamicAnswer = buildDynamicAssistantAnswer(
     context,
-    intent?.intent_key || null,
+    effectiveIntentKey,
     message,
     lang,
     liveData,   // already sanitized by sanitizeAssistantLiveData() upstream
@@ -7072,7 +7782,10 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   const _paymentSignalInMsg = (
     /(pay[eé]|pay|paiement|mvola|vola|argent|code|d[eé]bit[eé]|solde|forfait|reçu|nandoa|nahazo|nihena|nalefa|lasa)/.test(_msgLow)
   );
+  const personalizedPlanSensitiveTurn = context === "portal_user" &&
+    String(effectiveIntentKey || "").startsWith("portal_pp_");
   const paymentSensitiveTurn = context === "portal_user" && (
+    personalizedPlanSensitiveTurn                              ||
     messageIsPaymentComplaint                                  ||
     isNoCodeMessage(message)                                   ||
     thread?.pending_issue_type === "payment_no_code"           ||
@@ -7163,6 +7876,8 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
       !messageIsPaymentComplaint &&
       thread?.pending_issue_type !== "payment_no_code" &&
       (thread?.turns?.length || 0) === 0 &&
+      !String(effectiveIntentKey || "").startsWith("portal_pp_") &&
+      // Assistant PP: do not replace a PP explanation with a returning standard-plan recommendation.
       // G.3B: only use returning memory when it genuinely helps this turn
       shouldUseReturningMemoryForTurn({
         context,
@@ -7224,8 +7939,8 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     userMessage: message,
     assistantAnswer: finalAnswer,
     lang,
-    intentKey: intent?.intent_key || null,
-    topic: thread.current_topic,
+    intentKey: effectiveIntentKey,
+    topic: String(effectiveIntentKey || "").includes("_pp_") ? "personalized_plan" : thread.current_topic,
     slots: {},
   });
 
@@ -7235,7 +7950,7 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     const g1Goal = resolveAssistantConversationGoal({
       context,
       message,
-      intentKey: intent?.intent_key || null,
+      intentKey: effectiveIntentKey,
       diagnosticResult,
       thread,
     });
@@ -7258,7 +7973,7 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
       thread,
       context,
       message,
-      intentKey: intent?.intent_key || null,
+      intentKey: effectiveIntentKey,
       diagnosticResult,
       finalAnswer,
       signals: followUpSignals,
@@ -7283,7 +7998,7 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   return {
     ok: true,
     context,
-    intent_key: intent?.intent_key || null,
+    intent_key: effectiveIntentKey,
     lang,
     answer: finalAnswer,
     buttons: dynamicAnswer ? [] : buttons,
@@ -7406,7 +8121,8 @@ const ASSISTANT_AI_FORBIDDEN_TERMS = [
   "handleassistantchat", "buildportaldynamic", "loadassistantknowledge",
   // Raw payment/transaction refs (keep general fraud-proof)
   "request_ref", "transaction_id", "payment_ref", "mvola ref",
-  "client_mac", "voucher_code",
+  "client_mac", "voucher_code", "quote_token", "token_hash", "device_hash",
+  "quote_id", "pool_id", "config_hash", "pricing_config_version_id", "technical_plan_id",
   // Invented admin actions (see extra check in validateRazafiAiAnswer)
 ];
 
@@ -8088,6 +8804,7 @@ function buildGroundedAssistantPrompt({
   if (liveData && typeof liveData === "object" && Object.keys(liveData).length > 0) {
     const safeLive = {};
     for (const [k, v] of Object.entries(liveData)) {
+      if (k === "personalized_plan_context" || k === "platform_personalized_plan_context") continue;
       if (!ASSISTANT_FORBIDDEN_LIVE_KEYS.has(k)) safeLive[k] = v;
     }
     if (Object.keys(safeLive).length > 0) {
@@ -8103,6 +8820,26 @@ function buildGroundedAssistantPrompt({
       siteKnowledgeSection = `\n\n## SITE KNOWLEDGE (primary public source — use this for RAZAFI facts)\n${skSafe}`;
     } catch (_) {}
   }
+
+  // ── SECTION: PERSONALIZED PLAN CONTEXT ──────────────────────────────────
+  // Dedicated budget so long plan lists cannot truncate PP state/config.
+  let personalizedPlanSection = "";
+  try {
+    const source = context === "portal_user"
+      ? liveData?.personalized_plan_context
+      : context === "platform_prospect"
+        ? liveData?.platform_personalized_plan_context
+        : null;
+    if (source && typeof source === "object") {
+      const label = context === "portal_user"
+        ? "PERSONALIZED PLAN CONTEXT (current portal screen and trusted active config)"
+        : "PERSONALIZED PLAN CONTEXT (global public feature and trusted active config)";
+      personalizedPlanSection = `
+
+## ${label}
+${JSON.stringify(source, null, 2).slice(0, 2200)}`;
+    }
+  } catch (_) {}
 
   // ── SECTION: PAYMENT CONTEXT (portal_user payment complaints only) ────────
   const paymentSection = isPaymentComplaint
@@ -8130,6 +8867,7 @@ function buildGroundedAssistantPrompt({
     "PLAN DURATION: monthly = 28+ days (40320+ min). Weekly = 5–10 days. State clearly if none found.",
     "RAZAFI APP: no app to download — portal works directly from the browser.",
     "PAYMENT SAFETY: never say payment is confirmed unless latest_payment_status = 'completed'. Never say code is ready unless latest_voucher_status = 'ready'. Never accuse MVola/Orange/Airtel. Never ask for PIN. Never promise refund.",
+    "PERSONALIZED PLAN: use PERSONALIZED PLAN CONTEXT as the only source for PP availability, current screen state, quote price, countdown, active configuration, and PP payment methods. Never invent a PP price. Guide only; never claim to create a quote, change choices, start payment, or confirm payment.",
     // G.2.1: anti-duplication rule — the server prepends the returning-user intro; AI must not repeat it
     ...(liveData?.returning_user_context?.has_history === true && !isPaymentComplaint
       ? [
@@ -8163,6 +8901,7 @@ function buildGroundedAssistantPrompt({
     "You are a professional consultative sales agent for RAZAFI. Your goal is to understand the prospect's situation and guide them toward a relevant next step.",
     "MALAGASY STYLE: If the detected language is Malagasy (mg), use natural everyday Malagasy as spoken in Madagascar. Do not use heavy official Malagasy. Keep common RAZAFI/UI/business/technical words in French when they are more natural: forfait, plan, data, limité, illimité, code, paiement, bouton, réseau, connexion, client, usage, navigation, réseaux sociaux, vidéo, portail, WiFi, MVola, dashboard, revenus, ventes, pool, page Plans, page Revenus, plateforme, démo, contact WhatsApp, Starlink, fibre, routeur, access point.",
     "If live_data.site_knowledge is present, use it as the primary public knowledge source about RAZAFI. Prefer it over generic training knowledge.",
+    "PERSONALIZED PLAN: use the server-owned PERSONALIZED PLAN CONTEXT for PP facts and active public configuration. Explain PP globally; never claim it is active on a visitor's WiFi or that a visitor has a quote. Never invent a price or perform an action.",
     "Answer the prospect's question first. Then, only if natural, ask ONE useful qualifying question or suggest a next step.",
     "DEMO RULE: Mention demos only when the prospect asks to see, test, understand visually, or compare owner/client experience. When mentioning demos, say 'cliquez sur le bouton Voir les démos' — never give raw demo URLs, never say 'visitez razafistore.com', never say 'ouvrez ce lien'.",
     "WHATSAPP RULE: Mention WhatsApp only when the prospect asks to contact RAZAFI, start a project, get an exact quote, or after a clear qualification step. Do not push WhatsApp in every answer.",
@@ -8354,6 +9093,7 @@ function buildGroundedAssistantPrompt({
     diagnosticSection,
     paymentSection,
     siteKnowledgeSection,   // G.4: platform_prospect public knowledge — injected before liveSection
+    personalizedPlanSection, // Assistant PP: independent, trusted, never truncated by plan lists
     liveSection,
     groundingSection,
     knowledgeSection,

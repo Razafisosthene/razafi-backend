@@ -5546,6 +5546,95 @@ function selectPlanCardOnly(card) {
     try { return document.body.classList.contains("razafi-preview-mode"); } catch (_) { return false; }
   };
 
+  // Assistant PP: safe UI-state snapshot. Never returns quote token, MAC,
+  // phone, quote/transaction IDs, config hash, or any payment reference.
+  function buildSafePersonalizedAssistantContext() {
+    try {
+      var el = personalizedEls();
+      var enabled = personalizedPlansEnabled === true;
+      var available = personalizedFeatureAvailable === true;
+      var builderOpen = !!(el.builder && !el.builder.classList.contains("hidden"));
+      var quoteVisible = !!(personalizedQuote && el.quotePanel && !el.quotePanel.classList.contains("hidden"));
+      var paymentFormVisible = !!(el.paymentForm && !el.paymentForm.classList.contains("hidden") && el.paymentForm.offsetParent !== null);
+      var confirmationVisible = !!(el.confirmWrap && !el.confirmWrap.classList.contains("hidden") && el.confirmWrap.offsetParent !== null);
+      var processing = !!(personalizedPaymentStarted || window.razafiPaymentInProgress || el.card?.classList.contains("processing"));
+      var uiMessage = String(el.error?.textContent || "").replace(/[\r\n\t]/g, " ").replace(/\s{2,}/g, " ").trim().slice(0, 240) || null;
+      var state = "builder_closed";
+
+      if (!enabled) state = "disabled";
+      else if (!available) state = "unavailable";
+      else if (/incertaine|ne lancez pas un deuxième|ne payez pas une deuxième/i.test(uiMessage || "")) state = "payment_uncertain";
+      else if (processing) state = "payment_in_progress";
+      else if (confirmationVisible) state = "confirmation_visible";
+      else if (paymentFormVisible) state = "payment_form_visible";
+      else if (quoteVisible && personalizedQuoteIsUsable()) state = "quote_ready";
+      else if (/expiré|expire|plus disponible|nouveau devis/i.test(uiMessage || "")) state = "quote_expired";
+      else if (builderOpen) state = "builder_open";
+
+      var choice = null;
+      if (enabled && available && personalizedOptions) {
+        try {
+          var rawChoice = readPersonalizedChoice();
+          choice = {
+            type: String(rawChoice.type || ""),
+            duration_minutes: Number(rawChoice.duration_minutes || 0),
+            data_mb: rawChoice.data_mb === null ? null : Number(rawChoice.data_mb),
+            speed_mbps: Number(rawChoice.speed_mbps || 0),
+          };
+        } catch (_) {}
+      }
+
+      var quote = null;
+      if (personalizedQuote && typeof personalizedQuote === "object") {
+        quote = {
+          plan_name: String(personalizedQuote.plan_name || "Forfait personnalisé").slice(0, 120),
+          final_price_ar: Number(personalizedQuote.final_price_ar || 0),
+          currency: "Ar",
+          duration_minutes: Number(personalizedQuote.duration_minutes || 0),
+          data_mb: personalizedQuote.data_mb === null || personalizedQuote.data_mb === undefined
+            ? null : Number(personalizedQuote.data_mb),
+          speed_mbps: Number(personalizedQuote.speed_mbps || 0),
+          pricing_version: Number(personalizedQuote.pricing_version || personalizedOptions?.pricing_version || 0) || null,
+        };
+      }
+
+      var secondsLeft = 0;
+      if (quote && Number.isFinite(personalizedQuoteExpiresAtMs)) {
+        secondsLeft = Math.max(0, Math.ceil((personalizedQuoteExpiresAtMs - Date.now()) / 1000));
+      }
+
+      var ppPaymentMethods = PAYMENT_METHOD_ORDER.filter(function (key) {
+        return currentPaymentMethods?.[key] === true && PERSONALIZED_PAYMENT_PROVIDERS[key]?.operational === true;
+      }).map(function (key) {
+        return PERSONALIZED_PAYMENT_PROVIDERS[key]?.label || PAYMENT_METHOD_META[key]?.label || key;
+      });
+
+      return {
+        enabled: enabled,
+        available: available,
+        state: state,
+        choice: choice,
+        quote: quote,
+        quote_seconds_left: secondsLeft,
+        payment_methods: ppPaymentMethods,
+        ui_message: uiMessage,
+        context_version: "PP-A.1",
+      };
+    } catch (_) {
+      return {
+        enabled: false,
+        available: false,
+        state: "unavailable",
+        choice: null,
+        quote: null,
+        quote_seconds_left: 0,
+        payment_methods: [],
+        ui_message: null,
+        context_version: "PP-A.1",
+      };
+    }
+  }
+
   // Live-data bridge: assembles a safe, sanitized snapshot for the assistant.
   // Called lazily at the moment the user sends a message — never at page load.
   // NEVER returns: voucher code, client MAC, AP MAC, NAS-ID, phone, transaction refs, router info.
@@ -5808,6 +5897,8 @@ function selectPlanCardOnly(card) {
         portal_status_label:        portalStatusLabel,
         page_context:               "portal",
         ui_context_version:         "G.3B.1",
+        // Assistant PP: safe screen state only; trusted active config is merged server-side.
+        personalized_plan_context: buildSafePersonalizedAssistantContext(),
       };
     } catch (_) {
       // Fail-safe: always return a valid object so the assistant can proceed
@@ -5822,6 +5913,11 @@ function selectPlanCardOnly(card) {
         pool_name: null, display_name: null, brand_name: null, pool_label: null,
         selected_plan: null, payment_form_state: "idle", main_next_action: "choose_plan",
         portal_status_label: "no_active_code", page_context: "portal", ui_context_version: "G.3B.1",
+        personalized_plan_context: {
+          enabled: false, available: false, state: "unavailable", choice: null,
+          quote: null, quote_seconds_left: 0, payment_methods: [], ui_message: null,
+          context_version: "PP-A.1",
+        },
       };
     }
   };
