@@ -101,6 +101,25 @@
     .rz-create-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;}
     .rz-create-actions button{width:100%;min-height:48px;border-radius:18px!important;}
     .rz-create-success{margin-top:12px;padding:12px;border-radius:18px;background:rgba(22,163,74,.10);border:1px solid rgba(22,163,74,.22);color:#15803d;font-size:13px;font-weight:850;line-height:1.35;}
+    .rz-pricing-context{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:11px 13px;border-radius:20px;background:rgba(239,246,255,.82);border:1px solid rgba(13,110,253,.16);color:#334155;font-size:13px;font-weight:850;}
+    .rz-pricing-context strong{color:#0f172a;font-weight:950;}
+    .rz-pricing-context-meta{display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
+    .rz-context-chip{display:inline-flex;align-items:center;padding:6px 9px;border-radius:999px;background:rgba(255,255,255,.82);border:1px solid rgba(15,23,42,.07);color:#334155;font-size:12px;font-weight:900;}
+    .rz-price-breakdown{display:grid;grid-template-columns:1fr auto 1fr;gap:10px;align-items:stretch;margin:10px 0 4px;}
+    .rz-price-metric{padding:12px;border-radius:20px;background:rgba(248,250,252,.86);border:1px solid rgba(15,23,42,.07);min-width:0;}
+    .rz-price-metric.personalized{background:rgba(239,246,255,.90);border-color:rgba(13,110,253,.20);}
+    .rz-price-metric .rz-v{font-size:22px;letter-spacing:-.04em;}
+    .rz-price-metric.personalized .rz-v{color:#0d6efd;}
+    .rz-markup-arrow{display:flex;align-items:center;justify-content:center;flex-direction:column;gap:3px;color:#64748b;font-size:12px;font-weight:950;white-space:nowrap;}
+    .rz-markup-arrow strong{color:#0d6efd;font-size:13px;}
+    .rz-version-list{display:flex;flex-direction:column;gap:9px;}
+    .rz-version-item{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:12px;border-radius:20px;background:rgba(248,250,252,.84);border:1px solid rgba(15,23,42,.07);}
+    .rz-version-item.active{background:rgba(22,163,74,.08);border-color:rgba(22,163,74,.20);}
+    .rz-version-title{color:#0f172a;font-size:14px;font-weight:950;}
+    .rz-version-meta{margin-top:4px;color:#64748b;font-size:12px;font-weight:800;line-height:1.4;word-break:break-word;}
+    .rz-version-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
+    .rz-version-actions button{width:auto!important;min-height:40px!important;padding:0 12px!important;border-radius:15px!important;}
+    .rz-config-section-label{grid-column:1/-1;margin-top:4px;padding-top:10px;border-top:1px solid rgba(15,23,42,.08);color:#0f172a;font-size:13px;font-weight:950;}
 
     .rz-collapse-summary{display:flex;align-items:center;justify-content:space-between;gap:10px;list-style:none;cursor:default;}
     .rz-collapse-summary::-webkit-details-marker{display:none;}
@@ -146,7 +165,7 @@
     @media (max-width:860px){.rz-config-edit-grid{grid-template-columns:1fr 1fr;}.rz-ref-editor-fields{grid-template-columns:1fr 1fr;}.rz-ref-label-field{grid-column:1/-1;}}
     @media (max-width:520px){.rz-config-edit-grid{grid-template-columns:1fr;}.rz-ref-editor-fields{grid-template-columns:1fr;}.rz-ref-label-field{grid-column:auto;}.rz-ref-editor-actions{width:100%;}.rz-ref-editor-check,.rz-remove-ref-btn{flex:1;justify-content:center;}.rz-ref-editor-toolbar button,.rz-config-save-row button{width:100%;}.rz-config-save-row{justify-content:stretch;}}
     @media (max-width:860px){.rz-simulator-grid{grid-template-columns:1fr;}.rz-simulator-form{grid-template-columns:1fr;}.rz-type-switch{grid-template-columns:1fr 1fr;}.rz-range{grid-template-columns:1fr;}}
-    @media (max-width:520px){.rz-price-big{font-size:36px;}}
+    @media (max-width:520px){.rz-price-big{font-size:36px;}.rz-price-breakdown{grid-template-columns:1fr;}.rz-markup-arrow{min-height:42px;}.rz-version-item{flex-direction:column;}.rz-version-actions{width:100%;}.rz-version-actions button{width:100%!important;}}
   </style>
 </head>
 <body class="rz-admin-shell pricing-simulator-page">
@@ -155,7 +174,7 @@
       <div class="topbar rz-simulator-header">
         <div class="title">
           <h1 class="rz-hero-title">Simulateur de prix</h1>
-          <div class="rz-hero-subtitle">Calculez un prix recommandé avant de créer un forfait.</div>
+          <div class="rz-hero-subtitle">Simulez, créez et publiez un forfait avec la configuration tarifaire active.</div>
           <div id="me" class="subtitle rz-simulator-me">Vérification de la session…</div>
         </div>
 
@@ -167,6 +186,9 @@
       </div>
 
       <div id="error" class="error"></div>
+      <div id="pricingContext" class="rz-pricing-context" aria-live="polite">
+        <span>Chargement de la configuration tarifaire active…</span>
+      </div>
 
       <div class="rz-simulator-grid">
         <section class="rz-simulator-panel" aria-labelledby="formTitle">
@@ -219,6 +241,8 @@
               </datalist>
               <div id="speedMbpsError" class="rz-field-error"></div>
             </div>
+
+            <div id="personalizedRulesNote" class="rz-small-note">Chargement des règles actives…</div>
 
             <button id="simulateBtn" class="filter-btn primary rz-simulate-btn" type="submit">Simuler</button>
           </form>
@@ -292,6 +316,54 @@
               <label for="cfg_allowed_speeds_mbps">Débits autorisés (Mbps)</label>
               <input id="cfg_allowed_speeds_mbps" placeholder="5, 7, 10, 12" />
             </div>
+
+            <div class="rz-config-section-label">Forfait personnalisé client</div>
+            <div class="rz-field">
+              <label for="cfg_personalized_markup_pct">Majoration client (%)</label>
+              <input id="cfg_personalized_markup_pct" inputmode="decimal" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_personalized_quote_ttl_minutes">Validité devis (minutes)</label>
+              <input id="cfg_personalized_quote_ttl_minutes" inputmode="numeric" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_personalized_min_duration_minutes">Durée minimum (minutes)</label>
+              <input id="cfg_personalized_min_duration_minutes" inputmode="numeric" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_personalized_duration_step_minutes">Pas durée (minutes)</label>
+              <input id="cfg_personalized_duration_step_minutes" inputmode="numeric" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_personalized_min_data_mb">Data minimum (Mo)</label>
+              <input id="cfg_personalized_min_data_mb" inputmode="numeric" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_personalized_data_step_mb">Pas Data (Mo)</label>
+              <input id="cfg_personalized_data_step_mb" inputmode="numeric" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_personalized_min_price_ar">Prix client minimum (Ar)</label>
+              <input id="cfg_personalized_min_price_ar" inputmode="numeric" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_personalized_max_price_ar">Prix client maximum (Ar)</label>
+              <input id="cfg_personalized_max_price_ar" inputmode="numeric" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_personalized_quote_retention_days">Conservation devis (jours)</label>
+              <input id="cfg_personalized_quote_retention_days" inputmode="numeric" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_personalized_allowed_types">Types autorisés</label>
+              <input id="cfg_personalized_allowed_types" placeholder="data, unlimited" />
+            </div>
+            <div class="rz-field">
+              <label for="cfg_personalized_rounding">Arrondi</label>
+              <select id="cfg_personalized_rounding">
+                <option value="ceil_100">Centaine supérieure (ceil_100)</option>
+              </select>
+            </div>
           </div>
           <div class="rz-ref-editor-toolbar">
             <p>Les références inactives restent disponibles et peuvent être réactivées.</p>
@@ -307,10 +379,21 @@
         </form>
       </details>
 
+      <details id="versionHistory" class="rz-simulator-info rz-admin-config rz-mobile-collapsible" aria-labelledby="versionHistoryTitle" hidden>
+        <summary class="rz-collapse-summary">
+          <h2 id="versionHistoryTitle">🕘 Versions tarifaires</h2>
+          <span class="rz-collapse-icon" aria-hidden="true">▾</span>
+        </summary>
+        <div class="rz-collapse-body">
+          <div id="versionsStatus" class="rz-editor-status"></div>
+          <div id="versionsList" class="rz-version-list">Chargement des versions…</div>
+        </div>
+      </details>
+
     </div>
   </div>
 
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="./pricing-simulator.js?v=pricing-market-1"></script>
+  <script src="./pricing-simulator.js?v=pp4-admin-1"></script>
 </body>
 </html>

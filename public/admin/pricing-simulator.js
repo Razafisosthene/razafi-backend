@@ -3,8 +3,18 @@ async function fetchJSON(url, opts = {}) {
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); }
-  catch { throw new Error("Le serveur a répondu avec un format invalide."); }
-  if (!res.ok) throw new Error(data?.message || data?.error || "Requête impossible.");
+  catch {
+    const err = new Error("Le serveur a répondu avec un format invalide.");
+    err.status = res.status;
+    throw err;
+  }
+  if (!res.ok) {
+    const err = new Error(data?.message || data?.error || "Requête impossible.");
+    err.status = res.status;
+    err.code = data?.error || null;
+    err.data = data;
+    throw err;
+  }
   return data;
 }
 
@@ -44,6 +54,14 @@ function cleanErrorMessage(err) {
     visible_plan_limit_reached: "Limite de forfaits visibles atteinte. Masquez un forfait dans Plans avant de continuer.",
     max_total_plans_reached: "Limite totale de forfaits atteinte pour ce WiFi.",
     no_pools_assigned: "Aucun pool n’est assigné à ce compte.",
+    personalized_plan_type_not_allowed: "Ce type de forfait n’est pas autorisé.",
+    personalized_duration_not_allowed: "Cette durée ne respecte pas le minimum ou le pas configuré.",
+    personalized_data_not_allowed: "Cette Data ne respecte pas le minimum ou le pas configuré.",
+    personalized_speed_not_allowed: "Cette vitesse n’est pas autorisée.",
+    personalized_plan_combination_blocked: "Cette combinaison est bloquée par les règles actives.",
+    personalized_price_above_maximum: "Le prix client personnalisé dépasserait le maximum autorisé.",
+    personalized_pricing_config_unavailable: "La configuration tarifaire active est momentanément indisponible.",
+    plan_simulator_setting_invalid: "Une valeur de configuration est invalide.",
   };
   return map[raw] || raw || "Action impossible.";
 }
@@ -55,9 +73,49 @@ function formatAr(n) {
 }
 
 function formatSetting(v, suffix = "") {
+  if (v === null || v === undefined || String(v).trim() === "") return "—";
   const n = Number(v);
   if (Number.isFinite(n)) return `${n}${suffix}`;
-  return `${v ?? "—"}${suffix}`;
+  return `${v}${suffix}`;
+}
+
+
+function formatDateTime(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (!Number.isFinite(d.getTime())) return "—";
+  return new Intl.DateTimeFormat("fr-FR", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(d);
+}
+
+function shortHash(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "—";
+  return raw.length > 14 ? `${raw.slice(0, 10)}…${raw.slice(-4)}` : raw;
+}
+
+function formatDurationRule(minutes) {
+  const n = Number(minutes);
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  if (n % 1440 === 0) return `${n / 1440} j`;
+  if (n % 60 === 0) return `${n / 60} h`;
+  return `${n} min`;
+}
+
+function formatDataRule(megabytes) {
+  const n = Number(megabytes);
+  if (!Number.isFinite(n) || n < 0) return "—";
+  const gb = Math.round((n / 1024) * 100) / 100;
+  return `${Number.isInteger(gb) ? Math.trunc(gb) : String(gb).replace(".", ",")} Go`;
+}
+
+function parseAllowedTypes(value) {
+  const raw = Array.isArray(value) ? value : String(value ?? "").split(",");
+  return Array.from(new Set(raw
+    .map((v) => String(v || "").trim().toLowerCase())
+    .filter((v) => v === "data" || v === "unlimited")));
 }
 
 function setBusy(btn, busy, text) {
@@ -124,9 +182,12 @@ function parseAllowedSpeeds(value) {
 
 function refreshSpeedOptions(settings = {}) {
   const list = document.getElementById("speedOptions");
-  if (!list) return;
+  const input = document.getElementById("speedMbps");
   const speeds = parseAllowedSpeeds(settings.allowed_speeds_mbps);
-  list.innerHTML = speeds.map((speed) => `<option value="${esc(speed)}"></option>`).join("");
+  if (list) list.innerHTML = speeds.map((speed) => `<option value="${esc(speed)}"></option>`).join("");
+  if (input && speeds.length && !speeds.some((speed) => Math.abs(Number(input.value) - speed) < 0.001)) {
+    input.value = String(speeds[0]);
+  }
 }
 
 function createReferenceDraft() {
@@ -148,6 +209,8 @@ function createReferenceDraft() {
 
 let currentType = "unlimited";
 let simulatorConfig = null;
+let simulatorOptions = null;
+let pricingVersions = [];
 let currentAdmin = null;
 let isSuperadminUser = false;
 let simulatorPools = [];
@@ -165,6 +228,17 @@ const SETTING_KEYS = [
   "minimum_price_ar",
   "max_total_plans",
   "allowed_speeds_mbps",
+  "personalized_markup_pct",
+  "personalized_quote_ttl_minutes",
+  "personalized_min_duration_minutes",
+  "personalized_duration_step_minutes",
+  "personalized_min_data_mb",
+  "personalized_data_step_mb",
+  "personalized_min_price_ar",
+  "personalized_max_price_ar",
+  "personalized_quote_retention_days",
+  "personalized_allowed_types",
+  "personalized_rounding",
 ];
 
 let editableReferences = [];
@@ -192,6 +266,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   const configInfo = document.getElementById("configInfo");
   const configSummary = document.getElementById("configSummary");
   const referencesList = document.getElementById("referencesList");
+  const pricingContext = document.getElementById("pricingContext");
+  const personalizedRulesNote = document.getElementById("personalizedRulesNote");
+  const versionHistory = document.getElementById("versionHistory");
+  const versionsList = document.getElementById("versionsList");
+  const versionsStatus = document.getElementById("versionsStatus");
   const logoutBtn = document.getElementById("logoutBtn");
 
   const configEditor = document.getElementById("configEditor");
@@ -233,7 +312,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   function closeMobileConfigSections() {
     try {
       if (!window.matchMedia || !window.matchMedia("(max-width: 520px)").matches) return;
-      for (const el of [configInfo, configEditor]) {
+      for (const el of [configInfo, configEditor, versionHistory]) {
         if (el && el.tagName === "DETAILS") el.removeAttribute("open");
       }
     } catch (_) {}
@@ -263,6 +342,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function placeCreateError(err) {
+    const statusEl = document.getElementById("createStatus");
+    if (statusEl) statusEl.textContent = "";
     const raw = String(err?.message || err || "").trim();
     if (raw === "__create_error_shown__") return true;
     const msg = cleanErrorMessage(err);
@@ -337,10 +418,69 @@ document.addEventListener("DOMContentLoaded", async () => {
     return false;
   }
 
+  function syncDurationInputRules() {
+    const p = simulatorOptions?.personalized || {};
+    const factors = { hour: 60, day: 1440, week: 10080, month: 43200 };
+    const factor = factors[String(durationUnit?.value || "day")] || 60;
+    const min = Number(p.min_duration_minutes);
+    const step = Number(p.duration_step_minutes);
+    const max = Number(p.max_duration_minutes);
+    if (durationValue) {
+      if (Number.isFinite(min) && min > 0) durationValue.min = String(min / factor);
+      if (Number.isFinite(step) && step > 0) durationValue.step = String(step / factor);
+      if (Number.isFinite(max) && max > 0) durationValue.max = String(max / factor);
+    }
+  }
+
+  function renderPricingContext() {
+    if (!pricingContext) return;
+    const p = simulatorOptions?.personalized || {};
+    const v = simulatorOptions?.active_version || {};
+    const role = isSuperadminUser ? "Superadmin · contrôle complet" : "Owner · création dans vos propres pools";
+    pricingContext.innerHTML = `
+      <span><strong>Configuration tarifaire active</strong> · ${esc(role)}</span>
+      <span class="rz-pricing-context-meta">
+        <span class="rz-context-chip">Version ${esc(v.version_no ?? "—")}</span>
+        <span class="rz-context-chip">Majoration PP ${esc(formatSetting(p.markup_pct, "%"))}</span>
+        <span class="rz-context-chip">Devis ${esc(formatSetting(p.quote_ttl_minutes, " min"))}</span>
+      </span>
+    `;
+  }
+
+  function applySimulatorOptions(options) {
+    simulatorOptions = options || null;
+    const p = simulatorOptions?.personalized || {};
+    refreshSpeedOptions({ allowed_speeds_mbps: p.allowed_speeds_mbps || simulatorOptions?.common?.allowed_speeds_mbps });
+
+    if (dataGb) {
+      const minGb = Number(p.min_data_mb) / 1024;
+      const stepGb = Number(p.data_step_mb) / 1024;
+      const maxGb = Number(p.max_data_mb) / 1024;
+      if (Number.isFinite(minGb) && minGb > 0) dataGb.min = String(minGb);
+      if (Number.isFinite(stepGb) && stepGb > 0) dataGb.step = String(stepGb);
+      if (Number.isFinite(maxGb) && maxGb > 0) dataGb.max = String(maxGb);
+    }
+
+    const types = parseAllowedTypes(p.allowed_types);
+    if (typeDataBtn) typeDataBtn.disabled = types.length > 0 && !types.includes("data");
+    if (typeUnlimitedBtn) typeUnlimitedBtn.disabled = types.length > 0 && !types.includes("unlimited");
+    if (typeDataBtn?.disabled && currentType === "data") currentType = "unlimited";
+    if (typeUnlimitedBtn?.disabled && currentType === "unlimited") currentType = "data";
+
+    syncDurationInputRules();
+    applyTypeUI();
+    renderPricingContext();
+    if (personalizedRulesNote) {
+      personalizedRulesNote.textContent = `Règles client : durée min. ${formatDurationRule(p.min_duration_minutes)}, pas ${formatDurationRule(p.duration_step_minutes)} · Data min. ${formatDataRule(p.min_data_mb)}, pas ${formatDataRule(p.data_step_mb)} · débits ${parseAllowedSpeeds(p.allowed_speeds_mbps).join(", ") || "—"} Mbps.`;
+    }
+  }
+
   function applyTypeUI() {
     const isData = currentType === "data";
     typeDataBtn.classList.toggle("active", isData);
     typeUnlimitedBtn.classList.toggle("active", !isData);
+    typeDataBtn.setAttribute("aria-pressed", isData ? "true" : "false");
+    typeUnlimitedBtn.setAttribute("aria-pressed", isData ? "false" : "true");
     dataField.style.display = isData ? "flex" : "none";
     if (isData) dataGb.setAttribute("required", "required");
     else dataGb.removeAttribute("required");
@@ -350,24 +490,30 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!isSuperadminUser) {
       if (configInfo) configInfo.hidden = true;
       if (configEditor) configEditor.hidden = true;
+      if (versionHistory) versionHistory.hidden = true;
       return;
     }
 
     if (configInfo) configInfo.hidden = false;
+    if (configEditor) configEditor.hidden = false;
+    if (versionHistory) versionHistory.hidden = false;
 
     const settings = cfg?.settings || {};
     const references = Array.isArray(cfg?.references) ? cfg.references : [];
     const activeCount = references.filter((r) => r.is_active !== false).length;
+    const version = cfg?.active_version || {};
 
     configSummary.innerHTML = `
-      <div class="rz-config-line"><span>Tolérance prix</span><span>${esc(formatSetting(settings.price_tolerance_pct, "%"))}</span></div>
-      <div class="rz-config-line"><span>Facteur réaliste</span><span>${esc(formatSetting(settings.realistic_usage_factor_pct, "%"))}</span></div>
-      <div class="rz-config-line"><span>Seuil d’avertissement</span><span>${esc(formatSetting(settings.warning_usage_factor_pct, "%"))}</span></div>
-      <div class="rz-config-line"><span>Max data</span><span>${esc(formatSetting(settings.max_data_gb, " Go"))}</span></div>
-      <div class="rz-config-line"><span>Max débit</span><span>${esc(formatSetting(settings.max_speed_mbps, " Mbps"))}</span></div>
+      <div class="rz-config-line"><span>Version active</span><span>v${esc(version.version_no ?? "—")} · ${esc(shortHash(version.config_hash))}</span></div>
+      <div class="rz-config-line"><span>Activée le</span><span>${esc(formatDateTime(version.activated_at))}</span></div>
+      <div class="rz-config-line"><span>Tolérance prix standard</span><span>${esc(formatSetting(settings.price_tolerance_pct, "%"))}</span></div>
+      <div class="rz-config-line"><span>Majoration plan personnalisé</span><span>${esc(formatSetting(settings.personalized_markup_pct, "%"))}</span></div>
+      <div class="rz-config-line"><span>Arrondi personnalisé</span><span>${esc(settings.personalized_rounding || "—")}</span></div>
+      <div class="rz-config-line"><span>Validité du devis</span><span>${esc(formatSetting(settings.personalized_quote_ttl_minutes, " min"))}</span></div>
+      <div class="rz-config-line"><span>Durée personnalisée</span><span>min ${esc(formatDurationRule(settings.personalized_min_duration_minutes))} · pas ${esc(formatDurationRule(settings.personalized_duration_step_minutes))}</span></div>
+      <div class="rz-config-line"><span>Data personnalisée</span><span>min ${esc(formatDataRule(settings.personalized_min_data_mb))} · pas ${esc(formatDataRule(settings.personalized_data_step_mb))}</span></div>
+      <div class="rz-config-line"><span>Prix client personnalisé</span><span>${esc(formatAr(settings.personalized_min_price_ar))} à ${esc(formatAr(settings.personalized_max_price_ar))}</span></div>
       <div class="rz-config-line"><span>Débits autorisés</span><span>${esc(parseAllowedSpeeds(settings.allowed_speeds_mbps).join(", ") || "—")} Mbps</span></div>
-      <div class="rz-config-line"><span>Prix minimum accepté</span><span>${esc(formatSetting(settings.minimum_price_ar, " Ar"))}</span></div>
-      <div class="rz-config-line"><span>Max forfaits total</span><span>${esc(formatSetting(settings.max_total_plans, ""))}</span></div>
       <div class="rz-config-line"><span>Références</span><span>${activeCount} actives / ${references.length} total</span></div>
     `;
 
@@ -453,9 +599,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     for (const key of SETTING_KEYS) {
       const input = document.getElementById(`cfg_${key}`);
       if (!input) continue;
-      input.value = key === "allowed_speeds_mbps"
-        ? parseAllowedSpeeds(settings[key]).join(", ")
-        : (settings[key] ?? "");
+      if (key === "allowed_speeds_mbps") input.value = parseAllowedSpeeds(settings[key]).join(", ");
+      else if (key === "personalized_allowed_types") input.value = parseAllowedTypes(settings[key]).join(", ");
+      else input.value = settings[key] ?? "";
     }
 
     if (resetReferences) {
@@ -546,15 +692,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     clearFieldErrors();
     lastSimulationData = data || null;
     const status = String(data?.status || "ok").toLowerCase();
-    const ok = data?.ok !== false && status !== "blocked";
-    const tone = status === "blocked" ? "blocked" : (status === "warning" ? "warning" : "ok");
-    const label = status === "blocked" ? "Forfait bloqué" : (status === "warning" ? "Attention" : "Simulation OK");
+    const ok = data?.ok !== false && status !== "blocked" && status !== "error";
+    const tone = status === "blocked" || status === "error" ? "blocked" : (status === "warning" ? "warning" : "ok");
+    const label = status === "blocked" ? "Forfait bloqué" : (status === "error" ? "Configuration indisponible" : (status === "warning" ? "Attention" : "Simulation OK"));
 
-    if (!ok || status === "blocked") {
-      placeValidationError(data?.message || "");
+    if (!ok) {
+      placeValidationError(data?.message || data?.error || "");
       resultBox.innerHTML = `
         <div class="rz-result-status blocked">❌ ${esc(label)}</div>
-        <div class="rz-message blocked">${esc(data?.message || "Ce forfait n’est pas réaliste ou dépasse les limites configurées.")}</div>
+        <div class="rz-message blocked">${esc(data?.message || "Simulation impossible avec les règles actives.")}</div>
       `;
       return;
     }
@@ -563,23 +709,47 @@ document.addEventListener("DOMContentLoaded", async () => {
     const price = data?.recommended_price_ar ?? data?.price_ar ?? null;
     const min = data?.minimum_price_ar ?? data?.min_price_ar ?? null;
     const max = data?.maximum_price_ar ?? data?.max_price_ar ?? null;
+    const personalized = data?.personalized_pricing || {};
+    const clientPrice = personalized.final_price_ar ?? null;
+    const markupPct = personalized.markup_pct ?? simulatorOptions?.personalized?.markup_pct ?? null;
+    const percentageMarkupAmount = personalized.percentage_markup_amount_ar ?? null;
+    const roundingAdjustment = personalized.rounding_adjustment_ar ?? null;
+    const minimumAdjustment = personalized.minimum_adjustment_ar ?? null;
     const message = data?.warning_message || data?.message || "";
+    const version = data?.active_version || simulatorOptions?.active_version || {};
 
     resultBox.innerHTML = `
       <div class="rz-result-status ${esc(tone)}">${tone === "warning" ? "⚠️" : "✅"} ${esc(label)}</div>
-      <div class="rz-k">Prix recommandé</div>
-      <div class="rz-price-big">${formatAr(price)}</div>
+      <div class="rz-price-breakdown">
+        <div class="rz-price-metric">
+          <div class="rz-k">Prix de base recommandé</div>
+          <div class="rz-v">${formatAr(price)}</div>
+          <div class="rz-version-meta">Base utilisée pour créer un forfait standard.</div>
+        </div>
+        <div class="rz-markup-arrow">
+          <span>Majoration PP</span>
+          <strong>+${esc(formatSetting(markupPct, "%"))}</strong>
+          <span>${percentageMarkupAmount === null ? "" : `+${formatAr(percentageMarkupAmount)}`}</span>
+          ${Number(roundingAdjustment) > 0 ? `<span>Arrondi : +${formatAr(roundingAdjustment)}</span>` : ""}
+          ${Number(minimumAdjustment) > 0 ? `<span>Minimum : +${formatAr(minimumAdjustment)}</span>` : ""}
+        </div>
+        <div class="rz-price-metric personalized">
+          <div class="rz-k">Prix client personnalisé</div>
+          <div class="rz-v">${formatAr(clientPrice)}</div>
+          <div class="rz-version-meta">Arrondi ${esc(personalized.rounding || simulatorOptions?.personalized?.rounding || "—")} · version ${esc(version.version_no ?? "—")}</div>
+        </div>
+      </div>
       <div class="rz-plan-name-card">
         <div class="rz-k">Nom suggéré</div>
         <div class="rz-v">${esc(name)}</div>
       </div>
       <div class="rz-range">
         <div class="rz-plan-name-card">
-          <div class="rz-k">Minimum recommandé</div>
+          <div class="rz-k">Minimum recommandé standard</div>
           <div class="rz-v">${formatAr(min)}</div>
         </div>
         <div class="rz-plan-name-card">
-          <div class="rz-k">Maximum recommandé</div>
+          <div class="rz-k">Maximum recommandé standard</div>
           <div class="rz-v">${formatAr(max)}</div>
         </div>
       </div>
@@ -587,7 +757,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       ${renderAssistantCard(data)}
 
       <div class="rz-create-card">
-        <div class="rz-create-title">🚀 Création du forfait</div>
+        <div class="rz-create-title">🚀 Création du forfait standard</div>
+        <div class="rz-create-note">Le prix ci-dessous concerne le forfait standard créé dans votre pool. Le prix client personnalisé reste calculé séparément avec la majoration active.</div>
         <div class="rz-create-grid">
           <div class="rz-field full">
             <label for="finalPlanName">Nom du forfait</label>
@@ -595,7 +766,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             <div id="finalPlanNameError" class="rz-field-error"></div>
           </div>
           <div class="rz-field">
-            <label for="finalPriceAr">Prix final (Ar)</label>
+            <label for="finalPriceAr">Prix standard final (Ar)</label>
             <input id="finalPriceAr" inputmode="numeric" value="${esc(Math.round(Number(price) || 0))}" />
             <div id="finalPriceArError" class="rz-field-error"></div>
           </div>
@@ -623,22 +794,63 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     if (configInfo) configInfo.hidden = !isSuperadminUser;
     if (configEditor) configEditor.hidden = !isSuperadminUser;
+    if (versionHistory) versionHistory.hidden = !isSuperadminUser;
 
     meEl.innerHTML = `Connecté :<strong>${esc(displayAdminName(me.email))}</strong>`;
     return me;
   }
 
+  function renderVersionHistory() {
+    if (!versionsList || !isSuperadminUser) return;
+    const activeVersionNo = Number(simulatorOptions?.active_version?.version_no);
+    if (!pricingVersions.length) {
+      versionsList.innerHTML = `<div class="rz-result-empty">Aucune version disponible.</div>`;
+      return;
+    }
+    versionsList.innerHTML = pricingVersions.map((version) => {
+      const active = String(version.status || "") === "active" || Number(version.version_no) === activeVersionNo;
+      return `
+        <div class="rz-version-item ${active ? "active" : ""}">
+          <div>
+            <div class="rz-version-title">Version ${esc(version.version_no ?? "—")} ${active ? "· Active" : ""}</div>
+            <div class="rz-version-meta">${esc(formatDateTime(version.created_at))} · ${esc(shortHash(version.config_hash))}${version.note ? `<br>${esc(version.note)}` : ""}</div>
+          </div>
+          <div class="rz-version-actions">
+            ${active ? `<span class="rz-context-chip">Active</span>` : `<button type="button" class="filter-btn" data-activate-version="${esc(version.id)}" data-version-no="${esc(version.version_no)}">Activer</button>`}
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  async function loadVersions() {
+    if (!isSuperadminUser) return [];
+    const data = await fetchJSON("/api/admin/plan-simulator/versions?limit=50&offset=0");
+    pricingVersions = Array.isArray(data?.versions) ? data.versions : [];
+    renderVersionHistory();
+    return pricingVersions;
+  }
+
   async function loadConfig() {
+    simulatorOptions = await fetchJSON("/api/admin/plan-simulator/options");
+    applySimulatorOptions(simulatorOptions);
+
     if (!isSuperadminUser) {
       if (configInfo) configInfo.hidden = true;
       if (configEditor) configEditor.hidden = true;
-      return null;
+      if (versionHistory) versionHistory.hidden = true;
+      return simulatorOptions;
     }
 
-    simulatorConfig = await fetchJSON("/api/admin/plan-simulator/config");
+    const [config] = await Promise.all([
+      fetchJSON("/api/admin/plan-simulator/config"),
+      loadVersions(),
+    ]);
+    simulatorConfig = config;
     renderConfig(simulatorConfig);
     return simulatorConfig;
   }
+
   async function loadPools() {
     const data = await fetchJSON("/api/admin/pools?system=mikrotik&limit=500&offset=0");
     const items = data.items || data.pools || [];
@@ -664,6 +876,17 @@ document.addEventListener("DOMContentLoaded", async () => {
         const speeds = parseAllowedSpeeds(input.value);
         if (!speeds.length) throw new Error("Ajoutez au moins un débit autorisé.");
         settings[key] = speeds;
+        continue;
+      }
+      if (key === "personalized_allowed_types") {
+        const types = parseAllowedTypes(input.value);
+        if (!types.length) throw new Error("Ajoutez au moins un type personnalisé : data et/ou unlimited.");
+        settings[key] = types;
+        continue;
+      }
+      if (key === "personalized_rounding") {
+        if (String(input.value || "") !== "ceil_100") throw new Error("Règle d’arrondi invalide.");
+        settings[key] = "ceil_100";
         continue;
       }
       const n = toNumberOrNull(input.value);
@@ -775,6 +998,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     showError("");
     showConfigStatus("");
     const payload = buildConfigPayloadFromEditor();
+    const confirmed = window.confirm("Cette action crée et active immédiatement une nouvelle version tarifaire pour le simulateur Admin et le portail client. Continuer ?");
+    if (!confirmed) return;
     setBusy(saveConfigBtn, true, "Enregistrement…");
     try {
       simulatorConfig = await fetchJSON("/api/admin/plan-simulator/config", {
@@ -782,8 +1007,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      renderConfig(simulatorConfig);
-      showConfigStatus("Configuration enregistrée ✅");
+      await loadConfig();
+      showConfigStatus("Nouvelle version enregistrée et activée ✅");
       window.setTimeout(() => showConfigStatus(""), 2500);
     } finally {
       setBusy(saveConfigBtn, false);
@@ -826,13 +1051,20 @@ document.addEventListener("DOMContentLoaded", async () => {
       });
       renderResult(data);
       scrollResultIntoMobileView();
+    } catch (err) {
+      if (err?.data && (err.data.status === "blocked" || err.data.status === "error")) {
+        renderResult(err.data);
+        scrollResultIntoMobileView();
+        return;
+      }
+      throw err;
     } finally {
       setBusy(simulateBtn, false);
     }
   }
 
-  typeDataBtn.addEventListener("click", () => { currentType = "data"; lastSimulationData = null; clearFieldErrors(); applyTypeUI(); resultBox.innerHTML = `<div class="rz-result-empty">Remplissez les champs puis cliquez sur Simuler.</div>`; });
-  typeUnlimitedBtn.addEventListener("click", () => { currentType = "unlimited"; lastSimulationData = null; clearFieldErrors(); applyTypeUI(); resultBox.innerHTML = `<div class="rz-result-empty">Remplissez les champs puis cliquez sur Simuler.</div>`; });
+  typeDataBtn.addEventListener("click", () => { if (typeDataBtn.disabled) return; currentType = "data"; lastSimulationData = null; clearFieldErrors(); applyTypeUI(); resultBox.innerHTML = `<div class="rz-result-empty">Remplissez les champs puis cliquez sur Simuler.</div>`; });
+  typeUnlimitedBtn.addEventListener("click", () => { if (typeUnlimitedBtn.disabled) return; currentType = "unlimited"; lastSimulationData = null; clearFieldErrors(); applyTypeUI(); resultBox.innerHTML = `<div class="rz-result-empty">Remplissez les champs puis cliquez sur Simuler.</div>`; });
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -842,6 +1074,32 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (!placeValidationError(err)) showError(err.message);
     }
   });
+
+  if (durationUnit) durationUnit.addEventListener("change", syncDurationInputRules);
+
+  if (versionsList) {
+    versionsList.addEventListener("click", async (e) => {
+      const btn = e.target.closest?.("[data-activate-version]");
+      if (!btn || !isSuperadminUser) return;
+      const versionId = String(btn.dataset.activateVersion || "");
+      const versionNo = String(btn.dataset.versionNo || "");
+      if (!versionId) return;
+      const confirmed = window.confirm(`Activer la version tarifaire ${versionNo} pour le simulateur Admin et le portail client ?`);
+      if (!confirmed) return;
+      if (versionsStatus) versionsStatus.textContent = "Activation en cours…";
+      setBusy(btn, true, "Activation…");
+      try {
+        await fetchJSON(`/api/admin/plan-simulator/versions/${encodeURIComponent(versionId)}/activate`, { method: "POST" });
+        await loadConfig();
+        if (versionsStatus) versionsStatus.textContent = `Version ${versionNo} activée ✅`;
+      } catch (err) {
+        if (versionsStatus) versionsStatus.textContent = cleanErrorMessage(err);
+        showError(cleanErrorMessage(err));
+      } finally {
+        setBusy(btn, false);
+      }
+    });
+  }
 
   if (referencesEditor) {
     referencesEditor.addEventListener("change", (e) => {
@@ -889,7 +1147,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       try {
         setBusy(reloadConfigBtn, true, "Chargement…");
         await loadConfig();
-        showConfigStatus("Configuration rechargée ✅");
+        showConfigStatus("Configuration active et versions rechargées ✅");
         window.setTimeout(() => showConfigStatus(""), 1800);
       } catch (err) {
         showError(err.message);

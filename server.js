@@ -1262,6 +1262,7 @@ async function requireAdmin(req, res, next) {
         fullPath.startsWith("/api/admin/voucher-sessions/") ||
         fullPath === "/api/admin/plans" ||
         fullPath === "/api/admin/pools" ||
+        fullPath === "/api/admin/plan-simulator/options" ||
         fullPath === "/api/admin/portal-preview/validate" ||
         fullPath === "/api/admin/pool-live-stats" ||
         fullPath === "/api/admin/free-access-devices" ||
@@ -10215,10 +10216,17 @@ function buildAdminPermissions(admin) {
     // Current safe owner capability already enforced route-by-route on /api/admin/pools/:id.
     pools_branding_manage: isSuperadmin ? true : true,
 
-    // Phase 2A: owners can show/hide existing plans only.
-    // Full plan creation/editing remains superadmin-only.
+    // Existing Plans panel rights.
     plans_visibility_manage: true,
     plans_manage: isSuperadmin,
+
+    // PP-4: Owners keep the controlled simulator workflow in their own pools.
+    // Only Superadmin may edit or activate the global pricing configuration.
+    plan_simulator_simulate: true,
+    plan_simulator_create: true,
+    plan_simulator_publish: true,
+    plan_simulator_config_manage: isSuperadmin,
+    plan_simulator_versions_manage: isSuperadmin,
 
     // Phase 2B: owners can manage free-access devices in their assigned pools only.
     // The pool free_access_limit remains the business limiter (0 = no active devices).
@@ -18723,69 +18731,340 @@ function publicPlanSimulatorSettings(settings = {}) {
   };
 }
 
-function validatePlanSimulatorConfigPayload(body = {}, currentSettings = PLAN_SIMULATOR_DEFAULT_SETTINGS) {
-  const incomingSettings = body.settings && typeof body.settings === "object" ? body.settings : {};
-  const settings = normalizePlanSimulatorSettingsObject(incomingSettings, currentSettings);
+
+function publicPersonalizedSimulatorSettings(config = {}) {
+  const p = config?.personalized || {};
+  return {
+    allowed_types: Array.isArray(p.allowed_types) ? [...p.allowed_types] : [],
+    allowed_speeds_mbps: Array.isArray(p.allowed_speeds_mbps) ? [...p.allowed_speeds_mbps] : [],
+    min_duration_minutes: p.min_duration_minutes,
+    duration_step_minutes: p.duration_step_minutes,
+    max_duration_minutes: Number.isFinite(Number(p.max_duration_days))
+      ? Math.round(Number(p.max_duration_days) * 1440)
+      : null,
+    min_data_mb: p.min_data_mb,
+    data_step_mb: p.data_step_mb,
+    max_data_mb: Number.isFinite(Number(p.max_data_gb))
+      ? Math.round(Number(p.max_data_gb) * 1024)
+      : null,
+    markup_pct: p.markup_pct,
+    min_price_ar: Math.max(Number(p.minimum_price_ar || 0), Number(p.min_price_ar || 0)),
+    max_price_ar: p.max_price_ar,
+    quote_ttl_minutes: p.quote_ttl_minutes,
+    quote_retention_days: p.retention_days,
+    rounding: p.rounding,
+  };
+}
+
+function safePlanPricingVersionSummary(config = {}, { full = false } = {}) {
+  const summary = {
+    version_no: Number(config?.version_no),
+    config_hash: String(config?.config_hash || ""),
+    activated_at: config?.activated_at || null,
+  };
+  if (full) {
+    summary.id = config?.id || null;
+    summary.status = "active";
+  }
+  return summary;
+}
+
+function calculatePersonalizedClientPrice({ basePriceAr, config }) {
+  const base = Math.round(Number(basePriceAr));
+  const p = config?.personalized || {};
+  if (!Number.isInteger(base) || base <= 0) {
+    throw makePersonalizedPlanError("personalized_base_price_invalid", 503);
+  }
+
+  const markupPct = Number(p.markup_pct);
+  const minPrice = Math.max(Number(p.minimum_price_ar || 0), Number(p.min_price_ar || 0));
+  const maxPrice = Number(p.max_price_ar);
+  if (!Number.isFinite(markupPct) || markupPct < 0 || !Number.isFinite(minPrice) || !Number.isFinite(maxPrice)) {
+    throw makePersonalizedPlanError("personalized_pricing_config_invalid", 503);
+  }
+
+  const rawMarkupAmount = base * (markupPct / 100);
+  const raw = base + rawMarkupAmount;
+  let roundedPrice;
+  if (String(p.rounding || "") === "ceil_100") {
+    roundedPrice = Math.ceil(raw / 100) * 100;
+  } else {
+    throw makePersonalizedPlanError("personalized_rounding_unsupported", 503);
+  }
+
+  const roundingAdjustment = roundedPrice - raw;
+  const finalPrice = Math.max(roundedPrice, minPrice);
+  const minimumAdjustment = finalPrice - roundedPrice;
+  if (finalPrice > maxPrice) {
+    throw makePersonalizedPlanError("personalized_price_above_maximum", 400, {
+      base_price_ar: base,
+      maximum_price_ar: maxPrice,
+    });
+  }
+
+  return {
+    base_price_ar: base,
+    markup_pct: markupPct,
+    // Keep markup_amount_ar aligned with the DB quote snapshot: total uplift
+    // after percentage, ceil_100 and the configured minimum floor.
+    markup_amount_ar: finalPrice - base,
+    percentage_markup_amount_ar: rawMarkupAmount,
+    subtotal_before_rounding_ar: raw,
+    rounded_price_ar: roundedPrice,
+    rounding_adjustment_ar: roundingAdjustment,
+    minimum_adjustment_ar: minimumAdjustment,
+    final_price_ar: finalPrice,
+    rounding: String(p.rounding || ""),
+    minimum_price_ar: minPrice,
+    maximum_price_ar: maxPrice,
+  };
+}
+
+function personalizedPlanAdminMessage(err) {
+  const code = String(err?.publicCode || err?.code || err?.message || "personalized_plan_error");
+  const reason = Array.isArray(err?.publicDetails?.reasons)
+    ? err.publicDetails.reasons.find((item) => item?.message)?.message
+    : null;
+  if (reason) return String(reason);
+
+  const messages = {
+    personalized_plan_type_not_allowed: "Ce type de forfait n’est pas autorisé par la configuration active.",
+    personalized_duration_not_allowed: "Cette durée ne respecte pas le minimum ou le pas configuré pour les forfaits personnalisés.",
+    personalized_data_not_allowed: "Ce volume de données ne respecte pas le minimum ou le pas configuré pour les forfaits personnalisés.",
+    personalized_unlimited_data_must_be_empty: "Un forfait illimité ne doit pas contenir de volume Data.",
+    personalized_speed_not_allowed: "Cette vitesse n’est pas autorisée par la configuration active.",
+    personalized_plan_combination_blocked: "Cette combinaison est bloquée par les règles du simulateur.",
+    personalized_price_above_maximum: "Le prix client personnalisé dépasserait le maximum autorisé.",
+    personalized_pricing_config_unavailable: "La configuration tarifaire active est momentanément indisponible.",
+    personalized_pricing_config_incomplete: "La configuration tarifaire active est incomplète.",
+    personalized_pricing_config_invalid: "La configuration tarifaire active est invalide.",
+    personalized_pricing_references_invalid: "Les références tarifaires actives sont invalides.",
+    personalized_pricing_references_incomplete: "Les références tarifaires actives sont incomplètes.",
+    personalized_rounding_unsupported: "La règle d’arrondi active n’est pas prise en charge.",
+  };
+  return messages[code] || "Simulation impossible avec la configuration tarifaire active.";
+}
+
+function sendAdminPlanSimulatorPersonalizedError(res, err, { simulation = false } = {}) {
+  if (!err?.isPersonalizedPlanError) return false;
+  const isBlocked = Number(err.httpStatus || 400) < 500;
+  const message = personalizedPlanAdminMessage(err);
+  const reasons = Array.isArray(err?.publicDetails?.reasons) ? err.publicDetails.reasons : [];
+  return res.status(err.httpStatus || 400).json({
+    ok: false,
+    simulation,
+    status: isBlocked ? "blocked" : "error",
+    error: err.publicCode || "personalized_plan_error",
+    message,
+    errors: reasons.length ? reasons : [{ code: err.publicCode || "personalized_plan_error", message }],
+    warnings: [],
+    ...(err.publicDetails && typeof err.publicDetails === "object" ? err.publicDetails : {}),
+  });
+}
+
+function makePlanSimulatorConfigError(code, message, field = null) {
+  const err = new Error(String(code || "plan_simulator_config_invalid"));
+  err.code = String(code || "plan_simulator_config_invalid");
+  err.status = 400;
+  err.publicMessage = String(message || "Configuration invalide.");
+  err.field = field || null;
+  return err;
+}
+
+const PLAN_SIMULATOR_CONFIG_NUMBER_RULES = Object.freeze({
+  price_tolerance_pct: { min: 0, max: 100 },
+  realistic_usage_factor_pct: { min: 10, max: 100 },
+  warning_usage_factor_pct: { min: 10, max: 150 },
+  max_visible_data_plans: { min: 1, max: 100, integer: true },
+  max_visible_unlimited_plans: { min: 1, max: 100, integer: true },
+  minimum_price_ar: { min: 0, max: 1000000, integer: true },
+  max_total_plans: { min: 1, max: 10000, integer: true },
+  max_data_gb: { min: 1, max: 100000 },
+  max_speed_mbps: { min: 1, max: 1000 },
+  max_duration_days: { min: 1, max: 3650 },
+  personalized_markup_pct: { min: 0, max: 1000 },
+  personalized_quote_ttl_minutes: { min: 1, max: 1440, integer: true },
+  personalized_min_duration_minutes: { min: 1, max: 5256000, integer: true },
+  personalized_duration_step_minutes: { min: 1, max: 5256000, integer: true },
+  personalized_min_data_mb: { min: 1, max: 102400000, integer: true },
+  personalized_data_step_mb: { min: 1, max: 102400000, integer: true },
+  personalized_min_price_ar: { min: 0, max: 1000000, integer: true },
+  personalized_max_price_ar: { min: 1, max: 1000000, integer: true },
+  personalized_quote_retention_days: { min: 1, max: 3650, integer: true },
+});
+
+function strictPlanSimulatorConfigNumber(key, raw) {
+  const rule = PLAN_SIMULATOR_CONFIG_NUMBER_RULES[key];
+  const value = Number(raw);
+  if (!rule || !Number.isFinite(value) || (rule.integer && !Number.isInteger(value)) || value < rule.min || value > rule.max) {
+    throw makePlanSimulatorConfigError(
+      "plan_simulator_setting_invalid",
+      `Valeur invalide pour ${key}.`,
+      key
+    );
+  }
+  return value;
+}
+
+function strictPlanSimulatorSpeedList(raw) {
+  const values = Array.isArray(raw) ? raw : String(raw ?? "").split(",");
+  if (!values.length) {
+    throw makePlanSimulatorConfigError("allowed_speeds_required", "Ajoutez au moins un débit autorisé.", "allowed_speeds_mbps");
+  }
+  const parsed = values.map((value) => {
+    const clean = String(value).trim();
+    const n = Number(clean);
+    if (!clean || !Number.isFinite(n) || n <= 0) {
+      throw makePlanSimulatorConfigError("allowed_speed_invalid", "Un débit autorisé est invalide.", "allowed_speeds_mbps");
+    }
+    return Math.round(n * 100) / 100;
+  });
+  return Array.from(new Set(parsed));
+}
+
+function strictPersonalizedAllowedTypes(raw) {
+  const values = Array.isArray(raw) ? raw : String(raw ?? "").split(",");
+  const parsed = values.map((value) => normalizePlanSimulatorType(value));
+  if (!parsed.length || parsed.some((value) => !value)) {
+    throw makePlanSimulatorConfigError(
+      "personalized_allowed_types_invalid",
+      "Types personnalisés invalides. Utilisez data et/ou unlimited.",
+      "personalized_allowed_types"
+    );
+  }
+  return Array.from(new Set(parsed));
+}
+
+function validatePlanSimulatorConfigPayload(body = {}, currentSettings = {}) {
+  const incomingSettings = body.settings && typeof body.settings === "object" && !Array.isArray(body.settings)
+    ? body.settings
+    : {};
+  const settings = {};
+
+  for (const key of Object.keys(PLAN_SIMULATOR_CONFIG_NUMBER_RULES)) {
+    if (Object.prototype.hasOwnProperty.call(incomingSettings, key)) {
+      settings[key] = strictPlanSimulatorConfigNumber(key, incomingSettings[key]);
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(incomingSettings, "allowed_speeds_mbps")) {
+    settings.allowed_speeds_mbps = strictPlanSimulatorSpeedList(incomingSettings.allowed_speeds_mbps);
+  }
+  if (Object.prototype.hasOwnProperty.call(incomingSettings, "personalized_allowed_types")) {
+    settings.personalized_allowed_types = strictPersonalizedAllowedTypes(incomingSettings.personalized_allowed_types);
+  }
+  if (Object.prototype.hasOwnProperty.call(incomingSettings, "personalized_rounding")) {
+    const rounding = String(incomingSettings.personalized_rounding || "").trim();
+    if (rounding !== "ceil_100") {
+      throw makePlanSimulatorConfigError(
+        "personalized_rounding_invalid",
+        "La règle d’arrondi autorisée est ceil_100.",
+        "personalized_rounding"
+      );
+    }
+    settings.personalized_rounding = rounding;
+  }
+
+  const effectiveSettings = { ...(currentSettings || {}), ...settings };
+  const requiredKeys = [
+    ...Object.keys(PLAN_SIMULATOR_CONFIG_NUMBER_RULES),
+    "allowed_speeds_mbps",
+    "personalized_allowed_types",
+    "personalized_rounding",
+  ];
+  for (const key of requiredKeys) {
+    if (!Object.prototype.hasOwnProperty.call(effectiveSettings, key)) {
+      throw makePlanSimulatorConfigError("plan_simulator_setting_required", `Configuration manquante : ${key}.`, key);
+    }
+  }
+
+  if (Number(effectiveSettings.warning_usage_factor_pct) < Number(effectiveSettings.realistic_usage_factor_pct)) {
+    throw makePlanSimulatorConfigError(
+      "warning_factor_below_realistic_factor",
+      "Le seuil d’avertissement doit être supérieur ou égal au facteur réaliste.",
+      "warning_usage_factor_pct"
+    );
+  }
+
+  const allowedSpeeds = strictPlanSimulatorSpeedList(effectiveSettings.allowed_speeds_mbps);
+  if (allowedSpeeds.some((speed) => speed > Number(effectiveSettings.max_speed_mbps))) {
+    throw makePlanSimulatorConfigError(
+      "allowed_speed_above_maximum",
+      "Un débit autorisé dépasse le débit maximum.",
+      "allowed_speeds_mbps"
+    );
+  }
+
+  const minFinalPrice = Math.max(
+    Number(effectiveSettings.minimum_price_ar),
+    Number(effectiveSettings.personalized_min_price_ar)
+  );
+  if (Number(effectiveSettings.personalized_max_price_ar) < minFinalPrice) {
+    throw makePlanSimulatorConfigError(
+      "personalized_price_range_invalid",
+      "Le prix personnalisé maximum doit être supérieur ou égal au prix minimum.",
+      "personalized_max_price_ar"
+    );
+  }
+  if (Number(effectiveSettings.personalized_min_duration_minutes) > Number(effectiveSettings.max_duration_days) * 1440) {
+    throw makePlanSimulatorConfigError(
+      "personalized_duration_range_invalid",
+      "La durée personnalisée minimale dépasse la durée maximale.",
+      "personalized_min_duration_minutes"
+    );
+  }
+  if (Number(effectiveSettings.personalized_min_data_mb) > Number(effectiveSettings.max_data_gb) * 1024) {
+    throw makePlanSimulatorConfigError(
+      "personalized_data_range_invalid",
+      "La Data personnalisée minimale dépasse le maximum Data.",
+      "personalized_min_data_mb"
+    );
+  }
 
   const refsRaw = Array.isArray(body.references) ? body.references : null;
   let references = null;
   if (refsRaw) {
-    references = refsRaw.map(normalizePlanSimulatorReferenceRow);
-    if (!references.length) {
-      const err = new Error("references_required");
-      err.status = 400;
-      throw err;
+    if (!refsRaw.length) {
+      throw makePlanSimulatorConfigError("references_required", "Ajoutez au moins une référence tarifaire.", "references");
     }
-    if (references.some((r) => !r)) {
-      const err = new Error("reference_invalid");
-      err.status = 400;
-      throw err;
+    references = refsRaw.map(normalizePlanSimulatorReferenceRow);
+    if (references.some((reference) => !reference)) {
+      throw makePlanSimulatorConfigError("reference_invalid", "Une référence tarifaire est invalide.", "references");
     }
 
     const keys = new Set();
     const technicalKeys = new Set();
     for (const ref of references) {
       if (keys.has(ref.key)) {
-        const err = new Error("reference_key_duplicate");
-        err.status = 400;
-        throw err;
+        throw makePlanSimulatorConfigError("reference_key_duplicate", `Clé de référence en double : ${ref.key}.`, "references");
       }
       keys.add(ref.key);
 
       const technicalKey = [ref.type, ref.duration_minutes, ref.type === "data" ? ref.data_gb : "unlimited", ref.speed_mbps].join("|");
       if (technicalKeys.has(technicalKey)) {
-        const err = new Error("reference_technical_duplicate");
-        err.status = 400;
-        throw err;
+        throw makePlanSimulatorConfigError("reference_technical_duplicate", "Deux références utilisent la même combinaison technique.", "references");
       }
       technicalKeys.add(technicalKey);
     }
 
-    const activeRefs = references.filter((r) => r.is_active !== false);
-    const hasData = activeRefs.some((r) => r.type === "data");
-    const hasUnlimited = activeRefs.some((r) => r.type === "unlimited");
-    if (!hasData || !hasUnlimited) {
-      const err = new Error("references_must_include_data_and_unlimited");
-      err.status = 400;
-      throw err;
+    const activeRefs = references.filter((ref) => ref.is_active !== false);
+    if (!activeRefs.some((ref) => ref.type === "data") || !activeRefs.some((ref) => ref.type === "unlimited")) {
+      throw makePlanSimulatorConfigError(
+        "references_must_include_data_and_unlimited",
+        "Conservez au moins une référence Data et une référence Illimitée actives.",
+        "references"
+      );
     }
 
-    const allowedSpeeds = normalizePlanSimulatorSettingValue("allowed_speeds_mbps", settings.allowed_speeds_mbps);
     for (const ref of activeRefs) {
-      if (ref.duration_minutes > Number(settings.max_duration_days) * 1440) {
-        const err = new Error("reference_duration_above_limit");
-        err.status = 400;
-        throw err;
+      if (ref.duration_minutes > Number(effectiveSettings.max_duration_days) * 1440) {
+        throw makePlanSimulatorConfigError("reference_duration_above_limit", `Durée trop élevée pour ${ref.label || ref.key}.`, "references");
       }
-      if (ref.speed_mbps > Number(settings.max_speed_mbps) || !allowedSpeeds.some((v) => Math.abs(Number(v) - Number(ref.speed_mbps)) < 0.001)) {
-        const err = new Error("reference_speed_not_allowed");
-        err.status = 400;
-        throw err;
+      if (ref.speed_mbps > Number(effectiveSettings.max_speed_mbps) || !allowedSpeeds.some((speed) => Math.abs(speed - Number(ref.speed_mbps)) < 0.001)) {
+        throw makePlanSimulatorConfigError("reference_speed_not_allowed", `Débit non autorisé pour ${ref.label || ref.key}.`, "references");
       }
-      if (ref.type === "data" && ref.data_gb > Number(settings.max_data_gb)) {
-        const err = new Error("reference_data_above_limit");
-        err.status = 400;
-        throw err;
+      if (ref.type === "data" && ref.data_gb > Number(effectiveSettings.max_data_gb)) {
+        throw makePlanSimulatorConfigError("reference_data_above_limit", `Data trop élevée pour ${ref.label || ref.key}.`, "references");
       }
     }
   }
@@ -18793,29 +19072,53 @@ function validatePlanSimulatorConfigPayload(body = {}, currentSettings = PLAN_SI
   return { settings, references };
 }
 
+// GET /api/admin/plan-simulator/options
+// Owner-safe, read-only operational constraints. Pricing references and editable
+// global configuration remain Superadmin-only.
+app.get("/api/admin/plan-simulator/options", requireAdmin, async (req, res) => {
+  try {
+    const active = await getActivePersonalizedPricingConfigFailClosed();
+    return res.json({
+      ok: true,
+      common: publicPlanSimulatorSettings(active.settings),
+      personalized: publicPersonalizedSimulatorSettings(active),
+      active_version: safePlanPricingVersionSummary(active),
+      permissions: {
+        simulate: true,
+        create: true,
+        publish: true,
+        configure: !!req.admin?.is_superadmin,
+        versions: !!req.admin?.is_superadmin,
+      },
+    });
+  } catch (e) {
+    if (sendAdminPlanSimulatorPersonalizedError(res, e)) return;
+    console.error("PLAN SIMULATOR OPTIONS GET ERROR", e?.message || e);
+    return res.status(500).json({ ok: false, error: "plan_simulator_options_error", message: "Options du simulateur indisponibles." });
+  }
+});
+
 // GET /api/admin/plan-simulator/config
-// Superadmin only. Returns the active projection plus immutable version metadata.
+// Superadmin only. The active immutable version is the only source of truth.
 app.get("/api/admin/plan-simulator/config", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
-    const [cfg, activeVersion] = await Promise.all([
-      getPlanSimulatorConfig({ includeInactiveReferences: true }),
-      getActivePricingVersionSummary(),
-    ]);
-    const references = (cfg.references || [])
+    const active = await getActivePersonalizedPricingConfigFailClosed();
+    const references = (active.references_snapshot || [])
       .map(serializePlanSimulatorReference)
       .filter(Boolean)
       .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0));
 
     return res.json({
       ok: true,
-      settings: publicPlanSimulatorSettings(cfg.settings),
+      settings: { ...(active.settings_snapshot || {}) },
       references,
-      source: cfg.source,
-      active_version: activeVersion,
+      source: { settings: "active_version", references: "active_version" },
+      active_version: safePlanPricingVersionSummary(active, { full: true }),
     });
   } catch (e) {
+    if (sendAdminPlanSimulatorPersonalizedError(res, e)) return;
     console.error("PLAN SIMULATOR CONFIG GET ERROR", e?.message || e);
-    return res.status(500).json({ ok: false, error: "plan_simulator_config_error" });
+    return res.status(500).json({ ok: false, error: "plan_simulator_config_error", message: "Configuration du simulateur indisponible." });
   }
 });
 
@@ -18827,7 +19130,7 @@ app.put("/api/admin/plan-simulator/config", requireAdmin, requireSuperadmin, asy
     if (!supabase) return res.status(500).json({ ok: false, error: "supabase_not_configured" });
 
     const active = await getActivePersonalizedPricingConfigFailClosed();
-    const { settings, references } = validatePlanSimulatorConfigPayload(req.body || {}, active.settings);
+    const { settings, references } = validatePlanSimulatorConfigPayload(req.body || {}, active.settings_snapshot);
     const updatedBy = req.admin?.email || req.admin?.id || null;
 
     // Preserve the personalized_* keys and any future versioned keys that the
@@ -18880,20 +19183,22 @@ app.put("/api/admin/plan-simulator/config", requireAdmin, requireSuperadmin, asy
     }
 
     const savedVersion = Array.isArray(versionRows) && versionRows.length ? versionRows[0] : null;
-    const cfg = await getPlanSimulatorConfig({ includeInactiveReferences: true });
+    const refreshed = await getActivePersonalizedPricingConfigFailClosed();
     return res.json({
       ok: true,
-      settings: publicPlanSimulatorSettings(cfg.settings),
-      references: (cfg.references || []).map(serializePlanSimulatorReference).filter(Boolean),
-      source: cfg.source,
-      active_version: savedVersion || await getActivePricingVersionSummary(),
+      settings: { ...(refreshed.settings_snapshot || {}) },
+      references: (refreshed.references_snapshot || []).map(serializePlanSimulatorReference).filter(Boolean),
+      source: { settings: "active_version", references: "active_version" },
+      active_version: savedVersion || safePlanPricingVersionSummary(refreshed, { full: true }),
     });
   } catch (e) {
     if (sendPersonalizedPlanError(res, e)) return;
     console.error("PLAN SIMULATOR CONFIG PUT ERROR", e?.message || e);
     return res.status(e?.status || 500).json({
       ok: false,
-      error: e?.message || "plan_simulator_config_update_error",
+      error: e?.code || e?.message || "plan_simulator_config_update_error",
+      message: e?.publicMessage || "Configuration invalide ou impossible à enregistrer.",
+      field: e?.field || undefined,
     });
   }
 });
@@ -19359,8 +19664,8 @@ function normalizeSimulatorCreateVisibility(body = {}) {
 }
 
 // POST /api/admin/plan-simulator/create-plan
-// Controlled plan creation from the simulator only.
-// Body: { type, data_gb?, duration_minutes? OR duration_value+duration_unit, speed_mbps, pool_id, final_price_ar?, final_name?, action? }
+// Owner and Superadmin may create a standard plan inside their authorized pools.
+// The server always recalculates from the active immutable pricing version.
 app.post("/api/admin/plan-simulator/create-plan", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ ok: false, error: "supabase_not_configured" });
@@ -19374,49 +19679,45 @@ app.post("/api/admin/plan-simulator/create-plan", requireAdmin, async (req, res)
     const duration_minutes = normalizePlanSimulatorDurationMinutes(body);
     const data_gb = normalizePlanSimulatorDataGb(body, type);
     const speed_mbps = normalizePlanSimulatorSpeedMbps(body);
-
-    const { settings, references, source } = await getPlanSimulatorConfig();
-    const validation = validatePlanSimulatorInput({
+    const config = await getActivePersonalizedPricingConfigFailClosed();
+    const choice = validatePersonalizedQuoteChoice({
       type,
-      data_gb,
-      duration_minutes,
-      speed_mbps,
-      settings,
+      durationMinutes: duration_minutes,
+      dataMb: type === "data" && Number.isFinite(Number(data_gb)) ? Math.round(Number(data_gb) * 1024) : null,
+      speedMbps: speed_mbps,
+      config,
     });
+    const settings = config.settings;
+    const references = config.references;
+    const validation = {
+      status: choice.warnings.length ? "warning" : "ok",
+      warnings: choice.warnings,
+      errors: [],
+    };
 
     const technical = {
-      type,
-      data_gb: type === "data" ? data_gb : null,
-      duration_minutes,
-      duration_label: duration_minutes ? planSimulatorDurationLabel(duration_minutes) : null,
-      speed_mbps,
+      type: choice.type,
+      data_gb: choice.data_gb,
+      duration_minutes: choice.duration_minutes,
+      duration_label: planSimulatorDurationLabel(choice.duration_minutes),
+      speed_mbps: choice.speed_mbps,
       pool_id,
     };
 
-    if (validation.status === "blocked") {
-      return res.status(400).json({
-        ok: false,
-        error: validation.errors?.[0]?.code || "simulation_blocked",
-        message: validation.errors?.[0]?.message || "Simulation bloquée.",
-        status: "blocked",
-        errors: validation.errors,
-        warnings: validation.warnings,
-        technical,
-        settings: publicPlanSimulatorSettings(settings),
-        source,
-      });
-    }
-
     const pricing = calculateSuggestedPlanPrice({
-      type,
-      data_gb,
-      duration_minutes,
-      speed_mbps,
+      type: choice.type,
+      data_gb: choice.data_gb,
+      duration_minutes: choice.duration_minutes,
+      speed_mbps: choice.speed_mbps,
       settings,
       references,
     });
+    const personalizedPricing = calculatePersonalizedClientPrice({
+      basePriceAr: pricing.recommended_price_ar,
+      config,
+    });
 
-    const suggestedName = suggestPlanSimulatorName({ type, data_gb, duration_minutes, speed_mbps });
+    const suggestedName = suggestPlanSimulatorName(technical);
     const name = normalizePlanSimulatorFinalName(body.final_name || body.name || body.plan_name, suggestedName);
     if (!name) return res.status(400).json({ ok: false, error: "name_required", message: "Nom du forfait requis." });
 
@@ -19431,37 +19732,34 @@ app.post("/api/admin/plan-simulator/create-plan", requireAdmin, async (req, res)
 
     const minPrice = Number(pricing.minimum_price_ar || 0);
     const maxPrice = Number(pricing.maximum_price_ar || 0);
-    if (Number.isFinite(minPrice) && Number.isFinite(maxPrice) && maxPrice > 0) {
-      if (finalPrice < minPrice || finalPrice > maxPrice) {
-        return res.status(400).json({
-          ok: false,
-          error: "price_out_of_recommended_range",
-          message: `Prix hors plage recommandée (${minPrice.toLocaleString()} Ar à ${maxPrice.toLocaleString()} Ar).`,
-          recommended_price_ar: pricing.recommended_price_ar,
-          minimum_price_ar: minPrice,
-          maximum_price_ar: maxPrice,
-        });
-      }
+    if (Number.isFinite(minPrice) && Number.isFinite(maxPrice) && maxPrice > 0 && (finalPrice < minPrice || finalPrice > maxPrice)) {
+      return res.status(400).json({
+        ok: false,
+        error: "price_out_of_recommended_range",
+        message: `Prix hors plage recommandée (${minPrice.toLocaleString()} Ar à ${maxPrice.toLocaleString()} Ar).`,
+        recommended_price_ar: pricing.recommended_price_ar,
+        minimum_price_ar: minPrice,
+        maximum_price_ar: maxPrice,
+      });
     }
 
     const is_visible = normalizeSimulatorCreateVisibility(body);
     await assertSimulatorTotalPlanLimit({ pool_id, settings });
-    await assertSimulatorVisiblePlanLimit({ pool_id, type, settings, is_visible });
+    await assertSimulatorVisiblePlanLimit({ pool_id, type: choice.type, settings, is_visible });
 
-    const data_mb = type === "data" ? Math.round(Number(data_gb || 0) * 1024) : null;
-    const mikrotik_rate_limit = planSimulatorRateLimitFromSpeed(speed_mbps);
+    const data_mb = choice.type === "data" ? choice.data_mb : null;
+    const mikrotik_rate_limit = planSimulatorRateLimitFromSpeed(choice.speed_mbps);
     if (!mikrotik_rate_limit) {
       return res.status(400).json({ ok: false, error: "speed_invalid", message: "Débit invalide." });
     }
 
-    const duration_seconds = Math.max(60, Math.round(Number(duration_minutes) * 60));
-    const duration_hours = Math.max(1, Math.ceil(Number(duration_minutes) / 60));
-
+    const duration_seconds = Math.max(60, Math.round(choice.duration_minutes * 60));
+    const duration_hours = Math.max(1, Math.ceil(choice.duration_minutes / 60));
     const payload = {
       name,
       price_ar: finalPrice,
       duration_hours,
-      duration_minutes,
+      duration_minutes: choice.duration_minutes,
       duration_seconds,
       system: "mikrotik",
       pool_id,
@@ -19497,13 +19795,7 @@ app.post("/api/admin/plan-simulator/create-plan", requireAdmin, async (req, res)
       throw dupErr;
     }
 
-    const assistant = await buildPlanSimulatorAssistant({
-      pool_id,
-      technical,
-      pricing,
-      settings,
-    });
-
+    const assistant = await buildPlanSimulatorAssistant({ pool_id, technical, pricing, settings });
     const { data: created, error: createErr } = await supabase
       .from("plans")
       .insert(payload)
@@ -19515,6 +19807,13 @@ app.post("/api/admin/plan-simulator/create-plan", requireAdmin, async (req, res)
       return res.status(500).json({ ok: false, error: "plan_create_failed", message: "Création du forfait impossible." });
     }
 
+    const privileged = req.admin?.is_superadmin ? {
+      nearest_reference: pricing.nearest_reference || null,
+      exact_reference: pricing.exact_reference || null,
+      settings: publicPlanSimulatorSettings(settings),
+      source: { settings: "active_version", references: "active_version" },
+    } : {};
+
     return res.json({
       ok: true,
       created: true,
@@ -19524,19 +19823,21 @@ app.post("/api/admin/plan-simulator/create-plan", requireAdmin, async (req, res)
       warnings: validation.warnings,
       recommended_plan_name: suggestedName,
       recommended_price_ar: pricing.recommended_price_ar,
+      minimum_price_ar: pricing.minimum_price_ar,
+      maximum_price_ar: pricing.maximum_price_ar,
+      personalized_pricing: personalizedPricing,
+      active_version: safePlanPricingVersionSummary(config),
       final_plan_name: name,
       final_price_ar: finalPrice,
       is_visible,
       technical,
-      nearest_reference: pricing.nearest_reference || null,
-      exact_reference: pricing.exact_reference || null,
       assistant,
       assistant_confidence: assistant?.confidence || null,
       assistant_messages: assistant?.messages || [],
-      settings: publicPlanSimulatorSettings(settings),
-      source,
+      ...privileged,
     });
   } catch (e) {
+    if (sendAdminPlanSimulatorPersonalizedError(res, e)) return;
     console.error("PLAN SIMULATOR CREATE PLAN ERROR", e?.message || e);
     return res.status(e?.status || 500).json({
       ok: false,
@@ -19548,102 +19849,82 @@ app.post("/api/admin/plan-simulator/create-plan", requireAdmin, async (req, res)
 });
 
 // POST /api/admin/plan-simulator/simulate
-// Body: { type: "data"|"unlimited", data_gb?, duration_minutes? OR duration_value+duration_unit, speed_mbps, pool_id? }
+// Owner and Superadmin use the same active immutable config and the exact
+// personalized-plan validation pipeline used by the public portal.
 app.post("/api/admin/plan-simulator/simulate", requireAdmin, async (req, res) => {
   try {
     const body = req.body || {};
     const pool_id = String(body.pool_id || body.poolId || "").trim() || null;
-
     if (!pool_id) {
       return res.status(400).json({ ok: false, error: "pool_id_required", message: "Sélectionnez un WiFi avant de simuler." });
     }
-
-    if (pool_id && !requirePoolScopeForAdmin(req, res, pool_id)) return;
+    if (!requirePoolScopeForAdmin(req, res, pool_id)) return;
 
     const type = normalizePlanSimulatorType(body.type || body.plan_type || body.planType);
     const duration_minutes = normalizePlanSimulatorDurationMinutes(body);
     const data_gb = normalizePlanSimulatorDataGb(body, type);
     const speed_mbps = normalizePlanSimulatorSpeedMbps(body);
-
-    const { settings, references, source } = await getPlanSimulatorConfig();
-
-    const validation = validatePlanSimulatorInput({
+    const config = await getActivePersonalizedPricingConfigFailClosed();
+    const choice = validatePersonalizedQuoteChoice({
       type,
-      data_gb,
-      duration_minutes,
-      speed_mbps,
-      settings,
+      durationMinutes: duration_minutes,
+      dataMb: type === "data" && Number.isFinite(Number(data_gb)) ? Math.round(Number(data_gb) * 1024) : null,
+      speedMbps: speed_mbps,
+      config,
     });
-
+    const settings = config.settings;
+    const references = config.references;
+    const status = choice.warnings.length ? "warning" : "ok";
     const technical = {
-      type,
-      data_gb: type === "data" ? data_gb : null,
-      duration_minutes,
-      duration_label: duration_minutes ? planSimulatorDurationLabel(duration_minutes) : null,
-      speed_mbps,
+      type: choice.type,
+      data_gb: choice.data_gb,
+      duration_minutes: choice.duration_minutes,
+      duration_label: planSimulatorDurationLabel(choice.duration_minutes),
+      speed_mbps: choice.speed_mbps,
       pool_id,
     };
 
-    const publicSettings = publicPlanSimulatorSettings(settings);
-
-    if (validation.status === "blocked") {
-      return res.status(400).json({
-        ok: false,
-        simulation: true,
-        status: "blocked",
-        error: validation.errors?.[0]?.code || "simulation_blocked",
-        message: validation.errors?.[0]?.message || "Simulation bloquée.",
-        errors: validation.errors,
-        warnings: validation.warnings,
-        technical,
-        settings: publicSettings,
-        source,
-      });
-    }
-
     const pricing = calculateSuggestedPlanPrice({
-      type,
-      data_gb,
-      duration_minutes,
-      speed_mbps,
+      type: choice.type,
+      data_gb: choice.data_gb,
+      duration_minutes: choice.duration_minutes,
+      speed_mbps: choice.speed_mbps,
       settings,
       references,
     });
-
-    const recommended_plan_name = suggestPlanSimulatorName({
-      type,
-      data_gb,
-      duration_minutes,
-      speed_mbps,
+    const personalizedPricing = calculatePersonalizedClientPrice({
+      basePriceAr: pricing.recommended_price_ar,
+      config,
     });
-
-    const assistant = await buildPlanSimulatorAssistant({
-      pool_id,
-      technical,
-      pricing,
-      settings,
-    });
+    const recommended_plan_name = suggestPlanSimulatorName(technical);
+    const assistant = await buildPlanSimulatorAssistant({ pool_id, technical, pricing, settings });
+    const privileged = req.admin?.is_superadmin ? {
+      nearest_reference: pricing.nearest_reference,
+      exact_reference: pricing.exact_reference || null,
+      settings: publicPlanSimulatorSettings(settings),
+      source: { settings: "active_version", references: "active_version" },
+    } : {};
 
     return res.json({
       ok: true,
       simulation: true,
-      status: validation.status,
-      warnings: validation.warnings,
+      status,
+      warnings: choice.warnings,
       recommended_plan_name,
       recommended_price_ar: pricing.recommended_price_ar,
       minimum_price_ar: pricing.minimum_price_ar,
       maximum_price_ar: pricing.maximum_price_ar,
       price_tolerance_pct: pricing.price_tolerance_pct,
+      personalized_pricing: personalizedPricing,
+      active_version: safePlanPricingVersionSummary(config),
       technical,
-      nearest_reference: pricing.nearest_reference,
-      exact_reference: pricing.exact_reference || null,
       assistant,
       assistant_confidence: assistant?.confidence || null,
       assistant_messages: assistant?.messages || [],
-      settings: publicSettings,
-      source,
+      ...privileged,
     });
   } catch (e) {
+    if (sendAdminPlanSimulatorPersonalizedError(res, e, { simulation: true })) return;
     console.error("PLAN SIMULATOR SIMULATE ERROR", e?.message || e);
     return res.status(500).json({
       ok: false,
