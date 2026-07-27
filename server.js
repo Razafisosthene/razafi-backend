@@ -7616,7 +7616,7 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   // matched by isAssistantGenericOpeningTurn(), so they pass through normally.
   const isGenericOpening = isAssistantGenericOpeningTurn(message) && !diagnosticResult;
 
-  if (isGenericOpening) {
+  if (isGenericOpening && !isAssistantAnuEnabledForContext(context)) {
     const greetingAnswer = buildGenericOpeningAnswer({ context, lang });
     // Update thread so conversation memory is consistent (no plan slot set)
     updateAssistantThread({ thread, userMessage: message, assistantAnswer: greetingAnswer, lang, slots: {} });
@@ -7633,7 +7633,7 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   // ── G.4.1: platform_prospect short numeric follow-up ────────────────
   // Example: assistant asks "Combien d’utilisateurs ?" then user replies "200".
   // This must be understood as user_count=200, not as an unclear message.
-  if (context === "platform_prospect") {
+  if (context === "platform_prospect" && !isAssistantAnuEnabledForContext(context)) {
     const numericFollowUpAnswer = buildPlatformProspectNumericFollowUpAnswer({
       message,
       lang,
@@ -7688,6 +7688,25 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
         memory_active: true,
       };
     }
+  }
+
+  // ANU-1: keep useful structured context without forcing a canned answer.
+  // A short numeric follow-up such as "200" remains available to the AI as a
+  // user_count slot when the previous assistant turn asked for that quantity.
+  if (context === "platform_prospect" && isAssistantAnuEnabledForContext(context)) {
+    try {
+      const anuUserCount = extractPlatformProspectUserCount(message);
+      const explicitUserCount = /\b(utilisateurs?|users?|clients?|personnes?|appareils?|devices?|connexions?)\b/i.test(String(message || ""));
+      if (anuUserCount && (explicitUserCount || isPlatformProspectAwaitingUserCount(thread))) {
+        updateAssistantThread({
+          thread,
+          userMessage: "",
+          assistantAnswer: "",
+          lang,
+          slots: { user_count: anuUserCount },
+        });
+      }
+    } catch (_) {}
   }
 
   // Load KB rows for this context + universal rows
@@ -7772,11 +7791,17 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
 
   const messageIsPaymentComplaint = isPaymentComplaintMessage(message);
 
-  // ── Hotfix: payment-sensitive turn detection ─────────────────────────────
-  // For any portal_user turn that touches payment, code, or known-status states,
-  // skip AI entirely and use only deterministic portal-state-first / diagnostic
-  // / payment-education answers. This prevents the AI from inventing confirmations,
-  // asking for MVola details, or echoing amount/phone fragments from the message.
+  // ANU-1 is strictly opt-in. When its flags are absent/false, this exact turn
+  // follows the legacy payment-sensitive routing below.
+  const anuEnabledForContext = isAssistantAnuEnabledForContext(context);
+  const anuSafetyLane = anuEnabledForContext
+    ? classifyAssistantSafetyLane({ context, message, thread, diagnosticResult })
+    : null;
+  const naturalUnderstandingMode =
+    anuEnabledForContext && anuSafetyLane === ASSISTANT_ANU_LANES.NATURAL_AI;
+
+  // Legacy payment-sensitive turn detection. Kept intact for instant rollback by
+  // feature flag and for every context where ANU is not enabled.
   const _psl = String(liveData?.portal_status_label || "").toLowerCase();
   const _msgLow = String(message || "").toLowerCase();
   const _paymentSignalInMsg = (
@@ -7784,7 +7809,7 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   );
   const personalizedPlanSensitiveTurn = context === "portal_user" &&
     String(effectiveIntentKey || "").startsWith("portal_pp_");
-  const paymentSensitiveTurn = context === "portal_user" && (
+  const legacyPaymentSensitiveTurn = context === "portal_user" && (
     personalizedPlanSensitiveTurn                              ||
     messageIsPaymentComplaint                                  ||
     isNoCodeMessage(message)                                   ||
@@ -7796,8 +7821,12 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     _paymentSignalInMsg                                        ||
     !!diagnosticResult
   );
-  // Patch E: run AI for every valid message when enabled, EXCEPT payment-sensitive portal turns.
-  const shouldRunAi = isAssistantAiEnabled() && !!message && !paymentSensitiveTurn;
+
+  const shouldRunAi = isAssistantAiEnabled() && !!message && (
+    anuEnabledForContext
+      ? anuSafetyLane === ASSISTANT_ANU_LANES.NATURAL_AI
+      : !legacyPaymentSensitiveTurn
+  );
 
   if (shouldRunAi) {
     try {
@@ -7813,6 +7842,8 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
         canonicalAnswer,
         conversationContext,
         diagnosticResult,
+        naturalUnderstandingMode,
+        safetyLane: anuSafetyLane,
       });
 
       // Patch F.3 Fix 7: build forbidden phone list from thread slots (user payment phone)
@@ -7827,20 +7858,33 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
         diagnosticResult,
         forbiddenPhones,
         rawMessage: message,   // G.4: used to detect existing-owner context in safety check
+        naturalUnderstandingMode,
       });
 
       if (aiSafe) {
         finalAnswer = aiRaw;
         aiUsed = true;
-        console.info("[AI ASSISTANT]", { context, pageHint, ai_enabled: true, result: "success" });
+        console.info("[AI ASSISTANT]", {
+          context,
+          pageHint,
+          ai_enabled: true,
+          ...(anuEnabledForContext ? { anu_mode: true, safety_lane: anuSafetyLane } : {}),
+          result: "success",
+        });
       } else {
-        console.info("[AI ASSISTANT]", { context, ai_enabled: true, result: "blocked" });
+        console.info("[AI ASSISTANT]", {
+          context,
+          ai_enabled: true,
+          ...(anuEnabledForContext ? { anu_mode: true, safety_lane: anuSafetyLane } : {}),
+          result: "blocked",
+        });
       }
     } catch (aiErr) {
       const isTimeout = aiErr?.name === "AbortError" || String(aiErr?.message || "").includes("abort");
       console.info("[AI ASSISTANT]", {
         context,
         ai_enabled: true,
+        ...(anuEnabledForContext ? { anu_mode: true, safety_lane: anuSafetyLane } : {}),
         result: isTimeout ? "timeout" : "error",
         code: String(aiErr?.message || "unknown").slice(0, 80),
       });
@@ -7872,6 +7916,7 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
   try {
     if (
       context === "portal_user" &&
+      !anuEnabledForContext &&
       liveData?.returning_user_context?.has_history === true &&
       !messageIsPaymentComplaint &&
       thread?.pending_issue_type !== "payment_no_code" &&
@@ -8029,6 +8074,96 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
 function isAssistantAiEnabled() {
   return String(process.env.ASSISTANT_AI_ENABLED || "false").trim().toLowerCase() === "true";
 }
+
+
+// =============================================================================
+// RAZAFI ASSISTANT — ANU-1: Natural Understanding Orchestrator
+// =============================================================================
+// Disabled by default. The global flag AND the context flag must both be true.
+// When disabled, the legacy assistant behavior remains unchanged.
+//
+// HARD_DETERMINISTIC: PIN, payment/code/connection/refund facts and disputes.
+// NATURAL_AI: ordinary Portal/Admin/Platform conversation; AI interprets first.
+// SAFE_FALLBACK: AI unavailable/disabled/blocked; existing deterministic answer wins.
+// =============================================================================
+const ASSISTANT_ANU_LANES = Object.freeze({
+  HARD_DETERMINISTIC: "HARD_DETERMINISTIC",
+  NATURAL_AI: "NATURAL_AI",
+  SAFE_FALLBACK: "SAFE_FALLBACK",
+});
+
+function isAssistantEnvFlagEnabled(name) {
+  return String(process.env[name] || "false").trim().toLowerCase() === "true";
+}
+
+function isAssistantAnuEnabledForContext(context) {
+  if (!isAssistantEnvFlagEnabled("ASSISTANT_ANU_ENABLED")) return false;
+  if (context === "portal_user") return isAssistantEnvFlagEnabled("ASSISTANT_ANU_PORTAL_ENABLED");
+  if (context === "admin_owner") return isAssistantEnvFlagEnabled("ASSISTANT_ANU_ADMIN_ENABLED");
+  if (context === "platform_prospect") return isAssistantEnvFlagEnabled("ASSISTANT_ANU_PLATFORM_ENABLED");
+  return false;
+}
+
+function classifyAssistantSafetyLane({ context, message, thread, diagnosticResult }) {
+  if (!isAssistantAnuEnabledForContext(context)) return ASSISTANT_ANU_LANES.SAFE_FALLBACK;
+
+  const raw = String(message || "").trim();
+  if (!raw) return ASSISTANT_ANU_LANES.SAFE_FALLBACK;
+
+  // Admin and platform conversations are natural by default. Their existing
+  // validators still block secrets, private data and fake completed actions.
+  if (context !== "portal_user") return ASSISTANT_ANU_LANES.NATURAL_AI;
+
+  // Existing deterministic gates remain authoritative for all critical turns.
+  if (
+    looksLikePin(raw) ||
+    !!diagnosticResult ||
+    thread?.pending_issue_type === "payment_no_code" ||
+    isPaymentComplaintMessage(raw) ||
+    isNoCodeMessage(raw) ||
+    isPaymentEducationMessage(raw)
+  ) {
+    return ASSISTANT_ANU_LANES.HARD_DETERMINISTIC;
+  }
+
+  const s = raw.toLowerCase().replace(/[’`]/g, "'");
+
+  // Direct requests for a real payment, code, connection or refund state must
+  // never be answered by free-form AI. These are facts owned by RAZAFI.
+  const asksPaymentStatus = [
+    /\b(mon|ma|le|ce|the|my)\s+(paiement|payment)\b.{0,45}\b(confirm[eé]|valid[eé]|r[eé]ussi|pass[eé]|accept[eé]|en attente|pending|failed|[eé]chou[eé]|status|statut)/i,
+    /\b(paiement|payment)\s+(est|is|a-t-il|a il|ve)\b.{0,35}\b(confirm[eé]|valid[eé]|r[eé]ussi|pass[eé]|pending|en attente)/i,
+    /\b(did my payment go through|is my payment confirmed|payment status)\b/i,
+    /\b(efa|voamarina|voaloa)\b.{0,30}\b(paiement|vola)\b/i,
+  ].some((re) => re.test(s));
+
+  const asksCodeStatus = [
+    /\b(mon|le|my|the)\s+code\b.{0,35}\b(pr[eê]t|disponible|arriv[eé]|re[cç]u|ready|available|received|actif|active|valide|valid|expir[eé]|expired|utilis[eé]|used)/i,
+    /\b(o[uù] est|where is|ai-je re[cç]u|did i receive|ai-je|do i have|misy ve)\b.{0,25}\b(code)\b/i,
+    /\b(code)\b.{0,35}\b(vonona|tonga|azo|active|valide|lany|expir[eé])/i,
+    /\b(efa|vonona|tonga|misy)\b.{0,25}\b(code)\b/i,
+  ].some((re) => re.test(s));
+
+  const asksConnectionStatus = [
+    /\b(suis-je|est-ce que je suis|am i)\b.{0,25}\b(connect[eé]|connected|online)/i,
+    /\b(ma|my|the)\s+(connexion|connection|internet)\b.{0,30}\b(active|actif|connected|connect[eé]|online)/i,
+    /\b(internet|connexion|connection)\b.{0,25}\b(marche|fonctionne|working|mandeha)/i,
+    /\b(pourquoi|why|ahoana)\b.{0,35}\b(pas connect[eé]|not connected|tsy connect)/i,
+    /\b(efa connect[eé]|connexion active ve|internet mandeha ve)\b/i,
+  ].some((re) => re.test(s));
+
+  const asksRefundState = /\b(rembours[eé]|remboursement|refund(?:ed)?|money back|averina.*vola|vola.*averina)/i.test(s);
+
+  if (asksPaymentStatus || asksCodeStatus || asksConnectionStatus || asksRefundState) {
+    return ASSISTANT_ANU_LANES.HARD_DETERMINISTIC;
+  }
+
+  return ASSISTANT_ANU_LANES.NATURAL_AI;
+}
+
+// =============================================================================
+// END RAZAFI ASSISTANT — ANU-1
+// =============================================================================
 
 function getAssistantAiProvider() {
   const v = String(process.env.ASSISTANT_AI_PROVIDER || "").trim().toLowerCase();
@@ -8777,6 +8912,8 @@ function buildGroundedAssistantPrompt({
   canonicalAnswer,
   conversationContext,
   diagnosticResult,
+  naturalUnderstandingMode = false,
+  safetyLane = null,
 }) {
   const maxInput = getAssistantAiMaxInputChars();
 
@@ -8850,7 +8987,7 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
   // Passed to AI as grounding reference — AI should use this as factual base,
   // rewrite it naturally, and not contradict it unless it is clearly wrong.
   // Not passed for payment complaints: AI must reason from PAYMENT CONTEXT, not from a generic FAQ answer.
-  const groundingSection = (canonicalAnswer && !isPaymentComplaint)
+  const groundingSection = (!naturalUnderstandingMode && canonicalAnswer && !isPaymentComplaint)
     ? `\n\n## DETERMINISTIC GROUNDING ANSWER\nUse this as factual grounding. Rewrite it naturally in the user's language. Do not copy it word-for-word. Do not contradict it unless it is clearly wrong.\n${String(canonicalAnswer).slice(0, 500)}`
     : "";
 
@@ -8866,16 +9003,19 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
     "BUDGET: if user gives an Ariary amount, compare with visible_plans. Never invent a plan.",
     "PLAN DURATION: monthly = 28+ days (40320+ min). Weekly = 5–10 days. State clearly if none found.",
     "RAZAFI APP: no app to download — portal works directly from the browser.",
-    "PAYMENT SAFETY: never say payment is confirmed unless latest_payment_status = 'completed'. Never say code is ready unless latest_voucher_status = 'ready'. Never accuse MVola/Orange/Airtel. Never ask for PIN. Never promise refund.",
+    naturalUnderstandingMode
+      ? "PAYMENT SAFETY: never state that a payment is confirmed, a code is ready, a connection is active, or a refund is complete unless SAFE DIAGNOSTIC RESULT explicitly proves it. SAFE LIVE DATA is not financial proof. Never accuse MVola/Orange/Airtel. Never ask for PIN. Never promise refund."
+      : "PAYMENT SAFETY: never say payment is confirmed unless latest_payment_status = 'completed'. Never say code is ready unless latest_voucher_status = 'ready'. Never accuse MVola/Orange/Airtel. Never ask for PIN. Never promise refund.",
     "PERSONALIZED PLAN: use PERSONALIZED PLAN CONTEXT as the only source for PP availability, current screen state, quote price, countdown, active configuration, and PP payment methods. Never invent a PP price. Guide only; never claim to create a quote, change choices, start payment, or confirm payment.",
     // G.2.1: anti-duplication rule — the server prepends the returning-user intro; AI must not repeat it
     ...(liveData?.returning_user_context?.has_history === true && !isPaymentComplaint
-      ? [
-          "RETURNING USER CONTEXT: The server has already prepended a returning-user intro before your answer. " +
-          "Do NOT repeat 'Bon retour', 'La dernière fois', 'Last time', 'Tamin\'ny farany', or any similar opening. " +
-          "Start your answer directly with the recommendation or information. " +
-          "Use the RETURNING USER CONTEXT section to make your recommendation coherent with the previous plan. " +
-          "If is_test_or_temp_plan is true, guide toward a normal visible plan and do not recommend the test plan as the main option.",
+      ? [naturalUnderstandingMode
+          ? "RETURNING USER CONTEXT: Use the safe previous-plan context only when it helps answer the current question. Do not claim to recognize the person or device. Do not force a previous-plan recommendation when the user is discussing another topic."
+          : "RETURNING USER CONTEXT: The server has already prepended a returning-user intro before your answer. " +
+            "Do NOT repeat 'Bon retour', 'La dernière fois', 'Last time', 'Tamin\'ny farany', or any similar opening. " +
+            "Start your answer directly with the recommendation or information. " +
+            "Use the RETURNING USER CONTEXT section to make your recommendation coherent with the previous plan. " +
+            "If is_test_or_temp_plan is true, guide toward a normal visible plan and do not recommend the test plan as the main option."
         ]
       : []),
     ...(isPaymentComplaint ? [
@@ -8922,6 +9062,18 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
   };
   const contextRules = contextRulesMap[context] || "";
 
+  const naturalUnderstandingPolicy = naturalUnderstandingMode
+    ? [
+        "## NATURAL UNDERSTANDING MODE",
+        "Interpret the user's meaning from the current message, recent conversation and current page state before considering any FAQ intent.",
+        "Resolve natural references such as: mon forfait, celui-là, mon prix, et maintenant, plutôt 5 Go, et pour 3 jours, it, that one, my plan.",
+        "Do not force the message into a keyword category. Answer the actual conversational meaning.",
+        "SAFE LIVE DATA and PERSONALIZED PLAN CONTEXT describe the visible situation. They are not proof of a payment, code delivery, refund or active connection.",
+        "Never state a critical payment/code/connection/refund fact unless SAFE DIAGNOSTIC RESULT explicitly proves it.",
+        "The legacy deterministic answer is fallback-only in this mode and is intentionally not provided as a mandatory answer.",
+      ].join("\n")
+    : "";
+
   // ── SYSTEM PROMPT ─────────────────────────────────────────────────────────
   const systemPrompt = [
     "## ROLE",
@@ -8941,10 +9093,15 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
     "context: " + context,
     "page: " + pageHint,
     "language: " + lang,
+    ...(naturalUnderstandingMode ? [
+      "orchestration: natural_ai_first",
+      "safety_lane: " + (safetyLane || ASSISTANT_ANU_LANES.NATURAL_AI),
+    ] : []),
     "",
     "## RULES",
     "- " + contextRules,
     "",
+    ...(naturalUnderstandingMode ? [naturalUnderstandingPolicy, ""] : []),
     "## MULTI-TURN RULE",
     "If CONVERSATION CONTEXT is present and last_user_message_was_fragment=true, interpret the user message as a follow-up to the current topic. Do not say the message is incomplete or ask them to rephrase unless the fragment truly cannot be linked to any prior topic.",
     "If SAFE DIAGNOSTIC RESULT is present, use it as ground truth. Do not invent payment/voucher status.",
@@ -9071,8 +9228,12 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
       returningUserSection = [
         "\n\n## RETURNING USER CONTEXT",
         JSON.stringify(rucSafe, null, 2),
-        "RETURNING USER RULES (AI body only — server has already prepended the intro):",
-        "- Do NOT open with 'Bon retour', 'La dernière fois', 'Last time', or 'Tamin\'ny farany' — the server already did this.",
+        naturalUnderstandingMode
+          ? "RETURNING USER RULES (safe context; use only when relevant):"
+          : "RETURNING USER RULES (AI body only — server has already prepended the intro):",
+        naturalUnderstandingMode
+          ? "- Do not claim to remember or recognize the person/device. Do not force this context into unrelated answers."
+          : "- Do NOT open with 'Bon retour', 'La dernière fois', 'Last time', or 'Tamin\'ny farany' — the server already did this.",
         "- Start your response directly with the recommendation or answer.",
         "- Do not say 'je me souviens de vous', 'je vous reconnais', or any identity-recognition phrase.",
         "- Never mention MAC address, device ID, phone number, voucher code, or any identifier.",
@@ -9115,6 +9276,8 @@ async function generateRazafiGroundedAiAnswer({
   canonicalAnswer,
   conversationContext,
   diagnosticResult,
+  naturalUnderstandingMode = false,
+  safetyLane = null,
 }) {
   const provider = getAssistantAiProvider();
   const model    = getAssistantAiModel();
@@ -9127,7 +9290,7 @@ async function generateRazafiGroundedAiAnswer({
 
   const { systemPrompt, userContent } = buildGroundedAssistantPrompt({
     context, pageHint, lang, rawMessage, knowledgeRows, liveData, canonicalAnswer,
-    conversationContext, diagnosticResult,
+    conversationContext, diagnosticResult, naturalUnderstandingMode, safetyLane,
   });
 
   // Max tokens ≈ maxOutputChars / 3.5 (conservative)
@@ -9198,7 +9361,7 @@ async function generateRazafiGroundedAiAnswer({
 // ---------------------------------------------------------------------------
 // Safety validator — blocks unsafe AI answers; returns canonical fallback
 // ---------------------------------------------------------------------------
-function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer, diagnosticResult, forbiddenPhones, rawMessage }) {
+function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer, diagnosticResult, forbiddenPhones, rawMessage, naturalUnderstandingMode = false }) {
   if (!answer || typeof answer !== "string" || !answer.trim()) return false;
 
   const lower = answer.toLowerCase();
@@ -9233,12 +9396,18 @@ function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer, di
   // 2. Invented payment / code claims (portal_user)
   // Patch D Fix 2 + F.1 Fix 4: accept confirmation from liveData OR diagnosticResult.
   if (context === "portal_user") {
-    const paymentIsConfirmed =
-      String(liveData?.latest_payment_status || "").toLowerCase() === "completed" ||
-      String(diagnosticResult?.payment_status || "").toLowerCase() === "completed";
-    const voucherIsReady =
-      String(liveData?.latest_voucher_status || "").toLowerCase() === "ready" ||
-      String(diagnosticResult?.voucher_status || "").toLowerCase() === "ready";
+    const paymentIsConfirmed = naturalUnderstandingMode
+      ? String(diagnosticResult?.payment_status || "").toLowerCase() === "completed"
+      : (
+          String(liveData?.latest_payment_status || "").toLowerCase() === "completed" ||
+          String(diagnosticResult?.payment_status || "").toLowerCase() === "completed"
+        );
+    const voucherIsReady = naturalUnderstandingMode
+      ? String(diagnosticResult?.voucher_status || "").toLowerCase() === "ready"
+      : (
+          String(liveData?.latest_voucher_status || "").toLowerCase() === "ready" ||
+          String(diagnosticResult?.voucher_status || "").toLowerCase() === "ready"
+        );
     // Apology for RAZAFI-side issue is only valid when diagnostic supports it
     const apologyPermitted =
       diagnosticResult?.should_apologize === true ||
