@@ -829,8 +829,11 @@
       const _p2bePoolId    = String(liveData.selected_pool_id || "").trim();
       const _p2bePoolName  = String(liveData.selected_pool_name || liveData.plans_selected_pool_name || "").trim() || null;
       const _p2beNeedsFilter = (_p2bePanel === "plans") && (_p2beScope === "single_pool") && !!_p2bePoolId;
+      // ANU-2 sends the UUID only in requested_scope. The authenticated backend validates
+      // it against req.admin before using it; it never enters the AI prompt.
+      const _anu2RequestedScope = _p2bePoolId ? { pool_id: _p2bePoolId } : null;
 
-      // Always delete pool ID before sending — it must never reach the assistant endpoint.
+      // Always delete pool ID from browser business summaries before sending.
       // The server sanitizer also blocks it, but we are explicit here.
       delete liveData.selected_pool_id;
 
@@ -863,7 +866,9 @@
           body: JSON.stringify({
             context:   "admin_owner",
             message:   msg,
-            live_data: liveData,
+            live_data: liveData, // legacy path; unchanged while ANU flags are OFF
+            ui_snapshot: liveData, // ANU-2: browser state is never authoritative
+            requested_scope: _anu2RequestedScope,
             page_path: (function () {
               try { return String(window.location.pathname || "").slice(0, 200); } catch (_) { return null; }
             })(),
