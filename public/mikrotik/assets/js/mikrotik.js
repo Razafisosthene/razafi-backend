@@ -14,6 +14,7 @@
   // ============================================================
   var RAZAFI_PORTAL_ASSISTANT_CID_KEY = "razafi_portal_assistant_conversation_id_v1";
   var assistantHistoryToken = null; // G.2: opaque token from /api/mikrotik/plans — closure only, never DOM/storage
+  var assistantContextToken = null; // ANU-2: persistent-in-tab closure token for trusted pool/device scope
 
   function readAssistantConversationId(key) {
     try {
@@ -4404,6 +4405,9 @@ function saturationLabel(pct) {
       if (data && data.assistant_history_token) {
         assistantHistoryToken = data.assistant_history_token;
       }
+      if (data && data.assistant_context_token) {
+        assistantContextToken = data.assistant_context_token;
+      }
 
       const plans = data.plans || [];
       if (!plans.length) {
@@ -6249,7 +6253,9 @@ function selectPlanCardOnly(card) {
         body: JSON.stringify({
           context: "portal_user",
           message: msg,
-          live_data: liveData,
+          live_data: liveData, // legacy path; unchanged while ANU flags are OFF
+          ui_snapshot: liveData, // ANU-2: explicitly untrusted browser state
+          assistant_context_token: assistantContextToken || undefined,
           page_path: (function () {
             try { return String(window.location.pathname || "").slice(0, 200); } catch (_) { return null; }
           })(),
