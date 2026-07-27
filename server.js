@@ -2188,6 +2188,720 @@ function resolvePortalHistoryToken(token) {
   return { client_mac: entry.client_mac, pool_id: entry.pool_id };
 }
 
+// =============================================================================
+// RAZAFI ASSISTANT — ANU-2: Trusted server context + untrusted UI snapshot
+// =============================================================================
+// Dormant by default. ANU execution now requires THREE independent gates:
+//   ASSISTANT_ANU_ENABLED=true
+//   ASSISTANT_ANU_TRUSTED_CONTEXT_ENABLED=true
+//   ASSISTANT_ANU_<CONTEXT>_ENABLED=true
+// Browser data is never used as authority for payment/code/connection/refund,
+// Admin identity, pool scope, revenue, plans, or official support details.
+// =============================================================================
+const ASSISTANT_ANU_TRUSTED_CONTEXT_VERSION = "ANU-2.0";
+const RAZAFI_ASSISTANT_CONTEXT_TOKEN_MAX = 5000;
+const RAZAFI_ASSISTANT_CONTEXT_TOKEN_TTL_MS = 30 * 60 * 1000;
+const RAZAFI_ASSISTANT_CONTEXT_TOKEN_MAP = new Map();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, entry] of RAZAFI_ASSISTANT_CONTEXT_TOKEN_MAP.entries()) {
+    if (!entry || entry.expires_at < now) RAZAFI_ASSISTANT_CONTEXT_TOKEN_MAP.delete(token);
+  }
+}, 10 * 60 * 1000).unref();
+
+function isAssistantAnuTrustedContextEnabled() {
+  return String(process.env.ASSISTANT_ANU_TRUSTED_CONTEXT_ENABLED || "false")
+    .trim()
+    .toLowerCase() === "true";
+}
+
+function generatePortalAssistantContextToken({ clientMac, poolId }) {
+  const mac = normalizeMacColon(clientMac);
+  const pool = String(poolId || "").trim().toLowerCase();
+  if (!mac || !UUID_V1_TO_V5_RE.test(pool)) return null;
+  if (RAZAFI_ASSISTANT_CONTEXT_TOKEN_MAP.size >= RAZAFI_ASSISTANT_CONTEXT_TOKEN_MAX) {
+    const firstKey = RAZAFI_ASSISTANT_CONTEXT_TOKEN_MAP.keys().next().value;
+    if (firstKey) RAZAFI_ASSISTANT_CONTEXT_TOKEN_MAP.delete(firstKey);
+  }
+  const token = crypto.randomUUID();
+  RAZAFI_ASSISTANT_CONTEXT_TOKEN_MAP.set(token, {
+    client_mac: mac,
+    pool_id: pool,
+    expires_at: Date.now() + RAZAFI_ASSISTANT_CONTEXT_TOKEN_TTL_MS,
+  });
+  return token;
+}
+
+function resolvePortalAssistantContextToken(rawToken) {
+  const token = String(rawToken || "").trim().toLowerCase();
+  if (!UUID_V1_TO_V5_RE.test(token)) return null;
+  const entry = RAZAFI_ASSISTANT_CONTEXT_TOKEN_MAP.get(token);
+  if (!entry) return null;
+  if (entry.expires_at < Date.now()) {
+    RAZAFI_ASSISTANT_CONTEXT_TOKEN_MAP.delete(token);
+    return null;
+  }
+  // Sliding expiry while the portal tab remains active. The token stays opaque,
+  // is kept only in a JS closure, and is never persisted by the frontend.
+  entry.expires_at = Date.now() + RAZAFI_ASSISTANT_CONTEXT_TOKEN_TTL_MS;
+  return { client_mac: entry.client_mac, pool_id: entry.pool_id };
+}
+
+function assistantAnuScopeKeyFromOpaqueToken(prefix, token) {
+  const raw = String(token || "").trim();
+  if (!raw) return null;
+  return `${prefix}_${crypto.createHash("sha256").update(raw, "utf8").digest("hex").slice(0, 20)}`;
+}
+
+function normalizeAssistantRequestedScope(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { pool_id: null };
+  const poolId = String(raw.pool_id || "").trim().toLowerCase();
+  if (!poolId) return { pool_id: null };
+  if (!UUID_V1_TO_V5_RE.test(poolId)) {
+    const err = new Error("assistant_scope_invalid");
+    err.httpStatus = 400;
+    throw err;
+  }
+  return { pool_id: poolId };
+}
+
+// ANU-2 browser data is deliberately reduced to visual state only. Business
+// facts are rebuilt from trusted server context and never copied from live_data.
+function sanitizeAssistantUiSnapshot(raw, context) {
+  const sanitized = sanitizeAssistantLiveData(raw || {}, context);
+
+  if (context === "portal_user") {
+    const out = {};
+    if (typeof sanitized.current_filter === "string") out.current_filter = sanitized.current_filter.slice(0, 40);
+    if (sanitized.selected_plan && typeof sanitized.selected_plan === "object") out.selected_plan = sanitized.selected_plan;
+    if (sanitized.personalized_plan_context && typeof sanitized.personalized_plan_context === "object") {
+      const pp = sanitized.personalized_plan_context;
+      // Keep only what the user can currently see or has selected. A browser quote,
+      // price, countdown, payment method or status is never authoritative.
+      out.personalized_plan_context = {
+        state: cleanOptionalText(pp.state, 40) || "unavailable",
+        choice: pp.choice && typeof pp.choice === "object" ? pp.choice : null,
+        ui_message: cleanOptionalText(pp.ui_message, 240),
+        context_version: "ANU-2.0",
+      };
+    }
+    if (sanitized.page_context === "portal") out.page_context = "portal";
+    return out;
+  }
+
+  if (context === "admin_owner") {
+    return {
+      panel: cleanOptionalText(sanitized.panel, 40) || "unknown",
+    };
+  }
+
+  if (context === "platform_prospect") {
+    const allowedSections = new Set(["hero", "how_it_works", "owner_value", "demo", "faq", "contact"]);
+    return {
+      page_context: sanitized.page_context === "razafi_public_home" ? "razafi_public_home" : null,
+      site_language: ["fr", "mg", "en"].includes(String(sanitized.site_language || ""))
+        ? String(sanitized.site_language)
+        : "fr",
+      visible_sections: Array.isArray(sanitized.visible_sections)
+        ? sanitized.visible_sections.map((v) => String(v || "").trim()).filter((v) => allowedSections.has(v)).slice(0, 6)
+        : [],
+      main_cta: ["whatsapp_or_demo", "whatsapp", "demo"].includes(String(sanitized.main_cta || ""))
+        ? String(sanitized.main_cta)
+        : "whatsapp_or_demo",
+      context_version: "ANU-2.0",
+    };
+  }
+
+  return {};
+}
+
+function assistantSafePoolDisplay(pool) {
+  if (!pool || typeof pool !== "object") return null;
+  return buildPoolDisplayName(pool) || cleanOptionalText(pool.name, 120) || null;
+}
+
+function assistantSafePlan(row) {
+  if (!row || typeof row !== "object") return null;
+  const name = cleanOptionalText(row.name, 120);
+  if (!name) return null;
+  const price = Number(row.price_ar);
+  const duration = Number(row.duration_minutes ?? (Number(row.duration_hours || 0) * 60));
+  const dataMb = row.data_mb === null || row.data_mb === undefined ? null : Number(row.data_mb);
+  const speedLabel = typeof row.mikrotik_rate_limit === "string"
+    ? row.mikrotik_rate_limit.split("/")[0].trim().slice(0, 40) || null
+    : null;
+  return {
+    name,
+    price_ar: Number.isFinite(price) && price >= 0 ? Math.round(price) : 0,
+    duration_minutes: Number.isFinite(duration) && duration >= 0 ? Math.round(duration) : 0,
+    unlimited: dataMb === null,
+    data_mb: Number.isFinite(dataMb) && dataMb >= 0 ? Math.round(dataMb) : null,
+    speed_label: speedLabel,
+    source: String(row.plan_source || "standard") === "personalized" ? "personalized" : "standard",
+  };
+}
+
+function assistantNormalizeTransactionState(raw) {
+  const s = String(raw || "").trim().toLowerCase();
+  if (["completed", "paid", "success"].includes(s)) return "completed";
+  if (["pending", "initiated", "processing"].includes(s)) return "pending";
+  if (["failed", "cancelled", "canceled"].includes(s)) return "failed";
+  if (["timeout", "expired"].includes(s)) return "timeout";
+  return s ? "unknown" : "not_found";
+}
+
+function assistantNormalizeTruthState(raw) {
+  const s = String(raw || "").trim().toLowerCase();
+  if (["pending", "active", "used", "expired"].includes(s)) return s;
+  return "none";
+}
+
+function assistantCriticalStateFromRows({ sessionRow, transactionRow }) {
+  const truth = assistantNormalizeTruthState(sessionRow?.truth_status || sessionRow?.status);
+  const payment = assistantNormalizeTransactionState(transactionRow?.status);
+  let codeState = "none";
+  let connectionState = "inactive";
+  if (truth === "pending") codeState = "ready";
+  if (truth === "active") {
+    codeState = "active";
+    connectionState = "active";
+  }
+  if (truth === "used") codeState = "used";
+  if (truth === "expired") codeState = "expired";
+
+  return {
+    source: "server",
+    scope_verified: true,
+    payment_state: payment,
+    code_state: codeState,
+    connection_state: connectionState,
+    refund_state: "unknown",
+    session_state: truth,
+    has_session: !!sessionRow,
+    remaining_seconds: Number.isFinite(Number(sessionRow?.remaining_seconds))
+      ? Math.max(0, Math.trunc(Number(sessionRow.remaining_seconds)))
+      : null,
+    data_remaining_human: cleanOptionalText(sessionRow?.data_remaining_human, 60),
+    provider: cleanOptionalText(transactionRow?.provider, 30)?.toLowerCase() || null,
+    payment_time_ago: transactionRow?.created_at ? computePortalTimeAgo(transactionRow.created_at) : null,
+  };
+}
+
+async function buildPortalTrustedAssistantContext({ contextToken }) {
+  const identity = resolvePortalAssistantContextToken(contextToken);
+  if (!identity || !supabase) {
+    return {
+      version: ASSISTANT_ANU_TRUSTED_CONTEXT_VERSION,
+      context: "portal_user",
+      available: false,
+      scope_verified: false,
+      reason: identity ? "supabase_unavailable" : "context_token_invalid_or_expired",
+    };
+  }
+
+  const { client_mac: clientMac, pool_id: poolId } = identity;
+  try {
+    const [{ data: pool, error: poolErr }, { data: planRows, error: planErr }, { data: sessions, error: sessionErr }] = await Promise.all([
+      supabase
+        .from("internet_pools")
+        .select("id,name,brand_name,capacity_max,is_active,contact_phone,payment_methods,personalized_plans_enabled")
+        .eq("id", poolId)
+        .maybeSingle(),
+      supabase
+        .from("plans")
+        .select("name,price_ar,duration_minutes,duration_hours,data_mb,mikrotik_rate_limit,plan_source,sort_order")
+        .eq("pool_id", poolId)
+        .eq("system", "mikrotik")
+        .eq("is_active", true)
+        .eq("is_visible", true)
+        .order("sort_order", { ascending: true, nullsFirst: false })
+        .order("price_ar", { ascending: true })
+        .limit(100),
+      supabase
+        .from("vw_voucher_sessions_truth")
+        .select("truth_status,status,remaining_seconds,data_remaining_human,transaction_id,created_at")
+        .eq("pool_id", poolId)
+        .eq("client_mac", clientMac)
+        .order("created_at", { ascending: false })
+        .limit(1),
+    ]);
+
+    if (poolErr || !pool) throw poolErr || new Error("pool_not_found");
+    if (planErr) throw planErr;
+    if (sessionErr) throw sessionErr;
+
+    const sessionRow = Array.isArray(sessions) && sessions.length ? sessions[0] : null;
+    let transactionRow = null;
+
+    if (sessionRow?.transaction_id) {
+      const { data, error } = await supabase
+        .from("transactions")
+        .select("status,provider,created_at")
+        .eq("id", sessionRow.transaction_id)
+        .maybeSingle();
+      if (!error) transactionRow = data || null;
+    }
+
+    // No session yet: only use transactions whose server metadata matches BOTH
+    // this trusted pool and this trusted device. Never search globally by a phone
+    // or by a reference typed into the conversation.
+    if (!transactionRow) {
+      const { data, error } = await supabase
+        .from("transactions")
+        .select("status,provider,created_at")
+        .eq("metadata->>pool_id", poolId)
+        .eq("metadata->>client_mac", clientMac)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (!error && Array.isArray(data) && data.length) transactionRow = data[0];
+    }
+
+    let personalizedPlan = null;
+    try {
+      const deviceHash = personalizedDeviceHash({ poolId, clientMac });
+      const { data: quoteRows, error: quoteErr } = await supabase
+        .from("personalized_plan_quotes")
+        .select("plan_type,duration_minutes,data_mb,speed_mbps,final_price_ar,status,expires_at,created_at")
+        .eq("pool_id", poolId)
+        .eq("device_hash", deviceHash)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (!quoteErr && Array.isArray(quoteRows) && quoteRows.length) {
+        const q = quoteRows[0];
+        personalizedPlan = {
+          status: cleanOptionalText(q.status, 30),
+          plan_type: cleanOptionalText(q.plan_type, 20),
+          duration_minutes: Number.isFinite(Number(q.duration_minutes)) ? Math.trunc(Number(q.duration_minutes)) : null,
+          data_mb: q.data_mb === null ? null : (Number.isFinite(Number(q.data_mb)) ? Math.trunc(Number(q.data_mb)) : null),
+          speed_mbps: Number.isFinite(Number(q.speed_mbps)) ? Number(q.speed_mbps) : null,
+          final_price_ar: Number.isFinite(Number(q.final_price_ar)) ? Math.trunc(Number(q.final_price_ar)) : null,
+          expires_in_seconds: q.expires_at
+            ? Math.max(0, Math.ceil((new Date(q.expires_at).getTime() - Date.now()) / 1000))
+            : null,
+        };
+      }
+    } catch (_) {
+      personalizedPlan = null;
+    }
+
+    const normalizedMethods = normalizePaymentMethods(pool.payment_methods);
+    const plans = (planRows || []).map(assistantSafePlan).filter(Boolean);
+    const criticalState = assistantCriticalStateFromRows({ sessionRow, transactionRow });
+
+    return {
+      version: ASSISTANT_ANU_TRUSTED_CONTEXT_VERSION,
+      context: "portal_user",
+      available: true,
+      scope_verified: true,
+      pool: {
+        display_name: assistantSafePoolDisplay(pool),
+        brand_name: cleanOptionalText(pool.brand_name, 120),
+        place: cleanOptionalText(pool.name, 120),
+        capacity_max: Number.isFinite(Number(pool.capacity_max)) ? Math.max(0, Math.trunc(Number(pool.capacity_max))) : null,
+        is_active: pool.is_active === true,
+        support_phone: safeAssistantSupportPhone(pool.contact_phone),
+        payment_methods: activePaymentMethodsList(normalizedMethods),
+        personalized_plans_enabled: pool.personalized_plans_enabled === true,
+      },
+      plans,
+      plan_counts: {
+        total: plans.length,
+        data: plans.filter((p) => !p.unlimited).length,
+        unlimited: plans.filter((p) => p.unlimited).length,
+      },
+      critical_state: criticalState,
+      personalized_plan: personalizedPlan,
+      // clientMac, poolId, transaction ID, voucher code and phone never leave this function.
+    };
+  } catch (error) {
+    console.warn("[ANU-2 PORTAL CONTEXT] unavailable:", String(error?.message || error).slice(0, 100));
+    return {
+      version: ASSISTANT_ANU_TRUSTED_CONTEXT_VERSION,
+      context: "portal_user",
+      available: false,
+      scope_verified: false,
+      reason: "server_context_unavailable",
+    };
+  }
+}
+
+async function buildAdminTrustedAssistantContext({ req, requestedScope }) {
+  const admin = req?.admin;
+  if (!admin || !supabase) {
+    return {
+      version: ASSISTANT_ANU_TRUSTED_CONTEXT_VERSION,
+      context: "admin_owner",
+      available: false,
+      scope_verified: false,
+      reason: "admin_context_unavailable",
+    };
+  }
+
+  const requestedPoolId = requestedScope?.pool_id || null;
+  if (requestedPoolId && !adminCanAccessPool(req, requestedPoolId)) {
+    const err = new Error("forbidden_pool");
+    err.httpStatus = 403;
+    throw err;
+  }
+
+  let poolQuery = supabase
+    .from("internet_pools")
+    .select("id,name,brand_name,capacity_max,is_active,contact_phone,payment_methods,personalized_plans_enabled")
+    .eq("system", "mikrotik")
+    .order("name", { ascending: true });
+
+  if (requestedPoolId) {
+    poolQuery = poolQuery.eq("id", requestedPoolId);
+  } else if (!admin.is_superadmin) {
+    const allowed = getAdminAllowedPoolIds(req);
+    if (!allowed.length) {
+      return {
+        version: ASSISTANT_ANU_TRUSTED_CONTEXT_VERSION,
+        context: "admin_owner",
+        available: true,
+        scope_verified: true,
+        actor: {
+          role: String(admin.role || "pool_readonly"),
+          is_superadmin: false,
+          permissions: buildAdminPermissions(admin),
+        },
+        scope: { mode: "no_pool", pool_count: 0, selected_pool_name: null },
+        pools: [],
+        plans: [],
+        plans_summary: { total: 0, visible: 0, hidden: 0, active: 0, inactive: 0, free: 0, paid: 0, unlimited: 0, data_limited: 0 },
+        revenue: { available: true, paid_transactions: 0, total_amount_ar: 0, owner_total_ar: 0, by_plan: [], by_pool: [] },
+      };
+    }
+    poolQuery = poolQuery.in("id", allowed);
+  }
+
+  const { data: poolRows, error: poolErr } = await poolQuery;
+  if (poolErr) throw poolErr;
+  const poolsInternal = Array.isArray(poolRows) ? poolRows : [];
+  const poolIds = poolsInternal.map((p) => String(p.id || "")).filter(Boolean);
+
+  let planRows = [];
+  if (poolIds.length) {
+    const { data, error } = await supabase
+      .from("plans")
+      .select("name,price_ar,duration_minutes,duration_hours,data_mb,mikrotik_rate_limit,plan_source,is_active,is_visible,pool_id,sort_order")
+      .in("pool_id", poolIds)
+      .eq("system", "mikrotik")
+      .order("sort_order", { ascending: true, nullsFirst: false })
+      .limit(500);
+    if (error) throw error;
+    planRows = data || [];
+  }
+
+  const displayByPool = Object.fromEntries(
+    poolsInternal.map((p) => [String(p.id), assistantSafePoolDisplay(p)])
+  );
+  const safePlans = planRows.map((row) => {
+    const safe = assistantSafePlan(row);
+    return safe ? { ...safe, pool_name: displayByPool[String(row.pool_id)] || null, active: row.is_active === true, visible: row.is_visible === true } : null;
+  }).filter(Boolean);
+
+  const plansSummary = {
+    total: safePlans.length,
+    visible: safePlans.filter((p) => p.visible).length,
+    hidden: safePlans.filter((p) => !p.visible).length,
+    active: safePlans.filter((p) => p.active).length,
+    inactive: safePlans.filter((p) => !p.active).length,
+    free: safePlans.filter((p) => Number(p.price_ar) === 0).length,
+    paid: safePlans.filter((p) => Number(p.price_ar) > 0).length,
+    unlimited: safePlans.filter((p) => p.unlimited).length,
+    data_limited: safePlans.filter((p) => !p.unlimited).length,
+  };
+
+  const revenue = {
+    available: false,
+    paid_transactions: null,
+    total_amount_ar: null,
+    owner_total_ar: null,
+    by_plan: [],
+    by_pool: [],
+  };
+  if (poolIds.length) {
+    try {
+      const [totalsResult, byPlanResult, byPoolResult] = await Promise.all([
+        supabase.rpc("fn_revenue_paid_totals_scoped", { p_from: null, p_to: null, p_search: null, p_pool_ids: poolIds }),
+        supabase.rpc("fn_revenue_paid_by_plan_scoped", { p_from: null, p_to: null, p_search: null, p_pool_ids: poolIds }),
+        supabase.rpc("fn_revenue_paid_by_pool_scoped", { p_from: null, p_to: null, p_search: null, p_pool_ids: poolIds }),
+      ]);
+      if (!totalsResult.error && !byPlanResult.error && !byPoolResult.error) {
+        const totals = totalsResult.data?.[0] || {};
+        revenue.available = true;
+        revenue.paid_transactions = Number(totals.paid_transactions || 0);
+        revenue.total_amount_ar = Number(totals.total_amount_ar || 0);
+        revenue.by_plan = (byPlanResult.data || []).slice(0, 100).map((row) => ({
+          plan_name: cleanOptionalText(row.plan_name, 120),
+          paid_transactions: Number(row.paid_transactions ?? row.paid_count ?? 0) || 0,
+          total_amount_ar: Number(row.total_amount_ar || 0) || 0,
+          last_paid_at: row.last_paid_at ? computePortalTimeAgo(row.last_paid_at) : null,
+        })).filter((row) => row.plan_name);
+        revenue.by_pool = (byPoolResult.data || []).slice(0, 100).map((row) => ({
+          pool_name: displayByPool[String(row.pool_id)] || cleanOptionalText(row.pool_name, 120),
+          paid_transactions: Number(row.paid_transactions ?? row.paid_count ?? 0) || 0,
+          total_amount_ar: Number(row.total_amount_ar || 0) || 0,
+          last_paid_at: row.last_paid_at ? computePortalTimeAgo(row.last_paid_at) : null,
+        })).filter((row) => row.pool_name);
+      }
+    } catch (error) {
+      console.warn("[ANU-2 ADMIN REVENUE] unavailable:", String(error?.message || error).slice(0, 100));
+    }
+  }
+
+  const safePools = poolsInternal.map((pool) => ({
+    display_name: assistantSafePoolDisplay(pool),
+    capacity_max: Number.isFinite(Number(pool.capacity_max)) ? Math.max(0, Math.trunc(Number(pool.capacity_max))) : null,
+    is_active: pool.is_active === true,
+    support_phone: safeAssistantSupportPhone(pool.contact_phone),
+    payment_methods: activePaymentMethodsList(normalizePaymentMethods(pool.payment_methods)),
+    personalized_plans_enabled: pool.personalized_plans_enabled === true,
+  }));
+
+  return {
+    version: ASSISTANT_ANU_TRUSTED_CONTEXT_VERSION,
+    context: "admin_owner",
+    available: true,
+    scope_verified: true,
+    actor: {
+      role: String(admin.role || (admin.is_superadmin ? "superadmin" : "pool_readonly")),
+      is_superadmin: !!admin.is_superadmin,
+      permissions: buildAdminPermissions(admin),
+    },
+    scope: {
+      mode: requestedPoolId ? "single_pool" : "all_accessible_pools",
+      pool_count: safePools.length,
+      selected_pool_name: requestedPoolId ? safePools[0]?.display_name || null : null,
+    },
+    pools: safePools,
+    plans: safePlans,
+    plans_summary: plansSummary,
+    revenue,
+  };
+}
+
+function buildPlatformTrustedAssistantContext() {
+  return {
+    version: ASSISTANT_ANU_TRUSTED_CONTEXT_VERSION,
+    context: "platform_prospect",
+    available: true,
+    scope_verified: true,
+    public_knowledge: {
+      hero_title: "Plateforme pour votre zone WiFi",
+      value_proposition: "RAZAFI aide les propriétaires de connexion Starlink ou fibre à vendre un accès WiFi automatisé.",
+      customer_flow: ["Choix d’un forfait", "Paiement Mobile Money", "Code généré", "Connexion WiFi"],
+      owner_tools: ["Gestion des forfaits", "Suivi des clients", "Suivi des revenus", "Gestion de plusieurs pools"],
+      compatibility: "MikroTik pour le portail et la gestion, avec points d’accès WiFi en mode AP/bridge.",
+      operational_payment_methods: ["MVola"],
+      future_payment_methods_not_yet_operational: ["Orange Money", "Airtel Money", "Visa"],
+      pricing: "Commission sur les ventes; le coût d’installation dépend du projet.",
+      demos: ["Démo propriétaire", "Démo client"],
+    },
+  };
+}
+
+function buildAnuAssistantData({ context, trustedContext, uiSnapshot }) {
+  const ui = uiSnapshot && typeof uiSnapshot === "object" ? uiSnapshot : {};
+  const trusted = trustedContext && typeof trustedContext === "object" ? trustedContext : {};
+
+  if (context === "portal_user") {
+    const plans = Array.isArray(trusted.plans) ? trusted.plans : [];
+    const critical = trusted.critical_state || {};
+    const pool = trusted.pool || {};
+    const status = critical.session_state === "active" ? "active"
+      : critical.session_state === "pending" ? "pending"
+        : critical.session_state === "used" ? "used"
+          : critical.session_state === "expired" ? "expired" : "none";
+    const portalStatus = critical.connection_state === "active" ? "connection_active"
+      : ["ready", "active"].includes(critical.code_state) ? "code_ready"
+        : ["used", "expired"].includes(critical.code_state) ? "previous_consumption"
+          : "no_active_code";
+    const uiSelected = ui.selected_plan && typeof ui.selected_plan === "object" ? ui.selected_plan : null;
+    const selectedPlan = uiSelected
+      ? plans.find((plan) => (
+          String(plan.name || "") === String(uiSelected.name || "") &&
+          Number(plan.price_ar) === Number(uiSelected.price_ar) &&
+          Number(plan.duration_minutes) === Number(uiSelected.duration_minutes)
+        )) || null
+      : null;
+    const uiPp = ui.personalized_plan_context && typeof ui.personalized_plan_context === "object"
+      ? ui.personalized_plan_context
+      : null;
+    const trustedPp = trusted.personalized_plan && typeof trusted.personalized_plan === "object"
+      ? trusted.personalized_plan
+      : null;
+    const personalizedPlanContext = (pool.personalized_plans_enabled || uiPp)
+      ? {
+          enabled: pool.personalized_plans_enabled === true,
+          available: pool.personalized_plans_enabled === true,
+          state: cleanOptionalText(uiPp?.state, 40) || (trustedPp ? "quote_ready" : "builder_closed"),
+          choice: uiPp?.choice || null,
+          quote: trustedPp ? {
+            plan_type: trustedPp.plan_type || null,
+            duration_minutes: trustedPp.duration_minutes ?? null,
+            data_mb: trustedPp.data_mb ?? null,
+            speed_mbps: trustedPp.speed_mbps ?? null,
+            final_price_ar: trustedPp.final_price_ar ?? null,
+            status: trustedPp.status || null,
+          } : null,
+          quote_seconds_left: trustedPp?.expires_in_seconds ?? 0,
+          payment_methods: Array.isArray(pool.payment_methods) ? pool.payment_methods : [],
+          ui_message: cleanOptionalText(uiPp?.ui_message, 240),
+          context_version: "ANU-2.0",
+          quote_authority: "server",
+        }
+      : null;
+    return {
+      visible_plans: plans,
+      all_plans: plans,
+      recommended_plan: plans[0]?.name || null,
+      plan_counts: { ...(trusted.plan_counts || {}), visible: plans.length },
+      current_filter: cleanOptionalText(ui.current_filter, 40) || "Tous",
+      selected_plan: selectedPlan,
+      personalized_plan_context: personalizedPlanContext,
+      status,
+      portal_status_label: portalStatus,
+      payment_form_state: critical.payment_state === "pending" ? "in_progress" : "idle",
+      main_next_action: critical.connection_state === "active" ? "continue_internet"
+        : ["ready", "active"].includes(critical.code_state) ? "use_code_button"
+          : "choose_plan",
+      pool_name: pool.display_name || pool.place || null,
+      display_name: pool.display_name || null,
+      brand_name: pool.brand_name || null,
+      contact_phone: pool.support_phone || null,
+      available_payment_methods: Array.isArray(pool.payment_methods) ? pool.payment_methods : [],
+      capacity_max: pool.capacity_max ?? null,
+      latest_payment_status: critical.payment_state || "not_found",
+      latest_payment_provider: critical.provider || null,
+      latest_voucher_status: critical.code_state === "ready" || critical.code_state === "active" ? "ready"
+        : critical.code_state === "used" ? "used"
+          : critical.code_state === "none" ? "not_generated" : "unknown",
+      latest_payment_time_ago: critical.payment_time_ago || null,
+      page_context: "portal",
+      ui_context_version: "ANU-2.0",
+    };
+  }
+
+  if (context === "admin_owner") {
+    const revenue = trusted.revenue || {};
+    const byPlan = Array.isArray(revenue.by_plan) ? revenue.by_plan : [];
+    const byPool = Array.isArray(revenue.by_pool) ? revenue.by_pool : [];
+    const bestSelling = byPlan.slice().sort((a, b) => Number(b.paid_transactions || 0) - Number(a.paid_transactions || 0))[0];
+    const bestRevenue = byPlan.slice().sort((a, b) => Number(b.total_amount_ar || 0) - Number(a.total_amount_ar || 0))[0];
+    return {
+      panel: cleanOptionalText(ui.panel, 40) || "unknown",
+      plans: Array.isArray(trusted.plans) ? trusted.plans : [],
+      plans_summary: trusted.plans_summary || null,
+      pools: Array.isArray(trusted.pools) ? trusted.pools : [],
+      accessible_pool_count: trusted.scope?.pool_count ?? 0,
+      accessible_pool_names: Array.isArray(trusted.pools) ? trusted.pools.map((p) => p.display_name).filter(Boolean) : [],
+      owner_single_pool_name: trusted.scope?.pool_count === 1 ? trusted.pools?.[0]?.display_name || null : null,
+      analysis_scope: trusted.scope?.mode === "single_pool" ? "single_pool" : "all_pools",
+      selected_pool_name: trusted.scope?.selected_pool_name || null,
+      plans_analysis_scope: trusted.scope?.mode === "single_pool" ? "single_pool" : "all_pools",
+      plans_selected_pool_name: trusted.scope?.selected_pool_name || null,
+      revenue_analysis_scope: trusted.scope?.mode === "single_pool" ? "single_pool" : "all_pools",
+      revenue_selected_pool_name: trusted.scope?.selected_pool_name || null,
+      revenue_summary: revenue.available ? {
+        total_amount_ar: Number(revenue.total_amount_ar || 0),
+        paid_transactions: Number(revenue.paid_transactions || 0),
+        owner_total_ar: revenue.owner_total_ar === null ? undefined : Number(revenue.owner_total_ar || 0),
+      } : null,
+      by_plan: byPlan,
+      by_pool: byPool,
+      best_selling_plan: bestSelling?.plan_name || null,
+      best_revenue_plan: bestRevenue?.plan_name || null,
+      owner_visibility_only: trusted.actor?.is_superadmin !== true,
+    };
+  }
+
+  if (context === "platform_prospect") {
+    return {
+      page_context: "razafi_public_home",
+      site_language: ["fr", "mg", "en"].includes(String(ui.site_language || "")) ? String(ui.site_language) : "fr",
+      visible_sections: Array.isArray(ui.visible_sections) ? ui.visible_sections : [],
+      main_cta: cleanOptionalText(ui.main_cta, 40) || "whatsapp_or_demo",
+      product_context: trusted.public_knowledge?.value_proposition || null,
+      context_version: "ANU-2.0",
+      site_knowledge: trusted.public_knowledge || {},
+    };
+  }
+
+  return {};
+}
+
+function buildTrustedPortalDiagnosticResult({ trustedContext }) {
+  const contactPhone = safeAssistantSupportPhone(trustedContext?.pool?.support_phone) || DEFAULT_SUPPORT_PHONE;
+  if (!trustedContext?.available || !trustedContext?.scope_verified) {
+    return {
+      type: "payment",
+      status: "error",
+      diagnosis_code: "trusted_scope_unavailable",
+      payment_status: "unknown",
+      voucher_status: "unknown",
+      responsibility: "unknown",
+      should_apologize: false,
+      user_action: "refresh_or_contact_support",
+      missing_fields: [],
+      contact_phone: contactPhone,
+      trusted_server_fact: true,
+    };
+  }
+  const critical = trustedContext.critical_state || {};
+  const payment = critical.payment_state || "not_found";
+  const code = critical.code_state || "none";
+  let diagnosisCode = "payment_not_found";
+  let userAction = "contact_support";
+  let responsibility = "unknown";
+  let shouldApologize = false;
+
+  if (payment === "completed" && ["ready", "active"].includes(code)) {
+    diagnosisCode = "payment_received_code_exists";
+    userAction = code === "active" ? "continue_internet" : "use_code_button";
+    responsibility = "none";
+  } else if (payment === "completed") {
+    diagnosisCode = "payment_received_code_missing";
+    userAction = "contact_support";
+    responsibility = "razafi_possible";
+    shouldApologize = true;
+  } else if (payment === "pending") {
+    diagnosisCode = "payment_pending";
+    userAction = "wait";
+    responsibility = "waiting_provider_confirmation";
+  } else if (["failed", "timeout"].includes(payment)) {
+    diagnosisCode = "payment_not_confirmed";
+    userAction = "contact_support";
+    responsibility = "provider_confirmation_not_received";
+  }
+
+  return {
+    type: "payment",
+    status: "checked",
+    diagnosis_code: diagnosisCode,
+    payment_status: payment,
+    voucher_status: ["ready", "active"].includes(code) ? "ready"
+      : code === "used" ? "used"
+        : code === "none" ? "not_generated" : "unknown",
+    connection_status: critical.connection_state || "unknown",
+    refund_status: critical.refund_state || "unknown",
+    time_ago: critical.payment_time_ago || null,
+    provider: critical.provider || "unknown",
+    responsibility,
+    should_apologize: shouldApologize,
+    user_action: userAction,
+    missing_fields: [],
+    contact_phone: contactPhone,
+    trusted_server_fact: true,
+  };
+}
+
+// =============================================================================
+// END RAZAFI ASSISTANT — ANU-2
+// =============================================================================
+
 // G.2: Convert an ISO timestamp to a human-readable "time ago" string (French).
 function computePortalTimeAgo(isoTs) {
   try {
@@ -7331,9 +8045,17 @@ function buildPlatformProspectNumericFollowUpAnswer({ message, lang, thread }) {
 }
 
 
-async function handleAssistantChat({ context, rawMessage, liveData, pool_id, page_path, conversationId, scopeKey, historyToken }) {
+async function handleAssistantChat({ context, rawMessage, liveData, uiSnapshot, trustedContext, pool_id, page_path, conversationId, scopeKey, historyToken }) {
   const message = cleanAssistantMessage(rawMessage);
   const detectedLang = detectAssistantLang(message);
+
+  // ANU-2: only the fully gated ANU path consumes trusted server context.
+  // With flags absent/false, liveData remains byte-for-byte the legacy sanitized payload.
+  const anuEnabledForContext = isAssistantAnuEnabledForContext(context);
+  const sanitizedUiSnapshot = uiSnapshot && typeof uiSnapshot === "object" ? uiSnapshot : {};
+  if (anuEnabledForContext) {
+    liveData = buildAnuAssistantData({ context, trustedContext, uiSnapshot: sanitizedUiSnapshot });
+  }
 
   // ── Patch F: thread / conversation memory ───────────────────────────────
   const safeConvId = normalizeAssistantConversationId(conversationId) || generateAssistantConversationId();
@@ -7380,6 +8102,30 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     };
   }
   // ── End Global PIN guard ─────────────────────────────────────────────────
+
+  // ANU-2 fail-closed gate: direct critical-state questions require a verified
+  // server scope. Browser status labels are never used as substitute evidence.
+  if (
+    anuEnabledForContext &&
+    context === "portal_user" &&
+    trustedContext?.scope_verified !== true &&
+    !isPaymentEducationMessage(message) &&
+    classifyAssistantSafetyLane({ context, message, thread, diagnosticResult: null }) === ASSISTANT_ANU_LANES.HARD_DETERMINISTIC
+  ) {
+    const unavailableAnswer = lang === "mg"
+      ? "Tsy afaka manamarina ny paiement, code na connexion amin’izao fotoana izao aho satria tsy voamarina intsony ny contexte sécurisé an’ity portail ity. Actualisez ny page, dia andramo indray. Raha mbola mitohy ilay olana dia mifandraisa amin’ny assistance. Aza mandefa PIN."
+      : lang === "en"
+        ? "I cannot verify the payment, code or connection right now because this portal’s secure context is no longer verified. Refresh the page and try again. If the issue continues, contact support. Never share your PIN."
+        : "Je ne peux pas vérifier le paiement, le code ou la connexion pour le moment, car le contexte sécurisé de ce portail n’est plus vérifié. Actualisez la page puis réessayez. Si le problème continue, contactez l’assistance. N’envoyez jamais votre PIN.";
+    updateAssistantThread({ thread, userMessage: message, assistantAnswer: unavailableAnswer, lang, slots: {} });
+    await logAssistantInteraction({ context, intent_key: "anu2_trusted_scope_unavailable", lang, escalated: true, pool_id: null, page_path: page_path || null });
+    return {
+      ok: true, context, intent_key: "anu2_trusted_scope_unavailable", lang,
+      answer: unavailableAnswer, buttons: [], requires_live_data: false, live_data_keys: [],
+      dynamic: false, ai_enhanced: false, conversation_id: safeConvId, memory_active: true,
+      diagnostic: { type: "safety", status: "error", diagnosis_code: "trusted_scope_unavailable", user_action: "refresh_or_contact_support", missing_fields: [] },
+    };
+  }
 
   // Assistant PP: merge server-owned active pricing metadata and permanent PP
   // rules into the already-sanitized context. Failure is non-fatal.
@@ -7456,7 +8202,9 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     // If the portal already shows a delivered code, active connection, or consumed code,
     // the complaint is likely a UI confusion — answer from portal state, skip heavy diagnostic.
     // Exception: payment in_progress is already handled by the client-side guard (mikrotik.js).
-    const _portalFirstAnswer = buildPortalStateFirstPaymentAnswer(lang, { ...liveData, _raw_message_hint: message });
+    const _portalFirstAnswer = (!anuEnabledForContext || trustedContext?.scope_verified === true)
+      ? buildPortalStateFirstPaymentAnswer(lang, { ...liveData, _raw_message_hint: message })
+      : null;
     if (_portalFirstAnswer) {
       // Portal state resolved the complaint — return early, no diagnostic needed.
       updateAssistantThread({ thread, userMessage: message, assistantAnswer: _portalFirstAnswer, lang, slots: {} });
@@ -7471,7 +8219,9 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
     }
     // ── End Patch 2 ──────────────────────────────────────────────────────────
 
-    diagnosticResult = await buildAssistantDiagnosticContext({ context, message, liveData, thread });
+    diagnosticResult = anuEnabledForContext
+      ? buildTrustedPortalDiagnosticResult({ trustedContext })
+      : await buildAssistantDiagnosticContext({ context, message, liveData, thread });
     // Mark pending issue for future turns
     if (diagnosticResult && !thread.pending_issue_type) {
       thread.pending_issue_type = "payment_no_code";
@@ -7793,7 +8543,6 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
 
   // ANU-1 is strictly opt-in. When its flags are absent/false, this exact turn
   // follows the legacy payment-sensitive routing below.
-  const anuEnabledForContext = isAssistantAnuEnabledForContext(context);
   const anuSafetyLane = anuEnabledForContext
     ? classifyAssistantSafetyLane({ context, message, thread, diagnosticResult })
     : null;
@@ -7844,6 +8593,8 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
         diagnosticResult,
         naturalUnderstandingMode,
         safetyLane: anuSafetyLane,
+        trustedContext,
+        uiSnapshot: sanitizedUiSnapshot,
       });
 
       // Patch F.3 Fix 7: build forbidden phone list from thread slots (user payment phone)
@@ -7859,6 +8610,7 @@ async function handleAssistantChat({ context, rawMessage, liveData, pool_id, pag
         forbiddenPhones,
         rawMessage: message,   // G.4: used to detect existing-owner context in safety check
         naturalUnderstandingMode,
+        trustedContext,
       });
 
       if (aiSafe) {
@@ -8098,6 +8850,8 @@ function isAssistantEnvFlagEnabled(name) {
 
 function isAssistantAnuEnabledForContext(context) {
   if (!isAssistantEnvFlagEnabled("ASSISTANT_ANU_ENABLED")) return false;
+  // ANU-2 hard gate: natural AI cannot run until trusted server context is explicitly enabled.
+  if (!isAssistantAnuTrustedContextEnabled()) return false;
   if (context === "portal_user") return isAssistantEnvFlagEnabled("ASSISTANT_ANU_PORTAL_ENABLED");
   if (context === "admin_owner") return isAssistantEnvFlagEnabled("ASSISTANT_ANU_ADMIN_ENABLED");
   if (context === "platform_prospect") return isAssistantEnvFlagEnabled("ASSISTANT_ANU_PLATFORM_ENABLED");
@@ -8914,6 +9668,8 @@ function buildGroundedAssistantPrompt({
   diagnosticResult,
   naturalUnderstandingMode = false,
   safetyLane = null,
+  trustedContext = null,
+  uiSnapshot = null,
 }) {
   const maxInput = getAssistantAiMaxInputChars();
 
@@ -8936,24 +9692,41 @@ function buildGroundedAssistantPrompt({
     knowledgeSection = `\n\n## RELEVANT KNOWLEDGE\n${kbLines}`;
   }
 
-  // ── SECTION: SAFE LIVE DATA ───────────────────────────────────────────────
+  // ── SECTION: UI SNAPSHOT ──────────────────────────────────────────────────
+  // In ANU mode this section is explicitly untrusted and may describe only the
+  // visible page/filter/modal state. It cannot authorize business or critical facts.
   let liveSection = "";
-  if (liveData && typeof liveData === "object" && Object.keys(liveData).length > 0) {
+  const promptUiSource = naturalUnderstandingMode ? uiSnapshot : liveData;
+  if (promptUiSource && typeof promptUiSource === "object" && Object.keys(promptUiSource).length > 0) {
     const safeLive = {};
-    for (const [k, v] of Object.entries(liveData)) {
+    for (const [k, v] of Object.entries(promptUiSource)) {
       if (k === "personalized_plan_context" || k === "platform_personalized_plan_context") continue;
       if (!ASSISTANT_FORBIDDEN_LIVE_KEYS.has(k)) safeLive[k] = v;
     }
     if (Object.keys(safeLive).length > 0) {
-      liveSection = `\n\n## SAFE LIVE DATA\n${JSON.stringify(safeLive, null, 2).slice(0, 800)}`;
+      const heading = naturalUnderstandingMode
+        ? "## UI SNAPSHOT (UNTRUSTED — never proof of payment, code, connection, refund, role, scope, revenue or plans)"
+        : "## SAFE LIVE DATA";
+      liveSection = `\n\n${heading}\n${JSON.stringify(safeLive, null, 2).slice(0, 800)}`;
     }
+  }
+
+  // ── SECTION: TRUSTED SERVER CONTEXT (ANU-2) ───────────────────────────────
+  let trustedContextSection = "";
+  if (naturalUnderstandingMode && trustedContext && typeof trustedContext === "object") {
+    try {
+      trustedContextSection = `\n\n## TRUSTED SERVER CONTEXT (authoritative)\n${JSON.stringify(trustedContext, null, 2).slice(0, 5000)}`;
+    } catch (_) {}
   }
 
   // G.4: dedicated site_knowledge section for platform_prospect — higher char budget, clear label
   let siteKnowledgeSection = "";
-  if (context === "platform_prospect" && liveData?.site_knowledge && typeof liveData.site_knowledge === "object") {
+  const platformKnowledge = naturalUnderstandingMode
+    ? trustedContext?.public_knowledge
+    : liveData?.site_knowledge;
+  if (context === "platform_prospect" && platformKnowledge && typeof platformKnowledge === "object") {
     try {
-      const skSafe = JSON.stringify(liveData.site_knowledge, null, 2).slice(0, 1200);
+      const skSafe = JSON.stringify(platformKnowledge, null, 2).slice(0, 1200);
       siteKnowledgeSection = `\n\n## SITE KNOWLEDGE (primary public source — use this for RAZAFI facts)\n${skSafe}`;
     } catch (_) {}
   }
@@ -8999,14 +9772,18 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
     "Use simple words understandable by a non-technical user.",
     "Do not use Markdown formatting, bullet points, bold, tables, or numbered lists.",
     "Start directly with the answer. No greetings, no 'Bien sûr !', no title.",
-    "Use display_name or pool_name from SAFE LIVE DATA when available. Say 'Sur [Name]...' and keep the name exactly.",
+    naturalUnderstandingMode
+      ? "Use pool.display_name from TRUSTED SERVER CONTEXT when available. Never take an official pool name from UI SNAPSHOT."
+      : "Use display_name or pool_name from SAFE LIVE DATA when available. Say 'Sur [Name]...' and keep the name exactly.",
     "BUDGET: if user gives an Ariary amount, compare with visible_plans. Never invent a plan.",
     "PLAN DURATION: monthly = 28+ days (40320+ min). Weekly = 5–10 days. State clearly if none found.",
     "RAZAFI APP: no app to download — portal works directly from the browser.",
     naturalUnderstandingMode
-      ? "PAYMENT SAFETY: never state that a payment is confirmed, a code is ready, a connection is active, or a refund is complete unless SAFE DIAGNOSTIC RESULT explicitly proves it. SAFE LIVE DATA is not financial proof. Never accuse MVola/Orange/Airtel. Never ask for PIN. Never promise refund."
+      ? "PAYMENT SAFETY: never state that a payment is confirmed, a code is ready, a connection is active, or a refund is complete unless TRUSTED SERVER CONTEXT and SAFE DIAGNOSTIC RESULT agree. UI SNAPSHOT is never financial proof. Never accuse MVola/Orange/Airtel. Never ask for PIN. Never promise refund."
       : "PAYMENT SAFETY: never say payment is confirmed unless latest_payment_status = 'completed'. Never say code is ready unless latest_voucher_status = 'ready'. Never accuse MVola/Orange/Airtel. Never ask for PIN. Never promise refund.",
-    "PERSONALIZED PLAN: use PERSONALIZED PLAN CONTEXT as the only source for PP availability, current screen state, quote price, countdown, active configuration, and PP payment methods. Never invent a PP price. Guide only; never claim to create a quote, change choices, start payment, or confirm payment.",
+    naturalUnderstandingMode
+      ? "PERSONALIZED PLAN: UI SNAPSHOT may describe only the visible builder state and current choices. Use server-authoritative quote, price, countdown, status, availability, configuration and payment methods from PERSONALIZED PLAN CONTEXT/TRUSTED SERVER CONTEXT. If no trusted quote exists, do not repeat a browser quote or price. Guide only; never claim to create a quote, change choices, start payment, or confirm payment."
+      : "PERSONALIZED PLAN: use PERSONALIZED PLAN CONTEXT as the only source for PP availability, current screen state, quote price, countdown, active configuration, and PP payment methods. Never invent a PP price. Guide only; never claim to create a quote, change choices, start payment, or confirm payment.",
     // G.2.1: anti-duplication rule — the server prepends the returning-user intro; AI must not repeat it
     ...(liveData?.returning_user_context?.has_history === true && !isPaymentComplaint
       ? [naturalUnderstandingMode
@@ -9031,8 +9808,11 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
     "MALAGASY STYLE: If the detected language is Malagasy (mg), use natural everyday Malagasy as spoken in Madagascar. Do not use heavy official Malagasy. Keep common RAZAFI/UI/business/technical words in French when they are more natural: forfait, plan, data, limité, illimité, code, paiement, bouton, réseau, connexion, client, usage, navigation, réseaux sociaux, vidéo, portail, WiFi, MVola, dashboard, revenus, ventes, pool, page Plans, page Revenus, plateforme, démo, contact WhatsApp, Starlink, fibre, routeur, access point. For code activation, always write exactly: bouton Utiliser ce code — never translate this button label. Prefer natural phrases like 'Mila info kely aho hijerena ny paiement-nao' over overly formal or fully-translated wording.",
     "Act like a knowledgeable business advisor. Be practical, grounded, and honest.",
     "Short bullets are acceptable here when listing multiple options or steps, but keep it concise.",
-    "Use 'Je vous conseille…', 'Vous pouvez…', 'D'après les données visibles…' — never say 'I created/deleted/changed' anything.",
-    "Do not suggest actions that require platform-level access the owner does not have.",
+    naturalUnderstandingMode
+      ? "Use only TRUSTED SERVER CONTEXT for actor role, permissions, pool scope, plans, revenue and official pool details. UI SNAPSHOT only identifies the visible Admin panel. If trusted context is unavailable, state that current figures cannot be verified and give generic guidance only."
+      : "Use the sanitized dashboard data as the factual basis for plans and revenue advice.",
+    "Use 'Je vous conseille…', 'Vous pouvez…', 'D'après les données vérifiées…' — never say 'I created/deleted/changed' anything.",
+    "Do not suggest actions that require platform-level access the authenticated actor does not have.",
     "Do not expose secrets, internal IDs, platform revenue share figures, or infrastructure details.",
   ].join("\n- ");
 
@@ -9040,7 +9820,9 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
     // G.4: upgraded to professional consultative sales agent rules
     "You are a professional consultative sales agent for RAZAFI. Your goal is to understand the prospect's situation and guide them toward a relevant next step.",
     "MALAGASY STYLE: If the detected language is Malagasy (mg), use natural everyday Malagasy as spoken in Madagascar. Do not use heavy official Malagasy. Keep common RAZAFI/UI/business/technical words in French when they are more natural: forfait, plan, data, limité, illimité, code, paiement, bouton, réseau, connexion, client, usage, navigation, réseaux sociaux, vidéo, portail, WiFi, MVola, dashboard, revenus, ventes, pool, page Plans, page Revenus, plateforme, démo, contact WhatsApp, Starlink, fibre, routeur, access point.",
-    "If live_data.site_knowledge is present, use it as the primary public knowledge source about RAZAFI. Prefer it over generic training knowledge.",
+    naturalUnderstandingMode
+      ? "Use SITE KNOWLEDGE and TRUSTED SERVER CONTEXT as the only factual sources about RAZAFI. UI SNAPSHOT only describes the visible public page."
+      : "If live_data.site_knowledge is present, use it as the primary public knowledge source about RAZAFI. Prefer it over generic training knowledge.",
     "PERSONALIZED PLAN: use the server-owned PERSONALIZED PLAN CONTEXT for PP facts and active public configuration. Explain PP globally; never claim it is active on a visitor's WiFi or that a visitor has a quote. Never invent a price or perform an action.",
     "Answer the prospect's question first. Then, only if natural, ask ONE useful qualifying question or suggest a next step.",
     "DEMO RULE: Mention demos only when the prospect asks to see, test, understand visually, or compare owner/client experience. When mentioning demos, say 'cliquez sur le bouton Voir les démos' — never give raw demo URLs, never say 'visitez razafistore.com', never say 'ouvrez ce lien'.",
@@ -9068,8 +9850,8 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
         "Interpret the user's meaning from the current message, recent conversation and current page state before considering any FAQ intent.",
         "Resolve natural references such as: mon forfait, celui-là, mon prix, et maintenant, plutôt 5 Go, et pour 3 jours, it, that one, my plan.",
         "Do not force the message into a keyword category. Answer the actual conversational meaning.",
-        "SAFE LIVE DATA and PERSONALIZED PLAN CONTEXT describe the visible situation. They are not proof of a payment, code delivery, refund or active connection.",
-        "Never state a critical payment/code/connection/refund fact unless SAFE DIAGNOSTIC RESULT explicitly proves it.",
+        "UI SNAPSHOT and browser PERSONALIZED PLAN CONTEXT describe only the visible interface. They are not proof of a payment, code delivery, refund, active connection, Admin role, pool scope, revenue or plan truth.",
+        "Never state a critical payment/code/connection/refund fact unless TRUSTED SERVER CONTEXT and SAFE DIAGNOSTIC RESULT explicitly prove it.",
         "The legacy deterministic answer is fallback-only in this mode and is intentionally not provided as a mandatory answer.",
       ].join("\n")
     : "";
@@ -9108,7 +9890,9 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
     "If diagnosis_code = pin_detected: warn user not to share PIN, do not use the number sent.",
     "If should_apologize = true: apologize clearly for the RAZAFI-side issue in the user's language.",
     "SUPPORT PHONE RULE: NEVER use the user's payment phone as the support/assistance phone number.",
-    "For support contact, use ONLY the contact_phone from SAFE DIAGNOSTIC RESULT or SAFE LIVE DATA.",
+    naturalUnderstandingMode
+      ? "For support contact, use ONLY pool.support_phone from TRUSTED SERVER CONTEXT or contact_phone from SAFE DIAGNOSTIC RESULT."
+      : "For support contact, use ONLY the contact_phone from SAFE DIAGNOSTIC RESULT or SAFE LIVE DATA.",
     "If no trusted support phone is available, say 'contactez l'assistance RAZAFI' without any phone number.",
     // Patch G.1: natural conversation policy appended to system prompt
     "\n## NATURAL CONVERSATION POLICY",
@@ -9251,6 +10035,7 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
     returningUserSection,    // G.2.1: immediately after user message — never truncated, AI sees it first
     conversationSection,
     g1PolicySection,
+    trustedContextSection,
     diagnosticSection,
     paymentSection,
     siteKnowledgeSection,   // G.4: platform_prospect public knowledge — injected before liveSection
@@ -9278,6 +10063,8 @@ async function generateRazafiGroundedAiAnswer({
   diagnosticResult,
   naturalUnderstandingMode = false,
   safetyLane = null,
+  trustedContext = null,
+  uiSnapshot = null,
 }) {
   const provider = getAssistantAiProvider();
   const model    = getAssistantAiModel();
@@ -9291,6 +10078,7 @@ async function generateRazafiGroundedAiAnswer({
   const { systemPrompt, userContent } = buildGroundedAssistantPrompt({
     context, pageHint, lang, rawMessage, knowledgeRows, liveData, canonicalAnswer,
     conversationContext, diagnosticResult, naturalUnderstandingMode, safetyLane,
+    trustedContext, uiSnapshot,
   });
 
   // Max tokens ≈ maxOutputChars / 3.5 (conservative)
@@ -9361,7 +10149,7 @@ async function generateRazafiGroundedAiAnswer({
 // ---------------------------------------------------------------------------
 // Safety validator — blocks unsafe AI answers; returns canonical fallback
 // ---------------------------------------------------------------------------
-function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer, diagnosticResult, forbiddenPhones, rawMessage, naturalUnderstandingMode = false }) {
+function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer, diagnosticResult, forbiddenPhones, rawMessage, naturalUnderstandingMode = false, trustedContext = null }) {
   if (!answer || typeof answer !== "string" || !answer.trim()) return false;
 
   const lower = answer.toLowerCase();
@@ -9396,14 +10184,21 @@ function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer, di
   // 2. Invented payment / code claims (portal_user)
   // Patch D Fix 2 + F.1 Fix 4: accept confirmation from liveData OR diagnosticResult.
   if (context === "portal_user") {
+    const trustedCritical = trustedContext?.critical_state || {};
     const paymentIsConfirmed = naturalUnderstandingMode
-      ? String(diagnosticResult?.payment_status || "").toLowerCase() === "completed"
+      ? (
+          String(diagnosticResult?.payment_status || "").toLowerCase() === "completed" &&
+          String(trustedCritical.payment_state || "").toLowerCase() === "completed"
+        )
       : (
           String(liveData?.latest_payment_status || "").toLowerCase() === "completed" ||
           String(diagnosticResult?.payment_status || "").toLowerCase() === "completed"
         );
     const voucherIsReady = naturalUnderstandingMode
-      ? String(diagnosticResult?.voucher_status || "").toLowerCase() === "ready"
+      ? (
+          String(diagnosticResult?.voucher_status || "").toLowerCase() === "ready" &&
+          ["ready", "active"].includes(String(trustedCritical.code_state || "").toLowerCase())
+        )
       : (
           String(liveData?.latest_voucher_status || "").toLowerCase() === "ready" ||
           String(diagnosticResult?.voucher_status || "").toLowerCase() === "ready"
@@ -9416,8 +10211,9 @@ function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer, di
     // Block invented payment-success claims ONLY when backend has not confirmed payment
     if (!paymentIsConfirmed) {
       const paymentSuccessPhrases = [
-        "paiement réussi", "payment successful", "payment success",
-        "paiement confirmé", "payment confirmed", "fandraisana vola vita",
+        "paiement réussi", "paiement est réussi", "payment successful", "payment success",
+        "paiement confirmé", "paiement est confirmé", "paiement a été confirmé",
+        "payment confirmed", "payment is confirmed", "fandraisana vola vita",
         "votre paiement a été", "your payment was", "payment was successful",
       ];
       for (const phrase of paymentSuccessPhrases) {
@@ -9438,6 +10234,26 @@ function validateRazafiAiAnswer({ answer, context, liveData, canonicalAnswer, di
       for (const phrase of codeReadyPhrases) {
         if (lower.includes(phrase)) {
           console.warn("[AI SAFETY BLOCK] invented code-ready claim (voucher not confirmed), context:", context);
+          return false;
+        }
+      }
+    }
+
+    // Block invented connection-active claims unless trusted server state and the
+    // safe diagnostic agree. In ordinary natural turns there is no diagnostic,
+    // so the model cannot casually announce an active connection.
+    const connectionIsConfirmed = naturalUnderstandingMode &&
+      String(trustedCritical.connection_state || "").toLowerCase() === "active" &&
+      String(diagnosticResult?.connection_status || "").toLowerCase() === "active";
+    if (naturalUnderstandingMode && !connectionIsConfirmed) {
+      const connectionActivePhrases = [
+        "connexion est active", "connexion déjà active", "vous êtes connecté",
+        "connection is active", "already connected", "you are connected",
+        "connexion-nao efa active", "efa active ny connexion",
+      ];
+      for (const phrase of connectionActivePhrases) {
+        if (lower.includes(phrase)) {
+          console.warn("[AI SAFETY BLOCK] invented active connection, context:", context);
           return false;
         }
       }
@@ -10344,8 +11160,10 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
       return res.status(400).json({ ok: false, error: "message_required" });
     }
 
-    // G.4: platform_prospect now uses sanitized live_data (site_knowledge enabled)
+    // Legacy data remains unchanged while ANU flags are off. ANU-2 receives the same
+    // browser payload under ui_snapshot and treats it as non-authoritative.
     const liveData = sanitizeAssistantLiveData(req.body?.live_data || {}, rawContext);
+    const uiSnapshot = sanitizeAssistantUiSnapshot(req.body?.ui_snapshot || req.body?.live_data || {}, rawContext);
 
     // Optional anonymous context hints (never PII)
     const pool_id = null; // Public endpoint: never log pool_id (avoids UUID issues, keeps logs anonymous)
@@ -10360,14 +11178,29 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
       ? (String(req.body?.history_token || "").trim() || null)
       : null;
 
+    const rawContextToken = rawContext === "portal_user"
+      ? (String(req.body?.assistant_context_token || "").trim() || null)
+      : null;
+    const anuEnabled = isAssistantAnuEnabledForContext(rawContext);
+    const trustedContext = anuEnabled
+      ? (rawContext === "portal_user"
+          ? await buildPortalTrustedAssistantContext({ contextToken: rawContextToken })
+          : buildPlatformTrustedAssistantContext())
+      : null;
+    const publicScopeKey = anuEnabled && rawContext === "portal_user"
+      ? assistantAnuScopeKeyFromOpaqueToken("portal", rawContextToken)
+      : null;
+
     const result = await handleAssistantChat({
       context: rawContext,
       rawMessage,
       liveData,
+      uiSnapshot,
+      trustedContext,
       pool_id,
       page_path,
       conversationId,
-      scopeKey:     null, // public endpoint: no per-user scope
+      scopeKey: publicScopeKey,
       historyToken: rawHistoryToken, // G.2: opaque; null unless portal_user
     });
 
@@ -11192,18 +12025,43 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
     }
 
     const liveData = sanitizeAssistantLiveData(req.body?.live_data || {}, rawContext);
+    const uiSnapshot = sanitizeAssistantUiSnapshot(req.body?.ui_snapshot || req.body?.live_data || {}, rawContext);
+    const anuEnabled = isAssistantAnuEnabledForContext(rawContext);
+    const requestedScope = anuEnabled
+      ? normalizeAssistantRequestedScope(req.body?.requested_scope)
+      : { pool_id: null };
 
     const page_path = String(req.body?.page_path || "").trim().slice(0, 200) || null;
 
     const rawConvId = String(req.body?.conversation_id || "").trim();
     const conversationId = normalizeAssistantConversationId(rawConvId) || null;
-    // Scope admin threads by admin user ID so one admin's thread never leaks to another
-    const adminScopeKey = req.admin?.id ? "admin_" + String(req.admin.id).slice(0, 16) : null;
+    let trustedContext = null;
+    if (anuEnabled) {
+      try {
+        trustedContext = await buildAdminTrustedAssistantContext({ req, requestedScope });
+      } catch (contextError) {
+        if (contextError?.httpStatus === 400 || contextError?.httpStatus === 403) throw contextError;
+        console.warn("[ANU-2 ADMIN CONTEXT] unavailable:", String(contextError?.message || contextError).slice(0, 100));
+        trustedContext = {
+          version: ASSISTANT_ANU_TRUSTED_CONTEXT_VERSION,
+          context: "admin_owner",
+          available: false,
+          scope_verified: false,
+          reason: "server_context_unavailable",
+        };
+      }
+    }
+    // Scope Admin threads by authenticated actor AND validated requested pool.
+    const adminScopeKey = req.admin?.id
+      ? "admin_" + String(req.admin.id).slice(0, 16) + (requestedScope.pool_id ? "_" + requestedScope.pool_id.slice(0, 8) : "_all")
+      : null;
 
     const result = await handleAssistantChat({
       context: rawContext,
       rawMessage,
       liveData,
+      uiSnapshot,
+      trustedContext,
       pool_id: null,
       page_path,
       conversationId,
@@ -11212,6 +12070,9 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
 
     return res.json(result);
   } catch (e) {
+    if (e?.httpStatus === 400 || e?.httpStatus === 403) {
+      return res.status(e.httpStatus).json({ ok: false, error: String(e.message || "assistant_scope_error") });
+    }
     console.error("[ASSISTANT ADMIN CHAT ERROR]", e?.message || e);
     return res.status(500).json({ ok: false, error: "assistant_error" });
   }
@@ -16804,6 +17665,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     // The token is opaque — it maps to { client_mac, pool_id } only inside RAZAFI_HISTORY_TOKEN_MAP.
     // It is never logged, never stored in DB, never exposed in any other field.
     let assistantHistoryToken = null;
+    let assistantContextToken = null;
     try {
       const clientMacForToken = normalizeMacColon(
         req.query.client_mac || req.query.clientMac || req.query.clientMAC || ""
@@ -16813,11 +17675,18 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
           clientMac: clientMacForToken,
           poolId:    pool_id,
         });
+        assistantContextToken = isAssistantAnuTrustedContextEnabled()
+          ? generatePortalAssistantContextToken({
+              clientMac: clientMacForToken,
+              poolId:    pool_id,
+            })
+          : null;
       }
     } catch (tokenErr) {
       // Token minting failure is non-fatal — portal plans still returned normally
       console.warn("[G.2] history token mint failed (non-fatal):", tokenErr?.message || tokenErr);
       assistantHistoryToken = null;
+      assistantContextToken = null;
     }
 
     // H.1: serialize plans to public-safe shape — strips pool_id, system, sort_order,
@@ -16840,6 +17709,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
       payment_methods:        normalizedPaymentMethods,   // e.g. { mvola: true, orange_money: false, ... }
       active_payment_methods: activePaymentMethods,       // e.g. ["mvola"]
       assistant_history_token: assistantHistoryToken || null, // G.2: null when no client_mac
+      assistant_context_token: assistantContextToken || null, // ANU-2: opaque trusted-scope token; dormant until flags ON
     });
   } catch (e) {
     console.error("MIKROTIK PLANS EX", e);
