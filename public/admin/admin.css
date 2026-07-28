@@ -3845,7 +3845,7 @@ body.rz-login-page .error{
 /* Input row */
 .rz-aa-input-row {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 8px;
   padding: 8px 12px calc(10px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid rgba(17,24,39,.07);
@@ -3853,12 +3853,20 @@ body.rz-login-page .error{
 }
 .rz-aa-input {
   flex: 1;
+  min-width: 0;
+  min-height: 38px;
+  max-height: 98px;
+  box-sizing: border-box;
   background: rgba(17,24,39,.05);
   border: 1px solid rgba(17,24,39,.10);
   border-radius: 20px;
   color: var(--rz-text);
+  font-family: inherit;
   font-size: 14px;
-  padding: 9px 14px;
+  line-height: 20px;
+  padding: 8px 14px;
+  overflow-y: hidden;
+  resize: none;
   outline: none;
   transition: border-color 0.15s, box-shadow 0.15s;
   -webkit-appearance: none;

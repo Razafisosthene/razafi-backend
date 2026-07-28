@@ -739,8 +739,8 @@
     // Input row
     const inputRow = document.createElement("div");
     inputRow.className = "rz-aa-input-row";
-    const input = document.createElement("input");
-    input.type = "text";
+    const input = document.createElement("textarea");
+    input.rows = 1;
     input.id = "rzAdminAssistInput";
     input.className = "rz-aa-input";
     input.placeholder = "Écrivez votre question…";
@@ -771,6 +771,16 @@
     let isLoading = false;
 
     // ---- Helpers ----
+    function resizeInput() {
+      try {
+        input.style.height = "auto";
+        const maxHeight = parseFloat(window.getComputedStyle(input).maxHeight) || 98;
+        const nextHeight = Math.min(input.scrollHeight, maxHeight);
+        input.style.height = nextHeight + "px";
+        input.style.overflowY = input.scrollHeight > maxHeight ? "auto" : "hidden";
+      } catch (_) {}
+    }
+
     function openPanel() {
       isOpen = true;
       panel.classList.add("rz-open");
@@ -778,6 +788,7 @@
       backdrop.classList.add("rz-open");
       fab.setAttribute("aria-expanded", "true");
       fab.classList.add("rz-active");
+      resizeInput();
       try { input.focus(); } catch (_) {}
     }
 
@@ -833,6 +844,7 @@
 
       appendMsg(msg, "user");
       input.value = "";
+      resizeInput();
       sendBtn.disabled = true;
 
       const thinkingBubble = appendMsg("…", "thinking");
@@ -971,6 +983,7 @@
     backdrop.addEventListener("click", closePanel);
 
     input.addEventListener("input", function () {
+      resizeInput();
       sendBtn.disabled = !input.value.trim();
     });
     input.addEventListener("keydown", function (e) {
