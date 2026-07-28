@@ -1329,15 +1329,331 @@ function normalizeAssistantConversationId(raw) {
   return null;
 }
 
-function getAssistantThread({ conversationId, context, scopeKey }) {
+
+// =============================================================================
+// RAZAFI ASSISTANT — ANU-3: restart-safe, multi-instance conversation memory
+// =============================================================================
+// Dormant by default. Persistent memory requires the complete ANU gate chain:
+//   ASSISTANT_ANU_ENABLED=true
+//   ASSISTANT_ANU_TRUSTED_CONTEXT_ENABLED=true
+//   ASSISTANT_ANU_<CONTEXT>_ENABLED=true
+//   ASSISTANT_ANU_MEMORY_ENABLED=true
+//
+// Persistent rows contain only a strongly-redacted conversational projection.
+// They never contain trusted_context, live_data, ui_snapshot, phone, MAC, PIN,
+// WiFi code, payment/reference identifiers, auth tokens, Admin IDs or pool IDs.
+// Critical facts are rebuilt from ANU-2 trusted server context on every request.
+// =============================================================================
+const ASSISTANT_ANU_MEMORY_VERSION = "ANU-3.0";
+const ASSISTANT_MEMORY_TABLE = "assistant_conversation_memory";
+const ASSISTANT_MEMORY_TOKEN_RE = /^mem_[0-9a-f]{64}$/;
+const ASSISTANT_MEMORY_SCOPE_HASH_RE = /^[0-9a-f]{64}$/;
+const ASSISTANT_MEMORY_PAYLOAD_VERSION = 1;
+const ASSISTANT_MEMORY_MAX_PAYLOAD_BYTES = 12 * 1024;
+const ASSISTANT_MEMORY_TTL_MS = Math.max(
+  5 * 60 * 1000,
+  Math.min(2 * 60 * 60 * 1000, parseInt(process.env.ASSISTANT_ANU_MEMORY_TTL_MS || "1800000", 10) || 1800000)
+);
+const ASSISTANT_MEMORY_SAFE_SLOT_KEYS = new Set([
+  "amount_ar",
+  "time_hint",
+  "provider",
+  "affirmative",
+  "negative",
+  "plan_use",
+  "plan_duration",
+  "topic",
+  "admin_intent",
+  "prospect_intent",
+  "user_count",
+  "budget_ar",
+  "internet_source",
+]);
+const ASSISTANT_MEMORY_SAFE_PENDING_FIELDS = new Set([
+  "usage",
+  "duration",
+  "budget",
+  "provider",
+  "amount",
+  "time_hint",
+  "payment_date",
+  "user_count",
+  "internet_source",
+]);
+const ASSISTANT_MEMORY_SAFE_ALREADY_ASKED = new Set([
+  "usage",
+  "duration",
+  "budget",
+  "amount",
+  "provider",
+  "time_hint",
+  "payment_date",
+  "user_count",
+  "internet_source",
+]);
+let assistantMemoryLastCleanupAt = 0;
+
+function isAssistantAnuMemoryEnabledForContext(context) {
+  return isAssistantAnuEnabledForContext(context) &&
+    isAssistantEnvFlagEnabled("ASSISTANT_ANU_MEMORY_ENABLED");
+}
+
+function generateAssistantMemoryToken() {
+  return "mem_" + crypto.randomBytes(32).toString("hex");
+}
+
+function normalizeAssistantMemoryToken(raw) {
+  const token = String(raw || "").trim().toLowerCase();
+  return ASSISTANT_MEMORY_TOKEN_RE.test(token) ? token : null;
+}
+
+function assistantMemoryHash(value) {
+  return crypto.createHash("sha256").update(String(value || ""), "utf8").digest("hex");
+}
+
+function assistantMemoryScopeHash({ context, scopeKey }) {
+  const ctx = normalizeAssistantContext(context);
+  const scope = String(scopeKey || "").trim();
+  if (!ctx) return null;
+  if (ctx !== "platform_prospect" && !scope) return null;
+  const stableScope = ctx === "platform_prospect" ? "platform:public" : scope;
+  return assistantMemoryHash(`RAZAFI:ANU3:SCOPE:${ctx}:${stableScope}`);
+}
+
+function assistantThreadStoreKey({ conversationId, context, scopeHash, memoryToken }) {
+  const cid = normalizeAssistantConversationId(conversationId);
+  const ctx = normalizeAssistantContext(context);
+  const sh = String(scopeHash || "").trim().toLowerCase();
+  const token = normalizeAssistantMemoryToken(memoryToken);
+  if (!cid || !ctx || !ASSISTANT_MEMORY_SCOPE_HASH_RE.test(sh) || !token) return null;
+  return `anu3:${cid}:${ctx}:${sh}:${assistantMemoryHash(token)}`;
+}
+
+function redactAssistantMemoryText(raw, maxLen = 320) {
+  let text = String(raw || "").normalize("NFC").replace(/[\u0000-\u001F\u007F-\u009F]/g, " ");
+  text = text.replace(/\s+/g, " ").trim();
+  if (!text) return "";
+
+  // Secrets / credentials first.
+  text = text.replace(/\b(?:bearer\s+)?[A-Za-z0-9_-]{24,}\.[A-Za-z0-9._-]{16,}\b/gi, "[TOKEN]");
+  text = text.replace(/\b(?:sk|pk|api|token|secret)[-_]?[A-Za-z0-9_-]{16,}\b/gi, "[TOKEN]");
+  text = text.replace(/\bmem_[0-9a-f]{64}\b/gi, "[TOKEN]");
+  text = text.replace(/\brz1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[TOKEN]");
+
+  // Contact / device / internal identifiers.
+  text = text.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[EMAIL]");
+  text = text.replace(/\b(?:[0-9A-F]{2}[:-]){5}[0-9A-F]{2}\b/gi, "[DEVICE]");
+  text = text.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi, "[ID]");
+  text = text.replace(ASSISTANT_PHONE_PATTERN, (m, prefix) => (prefix || "") + "[PHONE]");
+
+  // Voucher/code/reference-like content.
+  text = text.replace(/\bRAZAFI[-_][A-Z0-9-]{4,}\b/gi, "[CODE]");
+  text = text.replace(/\b(?:pin|mot de passe|password|code secret)\s*[:=-]?\s*\d{4,8}\b/gi, "[PIN-LIKE — NOT STORED]");
+  text = text.replace(/\b[A-Z][A-Z0-9_-]{7,31}\b/g, "[REFERENCE]");
+  text = text.replace(/\b(?=[A-Za-z0-9_-]{12,40}\b)(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]+\b/g, "[REFERENCE]");
+  text = text.replace(/\b\d(?:[\s-]?\d){7,18}\b/g, "[NUMBER]");
+  if (ASSISTANT_PIN_PATTERN.test(text)) text = "[PIN-LIKE — NOT STORED]";
+
+  return text.slice(0, Math.max(0, Math.min(500, Number(maxLen) || 320)));
+}
+
+function buildDurableAssistantMemoryPayload(thread) {
+  if (!thread || typeof thread !== "object") return null;
+
+  const safeSlots = {};
+  for (const [key, value] of Object.entries(thread.slots || {})) {
+    if (!ASSISTANT_MEMORY_SAFE_SLOT_KEYS.has(key)) continue;
+    if (typeof value === "boolean") safeSlots[key] = value;
+    else if (typeof value === "number" && Number.isFinite(value)) safeSlots[key] = value;
+    else if (typeof value === "string") {
+      const clean = redactAssistantMemoryText(value, 80);
+      if (clean && !/\[(?:PHONE|TOKEN|CODE|REFERENCE|ID|DEVICE|EMAIL|NUMBER)\]/.test(clean)) {
+        safeSlots[key] = clean;
+      }
+    }
+  }
+
+  const turns = Array.isArray(thread.turns)
+    ? thread.turns.slice(-8).map((turn) => ({
+        role: turn?.role === "assistant" ? "assistant" : "user",
+        text: redactAssistantMemoryText(turn?.text, turn?.role === "assistant" ? 320 : 240),
+        at: Number.isFinite(Number(turn?.at)) ? Number(turn.at) : Date.now(),
+      })).filter((turn) => turn.text)
+    : [];
+
+  const cs = thread.conversation_state && typeof thread.conversation_state === "object"
+    ? thread.conversation_state
+    : {};
+  const payload = {
+    version: ASSISTANT_MEMORY_PAYLOAD_VERSION,
+    lang: ["fr", "mg", "en"].includes(String(thread.lang || "")) ? String(thread.lang) : "fr",
+    last_intent_key: redactAssistantMemoryText(thread.last_intent_key, 80) || null,
+    current_topic: redactAssistantMemoryText(thread.current_topic, 80) || null,
+    pending_issue_type: redactAssistantMemoryText(thread.pending_issue_type, 80) || null,
+    pending_fields: Array.isArray(thread.pending_fields)
+      ? thread.pending_fields.map(String).filter((v) => ASSISTANT_MEMORY_SAFE_PENDING_FIELDS.has(v)).slice(0, 8)
+      : [],
+    slots: safeSlots,
+    turns,
+    conversation_state: {
+      current_goal: redactAssistantMemoryText(cs.current_goal, 80) || null,
+      stage: ASSISTANT_STAGES.includes(String(cs.stage || "")) ? String(cs.stage) : "opening",
+      resolved: cs.resolved === true,
+      escalated: cs.escalated === true,
+      already_asked: Array.isArray(cs.already_asked)
+        ? cs.already_asked.map(String).filter((v) => ASSISTANT_MEMORY_SAFE_ALREADY_ASKED.has(v)).slice(0, 8)
+        : [],
+      collected_slots: Object.fromEntries(
+        Object.entries(cs.collected_slots || {})
+          .filter(([key]) => ASSISTANT_MEMORY_SAFE_SLOT_KEYS.has(key))
+          .map(([key, value]) => [key, typeof value === "string" ? redactAssistantMemoryText(value, 80) : value])
+          .filter(([, value]) => (
+            typeof value === "boolean" ||
+            (typeof value === "number" && Number.isFinite(value)) ||
+            (typeof value === "string" && value && !/\[(?:PHONE|TOKEN|CODE|REFERENCE|ID|DEVICE|EMAIL|NUMBER)\]/.test(value))
+          ))
+          .slice(0, 12)
+      ),
+      last_next_best_action: redactAssistantMemoryText(cs.last_next_best_action, 120) || null,
+      last_recommended_plan_name: redactAssistantMemoryText(cs.last_recommended_plan_name, 120) || null,
+    },
+  };
+
+  // Enforce the same hard maximum as the database constraint.
+  let serialized = JSON.stringify(payload);
+  if (Buffer.byteLength(serialized, "utf8") > ASSISTANT_MEMORY_MAX_PAYLOAD_BYTES) {
+    payload.turns = payload.turns.slice(-4);
+    serialized = JSON.stringify(payload);
+  }
+  if (Buffer.byteLength(serialized, "utf8") > ASSISTANT_MEMORY_MAX_PAYLOAD_BYTES) {
+    payload.turns = [];
+    serialized = JSON.stringify(payload);
+  }
+  return Buffer.byteLength(serialized, "utf8") <= ASSISTANT_MEMORY_MAX_PAYLOAD_BYTES ? payload : null;
+}
+
+function hydrateAssistantThreadFromMemory({ conversationId, context, scopeKey, lang, payload, storeKey = null }) {
+  const safePayload = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  const thread = createAssistantThread({
+    conversationId,
+    context,
+    scopeKey,
+    lang: ["fr", "mg", "en"].includes(String(safePayload.lang || "")) ? safePayload.lang : lang,
+    storeKey,
+  });
+  thread.last_intent_key = typeof safePayload.last_intent_key === "string" ? safePayload.last_intent_key.slice(0, 80) : null;
+  thread.current_topic = typeof safePayload.current_topic === "string" ? safePayload.current_topic.slice(0, 80) : null;
+  thread.pending_issue_type = typeof safePayload.pending_issue_type === "string" ? safePayload.pending_issue_type.slice(0, 80) : null;
+  thread.pending_fields = Array.isArray(safePayload.pending_fields)
+    ? safePayload.pending_fields.map(String).filter((v) => ASSISTANT_MEMORY_SAFE_PENDING_FIELDS.has(v)).slice(0, 8)
+    : [];
+  thread.slots = {};
+  for (const [key, value] of Object.entries(safePayload.slots || {})) {
+    if (ASSISTANT_MEMORY_SAFE_SLOT_KEYS.has(key)) thread.slots[key] = value;
+  }
+  thread.turns = Array.isArray(safePayload.turns)
+    ? safePayload.turns.slice(-8).map((turn) => ({
+        role: turn?.role === "assistant" ? "assistant" : "user",
+        text: redactAssistantMemoryText(turn?.text, turn?.role === "assistant" ? 320 : 240),
+        at: Number.isFinite(Number(turn?.at)) ? Number(turn.at) : Date.now(),
+      })).filter((turn) => turn.text)
+    : [];
+  ensureAssistantConversationState(thread);
+  const cs = safePayload.conversation_state && typeof safePayload.conversation_state === "object"
+    ? safePayload.conversation_state
+    : {};
+  thread.conversation_state.current_goal = typeof cs.current_goal === "string" ? cs.current_goal.slice(0, 80) : null;
+  thread.conversation_state.stage = ASSISTANT_STAGES.includes(String(cs.stage || "")) ? String(cs.stage) : "opening";
+  thread.conversation_state.resolved = cs.resolved === true;
+  thread.conversation_state.escalated = cs.escalated === true;
+  thread.conversation_state.already_asked = Array.isArray(cs.already_asked)
+    ? cs.already_asked.map(String).filter((v) => ASSISTANT_MEMORY_SAFE_ALREADY_ASKED.has(v)).slice(0, 8)
+    : [];
+  thread.conversation_state.collected_slots = {};
+  for (const [key, value] of Object.entries(cs.collected_slots || {})) {
+    if (ASSISTANT_MEMORY_SAFE_SLOT_KEYS.has(key)) thread.conversation_state.collected_slots[key] = value;
+  }
+  thread.conversation_state.last_next_best_action = typeof cs.last_next_best_action === "string"
+    ? cs.last_next_best_action.slice(0, 120) : null;
+  thread.conversation_state.last_recommended_plan_name = typeof cs.last_recommended_plan_name === "string"
+    ? cs.last_recommended_plan_name.slice(0, 120) : null;
+  return thread;
+}
+
+async function loadPersistentAssistantMemory({ conversationId, context, scopeHash, memoryToken }) {
+  if (!supabase) return { status: "unavailable" };
+  try {
+    const accessTokenHash = assistantMemoryHash(memoryToken);
+    const { data, error } = await supabase
+      .from(ASSISTANT_MEMORY_TABLE)
+      .select("payload,revision,expires_at")
+      .eq("conversation_id", conversationId)
+      .eq("context", context)
+      .eq("scope_hash", scopeHash)
+      .eq("access_token_hash", accessTokenHash)
+      .maybeSingle();
+    if (error) return { status: "unavailable" };
+    if (!data) return { status: "not_found" };
+    if (!data.expires_at || new Date(data.expires_at).getTime() <= Date.now()) {
+      const expiredBefore = new Date().toISOString();
+      void supabase
+        .from(ASSISTANT_MEMORY_TABLE)
+        .delete()
+        .eq("conversation_id", conversationId)
+        .eq("context", context)
+        .eq("scope_hash", scopeHash)
+        .eq("access_token_hash", accessTokenHash)
+        .lt("expires_at", expiredBefore);
+      return { status: "not_found" };
+    }
+    return {
+      status: "loaded",
+      payload: data.payload && typeof data.payload === "object" ? data.payload : {},
+      revision: Number.isFinite(Number(data.revision)) ? Number(data.revision) : 0,
+    };
+  } catch (_) {
+    return { status: "unavailable" };
+  }
+}
+
+async function savePersistentAssistantMemory({ conversationId, context, scopeHash, memoryToken, thread }) {
+  if (!supabase) return false;
+  const payload = buildDurableAssistantMemoryPayload(thread);
+  if (!payload) return false;
+  try {
+    const expiresAt = new Date(Date.now() + ASSISTANT_MEMORY_TTL_MS).toISOString();
+    const { error } = await supabase.rpc("upsert_assistant_conversation_memory", {
+      p_conversation_id: conversationId,
+      p_context: context,
+      p_scope_hash: scopeHash,
+      p_access_token_hash: assistantMemoryHash(memoryToken),
+      p_payload: payload,
+      p_expires_at: expiresAt,
+    });
+    if (error) return false;
+
+    const now = Date.now();
+    if (now - assistantMemoryLastCleanupAt > 10 * 60 * 1000) {
+      assistantMemoryLastCleanupAt = now;
+      void supabase.from(ASSISTANT_MEMORY_TABLE).delete().lt("expires_at", new Date().toISOString());
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+
+function getAssistantThread({ conversationId, context, scopeKey, storeKey = null }) {
   const now = Date.now();
-  const existing = conversationId ? assistantThreads.get(conversationId) : null;
+  const key = storeKey || conversationId;
+  const existing = key ? assistantThreads.get(key) : null;
   if (existing) {
     // Validate context and scope match — prevent cross-context injection
     if (existing.context !== context) return null;
     if (scopeKey && existing.scope_key !== scopeKey) return null;
     if (now - existing.updated_at > ASSISTANT_THREAD_TTL_MS) {
-      assistantThreads.delete(conversationId);
+      assistantThreads.delete(key);
       return null;
     }
     return existing;
@@ -1345,7 +1661,7 @@ function getAssistantThread({ conversationId, context, scopeKey }) {
   return null;
 }
 
-function createAssistantThread({ conversationId, context, scopeKey, lang }) {
+function createAssistantThread({ conversationId, context, scopeKey, lang, storeKey = null }) {
   const now = Date.now();
   const thread = {
     id: conversationId,
@@ -1369,7 +1685,7 @@ function createAssistantThread({ conversationId, context, scopeKey, lang }) {
     }
     if (oldestKey) assistantThreads.delete(oldestKey);
   }
-  assistantThreads.set(conversationId, thread);
+  assistantThreads.set(storeKey || conversationId, thread);
   return thread;
 }
 
@@ -2146,6 +2462,86 @@ function buildAssistantConversationPolicy({ context, lang, thread }) {
 const RAZAFI_HISTORY_TOKEN_MAX = 5000;
 const RAZAFI_HISTORY_TOKEN_MAP = new Map();
 
+
+// ANU-3 stateless sealed tokens. They replace process-local maps only when the
+// full ANU-3 memory gate is enabled. With memory disabled, ANU-2 behavior is
+// preserved byte-for-byte through the existing Maps.
+const ASSISTANT_ANU_SEALED_TOKEN_PREFIX = "rz1";
+const ASSISTANT_ANU_SEALED_TOKEN_TTL_MS = 30 * 60 * 1000;
+
+function getAssistantAnuSealingKey() {
+  const raw = String(process.env.ASSISTANT_ANU_SEALING_KEY || "").trim();
+  if (/^[0-9a-f]{64}$/i.test(raw)) return Buffer.from(raw, "hex");
+  try {
+    const decoded = Buffer.from(raw, "base64");
+    return decoded.length === 32 ? decoded : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function sealAssistantAnuToken({ purpose, clientMac, poolId, ttlMs = ASSISTANT_ANU_SEALED_TOKEN_TTL_MS }) {
+  const key = getAssistantAnuSealingKey();
+  const mac = normalizeMacColon(clientMac);
+  const pool = String(poolId || "").trim().toLowerCase();
+  if (!key || !purpose || !mac || !UUID_V1_TO_V5_RE.test(pool)) return null;
+  try {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+    const aad = Buffer.from(`RAZAFI:${purpose}:v1`, "utf8");
+    cipher.setAAD(aad);
+    const plaintext = Buffer.from(JSON.stringify({
+      v: 1,
+      purpose,
+      client_mac: mac,
+      pool_id: pool,
+      exp: Date.now() + Math.max(60_000, Math.min(2 * 60 * 60 * 1000, Number(ttlMs) || ASSISTANT_ANU_SEALED_TOKEN_TTL_MS)),
+    }), "utf8");
+    const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return [
+      ASSISTANT_ANU_SEALED_TOKEN_PREFIX,
+      iv.toString("base64url"),
+      encrypted.toString("base64url"),
+      tag.toString("base64url"),
+    ].join(".");
+  } catch (_) {
+    return null;
+  }
+}
+
+function unsealAssistantAnuToken(rawToken, expectedPurpose) {
+  const key = getAssistantAnuSealingKey();
+  const token = String(rawToken || "").trim();
+  if (!key || !token.startsWith(ASSISTANT_ANU_SEALED_TOKEN_PREFIX + ".")) return null;
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 4 || parts[0] !== ASSISTANT_ANU_SEALED_TOKEN_PREFIX) return null;
+    const iv = Buffer.from(parts[1], "base64url");
+    const encrypted = Buffer.from(parts[2], "base64url");
+    const tag = Buffer.from(parts[3], "base64url");
+    if (iv.length !== 12 || tag.length !== 16 || encrypted.length < 1 || encrypted.length > 1024) return null;
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAAD(Buffer.from(`RAZAFI:${expectedPurpose}:v1`, "utf8"));
+    decipher.setAuthTag(tag);
+    const payload = JSON.parse(Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8"));
+    const mac = normalizeMacColon(payload?.client_mac);
+    const pool = String(payload?.pool_id || "").trim().toLowerCase();
+    if (
+      payload?.v !== 1 ||
+      payload?.purpose !== expectedPurpose ||
+      !mac ||
+      !UUID_V1_TO_V5_RE.test(pool) ||
+      !Number.isFinite(Number(payload?.exp)) ||
+      Number(payload.exp) <= Date.now()
+    ) return null;
+    return { client_mac: mac, pool_id: pool, expires_at: Number(payload.exp) };
+  } catch (_) {
+    return null;
+  }
+}
+
+
 // Periodic cleanup of expired tokens (every 10 minutes)
 setInterval(() => {
   const now = Date.now();
@@ -2158,7 +2554,16 @@ setInterval(() => {
 // Returns null if either clientMac or poolId is missing.
 function generatePortalHistoryToken({ clientMac, poolId }) {
   if (!clientMac || !poolId) return null;
-  // Enforce max cap — evict oldest entry to prevent unbounded growth
+  if (isAssistantAnuMemoryEnabledForContext("portal_user")) {
+    // Fail closed when ANU-3 is enabled but the stable sealing key is missing.
+    return sealAssistantAnuToken({
+      purpose: "portal_history",
+      clientMac,
+      poolId,
+      ttlMs: 30 * 60 * 1000,
+    });
+  }
+  // ANU-2 legacy behavior while ANU-3 memory is disabled.
   if (RAZAFI_HISTORY_TOKEN_MAP.size >= RAZAFI_HISTORY_TOKEN_MAX) {
     const firstKey = RAZAFI_HISTORY_TOKEN_MAP.keys().next().value;
     if (firstKey) RAZAFI_HISTORY_TOKEN_MAP.delete(firstKey);
@@ -2167,7 +2572,7 @@ function generatePortalHistoryToken({ clientMac, poolId }) {
   RAZAFI_HISTORY_TOKEN_MAP.set(token, {
     client_mac: clientMac,
     pool_id:    poolId,
-    expires_at: Date.now() + 30 * 60 * 1000, // 30 min TTL
+    expires_at: Date.now() + 30 * 60 * 1000,
   });
   return token;
 }
@@ -2177,13 +2582,18 @@ function generatePortalHistoryToken({ clientMac, poolId }) {
 // Returns { client_mac, pool_id } or null.
 function resolvePortalHistoryToken(token) {
   if (!token) return null;
-  // Reject anything that isn't a UUID generated by the server
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)) {
+  const raw = String(token || "").trim();
+  if (raw.startsWith(ASSISTANT_ANU_SEALED_TOKEN_PREFIX + ".")) {
+    const sealed = unsealAssistantAnuToken(raw, "portal_history");
+    return sealed ? { client_mac: sealed.client_mac, pool_id: sealed.pool_id } : null;
+  }
+  // ANU-2 legacy UUID token behavior while ANU-3 memory is disabled.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) {
     return null;
   }
-  const entry = RAZAFI_HISTORY_TOKEN_MAP.get(token);
+  const entry = RAZAFI_HISTORY_TOKEN_MAP.get(raw);
   if (!entry) return null;
-  RAZAFI_HISTORY_TOKEN_MAP.delete(token); // one-time use — deleted regardless of expiry
+  RAZAFI_HISTORY_TOKEN_MAP.delete(raw);
   if (entry.expires_at < Date.now()) return null;
   return { client_mac: entry.client_mac, pool_id: entry.pool_id };
 }
@@ -2220,6 +2630,15 @@ function generatePortalAssistantContextToken({ clientMac, poolId }) {
   const mac = normalizeMacColon(clientMac);
   const pool = String(poolId || "").trim().toLowerCase();
   if (!mac || !UUID_V1_TO_V5_RE.test(pool)) return null;
+  if (isAssistantAnuMemoryEnabledForContext("portal_user")) {
+    // Stateless across Render restarts/instances. Fail closed if the key is absent.
+    return sealAssistantAnuToken({
+      purpose: "portal_context",
+      clientMac: mac,
+      poolId: pool,
+      ttlMs: RAZAFI_ASSISTANT_CONTEXT_TOKEN_TTL_MS,
+    });
+  }
   if (RAZAFI_ASSISTANT_CONTEXT_TOKEN_MAP.size >= RAZAFI_ASSISTANT_CONTEXT_TOKEN_MAX) {
     const firstKey = RAZAFI_ASSISTANT_CONTEXT_TOKEN_MAP.keys().next().value;
     if (firstKey) RAZAFI_ASSISTANT_CONTEXT_TOKEN_MAP.delete(firstKey);
@@ -2234,7 +2653,12 @@ function generatePortalAssistantContextToken({ clientMac, poolId }) {
 }
 
 function resolvePortalAssistantContextToken(rawToken) {
-  const token = String(rawToken || "").trim().toLowerCase();
+  const raw = String(rawToken || "").trim();
+  if (raw.startsWith(ASSISTANT_ANU_SEALED_TOKEN_PREFIX + ".")) {
+    const sealed = unsealAssistantAnuToken(raw, "portal_context");
+    return sealed ? { client_mac: sealed.client_mac, pool_id: sealed.pool_id } : null;
+  }
+  const token = raw.toLowerCase();
   if (!UUID_V1_TO_V5_RE.test(token)) return null;
   const entry = RAZAFI_ASSISTANT_CONTEXT_TOKEN_MAP.get(token);
   if (!entry) return null;
@@ -2242,8 +2666,6 @@ function resolvePortalAssistantContextToken(rawToken) {
     RAZAFI_ASSISTANT_CONTEXT_TOKEN_MAP.delete(token);
     return null;
   }
-  // Sliding expiry while the portal tab remains active. The token stays opaque,
-  // is kept only in a JS closure, and is never persisted by the frontend.
   entry.expires_at = Date.now() + RAZAFI_ASSISTANT_CONTEXT_TOKEN_TTL_MS;
   return { client_mac: entry.client_mac, pool_id: entry.pool_id };
 }
@@ -2388,8 +2810,8 @@ function assistantCriticalStateFromRows({ sessionRow, transactionRow }) {
   };
 }
 
-async function buildPortalTrustedAssistantContext({ contextToken }) {
-  const identity = resolvePortalAssistantContextToken(contextToken);
+async function buildPortalTrustedAssistantContext({ contextToken, identity: verifiedIdentity = null }) {
+  const identity = verifiedIdentity || resolvePortalAssistantContextToken(contextToken);
   if (!identity || !supabase) {
     return {
       version: ASSISTANT_ANU_TRUSTED_CONTEXT_VERSION,
@@ -8045,7 +8467,7 @@ function buildPlatformProspectNumericFollowUpAnswer({ message, lang, thread }) {
 }
 
 
-async function handleAssistantChat({ context, rawMessage, liveData, uiSnapshot, trustedContext, pool_id, page_path, conversationId, scopeKey, historyToken }) {
+async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapshot, trustedContext, pool_id, page_path, conversationId, scopeKey, historyToken, threadStoreKey = null }) {
   const message = cleanAssistantMessage(rawMessage);
   const detectedLang = detectAssistantLang(message);
 
@@ -8059,8 +8481,14 @@ async function handleAssistantChat({ context, rawMessage, liveData, uiSnapshot, 
 
   // ── Patch F: thread / conversation memory ───────────────────────────────
   const safeConvId = normalizeAssistantConversationId(conversationId) || generateAssistantConversationId();
-  let thread = getAssistantThread({ conversationId: safeConvId, context, scopeKey });
-  if (!thread) thread = createAssistantThread({ conversationId: safeConvId, context, scopeKey, lang: detectedLang });
+  let thread = getAssistantThread({ conversationId: safeConvId, context, scopeKey, storeKey: threadStoreKey });
+  if (!thread) thread = createAssistantThread({
+    conversationId: safeConvId,
+    context,
+    scopeKey,
+    lang: detectedLang,
+    storeKey: threadStoreKey,
+  });
 
   // ── Patch G.3A / G.3A.1: language continuity ───────────────────────────────
   // Reuse thread.lang only when the current message is truly neutral — i.e.
@@ -8808,6 +9236,99 @@ async function handleAssistantChat({ context, rawMessage, liveData, uiSnapshot, 
     ...(safeDiagnostic ? { diagnostic: safeDiagnostic } : {}),
   };
 }
+
+async function handleAssistantChat(args) {
+  const context = normalizeAssistantContext(args?.context);
+  if (!context || !isAssistantAnuMemoryEnabledForContext(context)) {
+    return handleAssistantChatCore(args);
+  }
+
+  const scopeHash = assistantMemoryScopeHash({ context, scopeKey: args?.scopeKey });
+  // Portal/Admin memory is never persisted without a verified server-side scope.
+  if (!scopeHash) return handleAssistantChatCore(args);
+
+  let conversationId = normalizeAssistantConversationId(args?.conversationId);
+  let memoryToken = normalizeAssistantMemoryToken(args?.memoryToken);
+  let threadStoreKey = null;
+  let loadedFromPersistentMemory = false;
+
+  // First ANU-3 request, or an invalid/missing bearer: start a new isolated thread.
+  if (!conversationId || !memoryToken) {
+    conversationId = generateAssistantConversationId();
+    memoryToken = generateAssistantMemoryToken();
+  }
+
+  threadStoreKey = assistantThreadStoreKey({ conversationId, context, scopeHash, memoryToken });
+  let l1Thread = getAssistantThread({
+    conversationId,
+    context,
+    scopeKey: args?.scopeKey,
+    storeKey: threadStoreKey,
+  });
+
+  if (!l1Thread) {
+    const loaded = await loadPersistentAssistantMemory({
+      conversationId,
+      context,
+      scopeHash,
+      memoryToken,
+    });
+
+    if (loaded.status === "loaded") {
+      l1Thread = hydrateAssistantThreadFromMemory({
+        conversationId,
+        context,
+        scopeKey: args?.scopeKey,
+        lang: detectAssistantLang(cleanAssistantMessage(args?.rawMessage)),
+        payload: loaded.payload,
+        storeKey: threadStoreKey,
+      });
+      loadedFromPersistentMemory = true;
+    }
+    // A not-found row starts a clean memory under this verified scope. A token
+    // mismatch cannot overwrite an existing row because the RPC enforces the
+    // stored access_token_hash. DB unavailability falls back to isolated L1.
+  }
+
+  let result = null;
+  let coreError = null;
+  try {
+    result = await handleAssistantChatCore({
+      ...args,
+      context,
+      conversationId,
+      threadStoreKey,
+    });
+  } catch (error) {
+    coreError = error;
+  }
+
+  const finalThread = getAssistantThread({
+    conversationId,
+    context,
+    scopeKey: args?.scopeKey,
+    storeKey: threadStoreKey,
+  });
+  const persisted = finalThread
+    ? await savePersistentAssistantMemory({
+        conversationId,
+        context,
+        scopeHash,
+        memoryToken,
+        thread: finalThread,
+      })
+    : false;
+
+  if (coreError) throw coreError;
+  return {
+    ...result,
+    conversation_id: conversationId,
+    memory_token: memoryToken,
+    memory_persistent: persisted || loadedFromPersistentMemory,
+    memory_version: ASSISTANT_ANU_MEMORY_VERSION,
+  };
+}
+
 // ===============================
 // END RAZAFI ASSISTANT — PATCH A
 // ===============================
@@ -11181,14 +11702,25 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
     const rawContextToken = rawContext === "portal_user"
       ? (String(req.body?.assistant_context_token || "").trim() || null)
       : null;
+    const rawMemoryToken = String(req.body?.memory_token || "").trim() || null;
     const anuEnabled = isAssistantAnuEnabledForContext(rawContext);
+    const portalIdentity = anuEnabled && rawContext === "portal_user"
+      ? resolvePortalAssistantContextToken(rawContextToken)
+      : null;
     const trustedContext = anuEnabled
       ? (rawContext === "portal_user"
-          ? await buildPortalTrustedAssistantContext({ contextToken: rawContextToken })
+          ? await buildPortalTrustedAssistantContext({
+              contextToken: rawContextToken,
+              identity: portalIdentity,
+            })
           : buildPlatformTrustedAssistantContext())
       : null;
+    // Raw scope components remain process-local. Persistent storage receives only
+    // a SHA-256 scope hash built by the ANU-3 memory wrapper.
     const publicScopeKey = anuEnabled && rawContext === "portal_user"
-      ? assistantAnuScopeKeyFromOpaqueToken("portal", rawContextToken)
+      ? (isAssistantAnuMemoryEnabledForContext(rawContext)
+          ? (portalIdentity ? `portal:${portalIdentity.pool_id}:${portalIdentity.client_mac}` : null)
+          : assistantAnuScopeKeyFromOpaqueToken("portal", rawContextToken))
       : null;
 
     const result = await handleAssistantChat({
@@ -11200,6 +11732,7 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
       pool_id,
       page_path,
       conversationId,
+      memoryToken: rawMemoryToken,
       scopeKey: publicScopeKey,
       historyToken: rawHistoryToken, // G.2: opaque; null unless portal_user
     });
@@ -12035,6 +12568,7 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
 
     const rawConvId = String(req.body?.conversation_id || "").trim();
     const conversationId = normalizeAssistantConversationId(rawConvId) || null;
+    const rawMemoryToken = String(req.body?.memory_token || "").trim() || null;
     let trustedContext = null;
     if (anuEnabled) {
       try {
@@ -12053,7 +12587,9 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
     }
     // Scope Admin threads by authenticated actor AND validated requested pool.
     const adminScopeKey = req.admin?.id
-      ? "admin_" + String(req.admin.id).slice(0, 16) + (requestedScope.pool_id ? "_" + requestedScope.pool_id.slice(0, 8) : "_all")
+      ? (isAssistantAnuMemoryEnabledForContext(rawContext)
+          ? `admin:${String(req.admin.id)}:${requestedScope.pool_id || "all"}`
+          : "admin_" + String(req.admin.id).slice(0, 16) + (requestedScope.pool_id ? "_" + requestedScope.pool_id.slice(0, 8) : "_all"))
       : null;
 
     const result = await handleAssistantChat({
@@ -12065,6 +12601,7 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
       pool_id: null,
       page_path,
       conversationId,
+      memoryToken: rawMemoryToken,
       scopeKey: adminScopeKey,
     });
 

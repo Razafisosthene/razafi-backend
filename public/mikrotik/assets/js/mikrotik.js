@@ -13,6 +13,7 @@
   // Uses sessionStorage (tab-scoped). Never stores PII.
   // ============================================================
   var RAZAFI_PORTAL_ASSISTANT_CID_KEY = "razafi_portal_assistant_conversation_id_v1";
+  var RAZAFI_PORTAL_ASSISTANT_MEMORY_TOKEN_KEY = "razafi_portal_assistant_memory_token_v1";
   var assistantHistoryToken = null; // G.2: opaque token from /api/mikrotik/plans — closure only, never DOM/storage
   var assistantContextToken = null; // ANU-2: persistent-in-tab closure token for trusted pool/device scope
 
@@ -29,6 +30,24 @@
     try {
       var v = String(value || "").trim();
       if (/^ast_[0-9a-f]{24}$/.test(v)) {
+        sessionStorage.setItem(key, v);
+      }
+    } catch (_) {}
+  }
+
+  function readAssistantMemoryToken(key) {
+    try {
+      var v = sessionStorage.getItem(key);
+      return /^mem_[0-9a-f]{64}$/.test(String(v || "")) ? v : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeAssistantMemoryToken(key, value) {
+    try {
+      var v = String(value || "").trim().toLowerCase();
+      if (/^mem_[0-9a-f]{64}$/.test(v)) {
         sessionStorage.setItem(key, v);
       }
     } catch (_) {}
@@ -6260,6 +6279,7 @@ function selectPlanCardOnly(card) {
             try { return String(window.location.pathname || "").slice(0, 200); } catch (_) { return null; }
           })(),
           conversation_id: assistantConversationId,
+          memory_token: readAssistantMemoryToken(RAZAFI_PORTAL_ASSISTANT_MEMORY_TOKEN_KEY) || undefined,
           history_token: tokenToSend, // G.2: opaque; undefined when no token
         }),
       })
@@ -6273,6 +6293,9 @@ function selectPlanCardOnly(card) {
           // Patch F.2: persist conversation_id for multi-turn memory
           if (data && data.conversation_id) {
             writeAssistantConversationId(RAZAFI_PORTAL_ASSISTANT_CID_KEY, data.conversation_id);
+          }
+          if (data && data.memory_token) {
+            writeAssistantMemoryToken(RAZAFI_PORTAL_ASSISTANT_MEMORY_TOKEN_KEY, data.memory_token);
           }
 
           var answer = String(

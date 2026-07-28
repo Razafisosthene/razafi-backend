@@ -306,6 +306,7 @@
         // so the next admin who logs in starts with a clean state.
         try { sessionStorage.removeItem(RAZAFI_MEMORY_KEY); } catch (_) {}
         try { sessionStorage.removeItem(RAZAFI_ADMIN_ASSISTANT_CID_KEY); } catch (_) {}
+        try { sessionStorage.removeItem(RAZAFI_ADMIN_ASSISTANT_MEMORY_TOKEN_KEY); } catch (_) {}
         _rzAccessiblePoolNames = null;
         _rzAccessiblePoolCount = null;
         _rzAccessiblePoolAdmin = null;
@@ -444,6 +445,7 @@
   const RAZAFI_MEMORY_KEY = "razafi_admin_assistant_memory_v1";
   // Patch F.2: conversation_id persistence for admin assistant
   const RAZAFI_ADMIN_ASSISTANT_CID_KEY = "razafi_admin_assistant_conversation_id_v1";
+  const RAZAFI_ADMIN_ASSISTANT_MEMORY_TOKEN_KEY = "razafi_admin_assistant_memory_token_v1";
 
   function readAssistantConversationId(key) {
     try {
@@ -458,6 +460,24 @@
     try {
       var v = String(value || "").trim();
       if (/^ast_[0-9a-f]{24}$/.test(v)) {
+        sessionStorage.setItem(key, v);
+      }
+    } catch (_) {}
+  }
+
+  function readAssistantMemoryToken(key) {
+    try {
+      var v = sessionStorage.getItem(key);
+      return /^mem_[0-9a-f]{64}$/.test(String(v || "")) ? v : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeAssistantMemoryToken(key, value) {
+    try {
+      var v = String(value || "").trim().toLowerCase();
+      if (/^mem_[0-9a-f]{64}$/.test(v)) {
         sessionStorage.setItem(key, v);
       }
     } catch (_) {}
@@ -873,6 +893,7 @@
               try { return String(window.location.pathname || "").slice(0, 200); } catch (_) { return null; }
             })(),
             conversation_id: readAssistantConversationId(RAZAFI_ADMIN_ASSISTANT_CID_KEY),
+            memory_token: readAssistantMemoryToken(RAZAFI_ADMIN_ASSISTANT_MEMORY_TOKEN_KEY) || undefined,
           }),
         })
           .then(function (res) { return res.json().catch(function () { return {}; }); })
@@ -882,6 +903,9 @@
             // Patch F.2: persist conversation_id for multi-turn memory
             if (data && data.conversation_id) {
               writeAssistantConversationId(RAZAFI_ADMIN_ASSISTANT_CID_KEY, data.conversation_id);
+            }
+            if (data && data.memory_token) {
+              writeAssistantMemoryToken(RAZAFI_ADMIN_ASSISTANT_MEMORY_TOKEN_KEY, data.memory_token);
             }
             const answer = String(
               (data && data.answer) ? data.answer :
