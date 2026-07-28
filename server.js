@@ -1344,7 +1344,7 @@ function normalizeAssistantConversationId(raw) {
 // WiFi code, payment/reference identifiers, auth tokens, Admin IDs or pool IDs.
 // Critical facts are rebuilt from ANU-2 trusted server context on every request.
 // =============================================================================
-const ASSISTANT_ANU_MEMORY_VERSION = "ANU-3.0";
+const ASSISTANT_ANU_MEMORY_VERSION = "ANU-3.1";
 const ASSISTANT_MEMORY_TABLE = "assistant_conversation_memory";
 const ASSISTANT_MEMORY_TOKEN_RE = /^mem_[0-9a-f]{64}$/;
 const ASSISTANT_MEMORY_SCOPE_HASH_RE = /^[0-9a-f]{64}$/;
@@ -1497,6 +1497,7 @@ function buildDurableAssistantMemoryPayload(thread) {
     turns,
     conversation_state: {
       current_goal: redactAssistantMemoryText(cs.current_goal, 80) || null,
+      remembered_scope_note: sanitizeAssistantRememberedScopeNote(cs.remembered_scope_note),
       stage: ASSISTANT_STAGES.includes(String(cs.stage || "")) ? String(cs.stage) : "opening",
       resolved: cs.resolved === true,
       escalated: cs.escalated === true,
@@ -1563,6 +1564,7 @@ function hydrateAssistantThreadFromMemory({ conversationId, context, scopeKey, l
     ? safePayload.conversation_state
     : {};
   thread.conversation_state.current_goal = typeof cs.current_goal === "string" ? cs.current_goal.slice(0, 80) : null;
+  thread.conversation_state.remembered_scope_note = sanitizeAssistantRememberedScopeNote(cs.remembered_scope_note);
   thread.conversation_state.stage = ASSISTANT_STAGES.includes(String(cs.stage || "")) ? String(cs.stage) : "opening";
   thread.conversation_state.resolved = cs.resolved === true;
   thread.conversation_state.escalated = cs.escalated === true;
@@ -1828,6 +1830,7 @@ function buildSafeConversationContext(thread) {
     const cs = thread.conversation_state;
     safeConversationState = {
       current_goal: cs.current_goal || null,
+      remembered_scope_note: sanitizeAssistantRememberedScopeNote(cs.remembered_scope_note),
       stage: cs.stage || "opening",
       resolved: cs.resolved || false,
       escalated: cs.escalated || false,
@@ -1962,9 +1965,15 @@ const ASSISTANT_GOAL_SIGNALS = [
 // ---------------------------------------------------------------------------
 function ensureAssistantConversationState(thread) {
   if (!thread) return;
-  if (thread.conversation_state && typeof thread.conversation_state === "object") return;
+  if (thread.conversation_state && typeof thread.conversation_state === "object") {
+    if (!Object.prototype.hasOwnProperty.call(thread.conversation_state, "remembered_scope_note")) {
+      thread.conversation_state.remembered_scope_note = null;
+    }
+    return;
+  }
   thread.conversation_state = {
     current_goal: null,         // one of ASSISTANT_GOALS_BY_CONTEXT[context]
+    remembered_scope_note: null, // ANU-3.1: short, non-sensitive user note bound to the verified Admin scope
     stage: "opening",           // one of ASSISTANT_STAGES
     resolved: false,
     escalated: false,
@@ -1975,6 +1984,127 @@ function ensureAssistantConversationState(thread) {
     greeted_at: null,           // timestamp ms — null = not yet greeted
     closed_at: null,            // timestamp ms — null = not yet closed
   };
+}
+
+// ---------------------------------------------------------------------------
+// ANU-3.1 — deterministic, scope-bound Admin conversational note
+// ---------------------------------------------------------------------------
+// This is deliberately separate from current_goal. current_goal is a controlled
+// navigation/coaching enum and may change as the user asks new questions. The
+// remembered note is a short user-defined preference or priority, persisted only
+// under the authenticated Admin + validated pool scope selected by the server.
+function sanitizeAssistantRememberedScopeNote(raw) {
+  let value = String(raw || "").normalize("NFC").replace(/[\u0000-\u001F\u007F-\u009F]/g, " ");
+  value = value.replace(/\s+/g, " ").trim();
+  if (!value) return null;
+
+  // Strip conversational wrappers while retaining the actual user-defined note.
+  value = value
+    .replace(/^(?:pour\s+(?:ce|cette)\s+pool(?:\s+(?:seulement|uniquement))?\s*[,;:]?\s*)/i, "")
+    .replace(/^(?:for\s+this\s+pool(?:\s+only)?\s*[,;:]?\s*)/i, "")
+    .replace(/^(?:ho\s+an(?:'|’)ity\s+pool\s+ity\s*[,;:]?\s*)/i, "")
+    .replace(/^(?:(?:retiens|retenez|note|notez|m[ée]morise|m[ée]morisez|garde\s+en\s+t[êe]te|gardez\s+en\s+t[êe]te)\s+(?:bien\s+)?(?:que\s+)?)/i, "")
+    .replace(/^(?:(?:remember|note|keep\s+in\s+mind)\s+(?:that\s+)?)/i, "")
+    .replace(/^(?:(?:tadidio|raketo)\s+(?:fa\s+)?)/i, "")
+    .replace(/^(?:(?:ma|mon|notre)\s+(?:priorit[ée]|objectif|but)(?:\s+prioritaire)?\s*(?:est|:)\s*)/i, "")
+    .replace(/^(?:(?:my|our)\s+(?:priority|objective|goal)\s*(?:is|:)\s*)/i, "")
+    .replace(/^(?:(?:ny|anjarako)\s+(?:laharam-pahamehana|tanjona)\s*(?:dia|:)\s*)/i, "")
+    .trim();
+
+  const clean = redactAssistantMemoryText(value, 180).replace(/^[\s:;,-]+|[\s]+$/g, "").trim();
+  if (!clean || clean.length < 4) return null;
+
+  // A note containing a redaction marker is rejected instead of storing a
+  // partially-redacted secret or identifier as a durable preference.
+  if (/\[(?:PHONE|TOKEN|CODE|REFERENCE|ID|DEVICE|EMAIL|NUMBER|PIN-LIKE)/i.test(clean)) return null;
+  return clean.slice(0, 180);
+}
+
+function classifyAssistantAdminScopeNoteAction(message) {
+  const s = String(message || "").normalize("NFC").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!s) return null;
+
+  if (
+    /(?:rappelle(?:-moi)?|souviens(?:-toi)?|quelle?\s+(?:était\s+)?(?:ma|mon|notre)?\s*(?:priorité|objectif|note)|quel\s+(?:était\s+)?(?:mon|notre)?\s*(?:objectif|but)|what\s+(?:was|is)\s+(?:my|our)\s+(?:priority|objective|goal)|remembered\s+(?:priority|objective|goal)|inona\s+(?:ny\s+)?(?:laharam-pahamehana|tanjona)|tadidinao)/i.test(s)
+  ) return "recall";
+
+  if (
+    /(?:oublie|efface|supprime)\s+(?:ma|mon|notre|cette)?\s*(?:priorité|objectif|note)|(?:forget|clear|delete)\s+(?:my|our|this)?\s*(?:priority|objective|goal|note)|(?:adino|fafao)\s+(?:ny\s+)?(?:laharam-pahamehana|tanjona)/i.test(s)
+  ) return "clear";
+
+  if (
+    /\b(?:retiens|retenez|mémorise|mémorisez|memorise|memorize|tadidio|raketo)\b/i.test(s) ||
+    /\b(?:note|notez)\s+(?:bien\s+)?(?:que|ceci)\b/i.test(s) ||
+    /\b(?:garde|gardez)\s+en\s+t[êe]te\b/i.test(s) ||
+    /\bremember\s+that\b|\bkeep\s+in\s+mind\b/i.test(s) ||
+    /(?:ma|mon|notre)\s+(?:priorité|objectif|but)(?:\s+prioritaire)?\s*(?:est|:)/i.test(s) ||
+    /(?:my|our)\s+(?:priority|objective|goal)\s*(?:is|:)/i.test(s)
+  ) return "save";
+
+  return null;
+}
+
+function buildAssistantAdminScopeNoteAnswer({ action, message, thread, trustedContext, lang }) {
+  ensureAssistantConversationState(thread);
+  const scope = trustedContext && typeof trustedContext === "object" ? trustedContext.scope : null;
+  const isSinglePool = trustedContext?.scope_verified === true && scope?.mode === "single_pool" && !!scope?.selected_pool_name;
+  const poolName = isSinglePool ? redactAssistantMemoryText(scope.selected_pool_name, 120) : null;
+
+  const choosePool = lang === "mg"
+    ? "Safidio aloha pool iray manokana ao amin’ny filtre Plans, dia avereno ilay fangatahana. Tsy mitahiry priorité amin’ny scope ‘pools rehetra’ aho."
+    : lang === "en"
+      ? "Select one specific pool in the Plans filter, then repeat the request. I do not save a priority under the all-pools scope."
+      : "Sélectionnez d’abord un pool précis dans le filtre de la page Plans, puis reformulez. Je n’enregistre pas de priorité dans le scope « Tous les pools ».";
+
+  if (!isSinglePool) {
+    return { handled: true, intentKey: "admin_scope_note_requires_pool", answer: choosePool };
+  }
+
+  if (action === "clear") {
+    thread.conversation_state.remembered_scope_note = null;
+    const answer = lang === "mg"
+      ? `Voafafa ny priorité voatahiry ho an’ny ${poolName}.`
+      : lang === "en"
+        ? `The remembered priority for ${poolName} has been cleared.`
+        : `La priorité mémorisée pour ${poolName} a été effacée.`;
+    return { handled: true, intentKey: "admin_scope_note_cleared", answer };
+  }
+
+  if (action === "recall") {
+    const note = sanitizeAssistantRememberedScopeNote(thread.conversation_state.remembered_scope_note);
+    if (!note) {
+      const answer = lang === "mg"
+        ? `Tsy mbola misy priorité voatahiry amin’ity conversation ity ho an’ny ${poolName}.`
+        : lang === "en"
+          ? `No priority is currently remembered in this conversation for ${poolName}.`
+          : `Aucune priorité n’est actuellement mémorisée dans cette conversation pour ${poolName}.`;
+      return { handled: true, intentKey: "admin_scope_note_empty", answer };
+    }
+    const answer = lang === "mg"
+      ? `Ho an’ny ${poolName}, izao no priorité tadidiko : « ${note} ».`
+      : lang === "en"
+        ? `For ${poolName}, the priority I remember is: “${note}”.`
+        : `Pour ${poolName}, la priorité que je retiens est : « ${note} ».`;
+    return { handled: true, intentKey: "admin_scope_note_recalled", answer };
+  }
+
+  const note = sanitizeAssistantRememberedScopeNote(message);
+  if (!note) {
+    const answer = lang === "mg"
+      ? "Tsy voatahiry ilay note satria foana, tsy mazava, na mety misy donnée sensible. Aza mandefa PIN, téléphone, code, token na référence de paiement."
+      : lang === "en"
+        ? "That note was not saved because it is empty, unclear, or may contain sensitive data. Never send a PIN, phone number, code, token, or payment reference."
+        : "Cette note n’a pas été enregistrée, car elle est vide, imprécise ou peut contenir une donnée sensible. N’envoyez jamais de PIN, téléphone, code, token ou référence de paiement.";
+    return { handled: true, intentKey: "admin_scope_note_rejected", answer };
+  }
+
+  thread.conversation_state.remembered_scope_note = note;
+  const answer = lang === "mg"
+    ? `Ekena. Ho an’ny ${poolName}, tadidiko izao : « ${note} ».`
+    : lang === "en"
+      ? `Understood. For ${poolName}, I’ll remember: “${note}”.`
+      : `Compris. Pour ${poolName}, je retiens : « ${note} ».`;
+  return { handled: true, intentKey: "admin_scope_note_saved", answer };
 }
 
 // ---------------------------------------------------------------------------
@@ -8530,6 +8660,55 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
     };
   }
   // ── End Global PIN guard ─────────────────────────────────────────────────
+
+  // ANU-3.1: deterministic save/recall/clear for a short Admin note bound to
+  // the authenticated and server-validated single-pool scope. This runs before
+  // generic Admin coaching so words such as "priorité" cannot be misclassified.
+  if (context === "admin_owner" && isAssistantAnuMemoryEnabledForContext(context)) {
+    const scopeNoteAction = classifyAssistantAdminScopeNoteAction(message);
+    if (scopeNoteAction) {
+      const scopeNoteResult = buildAssistantAdminScopeNoteAnswer({
+        action: scopeNoteAction,
+        message,
+        thread,
+        trustedContext,
+        lang,
+      });
+      if (scopeNoteResult?.handled) {
+        updateAssistantThread({
+          thread,
+          userMessage: message,
+          assistantAnswer: scopeNoteResult.answer,
+          lang,
+          intentKey: scopeNoteResult.intentKey,
+          topic: "admin_scope_note",
+          slots: {},
+        });
+        await logAssistantInteraction({
+          context,
+          intent_key: scopeNoteResult.intentKey,
+          lang,
+          escalated: false,
+          pool_id: null,
+          page_path: page_path || null,
+        });
+        return {
+          ok: true,
+          context,
+          intent_key: scopeNoteResult.intentKey,
+          lang,
+          answer: scopeNoteResult.answer,
+          buttons: [],
+          requires_live_data: false,
+          live_data_keys: [],
+          dynamic: true,
+          ai_enhanced: false,
+          conversation_id: safeConvId,
+          memory_active: true,
+        };
+      }
+    }
+  }
 
   // ANU-2 fail-closed gate: direct critical-state questions require a verified
   // server scope. Browser status labels are never used as substitute evidence.
