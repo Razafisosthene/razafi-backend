@@ -11,7 +11,7 @@
   <link rel="icon" type="image/svg+xml" href="assets/img/favicon.svg" />
   <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png" />
 
-  <link rel="stylesheet" href="assets/css/style.css?v=pp3-payment-form-visibility-1" />
+  <link rel="stylesheet" href="assets/css/style.css?v=pp4-mobile-order-validation-1" />
     <style>
     /* =========================================================
        RAZAFI Portal – Apple-inspired Phase 1
@@ -781,7 +781,7 @@
               </div>
             </div>
 
-            <div class="personalized-field">
+            <div class="personalized-field personalized-field-duration">
               <label class="personalized-label" for="personalizedDurationValue">Durée</label>
               <div class="personalized-inline-input">
                 <input id="personalizedDurationValue" type="number" min="1" step="1" value="1" inputmode="numeric" aria-describedby="personalizedDurationHint">
@@ -793,7 +793,7 @@
               <small id="personalizedDurationHint" class="personalized-hint"></small>
             </div>
 
-            <div id="personalizedDataField" class="personalized-field hidden">
+            <div id="personalizedDataField" class="personalized-field personalized-field-data hidden">
               <label class="personalized-label" for="personalizedDataValue">Volume data</label>
               <div class="personalized-inline-input personalized-inline-input-unit">
                 <input id="personalizedDataValue" type="number" min="0.5" step="0.5" value="1" inputmode="decimal" aria-describedby="personalizedDataHint">
@@ -802,7 +802,7 @@
               <small id="personalizedDataHint" class="personalized-hint"></small>
             </div>
 
-            <div class="personalized-field">
+            <div class="personalized-field personalized-field-speed">
               <label class="personalized-label" for="personalizedSpeed">Vitesse</label>
               <select id="personalizedSpeed"></select>
               <small class="personalized-hint">Vitesse maximale appliquée à votre code.</small>
@@ -1071,7 +1071,7 @@
       }
     });
   </script>
-  <script src="assets/js/mikrotik.js?v=pp3-mvola-failed-copy-1" defer></script>
+  <script src="assets/js/mikrotik.js?v=pp4-mobile-order-validation-1" defer></script>
 
 </body>
 </html>

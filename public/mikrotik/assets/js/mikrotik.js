@@ -3472,6 +3472,60 @@ function saturationLabel(pct) {
     el.classList.toggle("hidden", !text);
   }
 
+  function parsePersonalizedNumber(value) {
+    const normalized = String(value ?? "").trim().replace(",", ".");
+    if (!normalized) return Number.NaN;
+    return Number(normalized);
+  }
+
+  function createPersonalizedValidationError(code, field, message) {
+    const error = new Error(code);
+    error.personalizedField = field;
+    error.userMessage = String(message || "").trim();
+    return error;
+  }
+
+  function personalizedFieldNodes(field) {
+    const el = personalizedEls();
+    if (field === "duration") return [el.durationValue, el.durationUnit].filter(Boolean);
+    if (field === "data") return [el.dataValue].filter(Boolean);
+    if (field === "speed") return [el.speed].filter(Boolean);
+    return [];
+  }
+
+  function clearPersonalizedFieldError(nodeOrField) {
+    const nodes = typeof nodeOrField === "string"
+      ? personalizedFieldNodes(nodeOrField)
+      : [nodeOrField].filter(Boolean);
+    nodes.forEach((node) => {
+      node.removeAttribute("aria-invalid");
+      const field = node.closest?.(".personalized-field");
+      field?.classList.remove("personalized-field-invalid");
+      field?.querySelectorAll?.("input[aria-invalid], select[aria-invalid]").forEach((input) => {
+        input.removeAttribute("aria-invalid");
+      });
+    });
+  }
+
+  function clearPersonalizedFieldErrors() {
+    ["duration", "data", "speed"].forEach(clearPersonalizedFieldError);
+  }
+
+  function showPersonalizedValidationError(error) {
+    const field = String(error?.personalizedField || "");
+    const nodes = personalizedFieldNodes(field);
+    clearPersonalizedFieldErrors();
+    nodes.forEach((node) => node.setAttribute("aria-invalid", "true"));
+    nodes[0]?.closest?.(".personalized-field")?.classList.add("personalized-field-invalid");
+    setPersonalizedError(error?.userMessage || personalizedFriendlyError(error?.message));
+    if (nodes[0]) {
+      window.setTimeout(() => {
+        try { nodes[0].focus({ preventScroll: true }); } catch (_) { try { nodes[0].focus(); } catch (_) {} }
+        try { nodes[0].closest?.(".personalized-field")?.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (_) {}
+      }, 0);
+    }
+  }
+
   function clearPersonalizedQuoteTimer() {
     if (personalizedQuoteTimerId) window.clearInterval(personalizedQuoteTimerId);
     personalizedQuoteTimerId = null;
@@ -3580,6 +3634,7 @@ function saturationLabel(pct) {
     const el = personalizedEls();
     const isData = personalizedType() === "data";
     el.dataField?.classList.toggle("hidden", !isData);
+    el.config?.classList.toggle("personalized-data-mode", isData);
 
     const duration = personalizedOptions.duration || {};
     const factor = String(el.durationUnit?.value || "hours") === "days" ? 1440 : 60;
@@ -3589,10 +3644,6 @@ function saturationLabel(pct) {
       el.durationValue.min = String(Math.round(minValue * 100000) / 100000);
       el.durationValue.max = String(Math.round(maxValue * 100000) / 100000);
       el.durationValue.step = "any";
-      const current = Number(el.durationValue.value);
-      if (!Number.isFinite(current) || current < minValue || current > maxValue) {
-        el.durationValue.value = String(factor === 1440 ? Math.max(1, Math.ceil(minValue)) : Math.max(1, Math.ceil(minValue)));
-      }
     }
     if (el.durationHint) {
       el.durationHint.textContent = `De ${formatDuration(Number(duration.min_minutes || 60))} à ${formatDuration(Number(duration.max_minutes || 43200))}`;
@@ -3606,10 +3657,6 @@ function saturationLabel(pct) {
       el.dataValue.min = String(minGb);
       el.dataValue.max = String(maxGb);
       el.dataValue.step = String(stepGb);
-      const current = Number(el.dataValue.value);
-      if (!Number.isFinite(current) || current < minGb || current > maxGb) {
-        el.dataValue.value = String(Math.max(minGb, 1));
-      }
     }
     if (el.dataHint) {
       el.dataHint.textContent = `De ${formatPersonalizedRangeGb(Number(data.min_mb || 512))} à ${formatPersonalizedRangeGb(Number(data.max_mb || 102400))}`;
@@ -3620,45 +3667,102 @@ function saturationLabel(pct) {
     if (!personalizedOptions) throw new Error("personalized_options_unavailable");
     const el = personalizedEls();
     const type = personalizedType();
-    const durationRaw = Number(el.durationValue?.value);
+    const durationRaw = parsePersonalizedNumber(el.durationValue?.value);
     const durationFactor = String(el.durationUnit?.value || "hours") === "days" ? 1440 : 60;
     const exactDuration = durationRaw * durationFactor;
     const durationMinutes = Math.round(exactDuration);
     const duration = personalizedOptions.duration || {};
+    const minDuration = Number(duration.min_minutes || 0);
+    const maxDuration = Number(duration.max_minutes || 0);
+    const durationStep = Math.max(1, Number(duration.step_minutes || 1));
+    const durationRange = `entre ${formatDuration(minDuration)} et ${formatDuration(maxDuration)}`;
 
-    if (!Number.isFinite(durationRaw) || durationRaw <= 0 || Math.abs(exactDuration - durationMinutes) > 0.001) {
-      throw new Error("personalized_duration_not_allowed");
+    if (!Number.isFinite(durationRaw) || durationRaw <= 0 || !Number.isFinite(exactDuration)) {
+      throw createPersonalizedValidationError(
+        "personalized_duration_not_allowed",
+        "duration",
+        `Saisissez une durée valide ${durationRange}.`
+      );
     }
-    if (
-      durationMinutes < Number(duration.min_minutes || 0) ||
-      durationMinutes > Number(duration.max_minutes || 0) ||
-      (durationMinutes - Number(duration.min_minutes || 0)) % Number(duration.step_minutes || 1) !== 0
-    ) {
-      throw new Error("personalized_duration_not_allowed");
+    if (exactDuration < minDuration) {
+      throw createPersonalizedValidationError(
+        "personalized_duration_not_allowed",
+        "duration",
+        `La durée minimale autorisée est de ${formatDuration(minDuration)}. Entrez une durée ${durationRange}.`
+      );
+    }
+    if (exactDuration > maxDuration) {
+      throw createPersonalizedValidationError(
+        "personalized_duration_not_allowed",
+        "duration",
+        `La durée maximale autorisée est de ${formatDuration(maxDuration)}. Entrez une durée ${durationRange}.`
+      );
+    }
+    const durationStepCount = (exactDuration - minDuration) / durationStep;
+    if (Math.abs(durationStepCount - Math.round(durationStepCount)) > 0.000001) {
+      throw createPersonalizedValidationError(
+        "personalized_duration_not_allowed",
+        "duration",
+        `La durée doit respecter un pas de ${formatPersonalizedStepMinutes(durationStep)} à partir de ${formatDuration(minDuration)}.`
+      );
     }
 
     let dataMb = null;
     if (type === "data") {
-      const dataGb = Number(el.dataValue?.value);
+      const dataGb = parsePersonalizedNumber(el.dataValue?.value);
       const exactDataMb = dataGb * 1024;
       dataMb = Math.round(exactDataMb);
       const data = personalizedOptions.data || {};
-      if (!Number.isFinite(dataGb) || dataGb <= 0 || Math.abs(exactDataMb - dataMb) > 0.001) {
-        throw new Error("personalized_data_not_allowed");
+      const minDataMb = Number(data.min_mb || 0);
+      const maxDataMb = Number(data.max_mb || 0);
+      const dataStepMb = Math.max(1, Number(data.step_mb || 1));
+      const minDataText = formatPersonalizedRangeGb(minDataMb);
+      const maxDataText = formatPersonalizedRangeGb(maxDataMb);
+      const dataRange = `entre ${minDataText} et ${maxDataText}`;
+
+      if (!Number.isFinite(dataGb) || dataGb <= 0 || !Number.isFinite(exactDataMb)) {
+        throw createPersonalizedValidationError(
+          "personalized_data_not_allowed",
+          "data",
+          `Saisissez un volume data valide ${dataRange}.`
+        );
       }
-      if (
-        dataMb < Number(data.min_mb || 0) ||
-        dataMb > Number(data.max_mb || 0) ||
-        (dataMb - Number(data.min_mb || 0)) % Number(data.step_mb || 1) !== 0
-      ) {
-        throw new Error("personalized_data_not_allowed");
+      if (exactDataMb < minDataMb) {
+        throw createPersonalizedValidationError(
+          "personalized_data_not_allowed",
+          "data",
+          `Le volume minimum autorisé est de ${minDataText}. Entrez une valeur ${dataRange}.`
+        );
+      }
+      if (exactDataMb > maxDataMb) {
+        throw createPersonalizedValidationError(
+          "personalized_data_not_allowed",
+          "data",
+          `Le volume maximum autorisé est de ${maxDataText}. Entrez une valeur ${dataRange}.`
+        );
+      }
+      const dataStepCount = (exactDataMb - minDataMb) / dataStepMb;
+      if (Math.abs(dataStepCount - Math.round(dataStepCount)) > 0.000001) {
+        const examples = [minDataMb, minDataMb + dataStepMb, minDataMb + (2 * dataStepMb)]
+          .filter((value) => value <= maxDataMb)
+          .map(formatPersonalizedRangeGb)
+          .join(", ");
+        throw createPersonalizedValidationError(
+          "personalized_data_not_allowed",
+          "data",
+          `Le volume data doit être saisi par pas de ${formatPersonalizedRangeGb(dataStepMb)}.${examples ? ` Exemples autorisés : ${examples}.` : ""}`
+        );
       }
     }
 
-    const speedMbps = Number(el.speed?.value);
+    const speedMbps = parsePersonalizedNumber(el.speed?.value);
     if (!Array.isArray(personalizedOptions.allowed_speeds_mbps) ||
         !personalizedOptions.allowed_speeds_mbps.some((value) => Math.abs(Number(value) - speedMbps) < 0.001)) {
-      throw new Error("personalized_speed_not_allowed");
+      throw createPersonalizedValidationError(
+        "personalized_speed_not_allowed",
+        "speed",
+        "Choisissez l’une des vitesses proposées."
+      );
     }
 
     return {
@@ -3829,10 +3933,11 @@ function saturationLabel(pct) {
     try {
       choice = readPersonalizedChoice();
     } catch (error) {
-      setPersonalizedError(personalizedFriendlyError(error?.message));
+      showPersonalizedValidationError(error);
       return;
     }
 
+    clearPersonalizedFieldErrors();
     invalidatePersonalizedQuote();
     setPersonalizedError("");
     const oldLabel = el.quoteBtn.textContent;
@@ -4099,6 +4204,7 @@ function saturationLabel(pct) {
           other.setAttribute("aria-checked", active ? "true" : "false");
         });
         invalidatePersonalizedQuote();
+        clearPersonalizedFieldErrors();
         setPersonalizedError("");
         syncPersonalizedInputRules();
       });
@@ -4108,12 +4214,14 @@ function saturationLabel(pct) {
       input?.addEventListener("change", () => {
         if (personalizedPaymentStarted) return;
         invalidatePersonalizedQuote();
+        clearPersonalizedFieldError(input);
         setPersonalizedError("");
         syncPersonalizedInputRules();
       });
       input?.addEventListener("input", () => {
         if (personalizedPaymentStarted) return;
-        if (personalizedQuoteToken) invalidatePersonalizedQuote();
+        if (personalizedQuoteToken || personalizedQuote) invalidatePersonalizedQuote();
+        clearPersonalizedFieldError(input);
         setPersonalizedError("");
       });
     });

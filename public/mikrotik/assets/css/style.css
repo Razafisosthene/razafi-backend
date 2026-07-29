@@ -1694,6 +1694,12 @@ body.theme-dark #rzAssistSend {
   box-shadow: 0 2px 9px rgba(15,23,42,.10);
 }
 .personalized-hint { color: #737b88; font-size: 11px; line-height: 1.35; font-weight: 650; }
+.personalized-field-invalid .personalized-label { color: #b42318; }
+.personalized-field-invalid input,
+.personalized-field-invalid select {
+  border-color: rgba(220,38,38,.82) !important;
+  box-shadow: 0 0 0 3px rgba(220,38,38,.12);
+}
 .personalized-error {
   grid-column: 1 / -1;
   padding: 10px 12px;
@@ -1777,11 +1783,24 @@ body.theme-dark .personalized-quote-specs { color: #e5e7eb; }
 body.theme-dark .personalized-segmented { background: rgba(255,255,255,.08); }
 body.theme-dark .personalized-type-btn { color: #a8adb7; }
 body.theme-dark .personalized-type-btn.active { background: rgba(255,255,255,.14); color: #fff; box-shadow: none; }
+body.theme-dark .personalized-field-invalid .personalized-label { color: #ff9b92; }
+body.theme-dark .personalized-field-invalid input,
+body.theme-dark .personalized-field-invalid select {
+  border-color: rgba(255,107,107,.9) !important;
+  box-shadow: 0 0 0 3px rgba(255,107,107,.16);
+}
 @media (max-width: 620px) {
   .personalized-plan-config { grid-template-columns: 1fr; }
   .personalized-field-wide,
   .personalized-error,
   .personalized-quote-btn { grid-column: 1; }
+  .personalized-plan-config.personalized-data-mode > .personalized-field-wide { order: 0; }
+  .personalized-plan-config.personalized-data-mode > .personalized-field-data { order: 1; }
+  .personalized-plan-config.personalized-data-mode > .personalized-field-duration { order: 2; }
+  .personalized-plan-config.personalized-data-mode > .personalized-field-speed { order: 3; }
+  .personalized-plan-config.personalized-data-mode > .personalized-error { order: 4; }
+  .personalized-plan-config.personalized-data-mode > .personalized-quote-btn { order: 5; }
+  .personalized-plan-config.personalized-data-mode > .personalized-return-slot-config { order: 6; }
   .personalized-payment-methods { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .personalized-quote-top { align-items: center; }
 }
