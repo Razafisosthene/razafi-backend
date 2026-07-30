@@ -69,24 +69,18 @@ button:focus-visible, a:focus-visible {
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
   color: var(--text);
   text-decoration: none;
 }
 
-.brand-mark {
-  width: 26px;
-  height: 26px;
-  border: 2px solid currentColor;
-  border-radius: 6px;
-  display: grid;
-  place-items: center;
-  font-size: 13px;
-  font-weight: 900;
-  line-height: 1;
+.brand-logo {
+  display: block;
+  width: 120px;
+  height: 32px;
+  object-fit: contain;
+  object-position: left center;
 }
 
-.brand-name { font-size: 20px; font-weight: 800; letter-spacing: 0.08em; }
 .topbar-label { color: var(--muted); font-size: 14px; font-weight: 700; }
 
 .main {
@@ -402,7 +396,7 @@ button:focus-visible, a:focus-visible {
 
 @media (max-width: 540px) {
   .topbar { height: 64px; }
-  .brand-name { font-size: 18px; }
+  .brand-logo { width: 108px; height: 29px; }
   .topbar-label { font-size: 12px; }
   .main { padding: 18px 12px 32px; }
   .state-card { min-height: 360px; padding: 38px 20px; }
