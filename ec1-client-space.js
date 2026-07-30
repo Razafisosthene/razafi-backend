@@ -288,6 +288,7 @@ export function registerEc1ClientSpace({
   const enabled = envFlag("CLIENT_SPACE_ENABLED", false);
   const autoDetectEnabled = envFlag("CLIENT_SPACE_AUTO_DETECT_ENABLED", false);
   const dynamicNasEnabled = envFlag("CLIENT_SPACE_DYNAMIC_NAS_ENABLED", false);
+  const staleRecoveryEnabled = envFlag("CLIENT_SPACE_STALE_RECOVERY_ENABLED", false);
   const allowedNasIds = parseNasAllowlist(process.env.CLIENT_SPACE_ALLOWED_NAS_IDS || "");
   const hotspotStatusUrl = normalizeHotspotStatusUrl(
     process.env.CLIENT_SPACE_HOTSPOT_STATUS_URL || "http://192.168.88.1/status"
@@ -939,7 +940,19 @@ export function registerEc1ClientSpace({
       if (!supabase) return res.status(503).json({ error: "service_unavailable" });
       const session = await loadSession(req, res);
       if (!session) return res.status(401).json({ error: "client_session_required" });
-      return res.json(await buildConsumption(session));
+
+      const snapshot = await buildConsumption(session);
+      if (staleRecoveryEnabled && autoDetectReady && snapshot?.currently_consumed === "none") {
+        await revokeSessionById(session.id, "access_inactive_reauth");
+        clearCookie(res, sessionCookie);
+        return res.status(409).json({
+          error: "client_session_stale",
+          reauth_required: true,
+          auto_detect_enabled: true,
+        });
+      }
+
+      return res.json(snapshot);
     } catch (error) {
       if (["session_binding_invalid", "voucher_session_missing"].includes(String(error?.message || ""))) {
         clearCookie(res, sessionCookie);
@@ -969,7 +982,7 @@ export function registerEc1ClientSpace({
     return res.json({ ok: true });
   });
 
-  console.log(`[EC1] backend registered; enabled=${enabled}; auto_detect=${autoDetectReady}; dynamic_nas=${dynamicNasEnabled}; allowed_nas_count=${allowedNasIds.size}; verify_mode=${verifyMode}`);
+  console.log(`[EC1] backend registered; enabled=${enabled}; auto_detect=${autoDetectReady}; dynamic_nas=${dynamicNasEnabled}; stale_recovery=${staleRecoveryEnabled}; allowed_nas_count=${allowedNasIds.size}; verify_mode=${verifyMode}`);
 }
 
 export const __ec1Test = {

@@ -8,6 +8,9 @@
     logout: "/api/client/logout",
   });
 
+  const STALE_RECOVERY_STORAGE_KEY = "razafi_ec1_stale_recovery_at";
+  const STALE_RECOVERY_WINDOW_MS = 5 * 60 * 1000;
+
   const views = Object.freeze({
     loading: document.getElementById("loadingView"),
     unavailable: document.getElementById("unavailableView"),
@@ -37,6 +40,32 @@
     detectMessage: document.getElementById("detectMessage"),
   });
 
+
+  function readStaleRecoveryAttempt() {
+    try {
+      const timestamp = Number(window.sessionStorage.getItem(STALE_RECOVERY_STORAGE_KEY));
+      return Number.isFinite(timestamp) ? timestamp : 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  function markStaleRecoveryAttempt() {
+    try {
+      window.sessionStorage.setItem(STALE_RECOVERY_STORAGE_KEY, String(Date.now()));
+    } catch (_) {}
+  }
+
+  function clearStaleRecoveryAttempt() {
+    try {
+      window.sessionStorage.removeItem(STALE_RECOVERY_STORAGE_KEY);
+    } catch (_) {}
+  }
+
+  function staleRecoveryAttemptedRecently() {
+    const timestamp = readStaleRecoveryAttempt();
+    return timestamp > 0 && Date.now() - timestamp < STALE_RECOVERY_WINDOW_MS;
+  }
 
   function consumeClaimFragment() {
     const raw = String(window.location.hash || "").replace(/^#/, "");
@@ -115,6 +144,7 @@
       if (!response.ok || data?.ok !== true || data?.authenticated !== true) {
         throw new Error("claim_unavailable");
       }
+      clearStaleRecoveryAttempt();
       state.inFlight = false;
       await loadConsumption();
       return;
@@ -455,6 +485,41 @@
     showView("detect");
   }
 
+  async function recoverStaleSession() {
+    clearTimers();
+    state.snapshot = null;
+    state.detectionUrl = null;
+
+    if (staleRecoveryAttemptedRecently()) {
+      showDetect("Votre ancien espace client est terminé. Appuyez sur « Rechercher mon forfait » pour vérifier la session actuellement active.");
+      return;
+    }
+
+    markStaleRecoveryAttempt();
+    showView("loading");
+
+    try {
+      const { response, data } = await apiJson(ENDPOINTS.bootstrap);
+      if (response.status === 404) {
+        showView("unavailable");
+        return;
+      }
+      if (!response.ok || data?.ok !== true || data?.authenticated === true) {
+        throw new Error("stale_recovery_bootstrap_failed");
+      }
+      if (data.auto_detect_enabled !== true) {
+        showDetect("Votre ancien espace client est terminé. Reconnectez cet appareil à la zone WiFi où votre nouveau forfait est actif, puis réessayez.");
+        return;
+      }
+
+      state.detectionUrl = normalizeDetectionUrl(data.detection_url);
+      if (!state.detectionUrl) throw new Error("stale_recovery_url_invalid");
+      window.location.assign(state.detectionUrl);
+    } catch (_) {
+      showDetect("Votre ancien espace client est terminé. Appuyez sur « Rechercher mon forfait » pour vérifier la session actuellement active.");
+    }
+  }
+
   async function loadConsumption({ silent = false } = {}) {
     if (state.inFlight) return;
     state.inFlight = true;
@@ -467,6 +532,10 @@
       if (response.status === 404) {
         clearTimers();
         showView("unavailable");
+        return;
+      }
+      if (response.status === 409 && data?.error === "client_session_stale" && data?.reauth_required === true) {
+        await recoverStaleSession();
         return;
       }
       if (response.status === 401) {
@@ -536,6 +605,7 @@
       // The browser session is still treated as closed locally.
     } finally {
       clearTimers();
+      clearStaleRecoveryAttempt();
       state.snapshot = null;
       state.inFlight = false;
       elements.logoutBtn.disabled = false;
