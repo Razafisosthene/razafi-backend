@@ -287,11 +287,13 @@ export function registerEc1ClientSpace({
 
   const enabled = envFlag("CLIENT_SPACE_ENABLED", false);
   const autoDetectEnabled = envFlag("CLIENT_SPACE_AUTO_DETECT_ENABLED", false);
+  const dynamicNasEnabled = envFlag("CLIENT_SPACE_DYNAMIC_NAS_ENABLED", false);
   const allowedNasIds = parseNasAllowlist(process.env.CLIENT_SPACE_ALLOWED_NAS_IDS || "");
   const hotspotStatusUrl = normalizeHotspotStatusUrl(
     process.env.CLIENT_SPACE_HOTSPOT_STATUS_URL || "http://192.168.88.1/status"
   );
-  const autoDetectReady = autoDetectEnabled && allowedNasIds.size > 0 && Boolean(hotspotStatusUrl);
+  const autoDetectReady = autoDetectEnabled && Boolean(hotspotStatusUrl) &&
+    (dynamicNasEnabled || allowedNasIds.size > 0);
   const bindUserAgent = envFlag("CLIENT_SPACE_BIND_USER_AGENT", true);
   const claimTtlSeconds = envInt("CLIENT_SPACE_CLAIM_TTL_SECONDS", 180, 60, 600);
   const sessionTtlSeconds = envInt("CLIENT_SPACE_SESSION_TTL_SECONDS", 45 * 24 * 60 * 60, 3600, 90 * 24 * 60 * 60);
@@ -518,7 +520,7 @@ export function registerEc1ClientSpace({
     return { router, pool };
   }
 
-  async function verifyRouterDirect(router, clientMac, clientIp) {
+  async function verifyRouterDirect(router, nasId, clientMac, clientIp) {
     if (isProd && !normalizePrivateIpv4(router.api_host)) {
       throw new Error("router_host_not_private");
     }
@@ -532,6 +534,15 @@ export function registerEc1ClientSpace({
     try {
       await api.connect();
       await api.login();
+
+      const identityRows = rosRows(await api.command(["/system/identity/print"]));
+      const identities = Array.from(new Set(
+        (identityRows || []).map((row) => normalizeNasId(row?.name)).filter(Boolean)
+      ));
+      if (identities.length !== 1 || !safeEqual(identities[0], nasId)) {
+        throw new Error("router_identity_mismatch");
+      }
+
       const rows = rosRows(await api.command(["/ip/hotspot/active/print", `?mac-address=${clientMac}`]));
       const users = Array.from(new Set(
         (rows || [])
@@ -546,13 +557,14 @@ export function registerEc1ClientSpace({
     }
   }
 
-  async function verifyRouterAgent(router, clientMac, clientIp) {
+  async function verifyRouterAgent(router, nasId, clientMac, clientIp) {
     if (!verifyAgentUrl || !verifyAgentSecret) throw new Error("verify_agent_not_configured");
     if (isProd && !/^https:\/\//i.test(verifyAgentUrl)) throw new Error("verify_agent_https_required");
 
     const response = await axios.post(
       verifyAgentUrl,
       {
+        nas_id: nasId,
         router_ip: router.api_host,
         router_port: router.api_port || 8728,
         api_user: router.api_user,
@@ -571,7 +583,9 @@ export function registerEc1ClientSpace({
     if (response.status < 200 || response.status >= 300 || body.ok !== true || body.active !== true) {
       throw new Error("verify_agent_rejected");
     }
-    if (normalizeMacStrict(body.client_mac || clientMac) !== clientMac || String(body.client_ip || clientIp).trim() !== clientIp) {
+    if (normalizeNasId(body.nas_id) !== nasId ||
+        normalizeMacStrict(body.client_mac || clientMac) !== clientMac ||
+        String(body.client_ip || clientIp).trim() !== clientIp) {
       throw new Error("verify_agent_mismatch");
     }
     const username = String(body.username || "").trim();
@@ -606,8 +620,8 @@ export function registerEc1ClientSpace({
   async function verifyClaimIdentity({ nasId, clientMac, clientIp }) {
     const { router, pool } = await loadRouterAndPool(nasId);
     const routerProof = verifyMode === "agent"
-      ? await verifyRouterAgent(router, clientMac, clientIp)
-      : await verifyRouterDirect(router, clientMac, clientIp);
+      ? await verifyRouterAgent(router, nasId, clientMac, clientIp)
+      : await verifyRouterDirect(router, nasId, clientMac, clientIp);
 
     const expectedUsername = String(routerProof.username || "").trim().toLowerCase();
     const radiusRows = await recentRadiusRows(nasId, clientMac);
@@ -815,7 +829,7 @@ export function registerEc1ClientSpace({
       if (!/^[0-9a-f]{64}$/.test(challenge) || !/^[0-9a-f]{64}$/.test(browserBinding) || !nasId || !clientMac || !clientIp) {
         return res.status(400).json({ error: "claim_invalid" });
       }
-      if (!allowedNasIds.has(nasId)) {
+      if (!dynamicNasEnabled && !allowedNasIds.has(nasId)) {
         return res.status(401).json({ error: "device_not_verified" });
       }
 
@@ -955,7 +969,7 @@ export function registerEc1ClientSpace({
     return res.json({ ok: true });
   });
 
-  console.log(`[EC1] backend registered; enabled=${enabled}; auto_detect=${autoDetectReady}; allowed_nas_count=${allowedNasIds.size}; verify_mode=${verifyMode}`);
+  console.log(`[EC1] backend registered; enabled=${enabled}; auto_detect=${autoDetectReady}; dynamic_nas=${dynamicNasEnabled}; allowed_nas_count=${allowedNasIds.size}; verify_mode=${verifyMode}`);
 }
 
 export const __ec1Test = {

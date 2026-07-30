@@ -52,7 +52,7 @@
 
       if (
         /^[0-9a-f]{64}$/.test(challenge) &&
-        nasId === "razafi-pool-4" &&
+        /^[A-Za-z0-9_.:-]{1,160}$/.test(nasId) &&
         /^[0-9A-Fa-f:-]{12,17}$/.test(clientMac) &&
         /^(?:10|192\.168|172\.(?:1[6-9]|2\d|3[01]))\./.test(clientIp)
       ) {
@@ -109,7 +109,7 @@
         return;
       }
       if (response.status === 400 || response.status === 401 || response.status === 403) {
-        showDetect("RAZAFI n’a pas pu confirmer ce forfait sur cet appareil. Vérifiez que vous êtes connecté au WiFi RAZAFI du pool test, puis réessayez.");
+        showDetect("RAZAFI n’a pas pu confirmer ce forfait sur cet appareil. Vérifiez que vous êtes connecté à la zone WiFi où votre forfait est actif, puis réessayez.");
         return;
       }
       if (!response.ok || data?.ok !== true || data?.authenticated !== true) {
@@ -514,7 +514,7 @@
       if (data.auto_detect_enabled === true) {
         state.detectionUrl = normalizeDetectionUrl(data.detection_url);
         if (!state.detectionUrl) throw new Error("detection_url_invalid");
-        showDetect("Connectez cet appareil au WiFi RAZAFI du pool test, puis appuyez sur « Rechercher mon forfait ». Aucun code voucher ne sera demandé.");
+        showDetect("Connectez cet appareil à la zone WiFi où votre forfait est actif, puis appuyez sur « Rechercher mon forfait ». Aucun code voucher ne sera demandé.");
       } else {
         state.detectionUrl = null;
         showDetect("Aucune session client n’est reconnue sur ce navigateur. Connectez-vous au WiFi RAZAFI puis réessayez.");
