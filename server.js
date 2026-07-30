@@ -16,6 +16,7 @@ import { fileURLToPath } from "url";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import cookieParser from "cookie-parser";
 import bcrypt from "bcryptjs";
+import { registerEc1ClientSpace } from "./ec1-client-space.js";
 
 dotenv.config();
 
@@ -12075,6 +12076,19 @@ if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
     auth: { persistSession: false },
   });
 }
+
+// EC-1 Phase 2: register isolated client-space routes. Both feature flags
+// default to false, so this changes no production behavior until explicitly enabled.
+registerEc1ClientSpace({
+  app,
+  supabase,
+  isProd: IS_PROD,
+  allowedOrigins,
+  cleanOptionalText,
+  buildPoolDisplayName,
+  mikrotikRateLimitToSpeedHuman,
+  loadVoucherBonusV2Truth,
+});
 
 // ===============================
 // ADMIN AUTH — SHARED SESSION HELPER
