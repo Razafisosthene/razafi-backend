@@ -28,8 +28,6 @@
 
   const elements = Object.freeze({
     poolName: document.getElementById("poolName"),
-    poolLogoWrap: document.getElementById("poolLogoWrap"),
-    poolLogo: document.getElementById("poolLogo"),
     livePill: document.getElementById("livePill"),
     liveLabel: document.getElementById("liveLabel"),
     syncLabel: document.getElementById("syncLabel"),
@@ -388,19 +386,6 @@
 
   function renderPool(pool) {
     elements.poolName.textContent = cleanText(pool?.display_name, "RAZAFI WiFi");
-    const logoUrl = cleanText(pool?.logo_url);
-    if (/^https:\/\//i.test(logoUrl)) {
-      elements.poolLogo.src = logoUrl;
-      elements.poolLogo.alt = `Logo ${elements.poolName.textContent}`;
-      elements.poolLogoWrap.hidden = false;
-      elements.poolLogo.onerror = () => {
-        elements.poolLogo.removeAttribute("src");
-        elements.poolLogoWrap.hidden = true;
-      };
-    } else {
-      elements.poolLogo.removeAttribute("src");
-      elements.poolLogoWrap.hidden = true;
-    }
   }
 
   function renderDashboard(snapshot) {
