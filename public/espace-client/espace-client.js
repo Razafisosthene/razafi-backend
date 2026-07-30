@@ -1,0 +1,482 @@
+(() => {
+  "use strict";
+
+  const ENDPOINTS = Object.freeze({
+    bootstrap: "/api/client/bootstrap",
+    consumption: "/api/client/consumption",
+    logout: "/api/client/logout",
+  });
+
+  const views = Object.freeze({
+    loading: document.getElementById("loadingView"),
+    unavailable: document.getElementById("unavailableView"),
+    detect: document.getElementById("detectView"),
+    error: document.getElementById("errorView"),
+    dashboard: document.getElementById("dashboardView"),
+  });
+
+  const state = {
+    snapshot: null,
+    snapshotReceivedAt: 0,
+    refreshTimer: null,
+    tickTimer: null,
+    inFlight: false,
+    timeBindings: [],
+  };
+
+  const elements = Object.freeze({
+    poolName: document.getElementById("poolName"),
+    poolLogoWrap: document.getElementById("poolLogoWrap"),
+    poolLogo: document.getElementById("poolLogo"),
+    livePill: document.getElementById("livePill"),
+    liveLabel: document.getElementById("liveLabel"),
+    syncLabel: document.getElementById("syncLabel"),
+    accessList: document.getElementById("accessList"),
+    refreshBtn: document.getElementById("refreshBtn"),
+    logoutBtn: document.getElementById("logoutBtn"),
+    detectMessage: document.getElementById("detectMessage"),
+  });
+
+  function showView(name) {
+    Object.entries(views).forEach(([key, node]) => {
+      node.hidden = key !== name;
+    });
+  }
+
+  function clearTimers() {
+    if (state.refreshTimer) window.clearTimeout(state.refreshTimer);
+    if (state.tickTimer) window.clearInterval(state.tickTimer);
+    state.refreshTimer = null;
+    state.tickTimer = null;
+  }
+
+  async function apiJson(url, options = {}) {
+    const response = await fetch(url, {
+      credentials: "include",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.headers || {}),
+      },
+      ...options,
+    });
+    const data = await response.json().catch(() => ({}));
+    return { response, data };
+  }
+
+  function cleanText(value, fallback = "") {
+    const text = String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim();
+    return text || fallback;
+  }
+
+  function toFiniteNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function clampPercent(value) {
+    const number = toFiniteNumber(value);
+    return number === null ? 0 : Math.max(0, Math.min(100, number));
+  }
+
+  function formatPercent(value) {
+    return `${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 1 }).format(clampPercent(value))} %`;
+  }
+
+  function formatDuration(rawSeconds, empty = "—") {
+    const parsed = toFiniteNumber(rawSeconds);
+    if (parsed === null) return empty;
+    let seconds = Math.max(0, Math.floor(parsed));
+    const days = Math.floor(seconds / 86400);
+    seconds %= 86400;
+    const hours = Math.floor(seconds / 3600);
+    seconds %= 3600;
+    const minutes = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+
+    const parts = [];
+    if (days) parts.push(`${days} j`);
+    if (hours) parts.push(`${hours} h`);
+    if (minutes) parts.push(`${minutes} min`);
+    if (!days && !hours && secs) parts.push(`${secs} s`);
+    return parts.length ? parts.slice(0, 2).join(" ") : "0 s";
+  }
+
+  function formatBytes(rawBytes, providedHuman = null, empty = "—") {
+    const supplied = cleanText(providedHuman);
+    if (supplied) return supplied.replace(/GB\b/gi, "Go").replace(/MB\b/gi, "Mo");
+    if (rawBytes === null || rawBytes === undefined || rawBytes === "") return empty;
+    let bytes;
+    try { bytes = BigInt(String(rawBytes)); } catch (_) { return empty; }
+    if (bytes < 0n) bytes = 0n;
+    const number = Number(bytes);
+    const nf = new Intl.NumberFormat("fr-FR", { maximumFractionDigits: number >= 10 * 1024 ** 3 ? 0 : 1 });
+    if (number >= 1024 ** 3) return `${nf.format(number / (1024 ** 3))} Go`;
+    if (number >= 1024 ** 2) return `${nf.format(number / (1024 ** 2))} Mo`;
+    if (number >= 1024) return `${nf.format(number / 1024)} Ko`;
+    return `${nf.format(number)} o`;
+  }
+
+  function formatDateTime(value, prefix) {
+    const timestamp = Date.parse(value || "");
+    if (!Number.isFinite(timestamp)) return null;
+    const formatted = new Intl.DateTimeFormat("fr-FR", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(timestamp));
+    return `${prefix} ${formatted}`;
+  }
+
+  function statusMeta(status, kind) {
+    const normalized = cleanText(status, "unknown").toLowerCase();
+    if (normalized === "active") return { label: kind === "bonus" ? "En cours" : "Actif", className: "status-active" };
+    if (normalized === "available") return { label: "Disponible", className: "status-available" };
+    if (["expired", "finished", "used", "ended"].includes(normalized)) return { label: "Terminé", className: "status-ended" };
+    if (["delivered", "pending", "ready"].includes(normalized)) return { label: "Prêt", className: "status-warning" };
+    return { label: "Statut inconnu", className: "status-ended" };
+  }
+
+  function createElement(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function addMetric(grid, label, value, role = null) {
+    const metric = createElement("div", "metric");
+    metric.appendChild(createElement("span", "metric-label", label));
+    const valueNode = createElement("strong", "metric-value", value);
+    if (role) valueNode.dataset.timeRole = role;
+    metric.appendChild(valueNode);
+    grid.appendChild(metric);
+    return valueNode;
+  }
+
+  function addProgressRow(parent, label, percent, liveConfig = null) {
+    const row = createElement("div", "progress-row");
+    const meta = createElement("div", "progress-meta");
+    meta.appendChild(createElement("span", "", label));
+    const percentNode = createElement("span", "", formatPercent(percent));
+    meta.appendChild(percentNode);
+    const track = createElement("div", "progress-track");
+    track.setAttribute("role", "progressbar");
+    track.setAttribute("aria-valuemin", "0");
+    track.setAttribute("aria-valuemax", "100");
+    track.setAttribute("aria-valuenow", String(Math.round(clampPercent(percent))));
+    const fill = createElement("div", "progress-fill");
+    fill.style.width = `${clampPercent(percent)}%`;
+    track.appendChild(fill);
+    row.append(meta, track);
+    parent.appendChild(row);
+    if (liveConfig) {
+      liveConfig.percentNode = percentNode;
+      liveConfig.track = track;
+      liveConfig.fill = fill;
+    }
+  }
+
+  function primarySpecs(primary) {
+    const plan = primary?.plan || {};
+    const parts = [];
+    if (plan.data_unlimited) parts.push("Données illimitées");
+    else if (plan.data_total_bytes) parts.push(formatBytes(plan.data_total_bytes));
+    if (plan.duration_seconds !== null && plan.duration_seconds !== undefined) parts.push(formatDuration(plan.duration_seconds));
+    if (plan.speed_human) parts.push(cleanText(plan.speed_human));
+    return parts.join(" · ") || "Détails du forfait";
+  }
+
+  function bonusSpecs(bonus) {
+    const parts = [];
+    if (bonus?.data_unlimited) parts.push("Données illimitées");
+    else if (bonus?.data_total_bytes) parts.push(formatBytes(bonus.data_total_bytes, bonus.data_total_human));
+    if (bonus?.duration_seconds !== null && bonus?.duration_seconds !== undefined) parts.push(formatDuration(bonus.duration_seconds));
+    return parts.join(" · ") || "Bonus RAZAFI";
+  }
+
+  function createAccessCard(kind, payload, isCurrent) {
+    const isPrimary = kind === "primary";
+    const card = createElement("article", `access-card${isCurrent ? " is-current" : ""}`);
+    const head = createElement("div", "access-card-head");
+    const titleWrap = createElement("div", "");
+    titleWrap.appendChild(createElement("p", "access-type", isPrimary ? "Forfait principal" : (payload.status === "available" ? "Bonus disponible" : "Bonus en cours")));
+    titleWrap.appendChild(createElement("h2", "access-title", isPrimary ? cleanText(payload?.plan?.name, "Votre forfait") : "Bonus RAZAFI"));
+    titleWrap.appendChild(createElement("p", "access-specs", isPrimary ? primarySpecs(payload) : bonusSpecs(payload)));
+    const meta = statusMeta(payload?.status, kind);
+    const status = createElement("span", `status-pill ${meta.className}`, meta.label);
+    head.append(titleWrap, status);
+    card.appendChild(head);
+
+    if (isCurrent) {
+      card.appendChild(createElement("div", "current-banner", "Cet accès est actuellement consommé."));
+    }
+
+    const consumption = isPrimary ? (payload?.consumption || {}) : payload;
+    const totalTime = isPrimary ? payload?.plan?.duration_seconds : payload?.duration_seconds;
+    const remainingTime = isPrimary ? consumption?.time_remaining_seconds : payload?.time_remaining_seconds;
+    const usedTime = isPrimary ? consumption?.time_used_seconds : payload?.time_used_seconds;
+    const timePercent = isPrimary ? consumption?.time_progress_pct : payload?.time_progress_pct;
+    const unlimited = isPrimary ? payload?.plan?.data_unlimited === true : payload?.data_unlimited === true;
+    const totalBytes = isPrimary ? payload?.plan?.data_total_bytes : payload?.data_total_bytes;
+    const usedBytes = isPrimary ? consumption?.data_used_bytes : payload?.data_used_bytes;
+    const remainingBytes = isPrimary ? consumption?.data_remaining_bytes : payload?.data_remaining_bytes;
+    const dataPercent = isPrimary ? consumption?.data_progress_pct : payload?.data_progress_pct;
+    const usedHuman = isPrimary ? consumption?.data_used_human : payload?.data_used_human;
+    const remainingHuman = isPrimary ? consumption?.data_remaining_human : payload?.data_remaining_human;
+
+    const progressGroup = createElement("div", "progress-group");
+    const liveConfig = {
+      live: Boolean(isCurrent && payload?.status === "active"),
+      total: toFiniteNumber(totalTime),
+      baseRemaining: toFiniteNumber(remainingTime),
+      baseUsed: toFiniteNumber(usedTime),
+      remainingNode: null,
+      usedNode: null,
+      percentNode: null,
+      track: null,
+      fill: null,
+    };
+    if (totalTime !== null && totalTime !== undefined && remainingTime !== null && remainingTime !== undefined) {
+      addProgressRow(progressGroup, "Progression du temps", timePercent, liveConfig);
+    }
+
+    if (unlimited) {
+      const unlimitedLine = createElement("div", "unlimited-line");
+      unlimitedLine.appendChild(createElement("span", "", "Données utilisées"));
+      unlimitedLine.appendChild(createElement("strong", "", `${formatBytes(usedBytes, usedHuman)} · Illimité`));
+      progressGroup.appendChild(unlimitedLine);
+    } else if (totalBytes !== null && totalBytes !== undefined) {
+      addProgressRow(progressGroup, "Progression de la data", dataPercent);
+    }
+    if (progressGroup.childNodes.length) card.appendChild(progressGroup);
+
+    const grid = createElement("div", "metric-grid");
+    if (remainingTime !== null && remainingTime !== undefined) {
+      liveConfig.remainingNode = addMetric(grid, "Temps restant", formatDuration(remainingTime), "remaining");
+    }
+    if (usedTime !== null && usedTime !== undefined) {
+      liveConfig.usedNode = addMetric(grid, "Temps utilisé", formatDuration(usedTime), "used");
+    }
+    if (!unlimited && totalBytes !== null && totalBytes !== undefined) {
+      addMetric(grid, "Data restante", formatBytes(remainingBytes, remainingHuman));
+    }
+    addMetric(grid, "Data utilisée", formatBytes(usedBytes, usedHuman));
+    if (isPrimary && payload?.plan?.speed_human) {
+      addMetric(grid, "Vitesse", cleanText(payload.plan.speed_human));
+    }
+    card.appendChild(grid);
+
+    const dateLine = isCurrent
+      ? formatDateTime(payload?.started_at, "Démarré le")
+      : formatDateTime(payload?.expires_at, "Fin prévue le");
+    if (dateLine) card.appendChild(createElement("p", "card-foot", dateLine));
+
+    if (liveConfig.live && liveConfig.total !== null && liveConfig.baseRemaining !== null) {
+      state.timeBindings.push(liveConfig);
+    }
+    return card;
+  }
+
+  function renderLiveStatus(live) {
+    const status = cleanText(live?.status, "unknown").toLowerCase();
+    elements.livePill.className = "live-pill";
+    if (status === "online") {
+      elements.livePill.classList.add("live-online");
+      elements.liveLabel.textContent = "Connexion active";
+    } else if (status === "offline") {
+      elements.livePill.classList.add("live-offline");
+      elements.liveLabel.textContent = "Hors ligne";
+    } else {
+      elements.livePill.classList.add("live-unknown");
+      elements.liveLabel.textContent = "État inconnu";
+    }
+
+    const synced = formatDateTime(live?.updated_at, "Actualisé le");
+    elements.syncLabel.textContent = synced || "Dernière synchronisation indisponible";
+  }
+
+  function renderPool(pool) {
+    elements.poolName.textContent = cleanText(pool?.display_name, "RAZAFI WiFi");
+    const logoUrl = cleanText(pool?.logo_url);
+    if (/^https:\/\//i.test(logoUrl)) {
+      elements.poolLogo.src = logoUrl;
+      elements.poolLogo.alt = `Logo ${elements.poolName.textContent}`;
+      elements.poolLogoWrap.hidden = false;
+      elements.poolLogo.onerror = () => {
+        elements.poolLogo.removeAttribute("src");
+        elements.poolLogoWrap.hidden = true;
+      };
+    } else {
+      elements.poolLogo.removeAttribute("src");
+      elements.poolLogoWrap.hidden = true;
+    }
+  }
+
+  function renderDashboard(snapshot) {
+    state.snapshot = snapshot;
+    state.snapshotReceivedAt = Date.now();
+    state.timeBindings = [];
+    elements.accessList.replaceChildren();
+    renderPool(snapshot.pool || {});
+    renderLiveStatus(snapshot.live || {});
+
+    const current = cleanText(snapshot.currently_consumed, "none").toLowerCase();
+    if (snapshot.active_bonus) {
+      elements.accessList.appendChild(createAccessCard("bonus", snapshot.active_bonus, current === "bonus"));
+    }
+    if (snapshot.primary_voucher) {
+      elements.accessList.appendChild(createAccessCard("primary", snapshot.primary_voucher, current === "primary"));
+    }
+    if (snapshot.available_bonus) {
+      elements.accessList.appendChild(createAccessCard("bonus", snapshot.available_bonus, false));
+    }
+
+    if (!elements.accessList.childNodes.length) {
+      const empty = createElement("div", "state-card");
+      empty.appendChild(createElement("h2", "", "Aucun accès à afficher"));
+      empty.appendChild(createElement("p", "", "RAZAFI n’a trouvé aucun forfait ou bonus associé à cette session."));
+      elements.accessList.appendChild(empty);
+    }
+
+    showView("dashboard");
+    startLiveTick();
+    scheduleRefresh(snapshot.refresh_after_seconds);
+  }
+
+  function startLiveTick() {
+    if (state.tickTimer) window.clearInterval(state.tickTimer);
+    updateLiveTimes();
+    state.tickTimer = window.setInterval(updateLiveTimes, 1000);
+  }
+
+  function updateLiveTimes() {
+    const elapsed = Math.max(0, Math.floor((Date.now() - state.snapshotReceivedAt) / 1000));
+    state.timeBindings.forEach((binding) => {
+      const remaining = Math.max(0, binding.baseRemaining - elapsed);
+      const used = binding.baseUsed === null ? null : Math.min(binding.total, binding.baseUsed + elapsed);
+      if (binding.remainingNode) binding.remainingNode.textContent = formatDuration(remaining);
+      if (binding.usedNode && used !== null) binding.usedNode.textContent = formatDuration(used);
+      const percent = binding.total > 0 && used !== null ? (used / binding.total) * 100 : 0;
+      if (binding.percentNode) binding.percentNode.textContent = formatPercent(percent);
+      if (binding.fill) binding.fill.style.width = `${clampPercent(percent)}%`;
+      if (binding.track) binding.track.setAttribute("aria-valuenow", String(Math.round(clampPercent(percent))));
+    });
+  }
+
+  function scheduleRefresh(rawSeconds) {
+    if (state.refreshTimer) window.clearTimeout(state.refreshTimer);
+    const parsed = toFiniteNumber(rawSeconds);
+    const seconds = parsed === null ? 30 : Math.max(15, Math.min(120, parsed));
+    state.refreshTimer = window.setTimeout(() => loadConsumption({ silent: true }), seconds * 1000);
+  }
+
+  function showDetect(message) {
+    clearTimers();
+    elements.detectMessage.textContent = cleanText(
+      message,
+      "Connectez cet appareil au réseau WiFi RAZAFI sur lequel votre forfait est actif, puis réessayez."
+    );
+    showView("detect");
+  }
+
+  async function loadConsumption({ silent = false } = {}) {
+    if (state.inFlight) return;
+    state.inFlight = true;
+    elements.refreshBtn.classList.add("is-loading");
+    elements.refreshBtn.disabled = true;
+    if (!silent && !state.snapshot) showView("loading");
+
+    try {
+      const { response, data } = await apiJson(ENDPOINTS.consumption);
+      if (response.status === 404) {
+        clearTimers();
+        showView("unavailable");
+        return;
+      }
+      if (response.status === 401) {
+        state.snapshot = null;
+        showDetect();
+        return;
+      }
+      if (!response.ok || data?.ok !== true || data?.authenticated !== true) {
+        throw new Error("consumption_unavailable");
+      }
+      renderDashboard(data);
+    } catch (_) {
+      if (silent && state.snapshot) {
+        scheduleRefresh(30);
+      } else {
+        clearTimers();
+        showView("error");
+      }
+    } finally {
+      state.inFlight = false;
+      elements.refreshBtn.classList.remove("is-loading");
+      elements.refreshBtn.disabled = false;
+    }
+  }
+
+  async function bootstrap() {
+    if (state.inFlight) return;
+    clearTimers();
+    state.snapshot = null;
+    state.inFlight = true;
+    showView("loading");
+
+    try {
+      const { response, data } = await apiJson(ENDPOINTS.bootstrap);
+      if (response.status === 404) {
+        showView("unavailable");
+        return;
+      }
+      if (!response.ok || data?.ok !== true) throw new Error("bootstrap_unavailable");
+      if (data.authenticated === true) {
+        state.inFlight = false;
+        await loadConsumption();
+        return;
+      }
+      if (data.auto_detect_enabled === true) {
+        showDetect("Connectez cet appareil au réseau WiFi RAZAFI où votre forfait est actif. La détection automatique sera lancée depuis cette page.");
+      } else {
+        showDetect("Aucune session client n’est reconnue sur ce navigateur. Connectez-vous au WiFi RAZAFI puis réessayez.");
+      }
+    } catch (_) {
+      showView("error");
+    } finally {
+      state.inFlight = false;
+    }
+  }
+
+  async function logout() {
+    if (state.inFlight) return;
+    state.inFlight = true;
+    elements.logoutBtn.disabled = true;
+    try {
+      await apiJson(ENDPOINTS.logout, { method: "POST", body: "{}" });
+    } catch (_) {
+      // The browser session is still treated as closed locally.
+    } finally {
+      clearTimers();
+      state.snapshot = null;
+      state.inFlight = false;
+      elements.logoutBtn.disabled = false;
+      showDetect("Cet espace client a été déconnecté de ce navigateur. Votre forfait WiFi reste inchangé.");
+    }
+  }
+
+  document.getElementById("retryUnavailableBtn").addEventListener("click", bootstrap);
+  document.getElementById("retryDetectBtn").addEventListener("click", bootstrap);
+  document.getElementById("retryErrorBtn").addEventListener("click", bootstrap);
+  elements.refreshBtn.addEventListener("click", () => loadConsumption());
+  elements.logoutBtn.addEventListener("click", logout);
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && state.snapshot && Date.now() - state.snapshotReceivedAt > 20_000) {
+      loadConsumption({ silent: true });
+    }
+  });
+
+  window.addEventListener("pagehide", clearTimers, { once: true });
+  bootstrap();
+})();

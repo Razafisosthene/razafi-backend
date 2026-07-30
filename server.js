@@ -11413,6 +11413,12 @@ app.use((req, res, next) => {
       return next();
     }
 
+    // EC-1 Phase 3: the client-space shell is public, while all consumption
+    // data remains protected by /api/client/* HttpOnly session checks.
+    if (req.path === "/espace-client" || (req.path && req.path.startsWith("/espace-client/"))) {
+      return next();
+    }
+
 
     // 2b) System 3 (MikroTik captive portal): NEVER block /mikrotik/*
     // For System 3, identity is the NAS (nas_id) rather than Tanaza ap_mac.
@@ -11640,6 +11646,22 @@ app.use((req, res, next) => {
   try {
     if (req.path === "/portal/assets/js/portal.js") {
       res.setHeader("Cache-Control", "no-store");
+    }
+
+    // EC-1 Phase 3: hardened headers for the public client-space shell.
+    // The page contains no inline script/style and talks only to this origin.
+    if (req.path === "/espace-client" || req.path.startsWith("/espace-client/")) {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Referrer-Policy", "no-referrer");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("X-Frame-Options", "DENY");
+      res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+      res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
+      res.setHeader(
+        "Content-Security-Policy",
+        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
+      );
     }
   } catch (_) {}
   next();

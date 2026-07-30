@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#ffffff">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>Espace client — RAZAFI</title>
+  <link rel="stylesheet" href="/espace-client/espace-client.css">
+  <script src="/espace-client/espace-client.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="https://www.razafistore.com" aria-label="Accueil RAZAFI">
+        <span class="brand-mark" aria-hidden="true">R</span>
+        <span class="brand-name">RAZAFI</span>
+      </a>
+      <span class="topbar-label">Espace client</span>
+    </header>
+
+    <main class="main" id="mainContent">
+      <section class="state-card" id="loadingView" aria-live="polite">
+        <div class="spinner" aria-hidden="true"></div>
+        <h1>Vérification de votre espace…</h1>
+        <p>RAZAFI recherche une session client sécurisée sur ce navigateur.</p>
+      </section>
+
+      <section class="state-card" id="unavailableView" hidden aria-live="polite">
+        <div class="state-icon" aria-hidden="true">◷</div>
+        <h1>Espace client indisponible</h1>
+        <p>Cette fonctionnalité n’est pas disponible pour le moment. Votre connexion WiFi et votre forfait ne sont pas affectés.</p>
+        <button class="primary-button" id="retryUnavailableBtn" type="button">Réessayer</button>
+      </section>
+
+      <section class="state-card" id="detectView" hidden aria-live="polite">
+        <div class="state-icon" aria-hidden="true">⌁</div>
+        <h1>Forfait non détecté</h1>
+        <p id="detectMessage">Connectez cet appareil au réseau WiFi RAZAFI sur lequel votre forfait est actif, puis réessayez.</p>
+        <button class="primary-button" id="retryDetectBtn" type="button">Rechercher mon forfait</button>
+      </section>
+
+      <section class="state-card" id="errorView" hidden aria-live="assertive">
+        <div class="state-icon" aria-hidden="true">!</div>
+        <h1>Connexion momentanément indisponible</h1>
+        <p>Impossible d’actualiser votre consommation. Vérifiez votre connexion puis réessayez.</p>
+        <button class="primary-button" id="retryErrorBtn" type="button">Réessayer</button>
+      </section>
+
+      <section class="dashboard" id="dashboardView" hidden aria-live="polite">
+        <div class="dashboard-head">
+          <div class="pool-identity">
+            <div class="pool-logo-wrap" id="poolLogoWrap" hidden>
+              <img class="pool-logo" id="poolLogo" alt="">
+            </div>
+            <div>
+              <p class="eyebrow">Mon espace client</p>
+              <h1 id="poolName">RAZAFI WiFi</h1>
+            </div>
+          </div>
+          <div class="live-pill live-unknown" id="livePill">
+            <span class="live-dot" aria-hidden="true"></span>
+            <span id="liveLabel">État inconnu</span>
+          </div>
+        </div>
+
+        <div class="sync-line">
+          <span id="syncLabel">Dernière synchronisation indisponible</span>
+          <button class="icon-button" id="refreshBtn" type="button" aria-label="Actualiser la consommation" title="Actualiser">↻</button>
+        </div>
+
+        <div class="access-list" id="accessList"></div>
+
+        <aside class="info-card" id="accountingInfo">
+          <span class="info-icon" aria-hidden="true">i</span>
+          <p>Le temps évolue chaque seconde. La consommation data est synchronisée régulièrement par le réseau.</p>
+        </aside>
+
+        <div class="dashboard-actions">
+          <button class="secondary-button" id="logoutBtn" type="button">Déconnecter cet espace client</button>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Portail sécurisé</span>
+      <span aria-hidden="true">·</span>
+      <span>Powered by RAZAFI</span>
+    </footer>
+  </div>
+</body>
+</html>
