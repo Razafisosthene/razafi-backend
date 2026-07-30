@@ -67,6 +67,27 @@
     return timestamp > 0 && Date.now() - timestamp < STALE_RECOVERY_WINDOW_MS;
   }
 
+  function consumeClientSpaceStateFragment() {
+    const raw = String(window.location.hash || "").replace(/^#/, "");
+    if (!raw) return null;
+
+    let stateName = null;
+    try {
+      const params = new URLSearchParams(raw);
+      const candidate = String(params.get("ec1_state") || "").trim().toLowerCase();
+      if (candidate === "no_active_session") stateName = candidate;
+    } catch (_) {}
+
+    if (!stateName) return null;
+
+    try {
+      window.history.replaceState(null, document.title, "/espace-client/");
+    } catch (_) {
+      window.location.hash = "";
+    }
+    return stateName;
+  }
+
   function consumeClaimFragment() {
     const raw = String(window.location.hash || "").replace(/^#/, "");
     if (!raw) return null;
@@ -561,8 +582,11 @@
     }
   }
 
-  async function bootstrap() {
+  async function bootstrap(options = {}) {
     if (state.inFlight) return;
+    const detectMessageOverride = typeof options?.detectMessage === "string"
+      ? options.detectMessage.trim()
+      : "";
     clearTimers();
     state.snapshot = null;
     state.inFlight = true;
@@ -583,10 +607,10 @@
       if (data.auto_detect_enabled === true) {
         state.detectionUrl = normalizeDetectionUrl(data.detection_url);
         if (!state.detectionUrl) throw new Error("detection_url_invalid");
-        showDetect("Connectez cet appareil à la zone WiFi où votre forfait est actif, puis appuyez sur « Rechercher mon forfait ». Aucun code voucher ne sera demandé.");
+        showDetect(detectMessageOverride || "Connectez cet appareil à la zone WiFi où votre forfait est actif, puis appuyez sur « Rechercher mon forfait ». Aucun code voucher ne sera demandé.");
       } else {
         state.detectionUrl = null;
-        showDetect("Aucune session client n’est reconnue sur ce navigateur. Connectez-vous au WiFi RAZAFI puis réessayez.");
+        showDetect(detectMessageOverride || "Aucune session client n’est reconnue sur ce navigateur. Connectez-vous au WiFi RAZAFI puis réessayez.");
       }
     } catch (_) {
       showView("error");
@@ -632,7 +656,15 @@
   });
 
   window.addEventListener("pagehide", clearTimers, { once: true });
-  const claimProof = consumeClaimFragment();
-  if (claimProof) claimDevice(claimProof);
-  else bootstrap();
+  const clientSpaceState = consumeClientSpaceStateFragment();
+  const claimProof = clientSpaceState ? null : consumeClaimFragment();
+  if (claimProof) {
+    claimDevice(claimProof);
+  } else if (clientSpaceState === "no_active_session") {
+    bootstrap({
+      detectMessage: "Aucune session WiFi active n’a été détectée. Pour acheter ou activer un forfait, reconnectez-vous au WiFi RAZAFI afin d’ouvrir son portail, puis revenez dans votre Espace client.",
+    });
+  } else {
+    bootstrap();
+  }
 })();
