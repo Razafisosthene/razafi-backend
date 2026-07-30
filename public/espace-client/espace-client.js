@@ -3,6 +3,7 @@
 
   const ENDPOINTS = Object.freeze({
     bootstrap: "/api/client/bootstrap",
+    claim: "/api/client/claim",
     consumption: "/api/client/consumption",
     logout: "/api/client/logout",
   });
@@ -21,6 +22,7 @@
     refreshTimer: null,
     tickTimer: null,
     inFlight: false,
+    detectionUrl: null,
     timeBindings: [],
   };
 
@@ -36,6 +38,94 @@
     logoutBtn: document.getElementById("logoutBtn"),
     detectMessage: document.getElementById("detectMessage"),
   });
+
+
+  function consumeClaimFragment() {
+    const raw = String(window.location.hash || "").replace(/^#/, "");
+    if (!raw) return null;
+
+    let proof = null;
+    try {
+      const params = new URLSearchParams(raw);
+      const challenge = String(params.get("ec1") || "").trim().toLowerCase();
+      const nasId = String(params.get("nas") || "").trim();
+      const clientMac = String(params.get("mac") || "").trim();
+      const clientIp = String(params.get("ip") || "").trim();
+
+      if (
+        /^[0-9a-f]{64}$/.test(challenge) &&
+        nasId === "razafi-pool-4" &&
+        /^[0-9A-Fa-f:-]{12,17}$/.test(clientMac) &&
+        /^(?:10|192\.168|172\.(?:1[6-9]|2\d|3[01]))\./.test(clientIp)
+      ) {
+        proof = {
+          challenge,
+          nas_id: nasId,
+          client_mac: clientMac,
+          client_ip: clientIp,
+        };
+      }
+    } catch (_) {}
+
+    try {
+      window.history.replaceState(null, document.title, "/espace-client/");
+    } catch (_) {
+      window.location.hash = "";
+    }
+    return proof;
+  }
+
+  function normalizeDetectionUrl(raw) {
+    try {
+      const parsed = new URL(String(raw || ""));
+      const challenge = String(parsed.searchParams.get("var") || "");
+      if (
+        parsed.protocol !== "http:" ||
+        parsed.hostname !== "192.168.88.1" ||
+        parsed.pathname !== "/status" ||
+        !/^ec1_[0-9a-f]{64}$/.test(challenge)
+      ) {
+        return null;
+      }
+      return parsed.toString();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function claimDevice(proof) {
+    if (!proof || state.inFlight) return;
+    clearTimers();
+    state.snapshot = null;
+    state.detectionUrl = null;
+    state.inFlight = true;
+    showView("loading");
+
+    try {
+      const { response, data } = await apiJson(ENDPOINTS.claim, {
+        method: "POST",
+        body: JSON.stringify(proof),
+      });
+      if (response.status === 404) {
+        showView("unavailable");
+        return;
+      }
+      if (response.status === 400 || response.status === 401 || response.status === 403) {
+        showDetect("RAZAFI n’a pas pu confirmer ce forfait sur cet appareil. Vérifiez que vous êtes connecté au WiFi RAZAFI du pool test, puis réessayez.");
+        return;
+      }
+      if (!response.ok || data?.ok !== true || data?.authenticated !== true) {
+        throw new Error("claim_unavailable");
+      }
+      state.inFlight = false;
+      await loadConsumption();
+      return;
+    } catch (_) {
+      showView("error");
+    } finally {
+      state.inFlight = false;
+    }
+  }
 
   function showView(name) {
     Object.entries(views).forEach(([key, node]) => {
@@ -437,8 +527,11 @@
         return;
       }
       if (data.auto_detect_enabled === true) {
-        showDetect("Connectez cet appareil au réseau WiFi RAZAFI où votre forfait est actif. La détection automatique sera lancée depuis cette page.");
+        state.detectionUrl = normalizeDetectionUrl(data.detection_url);
+        if (!state.detectionUrl) throw new Error("detection_url_invalid");
+        showDetect("Connectez cet appareil au WiFi RAZAFI du pool test, puis appuyez sur « Rechercher mon forfait ». Aucun code voucher ne sera demandé.");
       } else {
+        state.detectionUrl = null;
         showDetect("Aucune session client n’est reconnue sur ce navigateur. Connectez-vous au WiFi RAZAFI puis réessayez.");
       }
     } catch (_) {
@@ -466,7 +559,13 @@
   }
 
   document.getElementById("retryUnavailableBtn").addEventListener("click", bootstrap);
-  document.getElementById("retryDetectBtn").addEventListener("click", bootstrap);
+  document.getElementById("retryDetectBtn").addEventListener("click", () => {
+    if (state.detectionUrl) {
+      window.location.assign(state.detectionUrl);
+      return;
+    }
+    bootstrap();
+  });
   document.getElementById("retryErrorBtn").addEventListener("click", bootstrap);
   elements.refreshBtn.addEventListener("click", () => loadConsumption());
   elements.logoutBtn.addEventListener("click", logout);
@@ -478,5 +577,7 @@
   });
 
   window.addEventListener("pagehide", clearTimers, { once: true });
-  bootstrap();
+  const claimProof = consumeClaimFragment();
+  if (claimProof) claimDevice(claimProof);
+  else bootstrap();
 })();

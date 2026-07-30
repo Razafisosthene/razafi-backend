@@ -52,6 +52,30 @@ function normalizePrivateIpv4(raw) {
   return isPrivateOrLocal ? value : null;
 }
 
+
+function normalizeHotspotStatusUrl(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    if (!["http:", "https:"].includes(parsed.protocol)) return null;
+    if (parsed.username || parsed.password || parsed.hash || parsed.search) return null;
+    if (parsed.pathname !== "/status") return null;
+    if (!normalizePrivateIpv4(parsed.hostname)) return null;
+    return parsed.toString().replace(/\/$/, "");
+  } catch (_) {
+    return null;
+  }
+}
+
+function parseNasAllowlist(raw) {
+  const values = String(raw || "")
+    .split(",")
+    .map((value) => normalizeNasId(value))
+    .filter(Boolean);
+  return new Set(values);
+}
+
 function decimalString(value) {
   if (value === null || value === undefined || value === "") return null;
   try {
@@ -263,6 +287,11 @@ export function registerEc1ClientSpace({
 
   const enabled = envFlag("CLIENT_SPACE_ENABLED", false);
   const autoDetectEnabled = envFlag("CLIENT_SPACE_AUTO_DETECT_ENABLED", false);
+  const allowedNasIds = parseNasAllowlist(process.env.CLIENT_SPACE_ALLOWED_NAS_IDS || "");
+  const hotspotStatusUrl = normalizeHotspotStatusUrl(
+    process.env.CLIENT_SPACE_HOTSPOT_STATUS_URL || "http://192.168.88.1/status"
+  );
+  const autoDetectReady = autoDetectEnabled && allowedNasIds.size > 0 && Boolean(hotspotStatusUrl);
   const bindUserAgent = envFlag("CLIENT_SPACE_BIND_USER_AGENT", true);
   const claimTtlSeconds = envInt("CLIENT_SPACE_CLAIM_TTL_SECONDS", 180, 60, 600);
   const sessionTtlSeconds = envInt("CLIENT_SPACE_SESSION_TTL_SECONDS", 45 * 24 * 60 * 60, 3600, 90 * 24 * 60 * 60);
@@ -731,8 +760,8 @@ export function registerEc1ClientSpace({
       cleanupExpiredRows().catch(() => {});
 
       const session = await loadSession(req, res);
-      if (session) return res.json({ ok: true, authenticated: true, auto_detect_enabled: autoDetectEnabled });
-      if (!autoDetectEnabled) return res.json({ ok: true, authenticated: false, auto_detect_enabled: false });
+      if (session) return res.json({ ok: true, authenticated: true, auto_detect_enabled: autoDetectReady });
+      if (!autoDetectReady) return res.json({ ok: true, authenticated: false, auto_detect_enabled: false });
 
       const oldBinding = String(req.cookies?.[claimCookie] || "").trim().toLowerCase();
       if (/^[0-9a-f]{64}$/.test(oldBinding)) {
@@ -755,11 +784,14 @@ export function registerEc1ClientSpace({
       if (error) throw error;
 
       res.cookie(claimCookie, browserBinding, cookieOptions(claimTtlSeconds * 1000));
+      const detectionUrl = new URL(hotspotStatusUrl);
+      detectionUrl.searchParams.set("var", `ec1_${challenge}`);
+
       return res.json({
         ok: true,
         authenticated: false,
         auto_detect_enabled: true,
-        challenge,
+        detection_url: detectionUrl.toString(),
         expires_in_seconds: claimTtlSeconds,
       });
     } catch (error) {
@@ -770,7 +802,7 @@ export function registerEc1ClientSpace({
 
   app.post("/api/client/claim", claimLimiter, async (req, res) => {
     noStore(res);
-    if (!enabled || !autoDetectEnabled) return hidden(res);
+    if (!enabled || !autoDetectReady) return hidden(res);
     if (!originAllowed(req)) return res.status(403).json({ error: "forbidden" });
 
     try {
@@ -782,6 +814,9 @@ export function registerEc1ClientSpace({
       const clientIp = normalizePrivateIpv4(req.body?.client_ip || req.body?.clientIp);
       if (!/^[0-9a-f]{64}$/.test(challenge) || !/^[0-9a-f]{64}$/.test(browserBinding) || !nasId || !clientMac || !clientIp) {
         return res.status(400).json({ error: "claim_invalid" });
+      }
+      if (!allowedNasIds.has(nasId)) {
+        return res.status(401).json({ error: "device_not_verified" });
       }
 
       const now = new Date();
@@ -920,13 +955,15 @@ export function registerEc1ClientSpace({
     return res.json({ ok: true });
   });
 
-  console.log(`[EC1] backend registered; enabled=${enabled}; auto_detect=${autoDetectEnabled}; verify_mode=${verifyMode}`);
+  console.log(`[EC1] backend registered; enabled=${enabled}; auto_detect=${autoDetectReady}; allowed_nas_count=${allowedNasIds.size}; verify_mode=${verifyMode}`);
 }
 
 export const __ec1Test = {
   normalizeNasId,
   normalizeMacStrict,
   normalizePrivateIpv4,
+  normalizeHotspotStatusUrl,
+  parseNasAllowlist,
   decimalString,
   progressPct,
   planDurationSeconds,
