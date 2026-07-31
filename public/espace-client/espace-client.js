@@ -38,6 +38,13 @@
     refreshBtn: document.getElementById("refreshBtn"),
     logoutBtn: document.getElementById("logoutBtn"),
     detectMessage: document.getElementById("detectMessage"),
+    ec2Content: document.getElementById("ec2Content"),
+    recentAccessList: document.getElementById("recentAccessList"),
+    recentAccessToggle: document.getElementById("recentAccessToggle"),
+    deviceConnection: document.getElementById("deviceConnection"),
+    deviceIdentifier: document.getElementById("deviceIdentifier"),
+    deviceSync: document.getElementById("deviceSync"),
+    whatsappLink: document.getElementById("whatsappLink"),
   });
 
 
@@ -267,6 +274,42 @@
     return `${prefix} ${formatted}`;
   }
 
+  function formatRecentDate(value) {
+    const timestamp = Date.parse(value || "");
+    if (!Number.isFinite(timestamp)) return "Date indisponible";
+    const date = new Date(timestamp);
+    const now = new Date();
+    const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const valueStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+    const deltaDays = Math.round((dayStart - valueStart) / 86400000);
+    if (deltaDays === 0) return "Aujourd’hui";
+    if (deltaDays === 1) return "Hier";
+    return new Intl.DateTimeFormat("fr-FR", {
+      day: "numeric",
+      month: "short",
+      year: date.getFullYear() === now.getFullYear() ? undefined : "numeric",
+    }).format(date);
+  }
+
+  function formatRelativeSync(value) {
+    const timestamp = Date.parse(value || "");
+    if (!Number.isFinite(timestamp)) return "indisponible";
+    const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+    if (seconds < 90) return "à l’instant";
+    if (seconds < 3600) return `il y a ${Math.max(1, Math.floor(seconds / 60))} min`;
+    return new Intl.DateTimeFormat("fr-FR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(timestamp));
+  }
+
+  function recentStatusMeta(status) {
+    const normalized = cleanText(status, "unknown").toLowerCase();
+    if (normalized === "active") return { label: "Actif", className: "status-active" };
+    if (normalized === "expired") return { label: "Expiré", className: "status-ended" };
+    if (["finished", "used", "ended"].includes(normalized)) return { label: "Terminé", className: "status-ended" };
+    if (normalized === "blocked") return { label: "Bloqué", className: "status-warning" };
+    if (["delivered", "pending", "ready"].includes(normalized)) return { label: "Prêt", className: "status-warning" };
+    return { label: "Terminé", className: "status-ended" };
+  }
+
   function statusMeta(status, kind) {
     const normalized = cleanText(status, "unknown").toLowerCase();
     if (normalized === "active") return { label: kind === "bonus" ? "En cours" : "Actif", className: "status-active" };
@@ -439,6 +482,82 @@
     elements.poolName.textContent = cleanText(pool?.display_name, "RAZAFI WiFi");
   }
 
+  function setRecentExpanded(expanded) {
+    const showAll = expanded === true;
+    elements.recentAccessList.querySelectorAll("[data-recent-extra='true']").forEach((row) => {
+      row.hidden = !showAll;
+    });
+    elements.recentAccessToggle.dataset.expanded = showAll ? "true" : "false";
+    elements.recentAccessToggle.setAttribute("aria-expanded", showAll ? "true" : "false");
+    elements.recentAccessToggle.textContent = showAll ? "Réduire" : "Voir tous mes accès récents";
+  }
+
+  function renderRecentAccesses(recent) {
+    elements.recentAccessList.replaceChildren();
+    const available = recent?.available !== false;
+    const items = Array.isArray(recent?.items) ? recent.items.slice(0, 5) : [];
+
+    if (!available) {
+      elements.recentAccessList.appendChild(createElement("p", "compact-empty", "Mes accès récents sont momentanément indisponibles."));
+      elements.recentAccessToggle.hidden = true;
+      return;
+    }
+    if (!items.length) {
+      elements.recentAccessList.appendChild(createElement("p", "compact-empty", "Aucun autre accès récent sur cet appareil."));
+      elements.recentAccessToggle.hidden = true;
+      return;
+    }
+
+    items.forEach((item, index) => {
+      const row = createElement("div", "recent-access-row");
+      if (index >= 2) {
+        row.dataset.recentExtra = "true";
+        row.hidden = true;
+      }
+      const text = createElement("div", "recent-access-copy");
+      text.appendChild(createElement("strong", "recent-access-title", cleanText(item?.plan?.name, "Forfait WiFi")));
+      const detailParts = [formatRecentDate(item?.occurred_at)];
+      const specs = primarySpecs({ plan: item?.plan || {} });
+      if (specs && specs !== "Détails du forfait") detailParts.push(specs);
+      text.appendChild(createElement("span", "recent-access-detail", detailParts.join(" · ")));
+      const meta = recentStatusMeta(item?.status);
+      row.append(text, createElement("span", `status-pill ${meta.className}`, meta.label));
+      elements.recentAccessList.appendChild(row);
+    });
+
+    elements.recentAccessToggle.hidden = items.length <= 2;
+    setRecentExpanded(false);
+  }
+
+  function renderDevice(snapshot) {
+    const poolName = cleanText(snapshot?.pool?.display_name, "RAZAFI WiFi");
+    const liveStatus = cleanText(snapshot?.live?.status, "unknown").toLowerCase();
+    if (liveStatus === "online") elements.deviceConnection.textContent = `Connecté à ${poolName}`;
+    else if (liveStatus === "offline") elements.deviceConnection.textContent = `Hors ligne sur ${poolName}`;
+    else elements.deviceConnection.textContent = `Associé à ${poolName}`;
+    elements.deviceIdentifier.textContent = cleanText(snapshot?.ec2?.device?.masked_identifier, "Indisponible");
+    elements.deviceSync.textContent = formatRelativeSync(snapshot?.live?.updated_at);
+  }
+
+  function renderWhatsApp(snapshot) {
+    const planName = cleanText(snapshot?.primary_voucher?.plan?.name, "mon forfait WiFi RAZAFI");
+    const poolName = cleanText(snapshot?.pool?.display_name);
+    const subject = poolName ? `${planName} sur ${poolName}` : planName;
+    const message = `Bonjour, j’ai besoin d’aide concernant mon forfait\n${subject}.`;
+    elements.whatsappLink.href = `https://wa.me/261340500592?text=${encodeURIComponent(message)}`;
+  }
+
+  function renderEc2(snapshot) {
+    if (snapshot?.ec2?.enabled !== true) {
+      elements.ec2Content.hidden = true;
+      return;
+    }
+    renderRecentAccesses(snapshot.ec2.recent_accesses || {});
+    renderDevice(snapshot);
+    renderWhatsApp(snapshot);
+    elements.ec2Content.hidden = false;
+  }
+
   function renderDashboard(snapshot) {
     state.snapshot = snapshot;
     state.snapshotReceivedAt = Date.now();
@@ -465,6 +584,7 @@
       elements.accessList.appendChild(empty);
     }
 
+    renderEc2(snapshot);
     showView("dashboard");
     startLiveTick();
     scheduleRefresh(snapshot.refresh_after_seconds);
@@ -648,6 +768,9 @@
   document.getElementById("retryErrorBtn").addEventListener("click", bootstrap);
   elements.refreshBtn.addEventListener("click", () => loadConsumption());
   elements.logoutBtn.addEventListener("click", logout);
+  elements.recentAccessToggle.addEventListener("click", () => {
+    setRecentExpanded(elements.recentAccessToggle.dataset.expanded !== "true");
+  });
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && state.snapshot && Date.now() - state.snapshotReceivedAt > 20_000) {

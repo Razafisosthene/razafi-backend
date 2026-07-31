@@ -39,6 +39,28 @@ function normalizeMacStrict(raw) {
   return compact.match(/.{2}/g).map((part) => part.toUpperCase()).join(":");
 }
 
+function macQueryVariants(raw) {
+  const normalized = normalizeMacStrict(raw);
+  if (!normalized) return [];
+  const hyphenated = normalized.replace(/:/g, "-");
+  const compact = normalized.replace(/:/g, "");
+  return Array.from(new Set([
+    normalized,
+    normalized.toLowerCase(),
+    hyphenated,
+    hyphenated.toLowerCase(),
+    compact,
+    compact.toLowerCase(),
+  ]));
+}
+
+function maskMacIdentifier(raw) {
+  const normalized = normalizeMacStrict(raw);
+  if (!normalized) return null;
+  const parts = normalized.split(":");
+  return `\u2022\u2022:\u2022\u2022:\u2022\u2022:\u2022\u2022:${parts[4]}:${parts[5]}`;
+}
+
 function normalizePrivateIpv4(raw) {
   const value = String(raw || "").trim();
   if (net.isIP(value) !== 4) return null;
@@ -289,6 +311,7 @@ export function registerEc1ClientSpace({
   const autoDetectEnabled = envFlag("CLIENT_SPACE_AUTO_DETECT_ENABLED", false);
   const dynamicNasEnabled = envFlag("CLIENT_SPACE_DYNAMIC_NAS_ENABLED", false);
   const staleRecoveryEnabled = envFlag("CLIENT_SPACE_STALE_RECOVERY_ENABLED", false);
+  const ec2Enabled = envFlag("CLIENT_SPACE_EC2_ENABLED", false);
   const allowedNasIds = parseNasAllowlist(process.env.CLIENT_SPACE_ALLOWED_NAS_IDS || "");
   const hotspotStatusUrl = normalizeHotspotStatusUrl(
     process.env.CLIENT_SPACE_HOTSPOT_STATUS_URL || "http://192.168.88.1/status"
@@ -428,6 +451,17 @@ export function registerEc1ClientSpace({
       prepared_at: bonus.prepared_at || null,
       started_at: bonus.started_at || null,
       expires_at: bonus.expires_at || null,
+    };
+  }
+
+  function recentAccessPayload(row) {
+    const primary = primaryPayload(row);
+    if (!primary) return null;
+    return {
+      status: primary.status,
+      plan: primary.plan,
+      occurred_at: row.started_at || row.activated_at || row.delivered_at || row.created_at || null,
+      expires_at: row.expires_at || null,
     };
   }
 
@@ -674,6 +708,33 @@ export function registerEc1ClientSpace({
     ) || null;
   }
 
+  async function loadRecentAccesses(session) {
+    const variants = macQueryVariants(session.bound_client_mac);
+    if (!session.pool_id || !variants.length) return [];
+
+    const { data, error } = await supabase
+      .from("vw_voucher_sessions_truth")
+      .select(`
+        id,status,truth_status,created_at,delivered_at,activated_at,started_at,expires_at,
+        data_total_bytes,data_used_bytes,data_remaining_bytes,
+        data_total_human,data_used_human,data_remaining_human,client_mac,is_bonus_session,
+        plans:plans(id,name,duration_seconds,duration_minutes,duration_hours,data_mb,mikrotik_rate_limit)
+      `)
+      .eq("pool_id", session.pool_id)
+      .eq("is_bonus_session", false)
+      .in("client_mac", variants)
+      .neq("id", session.voucher_session_id)
+      .order("created_at", { ascending: false })
+      .limit(5);
+    if (error) throw error;
+
+    const expectedMac = normalizeMacStrict(session.bound_client_mac);
+    return (Array.isArray(data) ? data : [])
+      .filter((row) => normalizeMacStrict(row?.client_mac) === expectedMac)
+      .map(recentAccessPayload)
+      .filter(Boolean);
+  }
+
   async function buildConsumption(session) {
     const { data: row, error } = await supabase
       .from("vw_voucher_sessions_truth")
@@ -720,7 +781,7 @@ export function registerEc1ClientSpace({
     const rowIsLive = liveStatus === "interim-update" || liveStatus === "start" || liveStatus === "alive";
     const online = Boolean((primaryActive || bonusActive) && rowIsLive);
 
-    return {
+    const snapshot = {
       ok: true,
       authenticated: true,
       server_time: new Date().toISOString(),
@@ -740,6 +801,30 @@ export function registerEc1ClientSpace({
         accounting_interval_seconds: 60,
       },
     };
+
+    if (ec2Enabled) {
+      let recentAccesses = [];
+      let recentAccessesAvailable = true;
+      try {
+        recentAccesses = await loadRecentAccesses(session);
+      } catch (recentError) {
+        recentAccessesAvailable = false;
+        console.warn("[EC2] recent accesses unavailable", String(recentError?.message || recentError).slice(0, 120));
+      }
+
+      snapshot.ec2 = {
+        enabled: true,
+        recent_accesses: {
+          available: recentAccessesAvailable,
+          items: recentAccesses,
+        },
+        device: {
+          masked_identifier: maskMacIdentifier(session.bound_client_mac),
+        },
+      };
+    }
+
+    return snapshot;
   }
 
   const bootstrapLimiter = rateLimit({
@@ -982,7 +1067,7 @@ export function registerEc1ClientSpace({
     return res.json({ ok: true });
   });
 
-  console.log(`[EC1] backend registered; enabled=${enabled}; auto_detect=${autoDetectReady}; dynamic_nas=${dynamicNasEnabled}; stale_recovery=${staleRecoveryEnabled}; allowed_nas_count=${allowedNasIds.size}; verify_mode=${verifyMode}`);
+  console.log(`[EC1] backend registered; enabled=${enabled}; ec2=${ec2Enabled}; auto_detect=${autoDetectReady}; dynamic_nas=${dynamicNasEnabled}; stale_recovery=${staleRecoveryEnabled}; allowed_nas_count=${allowedNasIds.size}; verify_mode=${verifyMode}`);
 }
 
 export const __ec1Test = {

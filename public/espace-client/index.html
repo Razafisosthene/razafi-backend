@@ -7,8 +7,8 @@
   <meta name="theme-color" content="#ffffff">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>Espace client — RAZAFI</title>
-  <link rel="stylesheet" href="/espace-client/espace-client.css?v=ec1-pool-identity-1">
-  <script src="/espace-client/espace-client.js?v=ec1-pool-identity-1" defer></script>
+  <link rel="stylesheet" href="/espace-client/espace-client.css?v=ec2-1">
+  <script src="/espace-client/espace-client.js?v=ec2-1" defer></script>
 </head>
 <body>
   <div class="app-shell">
@@ -78,6 +78,76 @@
           <span class="info-icon" aria-hidden="true">i</span>
           <p>Le temps évolue chaque seconde. La consommation data est synchronisée régulièrement par le réseau.</p>
         </aside>
+
+        <div class="ec2-content" id="ec2Content" hidden>
+          <section class="ec2-section" aria-labelledby="recentAccessTitle">
+            <h2 class="ec2-section-title" id="recentAccessTitle">Mes accès récents</h2>
+            <div class="compact-card recent-access-card">
+              <div class="recent-access-list" id="recentAccessList"></div>
+              <button class="recent-access-toggle" id="recentAccessToggle" type="button" aria-expanded="false" hidden>Voir tous mes accès récents</button>
+            </div>
+          </section>
+
+          <section class="ec2-section" aria-labelledby="deviceTitle">
+            <h2 class="ec2-section-title" id="deviceTitle">Cet appareil</h2>
+            <div class="compact-card device-card">
+              <p class="device-connection" id="deviceConnection">Associé à RAZAFI WiFi</p>
+              <dl class="device-details">
+                <div>
+                  <dt>Identifiant</dt>
+                  <dd id="deviceIdentifier">Indisponible</dd>
+                </div>
+                <div>
+                  <dt>Dernière synchronisation</dt>
+                  <dd id="deviceSync">indisponible</dd>
+                </div>
+              </dl>
+            </div>
+          </section>
+
+          <section class="ec2-section" aria-labelledby="supportTitle">
+            <h2 class="ec2-section-title" id="supportTitle">Assistance</h2>
+            <div class="compact-card support-card">
+              <div>
+                <h3>Besoin d’aide&nbsp;?</h3>
+                <p>Contactez l’assistance RAZAFI sur WhatsApp.</p>
+              </div>
+              <a class="whatsapp-button" id="whatsappLink" href="https://wa.me/261340500592" target="_blank" rel="noopener noreferrer">
+                Contacter sur WhatsApp
+              </a>
+              <p class="support-phone">034 05 005 92</p>
+            </div>
+          </section>
+
+          <details class="quick-help-card">
+            <summary>
+              <span>Aide rapide</span>
+              <span class="details-chevron" aria-hidden="true">›</span>
+            </summary>
+            <div class="quick-help-content">
+              <div>
+                <h3>Pourquoi ma consommation tarde-t-elle à changer&nbsp;?</h3>
+                <p>Les données réseau peuvent prendre environ une minute pour se synchroniser.</p>
+              </div>
+              <div>
+                <h3>Pourquoi mon appareil apparaît-il hors ligne&nbsp;?</h3>
+                <p>Vérifiez que vous êtes toujours connecté à la même zone WiFi.</p>
+              </div>
+              <div>
+                <h3>Mon bonus est-il mélangé à mon forfait&nbsp;?</h3>
+                <p>Non. Le bonus et le forfait principal sont suivis séparément.</p>
+              </div>
+            </div>
+          </details>
+
+          <aside class="security-note">
+            <span class="security-icon" aria-hidden="true">🔒</span>
+            <div>
+              <strong>Espace sécurisé et en lecture seule</strong>
+              <p>Aucun paiement ni aucune activation ne peut être effectué ici.</p>
+            </div>
+          </aside>
+        </div>
 
         <div class="dashboard-actions">
           <button class="secondary-button" id="logoutBtn" type="button">Déconnecter cet espace client</button>
