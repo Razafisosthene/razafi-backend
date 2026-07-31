@@ -7,8 +7,8 @@
   <meta name="theme-color" content="#ffffff">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>Espace client — RAZAFI</title>
-  <link rel="stylesheet" href="/espace-client/espace-client.css?v=ec2-1">
-  <script src="/espace-client/espace-client.js?v=ec2-1" defer></script>
+  <link rel="stylesheet" href="/espace-client/espace-client.css?v=ec3-1">
+  <script src="/espace-client/espace-client.js?v=ec3-1" defer></script>
 </head>
 <body>
   <div class="app-shell">
@@ -72,6 +72,14 @@
           <button class="icon-button" id="refreshBtn" type="button" aria-label="Actualiser la consommation" title="Actualiser">↻</button>
         </div>
 
+        <aside class="remote-consultation-card" id="remoteConsultationCard" hidden aria-live="polite">
+          <span class="remote-consultation-icon" aria-hidden="true">⌁</span>
+          <div>
+            <strong id="remoteConsultationTitle">Consultation à distance</strong>
+            <p id="remoteConsultationMessage">Vous consultez votre Espace client hors du réseau RAZAFI.</p>
+          </div>
+        </aside>
+
         <div class="access-list" id="accessList"></div>
 
         <aside class="info-card" id="accountingInfo">
@@ -93,6 +101,10 @@
             <div class="compact-card device-card">
               <p class="device-connection" id="deviceConnection">Associé à RAZAFI WiFi</p>
               <dl class="device-details">
+                <div id="deviceZoneRow" hidden>
+                  <dt>Zone associée</dt>
+                  <dd id="deviceZone">RAZAFI WiFi</dd>
+                </div>
                 <div>
                   <dt>Identifiant</dt>
                   <dd id="deviceIdentifier">Indisponible</dd>
@@ -131,7 +143,7 @@
               </div>
               <div>
                 <h3>Pourquoi mon appareil apparaît-il hors ligne&nbsp;?</h3>
-                <p>Vérifiez que vous êtes toujours connecté à la même zone WiFi.</p>
+                <p id="deviceOfflineHelp">Vérifiez que vous êtes toujours connecté à la même zone WiFi.</p>
               </div>
               <div>
                 <h3>Mon bonus est-il mélangé à mon forfait&nbsp;?</h3>
@@ -140,19 +152,32 @@
             </div>
           </details>
 
-          <aside class="security-note">
+          <aside class="security-note" id="securityNote">
             <span class="security-icon" aria-hidden="true">🔒</span>
-            <div>
-              <strong>Espace sécurisé et en lecture seule</strong>
-              <p>Aucun paiement ni aucune activation ne peut être effectué ici.</p>
+            <div class="security-copy">
+              <strong id="securityTitle">Espace sécurisé et en lecture seule</strong>
+              <p id="securityText">Aucun paiement ni aucune activation ne peut être effectué ici.</p>
+              <button class="security-remove-button" id="removeBrowserBtn" type="button" hidden>Retirer ce navigateur de mon Espace client</button>
             </div>
           </aside>
         </div>
 
-        <div class="dashboard-actions">
+        <div class="dashboard-actions" id="dashboardActions">
           <button class="secondary-button" id="logoutBtn" type="button">Déconnecter cet espace client</button>
         </div>
       </section>
+
+      <dialog class="remove-browser-dialog" id="removeBrowserDialog" aria-labelledby="removeBrowserTitle">
+        <form method="dialog" class="remove-browser-sheet">
+          <div class="remove-browser-icon" aria-hidden="true">🔒</div>
+          <h2 id="removeBrowserTitle">Retirer ce navigateur&nbsp;?</h2>
+          <p>Vous ne pourrez plus consulter cet Espace client depuis la 4G ou un autre WiFi sur ce navigateur. Pour le réassocier, ouvrez à nouveau l’Espace client depuis une zone WiFi RAZAFI.</p>
+          <div class="remove-browser-actions">
+            <button class="dialog-cancel-button" id="removeBrowserCancelBtn" value="cancel" type="submit">Annuler</button>
+            <button class="dialog-remove-button" id="removeBrowserConfirmBtn" value="default" type="button">Retirer</button>
+          </div>
+        </form>
+      </dialog>
     </main>
 
     <footer class="footer">

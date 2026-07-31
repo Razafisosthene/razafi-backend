@@ -28,6 +28,35 @@ function randomToken() {
   return crypto.randomBytes(32).toString("hex");
 }
 
+function normalizeBrowserProfile({ userAgent = "", clientHints = "", platform = "" } = {}) {
+  const normalize = (value, maxLength) => String(value || "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\b(?:version|chrome|chromium|crios|firefox|fxios|edg|edga|edgios|opr|safari|mobile)\/[0-9._-]+/gi, (match) => {
+      const slash = match.indexOf("/");
+      return slash >= 0 ? `${match.slice(0, slash)}/#` : match;
+    })
+    .replace(/v="[0-9._-]+"/gi, 'v="#"')
+    .replace(/\b(android|windows nt|cpu iphone os|cpu os|mac os x)\s+[0-9][0-9._-]*/gi, "$1 #")
+    .replace(/\b[0-9]+(?:[._-][0-9]+){1,4}\b/g, "#")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .slice(0, maxLength);
+
+  const normalizedHints = normalize(clientHints, 320)
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part && !/not[^"]*brand/i.test(part))
+    .sort()
+    .join(",");
+
+  return [
+    normalizedHints,
+    normalize(platform, 120),
+    normalize(userAgent, 700),
+  ].join("|");
+}
+
 function normalizeNasId(raw) {
   const value = String(raw || "").trim();
   return /^[A-Za-z0-9_.:-]{1,160}$/.test(value) ? value : null;
@@ -312,6 +341,7 @@ export function registerEc1ClientSpace({
   const dynamicNasEnabled = envFlag("CLIENT_SPACE_DYNAMIC_NAS_ENABLED", false);
   const staleRecoveryEnabled = envFlag("CLIENT_SPACE_STALE_RECOVERY_ENABLED", false);
   const ec2Enabled = envFlag("CLIENT_SPACE_EC2_ENABLED", false);
+  const ec3Enabled = ec2Enabled && envFlag("CLIENT_SPACE_EC3_ENABLED", false);
   const allowedNasIds = parseNasAllowlist(process.env.CLIENT_SPACE_ALLOWED_NAS_IDS || "");
   const hotspotStatusUrl = normalizeHotspotStatusUrl(
     process.env.CLIENT_SPACE_HOTSPOT_STATUS_URL || "http://192.168.88.1/status"
@@ -321,6 +351,11 @@ export function registerEc1ClientSpace({
   const bindUserAgent = envFlag("CLIENT_SPACE_BIND_USER_AGENT", true);
   const claimTtlSeconds = envInt("CLIENT_SPACE_CLAIM_TTL_SECONDS", 180, 60, 600);
   const sessionTtlSeconds = envInt("CLIENT_SPACE_SESSION_TTL_SECONDS", 45 * 24 * 60 * 60, 3600, 90 * 24 * 60 * 60);
+  const remoteIdleDays = envInt("CLIENT_SPACE_REMOTE_IDLE_DAYS", 30, 1, 90);
+  const remoteAbsoluteDays = envInt("CLIENT_SPACE_REMOTE_ABSOLUTE_DAYS", 90, 7, 365);
+  const remoteSessionHours = envInt("CLIENT_SPACE_REMOTE_SESSION_HOURS", 12, 1, 72);
+  const remoteMaxAssociations = envInt("CLIENT_SPACE_REMOTE_MAX_ASSOCIATIONS", 3, 1, 10);
+  const bindRemoteBrowserProfile = envFlag("CLIENT_SPACE_REMOTE_BIND_BROWSER_PROFILE", true);
   const radiusWindowSeconds = envInt("CLIENT_SPACE_RADIUS_WINDOW_SECONDS", 180, 60, 600);
   const maxClaimAttempts = envInt("CLIENT_SPACE_MAX_CLAIM_ATTEMPTS", 5, 1, 20);
   const routerTimeoutMs = envInt("CLIENT_SPACE_ROUTER_TIMEOUT_MS", 7000, 2000, 15000);
@@ -332,6 +367,8 @@ export function registerEc1ClientSpace({
 
   const sessionCookie = "razafi_client_session";
   const claimCookie = "razafi_client_claim";
+  const remoteAssociationCookie = "razafi_client_remote";
+  const remoteSessionCookie = "razafi_client_remote_session";
   const normalizedOrigins = new Set((allowedOrigins || []).map((origin) => String(origin || "").trim().replace(/\/$/, "")).filter(Boolean));
 
   function noStore(res) {
@@ -369,6 +406,23 @@ export function registerEc1ClientSpace({
   function userAgentHash(req) {
     const raw = String(req.get("user-agent") || "").trim();
     return raw ? hashToken(raw) : null;
+  }
+
+  function browserProfileHash(req) {
+    const profile = normalizeBrowserProfile({
+      userAgent: req.get("user-agent"),
+      clientHints: req.get("sec-ch-ua"),
+      platform: req.get("sec-ch-ua-platform"),
+    });
+    return profile.replace(/\|/g, "") ? hashToken(profile) : hashToken("unknown-browser-profile");
+  }
+
+  function addDays(date, days) {
+    return new Date(date.getTime() + Math.max(0, Number(days || 0)) * 24 * 60 * 60 * 1000);
+  }
+
+  function minDate(a, b) {
+    return new Date(Math.min(a.getTime(), b.getTime()));
   }
 
   function originAllowed(req) {
@@ -472,10 +526,23 @@ export function registerEc1ClientSpace({
     if (now - lastCleanupAt < 10 * 60 * 1000) return;
     lastCleanupAt = now;
     try {
-      await Promise.all([
+      const deletes = [
         supabase.from("client_space_claims").delete().lt("expires_at", new Date(now - 24 * 60 * 60 * 1000).toISOString()),
         supabase.from("client_space_sessions").delete().lt("expires_at", new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString()),
-      ]);
+      ];
+      if (ec3Enabled) {
+        const revokedCutoff = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
+        const expiredCutoff = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+        const nowIso = new Date(now).toISOString();
+        deletes.push(
+          supabase.from("client_space_remote_sessions").delete().lt("expires_at", expiredCutoff),
+          supabase.from("client_space_remote_sessions").delete().not("revoked_at", "is", null).lt("revoked_at", revokedCutoff),
+          supabase.from("client_space_remote_associations").delete().is("revoked_at", null).lt("idle_expires_at", nowIso),
+          supabase.from("client_space_remote_associations").delete().is("revoked_at", null).lt("absolute_expires_at", nowIso),
+          supabase.from("client_space_remote_associations").delete().not("revoked_at", "is", null).lt("revoked_at", revokedCutoff)
+        );
+      }
+      await Promise.all(deletes);
     } catch (error) {
       console.warn("[EC1] cleanup skipped", String(error?.message || error).slice(0, 160));
     }
@@ -490,6 +557,229 @@ export function registerEc1ClientSpace({
         .eq("id", id)
         .is("revoked_at", null);
     } catch (_) {}
+  }
+
+  async function revokeRemoteSessionsByAssociationId(associationId, reason) {
+    if (!supabase || !associationId) return;
+    try {
+      await supabase
+        .from("client_space_remote_sessions")
+        .update({ revoked_at: new Date().toISOString(), revoke_reason: cleanOptionalText(reason, 160) || "revoked" })
+        .eq("association_id", associationId)
+        .is("revoked_at", null);
+    } catch (_) {}
+  }
+
+  async function revokeRemoteAssociationById(associationId, reason) {
+    if (!supabase || !associationId) return;
+    const nowIso = new Date().toISOString();
+    try {
+      await supabase
+        .from("client_space_remote_associations")
+        .update({ revoked_at: nowIso, revoke_reason: cleanOptionalText(reason, 160) || "revoked" })
+        .eq("id", associationId)
+        .is("revoked_at", null);
+    } catch (_) {}
+    await revokeRemoteSessionsByAssociationId(associationId, reason);
+  }
+
+  function clearRemoteCookies(res) {
+    clearCookie(res, remoteAssociationCookie);
+    clearCookie(res, remoteSessionCookie);
+  }
+
+  async function loadRemoteAssociation(req, res) {
+    if (!ec3Enabled) return null;
+    const rawToken = String(req.cookies?.[remoteAssociationCookie] || "").trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(rawToken)) {
+      if (rawToken) clearRemoteCookies(res);
+      return null;
+    }
+    if (!supabase) throw new Error("supabase_not_configured");
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const { data, error } = await supabase
+      .from("client_space_remote_associations")
+      .select("id,pool_id,bound_nas_id,bound_client_mac,last_voucher_session_id,browser_profile_hash,created_at,last_local_verified_at,last_seen_at,idle_expires_at,absolute_expires_at,association_version")
+      .eq("association_token_hash", hashToken(rawToken))
+      .is("revoked_at", null)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) {
+      clearRemoteCookies(res);
+      return null;
+    }
+
+    const idleExpiry = Date.parse(data.idle_expires_at || "") || 0;
+    const absoluteExpiry = Date.parse(data.absolute_expires_at || "") || 0;
+    if (idleExpiry <= now.getTime() || absoluteExpiry <= now.getTime()) {
+      await revokeRemoteAssociationById(data.id, idleExpiry <= now.getTime() ? "idle_expired" : "absolute_expired");
+      clearRemoteCookies(res);
+      return null;
+    }
+
+    if (bindRemoteBrowserProfile && data.browser_profile_hash) {
+      const currentHash = browserProfileHash(req);
+      if (!currentHash || !safeEqual(currentHash, data.browser_profile_hash)) {
+        clearRemoteCookies(res);
+        return null;
+      }
+    }
+
+    const lastSeenMs = Date.parse(data.last_seen_at || "") || 0;
+    if (Date.now() - lastSeenMs > 60 * 60 * 1000) {
+      const nextIdleExpiry = minDate(addDays(now, remoteIdleDays), new Date(absoluteExpiry));
+      Promise.resolve(
+        supabase
+          .from("client_space_remote_associations")
+          .update({ last_seen_at: nowIso, idle_expires_at: nextIdleExpiry.toISOString() })
+          .eq("id", data.id)
+          .is("revoked_at", null)
+      ).catch(() => {});
+      data.last_seen_at = nowIso;
+      data.idle_expires_at = nextIdleExpiry.toISOString();
+    }
+    return data;
+  }
+
+  async function loadRemoteSession(req, res, association) {
+    if (!ec3Enabled || !association?.id) return null;
+    const rawToken = String(req.cookies?.[remoteSessionCookie] || "").trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(rawToken)) {
+      if (rawToken) clearCookie(res, remoteSessionCookie);
+      return null;
+    }
+
+    const nowIso = new Date().toISOString();
+    const { data, error } = await supabase
+      .from("client_space_remote_sessions")
+      .select("id,association_id,browser_profile_hash,last_seen_at,expires_at,session_version")
+      .eq("remote_session_token_hash", hashToken(rawToken))
+      .eq("association_id", association.id)
+      .is("revoked_at", null)
+      .gt("expires_at", nowIso)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) {
+      clearCookie(res, remoteSessionCookie);
+      return null;
+    }
+
+    if (bindRemoteBrowserProfile && data.browser_profile_hash) {
+      const currentHash = browserProfileHash(req);
+      if (!currentHash || !safeEqual(currentHash, data.browser_profile_hash)) {
+        clearCookie(res, remoteSessionCookie);
+        return null;
+      }
+    }
+
+    const lastSeenMs = Date.parse(data.last_seen_at || "") || 0;
+    if (Date.now() - lastSeenMs > 5 * 60 * 1000) {
+      Promise.resolve(
+        supabase.from("client_space_remote_sessions").update({ last_seen_at: nowIso }).eq("id", data.id).is("revoked_at", null)
+      ).catch(() => {});
+    }
+    return data;
+  }
+
+  async function createRemoteSession(req, res, association) {
+    if (!ec3Enabled || !association?.id) return null;
+    const token = randomToken();
+    const expiresAt = new Date(Date.now() + remoteSessionHours * 60 * 60 * 1000);
+    const profileHash = browserProfileHash(req);
+    const { data, error } = await supabase
+      .from("client_space_remote_sessions")
+      .insert({
+        remote_session_token_hash: hashToken(token),
+        association_id: association.id,
+        browser_profile_hash: profileHash,
+        expires_at: expiresAt.toISOString(),
+      })
+      .select("id,association_id,browser_profile_hash,last_seen_at,expires_at,session_version")
+      .single();
+    if (error || !data?.id) throw error || new Error("remote_session_insert_failed");
+    res.cookie(remoteSessionCookie, token, cookieOptions(remoteSessionHours * 60 * 60 * 1000));
+    return data;
+  }
+
+  async function ensureRemoteSession(req, res, association) {
+    return (await loadRemoteSession(req, res, association)) || createRemoteSession(req, res, association);
+  }
+
+  async function enforceRemoteAssociationLimit(currentId, poolId, clientMac) {
+    if (!supabase || !currentId || !poolId || !clientMac) return;
+    try {
+      const { data, error } = await supabase
+        .from("client_space_remote_associations")
+        .select("id")
+        .eq("pool_id", poolId)
+        .eq("bound_client_mac", clientMac)
+        .is("revoked_at", null)
+        .order("last_local_verified_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(20);
+      if (error) throw error;
+      const others = (Array.isArray(data) ? data : []).filter((row) => row?.id && row.id !== currentId);
+      const revokeIds = others.slice(Math.max(0, remoteMaxAssociations - 1)).map((row) => row.id);
+      for (const id of Array.from(new Set(revokeIds.filter(Boolean)))) {
+        await revokeRemoteAssociationById(id, "association_limit");
+      }
+    } catch (error) {
+      console.warn("[EC3] association limit skipped", String(error?.message || error).slice(0, 140));
+    }
+  }
+
+  async function createOrRefreshRemoteAssociation(req, res, { voucherSessionId, poolId, nasId, clientMac }) {
+    if (!ec3Enabled || !supabase) return null;
+    const now = new Date();
+    const profileHash = browserProfileHash(req);
+    const token = randomToken();
+    const absoluteExpiresAt = addDays(now, remoteAbsoluteDays);
+    const idleExpiresAt = minDate(addDays(now, remoteIdleDays), absoluteExpiresAt);
+    const existing = await loadRemoteAssociation(req, res);
+
+    const payload = {
+      association_token_hash: hashToken(token),
+      pool_id: poolId,
+      bound_nas_id: nasId,
+      bound_client_mac: clientMac,
+      last_voucher_session_id: voucherSessionId,
+      browser_profile_hash: profileHash,
+      last_local_verified_at: now.toISOString(),
+      last_seen_at: now.toISOString(),
+      idle_expires_at: idleExpiresAt.toISOString(),
+      absolute_expires_at: absoluteExpiresAt.toISOString(),
+      revoked_at: null,
+      revoke_reason: null,
+    };
+
+    let association;
+    if (existing?.id) {
+      const { data, error } = await supabase
+        .from("client_space_remote_associations")
+        .update({ ...payload, association_version: Math.max(1, Number(existing.association_version || 1)) + 1 })
+        .eq("id", existing.id)
+        .is("revoked_at", null)
+        .select("id,pool_id,bound_nas_id,bound_client_mac,last_voucher_session_id,browser_profile_hash,last_local_verified_at,last_seen_at,idle_expires_at,absolute_expires_at,association_version")
+        .single();
+      if (error || !data?.id) throw error || new Error("remote_association_update_failed");
+      association = data;
+      await revokeRemoteSessionsByAssociationId(existing.id, "local_reverification");
+    } else {
+      const { data, error } = await supabase
+        .from("client_space_remote_associations")
+        .insert(payload)
+        .select("id,pool_id,bound_nas_id,bound_client_mac,last_voucher_session_id,browser_profile_hash,last_local_verified_at,last_seen_at,idle_expires_at,absolute_expires_at,association_version")
+        .single();
+      if (error || !data?.id) throw error || new Error("remote_association_insert_failed");
+      association = data;
+    }
+
+    res.cookie(remoteAssociationCookie, token, cookieOptions(remoteAbsoluteDays * 24 * 60 * 60 * 1000));
+    clearCookie(res, remoteSessionCookie);
+    enforceRemoteAssociationLimit(association.id, poolId, clientMac).catch(() => {});
+    return association;
   }
 
   async function loadSession(req, res) {
@@ -735,6 +1025,38 @@ export function registerEc1ClientSpace({
       .filter(Boolean);
   }
 
+  async function resolveRemoteVoucherSession(association) {
+    const variants = macQueryVariants(association?.bound_client_mac);
+    if (!association?.pool_id || !variants.length) return null;
+
+    const { data, error } = await supabase
+      .from("vw_voucher_sessions_truth")
+      .select("id,status,truth_status,created_at,client_mac,is_bonus_session")
+      .eq("pool_id", association.pool_id)
+      .eq("is_bonus_session", false)
+      .in("client_mac", variants)
+      .order("created_at", { ascending: false })
+      .limit(20);
+    if (error) throw error;
+
+    const expectedMac = normalizeMacStrict(association.bound_client_mac);
+    const rows = (Array.isArray(data) ? data : []).filter((row) => normalizeMacStrict(row?.client_mac) === expectedMac);
+    const active = rows.find((row) => String(row?.truth_status || row?.status || "").toLowerCase() === "active");
+    const associated = rows.find((row) => row?.id === association.last_voucher_session_id);
+    const selected = active || associated || rows[0] || null;
+
+    if (selected?.id && selected.id !== association.last_voucher_session_id) {
+      Promise.resolve(
+        supabase
+          .from("client_space_remote_associations")
+          .update({ last_voucher_session_id: selected.id })
+          .eq("id", association.id)
+          .is("revoked_at", null)
+      ).catch(() => {});
+    }
+    return selected?.id || null;
+  }
+
   async function buildConsumption(session) {
     const { data: row, error } = await supabase
       .from("vw_voucher_sessions_truth")
@@ -827,6 +1149,31 @@ export function registerEc1ClientSpace({
     return snapshot;
   }
 
+  function decorateEc3Snapshot(snapshot, association, accessMode) {
+    if (!ec3Enabled || !snapshot || !association?.id) return snapshot;
+    const remote = accessMode === "remote";
+    snapshot.ec3 = {
+      enabled: true,
+      access_mode: remote ? "remote" : "local",
+      remote_consultation: remote,
+      association_active: Boolean(association?.id),
+    };
+    return snapshot;
+  }
+
+  async function buildRemoteConsumption(association) {
+    const voucherSessionId = await resolveRemoteVoucherSession(association);
+    if (!voucherSessionId) throw new Error("remote_voucher_missing");
+    return buildConsumption({
+      id: null,
+      voucher_session_id: voucherSessionId,
+      pool_id: association.pool_id,
+      bound_nas_id: association.bound_nas_id,
+      bound_client_mac: association.bound_client_mac,
+      bound_client_ip: null,
+    });
+  }
+
   const bootstrapLimiter = rateLimit({
     windowMs: 10 * 60 * 1000,
     max: 20,
@@ -860,7 +1207,20 @@ export function registerEc1ClientSpace({
       cleanupExpiredRows().catch(() => {});
 
       const session = await loadSession(req, res);
-      if (session) return res.json({ ok: true, authenticated: true, auto_detect_enabled: autoDetectReady });
+      if (session) return res.json({ ok: true, authenticated: true, auto_detect_enabled: autoDetectReady, access_mode: "local" });
+
+      if (ec3Enabled) {
+        try {
+          const association = await loadRemoteAssociation(req, res);
+          if (association) {
+            await ensureRemoteSession(req, res, association);
+            return res.json({ ok: true, authenticated: true, auto_detect_enabled: autoDetectReady, access_mode: "remote" });
+          }
+        } catch (remoteError) {
+          console.warn("[EC3] remote bootstrap unavailable; local detection kept", String(remoteError?.message || remoteError).slice(0, 160));
+        }
+      }
+
       if (!autoDetectReady) return res.json({ ok: true, authenticated: false, auto_detect_enabled: false });
 
       const oldBinding = String(req.cookies?.[claimCookie] || "").trim().toLowerCase();
@@ -1011,7 +1371,19 @@ export function registerEc1ClientSpace({
 
       res.cookie(sessionCookie, sessionToken, cookieOptions(sessionTtlSeconds * 1000));
       clearCookie(res, claimCookie);
-      return res.json({ ok: true, authenticated: true });
+      if (ec3Enabled) {
+        try {
+          await createOrRefreshRemoteAssociation(req, res, {
+            voucherSessionId: identity.voucherSessionId,
+            poolId: identity.poolId,
+            nasId,
+            clientMac,
+          });
+        } catch (remoteError) {
+          console.warn("[EC3] association unavailable; EC1 kept active", String(remoteError?.message || remoteError).slice(0, 160));
+        }
+      }
+      return res.json({ ok: true, authenticated: true, ec3_associated: ec3Enabled });
     } catch (error) {
       console.error("[EC1] claim error", String(error?.message || error).slice(0, 160));
       return res.status(503).json({ error: "service_unavailable" });
@@ -1024,26 +1396,126 @@ export function registerEc1ClientSpace({
     try {
       if (!supabase) return res.status(503).json({ error: "service_unavailable" });
       const session = await loadSession(req, res);
-      if (!session) return res.status(401).json({ error: "client_session_required" });
-
-      const snapshot = await buildConsumption(session);
-      if (staleRecoveryEnabled && autoDetectReady && snapshot?.currently_consumed === "none") {
-        await revokeSessionById(session.id, "access_inactive_reauth");
-        clearCookie(res, sessionCookie);
-        return res.status(409).json({
-          error: "client_session_stale",
-          reauth_required: true,
-          auto_detect_enabled: true,
-        });
+      let association = null;
+      if (ec3Enabled) {
+        try {
+          association = await loadRemoteAssociation(req, res);
+        } catch (remoteError) {
+          console.warn("[EC3] association read unavailable; EC2 kept active", String(remoteError?.message || remoteError).slice(0, 160));
+        }
       }
 
-      return res.json(snapshot);
+      if (session) {
+        const snapshot = await buildConsumption(session);
+        const localOnline = snapshot?.live?.status === "online";
+        if (ec3Enabled && !association && localOnline) {
+          try {
+            association = await createOrRefreshRemoteAssociation(req, res, {
+              voucherSessionId: session.voucher_session_id,
+              poolId: session.pool_id,
+              nasId: session.bound_nas_id,
+              clientMac: normalizeMacStrict(session.bound_client_mac),
+            });
+          } catch (remoteError) {
+            console.warn("[EC3] local association bootstrap skipped", String(remoteError?.message || remoteError).slice(0, 160));
+          }
+        }
+
+        if (staleRecoveryEnabled && autoDetectReady && snapshot?.currently_consumed === "none") {
+          if (association) {
+            await ensureRemoteSession(req, res, association);
+            const remoteSnapshot = await buildRemoteConsumption(association);
+            return res.json(decorateEc3Snapshot(
+              remoteSnapshot,
+              association,
+              remoteSnapshot?.live?.status === "online" ? "local" : "remote"
+            ));
+          }
+          await revokeSessionById(session.id, "access_inactive_reauth");
+          clearCookie(res, sessionCookie);
+          return res.status(409).json({
+            error: "client_session_stale",
+            reauth_required: true,
+            auto_detect_enabled: true,
+          });
+        }
+
+        return res.json(decorateEc3Snapshot(snapshot, association, association && !localOnline ? "remote" : "local"));
+      }
+
+      if (association) {
+        await ensureRemoteSession(req, res, association);
+        const remoteSnapshot = await buildRemoteConsumption(association);
+        return res.json(decorateEc3Snapshot(
+          remoteSnapshot,
+          association,
+          remoteSnapshot?.live?.status === "online" ? "local" : "remote"
+        ));
+      }
+
+      return res.status(401).json({ error: "client_session_required" });
     } catch (error) {
       if (["session_binding_invalid", "voucher_session_missing"].includes(String(error?.message || ""))) {
         clearCookie(res, sessionCookie);
         return res.status(401).json({ error: "client_session_invalid" });
       }
       console.error("[EC1] consumption error", String(error?.message || error).slice(0, 160));
+      return res.status(503).json({ error: "service_unavailable" });
+    }
+  });
+
+  app.post("/api/client/remote/revoke", claimLimiter, async (req, res) => {
+    noStore(res);
+    if (!enabled || !ec3Enabled) return hidden(res);
+    if (!originAllowed(req)) return res.status(403).json({ error: "forbidden" });
+    try {
+      if (!supabase) return res.status(503).json({ error: "service_unavailable" });
+      const rawAssociationToken = String(req.cookies?.[remoteAssociationCookie] || "").trim().toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(rawAssociationToken)) {
+        const { data: association, error: associationLookupError } = await supabase
+          .from("client_space_remote_associations")
+          .select("id")
+          .eq("association_token_hash", hashToken(rawAssociationToken))
+          .is("revoked_at", null)
+          .maybeSingle();
+        if (associationLookupError) throw associationLookupError;
+        if (association?.id) {
+          const nowIso = new Date().toISOString();
+          const { error: associationError } = await supabase
+            .from("client_space_remote_associations")
+            .update({ revoked_at: nowIso, revoke_reason: "client_removed_browser" })
+            .eq("id", association.id)
+            .is("revoked_at", null);
+          if (associationError) throw associationError;
+          await revokeRemoteSessionsByAssociationId(association.id, "client_removed_browser");
+        }
+      }
+
+      const rawSessionToken = String(req.cookies?.[sessionCookie] || "").trim().toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(rawSessionToken)) {
+        const { data, error: sessionLookupError } = await supabase
+          .from("client_space_sessions")
+          .select("id")
+          .eq("session_token_hash", hashToken(rawSessionToken))
+          .is("revoked_at", null)
+          .maybeSingle();
+        if (sessionLookupError) throw sessionLookupError;
+        if (data?.id) {
+          const { error: sessionRevokeError } = await supabase
+            .from("client_space_sessions")
+            .update({ revoked_at: new Date().toISOString(), revoke_reason: "client_removed_browser" })
+            .eq("id", data.id)
+            .is("revoked_at", null);
+          if (sessionRevokeError) throw sessionRevokeError;
+        }
+      }
+
+      clearCookie(res, sessionCookie);
+      clearCookie(res, claimCookie);
+      clearRemoteCookies(res);
+      return res.json({ ok: true, removed: true });
+    } catch (error) {
+      console.error("[EC3] browser revoke failed", String(error?.message || error).slice(0, 160));
       return res.status(503).json({ error: "service_unavailable" });
     }
   });
@@ -1064,10 +1536,11 @@ export function registerEc1ClientSpace({
     } catch (_) {}
     clearCookie(res, sessionCookie);
     clearCookie(res, claimCookie);
+    clearCookie(res, remoteSessionCookie);
     return res.json({ ok: true });
   });
 
-  console.log(`[EC1] backend registered; enabled=${enabled}; ec2=${ec2Enabled}; auto_detect=${autoDetectReady}; dynamic_nas=${dynamicNasEnabled}; stale_recovery=${staleRecoveryEnabled}; allowed_nas_count=${allowedNasIds.size}; verify_mode=${verifyMode}`);
+  console.log(`[EC1] backend registered; enabled=${enabled}; ec2=${ec2Enabled}; ec3=${ec3Enabled}; auto_detect=${autoDetectReady}; dynamic_nas=${dynamicNasEnabled}; stale_recovery=${staleRecoveryEnabled}; allowed_nas_count=${allowedNasIds.size}; verify_mode=${verifyMode}`);
 }
 
 export const __ec1Test = {
@@ -1079,4 +1552,5 @@ export const __ec1Test = {
   decimalString,
   progressPct,
   planDurationSeconds,
+  normalizeBrowserProfile,
 };

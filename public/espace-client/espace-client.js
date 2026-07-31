@@ -6,6 +6,7 @@
     claim: "/api/client/claim",
     consumption: "/api/client/consumption",
     logout: "/api/client/logout",
+    remoteRevoke: "/api/client/remote/revoke",
   });
 
   const STALE_RECOVERY_STORAGE_KEY = "razafi_ec1_stale_recovery_at";
@@ -45,6 +46,18 @@
     deviceIdentifier: document.getElementById("deviceIdentifier"),
     deviceSync: document.getElementById("deviceSync"),
     whatsappLink: document.getElementById("whatsappLink"),
+    remoteConsultationCard: document.getElementById("remoteConsultationCard"),
+    remoteConsultationMessage: document.getElementById("remoteConsultationMessage"),
+    deviceZoneRow: document.getElementById("deviceZoneRow"),
+    deviceZone: document.getElementById("deviceZone"),
+    dashboardActions: document.getElementById("dashboardActions"),
+    securityTitle: document.getElementById("securityTitle"),
+    securityText: document.getElementById("securityText"),
+    removeBrowserBtn: document.getElementById("removeBrowserBtn"),
+    removeBrowserDialog: document.getElementById("removeBrowserDialog"),
+    removeBrowserCancelBtn: document.getElementById("removeBrowserCancelBtn"),
+    removeBrowserConfirmBtn: document.getElementById("removeBrowserConfirmBtn"),
+    deviceOfflineHelp: document.getElementById("deviceOfflineHelp"),
   });
 
 
@@ -460,10 +473,14 @@
     return card;
   }
 
-  function renderLiveStatus(live) {
+  function renderLiveStatus(live, ec3 = {}) {
+    const remote = ec3?.remote_consultation === true;
     const status = cleanText(live?.status, "unknown").toLowerCase();
     elements.livePill.className = "live-pill";
-    if (status === "online") {
+    if (remote) {
+      elements.livePill.classList.add("live-remote");
+      elements.liveLabel.textContent = "Consultation à distance";
+    } else if (status === "online") {
       elements.livePill.classList.add("live-online");
       elements.liveLabel.textContent = "Connexion active";
     } else if (status === "offline") {
@@ -529,12 +546,47 @@
     setRecentExpanded(false);
   }
 
+  function remoteAvailabilityText(snapshot, poolName) {
+    const current = cleanText(snapshot?.currently_consumed, "none").toLowerCase();
+    const access = current === "bonus" ? snapshot?.active_bonus : snapshot?.primary_voucher;
+    const consumption = current === "bonus" ? access : access?.consumption;
+    const unlimited = current === "bonus" ? access?.data_unlimited === true : access?.plan?.data_unlimited === true;
+    const remainingBytes = current === "bonus" ? access?.data_remaining_bytes : consumption?.data_remaining_bytes;
+    const remainingHuman = current === "bonus" ? access?.data_remaining_human : consumption?.data_remaining_human;
+
+    if (current !== "none" && access?.status === "active") {
+      if (!unlimited && remainingBytes !== null && remainingBytes !== undefined) {
+        return `Il vous reste ${formatBytes(remainingBytes, remainingHuman)}. Rejoignez ${poolName} pour utiliser votre connexion.`;
+      }
+      return `Votre forfait est encore disponible. Rejoignez ${poolName} pour utiliser votre connexion.`;
+    }
+    if (snapshot?.available_bonus) {
+      return `Un bonus est disponible. Rejoignez ${poolName} pour utiliser votre connexion.`;
+    }
+    return `Votre forfait est terminé. Rejoignez ${poolName} pour découvrir les connexions disponibles dans cette zone.`;
+  }
+
+  function renderRemoteConsultation(snapshot) {
+    const remote = snapshot?.ec3?.enabled === true && snapshot?.ec3?.remote_consultation === true;
+    elements.remoteConsultationCard.hidden = !remote;
+    if (!remote) return;
+    const poolName = cleanText(snapshot?.pool?.display_name, "votre zone WiFi RAZAFI");
+    elements.remoteConsultationMessage.textContent = `Vous consultez votre Espace client hors du réseau ${poolName}. ${remoteAvailabilityText(snapshot, poolName)}`;
+  }
+
   function renderDevice(snapshot) {
     const poolName = cleanText(snapshot?.pool?.display_name, "RAZAFI WiFi");
+    const remote = snapshot?.ec3?.remote_consultation === true;
     const liveStatus = cleanText(snapshot?.live?.status, "unknown").toLowerCase();
-    if (liveStatus === "online") elements.deviceConnection.textContent = `Connecté à ${poolName}`;
+    if (remote) elements.deviceConnection.textContent = "Hors du réseau RAZAFI";
+    else if (liveStatus === "online") elements.deviceConnection.textContent = `Connecté à ${poolName}`;
     else if (liveStatus === "offline") elements.deviceConnection.textContent = `Hors ligne sur ${poolName}`;
     else elements.deviceConnection.textContent = `Associé à ${poolName}`;
+    elements.deviceZoneRow.hidden = !remote;
+    elements.deviceZone.textContent = poolName;
+    elements.deviceOfflineHelp.textContent = remote
+      ? "En consultation à distance, cet état est normal. Rejoignez la zone associée pour utiliser votre forfait."
+      : "Vérifiez que vous êtes toujours connecté à la même zone WiFi.";
     elements.deviceIdentifier.textContent = cleanText(snapshot?.ec2?.device?.masked_identifier, "Indisponible");
     elements.deviceSync.textContent = formatRelativeSync(snapshot?.live?.updated_at);
   }
@@ -545,6 +597,19 @@
     const subject = poolName ? `${planName} sur ${poolName}` : planName;
     const message = `Bonjour, j’ai besoin d’aide concernant mon forfait\n${subject}.`;
     elements.whatsappLink.href = `https://wa.me/261340500592?text=${encodeURIComponent(message)}`;
+  }
+
+  function renderSecurity(snapshot) {
+    const ec3Enabled = snapshot?.ec3?.enabled === true;
+    elements.dashboardActions.hidden = ec3Enabled;
+    elements.removeBrowserBtn.hidden = !ec3Enabled;
+    if (ec3Enabled) {
+      elements.securityTitle.textContent = "Sécurité et confidentialité";
+      elements.securityText.textContent = "Cet espace est en lecture seule. Retirer ce navigateur supprimera uniquement son accès à distance, sans modifier votre forfait, votre bonus ou votre connexion WiFi.";
+    } else {
+      elements.securityTitle.textContent = "Espace sécurisé et en lecture seule";
+      elements.securityText.textContent = "Aucun paiement ni aucune activation ne peut être effectué ici.";
+    }
   }
 
   function renderEc2(snapshot) {
@@ -564,7 +629,8 @@
     state.timeBindings = [];
     elements.accessList.replaceChildren();
     renderPool(snapshot.pool || {});
-    renderLiveStatus(snapshot.live || {});
+    renderLiveStatus(snapshot.live || {}, snapshot.ec3 || {});
+    renderRemoteConsultation(snapshot);
 
     const current = cleanText(snapshot.currently_consumed, "none").toLowerCase();
     if (snapshot.active_bonus) {
@@ -585,6 +651,7 @@
     }
 
     renderEc2(snapshot);
+    renderSecurity(snapshot);
     showView("dashboard");
     startLiveTick();
     scheduleRefresh(snapshot.refresh_after_seconds);
@@ -739,6 +806,46 @@
     }
   }
 
+  function openRemoveBrowserDialog() {
+    if (typeof elements.removeBrowserDialog?.showModal === "function") {
+      elements.removeBrowserDialog.showModal();
+      return;
+    }
+    elements.removeBrowserDialog.setAttribute("open", "");
+  }
+
+  function closeRemoveBrowserDialog() {
+    if (typeof elements.removeBrowserDialog?.close === "function") {
+      elements.removeBrowserDialog.close();
+      return;
+    }
+    elements.removeBrowserDialog.removeAttribute("open");
+  }
+
+  async function removeBrowserAssociation() {
+    if (state.inFlight) return;
+    state.inFlight = true;
+    elements.removeBrowserConfirmBtn.disabled = true;
+    elements.removeBrowserConfirmBtn.textContent = "Suppression…";
+    try {
+      const { response, data } = await apiJson(ENDPOINTS.remoteRevoke, { method: "POST", body: "{}" });
+      if (!response.ok || data?.ok !== true) throw new Error("remote_revoke_failed");
+      closeRemoveBrowserDialog();
+      clearTimers();
+      clearStaleRecoveryAttempt();
+      state.snapshot = null;
+      state.detectionUrl = null;
+      showDetect("Ce navigateur a été retiré de votre Espace client. Votre forfait WiFi reste inchangé. Pour le réassocier, reconnectez-vous à une zone WiFi RAZAFI puis recherchez votre forfait.");
+    } catch (_) {
+      closeRemoveBrowserDialog();
+      showView("error");
+    } finally {
+      state.inFlight = false;
+      elements.removeBrowserConfirmBtn.disabled = false;
+      elements.removeBrowserConfirmBtn.textContent = "Retirer";
+    }
+  }
+
   async function logout() {
     if (state.inFlight) return;
     state.inFlight = true;
@@ -768,6 +875,13 @@
   document.getElementById("retryErrorBtn").addEventListener("click", bootstrap);
   elements.refreshBtn.addEventListener("click", () => loadConsumption());
   elements.logoutBtn.addEventListener("click", logout);
+  elements.removeBrowserBtn.addEventListener("click", openRemoveBrowserDialog);
+  elements.removeBrowserCancelBtn.addEventListener("click", closeRemoveBrowserDialog);
+  elements.removeBrowserConfirmBtn.addEventListener("click", removeBrowserAssociation);
+  elements.removeBrowserDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeRemoveBrowserDialog();
+  });
   elements.recentAccessToggle.addEventListener("click", () => {
     setRecentExpanded(elements.recentAccessToggle.dataset.expanded !== "true");
   });

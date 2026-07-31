@@ -548,3 +548,148 @@ button:focus-visible, a:focus-visible {
   .metric-grid { grid-template-columns: 1fr; }
   .topbar-label { display: none; }
 }
+
+/* EC-3 — Consultation à distance */
+.live-remote {
+  color: #5a47c8;
+  background: #f0edff;
+}
+
+.remote-consultation-card {
+  margin: -2px 0 18px;
+  padding: 15px 16px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  border: 1px solid rgba(90, 71, 200, 0.18);
+  border-radius: 18px;
+  background: linear-gradient(145deg, rgba(245, 243, 255, 0.96), rgba(237, 243, 255, 0.94));
+  box-shadow: 0 10px 28px rgba(72, 63, 148, 0.07);
+}
+.remote-consultation-icon {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: rgba(90, 71, 200, 0.11);
+  color: #5a47c8;
+  font-size: 17px;
+  font-weight: 900;
+}
+.remote-consultation-card strong {
+  display: block;
+  font-size: 14px;
+  line-height: 1.35;
+}
+.remote-consultation-card p {
+  margin: 4px 0 0;
+  color: #5f6472;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.security-copy { min-width: 0; flex: 1 1 auto; }
+.security-remove-button {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 13px;
+  padding: 9px 14px;
+  border: 1px solid rgba(204, 51, 68, 0.2);
+  border-radius: 14px;
+  background: rgba(255, 240, 242, 0.72);
+  color: var(--red);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.35;
+  text-align: center;
+}
+.security-remove-button:active { background: var(--red-soft); }
+
+.remove-browser-dialog {
+  width: min(calc(100% - 28px), 430px);
+  max-width: 430px;
+  margin: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 26px;
+  background: transparent;
+  color: var(--text);
+  box-shadow: 0 28px 80px rgba(15, 23, 42, 0.24);
+}
+.remove-browser-dialog::backdrop {
+  background: rgba(12, 16, 24, 0.38);
+  backdrop-filter: blur(8px);
+}
+.remove-browser-sheet {
+  padding: 24px;
+  border: 1px solid rgba(229, 232, 238, 0.95);
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.97);
+  text-align: center;
+}
+.remove-browser-icon {
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 14px;
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  background: var(--red-soft);
+  font-size: 21px;
+}
+.remove-browser-sheet h2 {
+  margin: 0;
+  font-size: 21px;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+}
+.remove-browser-sheet p {
+  margin: 11px 0 20px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.remove-browser-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.dialog-cancel-button,
+.dialog-remove-button {
+  min-height: 48px;
+  padding: 0 14px;
+  border-radius: 15px;
+  cursor: pointer;
+  font-weight: 800;
+}
+.dialog-cancel-button {
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+  color: var(--text);
+}
+.dialog-remove-button {
+  border: 0;
+  background: var(--red);
+  color: #fff;
+}
+.dialog-remove-button:disabled { opacity: 0.58; cursor: wait; }
+
+@media (max-width: 540px) {
+  .remote-consultation-card { border-radius: 16px; }
+  .remove-browser-dialog {
+    width: 100%;
+    max-width: none;
+    margin: auto 0 0;
+    border-radius: 28px 28px 0 0;
+  }
+  .remove-browser-sheet {
+    padding: 24px 20px calc(20px + env(safe-area-inset-bottom));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .remove-browser-dialog::backdrop { backdrop-filter: none; }
+}
