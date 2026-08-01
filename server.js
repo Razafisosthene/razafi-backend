@@ -4962,6 +4962,235 @@ function sanitizeAssistantLiveData(liveData, context) {
   return safe;
 }
 
+
+// =============================================================================
+// RAZAFI ASSISTANT — Additive Espace client knowledge (EC-1 / EC-2 / EC-3)
+// =============================================================================
+// Dormant by default. This layer adds general product knowledge only; it never
+// receives EC cookies, MAC addresses, association tokens or personal usage data.
+// Flag:
+//   ASSISTANT_EC_KNOWLEDGE_ENABLED=true
+//
+// When disabled, EC knowledge rows are filtered out and all helpers below return
+// null/empty values, preserving the pre-patch Assistant behavior.
+// =============================================================================
+const ASSISTANT_EC_KNOWLEDGE_VERSION = "EC-KNOWLEDGE-1.0";
+const ASSISTANT_EC_INTENT_KEYS = Object.freeze([
+  "client_space_overview",
+  "client_space_remote_access",
+  "client_space_security",
+  "admin_client_space_overview",
+  "admin_client_space_remote_value",
+  "admin_client_space_security",
+  "platform_client_space_overview",
+  "platform_client_space_remote",
+  "platform_client_space_security",
+]);
+const ASSISTANT_EC_INTENT_KEY_SET = new Set(ASSISTANT_EC_INTENT_KEYS);
+
+function isAssistantEcKnowledgeEnabled() {
+  return isAssistantEnvFlagEnabled("ASSISTANT_EC_KNOWLEDGE_ENABLED");
+}
+
+function isAssistantEcKnowledgeIntentKey(intentKey) {
+  return ASSISTANT_EC_INTENT_KEY_SET.has(String(intentKey || "").trim());
+}
+
+function normalizeAssistantEcMessage(raw) {
+  return String(raw || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[’`]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function detectAssistantEcKnowledgeIntent(message, context) {
+  if (!isAssistantEcKnowledgeEnabled()) return null;
+  const s = normalizeAssistantEcMessage(message);
+  if (!s) return null;
+
+  const hasAny = (...terms) => terms.some((term) => s.includes(term));
+  const explicitClientSpace = hasAny(
+    "espace client", "client space", "customer space", "customer portal account",
+    "my client space", "espace de mes clients"
+  );
+  const strongOverview = hasAny(
+    "rechercher mon forfait", "mes acces recents", "acces recents"
+  );
+  const explicitRemoteLabel = hasAny(
+    "consultation a distance", "remote consultation", "client space remote access"
+  );
+  const remoteNetwork = hasAny(
+    "depuis la 4g", "depuis la 5g", "en 4g", "en 5g", "donnees mobiles",
+    "autre wifi", "another wifi", "other wifi", "wifi maison", "home wifi",
+    "hors du reseau razafi", "outside razafi", "wi-fi hafa", "wifi hafa"
+  );
+  const remoteConsultVerb = hasAny(
+    "consulter", "voir mon espace", "ouvrir mon espace", "acceder a mon espace",
+    "check my client space", "open my client space", "view my client space"
+  );
+  const strongRemote = explicitRemoteLabel || (remoteNetwork && (explicitClientSpace || remoteConsultVerb));
+  const strongSecurity = hasAny(
+    "retirer ce navigateur", "remove this browser", "revoquer ce navigateur",
+    "revoquer l'association", "supprimer l'association", "meme navigateur",
+    "same browser", "changer de navigateur", "different browser", "cookies",
+    "navigation privee", "private browsing", "association expir", "lecture seule",
+    "read only", "read-only", "securite et confidentialite", "securite espace client",
+    "securite de l'espace client", "client space security", "reassocier"
+  );
+
+  if (context === "portal_user") {
+    if (strongSecurity && (explicitClientSpace || hasAny("navigateur", "browser", "association", "lecture seule", "read-only"))) {
+      return "client_space_security";
+    }
+    if (strongRemote) return "client_space_remote_access";
+    if (explicitClientSpace || strongOverview) return "client_space_overview";
+    return null;
+  }
+
+  if (context === "admin_owner") {
+    const ownerAnchor = explicitClientSpace || strongOverview;
+    if (strongSecurity && (ownerAnchor || hasAny("association", "navigateur", "lecture seule", "read-only"))) {
+      return "admin_client_space_security";
+    }
+    if (strongRemote && (explicitRemoteLabel || ownerAnchor || hasAny("retour", "revenir", "nouvelle vente", "vente", "fidelis"))) {
+      return "admin_client_space_remote_value";
+    }
+    if (ownerAnchor) return "admin_client_space_overview";
+    return null;
+  }
+
+  if (context === "platform_prospect") {
+    const platformAnchor = explicitClientSpace || strongOverview || hasAny("fonction espace client", "client space feature");
+    if (strongSecurity && (platformAnchor || hasAny("association", "navigateur", "lecture seule", "read-only"))) {
+      return "platform_client_space_security";
+    }
+    if (strongRemote) return "platform_client_space_remote";
+    if (platformAnchor) return "platform_client_space_overview";
+  }
+
+  return null;
+}
+
+function resolveAssistantEcFollowUpIntent({ context, message, thread }) {
+  if (!isAssistantEcKnowledgeEnabled()) return null;
+  const previous = String(thread?.last_intent_key || "");
+  if (!isAssistantEcKnowledgeIntentKey(previous) && String(thread?.current_topic || "") !== "client_space") return null;
+
+  const explicit = detectAssistantEcKnowledgeIntent(message, context);
+  if (explicit) return explicit;
+
+  const s = normalizeAssistantEcMessage(message);
+  if (!s || s.length > 120) return null;
+
+  const remoteFollowUp = /\b(4g|5g|donnees mobiles|autre wifi|another wifi|other wifi|wifi hafa|hors du reseau)\b/.test(s);
+  const securityFollowUp = /\b(navigateur|browser|cookie|navigation privee|private browsing|revoqu|retirer|supprimer|lecture seule|read-only|securite)\b/.test(s);
+  if (remoteFollowUp) {
+    if (context === "portal_user") return "client_space_remote_access";
+    if (context === "admin_owner") return "admin_client_space_remote_value";
+    if (context === "platform_prospect") return "platform_client_space_remote";
+  }
+  if (securityFollowUp) {
+    if (context === "portal_user") return "client_space_security";
+    if (context === "admin_owner") return "admin_client_space_security";
+    if (context === "platform_prospect") return "platform_client_space_security";
+  }
+  if (/^(oui|ok|d'accord|yes|eny|et comment|comment ca|pourquoi)[ ?.]*$/.test(s)) return previous;
+  return null;
+}
+
+function selectAssistantEcLocalizedAnswer(lang, answers) {
+  if (lang === "mg") return answers.mg;
+  if (lang === "en") return answers.en;
+  return answers.fr;
+}
+
+function buildAssistantEcKnowledgeAnswer(context, intentKey, lang) {
+  if (!isAssistantEcKnowledgeEnabled() || !isAssistantEcKnowledgeIntentKey(intentKey)) return null;
+
+  const answers = {
+    client_space_overview: {
+      fr: "L’Espace client permet de suivre le forfait actuel, le bonus séparément s’il existe, les accès récents et l’appareil associé. Depuis le site RAZAFI, ouvrez Connexion puis Espace client ; sur la zone WiFi RAZAFI, le bouton « Rechercher mon forfait » reconnaît la session sans demander le code voucher. Cet espace est strictement en lecture seule : aucun achat, paiement ou activation n’y est possible.",
+      mg: "Ao amin’ny Espace client no ahitana ny forfait actuel, ny bonus misaraka raha misy, ny accès récents ary ny appareil associé. Ao amin’ny site RAZAFI, sokafy Connexion puis Espace client ; rehefa ao amin’ny zone WiFi RAZAFI dia ny bouton « Rechercher mon forfait » no mamantatra ny session, tsy mila manoratra code voucher. Lecture seule io espace io: tsy misy achat, paiement na activation azo atao ao.",
+      en: "The Client Space shows the current plan, a separate bonus card when one exists, recent access history, and the associated device. On the RAZAFI site, open Connexion then Espace client; while connected to the RAZAFI WiFi zone, “Rechercher mon forfait” recognizes the session without asking for the voucher code. It is strictly read-only: no purchase, payment, or activation is possible there.",
+    },
+    client_space_remote_access: {
+      fr: "Après une première association sécurisée réalisée depuis la zone WiFi RAZAFI, le même navigateur peut consulter l’Espace client en 4G, 5G ou depuis un autre WiFi. Le bandeau « Consultation à distance » indique que vous êtes hors du réseau et vous invite à rejoindre la zone pour utiliser le forfait. Si vous changez de navigateur, utilisez la navigation privée ou supprimez les cookies, une nouvelle association locale sera nécessaire.",
+      mg: "Rehefa vita indray mandeha ny association sécurisée tao amin’ny zone WiFi RAZAFI, dia afaka mijery Espace client amin’ny 4G, 5G na WiFi hafa ilay navigateur iray ihany. Ny bandeau « Consultation à distance » dia milaza fa ivelan’ny réseau ianao ary manasa anao hiverina ao amin’ilay zone hampiasa ny forfait. Raha miova navigateur, mampiasa navigation privée na mamafa cookies ianao dia mila manao association vaovao ao amin’ny réseau RAZAFI.",
+      en: "After one secure association while connected to the RAZAFI WiFi zone, the same browser can view the Client Space over 4G, 5G, or another WiFi network. The “Consultation à distance” banner shows that the user is outside the zone and invites them to return to use the plan. A different browser, private browsing, or deleted cookies requires a new local association.",
+    },
+    client_space_security: {
+      fr: "L’association distante est liée au navigateur vérifié, révocable et expirante : par défaut après 30 jours d’inactivité ou 90 jours au maximum. Dans « Sécurité et confidentialité », « Retirer ce navigateur de mon Espace client » supprime uniquement l’accès distant de ce navigateur ; le forfait, le bonus et la connexion WiFi restent inchangés. Je peux expliquer ce fonctionnement général, mais je ne peux pas voir votre solde personnel sans données serveur fiables.",
+      mg: "Ny association à distance dia mifamatotra amin’ilay navigateur vérifié, azo révoquer ary misy expiration: par défaut 30 andro tsy nampiasana na 90 andro maximum. Ao amin’ny « Sécurité et confidentialité », ny « Retirer ce navigateur de mon Espace client » dia manala fotsiny ny accès à distance amin’io navigateur io; tsy miova ny forfait, bonus na connexion WiFi. Afaka manazava ny fonctionnement général aho, fa tsy afaka milaza ny solde personnel raha tsy misy données serveur fiables.",
+      en: "The remote association is tied to the verified browser, revocable, and expiring: by default after 30 days of inactivity or 90 days maximum. In “Sécurité et confidentialité”, “Retirer ce navigateur de mon Espace client” removes only that browser’s remote access; the plan, bonus, and WiFi connection remain unchanged. I can explain the general feature, but I cannot claim to know personal remaining data or time without trusted server data.",
+    },
+    admin_client_space_overview: {
+      fr: "Dans l’Espace client, vos clients peuvent consulter leur forfait actuel, un bonus séparé s’il existe, leurs accès récents, l’appareil masqué associé, l’aide rapide et le contact WhatsApp RAZAFI. La détection locale se fait sans saisie du code voucher. L’ensemble reste en lecture seule : aucun paiement, achat ou activation n’est disponible dans cet espace.",
+      mg: "Ao amin’ny Espace client, ny clients-nao dia afaka mijery ny forfait actuel, bonus misaraka raha misy, accès récents, appareil associé voasaron-tava, aide rapide ary contact WhatsApp RAZAFI. Tsy mila manoratra code voucher ny détection locale. Lecture seule tanteraka ilay espace: tsy misy paiement, achat na activation ao.",
+      en: "In the Client Space, customers can view their current plan, a separate bonus when available, recent access history, the masked associated device, quick help, and RAZAFI WhatsApp support. Local detection does not require typing the voucher code. The whole area remains read-only, with no payment, purchase, or activation.",
+    },
+    admin_client_space_remote_value: {
+      fr: "Après l’association locale sécurisée, le même navigateur peut consulter l’Espace client en 4G, 5G ou sur un autre WiFi. Le client voit ce qui lui reste et un message l’invite à revenir dans votre zone pour utiliser sa connexion ; cela peut favoriser le retour du client et une nouvelle vente à la fin de sa session. Aucun achat à distance n’est lancé depuis l’Espace client.",
+      mg: "Rehefa vita ny association locale sécurisée, dia afaka mijery Espace client amin’ny 4G, 5G na WiFi hafa ilay navigateur iray ihany. Hitan’ny client izay mbola tavela ary misy message manasa azy hiverina ao amin’ny zone-nao hampiasa ny connexion; afaka manampy amin’ny retour client sy nouvelle vente rehefa tapitra ny session izany. Tsy misy achat à distance alefa avy ao amin’ny Espace client.",
+      en: "After secure local association, the same browser can view the Client Space over 4G, 5G, or another WiFi. The customer sees what remains and is invited to return to your zone to use the connection, which can encourage a return visit and a new sale when the session ends. The Client Space does not start remote purchases.",
+    },
+    admin_client_space_security: {
+      fr: "La consultation distante repose sur une association sécurisée entre le navigateur vérifié, l’appareil et le pool. Elle est révocable, expire après une période d’inactivité et reste strictement en lecture seule. Retirer un navigateur révoque seulement son accès distant ; cela ne modifie ni voucher, ni bonus, ni session MikroTik, et l’Assistant Admin n’expose pas les associations privées des clients.",
+      mg: "Ny consultation à distance dia mampiasa association sécurisée eo amin’ny navigateur vérifié, appareil ary pool. Azo révoquer izy, misy expiration rehefa tsy ampiasaina ary lecture seule tanteraka. Ny fanesorana navigateur dia manala fotsiny ny accès distant; tsy manova voucher, bonus na session MikroTik, ary tsy asehon’ny Assistant Admin ny associations privées an’ny clients.",
+      en: "Remote consultation uses a secure association between the verified browser, device, and pool. It is revocable, expires after inactivity, and remains strictly read-only. Removing a browser revokes only its remote access; it does not change the voucher, bonus, or MikroTik session, and the Admin Assistant does not expose customers’ private associations.",
+    },
+    platform_client_space_overview: {
+      fr: "RAZAFI comprend un Espace client distinct du portail d’achat. Le client peut y suivre son forfait actuel, voir son bonus séparément, consulter ses accès récents, reconnaître l’appareil associé et contacter l’assistance WhatsApp. L’accès est en lecture seule et la détection locale peut se faire sans saisie du code voucher.",
+      mg: "RAZAFI dia manana Espace client misaraka amin’ny portail d’achat. Ao no ahafahan’ny client manara-maso ny forfait actuel, mahita bonus misaraka, mijery accès récents, mahafantatra ny appareil associé ary mifandray amin’ny assistance WhatsApp. Lecture seule ilay accès ary afaka manao détection locale tsy mila manoratra code voucher.",
+      en: "RAZAFI includes a Client Space separate from the purchase portal. Customers can track the current plan, see a bonus separately, view recent access history, recognize the associated device, and contact WhatsApp support. It is read-only, and local detection can work without typing the voucher code.",
+    },
+    platform_client_space_remote: {
+      fr: "La Consultation à distance permet au même navigateur, après une première vérification dans la zone RAZAFI, d’ouvrir l’Espace client en 4G, 5G ou depuis un autre WiFi. Le client peut voir le forfait encore disponible et reçoit une invitation à revenir dans la zone pour l’utiliser. Cette fonction soutient la fidélisation sans transformer l’Espace client en canal de paiement à distance.",
+      mg: "Ny Consultation à distance dia ahafahan’ilay navigateur iray ihany, rehefa voamarina indray mandeha tao amin’ny zone RAZAFI, manokatra Espace client amin’ny 4G, 5G na WiFi hafa. Afaka mahita ny forfait mbola disponible ny client ary misy invitation hiverina ao amin’ilay zone hampiasa azy. Manampy amin’ny fidélisation io fonction io nefa tsy manao Espace client ho canal de paiement à distance.",
+      en: "Remote Consultation lets the same browser, after one verification in the RAZAFI zone, open the Client Space over 4G, 5G, or another WiFi. The customer can see an available plan and is invited to return to the zone to use it. This supports retention without turning the Client Space into a remote payment channel.",
+    },
+    platform_client_space_security: {
+      fr: "L’Espace client distant utilise une association de navigateur sécurisée, révocable et expirante. Il n’autorise aucun achat, paiement, activation de voucher ou activation de bonus ; les identifiants techniques restent masqués et le client peut retirer son navigateur dans « Sécurité et confidentialité ». Une nouvelle association exige une vérification locale dans une zone RAZAFI.",
+      mg: "Ny Espace client distant dia mampiasa association navigateur sécurisée, azo révoquer ary misy expiration. Tsy mamela achat, paiement, activation voucher na activation bonus izy; voasaron-tava ny identifiants techniques ary afaka manala navigateur ao amin’ny « Sécurité et confidentialité » ny client. Mila vérification locale ao amin’ny zone RAZAFI ny association vaovao.",
+      en: "The remote Client Space uses a secure, revocable, expiring browser association. It allows no purchase, payment, voucher activation, or bonus activation; technical identifiers stay masked, and the customer can remove the browser under “Sécurité et confidentialité”. A new association requires local verification in a RAZAFI zone.",
+    },
+  };
+
+  const selected = answers[intentKey];
+  return selected ? selectAssistantEcLocalizedAnswer(lang, selected) : null;
+}
+
+function shouldInjectAssistantEcKnowledge(context, message, conversationContext = null) {
+  if (!isAssistantEcKnowledgeEnabled()) return false;
+  if (String(conversationContext?.current_topic || "") === "client_space") return true;
+  if (detectAssistantEcKnowledgeIntent(message, context)) return true;
+  const s = normalizeAssistantEcMessage(message);
+  return /\b(espace client|client space|consultation a distance|rechercher mon forfait|mes acces recents|retirer ce navigateur)\b/.test(s);
+}
+
+function buildAssistantEcKnowledgePromptSection(context, message, conversationContext = null) {
+  if (!shouldInjectAssistantEcKnowledge(context, message, conversationContext)) return "";
+  const common = [
+    `version: ${ASSISTANT_EC_KNOWLEDGE_VERSION}`,
+    "The RAZAFI Client Space is separate from the purchase portal and is strictly read-only.",
+    "It never allows payment, purchase, voucher activation, bonus activation, or automatic portal opening.",
+    "It can show the current plan, a separate bonus card when applicable, recent accesses, a masked associated device, WhatsApp assistance, and quick help.",
+    "Local recognition uses the verified RAZAFI WiFi/MikroTik flow and can recognize the active session without asking the user to type the voucher code.",
+    "After secure local association, the same browser can consult remotely over 4G, 5G, or another WiFi and sees a Consultation à distance banner inviting the user to return to the associated RAZAFI zone.",
+    "The browser association is revocable and expiring (default: 30 days inactivity, 90 days absolute). Different browsers, private browsing, or deleted cookies require a new local association.",
+    "Never claim to know a specific customer's remaining data, time, bonus state, remote mode, device, or access history unless trusted server data explicitly provides it.",
+    "Never expose a MAC address, voucher code, association token, cookie, internal ID, or private client association.",
+  ];
+  const contextLine = context === "portal_user"
+    ? "For a portal user, explain how to access and use the Client Space in simple terms; do not imply that this Assistant is inside the Client Space."
+    : context === "admin_owner"
+      ? "For an owner, explain what customers can see, the commercial value of remote consultation, and the read-only security boundary; do not reveal individual client associations."
+      : "For a platform prospect, present the Client Space as a RAZAFI feature distinct from the purchase portal, including remote consultation and its security safeguards.";
+  return `\n\n## RAZAFI CLIENT SPACE KNOWLEDGE (general feature facts only)\n${[...common, contextLine].map((line) => `- ${line}`).join("\n")}`;
+}
+
 async function loadAssistantKnowledge(context) {
   if (!supabase) return [];
   try {
@@ -4979,7 +5208,10 @@ async function loadAssistantKnowledge(context) {
       console.error("[ASSISTANT KB LOAD ERROR]", error?.message || error);
       return [];
     }
-    return Array.isArray(data) ? data : [];
+    const rows = Array.isArray(data) ? data : [];
+    return isAssistantEcKnowledgeEnabled()
+      ? rows
+      : rows.filter((row) => !isAssistantEcKnowledgeIntentKey(row?.intent_key));
   } catch (e) {
     console.error("[ASSISTANT KB LOAD EX]", e?.message || e);
     return [];
@@ -5182,6 +5414,12 @@ function resolveAssistantPersonalizedFollowUpIntent({ context, message, thread }
 // (lowercased, trimmed) message.
 function detectDynamicIntentFromMessage(msg, context) {
   const s = String(msg || "").toLowerCase().trim();
+
+  // Additive EC knowledge must win only on explicit Espace client signals.
+  // When the feature flag is false, this helper returns null and legacy routing
+  // continues byte-for-byte from the next branch.
+  const ecIntent = detectAssistantEcKnowledgeIntent(msg, context);
+  if (ecIntent) return ecIntent;
 
   if (context === "portal_user") {
     // Assistant PP: explicit personalized-plan questions must win over generic
@@ -8147,6 +8385,8 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
     "portal_platform_interest",
     "platform_client_portal", "platform_owner_dashboard",
     "platform_multi_pool", "platform_demo",
+    // Additive Espace client knowledge — EC-1 / EC-2 / EC-3
+    ...ASSISTANT_EC_INTENT_KEYS,
   ]);
 
   let resolvedIntent = null;
@@ -8157,7 +8397,13 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
   // This prevents generic KB entries from swallowing cross-context questions.
   const detectedIntent = detectDynamicIntentFromMessage(message, context);
 
-  if (
+  if (isAssistantEcKnowledgeIntentKey(detectedIntent)) {
+    // Explicit EC phrases win over broad legacy rows such as consumption,
+    // bonus, portal client or pool analysis — only while the flag is enabled.
+    resolvedIntent = detectedIntent;
+  } else if (isAssistantEcKnowledgeIntentKey(intentKey)) {
+    resolvedIntent = intentKey;
+  } else if (
     context === "portal_user" &&
     detectedIntent &&
     (
@@ -8201,7 +8447,9 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
 
   let dynamicAnswer = null;
 
-  if (context === "portal_user") {
+  if (isAssistantEcKnowledgeIntentKey(resolvedIntent)) {
+    dynamicAnswer = buildAssistantEcKnowledgeAnswer(context, resolvedIntent, lang);
+  } else if (context === "portal_user") {
     dynamicAnswer = buildPortalDynamicAnswer(resolvedIntent, lang, liveData, message);
   } else if (context === "admin_owner") {
     dynamicAnswer = buildAdminOwnerDynamicAnswer(resolvedIntent, lang, liveData);
@@ -9081,7 +9329,11 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
     String(detectedIntentForTurn || "").startsWith("platform_pp_")
       ? detectedIntentForTurn
       : null;
-  const effectiveIntentKey = ppFollowUpIntent || detectedPpIntent || intent?.intent_key || null;
+  const detectedEcIntent = isAssistantEcKnowledgeIntentKey(detectedIntentForTurn)
+    ? detectedIntentForTurn
+    : null;
+  const ecFollowUpIntent = resolveAssistantEcFollowUpIntent({ context, message, thread });
+  const effectiveIntentKey = ecFollowUpIntent || detectedEcIntent || ppFollowUpIntent || detectedPpIntent || intent?.intent_key || null;
 
   // Select answer in detected language
   const answer = selectAssistantAnswer(intent, lang);
@@ -9345,7 +9597,11 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
     assistantAnswer: finalAnswer,
     lang,
     intentKey: effectiveIntentKey,
-    topic: String(effectiveIntentKey || "").includes("_pp_") ? "personalized_plan" : thread.current_topic,
+    topic: isAssistantEcKnowledgeIntentKey(effectiveIntentKey)
+      ? "client_space"
+      : String(effectiveIntentKey || "").includes("_pp_")
+        ? "personalized_plan"
+        : thread.current_topic,
     slots: {},
   });
 
@@ -10378,9 +10634,15 @@ function buildGroundedAssistantPrompt({
   const isPaymentComplaint = context === "portal_user" && isPaymentComplaintMessage(rawMessage);
 
   // ── SECTION: RELEVANT KNOWLEDGE ──────────────────────────────────────────
+  // EC rows are excluded on unrelated turns so enabling the additive feature
+  // does not displace legacy KB rows from the existing 12-row prompt budget.
+  const ecKnowledgeForTurn = shouldInjectAssistantEcKnowledge(context, rawMessage, conversationContext);
+  const promptKnowledgeRows = Array.isArray(knowledgeRows)
+    ? (ecKnowledgeForTurn ? knowledgeRows : knowledgeRows.filter((row) => !isAssistantEcKnowledgeIntentKey(row?.intent_key)))
+    : [];
   let knowledgeSection = "";
-  if (Array.isArray(knowledgeRows) && knowledgeRows.length > 0) {
-    const kbLines = knowledgeRows
+  if (promptKnowledgeRows.length > 0) {
+    const kbLines = promptKnowledgeRows
       .slice(0, 12)
       .map(r => {
         const key = r?.intent_key || "";
@@ -10392,6 +10654,11 @@ function buildGroundedAssistantPrompt({
       .join("\n");
     knowledgeSection = `\n\n## RELEVANT KNOWLEDGE\n${kbLines}`;
   }
+
+  // ── SECTION: ADDITIVE ESPACE CLIENT KNOWLEDGE ─────────────────────────────
+  // Static product facts only. No EC cookie, MAC, association or personal usage
+  // state is ever passed to the Assistant.
+  const ecKnowledgeSection = buildAssistantEcKnowledgePromptSection(context, rawMessage, conversationContext);
 
   // ── SECTION: UI SNAPSHOT ──────────────────────────────────────────────────
   // In ANU mode this section is explicitly untrusted and may describe only the
@@ -10595,6 +10862,9 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
       ? "For support contact, use ONLY pool.support_phone from TRUSTED SERVER CONTEXT or contact_phone from SAFE DIAGNOSTIC RESULT."
       : "For support contact, use ONLY the contact_phone from SAFE DIAGNOSTIC RESULT or SAFE LIVE DATA.",
     "If no trusted support phone is available, say 'contactez l'assistance RAZAFI' without any phone number.",
+    ...(ecKnowledgeSection ? [
+      "ESPACE CLIENT RULE: Explain only general Client Space features unless trusted server data explicitly supplies a personal state. Never invent remaining data/time, bonus state, remote mode, device identity or access history. Never expose EC identifiers or claim to perform an EC action."
+    ] : []),
     // Patch G.1: natural conversation policy appended to system prompt
     "\n## NATURAL CONVERSATION POLICY",
     "Do not restart the conversation. Continue from the open goal and stage.",
@@ -10737,6 +11007,7 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
     conversationSection,
     g1PolicySection,
     trustedContextSection,
+    ecKnowledgeSection,     // additive EC facts, gated and independent from unordered KB rows
     diagnosticSection,
     paymentSection,
     siteKnowledgeSection,   // G.4: platform_prospect public knowledge — injected before liveSection
