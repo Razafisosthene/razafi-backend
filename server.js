@@ -4974,7 +4974,7 @@ function sanitizeAssistantLiveData(liveData, context) {
 // When disabled, EC knowledge rows are filtered out and all helpers below return
 // null/empty values, preserving the pre-patch Assistant behavior.
 // =============================================================================
-const ASSISTANT_EC_KNOWLEDGE_VERSION = "EC-KNOWLEDGE-1.0";
+const ASSISTANT_EC_KNOWLEDGE_VERSION = "EC-KNOWLEDGE-1.1";
 const ASSISTANT_EC_INTENT_KEYS = Object.freeze([
   "client_space_overview",
   "client_space_remote_access",
@@ -5087,12 +5087,17 @@ function resolveAssistantEcFollowUpIntent({ context, message, thread }) {
 
   const remoteFollowUp = /\b(4g|5g|donnees mobiles|autre wifi|another wifi|other wifi|wifi hafa|hors du reseau)\b/.test(s);
   const securityFollowUp = /\b(navigateur|browser|cookie|navigation privee|private browsing|revoqu|retirer|supprimer|lecture seule|read-only|securite)\b/.test(s);
+  // EC precision hotfix: while the conversation is already anchored to the
+  // Client Space, short questions about purchase/payment/activation must stay
+  // inside the EC read-only boundary instead of falling back to broad legacy
+  // purchase or payment intents.
+  const restrictedActionFollowUp = /\b(?:achet\w*|achat\w*|buy\w*|purchase\w*|payer|paiement\w*|pay\w*|activ\w*)\b/.test(s);
   if (remoteFollowUp) {
     if (context === "portal_user") return "client_space_remote_access";
     if (context === "admin_owner") return "admin_client_space_remote_value";
     if (context === "platform_prospect") return "platform_client_space_remote";
   }
-  if (securityFollowUp) {
+  if (securityFollowUp || restrictedActionFollowUp) {
     if (context === "portal_user") return "client_space_security";
     if (context === "admin_owner") return "admin_client_space_security";
     if (context === "platform_prospect") return "platform_client_space_security";
@@ -9335,6 +9340,10 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
   const ecFollowUpIntent = resolveAssistantEcFollowUpIntent({ context, message, thread });
   const effectiveIntentKey = ecFollowUpIntent || detectedEcIntent || ppFollowUpIntent || detectedPpIntent || intent?.intent_key || null;
 
+  // EC precision hotfix: explicit/follow-up Client Space turns use the exact
+  // deterministic EC answer. ANU-3.1 remains unchanged for every other intent.
+  const ecDeterministicTurn = isAssistantEcKnowledgeEnabled() && isAssistantEcKnowledgeIntentKey(effectiveIntentKey);
+
   // Select answer in detected language
   const answer = selectAssistantAnswer(intent, lang);
 
@@ -9431,7 +9440,7 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
     !!diagnosticResult
   );
 
-  const shouldRunAi = isAssistantAiEnabled() && !!message && (
+  const shouldRunAi = isAssistantAiEnabled() && !!message && !ecDeterministicTurn && (
     anuEnabledForContext
       ? anuSafetyLane === ASSISTANT_ANU_LANES.NATURAL_AI
       : !legacyPaymentSensitiveTurn
