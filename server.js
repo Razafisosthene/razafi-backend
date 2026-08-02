@@ -4974,7 +4974,7 @@ function sanitizeAssistantLiveData(liveData, context) {
 // When disabled, EC knowledge rows are filtered out and all helpers below return
 // null/empty values, preserving the pre-patch Assistant behavior.
 // =============================================================================
-const ASSISTANT_EC_KNOWLEDGE_VERSION = "EC-KNOWLEDGE-1.1";
+const ASSISTANT_EC_KNOWLEDGE_VERSION = "EC-KNOWLEDGE-1.2";
 const ASSISTANT_EC_INTENT_KEYS = Object.freeze([
   "client_space_overview",
   "client_space_remote_access",
@@ -4983,6 +4983,7 @@ const ASSISTANT_EC_INTENT_KEYS = Object.freeze([
   "admin_client_space_remote_value",
   "admin_client_space_security",
   "platform_client_space_overview",
+  "platform_client_space_comparison",
   "platform_client_space_remote",
   "platform_client_space_security",
 ]);
@@ -5019,13 +5020,25 @@ function detectAssistantEcKnowledgeIntent(message, context) {
   const strongOverview = hasAny(
     "rechercher mon forfait", "mes acces recents", "acces recents"
   );
+  const clientPortalComparison = explicitClientSpace && hasAny(
+    "difference entre le portail client", "difference entre portail client",
+    "difference entre le portail d'achat", "difference entre portail d'achat",
+    "portail client et l'espace client", "portail d'achat et l'espace client",
+    "portail client vs espace client", "portail d'achat vs espace client",
+    "client portal vs client space", "difference between the client portal",
+    "difference between client portal"
+  );
   const explicitRemoteLabel = hasAny(
     "consultation a distance", "remote consultation", "client space remote access"
   );
   const remoteNetwork = hasAny(
     "depuis la 4g", "depuis la 5g", "en 4g", "en 5g", "donnees mobiles",
     "autre wifi", "another wifi", "other wifi", "wifi maison", "home wifi",
-    "hors du reseau razafi", "outside razafi", "wi-fi hafa", "wifi hafa"
+    "hors du reseau razafi", "hors du wifi razafi", "en dehors du wifi razafi",
+    "sans etre connecte au wifi razafi", "sans le wifi razafi",
+    "seulement sur le wifi razafi", "uniquement sur le wifi razafi",
+    "only on razafi wifi", "without razafi wifi", "outside razafi",
+    "wi-fi hafa", "wifi hafa"
   );
   const remoteConsultVerb = hasAny(
     "consulter", "voir mon espace", "ouvrir mon espace", "acceder a mon espace",
@@ -5064,6 +5077,7 @@ function detectAssistantEcKnowledgeIntent(message, context) {
 
   if (context === "platform_prospect") {
     const platformAnchor = explicitClientSpace || strongOverview || hasAny("fonction espace client", "client space feature");
+    if (clientPortalComparison) return "platform_client_space_comparison";
     if (strongSecurity && (platformAnchor || hasAny("association", "navigateur", "lecture seule", "read-only"))) {
       return "platform_client_space_security";
     }
@@ -5085,7 +5099,7 @@ function resolveAssistantEcFollowUpIntent({ context, message, thread }) {
   const s = normalizeAssistantEcMessage(message);
   if (!s || s.length > 120) return null;
 
-  const remoteFollowUp = /\b(4g|5g|donnees mobiles|autre wifi|another wifi|other wifi|wifi hafa|hors du reseau)\b/.test(s);
+  const remoteFollowUp = /\b(4g|5g|donnees mobiles|autre wifi|another wifi|other wifi|wifi hafa|hors du reseau|hors du wifi|en dehors du wifi|sans (?:etre connecte au )?wifi razafi|seulement sur le wifi razafi|uniquement sur le wifi razafi)\b/.test(s);
   const securityFollowUp = /\b(navigateur|browser|cookie|navigation privee|private browsing|revoqu|retirer|supprimer|lecture seule|read-only|securite)\b/.test(s);
   // EC precision hotfix: while the conversation is already anchored to the
   // Client Space, short questions about purchase/payment/activation must stay
@@ -5151,6 +5165,11 @@ function buildAssistantEcKnowledgeAnswer(context, intentKey, lang) {
       mg: "RAZAFI dia manana Espace client misaraka amin’ny portail d’achat. Ao no ahafahan’ny client manara-maso ny forfait actuel, mahita bonus misaraka, mijery accès récents, mahafantatra ny appareil associé ary mifandray amin’ny assistance WhatsApp. Lecture seule ilay accès ary afaka manao détection locale tsy mila manoratra code voucher.",
       en: "RAZAFI includes a Client Space separate from the purchase portal. Customers can track the current plan, see a bonus separately, view recent access history, recognize the associated device, and contact WhatsApp support. It is read-only, and local detection can work without typing the voucher code.",
     },
+    platform_client_space_comparison: {
+      fr: "Le portail client sert à choisir un forfait, effectuer le paiement et obtenir l’accès WiFi. L’Espace client sert uniquement à consulter le forfait actuel, le bonus, les accès récents et l’appareil associé. Il reste strictement en lecture seule : aucun achat, paiement ou activation n’y est possible.",
+      mg: "Ny portail client no ampiasaina hisafidianana forfait, hanaovana paiement ary hahazoana accès WiFi. Ny Espace client kosa dia natao hijerena fotsiny ny forfait actuel, bonus, accès récents ary appareil associé. Lecture seule tanteraka izy: tsy misy achat, paiement na activation ao.",
+      en: "The client portal is used to choose a plan, make payment, and obtain WiFi access. The Client Space is only for viewing the current plan, bonus, recent accesses, and associated device. It remains strictly read-only: no purchase, payment, or activation is possible there.",
+    },
     platform_client_space_remote: {
       fr: "La Consultation à distance permet au même navigateur, après une première vérification dans la zone RAZAFI, d’ouvrir l’Espace client en 4G, 5G ou depuis un autre WiFi. Le client peut voir le forfait encore disponible et reçoit une invitation à revenir dans la zone pour l’utiliser. Cette fonction soutient la fidélisation sans transformer l’Espace client en canal de paiement à distance.",
       mg: "Ny Consultation à distance dia ahafahan’ilay navigateur iray ihany, rehefa voamarina indray mandeha tao amin’ny zone RAZAFI, manokatra Espace client amin’ny 4G, 5G na WiFi hafa. Afaka mahita ny forfait mbola disponible ny client ary misy invitation hiverina ao amin’ilay zone hampiasa azy. Manampy amin’ny fidélisation io fonction io nefa tsy manao Espace client ho canal de paiement à distance.",
@@ -5179,7 +5198,7 @@ function buildAssistantEcKnowledgePromptSection(context, message, conversationCo
   if (!shouldInjectAssistantEcKnowledge(context, message, conversationContext)) return "";
   const common = [
     `version: ${ASSISTANT_EC_KNOWLEDGE_VERSION}`,
-    "The RAZAFI Client Space is separate from the purchase portal and is strictly read-only.",
+    "The purchase portal is used to choose a plan, pay, and obtain WiFi access; the RAZAFI Client Space is separate and strictly read-only.",
     "It never allows payment, purchase, voucher activation, bonus activation, or automatic portal opening.",
     "It can show the current plan, a separate bonus card when applicable, recent accesses, a masked associated device, WhatsApp assistance, and quick help.",
     "Local recognition uses the verified RAZAFI WiFi/MikroTik flow and can recognize the active session without asking the user to type the voucher code.",
@@ -5320,6 +5339,479 @@ function sanitizeAssistantLiveDataKeys(raw, context) {
 // Falls back to null when live_data is absent → caller uses KB/fallback unchanged.
 // ===============================
 
+
+// =============================================================================
+// RAZAFI ASSISTANT — Smart standard-plan → personalized-plan fallback
+// =============================================================================
+// Dormant by default. When enabled, quantified portal needs are resolved against
+// trusted visible standard plans first. Only when no standard plan covers every
+// explicit requirement does the Assistant guide the user toward an available PP
+// with server-authoritative type/data/duration/speed limits. It never invents a price.
+// Flag:
+//   ASSISTANT_PP_SMART_FALLBACK_ENABLED=true
+// =============================================================================
+const ASSISTANT_PP_SMART_FALLBACK_VERSION = "PP-SMART-FALLBACK-1.0";
+const ASSISTANT_PP_SMART_FALLBACK_INTENT = "portal_plan_advice_pp_fallback";
+
+function isAssistantPpSmartFallbackEnabled() {
+  return isAssistantEnvFlagEnabled("ASSISTANT_PP_SMART_FALLBACK_ENABLED");
+}
+
+function normalizeAssistantPpNeedMessage(raw) {
+  return String(raw || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[’`]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function assistantPpSmartHasQuantifiedNeed(raw) {
+  if (!isAssistantPpSmartFallbackEnabled()) return false;
+  const s = normalizeAssistantPpNeedMessage(raw);
+  if (!s) return false;
+  const hasData = /\b\d+(?:[.,]\d+)?\s*(?:go|gb|gigaoctets?|giga|mo|mb)\b/.test(s);
+  const hasDuration = /\b\d+(?:[.,]\d+)?\s*(?:minutes?|mins?|min|heures?|hrs?|h|jours?|days?|d|semaines?|weeks?|mois|months?)\b/.test(s) ||
+    /\b(mensuel|mensuelle|monthly|hebdomadaire|weekly|toute la journee|24h)\b/.test(s);
+  const hasSpeed = /\b\d+(?:[.,]\d+)?\s*(?:mbps|mb\/s|mbits?\/s|megas?)\b/.test(s);
+  const hasType = /\b(illimite|unlimited|data)\b/.test(s);
+  const dimensions = [hasData, hasDuration, hasSpeed, hasType].filter(Boolean).length;
+  const planAnchor = /\b(forfait|plan|offre|connexion|internet|besoin|veux|souhaite|cherche|recommend|conseille)\b/.test(s);
+  return dimensions >= 2 || (dimensions >= 1 && planAnchor);
+}
+
+function resolveAssistantPpSmartFallbackFollowUpIntent({ context, message, thread }) {
+  if (!isAssistantPpSmartFallbackEnabled() || context !== "portal_user") return null;
+  if (String(thread?.last_intent_key || "") !== ASSISTANT_PP_SMART_FALLBACK_INTENT) return null;
+  const s = normalizeAssistantPpNeedMessage(message);
+  if (!s || s.length > 140) return null;
+  if (assistantPpSmartHasQuantifiedNeed(s) || /\b(data|illimite|unlimited|go|gb|mo|mb|jours?|heures?|minutes?|mbps|vitesse)\b/.test(s)) {
+    return ASSISTANT_PP_SMART_FALLBACK_INTENT;
+  }
+  return null;
+}
+
+function assistantPpSmartParseNumber(raw) {
+  const n = Number(String(raw || "").replace(",", "."));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function assistantPpSmartRecentNeedText(message, thread) {
+  const current = String(message || "").trim();
+  if (String(thread?.last_intent_key || "") !== ASSISTANT_PP_SMART_FALLBACK_INTENT) return current;
+  const previous = Array.isArray(thread?.turns)
+    ? thread.turns.filter((turn) => turn?.role === "user" && turn?.text).slice(-4).map((turn) => String(turn.text).slice(0, 220))
+    : [];
+  return [...previous, current].filter(Boolean).join(" ");
+}
+
+function extractAssistantPpSmartNeed(raw) {
+  const s = normalizeAssistantPpNeedMessage(raw);
+  const need = {
+    type: null,
+    data_mb: null,
+    duration_minutes: null,
+    speed_mbps: null,
+    budget_ar: null,
+    usage: null,
+  };
+  if (!s) return need;
+
+  if (/\b(illimite|unlimited|sans limite)\b/.test(s)) need.type = "unlimited";
+  if (/\b(data|volume)\b/.test(s)) need.type = need.type || "data";
+
+  let match;
+  const dataRe = /\b(\d+(?:[.,]\d+)?)\s*(go|gb|gigaoctets?|giga|mo|mb)\b/g;
+  while ((match = dataRe.exec(s))) {
+    const value = assistantPpSmartParseNumber(match[1]);
+    if (!value) continue;
+    const unit = match[2];
+    need.data_mb = unit === "mo" || unit === "mb" ? value : value * 1024;
+    need.type = "data";
+  }
+
+  const durationRe = /\b(\d+(?:[.,]\d+)?)\s*(minutes?|mins?|min|heures?|hrs?|h|jours?|days?|d|semaines?|weeks?|mois|months?)\b/g;
+  while ((match = durationRe.exec(s))) {
+    const value = assistantPpSmartParseNumber(match[1]);
+    if (!value) continue;
+    const unit = match[2];
+    if (/^(minutes?|mins?|min)$/.test(unit)) need.duration_minutes = value;
+    else if (/^(heures?|hrs?|h)$/.test(unit)) need.duration_minutes = value * 60;
+    else if (/^(jours?|days?|d)$/.test(unit)) need.duration_minutes = value * 1440;
+    else if (/^(semaines?|weeks?)$/.test(unit)) need.duration_minutes = value * 7 * 1440;
+    else if (/^(mois|months?)$/.test(unit)) need.duration_minutes = value * 30 * 1440;
+  }
+  if (need.duration_minutes === null) {
+    if (/\b(mensuel|mensuelle|monthly|par mois|30j|30 jours)\b/.test(s)) need.duration_minutes = 30 * 1440;
+    else if (/\b(hebdomadaire|weekly|par semaine|une semaine|7j|7 jours)\b/.test(s)) need.duration_minutes = 7 * 1440;
+    else if (/\b(toute la journee|24h|24 h|journalier|daily)\b/.test(s)) need.duration_minutes = 1440;
+  }
+
+  const speedRe = /\b(\d+(?:[.,]\d+)?)\s*(?:mbps|mb\/s|mbits?\/s|megas?)\b/g;
+  while ((match = speedRe.exec(s))) {
+    const value = assistantPpSmartParseNumber(match[1]);
+    if (value) need.speed_mbps = value;
+  }
+
+  const budgetMatch = s.match(/\b(\d[\d\s\u00a0]*)\s*(?:ar|ariary)\b/);
+  if (budgetMatch) {
+    const budget = Number(budgetMatch[1].replace(/[\s\u00a0]/g, ""));
+    if (Number.isFinite(budget) && budget > 0) need.budget_ar = Math.round(budget);
+  }
+
+  if (/\b(match|football|foot|sport|direct|live|baolina)\b/.test(s)) need.usage = "live_match";
+  else if (/\b(jeu en ligne|jeux en ligne|jouer en ligne|gaming|gamer|free fire|fortnite|pubg|roblox|minecraft|ping|latence|lag)\b/.test(s)) need.usage = "gaming";
+  else if (/\b(tiktok|youtube|video|streaming|netflix|film|serie|disney)\b/.test(s)) need.usage = "video";
+  else if (/\b(travail|travailler|zoom|meet|teams|visio|reunion|formation|cours)\b/.test(s)) need.usage = "work";
+  else if (/\b(telecharger|download|fichier|mise a jour|update|backup|drive)\b/.test(s)) need.usage = "download";
+  else if (/\b(whatsapp|facebook|messenger|instagram|viber|telegram|reseaux sociaux|chat)\b/.test(s)) need.usage = "social";
+  else if (/\b(google|navigation|naviguer|site web|email|gmail|recherche|chercher)\b/.test(s)) need.usage = "browsing";
+
+  return need;
+}
+
+function assistantPpSmartPlanSpeedMbps(plan) {
+  const raw = String(plan?.speed_label || plan?.speed_human || plan?.mikrotik_rate_limit || "").trim();
+  if (!raw) return null;
+  const first = raw.split("/")[0].trim();
+  const direct = first.match(/([0-9]+(?:[.,][0-9]+)?)\s*(?:mbps|mb\/s|m)\b/i);
+  if (direct) return Number(direct[1].replace(",", "."));
+  const unit = first.match(/^([0-9]+(?:[.,][0-9]+)?)([kmgt])$/i);
+  if (!unit) return null;
+  const n = Number(unit[1].replace(",", "."));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const u = unit[2].toUpperCase();
+  if (u === "K") return n / 1024;
+  if (u === "G") return n * 1024;
+  if (u === "T") return n * 1024 * 1024;
+  return n;
+}
+
+function assistantPpSmartPlanMatchesNeed(plan, need) {
+  if (!plan || !need) return false;
+  if (need.type === "unlimited" && plan.unlimited !== true) return false;
+  if (need.type === "data" && plan.unlimited === true) return false;
+  if (need.data_mb !== null && !(Number(plan.data_mb) >= Number(need.data_mb))) return false;
+  if (need.duration_minutes !== null && !(Number(plan.duration_minutes) >= Number(need.duration_minutes))) return false;
+  if (need.speed_mbps !== null) {
+    const speed = assistantPpSmartPlanSpeedMbps(plan);
+    if (!(speed !== null && speed >= Number(need.speed_mbps))) return false;
+  }
+  if (need.budget_ar !== null && !(Number(plan.price_ar) > 0 && Number(plan.price_ar) <= Number(need.budget_ar))) return false;
+  return true;
+}
+
+function assistantPpSmartBestStandardPlan(plans, need) {
+  const matches = (Array.isArray(plans) ? plans : []).filter((plan) => assistantPpSmartPlanMatchesNeed(plan, need));
+  if (!matches.length) return null;
+  const excess = (actual, requested) => requested === null ? 0 : Math.max(0, Number(actual || 0) - Number(requested || 0));
+  return matches.slice().sort((a, b) => {
+    const aScore = excess(a.duration_minutes, need.duration_minutes) +
+      excess(a.data_mb, need.data_mb) / 10 +
+      excess(assistantPpSmartPlanSpeedMbps(a), need.speed_mbps) * 60;
+    const bScore = excess(b.duration_minutes, need.duration_minutes) +
+      excess(b.data_mb, need.data_mb) / 10 +
+      excess(assistantPpSmartPlanSpeedMbps(b), need.speed_mbps) * 60;
+    if (aScore !== bScore) return aScore - bScore;
+    return Number(a.price_ar || 0) - Number(b.price_ar || 0);
+  })[0];
+}
+
+function assistantPpSmartAlignUp(value, min, step, max) {
+  const requested = Number(value);
+  const lo = Number(min);
+  const hi = Number(max);
+  const increment = Number(step);
+  if (![requested, lo, hi, increment].every(Number.isFinite) || requested <= 0 || lo <= 0 || hi < lo || increment <= 0) {
+    return { ok: false, reason: "config_invalid", value: null, adjusted: false };
+  }
+  if (requested > hi) return { ok: false, reason: "above_max", value: hi, adjusted: true };
+  const base = Math.max(requested, lo);
+  const steps = Math.max(0, Math.ceil(((base - lo) / increment) - 1e-9));
+  const aligned = lo + steps * increment;
+  if (aligned > hi + 1e-9) return { ok: false, reason: "above_max", value: hi, adjusted: true };
+  return {
+    ok: true,
+    reason: requested < lo ? "below_min" : (Math.abs(aligned - requested) > 1e-6 ? "step" : null),
+    value: Math.round(aligned * 100) / 100,
+    adjusted: Math.abs(aligned - requested) > 1e-6,
+  };
+}
+
+function assistantPpSmartPickSpeed(requested, allowedSpeeds, usage) {
+  const speeds = (Array.isArray(allowedSpeeds) ? allowedSpeeds : [])
+    .map(Number).filter((n) => Number.isFinite(n) && n > 0)
+    .sort((a, b) => a - b);
+  if (!speeds.length) return { ok: false, value: null, adjusted: false, reason: "config_invalid" };
+  let target = Number(requested);
+  if (!Number.isFinite(target) || target <= 0) {
+    const usageTargets = { social: 3, browsing: 3, work: 7, video: 7, gaming: 10, live_match: 10, download: 10 };
+    target = usageTargets[usage] || null;
+    if (!target) return { ok: false, value: null, adjusted: false, reason: "missing" };
+  }
+  const selected = speeds.find((speed) => speed >= target);
+  if (selected !== undefined) return { ok: true, value: selected, adjusted: requested !== null && Number(requested) !== selected, reason: requested !== null && Number(requested) !== selected ? "discrete" : null };
+  return { ok: false, value: speeds[speeds.length - 1], adjusted: true, reason: "above_max" };
+}
+
+function assistantPpSmartFormatDuration(minutes, lang) {
+  const m = Math.round(Number(minutes) || 0);
+  if (!m) return "—";
+  if (m % 1440 === 0) {
+    const d = m / 1440;
+    if (lang === "mg") return `${d} andro`;
+    if (lang === "en") return `${d} day${d > 1 ? "s" : ""}`;
+    return `${d} jour${d > 1 ? "s" : ""}`;
+  }
+  if (m % 60 === 0) return `${m / 60}h`;
+  return `${m} min`;
+}
+
+function assistantPpSmartFormatData(mb) {
+  const n = Number(mb);
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  const gb = Math.round((n / 1024) * 100) / 100;
+  return `${Number.isInteger(gb) ? String(gb) : String(gb).replace(".", ",")} Go`;
+}
+
+function assistantPpSmartFormatSpeed(mbps) {
+  const n = Number(mbps);
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  const value = Math.round(n * 10) / 10;
+  return `${Number.isInteger(value) ? String(value) : String(value).replace(".", ",")} Mbps`;
+}
+
+function assistantPpSmartFormatAr(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "— Ar";
+  return `${Math.round(n).toLocaleString("fr-FR").replace(/\u202f/g, "\u00a0")}\u00a0Ar`;
+}
+
+function assistantPpSmartFormatStandardPlan(plan, lang) {
+  const parts = [String(plan?.name || "").trim()];
+  if (plan?.unlimited) parts.push(lang === "en" ? "Unlimited" : "Illimité");
+  else if (Number(plan?.data_mb) > 0) parts.push(assistantPpSmartFormatData(plan.data_mb));
+  if (Number(plan?.duration_minutes) > 0) parts.push(assistantPpSmartFormatDuration(plan.duration_minutes, lang));
+  const speed = assistantPpSmartPlanSpeedMbps(plan);
+  if (speed) parts.push(assistantPpSmartFormatSpeed(speed));
+  if (Number.isFinite(Number(plan?.price_ar))) parts.push(assistantPpSmartFormatAr(plan.price_ar));
+  return parts.filter(Boolean).join(" · ");
+}
+
+function buildAssistantPpSmartFallback({ context, intentKey, message, lang, liveData, thread }) {
+  if (!isAssistantPpSmartFallbackEnabled() || context !== "portal_user") return null;
+  const key = String(intentKey || "");
+  const isAdviceTurn = key.startsWith("portal_plan_advice_") || key === ASSISTANT_PP_SMART_FALLBACK_INTENT;
+  if (!isAdviceTurn) return null;
+
+  const combinedText = assistantPpSmartRecentNeedText(message, thread);
+  const need = extractAssistantPpSmartNeed(combinedText);
+  const hasConcreteNeed = [need.type, need.data_mb, need.duration_minutes, need.speed_mbps].some((value) => value !== null);
+  if (!hasConcreteNeed) return null;
+
+  const t = (fr, mg, en) => lang === "mg" ? mg : lang === "en" ? en : fr;
+  const plans = (Array.isArray(liveData?.all_plans) && liveData.all_plans.length
+    ? liveData.all_plans
+    : (Array.isArray(liveData?.visible_plans) ? liveData.visible_plans : []))
+    .filter((plan) => String(plan?.source || "standard") !== "personalized");
+
+  // Avoid a random standard-plan choice when the user supplied only a volume or
+  // speed but no duration. Ask one precise question instead.
+  if (need.duration_minutes === null && (need.data_mb !== null || need.speed_mbps !== null || need.type !== null) && !need.usage) {
+    return {
+      intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+      answer: t(
+        "Pendant combien de temps souhaitez-vous utiliser ce forfait ?",
+        "Hafiriana no tianao hampiasana an’io forfait io?",
+        "How long would you like to use this plan?"
+      ),
+    };
+  }
+
+  const standard = assistantPpSmartBestStandardPlan(plans, need);
+  if (standard) {
+    return {
+      intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+      answer: t(
+        `Un forfait standard couvre déjà votre besoin : ${assistantPpSmartFormatStandardPlan(standard, lang)}.`,
+        `Misy forfait standard efa mahafeno ny besoin-nao : ${assistantPpSmartFormatStandardPlan(standard, lang)}.`,
+        `A standard plan already covers your need: ${assistantPpSmartFormatStandardPlan(standard, lang)}.`
+      ),
+    };
+  }
+
+  const pp = liveData?.personalized_plan_context && typeof liveData.personalized_plan_context === "object"
+    ? liveData.personalized_plan_context
+    : null;
+  const config = pp?.config_available && pp?.config && typeof pp.config === "object" ? pp.config : null;
+  const blockedState = ["disabled", "unavailable", "payment_in_progress", "payment_uncertain"].includes(String(pp?.state || ""));
+  const ppUsable = !!(pp?.enabled && pp?.available && config && liveData?.is_full !== true && !blockedState);
+
+  if (!ppUsable) {
+    const reason = liveData?.is_full === true
+      ? t(" Le réseau est actuellement saturé.", " Feno ny réseau amin’izao.", " The network is currently saturated.")
+      : t(" Le forfait personnalisé n’est pas disponible sur cette zone pour le moment.", " Tsy disponible eto amin’ity zone ity ny forfait personnalisé amin’izao.", " Personalized plans are not available in this zone right now.");
+    return {
+      intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+      answer: t(
+        `Je ne trouve pas de forfait standard couvrant tous vos critères.${reason}`,
+        `Tsy misy forfait standard mahafeno ireo critères rehetra.${reason}`,
+        `I cannot find a standard plan covering all your criteria.${reason}`
+      ),
+    };
+  }
+
+  const allowedTypes = Array.isArray(config.allowed_types) ? config.allowed_types.map(String) : [];
+  const allowedSpeeds = Array.isArray(config.allowed_speeds_mbps) ? config.allowed_speeds_mbps.map(Number).filter(Number.isFinite) : [];
+  let selectedType = need.type;
+  if (!selectedType) {
+    if (["video", "live_match", "gaming", "work", "download"].includes(need.usage) && allowedTypes.includes("unlimited")) selectedType = "unlimited";
+    else if (["social", "browsing"].includes(need.usage) && allowedTypes.includes("data")) selectedType = "data";
+    else if (allowedTypes.length === 1) selectedType = allowedTypes[0];
+  }
+
+  if (!selectedType) {
+    return {
+      intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+      answer: t(
+        "Je ne trouve pas de forfait standard correspondant. Pour préparer un forfait personnalisé précis, préférez-vous Data ou Illimité ?",
+        "Tsy misy forfait standard mifanaraka. Mba hanomanana forfait personnalisé mazava, Data sa Illimité no tianao?",
+        "I cannot find a matching standard plan. For a precise personalized plan, do you prefer Data or Unlimited?"
+      ),
+    };
+  }
+
+  if (!allowedTypes.includes(selectedType)) {
+    const allowedLabel = allowedTypes.map((value) => value === "unlimited" ? (lang === "en" ? "Unlimited" : "Illimité") : "Data").join(" / ") || "—";
+    return {
+      intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+      answer: t(
+        `Le type demandé n’est pas autorisé dans le forfait personnalisé de cette zone. Type disponible : ${allowedLabel}.`,
+        `Tsy autorisé eto amin’ity zone ity ilay type nangatahina. Type disponible : ${allowedLabel}.`,
+        `The requested type is not allowed for personalized plans in this zone. Available type: ${allowedLabel}.`
+      ),
+    };
+  }
+
+  if (need.duration_minutes === null) {
+    return {
+      intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+      answer: t(
+        "Je ne trouve pas de forfait standard correspondant. Quelle durée souhaitez-vous pour le forfait personnalisé ?",
+        "Tsy misy forfait standard mifanaraka. Hafiriana no durée tianao amin’ny forfait personnalisé?",
+        "I cannot find a matching standard plan. What duration would you like for the personalized plan?"
+      ),
+    };
+  }
+
+  if (selectedType === "data" && need.data_mb === null) {
+    return {
+      intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+      answer: t(
+        `Je ne trouve pas de forfait standard correspondant pour ${assistantPpSmartFormatDuration(need.duration_minutes, lang)}. Quel volume de data souhaitez-vous, en Go ?`,
+        `Tsy misy forfait standard mifanaraka amin’ny ${assistantPpSmartFormatDuration(need.duration_minutes, lang)}. Firy Go ny data tianao?`,
+        `I cannot find a matching standard plan for ${assistantPpSmartFormatDuration(need.duration_minutes, lang)}. How much data would you like, in GB?`
+      ),
+    };
+  }
+
+  const durationCfg = config.duration || {};
+  const duration = assistantPpSmartAlignUp(
+    need.duration_minutes,
+    durationCfg.min_minutes,
+    durationCfg.step_minutes,
+    durationCfg.max_minutes
+  );
+  if (!duration.ok) {
+    const maxLabel = assistantPpSmartFormatDuration(duration.value || durationCfg.max_minutes, lang);
+    return {
+      intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+      answer: t(
+        `Je ne trouve pas de forfait standard correspondant. Le forfait personnalisé autorise au maximum ${maxLabel} : votre durée ne peut pas être créée telle quelle.`,
+        `Tsy misy forfait standard mifanaraka. ${maxLabel} no durée maximum autorisée amin’ny forfait personnalisé, ka tsy azo crée-na araka izany ny demande-nao.`,
+        `I cannot find a matching standard plan. Personalized plans allow at most ${maxLabel}, so your requested duration cannot be created as-is.`
+      ),
+    };
+  }
+
+  let data = null;
+  if (selectedType === "data") {
+    const dataCfg = config.data || {};
+    data = assistantPpSmartAlignUp(need.data_mb, dataCfg.min_mb, dataCfg.step_mb, dataCfg.max_mb);
+    if (!data.ok) {
+      const maxLabel = assistantPpSmartFormatData(data.value || dataCfg.max_mb);
+      return {
+        intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+        answer: t(
+          `Je ne trouve pas de forfait standard correspondant. Le forfait personnalisé autorise au maximum ${maxLabel} : votre volume ne peut pas être créé tel quel.`,
+          `Tsy misy forfait standard mifanaraka. ${maxLabel} no data maximum autorisée amin’ny forfait personnalisé, ka tsy azo crée-na araka izany ny demande-nao.`,
+          `I cannot find a matching standard plan. Personalized plans allow at most ${maxLabel}, so your requested data volume cannot be created as-is.`
+        ),
+      };
+    }
+  }
+
+  const speed = assistantPpSmartPickSpeed(need.speed_mbps, allowedSpeeds, need.usage);
+  if (speed.reason === "missing") {
+    const choices = allowedSpeeds.sort((a, b) => a - b).map(assistantPpSmartFormatSpeed).join(", ");
+    return {
+      intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+      answer: t(
+        `Je ne trouve pas de forfait standard correspondant. Quelle vitesse souhaitez-vous pour le forfait personnalisé ? Valeurs disponibles : ${choices}.`,
+        `Tsy misy forfait standard mifanaraka. Inona ny vitesse tianao amin’ny forfait personnalisé? Valeurs disponibles : ${choices}.`,
+        `I cannot find a matching standard plan. What speed would you like for the personalized plan? Available values: ${choices}.`
+      ),
+    };
+  }
+  if (!speed.ok) {
+    const maxLabel = assistantPpSmartFormatSpeed(speed.value);
+    return {
+      intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+      answer: t(
+        `Je ne trouve pas de forfait standard correspondant. La vitesse maximale disponible dans le forfait personnalisé est ${maxLabel} : votre vitesse ne peut pas être satisfaite telle quelle.`,
+        `Tsy misy forfait standard mifanaraka. ${maxLabel} no vitesse maximum disponible amin’ny forfait personnalisé, ka tsy mahafeno tanteraka ny demande-nao.`,
+        `I cannot find a matching standard plan. The maximum personalized-plan speed is ${maxLabel}, so your requested speed cannot be met as-is.`
+      ),
+    };
+  }
+
+  const adjustmentNotes = [];
+  if (data?.adjusted) adjustmentNotes.push(t(
+    `le volume demandé a été ajusté vers le haut à ${assistantPpSmartFormatData(data.value)} pour respecter le pas autorisé sans réduire votre besoin`,
+    `natao ${assistantPpSmartFormatData(data.value)} ny data mba hanajana ny pas autorisé nefa tsy hampihena ny besoin-nao`,
+    `the requested data was rounded up to ${assistantPpSmartFormatData(data.value)} to respect the allowed step without reducing your need`
+  ));
+  if (duration.adjusted) adjustmentNotes.push(t(
+    `la durée demandée a été ajustée vers le haut à ${assistantPpSmartFormatDuration(duration.value, lang)} pour respecter le pas autorisé`,
+    `natao ${assistantPpSmartFormatDuration(duration.value, lang)} ny durée mba hanajana ny pas autorisé`,
+    `the requested duration was rounded up to ${assistantPpSmartFormatDuration(duration.value, lang)} to respect the allowed step`
+  ));
+  if (speed.adjusted && need.speed_mbps !== null) adjustmentNotes.push(t(
+    `${assistantPpSmartFormatSpeed(need.speed_mbps)} n’est pas proposé ; ${assistantPpSmartFormatSpeed(speed.value)} est la première vitesse disponible qui ne réduit pas votre besoin`,
+    `tsy proposé ny ${assistantPpSmartFormatSpeed(need.speed_mbps)}; ${assistantPpSmartFormatSpeed(speed.value)} no vitesse disponible voalohany tsy mampihena ny besoin-nao`,
+    `${assistantPpSmartFormatSpeed(need.speed_mbps)} is not offered; ${assistantPpSmartFormatSpeed(speed.value)} is the first available speed that does not reduce your need`
+  ));
+
+  const typeLabel = selectedType === "unlimited" ? (lang === "en" ? "Unlimited" : "Illimité") : `Data ${assistantPpSmartFormatData(data.value)}`;
+  const specification = `${typeLabel} · ${t("Durée", "Durée", "Duration")} ${assistantPpSmartFormatDuration(duration.value, lang)} · ${t("Vitesse", "Vitesse", "Speed")} ${assistantPpSmartFormatSpeed(speed.value)}`;
+  const adjustmentSentence = adjustmentNotes.length
+    ? t(` Attention : ${adjustmentNotes.join(" ; ")}.`, ` Fanamarihana : ${adjustmentNotes.join(" ; ")}.`, ` Note: ${adjustmentNotes.join("; ")}.`)
+    : "";
+  const budgetSentence = need.budget_ar !== null
+    ? t(` Le respect de votre budget de ${assistantPpSmartFormatAr(need.budget_ar)} ne peut être confirmé qu’après « Voir mon prix ».`, ` Rehefa tsindrina « Voir mon prix » ihany no ahafantarana raha tafiditra amin’ny budget ${assistantPpSmartFormatAr(need.budget_ar)}.`, ` Your ${assistantPpSmartFormatAr(need.budget_ar)} budget can only be confirmed after tapping “Voir mon prix”.`)
+    : "";
+
+  return {
+    intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+    answer: t(
+      `Je ne trouve pas de forfait standard couvrant exactement votre besoin. Je vous conseille de créer : ${specification}. Appuyez sur « Créer mon forfait », sélectionnez ces valeurs, puis appuyez sur « Voir mon prix ».${adjustmentSentence}${budgetSentence}`,
+      `Tsy misy forfait standard mahafeno tsara ny besoin-nao. Ity no forfait personnalisé soso-kevitra : ${specification}. Tsindrio « Créer mon forfait », safidio ireo valeurs ireo, dia tsindrio « Voir mon prix ».${adjustmentSentence}${budgetSentence}`,
+      `I cannot find a standard plan covering your exact need. I recommend creating: ${specification}. Tap “Créer mon forfait”, select these values, then tap “Voir mon prix”.${adjustmentSentence}${budgetSentence}`
+    ),
+  };
+}
+
 function detectAssistantPersonalizedPlanIntent(msg, context) {
   const s = String(msg || "").toLowerCase().trim();
   if (!s || !["portal_user", "platform_prospect"].includes(context)) return null;
@@ -5431,6 +5923,10 @@ function detectDynamicIntentFromMessage(msg, context) {
     // payment_method and plan_list detection. Payment complaints are handled earlier.
     const ppIntent = detectAssistantPersonalizedPlanIntent(s, context);
     if (ppIntent) return ppIntent;
+
+    // Smart PP fallback: quantified needs (for example 5 Go / 3 jours / 10 Mbps)
+    // must reach plan advice before broad payment or network-status keywords.
+    if (assistantPpSmartHasQuantifiedNeed(s)) return "portal_plan_advice_general";
 
     // WiFi / pool name
     if (
@@ -9338,7 +9834,8 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
     ? detectedIntentForTurn
     : null;
   const ecFollowUpIntent = resolveAssistantEcFollowUpIntent({ context, message, thread });
-  const effectiveIntentKey = ecFollowUpIntent || detectedEcIntent || ppFollowUpIntent || detectedPpIntent || intent?.intent_key || null;
+  const ppSmartFollowUpIntent = resolveAssistantPpSmartFallbackFollowUpIntent({ context, message, thread });
+  const effectiveIntentKey = ecFollowUpIntent || detectedEcIntent || ppSmartFollowUpIntent || ppFollowUpIntent || detectedPpIntent || intent?.intent_key || null;
 
   // EC precision hotfix: explicit/follow-up Client Space turns use the exact
   // deterministic EC answer. ANU-3.1 remains unchanged for every other intent.
@@ -9362,10 +9859,21 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
   const escalated = !!(intent?.escalation_rule &&
     String(intent.escalation_rule).trim().length > 0);
 
+  const ppSmartResolution = buildAssistantPpSmartFallback({
+    context,
+    intentKey: effectiveIntentKey,
+    message,
+    lang,
+    liveData,
+    thread,
+  });
+  const ppSmartDeterministicTurn = !!ppSmartResolution?.answer;
+  const responseIntentKey = ppSmartResolution?.intentKey || effectiveIntentKey;
+
   // Log anonymously (fire-and-forget, real columns only)
   await logAssistantInteraction({
     context,
-    intent_key: effectiveIntentKey,
+    intent_key: responseIntentKey,
     lang,
     escalated,
     pool_id: pool_id || null,
@@ -9395,7 +9903,7 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
   // Phase 4 UX polish: when a dynamic answer is returned, suppress KB buttons and
   // live_data_keys inherited from an unrelated KB match. Dynamic answers are
   // self-contained; KB navigation chips are not meaningful context for them.
-  const canonicalAnswer = dynamicAnswer || answer || fallbackAnswer;
+  const canonicalAnswer = ppSmartResolution?.answer || dynamicAnswer || answer || fallbackAnswer;
 
   // ---------------------------------------------------------------------------
   // PATCH B+C+D+E — Conversational AI layer
@@ -9440,7 +9948,7 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
     !!diagnosticResult
   );
 
-  const shouldRunAi = isAssistantAiEnabled() && !!message && !ecDeterministicTurn && (
+  const shouldRunAi = isAssistantAiEnabled() && !!message && !ecDeterministicTurn && !ppSmartDeterministicTurn && (
     anuEnabledForContext
       ? anuSafetyLane === ASSISTANT_ANU_LANES.NATURAL_AI
       : !legacyPaymentSensitiveTurn
@@ -9542,6 +10050,7 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
       !messageIsPaymentComplaint &&
       thread?.pending_issue_type !== "payment_no_code" &&
       (thread?.turns?.length || 0) === 0 &&
+      !ppSmartDeterministicTurn &&
       !String(effectiveIntentKey || "").startsWith("portal_pp_") &&
       // Assistant PP: do not replace a PP explanation with a returning standard-plan recommendation.
       // G.3B: only use returning memory when it genuinely helps this turn
@@ -9605,10 +10114,10 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
     userMessage: message,
     assistantAnswer: finalAnswer,
     lang,
-    intentKey: effectiveIntentKey,
-    topic: isAssistantEcKnowledgeIntentKey(effectiveIntentKey)
+    intentKey: responseIntentKey,
+    topic: isAssistantEcKnowledgeIntentKey(responseIntentKey)
       ? "client_space"
-      : String(effectiveIntentKey || "").includes("_pp_")
+      : String(responseIntentKey || "").includes("_pp_")
         ? "personalized_plan"
         : thread.current_topic,
     slots: {},
@@ -9620,7 +10129,7 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
     const g1Goal = resolveAssistantConversationGoal({
       context,
       message,
-      intentKey: effectiveIntentKey,
+      intentKey: responseIntentKey,
       diagnosticResult,
       thread,
     });
@@ -9643,7 +10152,7 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
       thread,
       context,
       message,
-      intentKey: effectiveIntentKey,
+      intentKey: responseIntentKey,
       diagnosticResult,
       finalAnswer,
       signals: followUpSignals,
@@ -9668,13 +10177,13 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
   return {
     ok: true,
     context,
-    intent_key: effectiveIntentKey,
+    intent_key: responseIntentKey,
     lang,
     answer: finalAnswer,
-    buttons: dynamicAnswer ? [] : buttons,
-    requires_live_data: dynamicAnswer ? false : !!(intent?.requires_live_data),
-    live_data_keys: dynamicAnswer ? [] : live_data_keys,
-    dynamic: !!dynamicAnswer,
+    buttons: (dynamicAnswer || ppSmartDeterministicTurn) ? [] : buttons,
+    requires_live_data: (dynamicAnswer || ppSmartDeterministicTurn) ? false : !!(intent?.requires_live_data),
+    live_data_keys: (dynamicAnswer || ppSmartDeterministicTurn) ? [] : live_data_keys,
+    dynamic: !!(dynamicAnswer || ppSmartDeterministicTurn),
     ai_enhanced: aiUsed,
     conversation_id: safeConvId,
     memory_active: true,
