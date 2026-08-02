@@ -5350,7 +5350,7 @@ function sanitizeAssistantLiveDataKeys(raw, context) {
 // Flag:
 //   ASSISTANT_PP_SMART_FALLBACK_ENABLED=true
 // =============================================================================
-const ASSISTANT_PP_SMART_FALLBACK_VERSION = "PP-SMART-FALLBACK-1.0";
+const ASSISTANT_PP_SMART_FALLBACK_VERSION = "PP-SMART-FALLBACK-1.1";
 const ASSISTANT_PP_SMART_FALLBACK_INTENT = "portal_plan_advice_pp_fallback";
 
 function isAssistantPpSmartFallbackEnabled() {
@@ -5397,6 +5397,21 @@ function assistantPpSmartParseNumber(raw) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+// Exact is the safe default. A standard plan may exceed a requested dimension
+// only when the user explicitly says "au moins" / "at least" near that value.
+function assistantPpSmartDimensionMatchMode(text, index, length) {
+  const s = String(text || "");
+  const start = Math.max(0, Number(index || 0) - 40);
+  const end = Math.max(0, Number(index || 0) + Number(length || 0));
+  const before = s.slice(start, Number(index || 0)).trimEnd();
+  const after = s.slice(end, end + 28);
+
+  if (/(?:^|\b)(?:exactement|precisement|exactly|precisely)\s*$/.test(before)) return "exact";
+  if (/(?:^|\b)(?:au moins|minimum(?: de)?|pas moins de|at least|minimum of|farafahakeliny)\s*$/.test(before)) return "minimum";
+  if (/^\s*(?:ou plus|or more|na mihoatra)\b/.test(after)) return "minimum";
+  return "exact";
+}
+
 function assistantPpSmartRecentNeedText(message, thread) {
   const current = String(message || "").trim();
   if (String(thread?.last_intent_key || "") !== ASSISTANT_PP_SMART_FALLBACK_INTENT) return current;
@@ -5415,6 +5430,11 @@ function extractAssistantPpSmartNeed(raw) {
     speed_mbps: null,
     budget_ar: null,
     usage: null,
+    match_mode: {
+      data: "exact",
+      duration: "exact",
+      speed: "exact",
+    },
   };
   if (!s) return need;
 
@@ -5428,6 +5448,7 @@ function extractAssistantPpSmartNeed(raw) {
     if (!value) continue;
     const unit = match[2];
     need.data_mb = unit === "mo" || unit === "mb" ? value : value * 1024;
+    need.match_mode.data = assistantPpSmartDimensionMatchMode(s, match.index, match[0].length);
     need.type = "data";
   }
 
@@ -5441,6 +5462,7 @@ function extractAssistantPpSmartNeed(raw) {
     else if (/^(jours?|days?|d)$/.test(unit)) need.duration_minutes = value * 1440;
     else if (/^(semaines?|weeks?)$/.test(unit)) need.duration_minutes = value * 7 * 1440;
     else if (/^(mois|months?)$/.test(unit)) need.duration_minutes = value * 30 * 1440;
+    need.match_mode.duration = assistantPpSmartDimensionMatchMode(s, match.index, match[0].length);
   }
   if (need.duration_minutes === null) {
     if (/\b(mensuel|mensuelle|monthly|par mois|30j|30 jours)\b/.test(s)) need.duration_minutes = 30 * 1440;
@@ -5451,7 +5473,10 @@ function extractAssistantPpSmartNeed(raw) {
   const speedRe = /\b(\d+(?:[.,]\d+)?)\s*(?:mbps|mb\/s|mbits?\/s|megas?)\b/g;
   while ((match = speedRe.exec(s))) {
     const value = assistantPpSmartParseNumber(match[1]);
-    if (value) need.speed_mbps = value;
+    if (value) {
+      need.speed_mbps = value;
+      need.match_mode.speed = assistantPpSmartDimensionMatchMode(s, match.index, match[0].length);
+    }
   }
 
   const budgetMatch = s.match(/\b(\d[\d\s\u00a0]*)\s*(?:ar|ariary)\b/);
@@ -5488,15 +5513,24 @@ function assistantPpSmartPlanSpeedMbps(plan) {
   return n;
 }
 
+function assistantPpSmartDimensionMatches(actual, requested, mode = "exact") {
+  if (requested === null || requested === undefined) return true;
+  const a = Number(actual);
+  const r = Number(requested);
+  if (!Number.isFinite(a) || !Number.isFinite(r)) return false;
+  if (mode === "minimum") return a + 1e-6 >= r;
+  return Math.abs(a - r) <= 1e-6;
+}
+
 function assistantPpSmartPlanMatchesNeed(plan, need) {
   if (!plan || !need) return false;
   if (need.type === "unlimited" && plan.unlimited !== true) return false;
   if (need.type === "data" && plan.unlimited === true) return false;
-  if (need.data_mb !== null && !(Number(plan.data_mb) >= Number(need.data_mb))) return false;
-  if (need.duration_minutes !== null && !(Number(plan.duration_minutes) >= Number(need.duration_minutes))) return false;
+  if (!assistantPpSmartDimensionMatches(plan.data_mb, need.data_mb, need.match_mode?.data)) return false;
+  if (!assistantPpSmartDimensionMatches(plan.duration_minutes, need.duration_minutes, need.match_mode?.duration)) return false;
   if (need.speed_mbps !== null) {
     const speed = assistantPpSmartPlanSpeedMbps(plan);
-    if (!(speed !== null && speed >= Number(need.speed_mbps))) return false;
+    if (!assistantPpSmartDimensionMatches(speed, need.speed_mbps, need.match_mode?.speed)) return false;
   }
   if (need.budget_ar !== null && !(Number(plan.price_ar) > 0 && Number(plan.price_ar) <= Number(need.budget_ar))) return false;
   return true;
@@ -5539,6 +5573,12 @@ function assistantPpSmartAlignUp(value, min, step, max) {
   };
 }
 
+function assistantPpSmartUsageTargetSpeed(usage) {
+  const usageTargets = { social: 3, browsing: 3, work: 7, video: 7, gaming: 10, live_match: 10, download: 10 };
+  const target = Number(usageTargets[usage]);
+  return Number.isFinite(target) && target > 0 ? target : null;
+}
+
 function assistantPpSmartPickSpeed(requested, allowedSpeeds, usage) {
   const speeds = (Array.isArray(allowedSpeeds) ? allowedSpeeds : [])
     .map(Number).filter((n) => Number.isFinite(n) && n > 0)
@@ -5546,8 +5586,7 @@ function assistantPpSmartPickSpeed(requested, allowedSpeeds, usage) {
   if (!speeds.length) return { ok: false, value: null, adjusted: false, reason: "config_invalid" };
   let target = Number(requested);
   if (!Number.isFinite(target) || target <= 0) {
-    const usageTargets = { social: 3, browsing: 3, work: 7, video: 7, gaming: 10, live_match: 10, download: 10 };
-    target = usageTargets[usage] || null;
+    target = assistantPpSmartUsageTargetSpeed(usage);
     if (!target) return { ok: false, value: null, adjusted: false, reason: "missing" };
   }
   const selected = speeds.find((speed) => speed >= target);
@@ -5616,11 +5655,40 @@ function buildAssistantPpSmartFallback({ context, intentKey, message, lang, live
     : (Array.isArray(liveData?.visible_plans) ? liveData.visible_plans : []))
     .filter((plan) => String(plan?.source || "standard") !== "personalized");
 
-  // Avoid a random standard-plan choice when the user supplied only a volume or
-  // speed but no duration. Ask one precise question instead.
-  if (need.duration_minutes === null && (need.data_mb !== null || need.speed_mbps !== null || need.type !== null) && !need.usage) {
+  const pp = liveData?.personalized_plan_context && typeof liveData.personalized_plan_context === "object"
+    ? liveData.personalized_plan_context
+    : null;
+  const config = pp?.config_available && pp?.config && typeof pp.config === "object" ? pp.config : null;
+  const blockedState = ["disabled", "unavailable", "payment_in_progress", "payment_uncertain"].includes(String(pp?.state || ""));
+  const ppUsable = !!(pp?.enabled && pp?.available && config && liveData?.is_full !== true && !blockedState);
+  const allowedTypes = Array.isArray(config?.allowed_types) ? config.allowed_types.map(String) : [];
+  const allowedSpeeds = Array.isArray(config?.allowed_speeds_mbps) ? config.allowed_speeds_mbps.map(Number).filter(Number.isFinite) : [];
+
+  let selectedType = need.type;
+  if (!selectedType) {
+    if (["video", "live_match", "gaming", "work", "download"].includes(need.usage) && allowedTypes.includes("unlimited")) selectedType = "unlimited";
+    else if (["social", "browsing"].includes(need.usage) && allowedTypes.includes("data")) selectedType = "data";
+    else if (allowedTypes.length === 1) selectedType = allowedTypes[0];
+  }
+
+  // PP-SMART-FALLBACK-1.1: complete the need before evaluating standard plans.
+  // Never use an oversized standard plan to silently fill a missing dimension.
+  if (!selectedType) {
     return {
       intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+      outcome: "ask_type",
+      answer: t(
+        "Pour préciser votre besoin, préférez-vous Data ou Illimité ?",
+        "Mba hazava tsara ny besoin-nao, Data sa Illimité no tianao?",
+        "To clarify your need, do you prefer Data or Unlimited?"
+      ),
+    };
+  }
+
+  if (need.duration_minutes === null) {
+    return {
+      intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+      outcome: "ask_duration",
       answer: t(
         "Pendant combien de temps souhaitez-vous utiliser ce forfait ?",
         "Hafiriana no tianao hampiasana an’io forfait io?",
@@ -5629,24 +5697,58 @@ function buildAssistantPpSmartFallback({ context, intentKey, message, lang, live
     };
   }
 
-  const standard = assistantPpSmartBestStandardPlan(plans, need);
-  if (standard) {
+  if (selectedType === "data" && need.data_mb === null) {
     return {
       intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+      outcome: "ask_data",
       answer: t(
-        `Un forfait standard couvre déjà votre besoin : ${assistantPpSmartFormatStandardPlan(standard, lang)}.`,
-        `Misy forfait standard efa mahafeno ny besoin-nao : ${assistantPpSmartFormatStandardPlan(standard, lang)}.`,
-        `A standard plan already covers your need: ${assistantPpSmartFormatStandardPlan(standard, lang)}.`
+        "Quel volume de data souhaitez-vous, en Go ?",
+        "Firy Go ny data tianao?",
+        "How much data would you like, in GB?"
       ),
     };
   }
 
-  const pp = liveData?.personalized_plan_context && typeof liveData.personalized_plan_context === "object"
-    ? liveData.personalized_plan_context
-    : null;
-  const config = pp?.config_available && pp?.config && typeof pp.config === "object" ? pp.config : null;
-  const blockedState = ["disabled", "unavailable", "payment_in_progress", "payment_uncertain"].includes(String(pp?.state || ""));
-  const ppUsable = !!(pp?.enabled && pp?.available && config && liveData?.is_full !== true && !blockedState);
+  let effectiveSpeedNeed = need.speed_mbps;
+  if (effectiveSpeedNeed === null) {
+    effectiveSpeedNeed = assistantPpSmartUsageTargetSpeed(need.usage);
+    if (effectiveSpeedNeed === null) {
+      const choices = allowedSpeeds.slice().sort((a, b) => a - b).map(assistantPpSmartFormatSpeed).join(", ");
+      const choicesText = choices
+        ? t(` Valeurs disponibles : ${choices}.`, ` Valeurs disponibles : ${choices}.`, ` Available values: ${choices}.`)
+        : "";
+      return {
+        intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+        outcome: "ask_speed",
+        answer: t(
+          `Quelle vitesse souhaitez-vous ?${choicesText}`,
+          `Inona ny vitesse tianao?${choicesText}`,
+          `What speed would you like?${choicesText}`
+        ),
+      };
+    }
+  }
+
+  const completeNeed = {
+    ...need,
+    type: selectedType,
+    speed_mbps: effectiveSpeedNeed,
+  };
+  const standard = assistantPpSmartBestStandardPlan(plans, completeNeed);
+  if (standard) {
+    const hasMinimumCriterion = Object.values(need.match_mode || {}).includes("minimum");
+    const inferredSpeed = need.speed_mbps === null && need.usage !== null;
+    const lead = hasMinimumCriterion
+      ? t("Un forfait standard respecte vos critères minimums", "Misy forfait standard mahafeno ny minimum nangatahinao", "A standard plan meets your minimum criteria")
+      : inferredSpeed
+        ? t("Un forfait standard correspond à votre besoin", "Misy forfait standard mifanaraka amin’ny besoin-nao", "A standard plan matches your need")
+        : t("Un forfait standard correspond exactement à votre besoin", "Misy forfait standard mifanaraka tanteraka amin’ny besoin-nao", "A standard plan exactly matches your need");
+    return {
+      intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+      outcome: "standard_match",
+      answer: `${lead} : ${assistantPpSmartFormatStandardPlan(standard, lang)}.`,
+    };
+  }
 
   if (!ppUsable) {
     const reason = liveData?.is_full === true
@@ -5654,30 +5756,11 @@ function buildAssistantPpSmartFallback({ context, intentKey, message, lang, live
       : t(" Le forfait personnalisé n’est pas disponible sur cette zone pour le moment.", " Tsy disponible eto amin’ity zone ity ny forfait personnalisé amin’izao.", " Personalized plans are not available in this zone right now.");
     return {
       intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+      outcome: "pp_unavailable",
       answer: t(
-        `Je ne trouve pas de forfait standard couvrant tous vos critères.${reason}`,
-        `Tsy misy forfait standard mahafeno ireo critères rehetra.${reason}`,
-        `I cannot find a standard plan covering all your criteria.${reason}`
-      ),
-    };
-  }
-
-  const allowedTypes = Array.isArray(config.allowed_types) ? config.allowed_types.map(String) : [];
-  const allowedSpeeds = Array.isArray(config.allowed_speeds_mbps) ? config.allowed_speeds_mbps.map(Number).filter(Number.isFinite) : [];
-  let selectedType = need.type;
-  if (!selectedType) {
-    if (["video", "live_match", "gaming", "work", "download"].includes(need.usage) && allowedTypes.includes("unlimited")) selectedType = "unlimited";
-    else if (["social", "browsing"].includes(need.usage) && allowedTypes.includes("data")) selectedType = "data";
-    else if (allowedTypes.length === 1) selectedType = allowedTypes[0];
-  }
-
-  if (!selectedType) {
-    return {
-      intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
-      answer: t(
-        "Je ne trouve pas de forfait standard correspondant. Pour préparer un forfait personnalisé précis, préférez-vous Data ou Illimité ?",
-        "Tsy misy forfait standard mifanaraka. Mba hanomanana forfait personnalisé mazava, Data sa Illimité no tianao?",
-        "I cannot find a matching standard plan. For a precise personalized plan, do you prefer Data or Unlimited?"
+        `Je ne trouve pas de forfait standard correspondant exactement à vos critères.${reason}`,
+        `Tsy misy forfait standard mifanaraka tanteraka amin’ireo critères-nao.${reason}`,
+        `I cannot find a standard plan exactly matching your criteria.${reason}`
       ),
     };
   }
@@ -5686,32 +5769,11 @@ function buildAssistantPpSmartFallback({ context, intentKey, message, lang, live
     const allowedLabel = allowedTypes.map((value) => value === "unlimited" ? (lang === "en" ? "Unlimited" : "Illimité") : "Data").join(" / ") || "—";
     return {
       intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+      outcome: "type_not_allowed",
       answer: t(
         `Le type demandé n’est pas autorisé dans le forfait personnalisé de cette zone. Type disponible : ${allowedLabel}.`,
         `Tsy autorisé eto amin’ity zone ity ilay type nangatahina. Type disponible : ${allowedLabel}.`,
         `The requested type is not allowed for personalized plans in this zone. Available type: ${allowedLabel}.`
-      ),
-    };
-  }
-
-  if (need.duration_minutes === null) {
-    return {
-      intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
-      answer: t(
-        "Je ne trouve pas de forfait standard correspondant. Quelle durée souhaitez-vous pour le forfait personnalisé ?",
-        "Tsy misy forfait standard mifanaraka. Hafiriana no durée tianao amin’ny forfait personnalisé?",
-        "I cannot find a matching standard plan. What duration would you like for the personalized plan?"
-      ),
-    };
-  }
-
-  if (selectedType === "data" && need.data_mb === null) {
-    return {
-      intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
-      answer: t(
-        `Je ne trouve pas de forfait standard correspondant pour ${assistantPpSmartFormatDuration(need.duration_minutes, lang)}. Quel volume de data souhaitez-vous, en Go ?`,
-        `Tsy misy forfait standard mifanaraka amin’ny ${assistantPpSmartFormatDuration(need.duration_minutes, lang)}. Firy Go ny data tianao?`,
-        `I cannot find a matching standard plan for ${assistantPpSmartFormatDuration(need.duration_minutes, lang)}. How much data would you like, in GB?`
       ),
     };
   }
@@ -5752,7 +5814,7 @@ function buildAssistantPpSmartFallback({ context, intentKey, message, lang, live
     }
   }
 
-  const speed = assistantPpSmartPickSpeed(need.speed_mbps, allowedSpeeds, need.usage);
+  const speed = assistantPpSmartPickSpeed(effectiveSpeedNeed, allowedSpeeds, need.usage);
   if (speed.reason === "missing") {
     const choices = allowedSpeeds.sort((a, b) => a - b).map(assistantPpSmartFormatSpeed).join(", ");
     return {
@@ -5804,6 +5866,7 @@ function buildAssistantPpSmartFallback({ context, intentKey, message, lang, live
 
   return {
     intentKey: ASSISTANT_PP_SMART_FALLBACK_INTENT,
+    outcome: "pp_proposal",
     answer: t(
       `Je ne trouve pas de forfait standard couvrant exactement votre besoin. Je vous conseille de créer : ${specification}. Appuyez sur « Créer mon forfait », sélectionnez ces valeurs, puis appuyez sur « Voir mon prix ».${adjustmentSentence}${budgetSentence}`,
       `Tsy misy forfait standard mahafeno tsara ny besoin-nao. Ity no forfait personnalisé soso-kevitra : ${specification}. Tsindrio « Créer mon forfait », safidio ireo valeurs ireo, dia tsindrio « Voir mon prix ».${adjustmentSentence}${budgetSentence}`,
@@ -9869,6 +9932,15 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
   });
   const ppSmartDeterministicTurn = !!ppSmartResolution?.answer;
   const responseIntentKey = ppSmartResolution?.intentKey || effectiveIntentKey;
+  if (ppSmartDeterministicTurn) {
+    console.info("[ASSISTANT PP SMART FALLBACK]", {
+      version: ASSISTANT_PP_SMART_FALLBACK_VERSION,
+      context,
+      intent_key: responseIntentKey,
+      outcome: String(ppSmartResolution?.outcome || "guardrail"),
+      ai_bypassed: true,
+    });
+  }
 
   // Log anonymously (fire-and-forget, real columns only)
   await logAssistantInteraction({
