@@ -5350,7 +5350,7 @@ function sanitizeAssistantLiveDataKeys(raw, context) {
 // Flag:
 //   ASSISTANT_PP_SMART_FALLBACK_ENABLED=true
 // =============================================================================
-const ASSISTANT_PP_SMART_FALLBACK_VERSION = "PP-SMART-FALLBACK-1.1";
+const ASSISTANT_PP_SMART_FALLBACK_VERSION = "PP-SMART-FALLBACK-1.1.1";
 const ASSISTANT_PP_SMART_FALLBACK_INTENT = "portal_plan_advice_pp_fallback";
 
 function isAssistantPpSmartFallbackEnabled() {
@@ -9893,12 +9893,18 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
     String(detectedIntentForTurn || "").startsWith("platform_pp_")
       ? detectedIntentForTurn
       : null;
+  // PP-SMART-FALLBACK-1.1.1: quantified plan-advice intents are dynamic
+  // intents too. Preserve them before broad KB matches so the deterministic
+  // smart fallback receives portal_plan_advice_* on the first turn.
+  const detectedPlanAdviceIntent = String(detectedIntentForTurn || "").startsWith("portal_plan_advice_")
+    ? detectedIntentForTurn
+    : null;
   const detectedEcIntent = isAssistantEcKnowledgeIntentKey(detectedIntentForTurn)
     ? detectedIntentForTurn
     : null;
   const ecFollowUpIntent = resolveAssistantEcFollowUpIntent({ context, message, thread });
   const ppSmartFollowUpIntent = resolveAssistantPpSmartFallbackFollowUpIntent({ context, message, thread });
-  const effectiveIntentKey = ecFollowUpIntent || detectedEcIntent || ppSmartFollowUpIntent || ppFollowUpIntent || detectedPpIntent || intent?.intent_key || null;
+  const effectiveIntentKey = ecFollowUpIntent || detectedEcIntent || ppSmartFollowUpIntent || detectedPlanAdviceIntent || ppFollowUpIntent || detectedPpIntent || intent?.intent_key || null;
 
   // EC precision hotfix: explicit/follow-up Client Space turns use the exact
   // deterministic EC answer. ANU-3.1 remains unchanged for every other intent.
