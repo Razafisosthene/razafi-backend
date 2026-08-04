@@ -360,8 +360,9 @@ input[type="tel"] {
   color: var(--text-muted);
   padding: 20px;
 }
-/* ===== MVola Official Badge ===== */
-.mvola-badge {
+/* ===== Payment provider badge (MVola / Airtel Money) ===== */
+.mvola-badge,
+.payment-provider-badge {
   margin-top: 12px;
   display: flex;
   flex-direction: column;
@@ -369,12 +370,14 @@ input[type="tel"] {
   gap: 6px;
 }
 
-.mvola-badge .secure-text {
+.mvola-badge .secure-text,
+.payment-provider-badge .secure-text {
   font-size: 0.85rem;
   color: #6b7280; /* gris élégant */
 }
 
-.mvola-badge img {
+.mvola-badge img,
+.payment-provider-badge img {
   height: 44px;
   max-width: 160px;
   object-fit: contain;

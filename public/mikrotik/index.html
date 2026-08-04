@@ -11,7 +11,7 @@
   <link rel="icon" type="image/svg+xml" href="assets/img/favicon.svg" />
   <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png" />
 
-  <link rel="stylesheet" href="assets/css/style.css?v=pp4-mobile-order-validation-1" />
+  <link rel="stylesheet" href="assets/css/style.css?v=airtel-portal-test-1" />
     <style>
     /* =========================================================
        RAZAFI Portal – Apple-inspired Phase 1
@@ -840,11 +840,11 @@
             <div id="personalizedReturnAfterMethods" class="personalized-return-slot personalized-return-slot-quote hidden"></div>
 
             <div id="personalizedPaymentForm" class="plan-payment personalized-payment-form hidden" aria-live="polite">
-              <h5>Paiement MVola</h5>
+              <h5 class="payment-form-title">Paiement</h5>
 
-              <label for="personalizedMvolaInput">Numéro MVola payeur</label>
-              <input id="personalizedMvolaInput" class="mvola-input" type="tel"
-                     placeholder="0341234567 ou +26134xxxxxxx"
+              <label class="payment-phone-label" for="personalizedMvolaInput">Numéro de paiement</label>
+              <input id="personalizedMvolaInput" class="mvola-input payment-phone-input" type="tel"
+                     placeholder="Saisissez le numéro payeur"
                      inputmode="numeric" autocomplete="tel">
               <div class="phone-hint muted small"></div>
 
@@ -867,18 +867,18 @@
                   <div class="processing-main">
                     <div class="spinner" aria-hidden="true"></div>
                     <div class="processing-text">
-                      <div class="processing-title">📡 Connexion avec MVola…</div>
+                      <div class="processing-title">📡 Connexion au service de paiement…</div>
                       <div class="processing-sub">Envoi sécurisé de la demande. Gardez cette page ouverte.</div>
                     </div>
                   </div>
                   <div class="payment-progress">
                     <div class="payment-progress-track is-indeterminate" role="progressbar"
-                         aria-label="Envoi de la demande MVola" aria-valuemin="0" aria-valuemax="100"
-                         aria-valuetext="Envoi de la demande MVola">
+                         aria-label="Envoi de la demande de paiement" aria-valuemin="0" aria-valuemax="100"
+                         aria-valuetext="Envoi de la demande de paiement">
                       <div class="payment-progress-fill"></div>
                     </div>
                     <div class="payment-progress-meta">
-                      <span class="payment-progress-label">Connexion sécurisée avec MVola</span>
+                      <span class="payment-progress-label">Connexion sécurisée au service de paiement</span>
                       <span class="payment-progress-elapsed" aria-hidden="true"></span>
                     </div>
                     <p class="payment-progress-note">Ne fermez pas cette page.</p>
@@ -887,9 +887,9 @@
                 </div>
               </div>
 
-              <div class="mvola-badge">
+              <div class="mvola-badge payment-provider-badge">
                 <span class="secure-text">🔒 Paiement sécurisé via</span>
-                <img src="assets/img/mvola.png" alt="MVola">
+                <img class="payment-provider-badge-logo" src="assets/img/mvola.png" alt="MVola">
               </div>
             </div>
           </div>
@@ -1075,7 +1075,7 @@
       }
     });
   </script>
-  <script src="assets/js/mikrotik.js?v=pp4-mobile-order-validation-1" defer></script>
+  <script src="assets/js/mikrotik.js?v=airtel-portal-test-1" defer></script>
 
 </body>
 </html>

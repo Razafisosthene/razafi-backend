@@ -252,6 +252,19 @@
     return { cleaned, isMvola };
   }
 
+  // Airtel Money Madagascar payer validation. The portal always sends the
+  // canonical local form (033xxxxxxx); the backend remains responsible for
+  // converting it to the UAT MSISDN format selected by AIRTEL_MSISDN_FORMAT.
+  function normalizeAirtelNumber(entered) {
+    let cleaned = String(entered ?? "").trim().replace(/[\s()-]+/g, "");
+    const intRegex = /^(?:\+?261)33(\d{7})$/;
+    if (intRegex.test(cleaned)) {
+      cleaned = cleaned.replace(intRegex, "033$1");
+    }
+    const isAirtel = /^033\d{7}$/.test(cleaned);
+    return { cleaned, isAirtel };
+  }
+
   // -------- UX helpers (auto-scroll, highlight, resume banner, friendly errors) --------
   function ensureFlashStyle() {
     if (document.getElementById("razafi-flash-style")) return;
@@ -1565,7 +1578,7 @@
     getPlanCards().forEach((card) => {
       card.classList.add("plan-card-preview");
 
-      // Disable every payment method button (MVola logo button + Orange/Airtel/Visa
+      // Disable every payment method button (operational provider buttons + remaining
       // "coming soon" buttons) without touching their innerHTML/textContent —
       // logo-only buttons must keep their logo image in preview mode.
       card.querySelectorAll(".payment-method-btn").forEach((btn) => {
@@ -2896,25 +2909,99 @@ function submitToLoginUrl(code, ev) {
   // Default keeps MVola available before the first successful fetch resolves,
   // matching the DB default and today's production behavior.
   const PAYMENT_METHOD_META = {
-    mvola:        { label: "MVola",        logo: "assets/img/mvola.png" },
-    orange_money: { label: "Orange Money", logo: "assets/img/orange-money.png" },
-    airtel_money: { label: "Airtel Money", logo: "assets/img/airtel-money.png" },
-    visa:         { label: "Visa",         logo: "assets/img/visa.jpg" },
+    mvola: {
+      label: "MVola",
+      logo: "assets/img/mvola.png",
+      operational: true,
+      backendProvider: "mvola",
+      phoneLabel: "Numéro MVola payeur",
+      phonePlaceholder: "0341234567 ou +26134xxxxxxx",
+      phoneExample: "0341234567",
+      validPrefixes: "034, 037 ou 038",
+    },
+    orange_money: {
+      label: "Orange Money",
+      logo: "assets/img/orange-money.png",
+      operational: false,
+      backendProvider: "orange",
+    },
+    airtel_money: {
+      label: "Airtel Money",
+      logo: "assets/img/airtel-money.png",
+      operational: true,
+      backendProvider: "airtel",
+      phoneLabel: "Numéro Airtel Money payeur",
+      phonePlaceholder: "0330500592 ou +26133xxxxxxx",
+      phoneExample: "0330500592",
+      validPrefixes: "033",
+    },
+    visa: {
+      label: "Visa",
+      logo: "assets/img/visa.jpg",
+      operational: false,
+      backendProvider: "visa",
+    },
   };
   const PAYMENT_METHOD_ORDER = ["mvola", "orange_money", "airtel_money", "visa"];
   let currentPaymentMethods = { mvola: true, orange_money: false, airtel_money: false, visa: false };
   let currentActivePaymentMethods = ["mvola"];
 
-  // PAY-0 minimal: one provider registry shared by the personalized-plan UI.
-  // A method is rendered only when it is both enabled for the pool and marked
-  // operational here. Future PAY-1/2/3 phases only need to activate their
-  // adapter without rebuilding PP-3.
-  const PERSONALIZED_PAYMENT_PROVIDERS = {
-    mvola:        { operational: true,  label: "MVola" },
-    orange_money: { operational: false, label: "Orange Money" },
-    airtel_money: { operational: false, label: "Airtel Money" },
-    visa:         { operational: false, label: "Visa" },
-  };
+  // Shared provider registry for standard and personalized plans.
+  const PERSONALIZED_PAYMENT_PROVIDERS = PAYMENT_METHOD_META;
+
+  function normalizePaymentProviderKey(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (raw === "mvola") return "mvola";
+    if (raw === "airtel" || raw === "airtel_money") return "airtel_money";
+    if (raw === "orange" || raw === "orange_money") return "orange_money";
+    if (raw === "visa") return "visa";
+    return "";
+  }
+
+  function getPaymentProviderConfig(value) {
+    const key = normalizePaymentProviderKey(value);
+    const config = key ? PAYMENT_METHOD_META[key] : null;
+    return config ? { key, ...config } : null;
+  }
+
+  function getSelectedPaymentProviderKey(card) {
+    const fromCard = normalizePaymentProviderKey(card?.getAttribute?.("data-payment-provider"));
+    if (fromCard) return fromCard;
+    const selected = card?.querySelector?.(".payment-method-btn.payment-method-selected");
+    return normalizePaymentProviderKey(selected?.getAttribute?.("data-method") || selected?.getAttribute?.("data-pp-provider"));
+  }
+
+  function getSelectedPaymentProvider(card) {
+    return getPaymentProviderConfig(getSelectedPaymentProviderKey(card));
+  }
+
+  function normalizePaymentNumber(providerValue, entered) {
+    const provider = getPaymentProviderConfig(providerValue);
+    if (!provider) return { cleaned: String(entered || "").trim(), isValid: false, provider: null };
+    if (provider.key === "mvola") {
+      const result = normalizeMvolaNumber(entered);
+      return { cleaned: result.cleaned, isValid: result.isMvola, provider };
+    }
+    if (provider.key === "airtel_money") {
+      const result = normalizeAirtelNumber(entered);
+      return { cleaned: result.cleaned, isValid: result.isAirtel, provider };
+    }
+    return { cleaned: String(entered || "").trim(), isValid: false, provider };
+  }
+
+  function providerInvalidNumberMessage(provider) {
+    const p = provider || {};
+    if (p.key === "airtel_money") {
+      return "Numéro Airtel Money invalide. Entrez 033xxxxxxx ou +26133xxxxxxx (ex : 0330500592).";
+    }
+    return "Numéro MVola invalide. Entrez 034xxxxxxx, 037xxxxxxx, 038xxxxxxx ou le format +261 correspondant.";
+  }
+
+  function getOperationalPaymentMethodKeys() {
+    return PAYMENT_METHOD_ORDER.filter((key) =>
+      currentPaymentMethods?.[key] === true && PAYMENT_METHOD_META[key]?.operational === true
+    );
+  }
 
   let personalizedPlansEnabled = false;
   let personalizedOptions = null;
@@ -2928,6 +3015,34 @@ function submitToLoginUrl(code, ev) {
 
   function getActivePaymentMethodKeys() {
     return PAYMENT_METHOD_ORDER.filter((k) => currentPaymentMethods && currentPaymentMethods[k] === true);
+  }
+
+  function syncPaymentFormProvider(card, providerValue) {
+    const provider = getPaymentProviderConfig(providerValue);
+    if (!card || !provider || provider.operational !== true) return false;
+
+    card.setAttribute("data-payment-provider", provider.key);
+
+    const title = card.querySelector(".payment-form-title");
+    const label = card.querySelector(".payment-phone-label");
+    const input = card.querySelector(".payment-phone-input, .mvola-input");
+    const badge = card.querySelector(".payment-provider-badge, .mvola-badge");
+    const badgeLogo = badge?.querySelector(".payment-provider-badge-logo, img");
+
+    if (title) title.textContent = `Paiement ${provider.label}`;
+    if (label) label.textContent = provider.phoneLabel || `Numéro ${provider.label} payeur`;
+    if (input) {
+      input.setAttribute("placeholder", provider.phonePlaceholder || "Saisissez le numéro payeur");
+      input.setAttribute("aria-label", provider.phoneLabel || `Numéro ${provider.label} payeur`);
+      input.setAttribute("data-payment-provider", provider.key);
+    }
+    if (badgeLogo) {
+      badgeLogo.setAttribute("src", provider.logo);
+      badgeLogo.setAttribute("alt", provider.label);
+    }
+
+    updatePayButtonState(card);
+    return true;
   }
 
   // Updates the "Plans" section subtitle based on whether any payment method
@@ -3575,6 +3690,7 @@ function saturationLabel(pct) {
       btn.classList.remove("payment-method-selected");
       btn.setAttribute("aria-pressed", "false");
     });
+    el.card.removeAttribute("data-payment-provider");
     if (el.phone && !keepPhone) el.phone.value = "";
     const hint = el.card.querySelector(".phone-hint");
     if (hint) {
@@ -3798,7 +3914,7 @@ function saturationLabel(pct) {
     const el = personalizedEls();
     if (!el.methods) return;
     const available = PAYMENT_METHOD_ORDER.filter((key) =>
-      currentPaymentMethods?.[key] === true && PERSONALIZED_PAYMENT_PROVIDERS[key]?.operational === true
+      currentPaymentMethods?.[key] === true && PAYMENT_METHOD_META[key]?.operational === true
     );
     el.methods.innerHTML = available.map((key) => {
       const meta = PAYMENT_METHOD_META[key];
@@ -3986,9 +4102,9 @@ function saturationLabel(pct) {
     }
   }
 
-  function openPersonalizedPayment(provider) {
+  function openPersonalizedPayment(providerValue) {
     const el = personalizedEls();
-    const key = String(provider || "");
+    const key = String(providerValue || "");
     if (!personalizedQuoteIsUsable()) {
       setPersonalizedError("Ce prix n’est plus disponible. Calculez un nouveau prix.");
       return;
@@ -4003,12 +4119,9 @@ function saturationLabel(pct) {
       showToast(poolIsFull ? "⚠️ Réseau saturé. Achat impossible pour le moment." : "⚠️ Vous avez déjà un code en attente ou actif.", "warning", 7000);
       return;
     }
-    if (currentPaymentMethods?.[key] !== true || PERSONALIZED_PAYMENT_PROVIDERS[key]?.operational !== true) {
+    const provider = getPaymentProviderConfig(key);
+    if (currentPaymentMethods?.[key] !== true || provider?.operational !== true) {
       showToast("Ce moyen de paiement n’est pas encore disponible.", "info", 4500);
-      return;
-    }
-    if (key !== "mvola") {
-      showToast("Ce moyen de paiement sera activé prochainement.", "info", 4500);
       return;
     }
 
@@ -4017,6 +4130,7 @@ function saturationLabel(pct) {
       btn.classList.toggle("payment-method-selected", selected);
       btn.setAttribute("aria-pressed", selected ? "true" : "false");
     });
+    syncPaymentFormProvider(el.card, key);
     el.paymentForm?.classList.remove("hidden");
     syncPersonalizedReturnButton();
     enterPaymentFocusMode(el.card);
@@ -4037,18 +4151,21 @@ function saturationLabel(pct) {
       invalidatePersonalizedQuote({ message: "Ce prix a expiré. Calculez un nouveau prix." });
       return;
     }
-    const normalized = normalizeMvolaNumber(el.phone?.value || "");
-    if (!normalized.isMvola) {
-      showToast("❌ Numéro MVola invalide. Entrez 034xxxxxxx ou +26134xxxxxxx.", "error");
+
+    const provider = getSelectedPaymentProvider(el.card);
+    const normalized = normalizePaymentNumber(provider?.key, el.phone?.value || "");
+    if (!provider || provider.operational !== true || !normalized.isValid) {
+      showToast("❌ " + providerInvalidNumberMessage(provider), "error");
       updatePayButtonState(el.card);
       return;
     }
 
+    const providerLabel = provider.label;
     el.confirmWrap?.classList.add("hidden");
     personalizedPaymentStarted = true;
     clearPersonalizedQuoteTimer();
     setPersonalizedError("");
-    showToast("📲 Une demande MVola va être envoyée sur votre téléphone.", "info", 5200);
+    showToast(`📲 Une demande ${providerLabel} va être envoyée sur votre téléphone.`, "info", 5200);
     setProcessing(el.card, true);
 
     let invalidateAfter = false;
@@ -4063,7 +4180,7 @@ function saturationLabel(pct) {
           nas_id: nasId,
           client_mac: clientMac,
           phone: normalized.cleaned,
-          paymentProvider: "mvola",
+          paymentProvider: provider.backendProvider,
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -4093,9 +4210,9 @@ function saturationLabel(pct) {
       const verificationTimeoutMs = normalizeMvolaVerificationTimeoutMs(
         data?.verificationTimeoutMs ?? data?.verification_timeout_ms
       );
-      updateProcessingMessage(el.card, "📲 Demande envoyée à MVola", "Vérifiez votre téléphone et entrez votre PIN si MVola vous le demande.");
+      updateProcessingMessage(el.card, `📲 Demande envoyée à ${providerLabel}`, `Vérifiez votre téléphone et entrez votre PIN si ${providerLabel} vous le demande.`);
       startPaymentVerificationProgress(el.card, verificationTimeoutMs);
-      showToast("📲 Demande MVola envoyée. Vérifiez votre téléphone.", "success", 5200);
+      showToast(`📲 Demande ${providerLabel} envoyée. Vérifiez votre téléphone.`, "success", 5200);
 
       const pollResult = await pollDernierCode(normalized.cleaned, {
         timeoutMs: verificationTimeoutMs,
@@ -4107,16 +4224,16 @@ function saturationLabel(pct) {
       if (!pollResult || pollResult.outcome !== "success" || !pollResult.code) {
         clearProcessingWaitMessages(el.card);
         if (pollResult?.outcome === "failed") {
-          updateProcessingMessage(el.card, "❌ Paiement non validé par MVola", "MVola n’a pas confirmé ce paiement. Vous pourrez recalculer un nouveau prix.");
-          showToast("❌ Paiement non validé par MVola.", "error", 7500);
-          invalidateMessage = "Paiement non validé par MVola. Aucun code n’a été généré. Cliquez sur « Voir mon prix » pour réessayer.";
+          updateProcessingMessage(el.card, `❌ Paiement non validé par ${providerLabel}`, `${providerLabel} n’a pas confirmé ce paiement. Vous pourrez recalculer un nouveau prix.`);
+          showToast(`❌ Paiement non validé par ${providerLabel}.`, "error", 7500);
+          invalidateMessage = `Paiement non validé par ${providerLabel}. Aucun code n’a été généré. Cliquez sur « Voir mon prix » pour réessayer.`;
           invalidateAfter = true;
         } else {
           keepLockedAfter = true;
           const isNetwork = pollResult?.outcome === "network_error";
           updateProcessingMessage(
             el.card,
-            isNetwork ? "⚠️ Vérification interrompue" : "⏱️ Confirmation MVola non reçue",
+            isNetwork ? "⚠️ Vérification interrompue" : `⏱️ Confirmation ${providerLabel} non reçue`,
             "Le paiement peut encore être en cours. Ne payez pas une deuxième fois si votre solde a été débité."
           );
           showToast("⚠️ Le paiement peut encore être en cours. Ne payez pas une deuxième fois si votre solde a été débité.", "warning", 9500);
@@ -4148,7 +4265,7 @@ function saturationLabel(pct) {
       } else {
         invalidateAfter = true;
         const friendly = error?.userMessage || personalizedFriendlyError(error?.message);
-        updateProcessingMessage(el.card, "❌ Demande MVola non acceptée", friendly);
+        updateProcessingMessage(el.card, `❌ Demande ${providerLabel} non acceptée`, friendly);
         showToast("❌ " + friendly, "error", 8000);
       }
     } finally {
@@ -4160,7 +4277,7 @@ function saturationLabel(pct) {
       } else if (keepLockedAfter) {
         personalizedPaymentStarted = true;
         setPersonalizedError(
-          "La confirmation MVola reste incertaine. Ne lancez pas un deuxième paiement si votre solde a été débité. Contactez l’assistance si nécessaire."
+          `La confirmation ${providerLabel} reste incertaine. Ne lancez pas un deuxième paiement si votre solde a été débité. Contactez l’assistance si nécessaire.`
         );
         applyPersonalizedStateLocks();
       } else {
@@ -4246,10 +4363,11 @@ function saturationLabel(pct) {
         showTermsError();
         return;
       }
-      const normalized = normalizeMvolaNumber(el.phone?.value || "");
-      if (!normalized.isMvola) {
+      const provider = getSelectedPaymentProvider(el.card);
+      const normalized = normalizePaymentNumber(provider?.key, el.phone?.value || "");
+      if (!provider || !normalized.isValid) {
         updatePayButtonState(el.card);
-        showToast("❌ Numéro MVola invalide.", "error");
+        showToast("❌ " + providerInvalidNumberMessage(provider), "error");
         return;
       }
       if (el.summary) el.summary.innerHTML = buildPlanSummary(el.card);
@@ -4310,9 +4428,8 @@ function saturationLabel(pct) {
   // END PP-3
   // ============================================================
 
-  // Build the payment method buttons for a plan card from the current pool's
-  // active payment_methods. MVola reuses the existing .choose-plan-btn class
-  // and click flow untouched; other methods are inert "coming soon" logos.
+  // Build payment method buttons from the current pool configuration.
+  // MVola and Airtel Money share the same provider-neutral payment form.
   function buildPlanPaymentMethodsHTML(ctaText) {
     const activeKeys = getActivePaymentMethodKeys();
 
@@ -4324,12 +4441,11 @@ function saturationLabel(pct) {
       const meta = PAYMENT_METHOD_META[key];
       if (!meta) return "";
 
-      if (key === "mvola") {
-        // Exact same class/attributes as before — reuses the existing MVola flow untouched.
-        return `<button class="choose-plan-btn payment-method-btn payment-method-mvola" type="button"
-                  data-method="mvola" data-default-label="${escapeHtml(ctaText)}"
-                  aria-pressed="false" aria-label="Payer avec MVola">
-                  <img src="${meta.logo}" alt="MVola" class="payment-method-logo">
+      if (meta.operational === true) {
+        return `<button class="choose-plan-btn payment-method-btn payment-method-operational payment-method-${escapeHtml(key)}" type="button"
+                  data-method="${escapeHtml(key)}" data-default-label="${escapeHtml(ctaText)}"
+                  aria-pressed="false" aria-label="Payer avec ${escapeHtml(meta.label)}">
+                  <img src="${meta.logo}" alt="${escapeHtml(meta.label)}" class="payment-method-logo">
                 </button>`;
       }
 
@@ -4365,7 +4481,7 @@ function saturationLabel(pct) {
     const dataText = formatData(dataMb);
     const devicesText = formatDevices(maxDevices);
     const speedText = speedHuman || "Selon le forfait";
-    const mvolaActive = !!(currentPaymentMethods && currentPaymentMethods.mvola === true);
+    const hasOperationalPayment = getOperationalPaymentMethodKeys().length > 0;
     return `
       <div class="card plan-card ${familyClass} ${variantClass} ${roleClass}" 
            data-plan-id="${escapeHtml(plan.id)}"
@@ -4401,14 +4517,14 @@ function saturationLabel(pct) {
 
         ${buildPlanPaymentMethodsHTML(ctaText)}
 
-        ${mvolaActive ? `
+        ${hasOperationalPayment ? `
         <div class="plan-payment hidden" aria-live="polite">
-          <h5>Paiement</h5>
+          <h5 class="payment-form-title">Paiement</h5>
 
-          <label>Numéro MVola</label>
-          <input class="mvola-input"
+          <label class="payment-phone-label">Numéro de paiement</label>
+          <input class="mvola-input payment-phone-input"
             type="tel"
-            placeholder="0341234567 ou +26134xxxxxxx"
+            placeholder="Saisissez le numéro payeur"
             inputmode="numeric"
             autocomplete="tel"
           />
@@ -4441,7 +4557,7 @@ function saturationLabel(pct) {
               <div class="processing-main">
                 <div class="spinner" aria-hidden="true"></div>
                 <div class="processing-text">
-                  <div class="processing-title">📡 Connexion avec MVola…</div>
+                  <div class="processing-title">📡 Connexion au service de paiement…</div>
                   <div class="processing-sub">Envoi sécurisé de la demande. Gardez cette page ouverte.</div>
                 </div>
               </div>
@@ -4449,14 +4565,14 @@ function saturationLabel(pct) {
               <div class="payment-progress">
                 <div class="payment-progress-track is-indeterminate"
                   role="progressbar"
-                  aria-label="Envoi de la demande MVola"
+                  aria-label="Envoi de la demande de paiement"
                   aria-valuemin="0"
                   aria-valuemax="100"
-                  aria-valuetext="Envoi de la demande MVola">
+                  aria-valuetext="Envoi de la demande de paiement">
                   <div class="payment-progress-fill"></div>
                 </div>
                 <div class="payment-progress-meta">
-                  <span class="payment-progress-label">Connexion sécurisée avec MVola</span>
+                  <span class="payment-progress-label">Connexion sécurisée au service de paiement</span>
                   <span class="payment-progress-elapsed" aria-hidden="true"></span>
                 </div>
                 <p class="payment-progress-note">Ne fermez pas cette page.</p>
@@ -4466,9 +4582,9 @@ function saturationLabel(pct) {
             </div>
           </div>
 
-          <div class="mvola-badge">
+          <div class="mvola-badge payment-provider-badge">
             <span class="secure-text">🔒 Paiement sécurisé via</span>
-            <img src="assets/img/mvola.png" alt="MVola">
+            <img class="payment-provider-badge-logo" src="assets/img/mvola.png" alt="MVola">
           </div>
 
           <p class="muted small">
@@ -4669,6 +4785,7 @@ function saturationLabel(pct) {
       btn.classList.remove("payment-method-selected");
       btn.setAttribute("aria-pressed", "false");
     });
+    card.removeAttribute("data-payment-provider");
     const chooseBtn = card.querySelector(".choose-plan-btn");
     if (chooseBtn) {
       // Logo-only payment buttons keep their image; only legacy text buttons get relabeled.
@@ -4700,10 +4817,14 @@ function saturationLabel(pct) {
 
   function setSelectedPaymentMethod(card, btn) {
     if (!card || !btn) return;
+    const providerKey = normalizePaymentProviderKey(
+      btn.getAttribute("data-method") || btn.getAttribute("data-pp-provider")
+    );
     card.querySelectorAll(".payment-method-btn").forEach(function (other) {
       other.classList.toggle("payment-method-selected", other === btn);
       other.setAttribute("aria-pressed", other === btn ? "true" : "false");
     });
+    if (providerKey) syncPaymentFormProvider(card, providerKey);
   }
 
   function scrollSelectedPlanIntoView(card) {
@@ -4726,7 +4847,7 @@ function saturationLabel(pct) {
 
     window.setTimeout(function () {
       try {
-        // Mobile keyboard UX: target the MVola input itself and keep it around
+        // Mobile keyboard UX: target the payer input itself and keep it around
         // the visible center. Using "start" can push the input above the
         // captive-browser header, leaving only Pay/Cancel visible.
         target.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
@@ -4824,7 +4945,7 @@ function saturationLabel(pct) {
           els.track.classList.remove("is-determinate", "is-complete");
           els.track.classList.add("is-indeterminate");
           els.track.removeAttribute("aria-valuenow");
-          els.track.setAttribute("aria-valuetext", "Envoi de la demande MVola");
+          els.track.setAttribute("aria-valuetext", `Envoi de la demande ${getSelectedPaymentProvider(card)?.label || "de paiement"}`);
         }
         if (els.fill) els.fill.style.width = "";
         if (els.elapsed) els.elapsed.textContent = "";
@@ -4834,18 +4955,22 @@ function saturationLabel(pct) {
 
   function startPaymentRequestProgress(card) {
     stopPaymentProgress(card, { reset: true });
+    const provider = getSelectedPaymentProvider(card);
+    const providerLabel = provider?.label || "service de paiement";
     const els = getPaymentProgressElements(card);
-    if (els.label) els.label.textContent = "Connexion sécurisée avec MVola";
+    if (els.label) els.label.textContent = `Connexion sécurisée avec ${providerLabel}`;
     if (els.note) els.note.textContent = "Ne fermez pas cette page.";
     if (els.track) {
-      els.track.setAttribute("aria-label", "Envoi de la demande MVola");
-      els.track.setAttribute("aria-valuetext", "Envoi de la demande MVola");
+      els.track.setAttribute("aria-label", `Envoi de la demande ${providerLabel}`);
+      els.track.setAttribute("aria-valuetext", `Envoi de la demande ${providerLabel}`);
     }
-    announcePaymentProcessing(card, "Envoi de la demande MVola. Gardez cette page ouverte.");
+    announcePaymentProcessing(card, `Envoi de la demande ${providerLabel}. Gardez cette page ouverte.`);
   }
 
   function startPaymentVerificationProgress(card, timeoutMs) {
     stopPaymentProgress(card);
+    const provider = getSelectedPaymentProvider(card);
+    const providerLabel = provider?.label || "service de paiement";
     const safeTimeoutMs = normalizeMvolaVerificationTimeoutMs(timeoutMs);
     const els = getPaymentProgressElements(card);
     const startedAt = Date.now();
@@ -4853,9 +4978,9 @@ function saturationLabel(pct) {
     if (els.track) {
       els.track.classList.remove("is-indeterminate", "is-complete");
       els.track.classList.add("is-determinate");
-      els.track.setAttribute("aria-label", "Temps de vérification auprès de MVola");
+      els.track.setAttribute("aria-label", `Temps de vérification auprès de ${providerLabel}`);
     }
-    if (els.label) els.label.textContent = "Vérification auprès de MVola";
+    if (els.label) els.label.textContent = `Vérification auprès de ${providerLabel}`;
     if (els.note) {
       els.note.textContent = `La confirmation peut prendre jusqu’à ${formatPaymentWindow(safeTimeoutMs)}. Ne lancez pas un deuxième paiement.`;
     }
@@ -4882,7 +5007,7 @@ function saturationLabel(pct) {
     paymentProgressStates.set(card, { intervalId, startedAt, timeoutMs: safeTimeoutMs });
     announcePaymentProcessing(
       card,
-      `Demande envoyée à MVola. Vérifiez votre téléphone et entrez votre PIN si MVola vous le demande. La confirmation peut prendre jusqu’à ${formatPaymentWindow(safeTimeoutMs)}.`
+      `Demande envoyée à ${providerLabel}. Vérifiez votre téléphone et entrez votre PIN si ${providerLabel} vous le demande. La confirmation peut prendre jusqu’à ${formatPaymentWindow(safeTimeoutMs)}.`
     );
   }
 
@@ -4914,7 +5039,7 @@ function saturationLabel(pct) {
 
   function scheduleProcessingWaitMessages(card) {
     // UX vFinal: no timer-based message changes.
-    // The browser cannot know when the user entered the MVola PIN,
+    // The browser cannot know when the user entered the provider PIN,
     // so we keep one clear message during the whole polling period.
     try {
       if (!card) return;
@@ -4923,8 +5048,13 @@ function saturationLabel(pct) {
   }
 
   function setProcessing(card, isProcessing) {
-    // Assistant bridge: keep payment-in-progress flag in sync (no card/code data exposed).
-    try { window.razafiPaymentInProgress = !!isProcessing; } catch (_) {}
+    // Assistant bridge: keep payment-in-progress state provider-aware without exposing PII.
+    try {
+      window.razafiPaymentInProgress = !!isProcessing;
+      window.razafiPaymentProviderLabel = isProcessing
+        ? (getSelectedPaymentProvider(card)?.label || "Paiement")
+        : null;
+    } catch (_) {}
     if (!isProcessing) {
       clearProcessingWaitMessages(card);
       stopPaymentProgress(card, { reset: true });
@@ -4934,9 +5064,10 @@ function saturationLabel(pct) {
     if (overlay) overlay.classList.toggle("hidden", !isProcessing);
 
     if (isProcessing) {
+      const providerLabel = getSelectedPaymentProvider(card)?.label || "le service de paiement";
       updateProcessingMessage(
         card,
-        "📡 Connexion avec MVola…",
+        `📡 Connexion avec ${providerLabel}…`,
         "Envoi sécurisé de la demande. Gardez cette page ouverte."
       );
       startPaymentRequestProgress(card);
@@ -4978,6 +5109,7 @@ function saturationLabel(pct) {
     const dev = formatDevices(Number(devices));
 
     return `
+      ${getSelectedPaymentProvider(card)?.label ? `<div class="summary-row"><span>Paiement</span><strong>${escapeHtml(getSelectedPaymentProvider(card).label)}</strong></div>` : ""}
       <div class="summary-row"><span>Plan</span><strong>${escapeHtml(name)}</strong></div>
       <div class="summary-row"><span>Prix</span><strong>${escapeHtml(price)}</strong></div>
       <div class="summary-row"><span>Durée</span><strong>${escapeHtml(duration)}</strong></div>
@@ -4988,13 +5120,21 @@ function saturationLabel(pct) {
   }
 
   function updatePayButtonState(card) {
-    const input = card.querySelector(".mvola-input");
+    const input = card.querySelector(".payment-phone-input, .mvola-input");
     const hint = card.querySelector(".phone-hint");
     const payBtn = card.querySelector(".pay-btn");
     if (!input || !hint || !payBtn) return;
 
+    const provider = getSelectedPaymentProvider(card);
     const raw = input.value;
-    const { cleaned, isMvola } = normalizeMvolaNumber(raw);
+    const normalized = normalizePaymentNumber(provider?.key, raw);
+
+    if (!provider) {
+      hint.textContent = "";
+      hint.classList.remove("hint-ok", "hint-error");
+      payBtn.disabled = true;
+      return;
+    }
 
     if (!raw.trim()) {
       hint.textContent = "";
@@ -5003,20 +5143,19 @@ function saturationLabel(pct) {
       return;
     }
 
-    if (isMvola) {
-      hint.textContent = "✅ Numéro MVola valide : " + cleaned;
+    if (normalized.isValid) {
+      hint.textContent = `✅ Numéro ${provider.label} valide : ${normalized.cleaned}`;
       hint.classList.remove("hint-error");
       hint.classList.add("hint-ok");
       payBtn.disabled = false;
     } else {
-      hint.textContent = "❌ Numéro MVola invalide. Entrez 034xxxxxxx ou +26134xxxxxxx (ex : 0341234567).";
+      hint.textContent = "❌ " + providerInvalidNumberMessage(provider);
       hint.classList.remove("hint-ok");
       hint.classList.add("hint-error");
       payBtn.disabled = true;
     }
   }
 
-  
   function isTermsAccepted() {
     const cb = document.getElementById("acceptTermsCheckbox");
     return !!(cb && cb.checked);
@@ -5202,7 +5341,7 @@ function selectPlanCardOnly(card) {
     const planCards = getPlanCards();
 
     planCards.forEach((card) => {
-      const chooseBtn = card.querySelector(".choose-plan-btn");
+      const operationalBtns = card.querySelectorAll(".payment-method-operational");
       const cancelBtn = card.querySelector(".cancel-btn");
       const payBtn = card.querySelector(".pay-btn");
       const input = card.querySelector(".mvola-input");
@@ -5233,11 +5372,16 @@ function selectPlanCardOnly(card) {
         });
       });
 
-      if (chooseBtn) {
-        chooseBtn.addEventListener("click", async function (e) {
+      operationalBtns.forEach((methodBtn) => {
+        methodBtn.addEventListener("click", async function (e) {
           if (e) {
             e.preventDefault();
             e.stopPropagation();
+          }
+          const provider = getPaymentProviderConfig(methodBtn.getAttribute("data-method"));
+          if (!provider || provider.operational !== true || currentPaymentMethods?.[provider.key] !== true) {
+            showToast("Ce moyen de paiement n’est pas disponible pour ce WiFi.", "info", 4500);
+            return;
           }
           if (!isTermsAccepted()) {
             showTermsError();
@@ -5271,10 +5415,7 @@ function selectPlanCardOnly(card) {
                 const j = await r.json().catch(() => ({}));
                 const whenIso = j.last_used_at || null;
                 let whenTxt = "";
-                if (whenIso) {
-                  // ✅ Changed: always Madagascar datetime
-                  whenTxt = " (" + fmtDateTimeMG(whenIso) + ")";
-                }
+                if (whenIso) whenTxt = " (" + fmtDateTimeMG(whenIso) + ")";
                 showToast("Ce plan gratuit a déjà été utilisé sur cet appareil" + whenTxt + ". Merci de choisir un autre plan.", "warning", 7500);
                 return;
               }
@@ -5283,20 +5424,18 @@ function selectPlanCardOnly(card) {
 
           closeAllPayments();
           setPlanSelectedUi(card);
-          setSelectedPaymentMethod(card, chooseBtn);
+          setSelectedPaymentMethod(card, methodBtn);
           const payment = card.querySelector(".plan-payment");
           if (payment) payment.classList.remove("hidden");
           enterPaymentFocusMode(card);
           scrollPaymentFormIntoView(card, 120);
           if (input) {
             try { input.focus({ preventScroll: true }); } catch (_) { try { input.focus(); } catch (_) {} }
-            // Android/iPhone keyboards resize the visible area after focus, so scroll once more
-            // after the keyboard starts opening. This keeps the MVola field + Pay/Cancel visible.
             scrollPaymentFormIntoView(card, 420);
             updatePayButtonState(card);
           }
         });
-      }
+      });
 
       if (input) {
         let lastPaymentScrollAt = 0;
@@ -5338,9 +5477,10 @@ function selectPlanCardOnly(card) {
           if (card.classList.contains("processing")) return;
 
           const raw = input ? input.value.trim() : "";
-          const { isMvola } = normalizeMvolaNumber(raw);
-          if (!isMvola) {
-            showToast("❌ Numéro MVola invalide. Entrez 034xxxxxxx ou +26134xxxxxxx (ex : 0341234567).", "error");
+          const provider = getSelectedPaymentProvider(card);
+          const normalized = normalizePaymentNumber(provider?.key, raw);
+          if (!provider || !normalized.isValid) {
+            showToast("❌ " + providerInvalidNumberMessage(provider), "error");
             updatePayButtonState(card);
             return;
           }
@@ -5385,16 +5525,19 @@ function selectPlanCardOnly(card) {
           if (card.classList.contains("processing")) return;
 
           const raw = input ? input.value.trim() : "";
-          const { cleaned, isMvola } = normalizeMvolaNumber(raw);
-          if (!isMvola) {
-            showToast("❌ Numéro MVola invalide. Entrez 034xxxxxxx ou +26134xxxxxxx (ex : 0341234567).", "error");
+          const provider = getSelectedPaymentProvider(card);
+          const normalized = normalizePaymentNumber(provider?.key, raw);
+          if (!provider || !normalized.isValid) {
+            showToast("❌ " + providerInvalidNumberMessage(provider), "error");
             if (confirmWrap) confirmWrap.classList.add("hidden");
             updatePayButtonState(card);
             return;
           }
+          const cleaned = normalized.cleaned;
+          const providerLabel = provider.label;
 
           if (confirmWrap) confirmWrap.classList.add("hidden");
-          showToast("📲 Une demande MVola va être envoyée sur votre téléphone.", "info", 5200);
+          showToast(`📲 Une demande ${providerLabel} va être envoyée sur votre téléphone.`, "info", 5200);
           setProcessing(card, true);
 
           (async () => {
@@ -5435,7 +5578,7 @@ function selectPlanCardOnly(card) {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                  provider: "mvola",
+                  provider: provider.backendProvider,
                   phone: cleaned,
                   plan: planStr || planId || planPrice || "plan",
                   plan_id: planId || null,
@@ -5504,11 +5647,11 @@ function selectPlanCardOnly(card) {
 
               updateProcessingMessage(
                 card,
-                "📲 Demande envoyée à MVola",
-                "Vérifiez votre téléphone et entrez votre PIN si MVola vous le demande."
+                `📲 Demande envoyée à ${providerLabel}`,
+                `Vérifiez votre téléphone et entrez votre PIN si ${providerLabel} vous le demande.`
               );
               startPaymentVerificationProgress(card, verificationTimeoutMs);
-              showToast("📲 Demande MVola envoyée. Vérifiez votre téléphone.", "success", 5200);
+              showToast(`📲 Demande ${providerLabel} envoyée. Vérifiez votre téléphone.`, "success", 5200);
 
               const pollResult = await pollDernierCode(cleaned, {
                 timeoutMs: verificationTimeoutMs,
@@ -5523,11 +5666,11 @@ function selectPlanCardOnly(card) {
                 if (pollResult?.outcome === "failed") {
                   updateProcessingMessage(
                     card,
-                    "❌ Paiement non validé par MVola",
-                    "MVola n’a pas confirmé ce paiement. Vérifiez votre téléphone avant de réessayer."
+                    `❌ Paiement non validé par ${providerLabel}`,
+                    `${providerLabel} n’a pas confirmé ce paiement. Vérifiez votre téléphone avant de réessayer.`
                   );
                   showToast(
-                    "❌ Paiement non validé par MVola. Vérifiez votre téléphone avant de réessayer.",
+                    `❌ Paiement non validé par ${providerLabel}. Vérifiez votre téléphone avant de réessayer.`,
                     "error",
                     7500
                   );
@@ -5556,11 +5699,11 @@ function selectPlanCardOnly(card) {
                 } else {
                   updateProcessingMessage(
                     card,
-                    "⏱️ Confirmation MVola non reçue",
+                    `⏱️ Confirmation ${providerLabel} non reçue`,
                     "Si votre solde a été débité, ne payez pas une deuxième fois. Contactez l’assistance."
                   );
                   showToast(
-                    "⏱️ Confirmation MVola non reçue. Si votre solde a été débité, ne payez pas une deuxième fois et contactez l’assistance.",
+                    `⏱️ Confirmation ${providerLabel} non reçue. Si votre solde a été débité, ne payez pas une deuxième fois et contactez l’assistance.`,
                     "warning",
                     9000
                   );
@@ -5593,7 +5736,7 @@ function selectPlanCardOnly(card) {
               if (e?.razafiPaymentStage === "initiate_response") {
                 updateProcessingMessage(
                   card,
-                  "❌ Demande MVola non acceptée",
+                  `❌ Demande ${providerLabel} non acceptée`,
                   friendly
                 );
                 showToast("❌ " + friendly, "error", 7500);
@@ -5604,7 +5747,7 @@ function selectPlanCardOnly(card) {
                   "La demande peut avoir été reçue. Si votre solde a été débité, ne payez pas une deuxième fois et contactez l’assistance."
                 );
                 showToast(
-                  "⚠️ Impossible de confirmer l’envoi MVola. Si votre solde a été débité, ne payez pas une deuxième fois et contactez l’assistance.",
+                  `⚠️ Impossible de confirmer l’envoi ${providerLabel}. Si votre solde a été débité, ne payez pas une deuxième fois et contactez l’assistance.`,
                   "warning",
                   9000
                 );
@@ -5735,7 +5878,7 @@ function selectPlanCardOnly(card) {
       }
 
       var ppPaymentMethods = PAYMENT_METHOD_ORDER.filter(function (key) {
-        return currentPaymentMethods?.[key] === true && PERSONALIZED_PAYMENT_PROVIDERS[key]?.operational === true;
+        return currentPaymentMethods?.[key] === true && PAYMENT_METHOD_META[key]?.operational === true;
       }).map(function (key) {
         return PERSONALIZED_PAYMENT_PROVIDERS[key]?.label || PAYMENT_METHOD_META[key]?.label || key;
       });
@@ -6344,12 +6487,14 @@ function selectPlanCardOnly(card) {
           : (/\b(how|please|payment|waiting|confirm|my|i |the |is |are |do |did |can |what)\b/.test(_pip_s))
             ? "en"
           : "fr";
+        var _pip_provider = "Paiement";
+        try { _pip_provider = String(window.razafiPaymentProviderLabel || "Paiement"); } catch (_) {}
         var _pip_msg =
           _pip_lang === "mg"
-            ? "Mbola eo am-piandrasana confirmation MVola ny paiement-nao. Azafady miandrasa kely."
+            ? `Mbola eo am-piandrasana confirmation ${_pip_provider} ny paiement-nao. Azafady miandrasa kely.`
           : _pip_lang === "en"
-            ? "Your payment is still being confirmed. Please wait until confirmation."
-          : "Votre paiement est en cours de confirmation. Merci de patienter jusqu’à la confirmation.";
+            ? `Your ${_pip_provider} payment is still being confirmed. Please wait until confirmation.`
+          : `Votre paiement ${_pip_provider} est en cours de confirmation. Merci de patienter jusqu’à la confirmation.`;
         appendMsg(_pip_msg, "assistant");
         return;
       }
