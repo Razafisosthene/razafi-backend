@@ -17,6 +17,7 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import cookieParser from "cookie-parser";
 import bcrypt from "bcryptjs";
 import { registerEc1ClientSpace } from "./ec1-client-space.js";
+import { createAirtelMoneyClient, normalizeAirtelTransactionState } from "./airtel-money.js";
 
 dotenv.config();
 
@@ -890,6 +891,15 @@ function normalizePaymentProviderForSendPayment(rawProvider) {
   }
 
   return { ok: true, provider: map[normalized], raw: safeRaw };
+}
+
+function paymentProviderToPoolMethodKey(provider) {
+  const p = String(provider || "").trim().toLowerCase();
+  if (p === "mvola") return "mvola";
+  if (p === "orange") return "orange_money";
+  if (p === "airtel") return "airtel_money";
+  if (p === "visa") return "visa";
+  return null;
 }
 
 
@@ -12553,6 +12563,40 @@ const MVOLA_VERIFICATION_TIMEOUT_MS = Math.max(
 );
 const USER_LANGUAGE = "FR";
 
+// ---------------------------------------------------------------------------
+// AIRTEL MONEY TEST/UAT — disabled by default
+// Rollback is immediate: set all AIRTEL_*_ENABLED flags below to false.
+// Credentials must exist only in Render Environment, never in source control.
+// ---------------------------------------------------------------------------
+function airtelEnvFlag(name, fallback = false) {
+  const raw = String(process.env[name] ?? (fallback ? "true" : "false")).trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "yes" || raw === "on";
+}
+
+const AIRTEL_PAYMENTS_ENABLED = airtelEnvFlag("AIRTEL_PAYMENTS_ENABLED", false);
+const AIRTEL_RECONCILIATION_ENABLED = airtelEnvFlag("AIRTEL_RECONCILIATION_ENABLED", false);
+const AIRTEL_CALLBACK_ENABLED = airtelEnvFlag("AIRTEL_CALLBACK_ENABLED", false);
+const AIRTEL_RECOVERY_ENABLED = airtelEnvFlag("AIRTEL_RECOVERY_ENABLED", false);
+const AIRTEL_BASE_URL = String(process.env.AIRTEL_BASE_URL || "https://openapiuat.airtel.mg").trim().replace(/\/+$/, "");
+const AIRTEL_CLIENT_ID = String(process.env.AIRTEL_CLIENT_ID || "").trim();
+const AIRTEL_CLIENT_SECRET = String(process.env.AIRTEL_CLIENT_SECRET || "").trim();
+const AIRTEL_COUNTRY = String(process.env.AIRTEL_COUNTRY || "MG").trim().toUpperCase();
+const AIRTEL_CURRENCY = String(process.env.AIRTEL_CURRENCY || "MGA").trim().toUpperCase();
+const AIRTEL_MSISDN_FORMAT = String(process.env.AIRTEL_MSISDN_FORMAT || "national").trim().toLowerCase();
+const AIRTEL_HTTP_TIMEOUT_MS = Math.max(2_000, Math.min(60_000, parseInt(process.env.AIRTEL_HTTP_TIMEOUT_MS || "12000", 10) || 12_000));
+const AIRTEL_VERIFICATION_TIMEOUT_MS = Math.max(30_000, Math.min(10 * 60_000, parseInt(process.env.AIRTEL_VERIFICATION_TIMEOUT_MS || "180000", 10) || 180_000));
+const AIRTEL_POLL_INTERVAL_MS = Math.max(3_000, Math.min(30_000, parseInt(process.env.AIRTEL_POLL_INTERVAL_MS || "5000", 10) || 5_000));
+
+const airtelMoneyClient = createAirtelMoneyClient({
+  baseUrl: AIRTEL_BASE_URL,
+  clientId: AIRTEL_CLIENT_ID,
+  clientSecret: AIRTEL_CLIENT_SECRET,
+  country: AIRTEL_COUNTRY,
+  currency: AIRTEL_CURRENCY,
+  msisdnFormat: AIRTEL_MSISDN_FORMAT,
+  timeoutMs: AIRTEL_HTTP_TIMEOUT_MS,
+});
+
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -12828,10 +12872,27 @@ function isValidMGPhone(phone) {
 }
 
 function normalizePhone(phone) {
-  let p = phone.replace(/\s+/g, "");
+  let p = String(phone || "").replace(/\s+/g, "");
   if (p.startsWith("+261")) p = "0" + p.slice(4);
   if (p.startsWith("261")) p = "0" + p.slice(3);
   return p;
+}
+
+function isValidAirtelMGPhone(phone) {
+  const s = String(phone || "").trim().replace(/\s+/g, "");
+  return /^(033\d{7})$|^(\+26133\d{7})$|^(26133\d{7})$/.test(s);
+}
+
+function isValidPhoneForPaymentProvider(phone, provider) {
+  if (provider === "airtel") return isValidAirtelMGPhone(phone);
+  return isValidMGPhone(phone);
+}
+
+function paymentPhoneValidationMessage(provider) {
+  if (provider === "airtel") {
+    return "Numéro Airtel Money invalide. Format attendu: 033xxxxxxx ou +26133xxxxxxx.";
+  }
+  return "Numéro MVola invalide. Format attendu: 034xxxxxxx, 037xxxxxxx, 038xxxxxxx ou format +261.";
 }
 
 // Explicit UTC cutoff helper for RADIUS live-session comparisons.
@@ -24129,6 +24190,636 @@ function mvolaHeaders(token, correlationId) {
     "Content-Type": "application/json",
   };
 }
+
+// ---------------------------------------------------------------------------
+// AIRTEL MONEY COLLECTION API V1 — TEST/UAT integration
+// Financial success is never trusted from the callback alone. Every callback,
+// portal status fetch, background poll and recovery pass through Transaction
+// Enquiry before a voucher can be generated.
+// ---------------------------------------------------------------------------
+const airtelFinalizationLocks = new Map();
+let airtelRecoveryRunning = false;
+let airtelRecoveryIntervalHandle = null;
+
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+function airtelSafePayload(payload) {
+  try {
+    return sanitizeMvolaLogPayload(payload);
+  } catch (_) {
+    return { unavailable: true };
+  }
+}
+
+function mapAirtelApiError(error) {
+  const status = Number(error?.httpStatus || error?.response?.status || 0) || null;
+  const code = String(error?.code || "airtel_api_error");
+  const transient = error?.transient === true || !status || status === 408 || status === 429 || status >= 500;
+  let userMessage = "Le paiement Airtel Money n'a pas pu être lancé. Veuillez réessayer.";
+  let httpStatus = transient ? 503 : 400;
+
+  if (status === 401 || status === 403 || code === "airtel_credentials_missing") {
+    userMessage = "Airtel Money est momentanément indisponible. Veuillez réessayer plus tard.";
+    httpStatus = 503;
+  } else if (status === 429) {
+    userMessage = "Trop de demandes Airtel Money. Veuillez patienter un instant.";
+    httpStatus = 429;
+  } else if (status && status >= 500) {
+    userMessage = "Le service Airtel Money est momentanément indisponible.";
+    httpStatus = 503;
+  }
+
+  return { code, status, transient, userMessage, httpStatus };
+}
+
+async function loadAirtelTransaction({ requestRef = null, transactionId = null } = {}) {
+  if (!supabase) throw new Error("supabase_not_configured");
+  let query = supabase
+    .from("transactions")
+    .select("id,request_ref,phone,amount,currency,plan,status,code,voucher,provider,server_correlation_id,transaction_reference,metadata,created_at,updated_at");
+
+  if (requestRef) {
+    query = query.eq("request_ref", String(requestRef));
+  } else if (transactionId && UUID_V1_TO_V5_RE.test(String(transactionId))) {
+    query = query.eq("id", String(transactionId));
+  } else if (transactionId) {
+    query = query.eq("server_correlation_id", String(transactionId));
+  } else {
+    return null;
+  }
+
+  const { data, error } = await query.maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
+async function finalizeAirtelConfirmedPayment({
+  requestRef = null,
+  transactionId = null,
+  enquiryPayload = null,
+  source = "airtel_enquiry",
+} = {}) {
+  const lockKey = String(requestRef || transactionId || "").trim();
+  if (!lockKey) throw new Error("airtel_finalize_reference_missing");
+  if (airtelFinalizationLocks.has(lockKey)) return airtelFinalizationLocks.get(lockKey);
+
+  const work = (async () => {
+    if (!supabase) throw new Error("supabase_not_configured");
+    const tx = await loadAirtelTransaction({ requestRef, transactionId });
+    if (!tx) throw new Error("airtel_transaction_not_found");
+    if (normalizePaymentProviderForEmail(tx.provider) !== "airtel") {
+      throw new Error("airtel_transaction_provider_mismatch");
+    }
+
+    const baseMeta = tx?.metadata && typeof tx.metadata === "object" ? tx.metadata : {};
+    const metaPlanId = baseMeta.plan_id || null;
+    const metaPoolId = baseMeta.pool_id || null;
+    const metaClientMac = baseMeta.client_mac || null;
+    const metaApMac = baseMeta.ap_mac || null;
+    const normalized = normalizeAirtelTransactionState(enquiryPayload || {});
+    const providerTransactionId = String(
+      baseMeta.airtel_transaction_id || tx.server_correlation_id || transactionId || tx.id
+    ).trim();
+    const airtelMoneyId = normalized.airtelMoneyId || baseMeta.airtel_money_id || null;
+    const alreadyCompleted = String(tx.status || "").toLowerCase() === "completed" && !!(tx.code || tx.voucher);
+
+    await reconcilePersonalizedQuoteForTransaction({
+      transaction: tx,
+      targetStatus: "completed",
+      technicalPlanId: metaPlanId || null,
+      reason: "airtel_completed",
+    });
+
+    if (!alreadyCompleted) {
+      await insertAudit({
+        event_type: "airtel_completed",
+        status: "success",
+        entity_type: "transaction",
+        entity_id: tx.id || null,
+        actor_type: "client",
+        actor_id: metaClientMac || null,
+        request_ref: tx.request_ref || requestRef || null,
+        mvola_phone: tx.phone || null,
+        client_mac: metaClientMac || null,
+        ap_mac: metaApMac || null,
+        pool_id: metaPoolId || null,
+        plan_id: metaPlanId || null,
+        message: "Airtel Money payment confirmed by Transaction Enquiry",
+        metadata: {
+          source,
+          airtel_status: normalized.rawStatus,
+          airtel_money_id: airtelMoneyId,
+          airtel_transaction_id: providerTransactionId,
+        },
+      });
+    }
+
+    const isNewSystem = !!metaPlanId && !!metaClientMac;
+    let voucherCode = tx.code || tx.voucher || null;
+
+    if (isNewSystem) {
+      // Recovery after a partial DB failure must reuse any voucher already tied
+      // to this transaction instead of generating a second valid code.
+      if (!voucherCode && tx.id) {
+        const { data: existingVoucher, error: existingVoucherError } = await supabase
+          .from("voucher_sessions")
+          .select("voucher_code")
+          .eq("transaction_id", tx.id)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (existingVoucherError) throw existingVoucherError;
+        voucherCode = existingVoucher?.voucher_code || null;
+      }
+
+      voucherCode = voucherCode || ("RAZAFI-" + crypto.randomBytes(4).toString("hex").toUpperCase());
+      const nowIso = new Date().toISOString();
+
+      const { error: voucherError } = await supabase
+        .from("voucher_sessions")
+        .upsert([{
+          voucher_code: voucherCode,
+          plan_id: metaPlanId,
+          pool_id: metaPoolId,
+          client_mac: metaClientMac,
+          ap_mac: metaApMac,
+          mvola_phone: tx.phone || null,
+          transaction_id: tx.id || null,
+          status: "pending",
+          delivered_at: nowIso,
+          updated_at: nowIso,
+        }], { onConflict: "voucher_code" });
+      if (voucherError) throw voucherError;
+    } else {
+      const { data: rpcData, error: rpcError } = await supabase.rpc("assign_voucher_atomic", {
+        p_request_ref: tx.request_ref || requestRef,
+      });
+      if (rpcError) throw rpcError;
+      const assigned = Array.isArray(rpcData) && rpcData.length ? rpcData[0] : rpcData || null;
+      voucherCode = voucherCode || assigned?.voucher_code || assigned?.code || assigned?.voucher || assigned?.voucherCode || null;
+      if (!voucherCode) throw new Error("airtel_voucher_unavailable");
+    }
+
+    const completedAtLocal = toISOStringMG(new Date());
+    const metadataPatch = {
+      ...baseMeta,
+      provider: "airtel",
+      airtel_transaction_id: providerTransactionId,
+      airtel_money_id: airtelMoneyId,
+      airtel_status: normalized.rawStatus || "TS",
+      airtel_result_code: normalized.resultCode || null,
+      airtel_response_code: normalized.responseCode || null,
+      airtel_last_source: source,
+      airtel_last_enquiry: truncate(airtelSafePayload(enquiryPayload || {}), 2000),
+      completed_at_local: completedAtLocal,
+      updated_at_local: completedAtLocal,
+    };
+
+    const { error: txUpdateError } = await supabase
+      .from("transactions")
+      .update({
+        status: "completed",
+        code: voucherCode,
+        voucher: voucherCode,
+        transaction_reference: airtelMoneyId || tx.transaction_reference || normalized.transactionId || null,
+        metadata: metadataPatch,
+      })
+      .eq("id", tx.id);
+    if (txUpdateError) throw txUpdateError;
+
+    if (!alreadyCompleted) {
+      await insertAudit({
+        event_type: "voucher_generated",
+        status: "success",
+        entity_type: "voucher_session",
+        entity_id: null,
+        actor_type: "client",
+        actor_id: metaClientMac || null,
+        request_ref: tx.request_ref || requestRef || null,
+        mvola_phone: tx.phone || null,
+        client_mac: metaClientMac || null,
+        ap_mac: metaApMac || null,
+        pool_id: metaPoolId || null,
+        plan_id: metaPlanId || null,
+        message: "Voucher session created after Airtel Money confirmation",
+        metadata: {
+          provider: "airtel",
+          voucher_code_masked: maskVoucherCode(voucherCode),
+          airtel_money_id: airtelMoneyId,
+          source,
+        },
+      });
+
+      await insertLog({
+        request_ref: tx.request_ref || requestRef,
+        server_correlation_id: providerTransactionId,
+        event_type: "airtel_completed",
+        status: "completed",
+        masked_phone: maskPhone(tx.phone || ""),
+        amount: tx.amount ?? null,
+        short_message: "Airtel Money payment confirmed and voucher generated",
+        payload: {
+          voucherCode: maskVoucherCode(voucherCode),
+          airtel_money_id: airtelMoneyId,
+          source,
+        },
+      });
+
+      await sendEmailNotification(
+        `[RAZAFI WIFI] 💰 Payment Success Airtel Money – RequestRef ${tx.request_ref || requestRef}`,
+        buildReadablePaymentEmail({
+          intro: buildPaymentSuccessIntro("airtel"),
+          requestRef: tx.request_ref || requestRef,
+          statusLabel: "completed",
+          phone: maskPhone(tx.phone || ""),
+          amount: `${tx.amount ?? ""} Ar`,
+          voucherCode,
+          poolLabel: await resolvePoolEmailLabel(metaPoolId || "—"),
+          clientMac: metaClientMac || "—",
+          apMac: metaApMac || "—",
+          mode: isNewSystem ? "new_system" : "legacy_system",
+          paymentProvider: "Airtel Money",
+          serverCorrelationId: providerTransactionId,
+          transactionReference: airtelMoneyId || normalized.transactionId || "",
+          timestamp: completedAtLocal,
+        })
+      );
+    }
+
+    return { ok: true, completed: true, requestRef: tx.request_ref, voucherCode };
+  })().finally(() => {
+    airtelFinalizationLocks.delete(lockKey);
+  });
+
+  airtelFinalizationLocks.set(lockKey, work);
+  return work;
+}
+
+async function markAirtelTransactionFailed({
+  requestRef = null,
+  transactionId = null,
+  enquiryPayload = null,
+  source = "airtel_enquiry",
+} = {}) {
+  if (!supabase) throw new Error("supabase_not_configured");
+  const tx = await loadAirtelTransaction({ requestRef, transactionId });
+  if (!tx) return { ok: false, missing: true };
+  if (String(tx.status || "").toLowerCase() === "completed") return { ok: true, completed: true };
+
+  const baseMeta = tx?.metadata && typeof tx.metadata === "object" ? tx.metadata : {};
+  const normalized = normalizeAirtelTransactionState(enquiryPayload || {});
+  await updateTransactionPreservingMetadata({
+    requestRef: tx.request_ref,
+    patch: { status: "failed" },
+    metadataPatch: {
+      provider: "airtel",
+      airtel_status: normalized.rawStatus || null,
+      airtel_money_id: normalized.airtelMoneyId || null,
+      airtel_result_code: normalized.resultCode || null,
+      airtel_response_code: normalized.responseCode || null,
+      airtel_last_source: source,
+      airtel_last_enquiry: truncate(airtelSafePayload(enquiryPayload || {}), 2000),
+      updated_at_local: toISOStringMG(new Date()),
+    },
+  });
+
+  await reconcilePersonalizedQuoteForTransaction({
+    transaction: tx,
+    targetStatus: "cancelled",
+    technicalPlanId: baseMeta.plan_id || null,
+    reason: "airtel_failed",
+  });
+
+  await insertAudit({
+    event_type: "airtel_failed",
+    status: "failed",
+    entity_type: "transaction",
+    entity_id: tx.id || null,
+    actor_type: "client",
+    actor_id: baseMeta.client_mac || null,
+    request_ref: tx.request_ref || requestRef || null,
+    mvola_phone: tx.phone || null,
+    client_mac: baseMeta.client_mac || null,
+    ap_mac: baseMeta.ap_mac || null,
+    pool_id: baseMeta.pool_id || null,
+    plan_id: baseMeta.plan_id || null,
+    message: "Airtel Money payment failed",
+    metadata: {
+      source,
+      airtel_status: normalized.rawStatus,
+      airtel_money_id: normalized.airtelMoneyId,
+      message: normalized.message,
+    },
+  });
+
+  await sendEmailNotification(
+    `[RAZAFI WIFI] ❌ Payment Failed – RequestRef ${tx.request_ref || requestRef}`,
+    buildReadablePaymentEmail({
+      intro: "Le paiement Airtel Money a échoué ou a été refusé.",
+      requestRef: tx.request_ref || requestRef,
+      statusLabel: "failed",
+      phone: maskPhone(tx.phone || ""),
+      amount: `${tx.amount ?? ""} Ar`,
+      poolLabel: await resolvePoolEmailLabel(baseMeta.pool_id || "—"),
+      paymentProvider: "Airtel Money",
+      serverCorrelationId: baseMeta.airtel_transaction_id || tx.server_correlation_id || transactionId || "",
+      transactionReference: normalized.airtelMoneyId || normalized.transactionId || "",
+      timestamp: toISOStringMG(new Date()),
+      extraLines: [
+        normalized.rawStatus ? `• AirtelStatus: ${normalized.rawStatus}` : "",
+        normalized.message ? `• Message: ${normalized.message}` : "",
+      ],
+    })
+  );
+
+  return { ok: true, failed: true };
+}
+
+async function reconcileAirtelTransactionByRow(row, { source = "airtel_reconcile" } = {}) {
+  if (!AIRTEL_RECONCILIATION_ENABLED) return { ok: true, disabled: true };
+  if (!row) return { ok: false, missing: true };
+  if (normalizePaymentProviderForEmail(row.provider) !== "airtel") return { ok: true, skipped: "provider" };
+
+  const metadata = row?.metadata && typeof row.metadata === "object" ? row.metadata : {};
+  const transactionId = String(metadata.airtel_transaction_id || row.server_correlation_id || row.id || "").trim();
+  if (!transactionId) return { ok: false, error: "airtel_transaction_id_missing" };
+
+  const enquiry = await airtelMoneyClient.enquireTransaction(transactionId);
+  const normalized = enquiry.normalized;
+
+  await insertLog({
+    request_ref: row.request_ref || null,
+    server_correlation_id: transactionId,
+    event_type: "airtel_enquiry",
+    status: normalized.state,
+    masked_phone: maskPhone(row.phone || ""),
+    amount: row.amount ?? null,
+    short_message: `Airtel Transaction Enquiry: ${normalized.rawStatus || "unknown"}`,
+    payload: airtelSafePayload(enquiry.data),
+    meta: { source },
+  });
+
+  if (normalized.state === "success") {
+    return finalizeAirtelConfirmedPayment({
+      requestRef: row.request_ref,
+      transactionId,
+      enquiryPayload: enquiry.data,
+      source,
+    });
+  }
+  if (normalized.state === "failed") {
+    return markAirtelTransactionFailed({
+      requestRef: row.request_ref,
+      transactionId,
+      enquiryPayload: enquiry.data,
+      source,
+    });
+  }
+
+  await updateTransactionPreservingMetadata({
+    requestRef: row.request_ref,
+    patch: { status: "pending" },
+    metadataPatch: {
+      provider: "airtel",
+      airtel_transaction_id: transactionId,
+      airtel_status: normalized.rawStatus || null,
+      airtel_money_id: normalized.airtelMoneyId || null,
+      airtel_last_source: source,
+      airtel_last_enquiry: truncate(airtelSafePayload(enquiry.data), 2000),
+      updated_at_local: toISOStringMG(new Date()),
+    },
+  });
+
+  return { ok: true, pending: true, status: normalized.rawStatus || null };
+}
+
+async function pollAirtelTransactionStatus({
+  requestRef,
+  transactionId,
+  phone = null,
+  amount = null,
+  timeoutMsOverride = null,
+  maxAttempts = null,
+  skipTimeoutFinalization = false,
+  source = "airtel_background_poll",
+} = {}) {
+  if (!AIRTEL_RECONCILIATION_ENABLED) return { ok: true, disabled: true };
+  const timeoutMs = Math.max(5_000, Number(timeoutMsOverride || AIRTEL_VERIFICATION_TIMEOUT_MS));
+  const deadline = Date.now() + timeoutMs;
+  let attempt = 0;
+  let lastError = null;
+
+  while (Date.now() < deadline && (maxAttempts === null || attempt < maxAttempts)) {
+    attempt += 1;
+    if (attempt === 1) await sleepMs(Math.min(3_000, AIRTEL_POLL_INTERVAL_MS));
+    else await sleepMs(AIRTEL_POLL_INTERVAL_MS);
+
+    try {
+      const row = await loadAirtelTransaction({ requestRef, transactionId });
+      if (!row) throw new Error("airtel_transaction_not_found");
+      const status = String(row.status || "").toLowerCase();
+      if (status === "completed" && (row.code || row.voucher)) return { ok: true, completed: true };
+      if (["failed", "rejected", "declined", "cancelled"].includes(status)) return { ok: true, failed: true };
+
+      const result = await reconcileAirtelTransactionByRow(row, { source });
+      if (result?.completed || result?.failed) return result;
+    } catch (error) {
+      lastError = error;
+      const mapped = mapAirtelApiError(error);
+      console.warn("[AIRTEL] polling attempt failed", {
+        requestRef,
+        transactionId,
+        attempt,
+        code: mapped.code,
+        httpStatus: mapped.status,
+        transient: mapped.transient,
+      });
+      if (!mapped.transient) break;
+    }
+  }
+
+  if (!skipTimeoutFinalization && supabase && requestRef) {
+    await updateTransactionPreservingMetadata({
+      requestRef,
+      patch: { status: "timeout" },
+      metadataPatch: {
+        provider: "airtel",
+        airtel_transaction_id: transactionId || null,
+        airtel_poll_timeout: true,
+        airtel_poll_attempts: attempt,
+        airtel_last_error: lastError ? String(lastError?.code || lastError?.message || lastError).slice(0, 300) : null,
+        updated_at_local: toISOStringMG(new Date()),
+      },
+    });
+
+    await insertAudit({
+      event_type: "airtel_timeout",
+      status: "timeout",
+      entity_type: "transaction",
+      entity_id: null,
+      actor_type: "system",
+      actor_id: null,
+      request_ref: requestRef,
+      mvola_phone: phone || null,
+      message: "Airtel Money polling timed out; transaction remains recoverable",
+      metadata: { transactionId, attempts: attempt, source },
+    });
+  }
+
+  return { ok: false, timeout: true, attempts: attempt };
+}
+
+const AIRTEL_RECOVERY_INTERVAL_MS = Math.max(30_000, Number(process.env.AIRTEL_RECOVERY_INTERVAL_MS || 60_000));
+const AIRTEL_RECOVERY_STALE_AFTER_MS = Math.max(30_000, Number(process.env.AIRTEL_RECOVERY_STALE_AFTER_MS || 60_000));
+const AIRTEL_RECOVERY_MAX_AGE_MS = Math.max(10 * 60_000, Number(process.env.AIRTEL_RECOVERY_MAX_AGE_MS || 24 * 60 * 60_000));
+const AIRTEL_RECOVERY_BATCH_SIZE = Math.max(1, Math.min(20, Number(process.env.AIRTEL_RECOVERY_BATCH_SIZE || 5)));
+
+async function runAirtelRecoveryOnce({ reason = "interval" } = {}) {
+  if (!AIRTEL_RECONCILIATION_ENABLED || !AIRTEL_RECOVERY_ENABLED) {
+    return { ok: true, disabled: true, checked: 0 };
+  }
+  if (!supabase) return { ok: false, error: "supabase_not_configured", checked: 0 };
+  if (airtelRecoveryRunning) return { ok: true, skipped: "already_running", checked: 0 };
+
+  airtelRecoveryRunning = true;
+  const stats = { ok: true, checked: 0, completed: 0, failed: 0, pending: 0, errors: 0 };
+  try {
+    const staleBefore = new Date(Date.now() - AIRTEL_RECOVERY_STALE_AFTER_MS).toISOString();
+    const notOlderThan = new Date(Date.now() - AIRTEL_RECOVERY_MAX_AGE_MS).toISOString();
+    const { data: rows, error } = await supabase
+      .from("transactions")
+      .select("id,request_ref,phone,amount,status,provider,server_correlation_id,metadata,code,voucher,created_at,updated_at")
+      .eq("provider", "airtel")
+      .in("status", ["initiated", "pending", "timeout"])
+      .gte("created_at", notOlderThan)
+      .lte("updated_at", staleBefore)
+      .order("created_at", { ascending: true })
+      .limit(AIRTEL_RECOVERY_BATCH_SIZE);
+    if (error) throw error;
+
+    for (const row of rows || []) {
+      stats.checked += 1;
+      try {
+        const result = await reconcileAirtelTransactionByRow(row, { source: `airtel_recovery_${reason}` });
+        if (result?.completed) stats.completed += 1;
+        else if (result?.failed) stats.failed += 1;
+        else stats.pending += 1;
+      } catch (error) {
+        stats.errors += 1;
+        console.error("[AIRTEL RECOVERY] candidate failed", {
+          requestRef: row.request_ref,
+          error: error?.code || error?.message || error,
+        });
+      }
+    }
+    return stats;
+  } catch (error) {
+    stats.ok = false;
+    stats.error = String(error?.message || error);
+    console.error("[AIRTEL RECOVERY] scan failed", stats.error);
+    return stats;
+  } finally {
+    airtelRecoveryRunning = false;
+  }
+}
+
+function startAirtelRecoveryJob() {
+  if (!AIRTEL_RECONCILIATION_ENABLED || !AIRTEL_RECOVERY_ENABLED) {
+    console.log("[AIRTEL RECOVERY] disabled", {
+      reconciliation_enabled: AIRTEL_RECONCILIATION_ENABLED,
+      recovery_enabled: AIRTEL_RECOVERY_ENABLED,
+    });
+    return;
+  }
+  if (airtelRecoveryIntervalHandle) return;
+  console.log("[AIRTEL RECOVERY] enabled", {
+    interval_ms: AIRTEL_RECOVERY_INTERVAL_MS,
+    stale_after_ms: AIRTEL_RECOVERY_STALE_AFTER_MS,
+    batch_size: AIRTEL_RECOVERY_BATCH_SIZE,
+  });
+  setTimeout(() => runAirtelRecoveryOnce({ reason: "startup" }).catch(() => {}), 15_000);
+  airtelRecoveryIntervalHandle = setInterval(
+    () => runAirtelRecoveryOnce({ reason: "interval" }).catch(() => {}),
+    AIRTEL_RECOVERY_INTERVAL_MS
+  );
+  try { airtelRecoveryIntervalHandle.unref?.(); } catch (_) {}
+}
+
+const airtelCallbackLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req),
+  message: { error: "too_many_requests" },
+});
+
+app.post("/api/payments/airtel/callback", airtelCallbackLimiter, async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  if (!AIRTEL_CALLBACK_ENABLED || !AIRTEL_RECONCILIATION_ENABLED) {
+    return res.status(404).json({ error: "not_found" });
+  }
+
+  const callbackTransactionId = String(req.body?.transaction?.id || "").trim();
+  if (!callbackTransactionId || callbackTransactionId.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(callbackTransactionId)) {
+    return res.status(400).json({ error: "callback_transaction_invalid" });
+  }
+
+  // Acknowledge quickly. The callback status/hash is not used as proof of payment;
+  // a server-to-server Transaction Enquiry is started in the background.
+  res.status(200).json({ ok: true, accepted: true });
+  (async () => {
+    try {
+      const row = await loadAirtelTransaction({ transactionId: callbackTransactionId });
+      if (!row) {
+        console.warn("[AIRTEL CALLBACK] transaction not found", { callbackTransactionId });
+        return;
+      }
+      await reconcileAirtelTransactionByRow(row, { source: "airtel_callback_verified" });
+    } catch (error) {
+      console.error("[AIRTEL CALLBACK] verification failed", {
+        callbackTransactionId,
+        error: error?.code || error?.message || error,
+      });
+    }
+  })();
+});
+
+app.get("/api/admin/integrations/airtel/status", requireAdmin, requireSuperadmin, async (_req, res) => {
+  return res.json({
+    ok: true,
+    mode: "TEST",
+    payments_enabled: AIRTEL_PAYMENTS_ENABLED,
+    reconciliation_enabled: AIRTEL_RECONCILIATION_ENABLED,
+    callback_enabled: AIRTEL_CALLBACK_ENABLED,
+    recovery_enabled: AIRTEL_RECOVERY_ENABLED,
+    verification_timeout_ms: AIRTEL_VERIFICATION_TIMEOUT_MS,
+    client: airtelMoneyClient.publicConfig(),
+  });
+});
+
+app.post("/api/admin/integrations/airtel/test-token", requireAdmin, requireSuperadmin, async (_req, res) => {
+  res.set("Cache-Control", "no-store");
+  try {
+    await airtelMoneyClient.getAccessToken({ forceRefresh: true });
+    return res.json({ ok: true, token_received: true, client: airtelMoneyClient.publicConfig() });
+  } catch (error) {
+    const mapped = mapAirtelApiError(error);
+    console.error("[AIRTEL] token test failed", {
+      code: mapped.code,
+      httpStatus: mapped.status,
+      transient: mapped.transient,
+    });
+    return res.status(mapped.httpStatus).json({
+      ok: false,
+      error: mapped.code,
+      http_status: mapped.status,
+      transient: mapped.transient,
+    });
+  }
+});
 // ---------------------------------------------------------------------------
 // PART 2 / 3
 // MVola polling, logging, and main payment endpoints
@@ -26456,6 +27147,12 @@ function assertProductionSecurityEnv() {
     missing.push("BLOCKED_DEVICE_SYNC_AGENT_BASE_URL or both BLOCKED_DEVICE_SYNC_AGENT_URL and BLOCKED_DEVICE_UNBLOCK_AGENT_URL");
   }
 
+  if (AIRTEL_PAYMENTS_ENABLED || AIRTEL_RECONCILIATION_ENABLED || AIRTEL_CALLBACK_ENABLED || AIRTEL_RECOVERY_ENABLED) {
+    if (!AIRTEL_CLIENT_ID) missing.push("AIRTEL_CLIENT_ID");
+    if (!AIRTEL_CLIENT_SECRET) missing.push("AIRTEL_CLIENT_SECRET");
+    if (!/^https:\/\//i.test(AIRTEL_BASE_URL)) missing.push("AIRTEL_BASE_URL (https required)");
+  }
+
   if (missing.length) {
     throw new Error(`Missing required production env: ${missing.join(", ")}`);
   }
@@ -28683,7 +29380,19 @@ async function handleSendPayment(req, res) {
     paymentProvider,
   });
 
-  if (paymentProvider !== "mvola") {
+  if (
+    paymentProvider === "airtel" &&
+    (!AIRTEL_PAYMENTS_ENABLED || !AIRTEL_RECONCILIATION_ENABLED)
+  ) {
+    return res.status(409).json({
+      ok: false,
+      error: "provider_not_available",
+      provider: paymentProvider,
+      message: "Airtel Money est encore désactivé pendant la phase de test.",
+    });
+  }
+
+  if (!["mvola", "airtel"].includes(paymentProvider)) {
     return res.status(409).json({
       ok: false,
       error: "provider_not_available",
@@ -28762,10 +29471,11 @@ async function handleSendPayment(req, res) {
     }
   }
 
-  // Validate phone server-side (defense in depth)
-  if (!isValidMGPhone(phone)) {
+  // Validate payer phone server-side according to the selected provider.
+  if (!isValidPhoneForPaymentProvider(phone, paymentProvider)) {
     return res.status(400).json({
-      error: "Numéro MVola invalide. Format attendu: 034xxxxxxx ou +26134xxxxxxx."
+      error: paymentPhoneValidationMessage(paymentProvider),
+      provider: paymentProvider,
     });
   }
 
@@ -28851,16 +29561,6 @@ if (supabase) {
           error: "personalized_plans_not_enabled_for_pool",
         });
       }
-      if (isPersonalizedPayment) {
-        const poolPaymentMethods = normalizePaymentMethods(poolRow.payment_methods);
-        if (poolPaymentMethods[paymentProvider] !== true) {
-          return res.status(409).json({
-            ok: false,
-            error: "payment_provider_disabled_for_pool",
-            provider: paymentProvider,
-          });
-        }
-      }
     }
 
     // Legacy: pool resolution from AP MAC (System 1/2)
@@ -28882,12 +29582,26 @@ if (supabase) {
     if (pool_id) {
       const { data: pool, error: poolErr } = await supabase
         .from("internet_pools")
-        .select("id,name,capacity_max,radius_nas_id")
+        .select("id,name,capacity_max,radius_nas_id,payment_methods")
         .eq("id", pool_id)
         .maybeSingle();
 
       if (isPersonalizedPayment && (poolErr || !pool?.id)) {
         return res.status(503).json({ ok: false, error: "personalized_pool_unavailable" });
+      }
+
+      // Enforce the pool payment-method toggle for every paid flow, not only
+      // personalized plans. This prevents direct API calls from bypassing the UI.
+      if (!poolErr && pool?.id) {
+        const methodKey = paymentProviderToPoolMethodKey(paymentProvider);
+        const poolPaymentMethods = normalizePaymentMethods(pool.payment_methods);
+        if (!methodKey || poolPaymentMethods[methodKey] !== true) {
+          return res.status(409).json({
+            ok: false,
+            error: "payment_provider_disabled_for_pool",
+            provider: paymentProvider,
+          });
+        }
       }
 
       const capacity_max = (pool?.capacity_max === null || pool?.capacity_max === undefined)
@@ -29428,6 +30142,7 @@ const { error: vsErr } = await supabase
       client_mac: client_mac || null,
       ap_mac: ap_mac || null,
       amount_source: amountSource,
+      provider: paymentProvider,
     };
 
     if (supabase && !isPersonalizedPayment) {
@@ -29461,11 +30176,12 @@ const { error: vsErr } = await supabase
         pool_id: pool_id || null,
         plan_id: planIdForSession || null,
         message: isPersonalizedPayment
-          ? "Personalized MVola payment initiated"
-          : "MVola payment initiated (NEW system)",
+          ? `Personalized ${paymentProviderEmailLabel(paymentProvider)} payment initiated`
+          : `${paymentProviderEmailLabel(paymentProvider)} payment initiated (NEW system)`,
         metadata: {
           amount,
           plan,
+          provider: paymentProvider,
           amount_source: amountSource,
           correlationId,
           personalized_quote_id: personalizedContext?.quote_id || null,
@@ -29479,6 +30195,24 @@ const { error: vsErr } = await supabase
     console.error("⚠️ Warning: unable to persist initial payment audit:", dbErr?.message || dbErr);
   }
 
+  // Airtel must fail closed if the transaction row is not durable before the
+  // customer is debited. MVola keeps its historical behavior unchanged.
+  if (paymentProvider === "airtel") {
+    if (!supabase) {
+      await abortPersonalizedReservation("airtel_transaction_store_unavailable");
+      return res.status(503).json({ ok: false, error: "airtel_transaction_store_unavailable" });
+    }
+    const { data: durableTx, error: durableTxError } = await supabase
+      .from("transactions")
+      .select("id,request_ref,provider,status")
+      .eq("request_ref", requestRef)
+      .maybeSingle();
+    if (durableTxError || !durableTx?.id || normalizePaymentProviderForEmail(durableTx.provider) !== "airtel") {
+      await abortPersonalizedReservation("airtel_transaction_store_unavailable");
+      return res.status(503).json({ ok: false, error: "airtel_transaction_store_unavailable" });
+    }
+  }
+
   console.info("💵 SEND-PAYMENT amount resolved", {
     requestRef,
     plan_id: planIdForSession || null,
@@ -29486,6 +30220,191 @@ const { error: vsErr } = await supabase
     amountSource,
     plan_name_db: planRowFromDb?.name || null,
   });
+
+  // -----------------------------------------------------------------------
+  // Airtel Money Collection API V1 — TEST/UAT branch.
+  // MVola continues through the original code below without modification.
+  // -----------------------------------------------------------------------
+  if (paymentProvider === "airtel") {
+    const airtelTransactionId = String(txId);
+    try {
+      const initiated = await airtelMoneyClient.initiatePayment({
+        phone,
+        amount,
+        reference: `Achat WiFi RAZAFI ${requestRef}`,
+        transactionId: airtelTransactionId,
+      });
+      const providerResponse = initiated?.data || {};
+      const providerTransaction = providerResponse?.data?.transaction || {};
+      const providerReference = providerTransaction.id || null;
+
+      if (supabase) {
+        const { data: txBeforeUpdate } = await supabase
+          .from("transactions")
+          .select("metadata")
+          .eq("request_ref", requestRef)
+          .maybeSingle();
+        const baseMeta = txBeforeUpdate?.metadata && typeof txBeforeUpdate.metadata === "object"
+          ? txBeforeUpdate.metadata
+          : {};
+        const { error: updateError } = await supabase
+          .from("transactions")
+          .update({
+            status: "pending",
+            server_correlation_id: airtelTransactionId,
+            transaction_reference: providerReference,
+            metadata: {
+              ...baseMeta,
+              provider: "airtel",
+              airtel_transaction_id: airtelTransactionId,
+              airtel_initiate_status: providerTransaction.status || null,
+              airtel_initiate_response: truncate(airtelSafePayload(providerResponse), 2000),
+              updated_at_local: toISOStringMG(new Date()),
+            },
+          })
+          .eq("request_ref", requestRef);
+        if (updateError) throw updateError;
+      }
+
+      await insertLog({
+        request_ref: requestRef,
+        server_correlation_id: airtelTransactionId,
+        event_type: "airtel_initiate",
+        status: "initiated",
+        masked_phone: maskPhone(phone),
+        amount,
+        attempt: 0,
+        short_message: "Initiation du paiement Airtel Money",
+        payload: airtelSafePayload(providerResponse),
+      });
+
+      await insertAudit({
+        event_type: "airtel_initiated",
+        status: "info",
+        entity_type: "transaction",
+        entity_id: txId || null,
+        actor_type: "client",
+        actor_id: client_mac || null,
+        request_ref: requestRef,
+        mvola_phone: phone || null,
+        client_mac: client_mac || null,
+        ap_mac: ap_mac || null,
+        pool_id: pool_id || null,
+        plan_id: planIdForSession || null,
+        message: "Airtel Money payment initiated in TEST/UAT",
+        metadata: {
+          airtel_transaction_id: airtelTransactionId,
+          provider_reference: providerReference,
+          amount,
+          personalized_quote_id: personalizedContext?.quote_id || null,
+        },
+      });
+
+      res.json({
+        ok: true,
+        provider: "airtel",
+        requestRef,
+        serverCorrelationId: airtelTransactionId,
+        verificationTimeoutMs: AIRTEL_VERIFICATION_TIMEOUT_MS,
+        personalized: isPersonalizedPayment || undefined,
+        airtel: {
+          transactionId: airtelTransactionId,
+          providerReference,
+          status: providerTransaction.status || "PENDING",
+        },
+      });
+
+      (async () => {
+        try {
+          await pollAirtelTransactionStatus({
+            requestRef,
+            transactionId: airtelTransactionId,
+            phone,
+            amount,
+            source: "airtel_background_poll",
+          });
+        } catch (backgroundError) {
+          console.error("[AIRTEL] background poll failed", {
+            requestRef,
+            error: backgroundError?.code || backgroundError?.message || backgroundError,
+          });
+        }
+      })();
+      return;
+    } catch (error) {
+      const mapped = mapAirtelApiError(error);
+      if (isPersonalizedPayment) {
+        await abortPersonalizedReservation("airtel_initiate_failed");
+      }
+
+      try {
+        if (supabase) {
+          await updateTransactionPreservingMetadata({
+            requestRef,
+            patch: { status: "failed" },
+            metadataPatch: {
+              provider: "airtel",
+              airtel_transaction_id: airtelTransactionId,
+              airtel_initiate_error: mapped.code,
+              airtel_http_status: mapped.status,
+              airtel_error_response: truncate(airtelSafePayload(error?.responseData || error?.response?.data || {}), 2000),
+              updated_at_local: toISOStringMG(new Date()),
+            },
+          });
+        }
+      } catch (dbError) {
+        console.error("[AIRTEL] failed to persist initiate error", dbError?.message || dbError);
+      }
+
+      await insertAudit({
+        event_type: "airtel_initiate_error",
+        status: "failed",
+        entity_type: "transaction",
+        entity_id: txId || null,
+        actor_type: "client",
+        actor_id: client_mac || null,
+        request_ref: requestRef || null,
+        mvola_phone: phone || null,
+        client_mac: client_mac || null,
+        ap_mac: ap_mac || null,
+        pool_id: pool_id || null,
+        plan_id: planIdForSession || null,
+        message: "Airtel Money initiation failed",
+        metadata: {
+          code: mapped.code,
+          http_status: mapped.status,
+          transient: mapped.transient,
+        },
+      });
+
+      await sendEmailNotification(
+        `[RAZAFI WIFI] ❌ Payment Failed – RequestRef ${requestRef}`,
+        buildReadablePaymentEmail({
+          intro: "Le paiement Airtel Money n'a pas pu être lancé.",
+          requestRef,
+          statusLabel: "failed",
+          phone: maskPhone(phone),
+          amount: `${amount} Ar`,
+          poolLabel: await resolvePoolEmailLabel(pool_id || "—"),
+          paymentProvider: "Airtel Money",
+          serverCorrelationId: airtelTransactionId,
+          timestamp: toISOStringMG(new Date()),
+          extraLines: [
+            `• Type: ${mapped.code}`,
+            mapped.status ? `• HTTP: ${mapped.status}` : "",
+          ],
+        })
+      );
+
+      return res.status(mapped.httpStatus).json({
+        ok: false,
+        error: "airtel_payment_failed",
+        provider: "airtel",
+        message: mapped.userMessage,
+        details: mapped.code,
+      });
+    }
+  }
 
   // MVola can reject descriptions containing plan display text / speed values
   // such as "5M/5M" with a misleading validation error (formatError / Missing field).
@@ -29690,9 +30609,9 @@ app.get("/api/tx/:requestRef", txStatusLimiter, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("transactions")
-      .select("id, request_ref, phone, amount, currency, plan, status, voucher, transaction_reference, server_correlation_id, metadata, created_at, updated_at")
+      .select("id, request_ref, phone, amount, currency, plan, status, code, voucher, provider, transaction_reference, server_correlation_id, metadata, created_at, updated_at")
       .eq("request_ref", requestRef)
       .limit(1)
       .single();
@@ -29701,6 +30620,33 @@ app.get("/api/tx/:requestRef", txStatusLimiter, async (req, res) => {
     if (error) {
       console.error("Supabase error fetching transaction:", error);
       return res.status(500).json({ error: "db error" });
+    }
+
+    // Airtel status reads are self-healing: one trusted Transaction Enquiry can
+    // complete a payment after a Render restart even before the recovery job runs.
+    const beforeFetchStatus = String(data?.status || "").trim().toLowerCase();
+    if (
+      AIRTEL_RECONCILIATION_ENABLED &&
+      normalizePaymentProviderForEmail(data?.provider) === "airtel" &&
+      ["initiated", "pending", "timeout"].includes(beforeFetchStatus)
+    ) {
+      try {
+        await reconcileAirtelTransactionByRow(data, { source: "airtel_tx_status_fetch" });
+        const refreshed = await supabase
+          .from("transactions")
+          .select("id, request_ref, phone, amount, currency, plan, status, code, voucher, provider, transaction_reference, server_correlation_id, metadata, created_at, updated_at")
+          .eq("request_ref", requestRef)
+          .maybeSingle();
+        if (!refreshed.error && refreshed.data) data = refreshed.data;
+      } catch (airtelStatusError) {
+        const mapped = mapAirtelApiError(airtelStatusError);
+        console.warn("[AIRTEL] status fetch reconciliation skipped", {
+          requestRef,
+          code: mapped.code,
+          httpStatus: mapped.status,
+          transient: mapped.transient,
+        });
+      }
     }
 
     const normalizedTxStatus = String(data?.status || "").trim().toLowerCase();
@@ -30683,7 +31629,16 @@ app.listen(PORT, "0.0.0.0", () => {
   const now = new Date().toISOString();
   console.log(`🚀 Server started at ${now} on port ${PORT}`);
   console.log(`[INFO] Endpoint ready: POST /api/send-payment`);
+  console.log("[AIRTEL] integration flags", {
+    payments_enabled: AIRTEL_PAYMENTS_ENABLED,
+    reconciliation_enabled: AIRTEL_RECONCILIATION_ENABLED,
+    callback_enabled: AIRTEL_CALLBACK_ENABLED,
+    recovery_enabled: AIRTEL_RECOVERY_ENABLED,
+    configured: airtelMoneyClient.publicConfig().configured,
+    base_host: airtelMoneyClient.publicConfig().base_host,
+  });
   startMvolaRecoveryJob();
+  startAirtelRecoveryJob();
   // P2-A3.2: legacy Bonus cleanup is intentionally not started after the
   // atomic Bonus V2 cutover. The function remains dormant for rollback only.
 });
