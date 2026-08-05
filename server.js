@@ -17,7 +17,7 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import cookieParser from "cookie-parser";
 import bcrypt from "bcryptjs";
 import { registerEc1ClientSpace } from "./ec1-client-space.js";
-import { createAirtelMoneyClient, normalizeAirtelTransactionState } from "./airtel-money.js";
+import { createAirtelMoneyClient, normalizeAirtelInitiationState, normalizeAirtelTransactionState } from "./airtel-money.js";
 
 dotenv.config();
 
@@ -24213,17 +24213,59 @@ function airtelSafePayload(payload) {
   }
 }
 
+function assertAirtelInitiationAccepted(providerResponse) {
+  const normalized = normalizeAirtelInitiationState(providerResponse || {});
+  if (normalized.accepted) return normalized;
+
+  const error = new Error("Airtel payment initiation rejected");
+  error.name = "AirtelApiError";
+  error.code = "airtel_initiation_rejected";
+  error.httpStatus = 200;
+  error.responseData = providerResponse || {};
+  error.transient = false;
+  throw error;
+}
+
 function mapAirtelApiError(error) {
   const status = Number(error?.httpStatus || error?.response?.status || 0) || null;
   const code = String(error?.code || "airtel_api_error");
-  const transient = error?.transient === true || !status || status === 408 || status === 429 || status >= 500;
+  const responseData = error?.responseData || error?.response?.data || null;
+  const providerStatus = responseData?.status && typeof responseData.status === "object"
+    ? responseData.status
+    : {};
+  const providerResponseCode = String(providerStatus.response_code || "").trim() || null;
+  const providerMessage = String(providerStatus.message || "").trim() || null;
+  let transient = error?.transient === true || !status || status === 408 || status === 429 || status >= 500;
   let userMessage = "Le paiement Airtel Money n'a pas pu être lancé. Veuillez réessayer.";
   let httpStatus = transient ? 503 : 400;
 
-  if (status === 401 || status === 403 || code === "airtel_credentials_missing") {
+  if (code === "airtel_initiation_rejected") {
+    transient = false;
+    userMessage = "Airtel Money n'a pas accepté la demande. Aucun paiement n'a été effectué.";
+    httpStatus = 400;
+  } else if (code === "airtel_msisdn_invalid") {
+    transient = false;
+    userMessage = "Le numéro Airtel Money saisi est invalide.";
+    httpStatus = 400;
+  } else if (
+    code === "airtel_msisdn_format_invalid" ||
+    code === "airtel_credentials_missing" ||
+    code === "airtel_token_invalid_response" ||
+    code === "airtel_token_request_failed"
+  ) {
+    transient = false;
+    userMessage = "Airtel Money est momentanément indisponible. Veuillez réessayer plus tard.";
+    httpStatus = 503;
+  } else if (code === "airtel_amount_invalid" || code === "airtel_reference_invalid") {
+    transient = false;
+    userMessage = "La demande Airtel Money est invalide. Aucun paiement n'a été effectué.";
+    httpStatus = 400;
+  } else if (status === 401 || status === 403) {
+    transient = false;
     userMessage = "Airtel Money est momentanément indisponible. Veuillez réessayer plus tard.";
     httpStatus = 503;
   } else if (status === 429) {
+    transient = false;
     userMessage = "Trop de demandes Airtel Money. Veuillez patienter un instant.";
     httpStatus = 429;
   } else if (status && status >= 500) {
@@ -24231,7 +24273,21 @@ function mapAirtelApiError(error) {
     httpStatus = 503;
   }
 
-  return { code, status, transient, userMessage, httpStatus };
+  return {
+    code,
+    status,
+    transient,
+    userMessage,
+    httpStatus,
+    providerResponseCode,
+    providerMessage,
+  };
+}
+
+function isAirtelInitiationOutcomeUncertain(error, mapped) {
+  const code = String(mapped?.code || error?.code || "");
+  const status = Number(mapped?.status || error?.httpStatus || 0) || null;
+  return code === "airtel_request_failed" && (!status || status === 408 || status >= 500);
 }
 
 async function loadAirtelTransaction({ requestRef = null, transactionId = null } = {}) {
@@ -24279,6 +24335,12 @@ async function finalizeAirtelConfirmedPayment({
     const metaClientMac = baseMeta.client_mac || null;
     const metaApMac = baseMeta.ap_mac || null;
     const normalized = normalizeAirtelTransactionState(enquiryPayload || {});
+    if (normalized.state !== "success" || normalized.rawStatus !== "TS") {
+      const error = new Error("Airtel financial confirmation required");
+      error.code = "airtel_financial_confirmation_required";
+      error.transient = false;
+      throw error;
+    }
     const providerTransactionId = String(
       baseMeta.airtel_transaction_id || tx.server_correlation_id || transactionId || tx.id
     ).trim();
@@ -30227,45 +30289,244 @@ const { error: vsErr } = await supabase
   // -----------------------------------------------------------------------
   if (paymentProvider === "airtel") {
     const airtelTransactionId = String(txId);
+    let initiated = null;
+    let providerResponse = {};
+    let initiationState = null;
+
     try {
-      const initiated = await airtelMoneyClient.initiatePayment({
+      initiated = await airtelMoneyClient.initiatePayment({
         phone,
         amount,
         reference: `Achat WiFi RAZAFI ${requestRef}`,
         transactionId: airtelTransactionId,
       });
-      const providerResponse = initiated?.data || {};
-      const providerTransaction = providerResponse?.data?.transaction || {};
-      const providerReference = providerTransaction.id || null;
+      providerResponse = initiated?.data || {};
+      // Defense in depth: the client already validates this response, but the
+      // route independently refuses to persist/poll an application-level reject.
+      initiationState = assertAirtelInitiationAccepted(providerResponse);
+    } catch (error) {
+      const mapped = mapAirtelApiError(error);
+      const uncertainOutcome = isAirtelInitiationOutcomeUncertain(error, mapped);
 
-      if (supabase) {
-        const { data: txBeforeUpdate } = await supabase
-          .from("transactions")
-          .select("metadata")
-          .eq("request_ref", requestRef)
-          .maybeSingle();
-        const baseMeta = txBeforeUpdate?.metadata && typeof txBeforeUpdate.metadata === "object"
-          ? txBeforeUpdate.metadata
-          : {};
-        const { error: updateError } = await supabase
-          .from("transactions")
-          .update({
-            status: "pending",
-            server_correlation_id: airtelTransactionId,
-            transaction_reference: providerReference,
-            metadata: {
-              ...baseMeta,
+      if (uncertainOutcome) {
+        try {
+          await updateTransactionPreservingMetadata({
+            requestRef,
+            patch: {
+              status: "pending",
+              server_correlation_id: airtelTransactionId,
+            },
+            metadataPatch: {
               provider: "airtel",
               airtel_transaction_id: airtelTransactionId,
-              airtel_initiate_status: providerTransaction.status || null,
-              airtel_initiate_response: truncate(airtelSafePayload(providerResponse), 2000),
+              airtel_initiation_uncertain: true,
+              airtel_initiate_error: mapped.code,
+              airtel_http_status: mapped.status,
+              airtel_error_response: truncate(airtelSafePayload(error?.responseData || error?.response?.data || {}), 2000),
               updated_at_local: toISOStringMG(new Date()),
             },
-          })
-          .eq("request_ref", requestRef);
-        if (updateError) throw updateError;
+          });
+        } catch (dbError) {
+          console.error("[AIRTEL] failed to persist uncertain initiation", dbError?.message || dbError);
+        }
+
+        try {
+          await insertAudit({
+            event_type: "airtel_initiation_uncertain",
+            status: "warning",
+            entity_type: "transaction",
+            entity_id: txId || null,
+            actor_type: "client",
+            actor_id: client_mac || null,
+            request_ref: requestRef || null,
+            mvola_phone: phone || null,
+            client_mac: client_mac || null,
+            ap_mac: ap_mac || null,
+            pool_id: pool_id || null,
+            plan_id: planIdForSession || null,
+            message: "Airtel Money initiation outcome is uncertain; Transaction Enquiry will verify",
+            metadata: {
+              code: mapped.code,
+              http_status: mapped.status,
+              personalized_quote_id: personalizedContext?.quote_id || null,
+            },
+          });
+        } catch (auditError) {
+          console.error("[AIRTEL] failed to audit uncertain initiation", auditError?.message || auditError);
+        }
+
+        res.status(202).json({
+          ok: true,
+          provider: "airtel",
+          requestRef,
+          serverCorrelationId: airtelTransactionId,
+          verificationTimeoutMs: AIRTEL_VERIFICATION_TIMEOUT_MS,
+          personalized: isPersonalizedPayment || undefined,
+          initiationUncertain: true,
+          airtel: {
+            transactionId: airtelTransactionId,
+            providerReference: null,
+            status: "UNKNOWN",
+          },
+        });
+
+        (async () => {
+          try {
+            await pollAirtelTransactionStatus({
+              requestRef,
+              transactionId: airtelTransactionId,
+              phone,
+              amount,
+              source: "airtel_uncertain_initiation_poll",
+            });
+          } catch (backgroundError) {
+            console.error("[AIRTEL] uncertain initiation poll failed", {
+              requestRef,
+              error: backgroundError?.code || backgroundError?.message || backgroundError,
+            });
+          }
+        })();
+        return;
       }
 
+      if (isPersonalizedPayment) {
+        await abortPersonalizedReservation("airtel_initiate_failed");
+      }
+
+      try {
+        if (supabase) {
+          await updateTransactionPreservingMetadata({
+            requestRef,
+            patch: { status: "failed" },
+            metadataPatch: {
+              provider: "airtel",
+              airtel_transaction_id: airtelTransactionId,
+              airtel_initiate_error: mapped.code,
+              airtel_http_status: mapped.status,
+              airtel_response_code: mapped.providerResponseCode,
+              airtel_provider_message: mapped.providerMessage,
+              airtel_error_response: truncate(airtelSafePayload(error?.responseData || error?.response?.data || {}), 2000),
+              updated_at_local: toISOStringMG(new Date()),
+            },
+          });
+        }
+      } catch (dbError) {
+        console.error("[AIRTEL] failed to persist initiate error", dbError?.message || dbError);
+      }
+
+      try {
+        await insertLog({
+          request_ref: requestRef,
+          server_correlation_id: airtelTransactionId,
+          event_type: "airtel_initiate_error",
+          status: "failed",
+          masked_phone: maskPhone(phone),
+          amount,
+          attempt: 0,
+          short_message: "Airtel Money initiation rejected",
+          payload: airtelSafePayload(error?.responseData || error?.response?.data || {}),
+          meta: {
+            code: mapped.code,
+            response_code: mapped.providerResponseCode,
+          },
+        });
+      } catch (logError) {
+        console.error("[AIRTEL] failed to log initiate error", logError?.message || logError);
+      }
+
+      try {
+        await insertAudit({
+          event_type: "airtel_initiate_error",
+          status: "failed",
+          entity_type: "transaction",
+          entity_id: txId || null,
+          actor_type: "client",
+          actor_id: client_mac || null,
+          request_ref: requestRef || null,
+          mvola_phone: phone || null,
+          client_mac: client_mac || null,
+          ap_mac: ap_mac || null,
+          pool_id: pool_id || null,
+          plan_id: planIdForSession || null,
+          message: "Airtel Money initiation failed",
+          metadata: {
+            code: mapped.code,
+            http_status: mapped.status,
+            response_code: mapped.providerResponseCode,
+            provider_message: mapped.providerMessage,
+            transient: mapped.transient,
+          },
+        });
+      } catch (auditError) {
+        console.error("[AIRTEL] failed to audit initiate error", auditError?.message || auditError);
+      }
+
+      try {
+        await sendEmailNotification(
+          `[RAZAFI WIFI] ❌ Payment Failed – RequestRef ${requestRef}`,
+          buildReadablePaymentEmail({
+            intro: "Le paiement Airtel Money n'a pas pu être lancé.",
+            requestRef,
+            statusLabel: "failed",
+            phone: maskPhone(phone),
+            amount: `${amount} Ar`,
+            poolLabel: await resolvePoolEmailLabel(pool_id || "—"),
+            paymentProvider: "Airtel Money",
+            serverCorrelationId: airtelTransactionId,
+            timestamp: toISOStringMG(new Date()),
+            extraLines: [
+              `• Type: ${mapped.code}`,
+              mapped.status ? `• HTTP: ${mapped.status}` : "",
+              mapped.providerResponseCode ? `• AirtelResponseCode: ${mapped.providerResponseCode}` : "",
+            ],
+          })
+        );
+      } catch (emailError) {
+        console.error("[AIRTEL] failed to send initiate error email", emailError?.message || emailError);
+      }
+
+      return res.status(mapped.httpStatus).json({
+        ok: false,
+        error: "airtel_payment_failed",
+        provider: "airtel",
+        message: mapped.userMessage,
+        details: mapped.code,
+      });
+    }
+
+    const providerTransaction = initiationState?.transaction || providerResponse?.data?.transaction || {};
+    const providerReference = providerTransaction.id || null;
+    const postInitiationWarnings = [];
+
+    // From this point Airtel has explicitly accepted the initiation. Local DB,
+    // log, audit or email failures must never be converted into a provider reject.
+    try {
+      await updateTransactionPreservingMetadata({
+        requestRef,
+        patch: {
+          status: "pending",
+          server_correlation_id: airtelTransactionId,
+          transaction_reference: providerReference,
+        },
+        metadataPatch: {
+          provider: "airtel",
+          airtel_transaction_id: airtelTransactionId,
+          airtel_initiate_status: initiationState?.transactionStatus || providerTransaction.status || null,
+          airtel_initiate_response_code: initiationState?.responseCode || null,
+          airtel_initiate_result_code: initiationState?.resultCode || null,
+          airtel_initiate_response: truncate(airtelSafePayload(providerResponse), 2000),
+          updated_at_local: toISOStringMG(new Date()),
+        },
+      });
+    } catch (dbError) {
+      postInitiationWarnings.push("transaction_update_failed");
+      console.error("[AIRTEL] accepted initiation but transaction update failed", {
+        requestRef,
+        error: dbError?.message || dbError,
+      });
+    }
+
+    try {
       await insertLog({
         request_ref: requestRef,
         server_correlation_id: airtelTransactionId,
@@ -30274,10 +30535,15 @@ const { error: vsErr } = await supabase
         masked_phone: maskPhone(phone),
         amount,
         attempt: 0,
-        short_message: "Initiation du paiement Airtel Money",
+        short_message: "Initiation du paiement Airtel Money acceptée",
         payload: airtelSafePayload(providerResponse),
       });
+    } catch (logError) {
+      postInitiationWarnings.push("log_failed");
+      console.error("[AIRTEL] accepted initiation but log insert failed", logError?.message || logError);
+    }
 
+    try {
       await insertAudit({
         event_type: "airtel_initiated",
         status: "info",
@@ -30295,115 +30561,64 @@ const { error: vsErr } = await supabase
         metadata: {
           airtel_transaction_id: airtelTransactionId,
           provider_reference: providerReference,
+          initiation_status: initiationState?.transactionStatus || null,
+          response_code: initiationState?.responseCode || null,
           amount,
           personalized_quote_id: personalizedContext?.quote_id || null,
         },
       });
-
-      res.json({
-        ok: true,
-        provider: "airtel",
-        requestRef,
-        serverCorrelationId: airtelTransactionId,
-        verificationTimeoutMs: AIRTEL_VERIFICATION_TIMEOUT_MS,
-        personalized: isPersonalizedPayment || undefined,
-        airtel: {
-          transactionId: airtelTransactionId,
-          providerReference,
-          status: providerTransaction.status || "PENDING",
-        },
-      });
-
-      (async () => {
-        try {
-          await pollAirtelTransactionStatus({
-            requestRef,
-            transactionId: airtelTransactionId,
-            phone,
-            amount,
-            source: "airtel_background_poll",
-          });
-        } catch (backgroundError) {
-          console.error("[AIRTEL] background poll failed", {
-            requestRef,
-            error: backgroundError?.code || backgroundError?.message || backgroundError,
-          });
-        }
-      })();
-      return;
-    } catch (error) {
-      const mapped = mapAirtelApiError(error);
-      if (isPersonalizedPayment) {
-        await abortPersonalizedReservation("airtel_initiate_failed");
-      }
-
-      try {
-        if (supabase) {
-          await updateTransactionPreservingMetadata({
-            requestRef,
-            patch: { status: "failed" },
-            metadataPatch: {
-              provider: "airtel",
-              airtel_transaction_id: airtelTransactionId,
-              airtel_initiate_error: mapped.code,
-              airtel_http_status: mapped.status,
-              airtel_error_response: truncate(airtelSafePayload(error?.responseData || error?.response?.data || {}), 2000),
-              updated_at_local: toISOStringMG(new Date()),
-            },
-          });
-        }
-      } catch (dbError) {
-        console.error("[AIRTEL] failed to persist initiate error", dbError?.message || dbError);
-      }
-
-      await insertAudit({
-        event_type: "airtel_initiate_error",
-        status: "failed",
-        entity_type: "transaction",
-        entity_id: txId || null,
-        actor_type: "client",
-        actor_id: client_mac || null,
-        request_ref: requestRef || null,
-        mvola_phone: phone || null,
-        client_mac: client_mac || null,
-        ap_mac: ap_mac || null,
-        pool_id: pool_id || null,
-        plan_id: planIdForSession || null,
-        message: "Airtel Money initiation failed",
-        metadata: {
-          code: mapped.code,
-          http_status: mapped.status,
-          transient: mapped.transient,
-        },
-      });
-
-      await sendEmailNotification(
-        `[RAZAFI WIFI] ❌ Payment Failed – RequestRef ${requestRef}`,
-        buildReadablePaymentEmail({
-          intro: "Le paiement Airtel Money n'a pas pu être lancé.",
-          requestRef,
-          statusLabel: "failed",
-          phone: maskPhone(phone),
-          amount: `${amount} Ar`,
-          poolLabel: await resolvePoolEmailLabel(pool_id || "—"),
-          paymentProvider: "Airtel Money",
-          serverCorrelationId: airtelTransactionId,
-          timestamp: toISOStringMG(new Date()),
-          extraLines: [
-            `• Type: ${mapped.code}`,
-            mapped.status ? `• HTTP: ${mapped.status}` : "",
-          ],
-        })
-      );
-
-      return res.status(mapped.httpStatus).json({
-        ok: false,
-        error: "airtel_payment_failed",
-        provider: "airtel",
-        message: mapped.userMessage,
-        details: mapped.code,
-      });
+    } catch (auditError) {
+      postInitiationWarnings.push("audit_failed");
+      console.error("[AIRTEL] accepted initiation but audit insert failed", auditError?.message || auditError);
     }
+
+    if (postInitiationWarnings.length) {
+      console.warn("[AIRTEL] initiation accepted with local warnings", {
+        requestRef,
+        warnings: postInitiationWarnings,
+      });
+      try {
+        await updateTransactionPreservingMetadata({
+          requestRef,
+          metadataPatch: {
+            airtel_post_initiation_warnings: postInitiationWarnings,
+            updated_at_local: toISOStringMG(new Date()),
+          },
+        });
+      } catch (_) {}
+    }
+
+    res.json({
+      ok: true,
+      provider: "airtel",
+      requestRef,
+      serverCorrelationId: airtelTransactionId,
+      verificationTimeoutMs: AIRTEL_VERIFICATION_TIMEOUT_MS,
+      personalized: isPersonalizedPayment || undefined,
+      airtel: {
+        transactionId: airtelTransactionId,
+        providerReference,
+        status: initiationState?.transactionStatus || "SUCCESS",
+      },
+    });
+
+    (async () => {
+      try {
+        await pollAirtelTransactionStatus({
+          requestRef,
+          transactionId: airtelTransactionId,
+          phone,
+          amount,
+          source: "airtel_background_poll",
+        });
+      } catch (backgroundError) {
+        console.error("[AIRTEL] background poll failed", {
+          requestRef,
+          error: backgroundError?.code || backgroundError?.message || backgroundError,
+        });
+      }
+    })();
+    return;
   }
 
   // MVola can reject descriptions containing plan display text / speed values

@@ -3,6 +3,7 @@ import axios from "axios";
 const DEFAULT_BASE_URL = "https://openapiuat.airtel.mg";
 const DEFAULT_COUNTRY = "MG";
 const DEFAULT_CURRENCY = "MGA";
+const VALID_MSISDN_FORMATS = new Set(["local", "national", "e164"]);
 
 function cleanBaseUrl(value) {
   return String(value || DEFAULT_BASE_URL).trim().replace(/\/+$/, "");
@@ -14,20 +15,66 @@ function positiveInt(value, fallback, min, max) {
   return Math.max(min, Math.min(max, safe));
 }
 
+export class AirtelApiError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = "AirtelApiError";
+    this.httpStatus = details.httpStatus || null;
+    this.responseData = details.responseData || null;
+    this.code = details.code || "airtel_api_error";
+    this.transient = details.transient === true;
+  }
+}
+
 export function formatAirtelMsisdn(phone, format = "national") {
   let digits = String(phone || "").replace(/\D/g, "");
   if (digits.startsWith("261")) digits = `0${digits.slice(3)}`;
   if (!/^033\d{7}$/.test(digits)) {
-    throw new Error("airtel_msisdn_invalid");
+    throw new AirtelApiError("Invalid Airtel MSISDN", {
+      code: "airtel_msisdn_invalid",
+      transient: false,
+    });
   }
 
   const normalizedFormat = String(format || "national").trim().toLowerCase();
+  if (!VALID_MSISDN_FORMATS.has(normalizedFormat)) {
+    throw new AirtelApiError("Invalid Airtel MSISDN format configuration", {
+      code: "airtel_msisdn_format_invalid",
+      transient: false,
+    });
+  }
+
   if (normalizedFormat === "local") return digits;
   if (normalizedFormat === "e164") return `261${digits.slice(1)}`;
-  // Airtel OpenAPI payloads already carry X-Country/subscriber.country, so the
-  // national significant number (without the domestic trunk prefix 0) is the
-  // safest default. It remains configurable until the first UAT test confirms it.
   return digits.slice(1);
+}
+
+export function normalizeAirtelInitiationState(payload) {
+  const status = payload?.status && typeof payload.status === "object"
+    ? payload.status
+    : {};
+  const transaction = payload?.data?.transaction || payload?.transaction || {};
+  const statusCode = String(status.code ?? "").trim();
+  const statusSuccess = status.success === true;
+  const transactionStatus = String(
+    transaction.status ?? transaction.status_code ?? ""
+  ).trim().toUpperCase();
+
+  return {
+    accepted:
+      statusCode === "200" &&
+      statusSuccess === true &&
+      transactionStatus === "SUCCESS",
+    statusCode: statusCode || null,
+    statusSuccess,
+    transactionStatus: transactionStatus || null,
+    transaction,
+    transactionId: transaction.id || null,
+    airtelMoneyId: transaction.airtel_money_id || null,
+    message: transaction.message || status.message || null,
+    resultCode: status.result_code || null,
+    responseCode: status.response_code || null,
+  };
 }
 
 export function normalizeAirtelTransactionState(payload) {
@@ -39,7 +86,9 @@ export function normalizeAirtelTransactionState(payload) {
     ""
   ).trim().toUpperCase();
 
-  const successStatuses = new Set(["TS", "SUCCESS", "COMPLETED"]);
+  // Airtel initiation SUCCESS only confirms that the USSD request was accepted.
+  // A voucher may be generated only after Transaction Enquiry returns TS.
+  const successStatuses = new Set(["TS"]);
   const failedStatuses = new Set([
     "TF", "FAILED", "FAILURE", "REJECTED", "DECLINED", "CANCELLED", "CANCELED"
   ]);
@@ -56,17 +105,6 @@ export function normalizeAirtelTransactionState(payload) {
   };
 }
 
-export class AirtelApiError extends Error {
-  constructor(message, details = {}) {
-    super(message);
-    this.name = "AirtelApiError";
-    this.httpStatus = details.httpStatus || null;
-    this.responseData = details.responseData || null;
-    this.code = details.code || "airtel_api_error";
-    this.transient = details.transient === true;
-  }
-}
-
 export function createAirtelMoneyClient(options = {}) {
   const config = {
     baseUrl: cleanBaseUrl(options.baseUrl),
@@ -78,6 +116,13 @@ export function createAirtelMoneyClient(options = {}) {
     timeoutMs: positiveInt(options.timeoutMs, 12_000, 2_000, 60_000),
     tokenRefreshSkewMs: positiveInt(options.tokenRefreshSkewMs, 30_000, 5_000, 120_000),
   };
+
+  if (!VALID_MSISDN_FORMATS.has(config.msisdnFormat)) {
+    throw new AirtelApiError("Invalid Airtel MSISDN format configuration", {
+      code: "airtel_msisdn_format_invalid",
+      transient: false,
+    });
+  }
 
   let tokenCache = { accessToken: null, expiresAt: 0 };
 
@@ -184,10 +229,16 @@ export function createAirtelMoneyClient(options = {}) {
     const cleanReference = String(reference || "").trim().slice(0, 120);
     const cleanTransactionId = String(transactionId || "").trim().slice(0, 128);
     if (!Number.isInteger(cleanAmount) || cleanAmount <= 0) {
-      throw new AirtelApiError("Invalid Airtel payment amount", { code: "airtel_amount_invalid" });
+      throw new AirtelApiError("Invalid Airtel payment amount", {
+        code: "airtel_amount_invalid",
+        transient: false,
+      });
     }
     if (!cleanReference || !cleanTransactionId) {
-      throw new AirtelApiError("Missing Airtel payment reference", { code: "airtel_reference_invalid" });
+      throw new AirtelApiError("Missing Airtel payment reference", {
+        code: "airtel_reference_invalid",
+        transient: false,
+      });
     }
 
     const msisdn = formatAirtelMsisdn(phone, config.msisdnFormat);
@@ -207,13 +258,33 @@ export function createAirtelMoneyClient(options = {}) {
     };
 
     const response = await authorizedRequest("POST", "/merchant/v1/payments/", { data: payload });
-    return { data: response?.data || {}, httpStatus: response?.status || 200, transactionId: cleanTransactionId };
+    const data = response?.data || {};
+    const normalized = normalizeAirtelInitiationState(data);
+
+    if (!normalized.accepted) {
+      throw new AirtelApiError("Airtel payment initiation rejected", {
+        code: "airtel_initiation_rejected",
+        httpStatus: response?.status || null,
+        responseData: data,
+        transient: false,
+      });
+    }
+
+    return {
+      data,
+      httpStatus: response?.status || 200,
+      transactionId: cleanTransactionId,
+      normalized,
+    };
   }
 
   async function enquireTransaction(transactionId) {
     const cleanTransactionId = String(transactionId || "").trim();
     if (!cleanTransactionId || cleanTransactionId.length > 128) {
-      throw new AirtelApiError("Invalid Airtel transaction id", { code: "airtel_transaction_id_invalid" });
+      throw new AirtelApiError("Invalid Airtel transaction id", {
+        code: "airtel_transaction_id_invalid",
+        transient: false,
+      });
     }
     const response = await authorizedRequest(
       "GET",
