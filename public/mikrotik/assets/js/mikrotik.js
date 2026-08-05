@@ -402,6 +402,91 @@
     return String(err?.message || "Erreur serveur");
   }
 
+  // Shared payment-result copy for standard and personalized plans.
+  // The two purchase paths may keep their own state handling, but the customer
+  // must receive the same message for the same provider outcome.
+  function paymentFailureCopy(providerLabel, state, providerMessage = "", providerErrorCode = "") {
+    const label = String(providerLabel || "le service de paiement").trim();
+    const backendMessage = String(providerMessage || "").trim();
+    const backendCode = String(providerErrorCode || "").trim().toLowerCase();
+
+    if (
+      state === "initiation_rejected" &&
+      (backendCode === "airtel_initiation_rejected" || /n['’]a pas accepté la demande/i.test(backendMessage))
+    ) {
+      const detail = "Airtel Money n’a pas accepté la demande. Aucun paiement n’a été effectué et aucun code n’a été généré.";
+      return {
+        title: "❌ Demande Airtel Money non acceptée",
+        detail,
+        toast: "❌ " + detail,
+        kind: "error",
+        duration: 8000,
+      };
+    }
+
+    if (state === "initiation_rejected") {
+      let detail = backendMessage || `La demande ${label} n’a pas été acceptée.`;
+      if (!/aucun code n['’]a été généré/i.test(detail)) {
+        detail = detail.replace(/[.\s]*$/, ".") + " Aucun code n’a été généré.";
+      }
+      return {
+        title: `❌ Demande ${label} non acceptée`,
+        detail,
+        toast: "❌ " + detail,
+        kind: "error",
+        duration: 8000,
+      };
+    }
+
+    if (state === "failed") {
+      const detail = `Paiement non validé par ${label}. Aucun code n’a été généré. Vérifiez votre téléphone avant de réessayer.`;
+      return {
+        title: `❌ Paiement non validé par ${label}`,
+        detail,
+        toast: "❌ " + detail,
+        kind: "error",
+        duration: 8000,
+      };
+    }
+
+    if (state === "code_unavailable") {
+      const detail = "Le paiement peut avoir été confirmé, mais aucun code WiFi n’est disponible. Ne payez pas une deuxième fois et contactez l’assistance.";
+      return {
+        title: "⚠️ Code WiFi non disponible",
+        detail,
+        toast: "⚠️ " + detail,
+        kind: "warning",
+        duration: 10000,
+      };
+    }
+
+    if (state === "network_error" || state === "timeout" || state === "send_uncertain") {
+      const detail = "Le paiement peut encore être en cours. Ne payez pas une deuxième fois si votre solde a été débité.";
+      return {
+        title: state === "timeout" ? `⏱️ Confirmation ${label} non reçue` : "⚠️ Vérification interrompue",
+        detail,
+        toast: "⚠️ " + detail,
+        kind: "warning",
+        duration: 9500,
+      };
+    }
+
+    const detail = "RAZAFI n’a pas pu confirmer ce paiement. Si votre solde a été débité, ne payez pas une deuxième fois et contactez l’assistance.";
+    return {
+      title: "❌ Paiement non confirmé",
+      detail,
+      toast: "❌ " + detail,
+      kind: "error",
+      duration: 8500,
+    };
+  }
+
+  function presentPaymentFailure(card, copy) {
+    if (!copy) return;
+    updateProcessingMessage(card, copy.title, copy.detail);
+    showToast(copy.toast, copy.kind, copy.duration);
+  }
+
   // Toast (top-center, safe-area)
   function ensureToastContainer() {
     let c = document.getElementById("toastContainer");
@@ -641,6 +726,14 @@
       /* Per-pool payment method logo buttons (MVola / Orange Money / Airtel Money / Visa).
          Square icon style: same visual weight for every provider, light rounded corners,
          soft shadow, and cheap-phone-safe touch feedback. Payment logic is unchanged. */
+      .plan-payment-choice {
+        display: none;
+        margin-top: 17px;
+      }
+      .plan-card.selected .plan-payment-choice {
+        display: block;
+        animation: razafiPayMethodsIn 160ms ease both;
+      }
       .plan-payment-methods {
         display: none;
         grid-template-columns: repeat(auto-fit, 54px);
@@ -648,7 +741,7 @@
         align-items: center;
         gap: 8px;
         width: 100%;
-        margin-top: 10px;
+        margin-top: 9px;
       }
       .plan-card.selected .plan-payment-methods {
         display: grid;
@@ -4171,6 +4264,7 @@ function saturationLabel(pct) {
     let invalidateAfter = false;
     let invalidateMessage = "Le paiement n’a pas été lancé. Calculez un nouveau prix avant de réessayer.";
     let keepLockedAfter = false;
+    let lockedMessage = "Le paiement peut encore être en cours. Ne payez pas une deuxième fois si votre solde a été débité.";
     try {
       const response = await fetch(apiUrl("/api/portal/personalized-plan/pay"), {
         method: "POST",
@@ -4200,6 +4294,7 @@ function saturationLabel(pct) {
       } else if (!response.ok || !data?.ok) {
         const error = new Error(data?.error || data?.message || "personalized_payment_failed");
         error.userMessage = data?.message || null;
+        error.providerErrorCode = data?.error || data?.error_code || null;
         error.httpStatus = response.status;
         throw error;
       } else {
@@ -4223,21 +4318,27 @@ function saturationLabel(pct) {
 
       if (!pollResult || pollResult.outcome !== "success" || !pollResult.code) {
         clearProcessingWaitMessages(el.card);
-        if (pollResult?.outcome === "failed") {
-          updateProcessingMessage(el.card, `❌ Paiement non validé par ${providerLabel}`, `${providerLabel} n’a pas confirmé ce paiement. Vous pourrez recalculer un nouveau prix.`);
-          showToast(`❌ Paiement non validé par ${providerLabel}.`, "error", 7500);
-          invalidateMessage = `Paiement non validé par ${providerLabel}. Aucun code n’a été généré. Cliquez sur « Voir mon prix » pour réessayer.`;
+        const outcome = String(pollResult?.outcome || "timeout");
+        let copy;
+
+        if (outcome === "failed") {
+          copy = paymentFailureCopy(providerLabel, "failed");
+          invalidateMessage = copy.detail;
           invalidateAfter = true;
-        } else {
+        } else if (["processing_error", "code_unavailable"].includes(outcome)) {
+          copy = paymentFailureCopy(providerLabel, "code_unavailable");
           keepLockedAfter = true;
-          const isNetwork = pollResult?.outcome === "network_error";
-          updateProcessingMessage(
-            el.card,
-            isNetwork ? "⚠️ Vérification interrompue" : `⏱️ Confirmation ${providerLabel} non reçue`,
-            "Le paiement peut encore être en cours. Ne payez pas une deuxième fois si votre solde a été débité."
+          lockedMessage = copy.detail;
+        } else {
+          copy = paymentFailureCopy(
+            providerLabel,
+            outcome === "network_error" ? "network_error" : "timeout"
           );
-          showToast("⚠️ Le paiement peut encore être en cours. Ne payez pas une deuxième fois si votre solde a été débité.", "warning", 9500);
+          keepLockedAfter = true;
+          lockedMessage = copy.detail;
         }
+
+        presentPaymentFailure(el.card, copy);
         return;
       }
 
@@ -4260,13 +4361,20 @@ function saturationLabel(pct) {
       const isNetworkError = String(error?.name || "") === "TypeError" || /failed to fetch|network|connexion/i.test(String(error?.message || ""));
       if (isNetworkError || String(error?.message || "") === "request_ref_missing") {
         keepLockedAfter = true;
-        updateProcessingMessage(el.card, "⚠️ Impossible de confirmer l’envoi", "La demande peut avoir été reçue. Si votre solde a été débité, ne payez pas une deuxième fois.");
-        showToast("⚠️ Impossible de confirmer l’envoi. Si votre solde a été débité, ne payez pas une deuxième fois.", "warning", 9500);
+        const copy = paymentFailureCopy(providerLabel, "send_uncertain");
+        lockedMessage = copy.detail;
+        presentPaymentFailure(el.card, copy);
       } else {
         invalidateAfter = true;
         const friendly = error?.userMessage || personalizedFriendlyError(error?.message);
-        updateProcessingMessage(el.card, `❌ Demande ${providerLabel} non acceptée`, friendly);
-        showToast("❌ " + friendly, "error", 8000);
+        const copy = paymentFailureCopy(
+          providerLabel,
+          "initiation_rejected",
+          friendly,
+          error?.providerErrorCode || error?.message
+        );
+        invalidateMessage = copy.detail;
+        presentPaymentFailure(el.card, copy);
       }
     } finally {
       setProcessing(el.card, false);
@@ -4276,9 +4384,7 @@ function saturationLabel(pct) {
         exitPaymentFocusMode();
       } else if (keepLockedAfter) {
         personalizedPaymentStarted = true;
-        setPersonalizedError(
-          `La confirmation ${providerLabel} reste incertaine. Ne lancez pas un deuxième paiement si votre solde a été débité. Contactez l’assistance si nécessaire.`
-        );
+        setPersonalizedError(lockedMessage);
         applyPersonalizedStateLocks();
       } else {
         personalizedPaymentStarted = false;
@@ -4455,7 +4561,10 @@ function saturationLabel(pct) {
               </button>`;
     }).join("");
 
-    return `<div class="plan-payment-methods">${buttonsHtml}</div>`;
+    return `<div class="plan-payment-choice">
+              <div class="personalized-label payment-methods-label">Choisissez votre moyen de paiement</div>
+              <div class="plan-payment-methods">${buttonsHtml}</div>
+            </div>`;
   }
 
   function planCardHTML(plan, uiMeta = {}) {
@@ -5609,6 +5718,8 @@ function selectPlanCardOnly(card) {
                 const msg = data?.message || data?.error || "Erreur lors du paiement";
                 const paymentError = new Error(msg);
                 paymentError.razafiPaymentStage = "initiate_response";
+                paymentError.razafiProviderErrorCode = data?.error || data?.error_code || null;
+                paymentError.razafiUserMessage = data?.message || null;
                 paymentError.razafiHttpStatus = Number(resp?.status || 0) || null;
                 throw paymentError;
               }
@@ -5662,52 +5773,13 @@ function selectPlanCardOnly(card) {
 
               if (!pollResult || pollResult.outcome !== "success" || !pollResult.code) {
                 clearProcessingWaitMessages(card);
-
-                if (pollResult?.outcome === "failed") {
-                  updateProcessingMessage(
-                    card,
-                    `❌ Paiement non validé par ${providerLabel}`,
-                    `${providerLabel} n’a pas confirmé ce paiement. Vérifiez votre téléphone avant de réessayer.`
-                  );
-                  showToast(
-                    `❌ Paiement non validé par ${providerLabel}. Vérifiez votre téléphone avant de réessayer.`,
-                    "error",
-                    7500
-                  );
-                } else if (["processing_error", "code_unavailable"].includes(pollResult?.outcome)) {
-                  updateProcessingMessage(
-                    card,
-                    "⚠️ Code WiFi non disponible",
-                    "Le paiement peut avoir été confirmé. Ne payez pas une deuxième fois et contactez l’assistance."
-                  );
-                  showToast(
-                    "⚠️ Le paiement peut avoir été confirmé, mais aucun code WiFi n’est disponible. Ne payez pas une deuxième fois et contactez l’assistance.",
-                    "warning",
-                    10000
-                  );
-                } else if (pollResult?.outcome === "network_error") {
-                  updateProcessingMessage(
-                    card,
-                    "⚠️ Vérification interrompue",
-                    "Le paiement peut encore être en cours. Ne payez pas une deuxième fois si votre solde a été débité."
-                  );
-                  showToast(
-                    "⚠️ Connexion interrompue pendant la vérification. Si votre solde a été débité, ne payez pas une deuxième fois et contactez l’assistance.",
-                    "warning",
-                    9000
-                  );
-                } else {
-                  updateProcessingMessage(
-                    card,
-                    `⏱️ Confirmation ${providerLabel} non reçue`,
-                    "Si votre solde a été débité, ne payez pas une deuxième fois. Contactez l’assistance."
-                  );
-                  showToast(
-                    `⏱️ Confirmation ${providerLabel} non reçue. Si votre solde a été débité, ne payez pas une deuxième fois et contactez l’assistance.`,
-                    "warning",
-                    9000
-                  );
-                }
+                const outcome = String(pollResult?.outcome || "timeout");
+                const copy = outcome === "failed"
+                  ? paymentFailureCopy(providerLabel, "failed")
+                  : (["processing_error", "code_unavailable"].includes(outcome)
+                    ? paymentFailureCopy(providerLabel, "code_unavailable")
+                    : paymentFailureCopy(providerLabel, outcome === "network_error" ? "network_error" : "timeout"));
+                presentPaymentFailure(card, copy);
                 return;
               }
 
@@ -5734,34 +5806,19 @@ function selectPlanCardOnly(card) {
               const isMissingRef = rawMessage === "request_ref_missing";
 
               if (e?.razafiPaymentStage === "initiate_response") {
-                updateProcessingMessage(
+                presentPaymentFailure(
                   card,
-                  `❌ Demande ${providerLabel} non acceptée`,
-                  friendly
+                  paymentFailureCopy(
+                    providerLabel,
+                    "initiation_rejected",
+                    e?.razafiUserMessage || friendly,
+                    e?.razafiProviderErrorCode || rawMessage
+                  )
                 );
-                showToast("❌ " + friendly, "error", 7500);
               } else if (isNetworkError || isMissingRef) {
-                updateProcessingMessage(
-                  card,
-                  "⚠️ Impossible de confirmer l’envoi",
-                  "La demande peut avoir été reçue. Si votre solde a été débité, ne payez pas une deuxième fois et contactez l’assistance."
-                );
-                showToast(
-                  `⚠️ Impossible de confirmer l’envoi ${providerLabel}. Si votre solde a été débité, ne payez pas une deuxième fois et contactez l’assistance.`,
-                  "warning",
-                  9000
-                );
+                presentPaymentFailure(card, paymentFailureCopy(providerLabel, "send_uncertain"));
               } else {
-                updateProcessingMessage(
-                  card,
-                  "❌ Paiement non confirmé",
-                  "RAZAFI n’a pas pu confirmer ce paiement. Si votre solde a été débité, ne payez pas une deuxième fois."
-                );
-                showToast(
-                  "❌ Paiement non confirmé. Si votre solde a été débité, ne payez pas une deuxième fois et contactez l’assistance.",
-                  "error",
-                  8500
-                );
+                presentPaymentFailure(card, paymentFailureCopy(providerLabel, "generic_error"));
               }
             } finally {
               setProcessing(card, false);

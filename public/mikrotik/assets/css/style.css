@@ -1736,8 +1736,22 @@ body.theme-dark #rzAssistSend {
 }
 .personalized-quote-expiry { margin-top: 9px; color: #6b7280; font-size: 12px; font-weight: 700; }
 .personalized-payment-block { margin-top: 17px; }
-.personalized-payment-methods { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; margin-top: 9px; }
-.personalized-payment-methods .payment-method-btn { width: 100%; min-width: 0; margin: 0; }
+.personalized-payment-methods {
+  display: grid;
+  grid-template-columns: repeat(auto-fit,54px);
+  justify-content: start;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 9px;
+}
+.personalized-payment-methods .payment-method-btn {
+  width: 54px;
+  min-width: 54px;
+  height: 54px;
+  min-height: 54px;
+  margin: 0;
+}
 .personalized-payment-methods .payment-method-selected {
   outline: 3px solid rgba(17,24,39,.16);
   outline-offset: 2px;
@@ -1804,8 +1818,19 @@ body.theme-dark .personalized-field-invalid select {
   .personalized-plan-config.personalized-data-mode > .personalized-error { order: 4; }
   .personalized-plan-config.personalized-data-mode > .personalized-quote-btn { order: 5; }
   .personalized-plan-config.personalized-data-mode > .personalized-return-slot-config { order: 6; }
-  .personalized-payment-methods { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .personalized-quote-top { align-items: center; }
+}
+@media (max-width: 360px) {
+  .personalized-payment-methods {
+    grid-template-columns: repeat(auto-fit,52px);
+    gap: 7px;
+  }
+  .personalized-payment-methods .payment-method-btn {
+    width: 52px;
+    min-width: 52px;
+    height: 52px;
+    min-height: 52px;
+  }
 }
 @media (max-width: 390px) {
   .personalized-plan-entry { min-height: 32px; padding: 0 12px; font-size: 12px; }
