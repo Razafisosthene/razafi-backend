@@ -25,6 +25,9 @@
     snapshotReceivedAt: 0,
     refreshTimer: null,
     tickTimer: null,
+    promoTimer: null,
+    promoResumeTimer: null,
+    promoIndex: 0,
     inFlight: false,
     detectionUrl: null,
     timeBindings: [],
@@ -58,6 +61,8 @@
     removeBrowserCancelBtn: document.getElementById("removeBrowserCancelBtn"),
     removeBrowserConfirmBtn: document.getElementById("removeBrowserConfirmBtn"),
     deviceOfflineHelp: document.getElementById("deviceOfflineHelp"),
+    promoCarouselViewport: document.getElementById("promoCarouselViewport"),
+    promoDots: document.getElementById("promoDots"),
   });
 
 
@@ -205,8 +210,12 @@
   function clearTimers() {
     if (state.refreshTimer) window.clearTimeout(state.refreshTimer);
     if (state.tickTimer) window.clearInterval(state.tickTimer);
+    if (state.promoTimer) window.clearInterval(state.promoTimer);
+    if (state.promoResumeTimer) window.clearTimeout(state.promoResumeTimer);
     state.refreshTimer = null;
     state.tickTimer = null;
+    state.promoTimer = null;
+    state.promoResumeTimer = null;
   }
 
   async function apiJson(url, options = {}) {
@@ -623,6 +632,71 @@
     elements.ec2Content.hidden = false;
   }
 
+  function promoSlides() {
+    return elements.promoCarouselViewport
+      ? Array.from(elements.promoCarouselViewport.querySelectorAll(".promo-slide"))
+      : [];
+  }
+
+  function promoReducedMotion() {
+    return typeof window.matchMedia === "function"
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  function updatePromoDots(index) {
+    const dots = elements.promoDots?.querySelectorAll("[data-promo-index]") || [];
+    dots.forEach((dot) => {
+      const active = Number(dot.dataset.promoIndex) === index;
+      dot.classList.toggle("is-active", active);
+      dot.setAttribute("aria-current", active ? "true" : "false");
+    });
+  }
+
+  function scrollPromoTo(index, behavior = "smooth") {
+    const viewport = elements.promoCarouselViewport;
+    const slides = promoSlides();
+    if (!viewport || !slides.length) return;
+    const normalized = ((Number(index) || 0) % slides.length + slides.length) % slides.length;
+    state.promoIndex = normalized;
+    updatePromoDots(normalized);
+    viewport.scrollTo({
+      left: normalized * viewport.clientWidth,
+      behavior: promoReducedMotion() ? "auto" : behavior,
+    });
+  }
+
+  function startPromoAutoPlay() {
+    const viewport = elements.promoCarouselViewport;
+    const slides = promoSlides();
+    if (!viewport || slides.length < 2 || promoReducedMotion() || document.hidden) return;
+    if (state.promoResumeTimer || state.promoTimer) return;
+    state.promoTimer = window.setInterval(() => {
+      scrollPromoTo(state.promoIndex + 1);
+    }, 5000);
+  }
+
+  function pausePromoAutoPlay() {
+    if (state.promoTimer) window.clearInterval(state.promoTimer);
+    if (state.promoResumeTimer) window.clearTimeout(state.promoResumeTimer);
+    state.promoTimer = null;
+    state.promoResumeTimer = null;
+    if (promoReducedMotion()) return;
+    state.promoResumeTimer = window.setTimeout(() => {
+      state.promoResumeTimer = null;
+      startPromoAutoPlay();
+    }, 10000);
+  }
+
+  function syncPromoFromScroll() {
+    const viewport = elements.promoCarouselViewport;
+    const slides = promoSlides();
+    if (!viewport || !slides.length || viewport.clientWidth <= 0) return;
+    const index = Math.max(0, Math.min(slides.length - 1, Math.round(viewport.scrollLeft / viewport.clientWidth)));
+    if (index === state.promoIndex) return;
+    state.promoIndex = index;
+    updatePromoDots(index);
+  }
+
   function renderDashboard(snapshot) {
     state.snapshot = snapshot;
     state.snapshotReceivedAt = Date.now();
@@ -654,6 +728,7 @@
     renderSecurity(snapshot);
     showView("dashboard");
     startLiveTick();
+    startPromoAutoPlay();
     scheduleRefresh(snapshot.refresh_after_seconds);
   }
 
@@ -886,9 +961,32 @@
     setRecentExpanded(elements.recentAccessToggle.dataset.expanded !== "true");
   });
 
+  elements.promoDots?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-promo-index]");
+    if (!button) return;
+    pausePromoAutoPlay();
+    scrollPromoTo(Number(button.dataset.promoIndex));
+  });
+  elements.promoCarouselViewport?.addEventListener("scroll", syncPromoFromScroll, { passive: true });
+  elements.promoCarouselViewport?.addEventListener("pointerdown", pausePromoAutoPlay, { passive: true });
+  elements.promoCarouselViewport?.addEventListener("wheel", pausePromoAutoPlay, { passive: true });
+  elements.promoCarouselViewport?.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    event.preventDefault();
+    pausePromoAutoPlay();
+    scrollPromoTo(state.promoIndex + (event.key === "ArrowRight" ? 1 : -1));
+  });
+  window.addEventListener("resize", () => scrollPromoTo(state.promoIndex, "auto"));
+
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && state.snapshot && Date.now() - state.snapshotReceivedAt > 20_000) {
-      loadConsumption({ silent: true });
+    if (document.visibilityState === "visible") {
+      startPromoAutoPlay();
+      if (state.snapshot && Date.now() - state.snapshotReceivedAt > 20_000) {
+        loadConsumption({ silent: true });
+      }
+    } else if (state.promoTimer) {
+      window.clearInterval(state.promoTimer);
+      state.promoTimer = null;
     }
   });
 

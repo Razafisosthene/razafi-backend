@@ -549,6 +549,139 @@ button:focus-visible, a:focus-visible {
   .topbar-label { display: none; }
 }
 
+/* EC-3.2 — Découverte RAZAFI + réseaux sociaux */
+.promo-section,
+.social-section {
+  margin-top: 24px;
+  min-width: 0;
+}
+.promo-section-title {
+  margin: 0 0 9px;
+  padding-left: 2px;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+}
+.promo-carousel {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.045);
+}
+.promo-carousel-viewport {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  scroll-behavior: smooth;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.promo-carousel-viewport::-webkit-scrollbar { display: none; }
+.promo-carousel-track {
+  display: flex;
+  width: 100%;
+}
+.promo-slide {
+  flex: 0 0 100%;
+  min-width: 0;
+  height: min(125vw, 520px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  background: #fff;
+}
+.promo-slide img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.promo-dots {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border-top: 1px solid rgba(229, 232, 238, 0.72);
+}
+.promo-dot {
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #cbd1dc;
+  cursor: pointer;
+  transition: width 160ms ease, background 160ms ease, transform 120ms ease;
+}
+.promo-dot.is-active {
+  width: 20px;
+  border-radius: 999px;
+  background: var(--blue);
+}
+.promo-dot:active { transform: scale(0.92); }
+.social-links {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.social-link {
+  min-width: 0;
+  min-height: 62px;
+  padding: 9px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 800;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.045);
+  transition: transform 120ms ease, background 120ms ease;
+}
+.social-link img {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  object-fit: contain;
+}
+.social-link span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.social-link:active {
+  transform: scale(0.985);
+  background: var(--surface-soft);
+}
+
+@media (max-width: 540px) {
+  .promo-section, .social-section { margin-top: 20px; }
+  .promo-carousel { border-radius: 18px; }
+  .social-links { gap: 8px; }
+  .social-link {
+    min-height: 58px;
+    padding: 8px 6px;
+    border-radius: 16px;
+    gap: 6px;
+    font-size: 11px;
+  }
+  .social-link img { width: 27px; height: 27px; flex-basis: 27px; }
+}
+
+@media (max-width: 360px) {
+  .social-link { flex-direction: column; min-height: 70px; gap: 4px; }
+}
+
 /* EC-3 — Consultation à distance */
 .live-remote {
   color: #5a47c8;
@@ -692,4 +825,6 @@ button:focus-visible, a:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .remove-browser-dialog::backdrop { backdrop-filter: none; }
+  .promo-carousel-viewport { scroll-behavior: auto; }
+  .promo-dot { transition: none; }
 }
