@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="fr">
 <head>
   <meta charset="utf-8">
@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#ffffff">
   <meta name="robots" content="noindex,nofollow,noarchive">
-  <title>Espace client — RAZAFI</title>
+  <title>Espace client â€” RAZAFI</title>
   <link rel="stylesheet" href="/espace-client/espace-client.css?v=ec3-2">
   <script src="/espace-client/espace-client.js?v=ec3-2" defer></script>
 </head>
@@ -28,29 +28,29 @@
     <main class="main" id="mainContent">
       <section class="state-card" id="loadingView" aria-live="polite">
         <div class="spinner" aria-hidden="true"></div>
-        <h1>Vérification de votre espace…</h1>
-        <p>RAZAFI recherche une session client sécurisée sur ce navigateur.</p>
+        <h1>VÃ©rification de votre espaceâ€¦</h1>
+        <p>RAZAFI recherche une session client sÃ©curisÃ©e sur ce navigateur.</p>
       </section>
 
       <section class="state-card" id="unavailableView" hidden aria-live="polite">
-        <div class="state-icon" aria-hidden="true">◷</div>
+        <div class="state-icon" aria-hidden="true">â—·</div>
         <h1>Espace client indisponible</h1>
-        <p>Cette fonctionnalité n’est pas disponible pour le moment. Votre connexion WiFi et votre forfait ne sont pas affectés.</p>
-        <button class="primary-button" id="retryUnavailableBtn" type="button">Réessayer</button>
+        <p>Cette fonctionnalitÃ© nâ€™est pas disponible pour le moment. Votre connexion WiFi et votre forfait ne sont pas affectÃ©s.</p>
+        <button class="primary-button" id="retryUnavailableBtn" type="button">RÃ©essayer</button>
       </section>
 
       <section class="state-card" id="detectView" hidden aria-live="polite">
-        <div class="state-icon" aria-hidden="true">⌁</div>
-        <h1>Forfait non détecté</h1>
-        <p id="detectMessage">Connectez cet appareil au réseau WiFi RAZAFI sur lequel votre forfait est actif, puis réessayez.</p>
+        <div class="state-icon" aria-hidden="true">âŒ</div>
+        <h1>Forfait non dÃ©tectÃ©</h1>
+        <p id="detectMessage">Connectez cet appareil au rÃ©seau WiFi RAZAFI sur lequel votre forfait est actif, puis rÃ©essayez.</p>
         <button class="primary-button" id="retryDetectBtn" type="button">Rechercher mon forfait</button>
       </section>
 
       <section class="state-card" id="errorView" hidden aria-live="assertive">
         <div class="state-icon" aria-hidden="true">!</div>
-        <h1>Connexion momentanément indisponible</h1>
-        <p>Impossible d’actualiser votre consommation. Vérifiez votre connexion puis réessayez.</p>
-        <button class="primary-button" id="retryErrorBtn" type="button">Réessayer</button>
+        <h1>Connexion momentanÃ©ment indisponible</h1>
+        <p>Impossible dâ€™actualiser votre consommation. VÃ©rifiez votre connexion puis rÃ©essayez.</p>
+        <button class="primary-button" id="retryErrorBtn" type="button">RÃ©essayer</button>
       </section>
 
       <section class="dashboard" id="dashboardView" hidden aria-live="polite">
@@ -63,20 +63,20 @@
           </div>
           <div class="live-pill live-unknown" id="livePill">
             <span class="live-dot" aria-hidden="true"></span>
-            <span id="liveLabel">État inconnu</span>
+            <span id="liveLabel">Ã‰tat inconnu</span>
           </div>
         </div>
 
         <div class="sync-line">
-          <span id="syncLabel">Dernière synchronisation indisponible</span>
-          <button class="icon-button" id="refreshBtn" type="button" aria-label="Actualiser la consommation" title="Actualiser">↻</button>
+          <span id="syncLabel">DerniÃ¨re synchronisation indisponible</span>
+          <button class="icon-button" id="refreshBtn" type="button" aria-label="Actualiser la consommation" title="Actualiser">â†»</button>
         </div>
 
         <aside class="remote-consultation-card" id="remoteConsultationCard" hidden aria-live="polite">
-          <span class="remote-consultation-icon" aria-hidden="true">⌁</span>
+          <span class="remote-consultation-icon" aria-hidden="true">âŒ</span>
           <div>
-            <strong id="remoteConsultationTitle">Consultation à distance</strong>
-            <p id="remoteConsultationMessage">Vous consultez votre Espace client hors du réseau RAZAFI.</p>
+            <strong id="remoteConsultationTitle">Consultation Ã  distance</strong>
+            <p id="remoteConsultationMessage">Vous consultez votre Espace client hors du rÃ©seau RAZAFI.</p>
           </div>
         </aside>
 
@@ -84,12 +84,12 @@
 
         <aside class="info-card" id="accountingInfo">
           <span class="info-icon" aria-hidden="true">i</span>
-          <p>Le temps évolue chaque seconde. La consommation data est synchronisée régulièrement par le réseau.</p>
+          <p>Le temps Ã©volue chaque seconde. La consommation data est synchronisÃ©e rÃ©guliÃ¨rement par le rÃ©seau.</p>
         </aside>
 
         <section class="promo-section" aria-labelledby="promoTitle">
-          <h2 class="promo-section-title" id="promoTitle">À découvrir chez RAZAFI</h2>
-          <div class="promo-carousel" aria-roledescription="carrousel" aria-label="Fonctionnalités RAZAFI" aria-live="off">
+          <h2 class="promo-section-title" id="promoTitle">Ã€ dÃ©couvrir chez RAZAFI</h2>
+          <div class="promo-carousel" aria-roledescription="carrousel" aria-label="FonctionnalitÃ©s RAZAFI" aria-live="off">
             <div class="promo-carousel-viewport" id="promoCarouselViewport" tabindex="0">
               <div class="promo-carousel-track">
                 <article class="promo-slide" aria-label="1 sur 2">
@@ -100,9 +100,9 @@
                 </article>
               </div>
             </div>
-            <div class="promo-dots" id="promoDots" aria-label="Choisir une publicité">
-              <button class="promo-dot is-active" type="button" data-promo-index="0" aria-label="Afficher la publicité 1" aria-current="true"></button>
-              <button class="promo-dot" type="button" data-promo-index="1" aria-label="Afficher la publicité 2" aria-current="false"></button>
+            <div class="promo-dots" id="promoDots" aria-label="Choisir une publicitÃ©">
+              <button class="promo-dot is-active" type="button" data-promo-index="0" aria-label="Afficher la publicitÃ© 1" aria-current="true"></button>
+              <button class="promo-dot" type="button" data-promo-index="1" aria-label="Afficher la publicitÃ© 2" aria-current="false"></button>
             </div>
           </div>
         </section>
@@ -118,7 +118,7 @@
               <img src="/espace-client/assets/img/TikTok.png" alt="" aria-hidden="true">
               <span>TikTok</span>
             </a>
-            <a class="social-link" href="https://www.facebook.com/share/14kfTkLtCxG/" target="_blank" rel="noopener noreferrer" aria-label="Suivre RAZAFI sur Facebook">
+            <a class="social-link" href="https://www.facebook.com/share/1HaRLoxNub/" target="_blank" rel="noopener noreferrer" aria-label="Suivre RAZAFI sur Facebook">
               <img src="/espace-client/assets/img/Facebook.png" alt="" aria-hidden="true">
               <span>Facebook</span>
             </a>
@@ -127,20 +127,20 @@
 
         <div class="ec2-content" id="ec2Content" hidden>
           <section class="ec2-section" aria-labelledby="recentAccessTitle">
-            <h2 class="ec2-section-title" id="recentAccessTitle">Mes accès récents</h2>
+            <h2 class="ec2-section-title" id="recentAccessTitle">Mes accÃ¨s rÃ©cents</h2>
             <div class="compact-card recent-access-card">
               <div class="recent-access-list" id="recentAccessList"></div>
-              <button class="recent-access-toggle" id="recentAccessToggle" type="button" aria-expanded="false" hidden>Voir tous mes accès récents</button>
+              <button class="recent-access-toggle" id="recentAccessToggle" type="button" aria-expanded="false" hidden>Voir tous mes accÃ¨s rÃ©cents</button>
             </div>
           </section>
 
           <section class="ec2-section" aria-labelledby="deviceTitle">
             <h2 class="ec2-section-title" id="deviceTitle">Cet appareil</h2>
             <div class="compact-card device-card">
-              <p class="device-connection" id="deviceConnection">Associé à RAZAFI WiFi</p>
+              <p class="device-connection" id="deviceConnection">AssociÃ© Ã  RAZAFI WiFi</p>
               <dl class="device-details">
                 <div id="deviceZoneRow" hidden>
-                  <dt>Zone associée</dt>
+                  <dt>Zone associÃ©e</dt>
                   <dd id="deviceZone">RAZAFI WiFi</dd>
                 </div>
                 <div>
@@ -148,7 +148,7 @@
                   <dd id="deviceIdentifier">Indisponible</dd>
                 </div>
                 <div>
-                  <dt>Dernière synchronisation</dt>
+                  <dt>DerniÃ¨re synchronisation</dt>
                   <dd id="deviceSync">indisponible</dd>
                 </div>
               </dl>
@@ -159,8 +159,8 @@
             <h2 class="ec2-section-title" id="supportTitle">Assistance</h2>
             <div class="compact-card support-card">
               <div>
-                <h3>Besoin d’aide&nbsp;?</h3>
-                <p>Contactez l’assistance RAZAFI sur WhatsApp.</p>
+                <h3>Besoin dâ€™aide&nbsp;?</h3>
+                <p>Contactez lâ€™assistance RAZAFI sur WhatsApp.</p>
               </div>
               <a class="whatsapp-button" id="whatsappLink" href="https://wa.me/261340500592" target="_blank" rel="noopener noreferrer">
                 Contacter sur WhatsApp
@@ -172,44 +172,44 @@
           <details class="quick-help-card">
             <summary>
               <span>Aide rapide</span>
-              <span class="details-chevron" aria-hidden="true">›</span>
+              <span class="details-chevron" aria-hidden="true">â€º</span>
             </summary>
             <div class="quick-help-content">
               <div>
-                <h3>Pourquoi ma consommation tarde-t-elle à changer&nbsp;?</h3>
-                <p>Les données réseau peuvent prendre environ une minute pour se synchroniser.</p>
+                <h3>Pourquoi ma consommation tarde-t-elle Ã  changer&nbsp;?</h3>
+                <p>Les donnÃ©es rÃ©seau peuvent prendre environ une minute pour se synchroniser.</p>
               </div>
               <div>
-                <h3>Pourquoi mon appareil apparaît-il hors ligne&nbsp;?</h3>
-                <p id="deviceOfflineHelp">Vérifiez que vous êtes toujours connecté à la même zone WiFi.</p>
+                <h3>Pourquoi mon appareil apparaÃ®t-il hors ligne&nbsp;?</h3>
+                <p id="deviceOfflineHelp">VÃ©rifiez que vous Ãªtes toujours connectÃ© Ã  la mÃªme zone WiFi.</p>
               </div>
               <div>
-                <h3>Mon bonus est-il mélangé à mon forfait&nbsp;?</h3>
-                <p>Non. Le bonus et le forfait principal sont suivis séparément.</p>
+                <h3>Mon bonus est-il mÃ©langÃ© Ã  mon forfait&nbsp;?</h3>
+                <p>Non. Le bonus et le forfait principal sont suivis sÃ©parÃ©ment.</p>
               </div>
             </div>
           </details>
 
           <aside class="security-note" id="securityNote">
-            <span class="security-icon" aria-hidden="true">🔒</span>
+            <span class="security-icon" aria-hidden="true">ðŸ”’</span>
             <div class="security-copy">
-              <strong id="securityTitle">Espace sécurisé et en lecture seule</strong>
-              <p id="securityText">Aucun paiement ni aucune activation ne peut être effectué ici.</p>
+              <strong id="securityTitle">Espace sÃ©curisÃ© et en lecture seule</strong>
+              <p id="securityText">Aucun paiement ni aucune activation ne peut Ãªtre effectuÃ© ici.</p>
               <button class="security-remove-button" id="removeBrowserBtn" type="button" hidden>Retirer ce navigateur de mon Espace client</button>
             </div>
           </aside>
         </div>
 
         <div class="dashboard-actions" id="dashboardActions">
-          <button class="secondary-button" id="logoutBtn" type="button">Déconnecter cet espace client</button>
+          <button class="secondary-button" id="logoutBtn" type="button">DÃ©connecter cet espace client</button>
         </div>
       </section>
 
       <dialog class="remove-browser-dialog" id="removeBrowserDialog" aria-labelledby="removeBrowserTitle">
         <form method="dialog" class="remove-browser-sheet">
-          <div class="remove-browser-icon" aria-hidden="true">🔒</div>
+          <div class="remove-browser-icon" aria-hidden="true">ðŸ”’</div>
           <h2 id="removeBrowserTitle">Retirer ce navigateur&nbsp;?</h2>
-          <p>Vous ne pourrez plus consulter cet Espace client depuis la 4G ou un autre WiFi sur ce navigateur. Pour le réassocier, ouvrez à nouveau l’Espace client depuis une zone WiFi RAZAFI.</p>
+          <p>Vous ne pourrez plus consulter cet Espace client depuis la 4G ou un autre WiFi sur ce navigateur. Pour le rÃ©associer, ouvrez Ã  nouveau lâ€™Espace client depuis une zone WiFi RAZAFI.</p>
           <div class="remove-browser-actions">
             <button class="dialog-cancel-button" id="removeBrowserCancelBtn" value="cancel" type="submit">Annuler</button>
             <button class="dialog-remove-button" id="removeBrowserConfirmBtn" value="default" type="button">Retirer</button>
@@ -219,10 +219,11 @@
     </main>
 
     <footer class="footer">
-      <span>Portail sécurisé</span>
-      <span aria-hidden="true">·</span>
+      <span>Portail sÃ©curisÃ©</span>
+      <span aria-hidden="true">Â·</span>
       <span>Powered by RAZAFI</span>
     </footer>
   </div>
 </body>
 </html>
+
