@@ -742,6 +742,189 @@ const POOL_LOGO_BUCKET = "pool-branding";
 const POOL_LOGO_MAX_BYTES = 1024 * 1024; // 1 MB
 const POOL_LOGO_ALLOWED_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
+// EC-4 — Marketing Espace client (pool-personalized, RAZAFI fallback)
+const CLIENT_SPACE_MARKETING_BUCKET = "client-space-marketing";
+const CLIENT_SPACE_MARKETING_MAX_BYTES = 1024 * 1024; // 1 MB per image
+const CLIENT_SPACE_MARKETING_POOL_MAX_IMAGES = 5;
+const CLIENT_SPACE_MARKETING_ALLOWED_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+const CLIENT_SPACE_MARKETING_ENABLED = ["1", "true", "yes", "on"].includes(
+  String(process.env.CLIENT_SPACE_MARKETING_ENABLED || "false").trim().toLowerCase()
+);
+const CLIENT_SPACE_MARKETING_SOCIAL_DOMAINS = Object.freeze({
+  instagram: "instagram.com",
+  tiktok: "tiktok.com",
+  facebook: "facebook.com",
+});
+
+function detectMarketingImageMime(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12) return null;
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]))) return "image/png";
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
+  if (buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  return null;
+}
+
+function normalizeMarketingImagePayload(body = {}) {
+  const rawDataUrl = String(body?.data_url || body?.dataUrl || "").trim();
+  let mimeType = String(body?.mime_type || body?.mimeType || "").trim().toLowerCase();
+  let base64 = String(body?.image_base64 || body?.base64 || "").trim();
+
+  if (rawDataUrl) {
+    const m = rawDataUrl.match(/^data:([^;]+);base64,(.+)$/i);
+    if (!m) return { error: "marketing_image_data_url_invalid" };
+    mimeType = String(m[1] || "").trim().toLowerCase();
+    base64 = String(m[2] || "").trim();
+  }
+
+  if (!mimeType || !CLIENT_SPACE_MARKETING_ALLOWED_TYPES.has(mimeType)) {
+    return { error: "marketing_image_type_invalid" };
+  }
+  if (!base64) return { error: "marketing_image_required" };
+
+  let buffer;
+  try {
+    buffer = Buffer.from(base64, "base64");
+  } catch (_) {
+    return { error: "marketing_image_base64_invalid" };
+  }
+
+  if (!buffer?.length) return { error: "marketing_image_required" };
+  if (buffer.length > CLIENT_SPACE_MARKETING_MAX_BYTES) return { error: "marketing_image_too_large" };
+  const detectedMime = detectMarketingImageMime(buffer);
+  if (!detectedMime || detectedMime !== mimeType) return { error: "marketing_image_content_invalid" };
+
+  const ext = mimeType === "image/png" ? "png" : (mimeType === "image/webp" ? "webp" : "jpg");
+  return { buffer, mimeType, ext };
+}
+
+function normalizeMarketingSocialUrl(value, network) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return { value: null };
+  const baseDomain = CLIENT_SPACE_MARKETING_SOCIAL_DOMAINS[network];
+  if (!baseDomain) return { error: "marketing_social_network_invalid" };
+
+  try {
+    const parsed = new URL(raw);
+    const hostname = String(parsed.hostname || "").trim().toLowerCase().replace(/\.$/, "");
+    const domainOk = hostname === baseDomain || hostname.endsWith(`.${baseDomain}`);
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || !domainOk) {
+      return { error: `marketing_${network}_url_invalid` };
+    }
+    parsed.hash = "";
+    return { value: parsed.toString() };
+  } catch (_) {
+    return { error: `marketing_${network}_url_invalid` };
+  }
+}
+
+function marketingProfilePayload(row) {
+  return {
+    id: row?.id || null,
+    scope: row?.scope || null,
+    pool_id: row?.pool_id || null,
+    instagram_url: cleanOptionalText(row?.instagram_url, 2000),
+    tiktok_url: cleanOptionalText(row?.tiktok_url, 2000),
+    facebook_url: cleanOptionalText(row?.facebook_url, 2000),
+    updated_at: row?.updated_at || null,
+  };
+}
+
+function marketingImagePayload(row, source) {
+  return {
+    id: row?.id || null,
+    url: cleanOptionalText(row?.image_url, 4000),
+    sort_order: Number.isFinite(Number(row?.sort_order)) ? Number(row.sort_order) : 0,
+    source,
+  };
+}
+
+async function loadMarketingProfile(scope, poolId = null) {
+  let query = supabase
+    .from("client_space_marketing_profiles")
+    .select("id,scope,pool_id,instagram_url,tiktok_url,facebook_url,updated_at")
+    .eq("scope", scope);
+  query = scope === "global" ? query.is("pool_id", null) : query.eq("pool_id", poolId);
+  const { data, error } = await query.maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
+async function loadMarketingImages(profileId, { activeOnly = false, source = null } = {}) {
+  if (!profileId) return [];
+  let query = supabase
+    .from("client_space_marketing_images")
+    .select("id,profile_id,image_url,storage_path,sort_order,is_active,created_at,updated_at")
+    .eq("profile_id", profileId);
+  if (activeOnly) query = query.eq("is_active", true);
+  const { data, error } = await query.order("sort_order", { ascending: true }).order("created_at", { ascending: true });
+  if (error) throw error;
+  return (data || []).map((row) => source ? { ...row, source } : row);
+}
+
+async function ensureMarketingProfile(scope, poolId, adminId) {
+  const existing = await loadMarketingProfile(scope, poolId);
+  if (existing?.id) return existing;
+  const payload = {
+    scope,
+    pool_id: scope === "pool" ? poolId : null,
+    created_by_admin_user_id: adminId || null,
+    updated_by_admin_user_id: adminId || null,
+  };
+  const { data, error } = await supabase
+    .from("client_space_marketing_profiles")
+    .insert(payload)
+    .select("id,scope,pool_id,instagram_url,tiktok_url,facebook_url,updated_at")
+    .single();
+  if (error) {
+    // Concurrent first write: re-read the profile before surfacing an error.
+    const raced = await loadMarketingProfile(scope, poolId).catch(() => null);
+    if (raced?.id) return raced;
+    throw error;
+  }
+  return data;
+}
+
+async function resolveAdminMarketingConfig(poolId = null) {
+  const [globalProfile, poolProfile] = await Promise.all([
+    loadMarketingProfile("global", null),
+    poolId ? loadMarketingProfile("pool", poolId) : Promise.resolve(null),
+  ]);
+  const [globalImages, poolImages] = await Promise.all([
+    loadMarketingImages(globalProfile?.id, { activeOnly: true, source: "razafi" }),
+    loadMarketingImages(poolProfile?.id, { activeOnly: true, source: "pool" }),
+  ]);
+
+  const networkKeys = ["instagram", "tiktok", "facebook"];
+  const social = {};
+  for (const network of networkKeys) {
+    const key = `${network}_url`;
+    const poolValue = normalizeMarketingSocialUrl(poolProfile?.[key], network).value || null;
+    const globalValue = normalizeMarketingSocialUrl(globalProfile?.[key], network).value || null;
+    social[network] = {
+      url: poolValue || globalValue,
+      source: poolValue ? "pool" : (globalValue ? "razafi" : null),
+    };
+  }
+
+  return {
+    feature_enabled: CLIENT_SPACE_MARKETING_ENABLED,
+    profile: marketingProfilePayload(poolProfile),
+    defaults: {
+      profile: marketingProfilePayload(globalProfile),
+      images: globalImages.map((row) => marketingImagePayload(row, "razafi")).filter((row) => row.url),
+    },
+    images: poolImages.map((row) => marketingImagePayload(row, "pool")).filter((row) => row.url),
+    effective: {
+      images: [
+        ...poolImages.map((row) => marketingImagePayload(row, "pool")),
+        ...globalImages.map((row) => marketingImagePayload(row, "razafi")),
+      ].filter((row) => row.url),
+      social,
+    },
+    max_pool_images: CLIENT_SPACE_MARKETING_POOL_MAX_IMAGES,
+  };
+}
+
 function cleanOptionalText(value, maxLen = 120) {
   const s = String(value ?? "").replace(/[\r\n\t]/g, " ").replace(/\s{2,}/g, " ").trim();
   return s ? s.slice(0, maxLen) : null;
@@ -1204,6 +1387,14 @@ async function requireAdmin(req, res, next) {
       const allowOwnerPoolPatch = method === "PATCH" && /^\/api\/admin\/pools\/[^/]+$/.test(fullPath);
       const allowOwnerLogoWrite = (method === "POST" || method === "DELETE") && /^\/api\/admin\/pools\/[^/]+\/logo$/.test(fullPath);
 
+      // EC-4 marketing: owners may manage only the marketing configuration of pools
+      // they are assigned to / own. Route-level checks re-validate pool scope.
+      const allowOwnerMarketingWrite =
+        (method === "PATCH" && /^\/api\/admin\/pools\/[^/]+\/marketing$/.test(fullPath)) ||
+        (method === "POST" && /^\/api\/admin\/pools\/[^/]+\/marketing\/images$/.test(fullPath)) ||
+        (method === "DELETE" && /^\/api\/admin\/pools\/[^/]+\/marketing\/images\/[^/]+$/.test(fullPath)) ||
+        (method === "PATCH" && /^\/api\/admin\/pools\/[^/]+\/marketing\/images\/order$/.test(fullPath));
+
       // Phase 2A: owner can only show/hide plans. The route below still verifies
       // pool ownership and accepts only { is_visible } for non-superadmins.
       const allowOwnerPlanVisibilityPatch = method === "PATCH" && /^\/api\/admin\/plans\/[^/]+$/.test(fullPath);
@@ -1257,7 +1448,7 @@ async function requireAdmin(req, res, next) {
       const allowOwnerMarkSeen =
         method === "POST" && fullPath === "/api/admin/dashboard-since-last-visit/mark-seen";
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat || allowOwnerMarkSeen) {
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerMarketingWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat || allowOwnerMarkSeen) {
         return next();
       }
 
@@ -1273,6 +1464,7 @@ async function requireAdmin(req, res, next) {
         fullPath.startsWith("/api/admin/voucher-sessions/") ||
         fullPath === "/api/admin/plans" ||
         fullPath === "/api/admin/pools" ||
+        /^\/api\/admin\/pools\/[^/]+\/marketing$/.test(fullPath) ||
         fullPath === "/api/admin/plan-simulator/options" ||
         fullPath === "/api/admin/portal-preview/validate" ||
         fullPath === "/api/admin/pool-live-stats" ||
@@ -20352,6 +20544,319 @@ app.patch("/api/admin/aps/:ap_mac", requireAdmin, async (req, res) => {
   } catch (e) {
     console.error("ADMIN APS PATCH EX", e);
     return res.status(500).json({ error: "internal error" });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ADMIN — EC-4 marketing (RAZAFI defaults + per-pool overrides)
+// ---------------------------------------------------------------------------
+async function requireAccessibleMarketingPool(req, res) {
+  const poolId = String(req.params?.id || "").trim();
+  if (!poolId) {
+    res.status(400).json({ error: "pool_id_required" });
+    return null;
+  }
+  const { data: pool, error } = await supabase
+    .from("internet_pools")
+    .select("id,name,brand_name,owner_admin_user_id")
+    .eq("id", poolId)
+    .maybeSingle();
+  if (error) {
+    res.status(500).json({ error: "db_error" });
+    return null;
+  }
+  if (!pool?.id) {
+    res.status(404).json({ error: "pool_not_found" });
+    return null;
+  }
+  if (!canAdminAccessPool(req.admin, pool)) {
+    res.status(403).json({ error: "pool_forbidden" });
+    return null;
+  }
+  return pool;
+}
+
+function marketingLinksPatch(body = {}) {
+  const out = {};
+  for (const network of ["instagram", "tiktok", "facebook"]) {
+    const key = `${network}_url`;
+    if (!Object.prototype.hasOwnProperty.call(body || {}, key)) continue;
+    const normalized = normalizeMarketingSocialUrl(body[key], network);
+    if (normalized.error) return { error: normalized.error };
+    out[key] = normalized.value;
+  }
+  return { values: out };
+}
+
+async function updateMarketingProfileLinks(profile, req, res) {
+  const parsed = marketingLinksPatch(req.body || {});
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  if (!Object.keys(parsed.values).length) return res.status(400).json({ error: "no_updates" });
+  const { data, error } = await supabase
+    .from("client_space_marketing_profiles")
+    .update({ ...parsed.values, updated_by_admin_user_id: req.admin?.id || null, updated_at: new Date().toISOString() })
+    .eq("id", profile.id)
+    .select("id,scope,pool_id,instagram_url,tiktok_url,facebook_url,updated_at")
+    .single();
+  if (error) return res.status(400).json({ error: "marketing_update_failed", details: error });
+  return data;
+}
+
+async function uploadMarketingImage({ profile, poolId = null, req, res }) {
+  const parsed = normalizeMarketingImagePayload(req.body || {});
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+
+  if (profile.scope === "pool") {
+    const { count, error: countError } = await supabase
+      .from("client_space_marketing_images")
+      .select("id", { count: "exact", head: true })
+      .eq("profile_id", profile.id);
+    if (countError) return res.status(500).json({ error: "marketing_count_failed" });
+    if (Number(count || 0) >= CLIENT_SPACE_MARKETING_POOL_MAX_IMAGES) {
+      return res.status(409).json({ error: "marketing_pool_image_limit", max: CLIENT_SPACE_MARKETING_POOL_MAX_IMAGES });
+    }
+  }
+
+  const scopePath = profile.scope === "global" ? "global" : `pools/${poolId}`;
+  const objectPath = `${scopePath}/${Date.now()}-${crypto.randomBytes(8).toString("hex")}.${parsed.ext}`;
+  const { error: uploadError } = await supabase.storage
+    .from(CLIENT_SPACE_MARKETING_BUCKET)
+    .upload(objectPath, parsed.buffer, {
+      contentType: parsed.mimeType,
+      upsert: false,
+      cacheControl: "3600",
+    });
+  if (uploadError) {
+    console.error("MARKETING IMAGE UPLOAD ERROR", uploadError);
+    return res.status(500).json({ error: "marketing_image_upload_failed" });
+  }
+
+  const publicRes = supabase.storage.from(CLIENT_SPACE_MARKETING_BUCKET).getPublicUrl(objectPath);
+  const publicUrl = publicRes?.data?.publicUrl || null;
+  if (!publicUrl) {
+    try { await supabase.storage.from(CLIENT_SPACE_MARKETING_BUCKET).remove([objectPath]); } catch (_) {}
+    return res.status(500).json({ error: "marketing_image_public_url_failed" });
+  }
+
+  const { data: lastRows, error: orderError } = await supabase
+    .from("client_space_marketing_images")
+    .select("sort_order")
+    .eq("profile_id", profile.id)
+    .order("sort_order", { ascending: false })
+    .limit(1);
+  if (orderError) {
+    try { await supabase.storage.from(CLIENT_SPACE_MARKETING_BUCKET).remove([objectPath]); } catch (_) {}
+    return res.status(500).json({ error: "marketing_order_load_failed" });
+  }
+  const nextOrder = (Array.isArray(lastRows) && lastRows[0] ? Number(lastRows[0].sort_order || 0) : 0) + 10;
+
+  const { data, error } = await supabase
+    .from("client_space_marketing_images")
+    .insert({
+      profile_id: profile.id,
+      image_url: publicUrl,
+      storage_path: objectPath,
+      sort_order: nextOrder,
+      is_active: true,
+      created_by_admin_user_id: req.admin?.id || null,
+      updated_by_admin_user_id: req.admin?.id || null,
+    })
+    .select("id,profile_id,image_url,storage_path,sort_order,is_active,created_at,updated_at")
+    .single();
+  if (error) {
+    try { await supabase.storage.from(CLIENT_SPACE_MARKETING_BUCKET).remove([objectPath]); } catch (_) {}
+    const code = String(error?.message || "").includes("marketing_pool_image_limit") ? "marketing_pool_image_limit" : "marketing_image_insert_failed";
+    return res.status(code === "marketing_pool_image_limit" ? 409 : 500).json({ error: code });
+  }
+  return res.json({ ok: true, image: marketingImagePayload(data, profile.scope === "pool" ? "pool" : "razafi") });
+}
+
+async function deleteMarketingImage({ profile, imageId, req, res }) {
+  const { data: image, error: imageError } = await supabase
+    .from("client_space_marketing_images")
+    .select("id,profile_id,storage_path")
+    .eq("id", imageId)
+    .eq("profile_id", profile.id)
+    .maybeSingle();
+  if (imageError) return res.status(500).json({ error: "marketing_image_load_failed" });
+  if (!image?.id) return res.status(404).json({ error: "marketing_image_not_found" });
+
+  const { error: deleteError } = await supabase
+    .from("client_space_marketing_images")
+    .delete()
+    .eq("id", image.id)
+    .eq("profile_id", profile.id);
+  if (deleteError) return res.status(500).json({ error: "marketing_image_delete_failed" });
+
+  const storagePath = String(image.storage_path || "").trim();
+  if (storagePath) {
+    try { await supabase.storage.from(CLIENT_SPACE_MARKETING_BUCKET).remove([storagePath]); } catch (_) {}
+  }
+  return res.json({ ok: true, deleted: true });
+}
+
+async function reorderMarketingImages({ profile, req, res }) {
+  const orderedIds = Array.isArray(req.body?.ordered_ids) ? req.body.ordered_ids.map((v) => String(v || "").trim()).filter(Boolean) : [];
+  if (!orderedIds.length || new Set(orderedIds).size !== orderedIds.length) {
+    return res.status(400).json({ error: "marketing_order_invalid" });
+  }
+  const { data: rows, error } = await supabase
+    .from("client_space_marketing_images")
+    .select("id")
+    .eq("profile_id", profile.id);
+  if (error) return res.status(500).json({ error: "marketing_order_load_failed" });
+  const currentIds = (rows || []).map((r) => String(r.id)).sort();
+  const requestedIds = [...orderedIds].sort();
+  if (currentIds.length !== requestedIds.length || currentIds.some((id, i) => id !== requestedIds[i])) {
+    return res.status(400).json({ error: "marketing_order_mismatch" });
+  }
+
+  for (let i = 0; i < orderedIds.length; i += 1) {
+    const { error: updateError } = await supabase
+      .from("client_space_marketing_images")
+      .update({ sort_order: (i + 1) * 10, updated_by_admin_user_id: req.admin?.id || null, updated_at: new Date().toISOString() })
+      .eq("id", orderedIds[i])
+      .eq("profile_id", profile.id);
+    if (updateError) return res.status(500).json({ error: "marketing_order_update_failed" });
+  }
+  return res.json({ ok: true, ordered_ids: orderedIds });
+}
+
+app.get("/api/admin/pools/:id/marketing", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const pool = await requireAccessibleMarketingPool(req, res);
+    if (!pool) return;
+    const config = await resolveAdminMarketingConfig(pool.id);
+    return res.json({ ok: true, pool: withPoolDisplayName(pool), ...config });
+  } catch (error) {
+    console.error("ADMIN POOL MARKETING GET EX", error);
+    return res.status(500).json({ error: "marketing_unavailable" });
+  }
+});
+
+app.patch("/api/admin/pools/:id/marketing", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const pool = await requireAccessibleMarketingPool(req, res);
+    if (!pool) return;
+    const profile = await ensureMarketingProfile("pool", pool.id, req.admin?.id);
+    const updated = await updateMarketingProfileLinks(profile, req, res);
+    if (!updated || res.headersSent) return;
+    return res.json({ ok: true, profile: marketingProfilePayload(updated), ...(await resolveAdminMarketingConfig(pool.id)) });
+  } catch (error) {
+    console.error("ADMIN POOL MARKETING PATCH EX", error);
+    return res.status(500).json({ error: "marketing_update_failed" });
+  }
+});
+
+app.post("/api/admin/pools/:id/marketing/images", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const pool = await requireAccessibleMarketingPool(req, res);
+    if (!pool) return;
+    const profile = await ensureMarketingProfile("pool", pool.id, req.admin?.id);
+    return uploadMarketingImage({ profile, poolId: pool.id, req, res });
+  } catch (error) {
+    console.error("ADMIN POOL MARKETING IMAGE POST EX", error);
+    return res.status(500).json({ error: "marketing_image_upload_failed" });
+  }
+});
+
+app.delete("/api/admin/pools/:id/marketing/images/:imageId", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const pool = await requireAccessibleMarketingPool(req, res);
+    if (!pool) return;
+    const profile = await loadMarketingProfile("pool", pool.id);
+    if (!profile?.id) return res.status(404).json({ error: "marketing_profile_not_found" });
+    return deleteMarketingImage({ profile, imageId: String(req.params.imageId || "").trim(), req, res });
+  } catch (error) {
+    console.error("ADMIN POOL MARKETING IMAGE DELETE EX", error);
+    return res.status(500).json({ error: "marketing_image_delete_failed" });
+  }
+});
+
+app.patch("/api/admin/pools/:id/marketing/images/order", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const pool = await requireAccessibleMarketingPool(req, res);
+    if (!pool) return;
+    const profile = await loadMarketingProfile("pool", pool.id);
+    if (!profile?.id) return res.status(404).json({ error: "marketing_profile_not_found" });
+    return reorderMarketingImages({ profile, req, res });
+  } catch (error) {
+    console.error("ADMIN POOL MARKETING ORDER EX", error);
+    return res.status(500).json({ error: "marketing_order_update_failed" });
+  }
+});
+
+app.get("/api/admin/marketing/defaults", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const config = await resolveAdminMarketingConfig(null);
+    const globalProfile = await loadMarketingProfile("global", null);
+    const globalImages = await loadMarketingImages(globalProfile?.id, { activeOnly: false });
+    return res.json({
+      ok: true,
+      feature_enabled: CLIENT_SPACE_MARKETING_ENABLED,
+      profile: marketingProfilePayload(globalProfile),
+      images: globalImages.map((row) => marketingImagePayload(row, "razafi")).filter((row) => row.url),
+      effective: config.effective,
+      defaults: config.defaults,
+      max_pool_images: CLIENT_SPACE_MARKETING_POOL_MAX_IMAGES,
+    });
+  } catch (error) {
+    console.error("ADMIN MARKETING DEFAULTS GET EX", error);
+    return res.status(500).json({ error: "marketing_unavailable" });
+  }
+});
+
+app.patch("/api/admin/marketing/defaults", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const profile = await ensureMarketingProfile("global", null, req.admin?.id);
+    const updated = await updateMarketingProfileLinks(profile, req, res);
+    if (!updated || res.headersSent) return;
+    return res.json({ ok: true, profile: marketingProfilePayload(updated) });
+  } catch (error) {
+    console.error("ADMIN MARKETING DEFAULTS PATCH EX", error);
+    return res.status(500).json({ error: "marketing_update_failed" });
+  }
+});
+
+app.post("/api/admin/marketing/defaults/images", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const profile = await ensureMarketingProfile("global", null, req.admin?.id);
+    return uploadMarketingImage({ profile, poolId: null, req, res });
+  } catch (error) {
+    console.error("ADMIN MARKETING DEFAULT IMAGE POST EX", error);
+    return res.status(500).json({ error: "marketing_image_upload_failed" });
+  }
+});
+
+app.delete("/api/admin/marketing/defaults/images/:imageId", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const profile = await loadMarketingProfile("global", null);
+    if (!profile?.id) return res.status(404).json({ error: "marketing_profile_not_found" });
+    return deleteMarketingImage({ profile, imageId: String(req.params.imageId || "").trim(), req, res });
+  } catch (error) {
+    console.error("ADMIN MARKETING DEFAULT IMAGE DELETE EX", error);
+    return res.status(500).json({ error: "marketing_image_delete_failed" });
+  }
+});
+
+app.patch("/api/admin/marketing/defaults/images/order", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const profile = await loadMarketingProfile("global", null);
+    if (!profile?.id) return res.status(404).json({ error: "marketing_profile_not_found" });
+    return reorderMarketingImages({ profile, req, res });
+  } catch (error) {
+    console.error("ADMIN MARKETING DEFAULT ORDER EX", error);
+    return res.status(500).json({ error: "marketing_order_update_failed" });
   }
 });
 

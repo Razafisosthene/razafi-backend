@@ -149,6 +149,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const qEl = $id("q");
   const poolSelectFilterEl = $id("poolSelectFilter");
   const refreshBtn = $id("refresh");
+  const marketingDefaultsBtn = $id("marketingDefaultsBtn");
   const logoutBtn = $id("logoutBtn", "logout");
   const meEl = $id("me");
 
@@ -183,6 +184,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   let currentAdmin = null;
   let ownerUsers = [];
   let currentModalPoolId = null;
+  let currentMarketingData = null;
+  let currentMarketingMode = null;
 
   let activeSystem = "portal";
 
@@ -263,6 +266,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (createPoolSection) createPoolSection.classList.toggle("is-visible", canManage);
     if (openCreatePoolModalBtn) openCreatePoolModalBtn.style.display = canManage ? "" : "none";
     if (createPoolBtn) createPoolBtn.style.display = canManage ? "" : "none";
+    if (marketingDefaultsBtn) marketingDefaultsBtn.style.display = canManage ? "" : "none";
 
     const createFields = [
       newPoolName,
@@ -455,6 +459,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function closePoolModal() {
     currentModalPoolId = null;
+    currentMarketingData = null;
+    currentMarketingMode = null;
     modalBackdrop?.classList.remove("is-open");
     if (modalBackdrop) modalBackdrop.setAttribute("aria-hidden", "true");
     document.body.style.overflow = "";
@@ -557,6 +563,13 @@ document.addEventListener("DOMContentLoaded", async () => {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        <div class="rz-modal-section">
+          <div class="rz-modal-section-title">Promotion dans l’Espace client</div>
+          <div id="modalMarketingSection" class="rz-marketing-box">
+            <div class="rz-marketing-empty">Chargement de la configuration marketing…</div>
           </div>
         </div>
 
@@ -793,6 +806,384 @@ document.addEventListener("DOMContentLoaded", async () => {
     cancelBtn?.addEventListener("click", closePoolModal);
     saveBtn?.addEventListener("click", () => saveModalPool(pid));
     deleteBtn?.addEventListener("click", () => deletePoolFromModal(pid));
+
+    loadMarketingEditor("pool", pid).catch((e) => {
+      const target = $id("modalMarketingSection");
+      if (target && currentModalPoolId === pid) {
+        target.innerHTML = `<div class="rz-marketing-empty">Configuration marketing indisponible : ${esc(e.message)}</div>`;
+      }
+    });
+  }
+
+  function marketingNetworkMeta(network) {
+    const map = {
+      instagram: { label: "Instagram", domain: "instagram.com", icon: "/espace-client/assets/img/Instagram.png" },
+      tiktok: { label: "TikTok", domain: "tiktok.com", icon: "/espace-client/assets/img/TikTok.png" },
+      facebook: { label: "Facebook", domain: "facebook.com", icon: "/espace-client/assets/img/Facebook.png" },
+    };
+    return map[network] || null;
+  }
+
+  function validateMarketingUrl(value, network) {
+    const raw = String(value || "").trim();
+    if (!raw) return { ok: true, url: null };
+    const meta = marketingNetworkMeta(network);
+    if (!meta) return { ok: false, error: "Réseau inconnu." };
+    try {
+      const u = new URL(raw);
+      const host = String(u.hostname || "").toLowerCase().replace(/\.$/, "");
+      const domainOk = host === meta.domain || host.endsWith(`.${meta.domain}`);
+      if (u.protocol !== "https:" || u.username || u.password || !domainOk) {
+        return { ok: false, error: `Utilisez un lien ${meta.label} valide en https://.` };
+      }
+      u.hash = "";
+      return { ok: true, url: u.toString() };
+    } catch (_) {
+      return { ok: false, error: `Ce lien ne semble pas être un lien ${meta.label}.` };
+    }
+  }
+
+  function marketingOwnImages(data) {
+    return asArray(data?.images).filter((item) => item?.id && item?.url);
+  }
+
+  function marketingDefaultImages(data, mode) {
+    if (mode === "global") return [];
+    return asArray(data?.defaults?.images).filter((item) => item?.url);
+  }
+
+  function marketingEffectiveImagesForPreview(data, mode) {
+    return mode === "global"
+      ? marketingOwnImages(data)
+      : [...marketingOwnImages(data), ...marketingDefaultImages(data, mode)];
+  }
+
+  function marketingFallbackSocialUrl(data, network, mode) {
+    if (mode === "global") return null;
+    return String(data?.defaults?.profile?.[`${network}_url`] || "").trim() || null;
+  }
+
+  function marketingDraftSocialUrl(data, network, mode) {
+    const input = $id(`marketing${network[0].toUpperCase()}${network.slice(1)}Url`);
+    const raw = String(input?.value ?? data?.profile?.[`${network}_url`] ?? "").trim();
+    const validation = validateMarketingUrl(raw, network);
+    return {
+      raw,
+      validation,
+      effective: validation.ok && validation.url ? validation.url : marketingFallbackSocialUrl(data, network, mode),
+      source: validation.ok && validation.url ? (mode === "global" ? "razafi" : "pool") : (marketingFallbackSocialUrl(data, network, mode) ? "razafi" : null),
+    };
+  }
+
+  function renderMarketingPreview(data, mode) {
+    const preview = $id("marketingPreview");
+    if (!preview) return;
+    const images = marketingEffectiveImagesForPreview(data, mode);
+    const ownImages = marketingOwnImages(data);
+    const hasPoolImages = mode === "pool" && ownImages.length > 0;
+
+    const social = {};
+    let hasPoolSocial = false;
+    for (const network of ["instagram", "tiktok", "facebook"]) {
+      social[network] = marketingDraftSocialUrl(data, network, mode);
+      if (social[network].source === "pool") hasPoolSocial = true;
+    }
+
+    const imageBlock = images.length ? `
+      <div class="rz-marketing-preview-title">${hasPoolImages ? "À découvrir" : "À découvrir chez RAZAFI"}</div>
+      <div class="rz-marketing-preview-viewport" id="marketingPreviewViewport">
+        <div class="rz-marketing-preview-track">
+          ${images.map((item, index) => `
+            <div class="rz-marketing-preview-slide" aria-label="${index + 1} sur ${images.length}">
+              <img src="${esc(item.url)}" alt="Aperçu promotion ${index + 1}">
+            </div>
+          `).join("")}
+        </div>
+      </div>
+      ${images.length > 1 ? `<div class="rz-marketing-preview-dots" id="marketingPreviewDots">${images.map((_, i) => `<span class="rz-marketing-preview-dot ${i === 0 ? "is-active" : ""}" data-preview-dot="${i}"></span>`).join("")}</div>` : ``}
+    ` : ``;
+
+    const visibleSocials = ["instagram", "tiktok", "facebook"].filter((network) => !!social[network].effective);
+    const socialBlock = visibleSocials.length ? `
+      <div class="rz-marketing-preview-title" style="margin-top:${images.length ? "8px" : "0"};">${hasPoolSocial ? "Suivez-nous" : "Suivez RAZAFI"}</div>
+      <div class="rz-marketing-preview-socials">
+        ${["instagram", "tiktok", "facebook"].map((network) => {
+          const meta = marketingNetworkMeta(network);
+          const url = social[network].effective;
+          return `<a class="rz-marketing-preview-social ${url ? "" : "is-hidden"}" ${url ? `href="${esc(url)}" target="_blank" rel="noopener noreferrer"` : ``}><img src="${esc(meta.icon)}" alt=""><span>${esc(meta.label)}</span></a>`;
+        }).join("")}
+      </div>
+    ` : ``;
+
+    preview.innerHTML = imageBlock || socialBlock
+      ? `${imageBlock}${socialBlock}<div class="rz-marketing-live-note">Aperçu calculé avec les valeurs saisies et les fallback RAZAFI.</div>`
+      : `<div class="rz-marketing-empty">Aucun contenu ne sera affiché dans cette section de l’Espace client.</div>`;
+
+    const viewport = $id("marketingPreviewViewport");
+    const dots = $id("marketingPreviewDots");
+    viewport?.addEventListener("scroll", () => {
+      if (!viewport.clientWidth || !dots) return;
+      const idx = Math.max(0, Math.min(images.length - 1, Math.round(viewport.scrollLeft / viewport.clientWidth)));
+      dots.querySelectorAll("[data-preview-dot]").forEach((dot) => dot.classList.toggle("is-active", Number(dot.dataset.previewDot) === idx));
+    }, { passive: true });
+  }
+
+  function syncMarketingInputValidation(data, mode) {
+    let allValid = true;
+    for (const network of ["instagram", "tiktok", "facebook"]) {
+      const cap = network[0].toUpperCase() + network.slice(1);
+      const input = $id(`marketing${cap}Url`);
+      const errorEl = $id(`marketing${cap}Error`);
+      if (!input) continue;
+      const validation = validateMarketingUrl(input.value, network);
+      input.classList.toggle("is-invalid", !validation.ok);
+      if (errorEl) {
+        errorEl.textContent = validation.ok ? "" : validation.error;
+        errorEl.classList.toggle("is-visible", !validation.ok);
+      }
+      if (!validation.ok) allValid = false;
+    }
+    renderMarketingPreview(data, mode);
+    return allValid;
+  }
+
+  function marketingEditorHtml(data, mode) {
+    const ownImages = marketingOwnImages(data);
+    const maxImages = Number(data?.max_pool_images || 5);
+    const isPool = mode === "pool";
+    const profile = data?.profile || {};
+    const limitReached = isPool && ownImages.length >= maxImages;
+    const enabled = data?.feature_enabled === true;
+
+    const imagesHtml = ownImages.length
+      ? `<div class="rz-marketing-images">${ownImages.map((item, index) => `
+          <div class="rz-marketing-image-card">
+            <img src="${esc(item.url)}" alt="Visuel ${index + 1}">
+            <div class="rz-marketing-image-actions">
+              <button type="button" class="filter-btn" data-marketing-move="${esc(item.id)}" data-direction="-1" ${index === 0 ? "disabled" : ""}>←</button>
+              <button type="button" class="filter-btn" data-marketing-move="${esc(item.id)}" data-direction="1" ${index === ownImages.length - 1 ? "disabled" : ""}>→</button>
+              <button type="button" class="danger" data-marketing-delete="${esc(item.id)}">Suppr.</button>
+            </div>
+          </div>`).join("")}</div>`
+      : `<div class="rz-marketing-empty">${isPool ? "Aucun visuel personnalisé. Les visuels RAZAFI seront affichés automatiquement." : "Aucun visuel RAZAFI actif. Si aucun pool n’a de visuel non plus, la section disparaîtra proprement."}</div>`;
+
+    const fields = ["instagram", "tiktok", "facebook"].map((network) => {
+      const meta = marketingNetworkMeta(network);
+      const cap = network[0].toUpperCase() + network.slice(1);
+      const value = String(profile?.[`${network}_url`] || "");
+      const fallback = marketingFallbackSocialUrl(data, network, mode);
+      return `
+        <div class="rz-marketing-social-field">
+          <div class="rz-marketing-social-icon"><img src="${esc(meta.icon)}" alt="${esc(meta.label)}"></div>
+          <div class="rz-field">
+            <label>${esc(meta.label)}</label>
+            <input class="rz-marketing-input" id="marketing${cap}Url" type="url" inputmode="url" autocomplete="url" value="${esc(value)}" placeholder="https://${esc(meta.domain)}/…">
+            <div class="rz-marketing-field-error" id="marketing${cap}Error"></div>
+            ${isPool ? `<div class="rz-marketing-fallback">${fallback ? `Si vide : lien RAZAFI (${esc(fallback)})` : "Si vide : bouton masqué faute de lien RAZAFI."}</div>` : `<div class="rz-marketing-fallback">Lien RAZAFI utilisé par défaut dans tous les pools sans personnalisation.</div>`}
+          </div>
+        </div>`;
+    }).join("");
+
+    return `
+      <div class="rz-marketing-status">
+        <span>${isPool ? `<strong>${ownImages.length} / ${maxImages}</strong> visuel(s) personnalisé(s)` : `<strong>${ownImages.length}</strong> visuel(s) RAZAFI`}</span>
+        <span>${enabled ? "Diffusion dynamique EC active" : "Configuration prête — diffusion EC désactivée par feature flag"}</span>
+      </div>
+
+      <div>
+        <div style="font-size:13px;font-weight:950;margin-bottom:8px;">Visuels</div>
+        ${imagesHtml}
+        <div class="rz-marketing-upload-row" style="margin-top:10px;">
+          <input id="marketingImageFile" type="file" accept="image/png,image/jpeg,image/webp" style="display:none;">
+          <button type="button" id="marketingImageAddBtn" class="filter-btn" ${limitReached ? "disabled" : ""}>+ Ajouter une image</button>
+          <span class="rz-marketing-note">PNG, JPG ou WEBP · 1 MB max · format conseillé 4:5 (1080 × 1350).</span>
+        </div>
+      </div>
+
+      <div>
+        <div style="font-size:13px;font-weight:950;margin-bottom:8px;">Réseaux sociaux</div>
+        <div class="rz-marketing-social-grid">${fields}</div>
+        <div class="rz-marketing-save-row" style="margin-top:10px;">
+          <button type="button" id="marketingSaveLinksBtn" class="filter-btn primary">Enregistrer les liens</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="rz-marketing-preview-head"><strong>Aperçu Espace client</strong><span class="rz-marketing-preview-badge">LIVE</span></div>
+        <div class="rz-marketing-preview-shell"><div id="marketingPreview" class="rz-marketing-preview-card"></div></div>
+      </div>
+    `;
+  }
+
+  async function loadMarketingEditor(mode, poolId = null) {
+    const target = $id("modalMarketingSection");
+    if (!target) return;
+    const expectedModal = mode === "global" ? "__global_marketing__" : String(poolId || "");
+    target.innerHTML = `<div class="rz-marketing-empty">Chargement de la configuration marketing…</div>`;
+    const url = mode === "global"
+      ? "/api/admin/marketing/defaults"
+      : `/api/admin/pools/${encodeURIComponent(poolId)}/marketing`;
+    const data = await fetchJSON(url);
+    if (currentModalPoolId !== expectedModal || !$id("modalMarketingSection")) return;
+    currentMarketingData = data;
+    currentMarketingMode = mode;
+    target.innerHTML = marketingEditorHtml(data, mode);
+    bindMarketingEditor(mode, poolId, data);
+    syncMarketingInputValidation(data, mode);
+  }
+
+  function bindMarketingEditor(mode, poolId, data) {
+    const addBtn = $id("marketingImageAddBtn");
+    const fileInput = $id("marketingImageFile");
+    const saveBtn = $id("marketingSaveLinksBtn");
+
+    addBtn?.addEventListener("click", () => fileInput?.click());
+    fileInput?.addEventListener("change", () => uploadMarketingImage(mode, poolId, fileInput));
+    saveBtn?.addEventListener("click", () => saveMarketingLinks(mode, poolId, data));
+
+    for (const network of ["instagram", "tiktok", "facebook"]) {
+      const cap = network[0].toUpperCase() + network.slice(1);
+      $id(`marketing${cap}Url`)?.addEventListener("input", () => syncMarketingInputValidation(data, mode));
+    }
+
+    document.querySelectorAll("[data-marketing-delete]").forEach((btn) => {
+      btn.addEventListener("click", () => deleteMarketingImage(mode, poolId, btn.dataset.marketingDelete));
+    });
+    document.querySelectorAll("[data-marketing-move]").forEach((btn) => {
+      btn.addEventListener("click", () => moveMarketingImage(mode, poolId, btn.dataset.marketingMove, Number(btn.dataset.direction || 0)));
+    });
+  }
+
+  async function uploadMarketingImage(mode, poolId, inputEl) {
+    const file = inputEl?.files?.[0];
+    if (!file) return;
+    const allowed = ["image/png", "image/jpeg", "image/webp"];
+    if (!allowed.includes(String(file.type || "").toLowerCase())) {
+      showMsg(msgEl, "Image invalide : utilisez PNG, JPG ou WEBP.", true);
+      inputEl.value = "";
+      return;
+    }
+    if (file.size > 1024 * 1024) {
+      showMsg(msgEl, "Image trop lourde : maximum 1 MB.", true);
+      inputEl.value = "";
+      return;
+    }
+    const btn = $id("marketingImageAddBtn");
+    try {
+      if (btn) btn.disabled = true;
+      showMsg(msgEl, "Upload du visuel…", false);
+      const dataUrl = await fileToDataUrl(file);
+      const url = mode === "global"
+        ? "/api/admin/marketing/defaults/images"
+        : `/api/admin/pools/${encodeURIComponent(poolId)}/marketing/images`;
+      await fetchJSON(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data_url: dataUrl }),
+      });
+      showMsg(msgEl, "Visuel ajouté ✅", false);
+      await loadMarketingEditor(mode, poolId);
+    } catch (e) {
+      const message = e.message === "marketing_pool_image_limit" ? "Maximum 5 visuels personnalisés par pool." : e.message;
+      showMsg(msgEl, `Upload échoué : ${message}`, true);
+    } finally {
+      if (inputEl) inputEl.value = "";
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function deleteMarketingImage(mode, poolId, imageId) {
+    if (!imageId || !confirm("Supprimer ce visuel ?")) return;
+    const url = mode === "global"
+      ? `/api/admin/marketing/defaults/images/${encodeURIComponent(imageId)}`
+      : `/api/admin/pools/${encodeURIComponent(poolId)}/marketing/images/${encodeURIComponent(imageId)}`;
+    try {
+      await fetchJSON(url, { method: "DELETE" });
+      showMsg(msgEl, "Visuel supprimé ✅", false);
+      await loadMarketingEditor(mode, poolId);
+    } catch (e) {
+      showMsg(msgEl, `Suppression échouée : ${e.message}`, true);
+    }
+  }
+
+  async function moveMarketingImage(mode, poolId, imageId, direction) {
+    if (!imageId || ![-1, 1].includes(direction) || !currentMarketingData) return;
+    const images = marketingOwnImages(currentMarketingData);
+    const index = images.findIndex((item) => String(item.id) === String(imageId));
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= images.length) return;
+    const ordered = images.map((item) => String(item.id));
+    [ordered[index], ordered[nextIndex]] = [ordered[nextIndex], ordered[index]];
+    const url = mode === "global"
+      ? "/api/admin/marketing/defaults/images/order"
+      : `/api/admin/pools/${encodeURIComponent(poolId)}/marketing/images/order`;
+    try {
+      await fetchJSON(url, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ordered_ids: ordered }),
+      });
+      await loadMarketingEditor(mode, poolId);
+    } catch (e) {
+      showMsg(msgEl, `Réorganisation échouée : ${e.message}`, true);
+    }
+  }
+
+  async function saveMarketingLinks(mode, poolId, data) {
+    if (!syncMarketingInputValidation(data, mode)) {
+      showMsg(msgEl, "Corrigez les liens sociaux en rouge avant l’enregistrement.", true);
+      return;
+    }
+    const payload = {};
+    for (const network of ["instagram", "tiktok", "facebook"]) {
+      const cap = network[0].toUpperCase() + network.slice(1);
+      const input = $id(`marketing${cap}Url`);
+      payload[`${network}_url`] = String(input?.value || "").trim() || null;
+    }
+    const btn = $id("marketingSaveLinksBtn");
+    const url = mode === "global"
+      ? "/api/admin/marketing/defaults"
+      : `/api/admin/pools/${encodeURIComponent(poolId)}/marketing`;
+    try {
+      if (btn) btn.disabled = true;
+      await fetchJSON(url, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      showMsg(msgEl, "Liens enregistrés ✅", false);
+      await loadMarketingEditor(mode, poolId);
+    } catch (e) {
+      showMsg(msgEl, `Enregistrement des liens échoué : ${e.message}`, true);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function openGlobalMarketingModal() {
+    if (!isSuperadmin()) return;
+    currentModalPoolId = "__global_marketing__";
+    currentMarketingData = null;
+    currentMarketingMode = "global";
+    if (modalTitle) modalTitle.textContent = "Contenu RAZAFI par défaut";
+    if (modalSub) modalSub.innerHTML = `<span class="rz-pill">Superadmin uniquement</span><span class="rz-pill">Fallback de tous les pools</span>`;
+    if (modalBody) modalBody.innerHTML = `
+      <div class="rz-modal-section">
+        <div class="rz-modal-section-title">Promotion globale dans l’Espace client</div>
+        <div id="modalMarketingSection" class="rz-marketing-box"><div class="rz-marketing-empty">Chargement…</div></div>
+      </div>`;
+    if (modalActions) modalActions.innerHTML = `<button type="button" id="marketingGlobalCloseBtn" class="filter-btn primary">Fermer</button>`;
+    modalBackdrop?.classList.add("is-open");
+    if (modalBackdrop) modalBackdrop.setAttribute("aria-hidden", "false");
+    document.body.style.overflow = "hidden";
+    document.body.classList.add("rz-modal-open");
+    $id("marketingGlobalCloseBtn")?.addEventListener("click", closePoolModal);
+    try {
+      await loadMarketingEditor("global", null);
+    } catch (e) {
+      const target = $id("modalMarketingSection");
+      if (target && currentModalPoolId === "__global_marketing__") target.innerHTML = `<div class="rz-marketing-empty">Configuration indisponible : ${esc(e.message)}</div>`;
+    }
   }
 
   function fileToDataUrl(file) {
@@ -1156,6 +1547,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (e.target === modalBackdrop) closePoolModal();
   });
 
+  marketingDefaultsBtn?.addEventListener("click", openGlobalMarketingModal);
   openCreatePoolModalBtn?.addEventListener("click", openCreatePoolModal);
   createPoolModalClose?.addEventListener("click", closeCreatePoolModal);
   createPoolModalCancel?.addEventListener("click", closeCreatePoolModal);

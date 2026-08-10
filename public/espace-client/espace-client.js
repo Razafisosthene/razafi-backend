@@ -12,6 +12,19 @@
   const STALE_RECOVERY_STORAGE_KEY = "razafi_ec1_stale_recovery_at";
   const STALE_RECOVERY_WINDOW_MS = 5 * 60 * 1000;
 
+  const STATIC_MARKETING_FALLBACK = Object.freeze({
+    available: true,
+    images: [
+      { url: "/espace-client/assets/img/pub%201.png", source: "razafi" },
+      { url: "/espace-client/assets/img/pub%202.jpg", source: "razafi" },
+    ],
+    social: {
+      instagram: { url: "https://www.instagram.com/razafistore?igsh=MTQ1OXF3d2VuMnB5bA==", source: "razafi" },
+      tiktok: { url: "https://www.tiktok.com/@razafiwifi?_r=1&_t=ZS-98jrJjtzqbQ", source: "razafi" },
+      facebook: { url: "https://www.facebook.com/share/1HaRLoxNub/", source: "razafi" },
+    },
+  });
+
   const views = Object.freeze({
     loading: document.getElementById("loadingView"),
     unavailable: document.getElementById("unavailableView"),
@@ -28,6 +41,7 @@
     promoTimer: null,
     promoResumeTimer: null,
     promoIndex: 0,
+    marketingSignature: "static",
     inFlight: false,
     detectionUrl: null,
     timeBindings: [],
@@ -61,8 +75,18 @@
     removeBrowserCancelBtn: document.getElementById("removeBrowserCancelBtn"),
     removeBrowserConfirmBtn: document.getElementById("removeBrowserConfirmBtn"),
     deviceOfflineHelp: document.getElementById("deviceOfflineHelp"),
+    promoSection: document.getElementById("promoSection"),
+    promoTitle: document.getElementById("promoTitle"),
+    promoCarousel: document.getElementById("promoCarousel"),
     promoCarouselViewport: document.getElementById("promoCarouselViewport"),
+    promoCarouselTrack: document.getElementById("promoCarouselTrack"),
     promoDots: document.getElementById("promoDots"),
+    socialSection: document.getElementById("socialSection"),
+    socialTitle: document.getElementById("socialTitle"),
+    socialLinks: document.getElementById("socialLinks"),
+    socialInstagramLink: document.getElementById("socialInstagramLink"),
+    socialTikTokLink: document.getElementById("socialTikTokLink"),
+    socialFacebookLink: document.getElementById("socialFacebookLink"),
   });
 
 
@@ -632,6 +656,126 @@
     elements.ec2Content.hidden = false;
   }
 
+  function marketingSignature(config) {
+    try {
+      return JSON.stringify({
+        available: config?.available === true,
+        images: (Array.isArray(config?.images) ? config.images : []).map((item) => [String(item?.url || ""), String(item?.source || "")]),
+        social: ["instagram", "tiktok", "facebook"].map((network) => [
+          network,
+          String(config?.social?.[network]?.url || ""),
+          String(config?.social?.[network]?.source || ""),
+        ]),
+      });
+    } catch (_) {
+      return `invalid-${Date.now()}`;
+    }
+  }
+
+  function stopPromoTimers() {
+    if (state.promoTimer) window.clearInterval(state.promoTimer);
+    if (state.promoResumeTimer) window.clearTimeout(state.promoResumeTimer);
+    state.promoTimer = null;
+    state.promoResumeTimer = null;
+  }
+
+  function renderMarketingConfig(config, signature = null) {
+    const resolved = config?.available === true ? config : STATIC_MARKETING_FALLBACK;
+    const nextSignature = signature || marketingSignature(resolved);
+    if (state.marketingSignature === nextSignature) return;
+
+    stopPromoTimers();
+    state.promoIndex = 0;
+
+    const images = (Array.isArray(resolved?.images) ? resolved.images : [])
+      .map((item) => ({
+        url: cleanText(item?.url),
+        source: cleanText(item?.source).toLowerCase(),
+      }))
+      .filter((item) => item.url);
+
+    if (elements.promoSection && elements.promoCarouselTrack && elements.promoDots) {
+      elements.promoSection.hidden = images.length === 0;
+      if (images.length) {
+        const hasPoolImage = images.some((item) => item.source === "pool");
+        if (elements.promoTitle) elements.promoTitle.textContent = hasPoolImage ? "À découvrir" : "À découvrir chez RAZAFI";
+        elements.promoCarouselTrack.replaceChildren();
+        elements.promoDots.replaceChildren();
+
+        images.forEach((item, index) => {
+          const slide = createElement("article", "promo-slide");
+          slide.setAttribute("aria-label", `${index + 1} sur ${images.length}`);
+          const img = document.createElement("img");
+          img.src = item.url;
+          img.alt = item.source === "pool" ? "Offre de votre zone WiFi" : "Fonctionnalité RAZAFI";
+          img.decoding = "async";
+          if (index > 0) img.loading = "lazy";
+          slide.appendChild(img);
+          elements.promoCarouselTrack.appendChild(slide);
+
+          if (images.length > 1) {
+            const dot = createElement("button", `promo-dot${index === 0 ? " is-active" : ""}`);
+            dot.type = "button";
+            dot.dataset.promoIndex = String(index);
+            dot.setAttribute("aria-label", `Afficher la publicité ${index + 1}`);
+            dot.setAttribute("aria-current", index === 0 ? "true" : "false");
+            elements.promoDots.appendChild(dot);
+          }
+        });
+        elements.promoDots.hidden = images.length <= 1;
+        requestAnimationFrame(() => scrollPromoTo(0, "auto"));
+      } else {
+        elements.promoCarouselTrack.replaceChildren();
+        elements.promoDots.replaceChildren();
+      }
+    }
+
+    const socialEntries = [
+      ["instagram", elements.socialInstagramLink],
+      ["tiktok", elements.socialTikTokLink],
+      ["facebook", elements.socialFacebookLink],
+    ];
+    let visibleSocials = 0;
+    let hasPoolSocial = false;
+    socialEntries.forEach(([network, node]) => {
+      if (!node) return;
+      const item = resolved?.social?.[network] || {};
+      const url = cleanText(item?.url);
+      const source = cleanText(item?.source).toLowerCase();
+      node.hidden = !url;
+      if (url) {
+        node.href = url;
+        const label = network === "instagram" ? "Instagram" : (network === "tiktok" ? "TikTok" : "Facebook");
+        node.setAttribute("aria-label", source === "pool" ? `Suivre cette zone WiFi sur ${label}` : `Suivre RAZAFI sur ${label}`);
+        visibleSocials += 1;
+        if (source === "pool") hasPoolSocial = true;
+      }
+    });
+    if (elements.socialSection) elements.socialSection.hidden = visibleSocials === 0;
+    if (elements.socialLinks && visibleSocials > 0) {
+      elements.socialLinks.style.gridTemplateColumns = `repeat(${visibleSocials}, minmax(0, 1fr))`;
+    }
+    if (elements.socialTitle) elements.socialTitle.textContent = hasPoolSocial ? "Suivez-nous" : "Suivez RAZAFI";
+
+    state.marketingSignature = nextSignature;
+  }
+
+  function renderMarketing(snapshot) {
+    const hasMarketingField = Object.prototype.hasOwnProperty.call(snapshot || {}, "marketing");
+    if (!hasMarketingField) {
+      if (state.marketingSignature !== "static") {
+        renderMarketingConfig(STATIC_MARKETING_FALLBACK, "static");
+      }
+      return;
+    }
+    if (snapshot?.marketing?.available !== true) {
+      renderMarketingConfig(STATIC_MARKETING_FALLBACK, "static");
+      return;
+    }
+    const signature = marketingSignature(snapshot.marketing);
+    renderMarketingConfig(snapshot.marketing, signature);
+  }
+
   function promoSlides() {
     return elements.promoCarouselViewport
       ? Array.from(elements.promoCarouselViewport.querySelectorAll(".promo-slide"))
@@ -724,6 +868,7 @@
       elements.accessList.appendChild(empty);
     }
 
+    renderMarketing(snapshot);
     renderEc2(snapshot);
     renderSecurity(snapshot);
     showView("dashboard");

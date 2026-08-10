@@ -342,6 +342,7 @@ export function registerEc1ClientSpace({
   const staleRecoveryEnabled = envFlag("CLIENT_SPACE_STALE_RECOVERY_ENABLED", false);
   const ec2Enabled = envFlag("CLIENT_SPACE_EC2_ENABLED", false);
   const ec3Enabled = ec2Enabled && envFlag("CLIENT_SPACE_EC3_ENABLED", false);
+  const marketingEnabled = envFlag("CLIENT_SPACE_MARKETING_ENABLED", false);
   const allowedNasIds = parseNasAllowlist(process.env.CLIENT_SPACE_ALLOWED_NAS_IDS || "");
   const hotspotStatusUrl = normalizeHotspotStatusUrl(
     process.env.CLIENT_SPACE_HOTSPOT_STATUS_URL || "http://192.168.88.1/status"
@@ -430,6 +431,100 @@ export function registerEc1ClientSpace({
     if (fetchSite === "cross-site") return false;
     const origin = String(req.get("origin") || "").trim().replace(/\/$/, "");
     return !origin || normalizedOrigins.has(origin);
+  }
+
+  function marketingSocialUrl(value, network) {
+    const raw = String(value || "").trim();
+    if (!raw) return null;
+    const domains = { instagram: "instagram.com", tiktok: "tiktok.com", facebook: "facebook.com" };
+    const expected = domains[network];
+    if (!expected) return null;
+    try {
+      const parsed = new URL(raw);
+      const hostname = String(parsed.hostname || "").trim().toLowerCase().replace(/\.$/, "");
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password) return null;
+      if (hostname !== expected && !hostname.endsWith(`.${expected}`)) return null;
+      parsed.hash = "";
+      return parsed.toString();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function marketingImageUrl(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return null;
+    if (raw.startsWith("/espace-client/")) return raw;
+    try {
+      const parsed = new URL(raw);
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password) return null;
+      return parsed.toString();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function loadEffectiveMarketing(poolId) {
+    if (!marketingEnabled || !poolId) return null;
+
+    const globalQuery = supabase
+      .from("client_space_marketing_profiles")
+      .select("id,instagram_url,tiktok_url,facebook_url")
+      .eq("scope", "global")
+      .is("pool_id", null)
+      .maybeSingle();
+    const poolQuery = supabase
+      .from("client_space_marketing_profiles")
+      .select("id,instagram_url,tiktok_url,facebook_url")
+      .eq("scope", "pool")
+      .eq("pool_id", poolId)
+      .maybeSingle();
+
+    const [{ data: globalProfile, error: globalError }, { data: poolProfile, error: poolError }] = await Promise.all([globalQuery, poolQuery]);
+    if (globalError) throw globalError;
+    if (poolError) throw poolError;
+
+    const profileIds = [poolProfile?.id, globalProfile?.id].filter(Boolean);
+    let rows = [];
+    if (profileIds.length) {
+      const { data, error } = await supabase
+        .from("client_space_marketing_images")
+        .select("id,profile_id,image_url,sort_order,created_at")
+        .in("profile_id", profileIds)
+        .eq("is_active", true)
+        .order("sort_order", { ascending: true })
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      rows = Array.isArray(data) ? data : [];
+    }
+
+    const toImages = (profile, source) => rows
+      .filter((row) => row?.profile_id === profile?.id)
+      .map((row) => ({
+        id: row.id,
+        url: marketingImageUrl(row.image_url),
+        source,
+      }))
+      .filter((row) => row.url);
+
+    const poolImages = toImages(poolProfile, "pool");
+    const globalImages = toImages(globalProfile, "razafi");
+    const social = {};
+    for (const network of ["instagram", "tiktok", "facebook"]) {
+      const key = `${network}_url`;
+      const poolUrl = marketingSocialUrl(poolProfile?.[key], network);
+      const razafiUrl = marketingSocialUrl(globalProfile?.[key], network);
+      social[network] = {
+        url: poolUrl || razafiUrl,
+        source: poolUrl ? "pool" : (razafiUrl ? "razafi" : null),
+      };
+    }
+
+    return {
+      available: true,
+      images: [...poolImages, ...globalImages],
+      social,
+    };
   }
 
   function primaryPayload(row) {
@@ -1124,6 +1219,15 @@ export function registerEc1ClientSpace({
       },
     };
 
+    if (marketingEnabled) {
+      try {
+        snapshot.marketing = await loadEffectiveMarketing(session.pool_id);
+      } catch (marketingError) {
+        snapshot.marketing = { available: false };
+        console.warn("[EC4] marketing unavailable; EC kept active", String(marketingError?.message || marketingError).slice(0, 140));
+      }
+    }
+
     if (ec2Enabled) {
       let recentAccesses = [];
       let recentAccessesAvailable = true;
@@ -1540,7 +1644,7 @@ export function registerEc1ClientSpace({
     return res.json({ ok: true });
   });
 
-  console.log(`[EC1] backend registered; enabled=${enabled}; ec2=${ec2Enabled}; ec3=${ec3Enabled}; auto_detect=${autoDetectReady}; dynamic_nas=${dynamicNasEnabled}; stale_recovery=${staleRecoveryEnabled}; allowed_nas_count=${allowedNasIds.size}; verify_mode=${verifyMode}`);
+  console.log(`[EC1] backend registered; enabled=${enabled}; ec2=${ec2Enabled}; ec3=${ec3Enabled}; marketing=${marketingEnabled}; auto_detect=${autoDetectReady}; dynamic_nas=${dynamicNasEnabled}; stale_recovery=${staleRecoveryEnabled}; allowed_nas_count=${allowedNasIds.size}; verify_mode=${verifyMode}`);
 }
 
 export const __ec1Test = {

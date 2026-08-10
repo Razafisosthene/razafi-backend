@@ -26,7 +26,7 @@
       backdrop-filter:blur(18px);
       -webkit-backdrop-filter:blur(18px);
     }
-    .rz-pools-filter-grid{display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:10px;align-items:center;}
+    .rz-pools-filter-grid{display:grid;grid-template-columns:minmax(220px,1fr) auto auto;gap:10px;align-items:center;}
     .rz-pools-filter-grid select{margin-bottom:0;}
     .rz-pools-filter-grid button{width:auto;margin-bottom:0;}
 
@@ -388,6 +388,52 @@
       100%{background-color:transparent;box-shadow:none;}
     }
 
+    /* EC-4 — Marketing Espace client */
+    .rz-marketing-box{display:grid;gap:14px;}
+    .rz-marketing-status{
+      display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;
+      padding:10px 12px;border-radius:16px;background:rgba(17,24,39,.045);font-size:12px;font-weight:800;color:var(--rz-muted,#6b7280);
+    }
+    .rz-marketing-status strong{color:var(--rz-text,#111827);}
+    .rz-marketing-images{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;}
+    .rz-marketing-image-card{position:relative;min-width:0;padding:8px;border:1px solid rgba(17,24,39,.08);border-radius:18px;background:#fff;box-shadow:0 8px 22px rgba(15,23,42,.05);}
+    .rz-marketing-image-card img{display:block;width:100%;aspect-ratio:4/5;object-fit:contain;border-radius:12px;background:#f7f8fa;}
+    .rz-marketing-image-actions{display:flex;gap:6px;margin-top:7px;}
+    .rz-marketing-image-actions button{width:auto!important;min-height:34px;margin:0!important;padding:0 9px;border-radius:11px;font-size:12px;}
+    .rz-marketing-empty{padding:13px;border:1px dashed rgba(17,24,39,.14);border-radius:16px;color:var(--rz-muted,#6b7280);font-size:12px;font-weight:800;line-height:1.45;background:rgba(255,255,255,.58);}
+    .rz-marketing-upload-row{display:flex;align-items:center;gap:9px;flex-wrap:wrap;}
+    .rz-marketing-upload-row button{width:auto!important;margin:0!important;}
+    .rz-marketing-note{font-size:12px;color:var(--rz-muted,#6b7280);line-height:1.45;font-weight:750;}
+    .rz-marketing-social-grid{display:grid;gap:10px;}
+    .rz-marketing-social-field{display:grid;grid-template-columns:40px minmax(0,1fr);gap:10px;align-items:start;}
+    .rz-marketing-social-icon{width:40px;height:40px;display:grid;place-items:center;border-radius:13px;background:#fff;border:1px solid rgba(17,24,39,.08);}
+    .rz-marketing-social-icon img{width:27px;height:27px;object-fit:contain;}
+    .rz-marketing-field-error{display:none;margin-top:5px;color:#cc3344;font-size:11px;font-weight:800;}
+    .rz-marketing-field-error.is-visible{display:block;}
+    .rz-marketing-input.is-invalid{border-color:rgba(204,51,68,.7)!important;box-shadow:0 0 0 3px rgba(204,51,68,.08)!important;}
+    .rz-marketing-fallback{margin-top:5px;color:var(--rz-muted,#6b7280);font-size:11px;font-weight:750;line-height:1.35;word-break:break-word;}
+    .rz-marketing-save-row{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;}
+    .rz-marketing-save-row button{width:auto!important;margin:0!important;}
+    .rz-marketing-preview-shell{padding:12px;border-radius:22px;background:#f5f6f8;border:1px solid rgba(17,24,39,.08);}
+    .rz-marketing-preview-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:9px;}
+    .rz-marketing-preview-head strong{font-size:13px;}
+    .rz-marketing-preview-badge{font-size:10px;font-weight:900;color:#5a47c8;background:#f0edff;padding:6px 8px;border-radius:999px;}
+    .rz-marketing-preview-card{padding:10px;border-radius:19px;background:#fff;border:1px solid #e5e8ee;overflow:hidden;}
+    .rz-marketing-preview-title{margin:0 0 8px;font-size:13px;font-weight:900;color:#111318;}
+    .rz-marketing-preview-viewport{width:100%;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;scrollbar-width:none;border:1px solid #e5e8ee;border-radius:15px;background:#fff;}
+    .rz-marketing-preview-viewport::-webkit-scrollbar{display:none;}
+    .rz-marketing-preview-track{display:flex;width:100%;}
+    .rz-marketing-preview-slide{flex:0 0 100%;aspect-ratio:4/5;display:flex;align-items:center;justify-content:center;scroll-snap-align:start;background:#fff;}
+    .rz-marketing-preview-slide img{width:100%;height:100%;object-fit:contain;display:block;}
+    .rz-marketing-preview-dots{min-height:28px;display:flex;align-items:center;justify-content:center;gap:5px;}
+    .rz-marketing-preview-dot{width:6px;height:6px;border-radius:50%;background:#cbd1dc;}
+    .rz-marketing-preview-dot.is-active{width:16px;border-radius:999px;background:#1265ff;}
+    .rz-marketing-preview-socials{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:8px;}
+    .rz-marketing-preview-social{min-width:0;min-height:48px;padding:6px 4px;display:flex;align-items:center;justify-content:center;gap:5px;border:1px solid #e5e8ee;border-radius:13px;background:#fff;color:#111318;text-decoration:none;font-size:10px;font-weight:850;}
+    .rz-marketing-preview-social img{width:22px;height:22px;object-fit:contain;}
+    .rz-marketing-preview-social.is-hidden{display:none;}
+    .rz-marketing-live-note{font-size:11px;color:var(--rz-muted,#6b7280);line-height:1.4;margin-top:8px;}
+
     @media (max-width:980px){
       .rz-pools-list{grid-template-columns:1fr;}
       .rz-pools-form-grid{grid-template-columns:1fr 1fr;}
@@ -416,6 +462,9 @@
         .rz-pool-modal{max-height:calc(100vh - 20px);}
       }
       .rz-form-grid{grid-template-columns:1fr;}
+      .rz-marketing-images{grid-template-columns:repeat(2,minmax(0,1fr));}
+      .rz-marketing-social-field{grid-template-columns:36px minmax(0,1fr);}
+      .rz-marketing-social-icon{width:36px;height:36px;}
       .rz-modal-body{
         padding:14px 14px calc(158px + env(safe-area-inset-bottom,0px));
       }
@@ -461,6 +510,7 @@
             <option value="all">Tous les pools</option>
           </select>
           <button type="button" id="refresh" class="filter-btn primary">Actualiser</button>
+          <button type="button" id="marketingDefaultsBtn" class="filter-btn" style="display:none;">Contenu RAZAFI par défaut</button>
         </div>
       </div>
 
@@ -563,6 +613,6 @@
 
   <!-- NEW shared drawer -->
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="/admin/pools.js?v=pp3-toggle-1"></script>
+  <script src="/admin/pools.js?v=ec4-marketing-1"></script>
 </body>
 </html>
