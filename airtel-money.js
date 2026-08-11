@@ -4,6 +4,7 @@ const DEFAULT_BASE_URL = "https://openapiuat.airtel.mg";
 const DEFAULT_COUNTRY = "MG";
 const DEFAULT_CURRENCY = "MGA";
 const VALID_MSISDN_FORMATS = new Set(["local", "national", "e164"]);
+const AIRTEL_TRANSACTION_ID_MAX_LENGTH = 24;
 
 function cleanBaseUrl(value) {
   return String(value || DEFAULT_BASE_URL).trim().replace(/\/+$/, "");
@@ -227,16 +228,22 @@ export function createAirtelMoneyClient(options = {}) {
   async function initiatePayment({ phone, amount, reference, transactionId }) {
     const cleanAmount = Number(amount);
     const cleanReference = String(reference || "").trim().slice(0, 120);
-    const cleanTransactionId = String(transactionId || "").trim().slice(0, 128);
+    const cleanTransactionId = String(transactionId || "").trim();
     if (!Number.isInteger(cleanAmount) || cleanAmount <= 0) {
       throw new AirtelApiError("Invalid Airtel payment amount", {
         code: "airtel_amount_invalid",
         transient: false,
       });
     }
-    if (!cleanReference || !cleanTransactionId) {
+    if (!cleanReference) {
       throw new AirtelApiError("Missing Airtel payment reference", {
         code: "airtel_reference_invalid",
+        transient: false,
+      });
+    }
+    if (!cleanTransactionId || cleanTransactionId.length > AIRTEL_TRANSACTION_ID_MAX_LENGTH) {
+      throw new AirtelApiError("Invalid Airtel transaction id", {
+        code: "airtel_transaction_id_invalid",
         transient: false,
       });
     }
@@ -280,7 +287,7 @@ export function createAirtelMoneyClient(options = {}) {
 
   async function enquireTransaction(transactionId) {
     const cleanTransactionId = String(transactionId || "").trim();
-    if (!cleanTransactionId || cleanTransactionId.length > 128) {
+    if (!cleanTransactionId || cleanTransactionId.length > AIRTEL_TRANSACTION_ID_MAX_LENGTH) {
       throw new AirtelApiError("Invalid Airtel transaction id", {
         code: "airtel_transaction_id_invalid",
         transient: false,

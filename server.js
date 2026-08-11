@@ -24706,6 +24706,23 @@ const airtelFinalizationLocks = new Map();
 let airtelRecoveryRunning = false;
 let airtelRecoveryIntervalHandle = null;
 
+// Airtel UAT contract: transaction.id must not exceed 24 characters.
+// Keep the internal RAZAFI transaction UUID unchanged and derive a separate,
+// deterministic 96-bit provider identifier for every Airtel request/retry.
+const AIRTEL_TRANSACTION_ID_MAX_LENGTH = 24;
+const AIRTEL_TRANSACTION_ID_RE = /^[a-f0-9]{24}$/i;
+
+function buildAirtelTransactionId(razafiTransactionId) {
+  const source = String(razafiTransactionId || "").trim();
+  if (!source) throw new Error("airtel_transaction_source_id_missing");
+  return crypto.createHash("sha256").update(source, "utf8").digest("hex").slice(0, AIRTEL_TRANSACTION_ID_MAX_LENGTH);
+}
+
+function isValidAirtelTransactionId(value) {
+  const clean = String(value || "").trim();
+  return clean.length === AIRTEL_TRANSACTION_ID_MAX_LENGTH && AIRTEL_TRANSACTION_ID_RE.test(clean);
+}
+
 function sleepMs(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 }
@@ -25110,8 +25127,11 @@ async function reconcileAirtelTransactionByRow(row, { source = "airtel_reconcile
   if (normalizePaymentProviderForEmail(row.provider) !== "airtel") return { ok: true, skipped: "provider" };
 
   const metadata = row?.metadata && typeof row.metadata === "object" ? row.metadata : {};
-  const transactionId = String(metadata.airtel_transaction_id || row.server_correlation_id || row.id || "").trim();
+  const transactionId = String(metadata.airtel_transaction_id || row.server_correlation_id || "").trim();
   if (!transactionId) return { ok: false, error: "airtel_transaction_id_missing" };
+  if (!isValidAirtelTransactionId(transactionId)) {
+    return { ok: false, error: "airtel_transaction_id_invalid" };
+  }
 
   const enquiry = await airtelMoneyClient.enquireTransaction(transactionId);
   const normalized = enquiry.normalized;
@@ -25330,7 +25350,7 @@ app.post("/api/payments/airtel/callback", airtelCallbackLimiter, async (req, res
   }
 
   const callbackTransactionId = String(req.body?.transaction?.id || "").trim();
-  if (!callbackTransactionId || callbackTransactionId.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(callbackTransactionId)) {
+  if (!isValidAirtelTransactionId(callbackTransactionId)) {
     return res.status(400).json({ error: "callback_transaction_invalid" });
   }
 
@@ -30793,10 +30813,34 @@ const { error: vsErr } = await supabase
   // MVola continues through the original code below without modification.
   // -----------------------------------------------------------------------
   if (paymentProvider === "airtel") {
-    const airtelTransactionId = String(txId);
+    const airtelTransactionId = buildAirtelTransactionId(txId);
     let initiated = null;
     let providerResponse = {};
     let initiationState = null;
+
+    // Persist the provider-specific ID before the external POST. If Render stops
+    // after Airtel receives the request, recovery can still enquire the exact ID.
+    // Fail closed here: no Airtel request is sent when this durable write fails.
+    try {
+      const persistedAirtelId = await updateTransactionPreservingMetadata({
+        requestRef,
+        patch: { server_correlation_id: airtelTransactionId },
+        metadataPatch: {
+          provider: "airtel",
+          airtel_transaction_id: airtelTransactionId,
+          airtel_transaction_id_scheme: "sha256-24-v1",
+          updated_at_local: toISOStringMG(new Date()),
+        },
+      });
+      if (!persistedAirtelId?.id) throw new Error("airtel_transaction_id_store_failed");
+    } catch (dbError) {
+      console.error("[AIRTEL] transaction id pre-persist failed", {
+        requestRef,
+        error: dbError?.message || dbError,
+      });
+      await abortPersonalizedReservation("airtel_transaction_id_store_unavailable");
+      return res.status(503).json({ ok: false, error: "airtel_transaction_id_store_unavailable" });
+    }
 
     try {
       initiated = await airtelMoneyClient.initiatePayment({
