@@ -30846,7 +30846,7 @@ const { error: vsErr } = await supabase
       initiated = await airtelMoneyClient.initiatePayment({
         phone,
         amount,
-        reference: `Achat WiFi RAZAFI ${requestRef}`,
+        reference: "RAZAFI",
         transactionId: airtelTransactionId,
       });
       providerResponse = initiated?.data || {};
