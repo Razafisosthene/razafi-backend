@@ -24706,21 +24706,39 @@ const airtelFinalizationLocks = new Map();
 let airtelRecoveryRunning = false;
 let airtelRecoveryIntervalHandle = null;
 
-// Airtel UAT contract: transaction.id must not exceed 24 characters.
-// Keep the internal RAZAFI transaction UUID unchanged and derive a separate,
-// deterministic 96-bit provider identifier for every Airtel request/retry.
-const AIRTEL_TRANSACTION_ID_MAX_LENGTH = 24;
-const AIRTEL_TRANSACTION_ID_RE = /^[a-f0-9]{24}$/i;
+// Airtel UAT transaction IDs observed as valid by Transaction Enquiry use
+// the provider's TEST + 7 digits form (for example TEST0987656). Keep this
+// scheme strictly UAT-only until Airtel confirms the production contract.
+// Legacy 24-hex IDs remain readable so recovery/callback handling for already
+// persisted UAT transactions does not regress.
+const AIRTEL_UAT_TRANSACTION_ID_RE = /^TEST\d{7}$/;
+const AIRTEL_LEGACY_TRANSACTION_ID_RE = /^[a-f0-9]{24}$/i;
+
+function isAirtelUatEnvironment() {
+  try {
+    return new URL(AIRTEL_BASE_URL).host.toLowerCase() === "openapiuat.airtel.mg";
+  } catch (_) {
+    return false;
+  }
+}
 
 function buildAirtelTransactionId(razafiTransactionId) {
   const source = String(razafiTransactionId || "").trim();
   if (!source) throw new Error("airtel_transaction_source_id_missing");
-  return crypto.createHash("sha256").update(source, "utf8").digest("hex").slice(0, AIRTEL_TRANSACTION_ID_MAX_LENGTH);
+  if (!isAirtelUatEnvironment()) {
+    throw new Error("airtel_transaction_id_scheme_unconfigured_for_non_uat");
+  }
+
+  // Deterministic mapping: retries of the same internal RAZAFI transaction use
+  // the same Airtel UAT ID. The seven-digit namespace is UAT-only.
+  const digest = crypto.createHash("sha256").update(source, "utf8").digest();
+  const numericPart = digest.readUIntBE(0, 6) % 10_000_000;
+  return `TEST${String(numericPart).padStart(7, "0")}`;
 }
 
 function isValidAirtelTransactionId(value) {
   const clean = String(value || "").trim();
-  return clean.length === AIRTEL_TRANSACTION_ID_MAX_LENGTH && AIRTEL_TRANSACTION_ID_RE.test(clean);
+  return AIRTEL_UAT_TRANSACTION_ID_RE.test(clean) || AIRTEL_LEGACY_TRANSACTION_ID_RE.test(clean);
 }
 
 function sleepMs(ms) {
@@ -30828,7 +30846,7 @@ const { error: vsErr } = await supabase
         metadataPatch: {
           provider: "airtel",
           airtel_transaction_id: airtelTransactionId,
-          airtel_transaction_id_scheme: "sha256-24-v1",
+          airtel_transaction_id_scheme: "uat-test7-v1",
           updated_at_local: toISOStringMG(new Date()),
         },
       });

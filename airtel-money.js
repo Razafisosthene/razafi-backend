@@ -65,7 +65,7 @@ export function normalizeAirtelInitiationState(payload) {
     accepted:
       statusCode === "200" &&
       statusSuccess === true &&
-      transactionStatus === "SUCCESS",
+      (transactionStatus === "SUCCESS" || transactionStatus === "SUCCESS."),
     statusCode: statusCode || null,
     statusSuccess,
     transactionStatus: transactionStatus || null,
