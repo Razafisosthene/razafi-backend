@@ -30864,7 +30864,9 @@ const { error: vsErr } = await supabase
       initiated = await airtelMoneyClient.initiatePayment({
         phone,
         amount,
-        reference: "RAZAFI",
+        // Airtel UAT baseline reference provided by Airtel.
+        // Reconfirm the production reference contract before go-live.
+        reference: "Testing transaction",
         transactionId: airtelTransactionId,
       });
       providerResponse = initiated?.data || {};
