@@ -441,7 +441,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       <span><strong>Configuration tarifaire active</strong> · ${esc(role)}</span>
       <span class="rz-pricing-context-meta">
         <span class="rz-context-chip">Version ${esc(v.version_no ?? "—")}</span>
-        <span class="rz-context-chip">Majoration PP ${esc(formatSetting(p.markup_pct, "%"))}</span>
+        <span class="rz-context-chip">Majoration PP par défaut ${esc(formatSetting(p.markup_pct, "%"))}</span>
         <span class="rz-context-chip">Devis ${esc(formatSetting(p.quote_ttl_minutes, " min"))}</span>
       </span>
     `;
@@ -507,7 +507,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       <div class="rz-config-line"><span>Version active</span><span>v${esc(version.version_no ?? "—")} · ${esc(shortHash(version.config_hash))}</span></div>
       <div class="rz-config-line"><span>Activée le</span><span>${esc(formatDateTime(version.activated_at))}</span></div>
       <div class="rz-config-line"><span>Tolérance prix standard</span><span>${esc(formatSetting(settings.price_tolerance_pct, "%"))}</span></div>
-      <div class="rz-config-line"><span>Majoration plan personnalisé</span><span>${esc(formatSetting(settings.personalized_markup_pct, "%"))}</span></div>
+      <div class="rz-config-line"><span>Majoration PP par défaut</span><span>${esc(formatSetting(settings.personalized_markup_pct, "%"))}</span></div>
       <div class="rz-config-line"><span>Arrondi personnalisé</span><span>${esc(settings.personalized_rounding || "—")}</span></div>
       <div class="rz-config-line"><span>Validité du devis</span><span>${esc(formatSetting(settings.personalized_quote_ttl_minutes, " min"))}</span></div>
       <div class="rz-config-line"><span>Durée personnalisée</span><span>min ${esc(formatDurationRule(settings.personalized_min_duration_minutes))} · pas ${esc(formatDurationRule(settings.personalized_duration_step_minutes))}</span></div>
@@ -712,6 +712,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     const personalized = data?.personalized_pricing || {};
     const clientPrice = personalized.final_price_ar ?? null;
     const markupPct = personalized.markup_pct ?? simulatorOptions?.personalized?.markup_pct ?? null;
+    const markupSource = String(personalized.markup_source || "").trim();
+    const markupSourceLabel = markupSource === "pool" ? "Valeur du pool" : (markupSource === "global_fallback" ? "Défaut global" : "");
     const percentageMarkupAmount = personalized.percentage_markup_amount_ar ?? null;
     const roundingAdjustment = personalized.rounding_adjustment_ar ?? null;
     const minimumAdjustment = personalized.minimum_adjustment_ar ?? null;
@@ -729,6 +731,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         <div class="rz-markup-arrow">
           <span>Majoration PP</span>
           <strong>+${esc(formatSetting(markupPct, "%"))}</strong>
+          ${markupSourceLabel ? `<span>${esc(markupSourceLabel)}</span>` : ""}
           <span>${percentageMarkupAmount === null ? "" : `+${formatAr(percentageMarkupAmount)}`}</span>
           ${Number(roundingAdjustment) > 0 ? `<span>Arrondi : +${formatAr(roundingAdjustment)}</span>` : ""}
           ${Number(minimumAdjustment) > 0 ? `<span>Minimum : +${formatAr(minimumAdjustment)}</span>` : ""}
@@ -758,7 +761,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       <div class="rz-create-card">
         <div class="rz-create-title">🚀 Création du forfait standard</div>
-        <div class="rz-create-note">Le prix ci-dessous concerne le forfait standard créé dans votre pool. Le prix client personnalisé reste calculé séparément avec la majoration active.</div>
+        <div class="rz-create-note">Le prix ci-dessous concerne le forfait standard créé dans votre pool. Le prix client personnalisé reste calculé séparément avec la majoration du pool sélectionné (ou le défaut global si ce pool n’a pas de valeur propre).</div>
         <div class="rz-create-grid">
           <div class="rz-field full">
             <label for="finalPlanName">Nom du forfait</label>

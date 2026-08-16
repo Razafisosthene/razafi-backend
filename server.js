@@ -3160,7 +3160,7 @@ async function buildPortalTrustedAssistantContext({ contextToken, identity: veri
     const [{ data: pool, error: poolErr }, { data: planRows, error: planErr }, { data: sessions, error: sessionErr }] = await Promise.all([
       supabase
         .from("internet_pools")
-        .select("id,name,brand_name,capacity_max,is_active,contact_phone,payment_methods,personalized_plans_enabled")
+        .select("id,name,brand_name,capacity_max,is_active,contact_phone,payment_methods,personalized_plans_enabled,personalized_markup_pct")
         .eq("id", poolId)
         .maybeSingle(),
       supabase
@@ -3302,7 +3302,7 @@ async function buildAdminTrustedAssistantContext({ req, requestedScope }) {
 
   let poolQuery = supabase
     .from("internet_pools")
-    .select("id,name,brand_name,capacity_max,is_active,contact_phone,payment_methods,personalized_plans_enabled")
+    .select("id,name,brand_name,capacity_max,is_active,contact_phone,payment_methods,personalized_plans_enabled,personalized_markup_pct")
     .eq("system", "mikrotik")
     .order("name", { ascending: true });
 
@@ -6903,9 +6903,9 @@ function buildPortalDynamicAnswer(intent_key, lang, liveData, message) {
         "The allowed choices are displayed directly in the builder. RAZAFI validates duration, data, and speed before calculating the price."
       );
       return t(
-        `Configuration active : ${summary.types}; vitesses ${summary.speeds}; durée ${summary.durationLine}; data ${summary.dataLine}. Le prix applique une majoration de ${config.markup_pct}% puis l’arrondi ${config.rounding}.`,
-        `Configuration active : ${summary.types}; vitesses ${summary.speeds}; durée ${summary.durationLine}; data ${summary.dataLine}. Ny prix dia mampihatra majoration ${config.markup_pct}% avy eo arrondi ${config.rounding}.`,
-        `Active configuration: ${summary.types}; speeds ${summary.speeds}; duration ${summary.durationLine}; data ${summary.dataLine}. The price applies a ${config.markup_pct}% markup, then ${config.rounding} rounding.`
+        `Configuration active : ${summary.types}; vitesses ${summary.speeds}; durée ${summary.durationLine}; data ${summary.dataLine}. Le prix applique la majoration configurée pour ce pool (ou la valeur globale par défaut si aucune valeur n’est définie), puis l’arrondi ${config.rounding}.`,
+        `Configuration active : ${summary.types}; vitesses ${summary.speeds}; durée ${summary.durationLine}; data ${summary.dataLine}. Ny prix dia mampihatra ny majoration voafaritra ho an’ity pool ity (na valeur globale par défaut raha tsy misy), avy eo arrondi ${config.rounding}.`,
+        `Active configuration: ${summary.types}; speeds ${summary.speeds}; duration ${summary.durationLine}; data ${summary.dataLine}. The price uses the markup configured for this pool (or the global default when none is set), then ${config.rounding} rounding.`
       );
     }
 
@@ -9334,9 +9334,9 @@ function buildPlatformProspectDynamicAnswer(intent_key, lang, message, liveData)
         "Tsy ny assistant na navigateur no mifidy ny prix: RAZAFI no manao calcul côté serveur araka ny configuration tarifaire active. Tsindrian'ny client « Voir mon prix » hahazoana ny montant exact."
       );
       return t(
-        `RAZAFI calcule le prix côté serveur, applique actuellement une majoration PP de ${c.markup_pct}% puis l’arrondi ${c.rounding}. Le prix final reste entre ${Number(c.min_price_ar).toLocaleString("fr-FR")} Ar et ${Number(c.max_price_ar).toLocaleString("fr-FR")} Ar selon la configuration active ; l’assistant ne l’invente jamais.`,
-        `RAZAFI calculates the price on the server, currently applies a ${c.markup_pct}% PP markup, then ${c.rounding} rounding. Under the active configuration, the final price stays between ${Number(c.min_price_ar).toLocaleString("fr-FR")} Ar and ${Number(c.max_price_ar).toLocaleString("fr-FR")} Ar; the assistant never invents it.`,
-        `RAZAFI no manao calcul prix côté serveur, mampihatra majoration PP ${c.markup_pct}% amin'izao, avy eo arrondi ${c.rounding}. Araka ny configuration active, eo anelanelan'ny ${Number(c.min_price_ar).toLocaleString("fr-FR")} Ar sy ${Number(c.max_price_ar).toLocaleString("fr-FR")} Ar ny prix final; tsy mamorona prix mihitsy ny assistant.`
+        `RAZAFI calcule le prix côté serveur avec la majoration PP configurée pour chaque pool ; si un pool n’a pas encore de valeur propre, la majoration globale par défaut est utilisée. L’arrondi reste ${c.rounding}. Le prix final reste entre ${Number(c.min_price_ar).toLocaleString("fr-FR")} Ar et ${Number(c.max_price_ar).toLocaleString("fr-FR")} Ar selon la configuration active ; l’assistant ne l’invente jamais.`,
+        `RAZAFI calculates the price on the server using the PP markup configured for each pool; when a pool has no specific value yet, the global default markup is used. Rounding remains ${c.rounding}. Under the active configuration, the final price stays between ${Number(c.min_price_ar).toLocaleString("fr-FR")} Ar and ${Number(c.max_price_ar).toLocaleString("fr-FR")} Ar; the assistant never invents it.`,
+        `RAZAFI no manao calcul prix côté serveur amin’ny majoration PP voafaritra isaky ny pool; raha mbola tsy manana valeur manokana ny pool iray dia ampiasaina ny majoration globale par défaut. ${c.rounding} foana ny arrondi. Araka ny configuration active, eo anelanelan'ny ${Number(c.min_price_ar).toLocaleString("fr-FR")} Ar sy ${Number(c.max_price_ar).toLocaleString("fr-FR")} Ar ny prix final; tsy mamorona prix mihitsy ny assistant.`
       );
     }
 
@@ -19416,7 +19416,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     if (nas_id) {
       const { data: poolRow, error: poolRowErr } = await supabase
         .from("internet_pools")
-        .select(`id,name,system,radius_nas_id,payment_methods,personalized_plans_enabled,${POOL_ANNOUNCEMENT_SELECT}`)
+        .select(`id,name,system,radius_nas_id,payment_methods,personalized_plans_enabled,personalized_markup_pct,${POOL_ANNOUNCEMENT_SELECT}`)
         .eq("radius_nas_id", nas_id)
         .maybeSingle();
 
@@ -19455,7 +19455,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     if (!pool) {
       const { data: poolDb, error: poolErr } = await supabase
         .from("internet_pools")
-        .select(`id,name,system,radius_nas_id,payment_methods,personalized_plans_enabled,${POOL_ANNOUNCEMENT_SELECT}`)
+        .select(`id,name,system,radius_nas_id,payment_methods,personalized_plans_enabled,personalized_markup_pct,${POOL_ANNOUNCEMENT_SELECT}`)
         .eq("id", pool_id)
         .maybeSingle();
 
@@ -20879,7 +20879,7 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
 
     let query = supabase
       .from("internet_pools")
-      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,payment_methods,personalized_plans_enabled,${POOL_ANNOUNCEMENT_SELECT}`, { count: "exact" });
+      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,payment_methods,personalized_plans_enabled,personalized_markup_pct,${POOL_ANNOUNCEMENT_SELECT}`, { count: "exact" });
 
     // 🔐 Pool scoping (server-side): pool assignments OR business owner
     if (!req.admin?.is_superadmin) {
@@ -21078,7 +21078,7 @@ app.post("/api/admin/pools", requireAdmin, async (req, res) => {
     const { data, error } = await supabase
       .from("internet_pools")
       .insert(payload)
-      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,payment_methods,personalized_plans_enabled,${POOL_ANNOUNCEMENT_SELECT}`)
+      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,payment_methods,personalized_plans_enabled,personalized_markup_pct,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -21156,6 +21156,26 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
         return res.status(409).json({ error: "personalized_plans_require_mikrotik_pool" });
       }
       updates.personalized_plans_enabled = enabled;
+    }
+
+    // PP per-pool markup: editable by Superadmin and by an admin already
+    // authorized for this pool. NULL keeps the active global percentage as
+    // backward-compatible fallback; 0 is a real explicit 0% markup.
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "personalized_markup_pct")) {
+      if (String(currentPool?.system || "").toLowerCase() !== "mikrotik") {
+        return res.status(409).json({ error: "personalized_markup_requires_mikrotik_pool" });
+      }
+      const rawMarkup = req.body.personalized_markup_pct;
+      const normalizedRaw = rawMarkup === null || rawMarkup === undefined ? "" : String(rawMarkup).trim();
+      if (normalizedRaw === "") {
+        updates.personalized_markup_pct = null;
+      } else {
+        const markupPct = Number(normalizedRaw);
+        if (!Number.isFinite(markupPct) || markupPct < 0 || markupPct > 1000) {
+          return res.status(400).json({ error: "personalized_markup_pct_invalid" });
+        }
+        updates.personalized_markup_pct = Math.round(markupPct * 100) / 100;
+      }
     }
 
     // Optional: contact phone (nullable, can be cleared)
@@ -21286,7 +21306,7 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       .from("internet_pools")
       .update(updates)
       .eq("id", id)
-      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,payment_methods,personalized_plans_enabled,${POOL_ANNOUNCEMENT_SELECT}`)
+      .select(`id,name,${POOL_BRANDING_SELECT},capacity_max,contact_phone,system,mikrotik_ip,radius_nas_id,free_access_limit,platform_share_pct,owner_share_pct,owner_admin_user_id,payment_methods,personalized_plans_enabled,personalized_markup_pct,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -21348,7 +21368,7 @@ app.post("/api/admin/pools/:id/logo", requireAdmin, async (req, res) => {
       .from("internet_pools")
       .update({ branding_logo_url: publicUrl })
       .eq("id", id)
-      .select(`id,name,${POOL_BRANDING_SELECT},contact_phone,system,owner_admin_user_id,payment_methods,personalized_plans_enabled,${POOL_ANNOUNCEMENT_SELECT}`)
+      .select(`id,name,${POOL_BRANDING_SELECT},contact_phone,system,owner_admin_user_id,payment_methods,personalized_plans_enabled,personalized_markup_pct,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -21399,7 +21419,7 @@ app.delete("/api/admin/pools/:id/logo", requireAdmin, async (req, res) => {
       .from("internet_pools")
       .update({ branding_logo_url: null })
       .eq("id", id)
-      .select(`id,name,${POOL_BRANDING_SELECT},contact_phone,system,owner_admin_user_id,payment_methods,personalized_plans_enabled,${POOL_ANNOUNCEMENT_SELECT}`)
+      .select(`id,name,${POOL_BRANDING_SELECT},contact_phone,system,owner_admin_user_id,payment_methods,personalized_plans_enabled,personalized_markup_pct,${POOL_ANNOUNCEMENT_SELECT}`)
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
@@ -22249,7 +22269,7 @@ async function resolvePersonalizedPoolByNasId(nasId, { requireEnabled = false } 
 
   const { data, error } = await supabase
     .from("internet_pools")
-    .select("id,name,brand_name,system,radius_nas_id,capacity_max,contact_phone,payment_methods,personalized_plans_enabled")
+    .select("id,name,brand_name,system,radius_nas_id,capacity_max,contact_phone,payment_methods,personalized_plans_enabled,personalized_markup_pct")
     .eq("radius_nas_id", cleanNasId)
     .maybeSingle();
 
@@ -22265,6 +22285,51 @@ async function resolvePersonalizedPoolByNasId(nasId, { requireEnabled = false } 
     throw makePersonalizedPlanError("personalized_plans_not_enabled_for_pool", 409);
   }
   return data;
+}
+
+function normalizePoolPersonalizedMarkupPct(raw) {
+  if (raw === null || raw === undefined || String(raw).trim() === "") return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0 || value > 1000) {
+    throw makePersonalizedPlanError("personalized_pool_markup_invalid", 503);
+  }
+  return Math.round(value * 100) / 100;
+}
+
+async function resolveEffectivePersonalizedMarkupForPool({ poolId, config }) {
+  const cleanPoolId = String(poolId || "").trim();
+  if (!UUID_V1_TO_V5_RE.test(cleanPoolId)) {
+    throw makePersonalizedPlanError("pool_id_invalid", 400);
+  }
+  if (!supabase) throw makePersonalizedPlanError("supabase_not_configured", 503);
+
+  const { data: pool, error } = await supabase
+    .from("internet_pools")
+    .select("id,system,personalized_markup_pct")
+    .eq("id", cleanPoolId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("PERSONALIZED POOL MARKUP LOAD ERROR", error);
+    throw makePersonalizedPlanError("personalized_pool_unavailable", 503);
+  }
+  if (!pool?.id) throw makePersonalizedPlanError("pool_not_found", 404);
+  if (String(pool.system || "").toLowerCase() !== "mikrotik") {
+    throw makePersonalizedPlanError("pool_not_mikrotik", 409);
+  }
+
+  const poolMarkupPct = normalizePoolPersonalizedMarkupPct(pool.personalized_markup_pct);
+  const globalFallbackMarkupPct = Number(config?.personalized?.markup_pct);
+  if (!Number.isFinite(globalFallbackMarkupPct) || globalFallbackMarkupPct < 0 || globalFallbackMarkupPct > 1000) {
+    throw makePersonalizedPlanError("personalized_pricing_config_invalid", 503);
+  }
+
+  return {
+    markup_pct: poolMarkupPct === null ? globalFallbackMarkupPct : poolMarkupPct,
+    markup_source: poolMarkupPct === null ? "global_fallback" : "pool",
+    pool_markup_pct: poolMarkupPct,
+    global_fallback_markup_pct: globalFallbackMarkupPct,
+  };
 }
 
 function validatePersonalizedQuoteChoice({ type, durationMinutes, dataMb, speedMbps, config }) {
@@ -22733,14 +22798,17 @@ function safePlanPricingVersionSummary(config = {}, { full = false } = {}) {
   return summary;
 }
 
-function calculatePersonalizedClientPrice({ basePriceAr, config }) {
+function calculatePersonalizedClientPrice({ basePriceAr, config, markupPct: markupPctOverride = null, markupSource = null }) {
   const base = Math.round(Number(basePriceAr));
   const p = config?.personalized || {};
   if (!Number.isInteger(base) || base <= 0) {
     throw makePersonalizedPlanError("personalized_base_price_invalid", 503);
   }
 
-  const markupPct = Number(p.markup_pct);
+  const effectiveMarkupRaw = markupPctOverride === null || markupPctOverride === undefined
+    ? p.markup_pct
+    : markupPctOverride;
+  const markupPct = Number(effectiveMarkupRaw);
   const minPrice = Math.max(Number(p.minimum_price_ar || 0), Number(p.min_price_ar || 0));
   const maxPrice = Number(p.max_price_ar);
   if (!Number.isFinite(markupPct) || markupPct < 0 || !Number.isFinite(minPrice) || !Number.isFinite(maxPrice)) {
@@ -22769,6 +22837,7 @@ function calculatePersonalizedClientPrice({ basePriceAr, config }) {
   return {
     base_price_ar: base,
     markup_pct: markupPct,
+    markup_source: markupSource || (markupPctOverride === null || markupPctOverride === undefined ? "global_fallback" : "pool"),
     // Keep markup_amount_ar aligned with the DB quote snapshot: total uplift
     // after percentage, ceil_100 and the configured minimum floor.
     markup_amount_ar: finalPrice - base,
@@ -23644,6 +23713,7 @@ app.post("/api/admin/plan-simulator/create-plan", requireAdmin, async (req, res)
     const data_gb = normalizePlanSimulatorDataGb(body, type);
     const speed_mbps = normalizePlanSimulatorSpeedMbps(body);
     const config = await getActivePersonalizedPricingConfigFailClosed();
+    const effectiveMarkup = await resolveEffectivePersonalizedMarkupForPool({ poolId: pool_id, config });
     const choice = validatePersonalizedQuoteChoice({
       type,
       durationMinutes: duration_minutes,
@@ -23679,7 +23749,11 @@ app.post("/api/admin/plan-simulator/create-plan", requireAdmin, async (req, res)
     const personalizedPricing = calculatePersonalizedClientPrice({
       basePriceAr: pricing.recommended_price_ar,
       config,
+      markupPct: effectiveMarkup.markup_pct,
+      markupSource: effectiveMarkup.markup_source,
     });
+    personalizedPricing.pool_markup_pct = effectiveMarkup.pool_markup_pct;
+    personalizedPricing.global_fallback_markup_pct = effectiveMarkup.global_fallback_markup_pct;
 
     const suggestedName = suggestPlanSimulatorName(technical);
     const name = normalizePlanSimulatorFinalName(body.final_name || body.name || body.plan_name, suggestedName);
@@ -23829,6 +23903,7 @@ app.post("/api/admin/plan-simulator/simulate", requireAdmin, async (req, res) =>
     const data_gb = normalizePlanSimulatorDataGb(body, type);
     const speed_mbps = normalizePlanSimulatorSpeedMbps(body);
     const config = await getActivePersonalizedPricingConfigFailClosed();
+    const effectiveMarkup = await resolveEffectivePersonalizedMarkupForPool({ poolId: pool_id, config });
     const choice = validatePersonalizedQuoteChoice({
       type,
       durationMinutes: duration_minutes,
@@ -23859,7 +23934,11 @@ app.post("/api/admin/plan-simulator/simulate", requireAdmin, async (req, res) =>
     const personalizedPricing = calculatePersonalizedClientPrice({
       basePriceAr: pricing.recommended_price_ar,
       config,
+      markupPct: effectiveMarkup.markup_pct,
+      markupSource: effectiveMarkup.markup_source,
     });
+    personalizedPricing.pool_markup_pct = effectiveMarkup.pool_markup_pct;
+    personalizedPricing.global_fallback_markup_pct = effectiveMarkup.global_fallback_markup_pct;
     const recommended_plan_name = suggestPlanSimulatorName(technical);
     const assistant = await buildPlanSimulatorAssistant({ pool_id, technical, pricing, settings });
     const privileged = req.admin?.is_superadmin ? {
@@ -30144,7 +30223,7 @@ if (supabase) {
     if (nas_id) {
       const { data: poolRow, error: poolErr } = await supabase
         .from("internet_pools")
-        .select("id,name,capacity_max,system,radius_nas_id,payment_methods,personalized_plans_enabled")
+        .select("id,name,capacity_max,system,radius_nas_id,payment_methods,personalized_plans_enabled,personalized_markup_pct")
         .eq("radius_nas_id", nas_id)
         .maybeSingle();
 

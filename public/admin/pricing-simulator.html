@@ -319,8 +319,9 @@
 
             <div class="rz-config-section-label">Forfait personnalisé client</div>
             <div class="rz-field">
-              <label for="cfg_personalized_markup_pct">Majoration client (%)</label>
+              <label for="cfg_personalized_markup_pct">Majoration PP par défaut (%)</label>
               <input id="cfg_personalized_markup_pct" inputmode="decimal" />
+              <small style="display:block;margin-top:6px;color:var(--rz-muted,#6b7280);font-weight:700;line-height:1.35;">Utilisée uniquement lorsqu’un pool n’a pas sa propre majoration.</small>
             </div>
             <div class="rz-field">
               <label for="cfg_personalized_quote_ttl_minutes">Validité devis (minutes)</label>
@@ -394,6 +395,6 @@
   </div>
 
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="./pricing-simulator.js?v=pp4-admin-1"></script>
+  <script src="./pricing-simulator.js?v=pp-pool-markup-1"></script>
 </body>
 </html>

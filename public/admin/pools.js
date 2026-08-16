@@ -393,6 +393,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     const personalizedEnabled =
       p.personalized_plans_enabled === true ||
       String(p.personalized_plans_enabled).toLowerCase() === "true";
+    const personalizedMarkupRaw = p.personalized_markup_pct;
+    const personalizedMarkupPct = personalizedMarkupRaw === null || personalizedMarkupRaw === undefined || String(personalizedMarkupRaw).trim() === ""
+      ? null
+      : Number(personalizedMarkupRaw);
+    const personalizedMarkupLabel = Number.isFinite(personalizedMarkupPct) ? `${personalizedMarkupPct}%` : "Défaut global";
 
     return `
       <button type="button" class="rz-pool-card" data-poolcard="${esc(pid)}">
@@ -409,6 +414,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           <span class="rz-pill">Accès gratuit : <strong>${esc(freeLimit)} max</strong></span>
           <span class="rz-pill ${ann.active ? "rz-pill-ok" : "rz-pill-muted"}">Annonce portail : <strong>${ann.active ? "Actif" : "Inactif"}</strong></span>
           ${system === "mikrotik" ? `<span class="rz-pill ${personalizedEnabled ? "rz-pill-ok" : "rz-pill-muted"}">Plan personnalisé : <strong>${personalizedEnabled ? "Actif" : "Inactif"}</strong></span>` : ""}
+          ${system === "mikrotik" ? `<span class="rz-pill">Majoration PP : <strong>${esc(personalizedMarkupLabel)}</strong></span>` : ""}
         </div>
       </button>
     `;
@@ -510,6 +516,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     const personalizedEnabled =
       p.personalized_plans_enabled === true ||
       String(p.personalized_plans_enabled).toLowerCase() === "true";
+    const personalizedMarkupRaw = p.personalized_markup_pct;
+    const personalizedMarkupPct = personalizedMarkupRaw === null || personalizedMarkupRaw === undefined || String(personalizedMarkupRaw).trim() === ""
+      ? null
+      : Number(personalizedMarkupRaw);
+    const personalizedMarkupValue = Number.isFinite(personalizedMarkupPct) ? String(personalizedMarkupPct) : "";
 
     const stats = liveStatsByPool[pid] || null;
     const liveClients = stats ? toNum(stats.active_clients, 0) : 0;
@@ -651,6 +662,29 @@ document.addEventListener("DOMContentLoaded", async () => {
               ${canManageAll
                 ? "Activation par pool. Les prix restent calculés et validés par le serveur."
                 : "Statut en lecture seule. Seul le Superadmin peut activer ou désactiver cette fonction."}
+            </div>
+            <div class="rz-form-grid" style="margin-top:12px;">
+              <div class="rz-field">
+                <label for="modalPersonalizedMarkupPct">Majoration plan personnalisé (%)</label>
+                <input
+                  id="modalPersonalizedMarkupPct"
+                  type="number"
+                  min="0"
+                  max="1000"
+                  step="0.01"
+                  inputmode="decimal"
+                  value="${esc(personalizedMarkupValue)}"
+                  placeholder="Défaut global"
+                  ${canEditBusiness ? "" : "readonly disabled"}
+                />
+              </div>
+              <div class="rz-field">
+                <label>Valeur appliquée à ce pool</label>
+                <div class="rz-readonly-box">${Number.isFinite(personalizedMarkupPct) ? `${esc(personalizedMarkupPct)}%` : "Majoration globale par défaut"}</div>
+              </div>
+            </div>
+            <div class="rz-pay-methods-note" style="margin-top:8px;">
+              Cette même majoration est utilisée par le simulateur de prix Admin et par le Plan personnalisé du portail. Laissez vide pour utiliser la majoration globale par défaut.
             </div>
           </div>
         ` : ``}
@@ -1264,6 +1298,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const capInput = $id("modalPoolCap");
     const phoneInput = $id("modalPoolPhone");
     const freeAccessLimitInput = $id("modalFreeAccessLimit");
+    const personalizedMarkupInput = $id("modalPersonalizedMarkupPct");
 
     const name = (nameInput?.value || "").trim();
     const brand_name = (brandInput?.value || "").trim() || null;
@@ -1291,6 +1326,20 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const payload = { name, brand_name, contact_phone };
     if (canManageAll) payload.capacity_max = capacity_max;
+
+    if (personalizedMarkupInput) {
+      const markupRaw = String(personalizedMarkupInput.value || "").trim();
+      if (markupRaw === "") {
+        payload.personalized_markup_pct = null;
+      } else {
+        const markupPct = Number(markupRaw);
+        if (!Number.isFinite(markupPct) || markupPct < 0 || markupPct > 1000) {
+          showMsg(msgEl, "Majoration Plan personnalisé invalide (0 à 1000%).", true);
+          return;
+        }
+        payload.personalized_markup_pct = Math.round(markupPct * 100) / 100;
+      }
+    }
 
     payload.portal_announcement_enabled = String($id("modalAnnEnabled")?.value || "false") === "true";
     payload.portal_announcement_type = ($id("modalAnnType")?.value || "information").trim();
