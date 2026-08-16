@@ -475,6 +475,102 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (modalActions) modalActions.innerHTML = "";
   }
 
+  function initPoolModalAccordion() {
+    if (!modalBody) return;
+
+    const sections = Array.from(modalBody.children).filter((el) =>
+      el?.classList?.contains("rz-modal-section")
+    );
+
+    if (!sections.length) return;
+
+    const closeSection = (section) => {
+      if (!section) return;
+      const toggle = section.querySelector(":scope > .rz-modal-section-toggle");
+      const content = section.querySelector(":scope > .rz-modal-section-content");
+      section.classList.remove("is-open");
+      if (toggle) toggle.setAttribute("aria-expanded", "false");
+      if (content) content.hidden = true;
+    };
+
+    const openSection = (section) => {
+      if (!section) return;
+      sections.forEach((other) => {
+        if (other !== section) closeSection(other);
+      });
+      const toggle = section.querySelector(":scope > .rz-modal-section-toggle");
+      const content = section.querySelector(":scope > .rz-modal-section-content");
+      section.classList.add("is-open");
+      if (toggle) toggle.setAttribute("aria-expanded", "true");
+      if (content) content.hidden = false;
+    };
+
+    sections.forEach((section, index) => {
+      const legacyTitle = section.querySelector(":scope > .rz-modal-section-title");
+      const legacyTechToggle = section.querySelector(":scope > #techToggle");
+      const legacyTechPanel = section.querySelector(":scope > #techPanel");
+
+      let label = "";
+      let content = null;
+
+      if (legacyTitle) {
+        label = String(legacyTitle.textContent || "").trim();
+        content = document.createElement("div");
+        content.className = "rz-modal-section-content";
+
+        let node = legacyTitle.nextSibling;
+        while (node) {
+          const next = node.nextSibling;
+          content.appendChild(node);
+          node = next;
+        }
+        legacyTitle.remove();
+        section.appendChild(content);
+      } else if (legacyTechToggle && legacyTechPanel) {
+        label = String(legacyTechToggle.textContent || "")
+          .replace(/[▾⌄›>]+\s*$/u, "")
+          .trim() || "Technique / Superadmin";
+        content = legacyTechPanel;
+        content.classList.remove("rz-tech-panel", "is-open");
+        content.classList.add("rz-modal-section-content");
+        legacyTechToggle.remove();
+      } else {
+        return;
+      }
+
+      section.classList.add("rz-accordion-section");
+      section.classList.remove("is-open");
+
+      const panelId = content.id || `rzPoolAccordionPanel${index + 1}`;
+      content.id = panelId;
+      content.hidden = true;
+
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "rz-modal-section-toggle";
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.setAttribute("aria-controls", panelId);
+
+      const labelSpan = document.createElement("span");
+      labelSpan.className = "rz-modal-section-label";
+      labelSpan.textContent = label;
+
+      const chevron = document.createElement("span");
+      chevron.className = "rz-modal-section-chevron";
+      chevron.setAttribute("aria-hidden", "true");
+      chevron.textContent = "›";
+
+      toggle.append(labelSpan, chevron);
+      section.insertBefore(toggle, content);
+
+      toggle.addEventListener("click", () => {
+        const isOpen = section.classList.contains("is-open");
+        if (isOpen) closeSection(section);
+        else openSection(section);
+      });
+    });
+  }
+
   function openPoolModal(poolId) {
     const p = poolById(poolId);
     if (!p) return;
@@ -774,6 +870,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       `;
     }
 
+    initPoolModalAccordion();
     bindModalEvents(pid);
 
     modalBackdrop?.classList.add("is-open");

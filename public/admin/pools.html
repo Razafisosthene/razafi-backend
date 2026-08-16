@@ -197,6 +197,70 @@
       margin-bottom:12px;
       letter-spacing:-.01em;
     }
+
+    /* Pool modal accordion — selected pool only. Other modals keep their existing section layout. */
+    .rz-modal-section.rz-accordion-section{
+      padding:0;
+      overflow:hidden;
+      transition:border-color .18s ease, background-color .18s ease, box-shadow .18s ease;
+    }
+    .rz-modal-section.rz-accordion-section.is-open{
+      background:rgba(248,250,252,.94);
+      border-color:rgba(13,110,253,.14);
+      box-shadow:0 10px 24px rgba(15,23,42,.055);
+    }
+    .rz-modal-section-toggle{
+      width:100%;
+      min-height:52px;
+      margin:0;
+      padding:14px 16px;
+      border:0;
+      border-radius:26px;
+      background:transparent;
+      color:rgba(17,24,39,.88);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      text-align:left;
+      font-size:14px;
+      font-weight:950;
+      letter-spacing:-.01em;
+      cursor:pointer;
+      transition:background-color .16s ease, color .16s ease;
+    }
+    .rz-modal-section-toggle:hover{background:rgba(17,24,39,.04);}
+    .rz-modal-section-toggle:focus-visible{
+      outline:3px solid rgba(13,110,253,.20);
+      outline-offset:-3px;
+    }
+    .rz-accordion-section.is-open > .rz-modal-section-toggle{
+      color:#0d5fc7;
+      background:rgba(13,110,253,.055);
+      border-radius:26px 26px 18px 18px;
+    }
+    .rz-modal-section-label{min-width:0;word-break:break-word;}
+    .rz-modal-section-chevron{
+      flex:0 0 30px;
+      width:30px;
+      height:30px;
+      border-radius:999px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      background:rgba(17,24,39,.06);
+      color:rgba(17,24,39,.55);
+      font-size:20px;
+      line-height:1;
+      transition:transform .18s ease, background-color .18s ease, color .18s ease;
+    }
+    .rz-accordion-section.is-open > .rz-modal-section-toggle .rz-modal-section-chevron{
+      transform:rotate(90deg);
+      background:rgba(13,110,253,.10);
+      color:#0d5fc7;
+    }
+    .rz-modal-section-content{padding:2px 14px 14px;}
+    .rz-modal-section-content[hidden]{display:none!important;}
     .rz-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
     .rz-field{display:flex;flex-direction:column;gap:6px;}
     .rz-field label{font-size:12px;font-weight:900;color:var(--rz-muted,#6b7280);}
@@ -613,6 +677,6 @@
 
   <!-- NEW shared drawer -->
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="/admin/pools.js?v=pp-pool-markup-1"></script>
+  <script src="/admin/pools.js?v=pool-accordion-1"></script>
 </body>
 </html>
