@@ -10,6 +10,8 @@ async function api(url, options = {}) {
 }
 function esc(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function money(value) { return value === null || value === undefined ? "—" : `${Number(value).toLocaleString("fr-FR")} Ar`; }
+function statusLabel(value) { return ({ draft:"Brouillon", scheduled:"Planifiée", active:"Active", retired:"Retirée", archived:"Archivée" })[value] || value || "—"; }
+function featureLabel(key) { return state.features.find((f) => f.key === key)?.label || key; }
 function err(target, message) { target.style.display = message ? "block" : "none"; target.textContent = message || ""; }
 
 async function requireSuperadmin() {
@@ -22,13 +24,13 @@ function render() {
   $("offers").innerHTML = state.items.length ? state.items.map((offer) => {
     const v = latestVersion(offer);
     return `<article class="bo-card" data-id="${esc(offer.id)}">
-      <h2>${esc(offer.title)}</h2><div class="bo-meta">${esc(offer.code)} · ${offer.visibility === "public" ? "publique" : "privée"} · ${esc(offer.status)}</div>
+      <h2>${esc(offer.title)}</h2><div class="bo-meta">${esc(offer.code)} · ${offer.visibility === "public" ? "publique" : "privée"} · ${esc(statusLabel(offer.status))}</div>
       <p>${esc(offer.description || "Aucune description")}</p>
-      <div class="bo-version">${v ? `Version ${v.version_no} · ${esc(v.status)}` : "Aucune version tarifaire"}</div>
+      <div class="bo-version">${v ? `Version ${v.version_no} · ${esc(statusLabel(v.status))}` : "Aucune version tarifaire"}</div>
       <div class="bo-pills">
         ${v?.commission_enabled ? `<span class="bo-pill ok">Commission ${Number(v.commission_pct)} %</span>` : ""}
         ${v?.subscription_enabled ? `<span class="bo-pill ok">${money(v.subscription_price_ar)}/mois</span>` : ""}
-        ${(v?.features || []).map((f) => `<span class="bo-pill">${esc(f)}</span>`).join("")}
+        ${(v?.features || []).map((f) => `<span class="bo-pill">${esc(featureLabel(f))}</span>`).join("")}
       </div></article>`;
   }).join("") : `<div class="bo-empty">Aucune offre.</div>`;
   document.querySelectorAll(".bo-card").forEach((card) => card.onclick = () => openEdit(card.dataset.id));
@@ -50,21 +52,23 @@ function setVersion(v) {
   const editable = !v || v.status === "draft";
   ["commissionEnabled","commissionPct","subscriptionEnabled","subscriptionPrice","graceDays"].forEach((id) => $(id).disabled = !editable);
   $("featuresBox").querySelectorAll("input").forEach((input) => input.disabled = !editable);
-  $("versionNote").textContent = v ? `Version ${v.version_no} — ${v.status}${editable ? "" : " (immuable)"}` : "La première sauvegarde créera la version 1.";
-  $("newVersionBtn").style.display = state.editing && v ? "" : "none";
+  $("versionNote").textContent = v ? `Version ${v.version_no} — ${statusLabel(v.status)}${editable ? "" : " (immuable)"}` : "La première sauvegarde créera la version 1.";
+  $("newVersionBtn").style.display = state.editing && v && !editable ? "" : "none";
 }
+function showModal() { $("modal").classList.add("open"); document.body.classList.add("bo-modal-open"); }
+function closeModal() { $("modal").classList.remove("open"); document.body.classList.remove("bo-modal-open"); }
 function openNew() {
   state.editing = null; $("modalTitle").textContent = "Nouvelle offre"; $("modalSub").textContent = "Créée en brouillon.";
   $("code").disabled = false; ["code","title","description","details"].forEach((id) => $(id).value = "");
   $("visibility").value = "private"; $("offerStatus").value = "draft"; $("offerStatus").disabled = true; $("sortOrder").value = 0;
-  setVersion(null); err($("modalError"), ""); $("modal").classList.add("open");
+  setVersion(null); err($("modalError"), ""); showModal();
 }
 function openEdit(id) {
   const offer = state.items.find((x) => x.id === id); if (!offer) return;
   state.editing = offer; $("modalTitle").textContent = offer.title; $("modalSub").textContent = offer.code;
   $("code").value = offer.code; $("code").disabled = true; $("title").value = offer.title || ""; $("description").value = offer.description || "";
   $("details").value = (offer.details || []).join("\n"); $("visibility").value = offer.visibility; $("offerStatus").value = offer.status; $("offerStatus").disabled = false; $("sortOrder").value = offer.sort_order || 0;
-  setVersion(latestVersion(offer)); err($("modalError"), ""); $("modal").classList.add("open");
+  setVersion(latestVersion(offer)); err($("modalError"), ""); showModal();
 }
 function versionBody() {
   return { commission_enabled: $("commissionEnabled").checked, commission_pct: $("commissionPct").value, subscription_enabled: $("subscriptionEnabled").checked, subscription_price_ar: $("subscriptionPrice").value, grace_days: $("graceDays").value };
@@ -81,7 +85,7 @@ async function save() {
     if (!version) { const created = await api(`/api/admin/billing/offers/${encodeURIComponent(offer.id)}/versions`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(versionBody()) }); version = created.item; }
     else if (version.status === "draft") await api(`/api/admin/billing/offer-versions/${encodeURIComponent(version.id)}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify(versionBody()) });
     if (version.status === "draft") await api(`/api/admin/billing/offer-versions/${encodeURIComponent(version.id)}/features`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ features:selectedFeatures() }) });
-    $("modal").classList.remove("open"); await load();
+    closeModal(); await load();
   } catch (e) { err($("modalError"), e.message); } finally { $("saveBtn").disabled = false; }
 }
 function newVersion() { if (!state.editing) return; setVersion(null); $("versionNote").textContent = "Nouvelle version brouillon — enregistrer pour la créer."; }
@@ -89,7 +93,9 @@ function newVersion() { if (!state.editing) return; setVersion(null); $("version
 async function boot() {
   try { await requireSuperadmin(); await load(); } catch (e) { err($("error"), e.message === "billing_admin_disabled" ? "Le panneau Offres est désactivé par le feature flag S2." : e.message); }
   $("refreshBtn").onclick = () => load().catch((e) => err($("error"), e.message)); $("newBtn").onclick = openNew;
-  $("closeBtn").onclick = () => $("modal").classList.remove("open"); $("saveBtn").onclick = save; $("newVersionBtn").onclick = newVersion;
+  $("closeBtn").onclick = closeModal; $("saveBtn").onclick = save; $("newVersionBtn").onclick = newVersion;
+  $("modal").onclick = (event) => { if (event.target === $("modal")) closeModal(); };
+  window.addEventListener("keydown", (event) => { if (event.key === "Escape" && $("modal").classList.contains("open")) closeModal(); });
   $("commissionEnabled").onchange = () => $("commissionPct").disabled = !$("commissionEnabled").checked;
   $("subscriptionEnabled").onchange = () => $("subscriptionPrice").disabled = !$("subscriptionEnabled").checked;
 }
