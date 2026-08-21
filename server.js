@@ -12741,6 +12741,26 @@ app.use(express.static(path.join(__dirname, "public")));
 // ---------------------------------------------------------------------------
 // ENVIRONMENT VARIABLES
 // ---------------------------------------------------------------------------
+// BILLING V1 / S1 — passive scaffolding only.
+// Every behavior flag is OFF by default. In S1 these constants are deliberately
+// not connected to portal, revenue, PP, payout or payment execution paths.
+function billingEnvFlag(name, fallback = false) {
+  const raw = String(process.env[name] ?? (fallback ? "true" : "false")).trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "yes" || raw === "on";
+}
+
+const BILLING_V1_ENABLED = billingEnvFlag("BILLING_V1_ENABLED", false);
+const BILLING_V1_SHADOW_READ = billingEnvFlag("BILLING_V1_SHADOW_READ", false);
+const BILLING_V1_ENFORCE = billingEnvFlag("BILLING_V1_ENFORCE", false);
+const BILLING_V1_SUBSCRIPTION_PAYMENTS = billingEnvFlag("BILLING_V1_SUBSCRIPTION_PAYMENTS", false);
+const BILLING_V1_PORTAL_LOCK = billingEnvFlag("BILLING_V1_PORTAL_LOCK", false);
+const BILLING_V1_OWNER_SELF_SERVICE = billingEnvFlag("BILLING_V1_OWNER_SELF_SERVICE", false);
+const BILLING_V1_PDF = billingEnvFlag("BILLING_V1_PDF", false);
+const BILLING_V1_DEFAULT_GRACE_DAYS = Math.max(
+  0,
+  Math.min(31, parseInt(process.env.BILLING_V1_DEFAULT_GRACE_DAYS || "5", 10) || 0)
+);
+
 const MVOLA_BASE = process.env.MVOLA_BASE || "https://api.mvola.mg";
 const MVOLA_CLIENT_ID = process.env.MVOLA_CLIENT_ID || process.env.MVOLA_CONSUMER_KEY;
 const MVOLA_CLIENT_SECRET = process.env.MVOLA_CLIENT_SECRET || process.env.MVOLA_CONSUMER_SECRET;
