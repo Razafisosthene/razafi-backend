@@ -12756,6 +12756,7 @@ const BILLING_V1_SUBSCRIPTION_PAYMENTS = billingEnvFlag("BILLING_V1_SUBSCRIPTION
 const BILLING_V1_PORTAL_LOCK = billingEnvFlag("BILLING_V1_PORTAL_LOCK", false);
 const BILLING_V1_OWNER_SELF_SERVICE = billingEnvFlag("BILLING_V1_OWNER_SELF_SERVICE", false);
 const BILLING_V1_PDF = billingEnvFlag("BILLING_V1_PDF", false);
+const BILLING_V1_ADMIN_OFFERS = billingEnvFlag("BILLING_V1_ADMIN_OFFERS", false);
 const BILLING_V1_DEFAULT_GRACE_DAYS = Math.max(
   0,
   Math.min(31, parseInt(process.env.BILLING_V1_DEFAULT_GRACE_DAYS || "5", 10) || 0)
@@ -13872,6 +13873,7 @@ function buildAdminPermissions(admin) {
     settings_manage: isSuperadmin,
     owner_revenue_view: isSuperadmin,
     maintenance_manage: isSuperadmin,
+    billing_offers_manage: isSuperadmin && BILLING_V1_ADMIN_OFFERS,
   };
 }
 
@@ -14204,6 +14206,180 @@ app.post("/api/admin/maintenance/cleanup", requireAdmin, requireSuperadmin, asyn
 // ------------------------------------------------------------
 // ADMIN: Users (Superadmin only) + Pool assignments
 // ------------------------------------------------------------
+function requireBillingAdminOffers(req, res, next) {
+  if (!BILLING_V1_ADMIN_OFFERS) return res.status(404).json({ error: "billing_admin_disabled" });
+  return next();
+}
+
+function billingText(value, max, required = false) {
+  const text = String(value ?? "").trim();
+  if (required && !text) return null;
+  return text ? text.slice(0, max) : null;
+}
+
+function billingCode(value) {
+  const code = String(value || "").trim().toLowerCase();
+  return /^[a-z][a-z0-9_-]{1,63}$/.test(code) ? code : null;
+}
+
+function billingDetails(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((x) => billingText(x, 240)).filter(Boolean).slice(0, 30);
+}
+
+function billingVersionPayload(body = {}) {
+  const commissionEnabled = body.commission_enabled === true;
+  const subscriptionEnabled = body.subscription_enabled === true;
+  const commissionPct = commissionEnabled ? Number(body.commission_pct) : null;
+  const price = subscriptionEnabled ? Number(body.subscription_price_ar) : null;
+  const grace = body.grace_days === null || body.grace_days === undefined || body.grace_days === ""
+    ? null : Number(body.grace_days);
+  if (commissionEnabled && (!Number.isFinite(commissionPct) || commissionPct < 0 || commissionPct > 100)) return null;
+  if (subscriptionEnabled && (!Number.isInteger(price) || price < 0)) return null;
+  if (grace !== null && (!Number.isInteger(grace) || grace < 0 || grace > 31)) return null;
+  return {
+    commission_enabled: commissionEnabled,
+    subscription_enabled: subscriptionEnabled,
+    commission_pct: commissionPct,
+    subscription_price_ar: price,
+    grace_days: grace,
+  };
+}
+
+// S2: catalog administration only. No pool assignment, invoice or enforcement.
+app.get("/api/admin/billing/offers", requireAdmin, requireSuperadmin, requireBillingAdminOffers, async (_req, res) => {
+  try {
+    const [{ data: offers, error: offerError }, { data: features, error: featureError }] = await Promise.all([
+      supabase.from("billing_offers").select("id,code,title,description,details,visibility,status,sort_order,created_at,updated_at").order("sort_order"),
+      supabase.from("billing_features").select("key,label,description,is_assignable,is_active").order("label"),
+    ]);
+    if (offerError || featureError) return res.status(500).json({ error: offerError?.message || featureError?.message });
+    const ids = (offers || []).map((o) => o.id);
+    let versions = [];
+    if (ids.length) {
+      const { data, error } = await supabase.from("billing_offer_versions")
+        .select("id,offer_id,version_no,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,effective_from,effective_to,status,created_at")
+        .in("offer_id", ids).order("version_no", { ascending: false });
+      if (error) return res.status(500).json({ error: error.message });
+      versions = data || [];
+    }
+    const versionIds = versions.map((v) => v.id);
+    let links = [];
+    if (versionIds.length) {
+      const { data, error } = await supabase.from("billing_offer_version_features")
+        .select("offer_version_id,feature_key,enabled").in("offer_version_id", versionIds);
+      if (error) return res.status(500).json({ error: error.message });
+      links = data || [];
+    }
+    const items = (offers || []).map((offer) => ({
+      ...offer,
+      versions: versions.filter((v) => v.offer_id === offer.id).map((v) => ({
+        ...v,
+        features: links.filter((x) => x.offer_version_id === v.id && x.enabled).map((x) => x.feature_key),
+      })),
+    }));
+    return res.json({ items, features: features || [], passive: true });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/admin/billing/offers", requireAdmin, requireSuperadmin, requireBillingAdminOffers, async (req, res) => {
+  try {
+    const code = billingCode(req.body?.code);
+    const title = billingText(req.body?.title, 160, true);
+    if (!code) return res.status(400).json({ error: "code_invalid" });
+    if (!title) return res.status(400).json({ error: "title_required" });
+    const row = {
+      code, title,
+      description: billingText(req.body?.description, 1000),
+      details: billingDetails(req.body?.details),
+      visibility: req.body?.visibility === "public" ? "public" : "private",
+      status: "draft",
+      sort_order: Number.isInteger(Number(req.body?.sort_order)) ? Number(req.body.sort_order) : 0,
+      created_by: req.admin.id,
+    };
+    const { data, error } = await supabase.from("billing_offers").insert(row).select().single();
+    if (error) return res.status(error.code === "23505" ? 409 : 500).json({ error: error.code === "23505" ? "code_exists" : error.message });
+    return res.status(201).json({ ok: true, item: data });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.patch("/api/admin/billing/offers/:id", requireAdmin, requireSuperadmin, requireBillingAdminOffers, async (req, res) => {
+  try {
+    const patch = {};
+    if (req.body?.title !== undefined) {
+      patch.title = billingText(req.body.title, 160, true);
+      if (!patch.title) return res.status(400).json({ error: "title_required" });
+    }
+    if (req.body?.description !== undefined) patch.description = billingText(req.body.description, 1000);
+    if (req.body?.details !== undefined) patch.details = billingDetails(req.body.details);
+    if (req.body?.visibility !== undefined) patch.visibility = req.body.visibility === "public" ? "public" : "private";
+    if (req.body?.status !== undefined) {
+      const status = String(req.body.status);
+      if (!["draft", "active", "archived"].includes(status)) return res.status(400).json({ error: "status_invalid" });
+      patch.status = status;
+    }
+    if (req.body?.sort_order !== undefined) patch.sort_order = Number(req.body.sort_order) || 0;
+    if (!Object.keys(patch).length) return res.json({ ok: true });
+    const { data, error } = await supabase.from("billing_offers").update(patch).eq("id", req.params.id).select().maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data) return res.status(404).json({ error: "not_found" });
+    return res.json({ ok: true, item: data });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/admin/billing/offers/:id/versions", requireAdmin, requireSuperadmin, requireBillingAdminOffers, async (req, res) => {
+  try {
+    const payload = billingVersionPayload(req.body);
+    if (!payload) return res.status(400).json({ error: "version_invalid" });
+    const { data: latest, error: latestError } = await supabase.from("billing_offer_versions")
+      .select("version_no").eq("offer_id", req.params.id).order("version_no", { ascending: false }).limit(1).maybeSingle();
+    if (latestError) return res.status(500).json({ error: latestError.message });
+    const { data, error } = await supabase.from("billing_offer_versions").insert({
+      offer_id: req.params.id, version_no: Number(latest?.version_no || 0) + 1,
+      ...payload, status: "draft", created_by: req.admin.id,
+    }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    return res.status(201).json({ ok: true, item: data });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.patch("/api/admin/billing/offer-versions/:id", requireAdmin, requireSuperadmin, requireBillingAdminOffers, async (req, res) => {
+  try {
+    const { data: current, error: readError } = await supabase.from("billing_offer_versions").select("status").eq("id", req.params.id).maybeSingle();
+    if (readError) return res.status(500).json({ error: readError.message });
+    if (!current) return res.status(404).json({ error: "not_found" });
+    if (current.status !== "draft") return res.status(409).json({ error: "version_immutable" });
+    const payload = billingVersionPayload(req.body);
+    if (!payload) return res.status(400).json({ error: "version_invalid" });
+    const { data, error } = await supabase.from("billing_offer_versions").update(payload).eq("id", req.params.id).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true, item: data });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.put("/api/admin/billing/offer-versions/:id/features", requireAdmin, requireSuperadmin, requireBillingAdminOffers, async (req, res) => {
+  try {
+    const { data: current, error: readError } = await supabase.from("billing_offer_versions").select("status").eq("id", req.params.id).maybeSingle();
+    if (readError) return res.status(500).json({ error: readError.message });
+    if (!current) return res.status(404).json({ error: "not_found" });
+    if (current.status !== "draft") return res.status(409).json({ error: "version_immutable" });
+    const keys = uniqStrings(req.body?.features || []).slice(0, 50);
+    const { data: allowed, error: featureError } = await supabase.from("billing_features").select("key").eq("is_active", true).eq("is_assignable", true);
+    if (featureError) return res.status(500).json({ error: featureError.message });
+    const allow = new Set((allowed || []).map((x) => x.key));
+    if (keys.some((key) => !allow.has(key))) return res.status(400).json({ error: "feature_invalid" });
+    const allFeatureKeys = [...allow];
+    if (allFeatureKeys.length) {
+      const { error } = await supabase.from("billing_offer_version_features").upsert(
+        allFeatureKeys.map((feature_key) => ({ offer_version_id: req.params.id, feature_key, enabled: keys.includes(feature_key) })),
+        { onConflict: "offer_version_id,feature_key" }
+      );
+      if (error) return res.status(500).json({ error: error.message });
+    }
+    return res.json({ ok: true, features: keys });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
 function normalizeEmail(e) {
   return String(e || "").trim().toLowerCase();
 }

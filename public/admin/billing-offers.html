@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RAZAFI Admin — Offres</title>
+  <link rel="stylesheet" href="/admin/admin.css?v=billing-s2">
+  <style>
+    .bo-shell{width:min(1120px,96%);display:grid;gap:16px}.bo-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}.bo-actions{display:flex;gap:8px;flex-wrap:wrap}.bo-banner{padding:12px 14px;border-radius:16px;background:#fff7d6;color:#6b4e00;font-weight:800}.bo-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px}.bo-card{background:rgba(255,255,255,.82);border:1px solid rgba(17,24,39,.08);border-radius:24px;padding:18px;box-shadow:0 12px 28px rgba(15,23,42,.07);cursor:pointer}.bo-card h2{margin:0 0 5px;font-size:20px}.bo-meta,.bo-version{color:#667085;font-size:13px}.bo-pills{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}.bo-pill{padding:6px 9px;border-radius:999px;background:#eef2f6;font-size:12px;font-weight:850}.bo-pill.ok{background:#dcfce7;color:#166534}.bo-empty{padding:24px;text-align:center;color:#667085}.bo-modal{position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:5000;display:none;align-items:center;justify-content:center;padding:16px}.bo-modal.open{display:flex}.bo-dialog{width:min(760px,100%);max-height:92vh;overflow:auto;background:white;border-radius:26px;padding:20px}.bo-dialog-head{display:flex;justify-content:space-between;gap:10px}.bo-form{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.bo-form .full{grid-column:1/-1}.bo-form label{display:block;font-weight:850;margin-bottom:6px}.bo-form input,.bo-form textarea,.bo-form select{width:100%;box-sizing:border-box}.bo-check{display:flex!important;align-items:center;gap:8px}.bo-check input{width:auto}.bo-footer{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;flex-wrap:wrap}.bo-error{color:#b42318;background:#fee4e2;padding:10px;border-radius:12px;margin-top:10px;display:none}@media(max-width:650px){.bo-form{grid-template-columns:1fr}.bo-form .full{grid-column:auto}.bo-actions,.bo-actions button,.bo-footer button{width:100%}}
+  </style>
+</head>
+<body class="rz-admin-shell">
+  <div class="login-container">
+    <main class="card bo-shell">
+      <div class="topbar bo-head">
+        <div><h1 class="rz-hero-title">Offres RAZAFI</h1><div id="me" class="subtitle">Vérification de la session…</div></div>
+        <div class="bo-actions"><button id="refreshBtn" class="filter-btn">Actualiser</button><button id="newBtn" class="filter-btn primary">+ Nouvelle offre</button></div>
+      </div>
+      <div class="bo-banner">S2 — Catalogue uniquement. Aucune offre n’est appliquée automatiquement aux pools.</div>
+      <div id="error" class="bo-error"></div>
+      <section id="offers" class="bo-grid"><div class="bo-empty">Chargement…</div></section>
+    </main>
+  </div>
+
+  <div id="modal" class="bo-modal" role="dialog" aria-modal="true">
+    <div class="bo-dialog">
+      <div class="bo-dialog-head"><div><h2 id="modalTitle">Offre</h2><div id="modalSub" class="bo-meta"></div></div><button id="closeBtn" class="filter-btn">Fermer</button></div>
+      <div id="modalError" class="bo-error"></div>
+      <div class="bo-form">
+        <div><label>Code</label><input id="code" placeholder="ex. razafi_pro"></div>
+        <div><label>Titre</label><input id="title"></div>
+        <div class="full"><label>Description</label><textarea id="description" rows="2"></textarea></div>
+        <div class="full"><label>Détails / avantages (une ligne par élément)</label><textarea id="details" rows="5"></textarea></div>
+        <div><label>Visibilité</label><select id="visibility"><option value="public">Publique</option><option value="private">Privée</option></select></div>
+        <div><label>Statut de l’offre</label><select id="offerStatus"><option value="draft">Brouillon</option><option value="active">Active</option><option value="archived">Archivée</option></select></div>
+        <div><label>Ordre</label><input id="sortOrder" type="number" step="1"></div>
+      </div>
+      <hr>
+      <h3>Version tarifaire brouillon</h3>
+      <div id="versionNote" class="bo-meta"></div>
+      <div class="bo-form">
+        <div><label class="bo-check"><input id="commissionEnabled" type="checkbox"> Mode commission</label></div>
+        <div><label>Taux commission (%)</label><input id="commissionPct" type="number" min="0" max="100" step="0.01"></div>
+        <div><label class="bo-check"><input id="subscriptionEnabled" type="checkbox"> Abonnement mensuel</label></div>
+        <div><label>Prix final propriétaire (Ar)</label><input id="subscriptionPrice" type="number" min="0" step="1"></div>
+        <div><label>Jours de tolérance</label><input id="graceDays" type="number" min="0" max="31" step="1"></div>
+        <div id="featuresBox" class="full"></div>
+      </div>
+      <div class="bo-footer"><button id="newVersionBtn" class="filter-btn">Créer une nouvelle version</button><button id="saveBtn" class="filter-btn primary">Enregistrer</button></div>
+    </div>
+  </div>
+  <script src="/admin/nav.js?v=billing-s2"></script>
+  <script src="/admin/billing-offers.js?v=billing-s2"></script>
+</body>
+</html>
