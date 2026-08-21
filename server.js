@@ -12757,6 +12757,7 @@ const BILLING_V1_PORTAL_LOCK = billingEnvFlag("BILLING_V1_PORTAL_LOCK", false);
 const BILLING_V1_OWNER_SELF_SERVICE = billingEnvFlag("BILLING_V1_OWNER_SELF_SERVICE", false);
 const BILLING_V1_PDF = billingEnvFlag("BILLING_V1_PDF", false);
 const BILLING_V1_ADMIN_OFFERS = billingEnvFlag("BILLING_V1_ADMIN_OFFERS", false);
+const BILLING_V1_POOL_ASSIGNMENTS_SHADOW = billingEnvFlag("BILLING_V1_POOL_ASSIGNMENTS_SHADOW", false);
 const BILLING_V1_DEFAULT_GRACE_DAYS = Math.max(
   0,
   Math.min(31, parseInt(process.env.BILLING_V1_DEFAULT_GRACE_DAYS || "5", 10) || 0)
@@ -13874,6 +13875,7 @@ function buildAdminPermissions(admin) {
     owner_revenue_view: isSuperadmin,
     maintenance_manage: isSuperadmin,
     billing_offers_manage: isSuperadmin && BILLING_V1_ADMIN_OFFERS,
+    billing_assignments_shadow_manage: isSuperadmin && BILLING_V1_POOL_ASSIGNMENTS_SHADOW,
   };
 }
 
@@ -14211,6 +14213,11 @@ function requireBillingAdminOffers(req, res, next) {
   return next();
 }
 
+function requireBillingAssignmentsShadow(req, res, next) {
+  if (!BILLING_V1_POOL_ASSIGNMENTS_SHADOW) return res.status(404).json({ error: "billing_assignments_shadow_disabled" });
+  return next();
+}
+
 function billingText(value, max, required = false) {
   const text = String(value ?? "").trim();
   if (required && !text) return null;
@@ -14425,6 +14432,123 @@ app.put("/api/admin/billing/offer-versions/:id/features", requireAdmin, requireS
       },
     });
     return res.json({ ok: true, features: keys });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+function billingDate(value, required = false) {
+  const s = String(value || "").trim();
+  if (!s) return required ? null : null;
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(`${s}T00:00:00Z`)) ? s : undefined;
+}
+
+async function loadBillingOfferMode(offerId, mode) {
+  const { data: offer, error: offerError } = await supabase.from("billing_offers")
+    .select("id,code,title,status").eq("id", offerId).maybeSingle();
+  if (offerError || !offer) return { error: offerError?.message || "offer_not_found" };
+  if (offer.status === "archived") return { error: "offer_archived" };
+  const { data: version, error: versionError } = await supabase.from("billing_offer_versions")
+    .select("id,version_no,status,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days")
+    .eq("offer_id", offerId).order("version_no", { ascending: false }).limit(1).maybeSingle();
+  if (versionError || !version) return { error: versionError?.message || "offer_version_missing" };
+  if (mode === "commission" && !version.commission_enabled) return { error: "commission_not_available" };
+  if (mode === "subscription" && !version.subscription_enabled) return { error: "subscription_not_available" };
+  return { offer, version };
+}
+
+function normalizeShadowAssignment(body = {}) {
+  const billing_status = String(body.billing_status || "").trim();
+  if (!["commercial", "trial", "internal", "exempt"].includes(billing_status)) return { error: "billing_status_invalid" };
+  let billing_mode = body.billing_mode ? String(body.billing_mode).trim() : null;
+  if (billing_status === "internal" || billing_status === "exempt") billing_mode = null;
+  if (["commercial", "trial"].includes(billing_status) && !["commission", "subscription"].includes(billing_mode)) return { error: "billing_mode_required" };
+  const effective_from = billingDate(body.effective_from, true);
+  const effective_to = billingDate(body.effective_to);
+  const trial_ends_at = billingDate(body.trial_ends_at);
+  if (!effective_from || effective_to === undefined || trial_ends_at === undefined) return { error: "date_invalid" };
+  if (effective_to && effective_to < effective_from) return { error: "date_range_invalid" };
+  if (billing_status === "trial" && (!trial_ends_at || trial_ends_at < effective_from)) return { error: "trial_end_required" };
+  const post_trial_offer_id = billing_status === "trial" ? String(body.post_trial_offer_id || "").trim() || null : null;
+  const post_trial_mode = billing_status === "trial" ? String(body.post_trial_mode || "").trim() || null : null;
+  if (billing_status === "trial" && (!post_trial_offer_id || !["commission", "subscription"].includes(post_trial_mode))) return { error: "post_trial_required" };
+  return { value: { billing_status, billing_mode, effective_from, effective_to, trial_ends_at: billing_status === "trial" ? trial_ends_at : null, post_trial_offer_id, post_trial_mode } };
+}
+
+app.get("/api/admin/billing/assignments-shadow", requireAdmin, requireSuperadmin, requireBillingAssignmentsShadow, async (_req, res) => {
+  try {
+    const [{ data: pools, error: poolError }, { data: offers, error: offerError }, { data: assignments, error: assignmentError }] = await Promise.all([
+      supabase.from("internet_pools").select("id,name,brand_name,radius_nas_id").order("name"),
+      supabase.from("billing_offers").select("id,code,title,status,visibility").neq("status", "archived").order("sort_order"),
+      supabase.from("pool_billing_assignments").select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to,trial_ends_at,post_trial_offer_id,post_trial_mode,source,created_at").order("effective_from", { ascending: false }),
+    ]);
+    if (poolError || offerError || assignmentError) return res.status(500).json({ error: poolError?.message || offerError?.message || assignmentError?.message });
+    const offerIds = (offers || []).map((x) => x.id);
+    let versions = [];
+    let versionFeatures = [];
+    if (offerIds.length) {
+      const { data, error } = await supabase.from("billing_offer_versions").select("id,offer_id,version_no,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,status").in("offer_id", offerIds).order("version_no", { ascending: false });
+      if (error) return res.status(500).json({ error: error.message });
+      versions = data || [];
+      const versionIds = versions.map((v) => v.id);
+      if (versionIds.length) {
+        const { data: links, error: linkError } = await supabase.from("billing_offer_version_features").select("offer_version_id,feature_key,enabled").in("offer_version_id", versionIds).eq("enabled", true);
+        if (linkError) return res.status(500).json({ error: linkError.message });
+        versionFeatures = links || [];
+      }
+    }
+    return res.json({
+      passive: true,
+      pools: pools || [],
+      offers: (offers || []).map((offer) => {
+        const version = versions.find((v) => v.offer_id === offer.id) || null;
+        return { ...offer, version: version ? { ...version, features: versionFeatures.filter((x) => x.offer_version_id === version.id).map((x) => x.feature_key) } : null };
+      }),
+      assignments: assignments || [],
+    });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/admin/billing/assignments-shadow", requireAdmin, requireSuperadmin, requireBillingAssignmentsShadow, async (req, res) => {
+  try {
+    const pool_id = String(req.body?.pool_id || "").trim();
+    const offer_id = String(req.body?.offer_id || "").trim();
+    if (!pool_id || !offer_id) return res.status(400).json({ error: "pool_and_offer_required" });
+    const normalized = normalizeShadowAssignment(req.body);
+    if (normalized.error) return res.status(400).json({ error: normalized.error });
+    const { data: pool, error: poolError } = await supabase.from("internet_pools").select("id,name,brand_name").eq("id", pool_id).maybeSingle();
+    if (poolError || !pool) return res.status(404).json({ error: poolError?.message || "pool_not_found" });
+    const modeCheck = await loadBillingOfferMode(offer_id, normalized.value.billing_mode);
+    if (modeCheck.error) return res.status(400).json({ error: modeCheck.error });
+    if (normalized.value.post_trial_offer_id) {
+      const postCheck = await loadBillingOfferMode(normalized.value.post_trial_offer_id, normalized.value.post_trial_mode);
+      if (postCheck.error) return res.status(400).json({ error: `post_trial_${postCheck.error}` });
+    }
+    const { data, error } = await supabase.from("pool_billing_assignments").insert({
+      pool_id, offer_id, ...normalized.value, source: "superadmin", created_by: req.admin.id,
+    }).select().single();
+    if (error) return res.status(error.message?.includes("overlap") ? 409 : 500).json({ error: error.message?.includes("overlap") ? "assignment_overlap" : error.message });
+    await insertAudit({ event_type: "billing_pool_assignment_created", status: "success", entity_type: "pool_billing_assignment", entity_id: data.id, actor_type: "admin_user", actor_id: req.admin.id, pool_id, message: "Attribution shadow créée", metadata: { shadow: true, after: data } });
+    return res.status(201).json({ ok: true, item: data, passive: true });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.patch("/api/admin/billing/assignments-shadow/:id", requireAdmin, requireSuperadmin, requireBillingAssignmentsShadow, async (req, res) => {
+  try {
+    const { data: before, error: beforeError } = await supabase.from("pool_billing_assignments").select("*").eq("id", req.params.id).maybeSingle();
+    if (beforeError) return res.status(500).json({ error: beforeError.message });
+    if (!before) return res.status(404).json({ error: "not_found" });
+    const normalized = normalizeShadowAssignment({ ...before, ...req.body });
+    if (normalized.error) return res.status(400).json({ error: normalized.error });
+    const offer_id = String(req.body?.offer_id || before.offer_id);
+    const modeCheck = await loadBillingOfferMode(offer_id, normalized.value.billing_mode);
+    if (modeCheck.error) return res.status(400).json({ error: modeCheck.error });
+    if (normalized.value.post_trial_offer_id) {
+      const postCheck = await loadBillingOfferMode(normalized.value.post_trial_offer_id, normalized.value.post_trial_mode);
+      if (postCheck.error) return res.status(400).json({ error: `post_trial_${postCheck.error}` });
+    }
+    const { data, error } = await supabase.from("pool_billing_assignments").update({ offer_id, ...normalized.value }).eq("id", req.params.id).select().single();
+    if (error) return res.status(error.message?.includes("overlap") ? 409 : 500).json({ error: error.message?.includes("overlap") ? "assignment_overlap" : error.message });
+    await insertAudit({ event_type: "billing_pool_assignment_updated", status: "success", entity_type: "pool_billing_assignment", entity_id: data.id, actor_type: "admin_user", actor_id: req.admin.id, pool_id: data.pool_id, message: "Attribution shadow modifiée", metadata: { shadow: true, before, after: data } });
+    return res.json({ ok: true, item: data, passive: true });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 

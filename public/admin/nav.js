@@ -83,6 +83,9 @@
           <a class="rz-item" data-href="/admin/billing-offers.html" href="/admin/billing-offers.html" id="rzNavBillingOffers">
             <span class="rz-item-label">Offres RAZAFI</span>
           </a>
+          <a class="rz-item" data-href="/admin/billing-assignments.html" href="/admin/billing-assignments.html" id="rzNavBillingAssignments">
+            <span class="rz-item-label">Abonnements des pools</span>
+          </a>
           <a class="rz-item" data-href="/admin/audit.html" href="/admin/audit.html" id="rzNavAudit">
             <span class="rz-item-label">AUDIT</span>
           </a>
@@ -328,6 +331,7 @@
 
       const isSuper = !!admin?.is_superadmin || String(admin?.role || "").toLowerCase() === "superadmin";
       const canManageBillingOffers = isSuper && admin?.permissions?.billing_offers_manage === true;
+      const canManageBillingAssignments = isSuper && admin?.permissions?.billing_assignments_shadow_manage === true;
 
       // Hide forbidden nav items for pool_readonly
       if (!isSuper) {
@@ -336,6 +340,7 @@
         const elAudit = $("#rzNavAudit");
         const elUsers = $("#rzNavUsers");
         const elBillingOffers = $("#rzNavBillingOffers");
+        const elBillingAssignments = $("#rzNavBillingAssignments");
         const elBlocked = $("#rzNavBlocked");
         const elOwnerRevenue = $("#rzNavOwnerRevenue");
         const elMaintenance = $("#rzNavMaintenance");
@@ -343,16 +348,19 @@
         if (elAudit) elAudit.style.display = "none";
         if (elUsers) elUsers.style.display = "none";
         if (elBillingOffers) elBillingOffers.style.display = "none";
+        if (elBillingAssignments) elBillingAssignments.style.display = "none";
         if (elOwnerRevenue) elOwnerRevenue.style.display = "none";
         if (elMaintenance) elMaintenance.style.display = "none";
       } else {
         // Superadmin only: show Users and Owner Revenue (if present)
         const elUsers = $("#rzNavUsers");
         const elBillingOffers = $("#rzNavBillingOffers");
+        const elBillingAssignments = $("#rzNavBillingAssignments");
         const elOwnerRevenue = $("#rzNavOwnerRevenue");
         const elMaintenance = $("#rzNavMaintenance");
         if (elUsers) elUsers.style.display = "";
         if (elBillingOffers) elBillingOffers.style.display = canManageBillingOffers ? "" : "none";
+        if (elBillingAssignments) elBillingAssignments.style.display = canManageBillingAssignments ? "" : "none";
         if (elOwnerRevenue) elOwnerRevenue.style.display = "";
         if (elMaintenance) elMaintenance.style.display = "";
       }
@@ -438,6 +446,7 @@
       if (p.includes("/block-devices"))     return "blocked_devices";
       if (p.includes("/users"))             return "users";
       if (p.includes("/billing-offers"))    return "billing_offers";
+      if (p.includes("/billing-assignments")) return "billing_assignments";
       if (p.includes("/audit"))             return "audit";
       return "unknown";
     } catch (_) {
