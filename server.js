@@ -12758,6 +12758,7 @@ const BILLING_V1_OWNER_SELF_SERVICE = billingEnvFlag("BILLING_V1_OWNER_SELF_SERV
 const BILLING_V1_PDF = billingEnvFlag("BILLING_V1_PDF", false);
 const BILLING_V1_ADMIN_OFFERS = billingEnvFlag("BILLING_V1_ADMIN_OFFERS", false);
 const BILLING_V1_POOL_ASSIGNMENTS_SHADOW = billingEnvFlag("BILLING_V1_POOL_ASSIGNMENTS_SHADOW", false);
+const BILLING_V1_CHANGES_SHADOW = billingEnvFlag("BILLING_V1_CHANGES_SHADOW", false);
 const BILLING_V1_DEFAULT_GRACE_DAYS = Math.max(
   0,
   Math.min(31, parseInt(process.env.BILLING_V1_DEFAULT_GRACE_DAYS || "5", 10) || 0)
@@ -13876,6 +13877,7 @@ function buildAdminPermissions(admin) {
     maintenance_manage: isSuperadmin,
     billing_offers_manage: isSuperadmin && BILLING_V1_ADMIN_OFFERS,
     billing_assignments_shadow_manage: isSuperadmin && BILLING_V1_POOL_ASSIGNMENTS_SHADOW,
+    billing_changes_shadow_manage: isSuperadmin && BILLING_V1_CHANGES_SHADOW,
   };
 }
 
@@ -14218,6 +14220,11 @@ function requireBillingAssignmentsShadow(req, res, next) {
   return next();
 }
 
+function requireBillingChangesShadow(req, res, next) {
+  if (!BILLING_V1_CHANGES_SHADOW) return res.status(404).json({ error: "billing_changes_shadow_disabled" });
+  return next();
+}
+
 function billingText(value, max, required = false) {
   const text = String(value ?? "").trim();
   if (required && !text) return null;
@@ -14549,6 +14556,106 @@ app.patch("/api/admin/billing/assignments-shadow/:id", requireAdmin, requireSupe
     if (error) return res.status(error.message?.includes("overlap") ? 409 : 500).json({ error: error.message?.includes("overlap") ? "assignment_overlap" : error.message });
     await insertAudit({ event_type: "billing_pool_assignment_updated", status: "success", entity_type: "pool_billing_assignment", entity_id: data.id, actor_type: "admin_user", actor_id: req.admin.id, pool_id: data.pool_id, message: "Attribution shadow modifiée", metadata: { shadow: true, before, after: data } });
     return res.json({ ok: true, item: data, passive: true });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+function normalizeBillingChangeShadow(body = {}) {
+  const pool_id = String(body.pool_id || "").trim();
+  const target_offer_id = String(body.target_offer_id || "").trim();
+  const target_billing_mode = String(body.target_billing_mode || "").trim();
+  const effective_on = billingDate(body.effective_on, true);
+  if (!pool_id || !target_offer_id) return { error: "pool_and_target_offer_required" };
+  if (!["commission", "subscription"].includes(target_billing_mode)) return { error: "target_billing_mode_invalid" };
+  if (!effective_on) return { error: "effective_on_invalid" };
+  if (!/^\d{4}-\d{2}-01$/.test(effective_on)) return { error: "effective_on_must_be_first_day" };
+  if (effective_on <= new Date().toISOString().slice(0, 10)) return { error: "effective_on_must_be_future" };
+  return { value: { pool_id, target_offer_id, target_billing_mode, effective_on } };
+}
+
+app.get("/api/admin/billing/changes-shadow", requireAdmin, requireSuperadmin, requireBillingChangesShadow, async (_req, res) => {
+  try {
+    const { data, error } = await supabase.from("pool_billing_changes")
+      .select("id,pool_id,current_assignment_id,target_offer_id,target_billing_mode,effective_on,status,requested_by,requested_at,cancelled_by,cancelled_at,cancel_reason,applied_at,created_at,updated_at")
+      .order("created_at", { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ items: data || [], passive: true, shadow: true });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/admin/billing/changes-shadow", requireAdmin, requireSuperadmin, requireBillingChangesShadow, async (req, res) => {
+  try {
+    const normalized = normalizeBillingChangeShadow(req.body);
+    if (normalized.error) return res.status(400).json({ error: normalized.error });
+    const { pool_id, target_offer_id, target_billing_mode, effective_on } = normalized.value;
+    const { data: pool, error: poolError } = await supabase.from("internet_pools").select("id,name,brand_name").eq("id", pool_id).maybeSingle();
+    if (poolError || !pool) return res.status(404).json({ error: poolError?.message || "pool_not_found" });
+    const { data: current, error: currentError } = await supabase.from("pool_billing_assignments")
+      .select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to")
+      .eq("pool_id", pool_id).lte("effective_from", new Date().toISOString().slice(0, 10))
+      .or(`effective_to.is.null,effective_to.gte.${new Date().toISOString().slice(0, 10)}`)
+      .order("effective_from", { ascending: false }).limit(1).maybeSingle();
+    if (currentError) return res.status(500).json({ error: currentError.message });
+    if (!current) return res.status(409).json({ error: "current_assignment_required" });
+    if (current.offer_id === target_offer_id && current.billing_mode === target_billing_mode) return res.status(409).json({ error: "target_same_as_current" });
+    const modeCheck = await loadBillingOfferMode(target_offer_id, target_billing_mode);
+    if (modeCheck.error) return res.status(400).json({ error: modeCheck.error });
+    const status = target_billing_mode === "subscription" ? "pending_payment" : "scheduled";
+    const { data, error } = await supabase.from("pool_billing_changes").insert({
+      pool_id,
+      current_assignment_id: current.id,
+      target_offer_id,
+      target_billing_mode,
+      effective_on,
+      status,
+      requested_by: req.admin.id,
+    }).select().single();
+    if (error) {
+      const duplicate = error.code === "23505" || String(error.message || "").includes("one_open");
+      return res.status(duplicate ? 409 : 500).json({ error: duplicate ? "open_change_exists" : error.message });
+    }
+    await insertAudit({
+      event_type: "billing_pool_change_scheduled",
+      status: "success",
+      entity_type: "pool_billing_change",
+      entity_id: data.id,
+      actor_type: "admin_user",
+      actor_id: req.admin.id,
+      pool_id,
+      message: "Changement de facturation programmé en shadow",
+      metadata: { shadow: true, no_effect: true, current_assignment: current, after: data },
+    });
+    return res.status(201).json({ ok: true, item: data, passive: true, shadow: true });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.patch("/api/admin/billing/changes-shadow/:id/cancel", requireAdmin, requireSuperadmin, requireBillingChangesShadow, async (req, res) => {
+  try {
+    const cancel_reason = String(req.body?.cancel_reason || "").trim().slice(0, 500);
+    if (cancel_reason.length < 3) return res.status(400).json({ error: "cancel_reason_required" });
+    const { data: before, error: readError } = await supabase.from("pool_billing_changes").select("*").eq("id", req.params.id).maybeSingle();
+    if (readError) return res.status(500).json({ error: readError.message });
+    if (!before) return res.status(404).json({ error: "not_found" });
+    if (!["pending_payment", "scheduled"].includes(before.status)) return res.status(409).json({ error: "change_not_cancellable" });
+    const { data, error } = await supabase.from("pool_billing_changes").update({
+      status: "cancelled",
+      cancelled_by: req.admin.id,
+      cancelled_at: new Date().toISOString(),
+      cancel_reason,
+    }).eq("id", req.params.id).in("status", ["pending_payment", "scheduled"]).select().maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data) return res.status(409).json({ error: "change_not_cancellable" });
+    await insertAudit({
+      event_type: "billing_pool_change_cancelled",
+      status: "success",
+      entity_type: "pool_billing_change",
+      entity_id: data.id,
+      actor_type: "admin_user",
+      actor_id: req.admin.id,
+      pool_id: data.pool_id,
+      message: "Changement de facturation annulé en shadow",
+      metadata: { shadow: true, no_effect: true, before, after: data },
+    });
+    return res.json({ ok: true, item: data, passive: true, shadow: true });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
