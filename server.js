@@ -14299,12 +14299,23 @@ app.post("/api/admin/billing/offers", requireAdmin, requireSuperadmin, requireBi
     };
     const { data, error } = await supabase.from("billing_offers").insert(row).select().single();
     if (error) return res.status(error.code === "23505" ? 409 : 500).json({ error: error.code === "23505" ? "code_exists" : error.message });
+    await insertAudit({
+      event_type: "billing_offer_created", status: "success",
+      entity_type: "billing_offer", entity_id: data.id,
+      actor_type: "admin_user", actor_id: req.admin.id,
+      message: `Offre créée : ${data.code}`,
+      metadata: { after: { code: data.code, title: data.title, visibility: data.visibility, status: data.status, sort_order: data.sort_order } },
+    });
     return res.status(201).json({ ok: true, item: data });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
 app.patch("/api/admin/billing/offers/:id", requireAdmin, requireSuperadmin, requireBillingAdminOffers, async (req, res) => {
   try {
+    const { data: before, error: beforeError } = await supabase.from("billing_offers")
+      .select("id,code,title,description,details,visibility,status,sort_order").eq("id", req.params.id).maybeSingle();
+    if (beforeError) return res.status(500).json({ error: beforeError.message });
+    if (!before) return res.status(404).json({ error: "not_found" });
     const patch = {};
     if (req.body?.title !== undefined) {
       patch.title = billingText(req.body.title, 160, true);
@@ -14323,6 +14334,13 @@ app.patch("/api/admin/billing/offers/:id", requireAdmin, requireSuperadmin, requ
     const { data, error } = await supabase.from("billing_offers").update(patch).eq("id", req.params.id).select().maybeSingle();
     if (error) return res.status(500).json({ error: error.message });
     if (!data) return res.status(404).json({ error: "not_found" });
+    await insertAudit({
+      event_type: "billing_offer_updated", status: "success",
+      entity_type: "billing_offer", entity_id: data.id,
+      actor_type: "admin_user", actor_id: req.admin.id,
+      message: `Offre modifiée : ${data.code}`,
+      metadata: { changed_fields: Object.keys(patch), before, after: data },
+    });
     return res.json({ ok: true, item: data });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
@@ -14339,13 +14357,22 @@ app.post("/api/admin/billing/offers/:id/versions", requireAdmin, requireSuperadm
       ...payload, status: "draft", created_by: req.admin.id,
     }).select().single();
     if (error) return res.status(500).json({ error: error.message });
+    await insertAudit({
+      event_type: "billing_offer_version_created", status: "success",
+      entity_type: "billing_offer_version", entity_id: data.id,
+      actor_type: "admin_user", actor_id: req.admin.id,
+      message: `Version tarifaire ${data.version_no} créée`,
+      metadata: { offer_id: data.offer_id, after: data },
+    });
     return res.status(201).json({ ok: true, item: data });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
 app.patch("/api/admin/billing/offer-versions/:id", requireAdmin, requireSuperadmin, requireBillingAdminOffers, async (req, res) => {
   try {
-    const { data: current, error: readError } = await supabase.from("billing_offer_versions").select("status").eq("id", req.params.id).maybeSingle();
+    const { data: current, error: readError } = await supabase.from("billing_offer_versions")
+      .select("id,offer_id,version_no,status,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,effective_from,effective_to")
+      .eq("id", req.params.id).maybeSingle();
     if (readError) return res.status(500).json({ error: readError.message });
     if (!current) return res.status(404).json({ error: "not_found" });
     if (current.status !== "draft") return res.status(409).json({ error: "version_immutable" });
@@ -14353,13 +14380,20 @@ app.patch("/api/admin/billing/offer-versions/:id", requireAdmin, requireSuperadm
     if (!payload) return res.status(400).json({ error: "version_invalid" });
     const { data, error } = await supabase.from("billing_offer_versions").update(payload).eq("id", req.params.id).select().single();
     if (error) return res.status(500).json({ error: error.message });
+    await insertAudit({
+      event_type: "billing_offer_version_updated", status: "success",
+      entity_type: "billing_offer_version", entity_id: data.id,
+      actor_type: "admin_user", actor_id: req.admin.id,
+      message: `Version tarifaire ${data.version_no} modifiée`,
+      metadata: { offer_id: data.offer_id, before: current, after: data },
+    });
     return res.json({ ok: true, item: data });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
 app.put("/api/admin/billing/offer-versions/:id/features", requireAdmin, requireSuperadmin, requireBillingAdminOffers, async (req, res) => {
   try {
-    const { data: current, error: readError } = await supabase.from("billing_offer_versions").select("status").eq("id", req.params.id).maybeSingle();
+    const { data: current, error: readError } = await supabase.from("billing_offer_versions").select("id,offer_id,version_no,status").eq("id", req.params.id).maybeSingle();
     if (readError) return res.status(500).json({ error: readError.message });
     if (!current) return res.status(404).json({ error: "not_found" });
     if (current.status !== "draft") return res.status(409).json({ error: "version_immutable" });
@@ -14368,6 +14402,9 @@ app.put("/api/admin/billing/offer-versions/:id/features", requireAdmin, requireS
     if (featureError) return res.status(500).json({ error: featureError.message });
     const allow = new Set((allowed || []).map((x) => x.key));
     if (keys.some((key) => !allow.has(key))) return res.status(400).json({ error: "feature_invalid" });
+    const { data: beforeLinks, error: beforeLinksError } = await supabase.from("billing_offer_version_features")
+      .select("feature_key,enabled").eq("offer_version_id", req.params.id);
+    if (beforeLinksError) return res.status(500).json({ error: beforeLinksError.message });
     const allFeatureKeys = [...allow];
     if (allFeatureKeys.length) {
       const { error } = await supabase.from("billing_offer_version_features").upsert(
@@ -14376,6 +14413,17 @@ app.put("/api/admin/billing/offer-versions/:id/features", requireAdmin, requireS
       );
       if (error) return res.status(500).json({ error: error.message });
     }
+    await insertAudit({
+      event_type: "billing_offer_features_updated", status: "success",
+      entity_type: "billing_offer_version", entity_id: req.params.id,
+      actor_type: "admin_user", actor_id: req.admin.id,
+      message: `Fonctionnalités de la version ${current.version_no} modifiées`,
+      metadata: {
+        offer_id: current.offer_id,
+        before: (beforeLinks || []).filter((x) => x.enabled).map((x) => x.feature_key),
+        after: keys,
+      },
+    });
     return res.json({ ok: true, features: keys });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
