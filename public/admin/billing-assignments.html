@@ -12,7 +12,11 @@
 <body class="rz-admin-shell">
   <div class="login-container"><main class="card ba-shell">
     <div class="topbar ba-head"><div><h1 class="rz-hero-title">Abonnements des pools</h1><div id="me" class="subtitle">Vérification de la session…</div></div><button id="refreshBtn" class="filter-btn">Actualiser</button></div>
-    <div class="ba-banner">S4 Shadow — les attributions et changements programmés sont enregistrés et audités, sans piloter les paiements, revenus, PP ou portail.</div>
+    <div class="ba-banner">S5 Shadow — attributions, changements et snapshots mensuels sont enregistrés et audités, sans facture, paiement, suspension, revenu, PP ou effet portail.</div>
+    <section id="periodSection" class="ba-change ba-hidden">
+      <h3>Snapshots mensuels</h3><div class="ba-muted">Prévisualisez d’abord la source de vérité mensuelle, puis générez-la manuellement en Shadow.</div>
+      <div class="ba-form"><div><label>Mois</label><input id="periodMonth" type="month"></div><div class="ba-actions" style="align-items:end;margin-top:0"><button id="previewPeriodsBtn" class="filter-btn">Prévisualiser</button><button id="generatePeriodsBtn" class="filter-btn primary">Générer en shadow</button></div><div class="full"><div id="periodResult" class="ba-summary">Aucune prévisualisation.</div></div></div>
+    </section>
     <div id="error" class="ba-error"></div><section id="pools" class="ba-grid"><div class="ba-muted">Chargement…</div></section>
   </main></div>
   <div id="modal" class="ba-modal" role="dialog" aria-modal="true"><div class="ba-dialog">
@@ -34,6 +38,6 @@
       <div id="changeNew" class="ba-hidden"><div class="ba-form"><div class="full"><label>Nouvelle offre</label><select id="targetOffer"></select></div><div><label>Nouveau mode</label><select id="targetMode"><option value="commission">Commission</option><option value="subscription">Abonnement</option></select></div><div><label>Date d’effet</label><input id="changeEffectiveOn" type="date"></div><div class="full"><div id="changePreview" class="ba-summary"></div></div></div><div class="ba-actions"><button id="scheduleChangeBtn" class="filter-btn primary">Programmer en shadow</button></div></div>
     </section>
   </div></div>
-  <script src="/admin/nav.js?v=billing-s3"></script><script src="/admin/billing-assignments.js?v=billing-s4"></script>
+  <script src="/admin/nav.js?v=billing-s3"></script><script src="/admin/billing-assignments.js?v=billing-s5"></script>
 </body>
 </html>

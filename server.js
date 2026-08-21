@@ -12759,6 +12759,7 @@ const BILLING_V1_PDF = billingEnvFlag("BILLING_V1_PDF", false);
 const BILLING_V1_ADMIN_OFFERS = billingEnvFlag("BILLING_V1_ADMIN_OFFERS", false);
 const BILLING_V1_POOL_ASSIGNMENTS_SHADOW = billingEnvFlag("BILLING_V1_POOL_ASSIGNMENTS_SHADOW", false);
 const BILLING_V1_CHANGES_SHADOW = billingEnvFlag("BILLING_V1_CHANGES_SHADOW", false);
+const BILLING_V1_PERIODS_SHADOW = billingEnvFlag("BILLING_V1_PERIODS_SHADOW", false);
 const BILLING_V1_DEFAULT_GRACE_DAYS = Math.max(
   0,
   Math.min(31, parseInt(process.env.BILLING_V1_DEFAULT_GRACE_DAYS || "5", 10) || 0)
@@ -13878,6 +13879,7 @@ function buildAdminPermissions(admin) {
     billing_offers_manage: isSuperadmin && BILLING_V1_ADMIN_OFFERS,
     billing_assignments_shadow_manage: isSuperadmin && BILLING_V1_POOL_ASSIGNMENTS_SHADOW,
     billing_changes_shadow_manage: isSuperadmin && BILLING_V1_CHANGES_SHADOW,
+    billing_periods_shadow_manage: isSuperadmin && BILLING_V1_PERIODS_SHADOW,
   };
 }
 
@@ -14222,6 +14224,11 @@ function requireBillingAssignmentsShadow(req, res, next) {
 
 function requireBillingChangesShadow(req, res, next) {
   if (!BILLING_V1_CHANGES_SHADOW) return res.status(404).json({ error: "billing_changes_shadow_disabled" });
+  return next();
+}
+
+function requireBillingPeriodsShadow(req, res, next) {
+  if (!BILLING_V1_PERIODS_SHADOW) return res.status(404).json({ error: "billing_periods_shadow_disabled" });
   return next();
 }
 
@@ -14656,6 +14663,123 @@ app.patch("/api/admin/billing/changes-shadow/:id/cancel", requireAdmin, requireS
       metadata: { shadow: true, no_effect: true, before, after: data },
     });
     return res.json({ ok: true, item: data, passive: true, shadow: true });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+function normalizeBillingPeriodStart(value) {
+  const period_start = billingDate(value, true);
+  if (!period_start) return { error: "period_start_invalid" };
+  if (!/^\d{4}-\d{2}-01$/.test(period_start)) return { error: "period_start_must_be_first_day" };
+  const now = new Date();
+  const currentMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`;
+  const max = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 13, 1)).toISOString().slice(0, 10);
+  if (period_start < currentMonth) return { error: "period_start_in_past" };
+  if (period_start > max) return { error: "period_start_too_far" };
+  const start = new Date(`${period_start}T00:00:00Z`);
+  const end = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0)).toISOString().slice(0, 10);
+  return { value: { period_start, period_end: end } };
+}
+
+async function buildBillingPeriodsShadow(period_start, period_end) {
+  const { data: assignments, error: assignmentError } = await supabase.from("pool_billing_assignments")
+    .select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to")
+    .lte("effective_from", period_start)
+    .or(`effective_to.is.null,effective_to.gte.${period_start}`)
+    .order("effective_from", { ascending: false });
+  if (assignmentError) throw assignmentError;
+  const byPool = new Map();
+  for (const assignment of assignments || []) if (!byPool.has(assignment.pool_id)) byPool.set(assignment.pool_id, assignment);
+  const selected = [...byPool.values()];
+  const poolIds = [...new Set(selected.map((x) => x.pool_id))];
+  const offerIds = [...new Set(selected.map((x) => x.offer_id))];
+  let pools = [], offers = [], versions = [], existing = [];
+  if (poolIds.length) {
+    const [{ data: poolRows, error: poolError }, { data: existingRows, error: existingError }] = await Promise.all([
+      supabase.from("internet_pools").select("id,name,brand_name,radius_nas_id").in("id", poolIds),
+      supabase.from("pool_billing_periods").select("id,pool_id,period_start,period_end,assignment_id,offer_id,offer_version_id,offer_title_snapshot,billing_status,billing_mode,commission_pct,owner_share_pct,subscription_price_ar,grace_days,access_status,created_at").eq("period_start", period_start).in("pool_id", poolIds),
+    ]);
+    if (poolError || existingError) throw poolError || existingError;
+    pools = poolRows || []; existing = existingRows || [];
+  }
+  if (offerIds.length) {
+    const [{ data: offerRows, error: offerError }, { data: versionRows, error: versionError }] = await Promise.all([
+      supabase.from("billing_offers").select("id,code,title,status").in("id", offerIds),
+      supabase.from("billing_offer_versions").select("id,offer_id,version_no,status,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,effective_from,effective_to").in("offer_id", offerIds).order("version_no", { ascending: false }),
+    ]);
+    if (offerError || versionError) throw offerError || versionError;
+    offers = offerRows || []; versions = versionRows || [];
+  }
+  const items = selected.map((assignment) => {
+    const pool = pools.find((x) => x.id === assignment.pool_id) || null;
+    const offer = offers.find((x) => x.id === assignment.offer_id) || null;
+    const candidates = versions.filter((x) => x.offer_id === assignment.offer_id);
+    const version = candidates.find((x) => x.effective_from && x.effective_from <= period_start && (!x.effective_to || x.effective_to >= period_start)) || candidates[0] || null;
+    const errors = [];
+    if (!pool) errors.push("pool_missing");
+    if (!offer) errors.push("offer_missing");
+    if (!version) errors.push("offer_version_missing");
+    if (assignment.billing_mode === "commission" && !version?.commission_enabled) errors.push("commission_not_available");
+    if (assignment.billing_mode === "subscription" && !version?.subscription_enabled) errors.push("subscription_not_available");
+    const commission = assignment.billing_mode === "commission" ? Number(version?.commission_pct) : null;
+    const subscription = assignment.billing_mode === "subscription" ? Number(version?.subscription_price_ar) : null;
+    if (assignment.billing_mode === "commission" && (!Number.isFinite(commission) || commission < 0 || commission > 100)) errors.push("commission_invalid");
+    if (assignment.billing_mode === "subscription" && (!Number.isInteger(subscription) || subscription < 0)) errors.push("subscription_price_invalid");
+    const grace = Math.max(0, Math.min(31, Number.isInteger(Number(version?.grace_days)) ? Number(version.grace_days) : BILLING_V1_DEFAULT_GRACE_DAYS));
+    const row = errors.length ? null : {
+      pool_id: assignment.pool_id,
+      period_start,
+      period_end,
+      assignment_id: assignment.id,
+      offer_id: assignment.offer_id,
+      offer_version_id: version.id,
+      offer_title_snapshot: offer.title,
+      billing_status: assignment.billing_status,
+      billing_mode: assignment.billing_mode,
+      commission_pct: assignment.billing_mode === "commission" ? commission : null,
+      owner_share_pct: assignment.billing_mode === "commission" ? 100 - commission : null,
+      subscription_price_ar: assignment.billing_mode === "subscription" ? subscription : null,
+      grace_days: grace,
+      access_status: "active",
+    };
+    return { pool, assignment, offer, version, row, errors, existing: existing.find((x) => x.pool_id === assignment.pool_id) || null };
+  });
+  return { period_start, period_end, items };
+}
+
+app.get("/api/admin/billing/periods-shadow", requireAdmin, requireSuperadmin, requireBillingPeriodsShadow, async (req, res) => {
+  try {
+    const normalized = normalizeBillingPeriodStart(req.query?.period_start);
+    if (normalized.error) return res.status(400).json({ error: normalized.error });
+    const preview = await buildBillingPeriodsShadow(normalized.value.period_start, normalized.value.period_end);
+    return res.json({ ...preview, passive: true, shadow: true });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/admin/billing/periods-shadow/generate", requireAdmin, requireSuperadmin, requireBillingPeriodsShadow, async (req, res) => {
+  try {
+    const normalized = normalizeBillingPeriodStart(req.body?.period_start);
+    if (normalized.error) return res.status(400).json({ error: normalized.error });
+    const preview = await buildBillingPeriodsShadow(normalized.value.period_start, normalized.value.period_end);
+    if (!preview.items.length) return res.status(409).json({ error: "no_assignments_for_period" });
+    const invalid = preview.items.filter((x) => x.errors.length);
+    if (invalid.length) return res.status(409).json({ error: "period_snapshot_invalid", details: invalid.map((x) => ({ pool_id: x.assignment.pool_id, errors: x.errors })) });
+    const rows = preview.items.filter((x) => !x.existing).map((x) => x.row);
+    let created = [];
+    if (rows.length) {
+      const { data, error } = await supabase.from("pool_billing_periods").upsert(rows, { onConflict: "pool_id,period_start", ignoreDuplicates: true }).select();
+      if (error) return res.status(500).json({ error: error.message });
+      created = data || [];
+    }
+    await insertAudit({
+      event_type: "billing_periods_shadow_generated",
+      status: "success",
+      entity_type: "billing_period_batch",
+      actor_type: "admin_user",
+      actor_id: req.admin.id,
+      message: `Périodes mensuelles shadow générées : ${normalized.value.period_start}`,
+      metadata: { shadow: true, no_effect: true, period_start: normalized.value.period_start, period_end: normalized.value.period_end, eligible_count: preview.items.length, created_count: created.length, existing_count: preview.items.length - rows.length, created_ids: created.map((x) => x.id) },
+    });
+    return res.json({ ok: true, created, created_count: created.length, existing_count: preview.items.length - rows.length, passive: true, shadow: true });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 

@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-let state = { pools: [], offers: [], assignments: [], changes: [], pool: null, assignment: null, changesEnabled: false };
+let state = { pools: [], offers: [], assignments: [], changes: [], pool: null, assignment: null, changesEnabled: false, periodsEnabled: false };
 
 async function api(url, opts = {}) {
   const r = await fetch(url, { credentials: "include", ...opts });
@@ -115,12 +115,38 @@ async function cancelChange() {
     await load(); openPool(state.pool.id);
   } catch (e) { error($("changeError"), e.message); } finally { $("cancelChangeBtn").disabled = false; }
 }
+function periodStartValue() { const month = String($("periodMonth").value || ""); return /^\d{4}-\d{2}$/.test(month) ? `${month}-01` : ""; }
+function renderPeriodPreview(data) {
+  const items = data.items || [];
+  if (!items.length) { $("periodResult").innerHTML = `<strong>Aucune attribution applicable pour ${esc(data.period_start || "ce mois")}.</strong><br>Aucune période ne sera créée.`; return; }
+  $("periodResult").innerHTML = `<strong>${esc(data.period_start)} → ${esc(data.period_end)}</strong><br>${items.map((item) => {
+    const pool = item.pool ? name(item.pool) : item.assignment?.pool_id;
+    if ((item.errors || []).length) return `<div style="margin-top:9px"><strong>${esc(pool)}</strong> — Erreur : ${esc(item.errors.join(", "))}</div>`;
+    const row = item.row || item.existing, price = row.billing_mode === "commission" ? `Commission ${Number(row.commission_pct)} % · Part propriétaire ${Number(row.owner_share_pct)} %` : row.billing_mode === "subscription" ? `Abonnement ${money(row.subscription_price_ar)}` : "Sans commission ni abonnement";
+    return `<div style="margin-top:9px"><strong>${esc(pool)}</strong> — ${esc(row.offer_title_snapshot)}<br>${esc(label(row.billing_status))} · ${esc(label(row.billing_mode))} · ${esc(price)} · Tolérance ${Number(row.grace_days)} jour(s)${item.existing ? " · Déjà généré" : " · À générer"}</div>`;
+  }).join("")}<br><strong>Shadow : aucune facture ni action automatique</strong>`;
+}
+async function previewPeriods() {
+  error($("error"), ""); $("previewPeriodsBtn").disabled = true;
+  try { const start = periodStartValue(); if (!start) throw new Error("period_start_invalid"); renderPeriodPreview(await api(`/api/admin/billing/periods-shadow?period_start=${encodeURIComponent(start)}`)); }
+  catch (e) { error($("error"), e.message); } finally { $("previewPeriodsBtn").disabled = false; }
+}
+async function generatePeriods() {
+  const start = periodStartValue(); if (!start) return error($("error"), "period_start_invalid");
+  if (!window.confirm(`Générer les snapshots Shadow pour ${start} ?`)) return;
+  error($("error"), ""); $("generatePeriodsBtn").disabled = true;
+  try {
+    const result = await api("/api/admin/billing/periods-shadow/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ period_start: start }) });
+    await previewPeriods();
+    $("periodResult").insertAdjacentHTML("afterbegin", `<div style="margin-bottom:10px"><strong>Génération terminée :</strong> ${Number(result.created_count)} créée(s), ${Number(result.existing_count)} déjà existante(s).</div>`);
+  } catch (e) { error($("error"), e.message); } finally { $("generatePeriodsBtn").disabled = false; }
+}
 async function boot() {
   try {
     const me = await api("/api/admin/me"); if (!me.is_superadmin) location.href = "/admin/";
-    state.changesEnabled = !!me.permissions?.billing_changes_shadow_manage; $("me").textContent = `Connecté : ${me.email || "superadmin"}`; await load();
+    state.changesEnabled = !!me.permissions?.billing_changes_shadow_manage; state.periodsEnabled = !!me.permissions?.billing_periods_shadow_manage; $("periodSection").classList.toggle("ba-hidden", !state.periodsEnabled); $("periodMonth").value = nextMonth().slice(0, 7); $("me").textContent = `Connecté : ${me.email || "superadmin"}`; await load();
   } catch (e) { error($("error"), e.message === "billing_assignments_shadow_disabled" ? "Le panneau Shadow est désactivé." : e.message); }
-  $("refreshBtn").onclick = () => load().catch((e) => error($("error"), e.message)); $("closeBtn").onclick = close; $("saveBtn").onclick = save; $("scheduleChangeBtn").onclick = scheduleChange; $("cancelChangeBtn").onclick = cancelChange;
+  $("refreshBtn").onclick = () => load().catch((e) => error($("error"), e.message)); $("closeBtn").onclick = close; $("saveBtn").onclick = save; $("scheduleChangeBtn").onclick = scheduleChange; $("cancelChangeBtn").onclick = cancelChange; $("previewPeriodsBtn").onclick = previewPeriods; $("generatePeriodsBtn").onclick = generatePeriods;
   ["status", "mode", "offer"].forEach((id) => { $(id).onchange = syncForm; }); ["targetOffer", "targetMode", "changeEffectiveOn"].forEach((id) => { $(id).onchange = syncChangeForm; });
   $("modal").onclick = (e) => { if (e.target === $("modal")) close(); }; window.onkeydown = (e) => { if (e.key === "Escape") close(); };
 }
