@@ -15305,14 +15305,18 @@ async function billingOwnerPaymentUi(invoices) {
   );
   if(!candidates.length) return {enabled:true,provider:"mvola",payable_invoice_ids:[]};
   const poolIds=[...new Set(candidates.map(i=>i.pool_id).filter(Boolean))];
-  const enabledPools=new Set();
+  const enabledPilots=new Map();
   await Promise.all(poolIds.map(async poolId=>{
-    if(await billingEnabledMvolaPilot(poolId)) enabledPools.add(poolId);
+    const pilot=await billingEnabledMvolaPilot(poolId);
+    if(pilot) enabledPilots.set(poolId,pilot);
   }));
   return {
     enabled:true,
     provider:"mvola",
-    payable_invoice_ids:candidates.filter(i=>enabledPools.has(i.pool_id)).map(i=>i.id),
+    payable_invoice_ids:candidates.filter(i=>{
+      const pilot=enabledPilots.get(i.pool_id);
+      return pilot && String(i.period_start||"")>=String(pilot.first_live_at||"");
+    }).map(i=>i.id),
   };
 }
 async function billingEnabledMvolaPilot(poolId) {
@@ -15394,7 +15398,7 @@ app.post("/api/owner/billing/invoices/:id/pay",
       return res.status(400).json({error:"payer_phone_invalid",message:paymentPhoneValidationMessage("mvola")});
 
     const {data:invoice,error:invoiceError}=await supabase.from("subscription_invoices")
-      .select("id,invoice_number,pool_id,owner_admin_user_id,purpose,amount_due_ar,amount_paid_ar,status")
+      .select("id,invoice_number,pool_id,owner_admin_user_id,purpose,period_start,amount_due_ar,amount_paid_ar,status")
       .eq("id",req.params.id).eq("owner_admin_user_id",ownerId)
       .eq("purpose","monthly_subscription").maybeSingle();
     if(invoiceError) return res.status(500).json({error:invoiceError.message});
@@ -15406,6 +15410,8 @@ app.post("/api/owner/billing/invoices/:id/pay",
 
     const pilot=await billingEnabledMvolaPilot(invoice.pool_id);
     if(!pilot) return res.status(409).json({error:"billing_pilot_not_live"});
+    if(String(invoice.period_start||"")<String(pilot.first_live_at||""))
+      return res.status(409).json({error:"subscription_invoice_before_pilot"});
     const {data:open,error:openError}=await supabase.from("subscription_payment_transactions")
       .select("request_ref,status").eq("invoice_id",invoice.id)
       .in("status",["initiated","pending"]).maybeSingle();

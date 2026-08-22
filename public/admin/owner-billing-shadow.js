@@ -63,7 +63,7 @@ async function submitPayment(form){
     await pollPayment(form,d.request_ref);
   }catch(e){
     if(e.code==="subscription_payment_already_pending")payMessage(form,"Un paiement est déjà en cours pour cette facture. Actualisez la page.","error");
-    else if(e.code==="billing_subscription_payment_live_disabled"||e.code==="billing_pilot_not_live")payMessage(form,"Paiement non disponible pour ce pool.","error");
+    else if(e.code==="billing_subscription_payment_live_disabled"||e.code==="billing_pilot_not_live"||e.code==="subscription_invoice_before_pilot")payMessage(form,"Cette facture historique n’est pas payable pour ce pilote.","error");
     else payMessage(form,e.message||"Le paiement n’a pas pu être lancé.","error");
     button.disabled=false;input.disabled=false;
   }
