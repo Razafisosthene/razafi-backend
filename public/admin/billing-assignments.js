@@ -228,12 +228,44 @@ async function evaluateAccess() {
   try { const result = await api("/api/admin/billing/access-shadow/evaluate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ period_start: start, as_of_date: asOf }) }); const preview = await api(`/api/admin/billing/access-shadow?period_start=${encodeURIComponent(start)}&as_of_date=${encodeURIComponent(asOf)}`); renderAccessPreview(preview, `Simulation enregistrée : ${Number(result.evaluated_count)} évaluation(s).`); }
   catch (e) { error($("error"), e.message); } finally { $("evaluateAccessBtn").disabled = false; }
 }
+function commissionStartValue() { const month = String($("commissionMonth").value || ""); return /^\d{4}-\d{2}$/.test(month) ? `${month}-01` : ""; }
+function renderCommissionPreview(data, notice = "") {
+  const items = data.items || [];
+  if (!items.length) { $("commissionResult").innerHTML = `<strong>Aucun snapshot commission S5 pour ${esc(data.period_start || "ce mois")}.</strong><br>Aucun relevé ni reversement ne sera créé.`; return; }
+  $("commissionResult").innerHTML = `${notice ? `<div style="margin-bottom:10px"><strong>${esc(notice)}</strong></div>` : ""}<strong>Mois : ${esc(data.period_start)}</strong><br>${items.map((item) => {
+    const row = item.existing || item.row, pool = item.pool ? name(item.pool) : item.period?.pool_id;
+    if ((item.errors || []).length) return `<div style="margin-top:10px"><strong>${esc(pool)}</strong> — Erreur : ${esc(item.errors.join(", "))}</div>`;
+    const payout = item.payout_record ? `Reversement test enregistré : ${money(item.payout_record.net_owner_amount_ar)}` : item.existing && Number(row.owner_gross_amount_ar) > 0 ? `<button class="filter-btn s9-payout" data-id="${esc(row.id)}" data-amount="${esc(row.owner_gross_amount_ar)}">Enregistrer reversement test</button>` : "Aucun reversement à enregistrer";
+    return `<div style="margin-top:10px"><strong>${esc(pool)}</strong> — ${esc(row.offer_title_snapshot)}<br>Ventes confirmées : ${money(row.gross_sales_ar)} · Commission ${Number(row.commission_pct)} % : ${money(row.commission_amount_ar)} · Propriétaire avant frais : ${money(row.owner_gross_amount_ar)}<br>${Number(row.transaction_count)} transaction(s) · ${item.existing ? "Relevé déjà généré" : "À générer"}<div class="ba-actions" style="margin-top:8px">${payout}</div></div>`;
+  }).join("")}<br><strong>Shadow : aucun revenu existant modifié, aucun transfert exécuté, aucun frais déduit automatiquement</strong>`;
+  document.querySelectorAll(".s9-payout").forEach((b) => { b.onclick = () => recordCommissionPayout(b.dataset.id, b.dataset.amount); });
+}
+async function previewCommissions() {
+  error($("error"), ""); $("previewCommissionsBtn").disabled = true;
+  try { const start = commissionStartValue(); if (!start) throw new Error("period_start_invalid"); renderCommissionPreview(await api(`/api/admin/billing/commission-statements-shadow?period_start=${encodeURIComponent(start)}`)); }
+  catch (e) { error($("error"), e.message); } finally { $("previewCommissionsBtn").disabled = false; }
+}
+async function generateCommissions() {
+  const start = commissionStartValue(); if (!start) return error($("error"), "period_start_invalid");
+  if (!window.confirm(`Générer les relevés de commission Shadow pour ${start} ?`)) return;
+  error($("error"), ""); $("generateCommissionsBtn").disabled = true;
+  try { const result = await api("/api/admin/billing/commission-statements-shadow/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ period_start: start }) }); const preview = await api(`/api/admin/billing/commission-statements-shadow?period_start=${encodeURIComponent(start)}`); renderCommissionPreview(preview, `Génération terminée : ${Number(result.created_count)} relevé(s) créé(s), ${Number(result.existing_count)} existant(s).`); }
+  catch (e) { error($("error"), e.message); } finally { $("generateCommissionsBtn").disabled = false; }
+}
+async function recordCommissionPayout(statementId, ownerGross) {
+  const raw = window.prompt(`Frais de transfert opérateur en Ar (maximum ${ownerGross}) :`, "0"); if (raw === null) return;
+  const fee = Number(raw); if (!Number.isFinite(fee) || fee < 0 || fee > Number(ownerGross)) return error($("error"), "transfer_fee_invalid");
+  if (!window.confirm("Enregistrer seulement le reversement test Shadow ? Aucun transfert ne sera exécuté.")) return;
+  error($("error"), "");
+  try { await api(`/api/admin/billing/commission-statements-shadow/${encodeURIComponent(statementId)}/payout-record`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ transfer_fee_ar: fee }) }); await previewCommissions(); }
+  catch (e) { error($("error"), e.message); }
+}
 async function boot() {
   try {
     const me = await api("/api/admin/me"); if (!me.is_superadmin) location.href = "/admin/";
-    state.changesEnabled = !!me.permissions?.billing_changes_shadow_manage; state.periodsEnabled = !!me.permissions?.billing_periods_shadow_manage; state.invoicesEnabled = !!me.permissions?.billing_invoices_shadow_manage; state.paymentsEnabled = !!me.permissions?.billing_subscription_payments_shadow_manage; state.accessEnabled = !!me.permissions?.billing_access_shadow_manage; $("periodSection").classList.toggle("ba-hidden", !state.periodsEnabled); $("invoiceSection").classList.toggle("ba-hidden", !state.invoicesEnabled); $("paymentSection").classList.toggle("ba-hidden", !state.paymentsEnabled); $("accessSection").classList.toggle("ba-hidden", !state.accessEnabled); $("periodMonth").value = nextMonth().slice(0, 7); $("invoiceMonth").value = nextMonth().slice(0, 7); $("paymentMonth").value = nextMonth().slice(0, 7); $("accessMonth").value = nextMonth().slice(0, 7); $("accessAsOf").value = today(); $("me").textContent = `Connecté : ${me.email || "superadmin"}`; await load();
+    state.changesEnabled = !!me.permissions?.billing_changes_shadow_manage; state.periodsEnabled = !!me.permissions?.billing_periods_shadow_manage; state.invoicesEnabled = !!me.permissions?.billing_invoices_shadow_manage; state.paymentsEnabled = !!me.permissions?.billing_subscription_payments_shadow_manage; state.accessEnabled = !!me.permissions?.billing_access_shadow_manage; state.commissionsEnabled = !!me.permissions?.billing_commission_statements_shadow_manage; $("periodSection").classList.toggle("ba-hidden", !state.periodsEnabled); $("invoiceSection").classList.toggle("ba-hidden", !state.invoicesEnabled); $("paymentSection").classList.toggle("ba-hidden", !state.paymentsEnabled); $("accessSection").classList.toggle("ba-hidden", !state.accessEnabled); $("commissionSection").classList.toggle("ba-hidden", !state.commissionsEnabled); $("periodMonth").value = nextMonth().slice(0, 7); $("invoiceMonth").value = nextMonth().slice(0, 7); $("paymentMonth").value = nextMonth().slice(0, 7); $("accessMonth").value = nextMonth().slice(0, 7); $("commissionMonth").value = nextMonth().slice(0, 7); $("accessAsOf").value = today(); $("me").textContent = `Connecté : ${me.email || "superadmin"}`; await load();
   } catch (e) { error($("error"), e.message === "billing_assignments_shadow_disabled" ? "Le panneau Shadow est désactivé." : e.message); }
-  $("refreshBtn").onclick = () => load().catch((e) => error($("error"), e.message)); $("closeBtn").onclick = close; $("saveBtn").onclick = save; $("scheduleChangeBtn").onclick = scheduleChange; $("cancelChangeBtn").onclick = cancelChange; $("previewPeriodsBtn").onclick = previewPeriods; $("generatePeriodsBtn").onclick = generatePeriods; $("previewInvoicesBtn").onclick = previewInvoices; $("generateInvoicesBtn").onclick = generateInvoices; $("previewPaymentsBtn").onclick = previewPayments; $("previewAccessBtn").onclick = previewAccess; $("evaluateAccessBtn").onclick = evaluateAccess;
+  $("refreshBtn").onclick = () => load().catch((e) => error($("error"), e.message)); $("closeBtn").onclick = close; $("saveBtn").onclick = save; $("scheduleChangeBtn").onclick = scheduleChange; $("cancelChangeBtn").onclick = cancelChange; $("previewPeriodsBtn").onclick = previewPeriods; $("generatePeriodsBtn").onclick = generatePeriods; $("previewInvoicesBtn").onclick = previewInvoices; $("generateInvoicesBtn").onclick = generateInvoices; $("previewPaymentsBtn").onclick = previewPayments; $("previewAccessBtn").onclick = previewAccess; $("evaluateAccessBtn").onclick = evaluateAccess; $("previewCommissionsBtn").onclick = previewCommissions; $("generateCommissionsBtn").onclick = generateCommissions;
   ["status", "mode", "offer"].forEach((id) => { $(id).onchange = syncForm; }); ["targetOffer", "targetMode", "changeEffectiveOn"].forEach((id) => { $(id).onchange = syncChangeForm; });
   $("modal").onclick = (e) => { if (e.target === $("modal")) close(); }; window.onkeydown = (e) => { if (e.key === "Escape") close(); };
 }

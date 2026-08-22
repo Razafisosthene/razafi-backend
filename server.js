@@ -12765,6 +12765,7 @@ const BILLING_V1_SUBSCRIPTION_PAYMENTS_SHADOW = billingEnvFlag("BILLING_V1_SUBSC
 // S8 remains an isolated simulation.  It never changes a pool's actual
 // access status or payment_methods; it records only a Shadow evaluation.
 const BILLING_V1_ACCESS_SHADOW = billingEnvFlag("BILLING_V1_ACCESS_SHADOW", false);
+const BILLING_V1_COMMISSION_STATEMENTS_SHADOW = billingEnvFlag("BILLING_V1_COMMISSION_STATEMENTS_SHADOW", false);
 const BILLING_V1_DEFAULT_GRACE_DAYS = Math.max(
   0,
   Math.min(31, parseInt(process.env.BILLING_V1_DEFAULT_GRACE_DAYS || "5", 10) || 0)
@@ -13888,6 +13889,7 @@ function buildAdminPermissions(admin) {
     billing_invoices_shadow_manage: isSuperadmin && BILLING_V1_INVOICES_SHADOW,
     billing_subscription_payments_shadow_manage: isSuperadmin && BILLING_V1_SUBSCRIPTION_PAYMENTS_SHADOW,
     billing_access_shadow_manage: isSuperadmin && BILLING_V1_ACCESS_SHADOW,
+    billing_commission_statements_shadow_manage: isSuperadmin && BILLING_V1_COMMISSION_STATEMENTS_SHADOW,
   };
 }
 
@@ -14252,6 +14254,11 @@ function requireBillingSubscriptionPaymentsShadow(req, res, next) {
 
 function requireBillingAccessShadow(req, res, next) {
   if (!BILLING_V1_ACCESS_SHADOW) return res.status(404).json({ error: "billing_access_shadow_disabled" });
+  return next();
+}
+
+function requireBillingCommissionStatementsShadow(req, res, next) {
+  if (!BILLING_V1_COMMISSION_STATEMENTS_SHADOW) return res.status(404).json({ error: "billing_commission_statements_shadow_disabled" });
   return next();
 }
 
@@ -15121,6 +15128,110 @@ app.post("/api/admin/billing/access-shadow/evaluate", requireAdmin, requireSuper
         evaluation_ids: (data || []).map((x) => x.id), },
     });
     return res.json({ ok: true, items: data || [], evaluated_count: rows.length, passive: true, shadow: true, no_effect: true });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+function billingMonthUtcBounds(period_start) {
+  const start = new Date(`${period_start}T00:00:00+03:00`);
+  const next = new Date(start);
+  next.setUTCMonth(next.getUTCMonth() + 1);
+  return { from: start.toISOString(), to: next.toISOString() };
+}
+
+async function buildCommissionStatementsShadow(period_start) {
+  const { data: periods, error: periodError } = await supabase.from("pool_billing_periods")
+    .select("id,pool_id,offer_id,offer_version_id,offer_title_snapshot,period_start,period_end,billing_status,billing_mode,commission_pct,owner_share_pct")
+    .eq("period_start", period_start).eq("billing_mode", "commission")
+    .in("billing_status", ["commercial", "trial"]);
+  if (periodError) throw periodError;
+  const poolIds = (periods || []).map((x) => x.pool_id);
+  if (!poolIds.length) return { period_start, items: [] };
+  const bounds = billingMonthUtcBounds(period_start);
+  const [poolResult, salesResult, statementResult] = await Promise.all([
+    supabase.from("internet_pools").select("id,name,brand_name,radius_nas_id,owner_admin_user_id").in("id", poolIds),
+    supabase.from("v_revenue_paid_truth").select("transaction_id,transaction_created_at,amount_num,currency,pool_id,plan_name,transaction_reference,request_ref").in("pool_id", poolIds).gte("transaction_created_at", bounds.from).lt("transaction_created_at", bounds.to).order("transaction_created_at", { ascending: true }).range(0, 1999),
+    supabase.from("pool_billing_commission_shadow_statements").select("id,pool_billing_period_id,pool_id,owner_admin_user_id,gross_sales_ar,commission_pct,commission_amount_ar,owner_gross_amount_ar,transaction_count,status,created_at").in("pool_billing_period_id", (periods || []).map((x) => x.id)),
+  ]);
+  if (poolResult.error || salesResult.error || statementResult.error) throw poolResult.error || salesResult.error || statementResult.error;
+  const pools = poolResult.data || [], sales = salesResult.data || [], existing = statementResult.data || [];
+  let payoutRecords = [];
+  if (existing.length) {
+    const { data, error } = await supabase.from("pool_billing_payout_shadow_records")
+      .select("id,commission_statement_id,transfer_fee_ar,net_owner_amount_ar,status,created_at")
+      .in("commission_statement_id", existing.map((x) => x.id));
+    if (error) throw error;
+    payoutRecords = data || [];
+  }
+  return {
+    period_start,
+    items: (periods || []).map((period) => {
+      const pool = pools.find((x) => x.id === period.pool_id) || null;
+      const transactions = sales.filter((x) => x.pool_id === period.pool_id);
+      const gross_sales_ar = roundMoney2(transactions.reduce((sum, x) => sum + Number(x.amount_num || 0), 0));
+      const commission_pct = Number(period.commission_pct || 0);
+      const commission_amount_ar = roundMoney2(gross_sales_ar * commission_pct / 100);
+      const owner_gross_amount_ar = roundMoney2(gross_sales_ar - commission_amount_ar);
+      const errors = [];
+      if (!pool) errors.push("pool_missing");
+      if (!pool?.owner_admin_user_id) errors.push("pool_owner_missing");
+      if (!Number.isFinite(commission_pct) || commission_pct < 0 || commission_pct > 100) errors.push("commission_invalid");
+      const row = errors.length ? null : {
+        pool_billing_period_id: period.id, pool_id: period.pool_id, owner_admin_user_id: pool.owner_admin_user_id,
+        offer_id: period.offer_id, offer_version_id: period.offer_version_id, offer_title_snapshot: period.offer_title_snapshot,
+        period_start: period.period_start, period_end: period.period_end, commission_pct, gross_sales_ar, commission_amount_ar,
+        owner_gross_amount_ar, transaction_count: transactions.length, transaction_snapshot: transactions,
+        status: "calculated", metadata: { shadow: true, no_effect: true, source: "v_revenue_paid_truth", transfer_fee_auto_deducted: false },
+      };
+      const existingStatement = existing.find((x) => x.pool_billing_period_id === period.id) || null;
+      return { period, pool, transactions, row, errors, existing: existingStatement, payout_record: existingStatement ? payoutRecords.find((x) => x.commission_statement_id === existingStatement.id) || null : null };
+    }),
+  };
+}
+
+app.get("/api/admin/billing/commission-statements-shadow", requireAdmin, requireSuperadmin, requireBillingCommissionStatementsShadow, async (req, res) => {
+  try {
+    const normalized = normalizeBillingPeriodStart(req.query?.period_start);
+    if (normalized.error) return res.status(400).json({ error: normalized.error });
+    return res.json({ ...(await buildCommissionStatementsShadow(normalized.value.period_start)), passive: true, shadow: true, no_effect: true });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/admin/billing/commission-statements-shadow/generate", requireAdmin, requireSuperadmin, requireBillingCommissionStatementsShadow, async (req, res) => {
+  try {
+    const normalized = normalizeBillingPeriodStart(req.body?.period_start);
+    if (normalized.error) return res.status(400).json({ error: normalized.error });
+    const preview = await buildCommissionStatementsShadow(normalized.value.period_start);
+    const invalid = preview.items.filter((x) => x.errors.length);
+    if (invalid.length) return res.status(409).json({ error: "commission_statement_invalid", details: invalid.map((x) => ({ pool_id: x.period.pool_id, errors: x.errors })) });
+    const rows = preview.items.filter((x) => !x.existing).map((x) => x.row);
+    let created = [];
+    if (rows.length) {
+      const { data, error } = await supabase.from("pool_billing_commission_shadow_statements").insert(rows).select();
+      if (error) return res.status(error.code === "23505" ? 409 : 500).json({ error: error.code === "23505" ? "statement_already_generated_refresh_preview" : error.message });
+      created = data || [];
+    }
+    await insertAudit({ event_type: "billing_commission_statements_shadow_generated", status: "success", entity_type: "commission_statement_batch", actor_type: "admin_user", actor_id: req.admin.id,
+      message: `Relevés de commission shadow générés : ${normalized.value.period_start}`,
+      metadata: { shadow: true, no_effect: true, period_start: normalized.value.period_start, eligible_count: preview.items.length, created_count: created.length, existing_count: preview.items.length - rows.length, created_ids: created.map((x) => x.id) } });
+    return res.json({ ok: true, created, created_count: created.length, existing_count: preview.items.length - rows.length, passive: true, shadow: true });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/admin/billing/commission-statements-shadow/:id/payout-record", requireAdmin, requireSuperadmin, requireBillingCommissionStatementsShadow, async (req, res) => {
+  try {
+    const transfer_fee_ar = Math.max(0, Math.round(Number(req.body?.transfer_fee_ar || 0)));
+    if (!Number.isFinite(transfer_fee_ar)) return res.status(400).json({ error: "transfer_fee_invalid" });
+    const { data: statement, error: statementError } = await supabase.from("pool_billing_commission_shadow_statements").select("*").eq("id", req.params.id).maybeSingle();
+    if (statementError) return res.status(500).json({ error: statementError.message });
+    if (!statement) return res.status(404).json({ error: "statement_not_found" });
+    const net_owner_amount_ar = Math.max(0, Number(statement.owner_gross_amount_ar || 0) - transfer_fee_ar);
+    const { data: existing, error: existingError } = await supabase.from("pool_billing_payout_shadow_records").select("id").eq("commission_statement_id", statement.id).maybeSingle();
+    if (existingError) return res.status(500).json({ error: existingError.message });
+    if (existing) return res.status(409).json({ error: "payout_record_already_created" });
+    const { data, error } = await supabase.from("pool_billing_payout_shadow_records").insert({ commission_statement_id: statement.id, pool_id: statement.pool_id, owner_admin_user_id: statement.owner_admin_user_id, transfer_fee_ar, net_owner_amount_ar, status: "recorded", created_by: req.admin.id, metadata: { shadow: true, no_effect: true, transfer_executed: false } }).select().maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    await insertAudit({ event_type: "billing_commission_payout_shadow_recorded", status: "success", entity_type: "commission_payout_shadow_record", entity_id: data.id, actor_type: "admin_user", actor_id: req.admin.id, pool_id: statement.pool_id, message: "Reversement manuel enregistré en shadow", metadata: { shadow: true, no_effect: true, statement_id: statement.id, payout_record_id: data.id, transfer_fee_ar, net_owner_amount_ar, transfer_executed: false } });
+    return res.json({ ok: true, item: data, passive: true, shadow: true });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
