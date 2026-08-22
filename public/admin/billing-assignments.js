@@ -141,12 +141,42 @@ async function generatePeriods() {
     $("periodResult").insertAdjacentHTML("afterbegin", `<div style="margin-bottom:10px"><strong>Génération terminée :</strong> ${Number(result.created_count)} créée(s), ${Number(result.existing_count)} déjà existante(s).</div>`);
   } catch (e) { error($("error"), e.message); } finally { $("generatePeriodsBtn").disabled = false; }
 }
+function invoiceStartValue() { const month = String($("invoiceMonth").value || ""); return /^\d{4}-\d{2}$/.test(month) ? `${month}-01` : ""; }
+function renderInvoicePreview(data) {
+  const items = data.items || [];
+  if (!items.length) { $("invoiceResult").innerHTML = `<strong>Aucun snapshot S5 pour ${esc(data.period_start || "ce mois")}.</strong><br>Aucune facture ne sera créée.`; return; }
+  $("invoiceResult").innerHTML = `<strong>Mois : ${esc(data.period_start)}</strong><br>${items.map((item) => {
+    const pool = item.pool ? name(item.pool) : item.period?.pool_id;
+    if ((item.errors || []).length) return `<div style="margin-top:9px"><strong>${esc(pool)}</strong> — Erreur : ${esc(item.errors.join(", "))}</div>`;
+    if (!item.eligible) {
+      const reason = item.skip_reason === "not_subscription" ? (item.period?.billing_mode ? `Mode ${label(item.period.billing_mode)}` : `Statut ${label(item.period?.billing_status)}`) : `Statut ${label(item.period?.billing_status)}`;
+      return `<div style="margin-top:9px"><strong>${esc(pool)}</strong> — Non éligible · ${esc(reason)} · Aucune facture</div>`;
+    }
+    const row = item.row || item.existing;
+    return `<div style="margin-top:9px"><strong>${esc(pool)}</strong> — ${esc(row.offer_title_snapshot)}<br>Facture ${esc(row.invoice_number)} · ${money(row.amount_due_ar)} · Échéance ${esc(String(row.due_at || "").slice(0, 10))} · ${item.existing ? "Déjà générée" : "À générer"}</div>`;
+  }).join("")}<br><strong>Shadow : aucun paiement, PDF, relance ou verrou automatique</strong>`;
+}
+async function previewInvoices() {
+  error($("error"), ""); $("previewInvoicesBtn").disabled = true;
+  try { const start = invoiceStartValue(); if (!start) throw new Error("period_start_invalid"); renderInvoicePreview(await api(`/api/admin/billing/invoices-shadow?period_start=${encodeURIComponent(start)}`)); }
+  catch (e) { error($("error"), e.message); } finally { $("previewInvoicesBtn").disabled = false; }
+}
+async function generateInvoices() {
+  const start = invoiceStartValue(); if (!start) return error($("error"), "period_start_invalid");
+  if (!window.confirm(`Générer les factures d'abonnement Shadow pour ${start} ?`)) return;
+  error($("error"), ""); $("generateInvoicesBtn").disabled = true;
+  try {
+    const result = await api("/api/admin/billing/invoices-shadow/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ period_start: start }) });
+    await previewInvoices();
+    $("invoiceResult").insertAdjacentHTML("afterbegin", `<div style="margin-bottom:10px"><strong>Génération terminée :</strong> ${Number(result.created_count)} créée(s), ${Number(result.existing_count)} existante(s), ${Number(result.skipped_count)} ignorée(s).</div>`);
+  } catch (e) { error($("error"), e.message); } finally { $("generateInvoicesBtn").disabled = false; }
+}
 async function boot() {
   try {
     const me = await api("/api/admin/me"); if (!me.is_superadmin) location.href = "/admin/";
-    state.changesEnabled = !!me.permissions?.billing_changes_shadow_manage; state.periodsEnabled = !!me.permissions?.billing_periods_shadow_manage; $("periodSection").classList.toggle("ba-hidden", !state.periodsEnabled); $("periodMonth").value = nextMonth().slice(0, 7); $("me").textContent = `Connecté : ${me.email || "superadmin"}`; await load();
+    state.changesEnabled = !!me.permissions?.billing_changes_shadow_manage; state.periodsEnabled = !!me.permissions?.billing_periods_shadow_manage; state.invoicesEnabled = !!me.permissions?.billing_invoices_shadow_manage; $("periodSection").classList.toggle("ba-hidden", !state.periodsEnabled); $("invoiceSection").classList.toggle("ba-hidden", !state.invoicesEnabled); $("periodMonth").value = nextMonth().slice(0, 7); $("invoiceMonth").value = nextMonth().slice(0, 7); $("me").textContent = `Connecté : ${me.email || "superadmin"}`; await load();
   } catch (e) { error($("error"), e.message === "billing_assignments_shadow_disabled" ? "Le panneau Shadow est désactivé." : e.message); }
-  $("refreshBtn").onclick = () => load().catch((e) => error($("error"), e.message)); $("closeBtn").onclick = close; $("saveBtn").onclick = save; $("scheduleChangeBtn").onclick = scheduleChange; $("cancelChangeBtn").onclick = cancelChange; $("previewPeriodsBtn").onclick = previewPeriods; $("generatePeriodsBtn").onclick = generatePeriods;
+  $("refreshBtn").onclick = () => load().catch((e) => error($("error"), e.message)); $("closeBtn").onclick = close; $("saveBtn").onclick = save; $("scheduleChangeBtn").onclick = scheduleChange; $("cancelChangeBtn").onclick = cancelChange; $("previewPeriodsBtn").onclick = previewPeriods; $("generatePeriodsBtn").onclick = generatePeriods; $("previewInvoicesBtn").onclick = previewInvoices; $("generateInvoicesBtn").onclick = generateInvoices;
   ["status", "mode", "offer"].forEach((id) => { $(id).onchange = syncForm; }); ["targetOffer", "targetMode", "changeEffectiveOn"].forEach((id) => { $(id).onchange = syncChangeForm; });
   $("modal").onclick = (e) => { if (e.target === $("modal")) close(); }; window.onkeydown = (e) => { if (e.key === "Escape") close(); };
 }

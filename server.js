@@ -12760,6 +12760,7 @@ const BILLING_V1_ADMIN_OFFERS = billingEnvFlag("BILLING_V1_ADMIN_OFFERS", false)
 const BILLING_V1_POOL_ASSIGNMENTS_SHADOW = billingEnvFlag("BILLING_V1_POOL_ASSIGNMENTS_SHADOW", false);
 const BILLING_V1_CHANGES_SHADOW = billingEnvFlag("BILLING_V1_CHANGES_SHADOW", false);
 const BILLING_V1_PERIODS_SHADOW = billingEnvFlag("BILLING_V1_PERIODS_SHADOW", false);
+const BILLING_V1_INVOICES_SHADOW = billingEnvFlag("BILLING_V1_INVOICES_SHADOW", false);
 const BILLING_V1_DEFAULT_GRACE_DAYS = Math.max(
   0,
   Math.min(31, parseInt(process.env.BILLING_V1_DEFAULT_GRACE_DAYS || "5", 10) || 0)
@@ -13880,6 +13881,7 @@ function buildAdminPermissions(admin) {
     billing_assignments_shadow_manage: isSuperadmin && BILLING_V1_POOL_ASSIGNMENTS_SHADOW,
     billing_changes_shadow_manage: isSuperadmin && BILLING_V1_CHANGES_SHADOW,
     billing_periods_shadow_manage: isSuperadmin && BILLING_V1_PERIODS_SHADOW,
+    billing_invoices_shadow_manage: isSuperadmin && BILLING_V1_INVOICES_SHADOW,
   };
 }
 
@@ -14229,6 +14231,11 @@ function requireBillingChangesShadow(req, res, next) {
 
 function requireBillingPeriodsShadow(req, res, next) {
   if (!BILLING_V1_PERIODS_SHADOW) return res.status(404).json({ error: "billing_periods_shadow_disabled" });
+  return next();
+}
+
+function requireBillingInvoicesShadow(req, res, next) {
+  if (!BILLING_V1_INVOICES_SHADOW) return res.status(404).json({ error: "billing_invoices_shadow_disabled" });
   return next();
 }
 
@@ -14780,6 +14787,127 @@ app.post("/api/admin/billing/periods-shadow/generate", requireAdmin, requireSupe
       metadata: { shadow: true, no_effect: true, period_start: normalized.value.period_start, period_end: normalized.value.period_end, eligible_count: preview.items.length, created_count: created.length, existing_count: preview.items.length - rows.length, created_ids: created.map((x) => x.id) },
     });
     return res.json({ ok: true, created, created_count: created.length, existing_count: preview.items.length - rows.length, passive: true, shadow: true });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+function billingInvoiceNumber(periodStart, poolId) {
+  return `RAZAFI-SUB-${String(periodStart).slice(0, 7).replace("-", "")}-${String(poolId).replace(/-/g, "").toUpperCase()}`;
+}
+
+function billingInvoiceDueAt(periodStart, graceDays) {
+  const due = new Date(`${periodStart}T23:59:59.999Z`);
+  due.setUTCDate(due.getUTCDate() + Math.max(0, Math.min(31, Number(graceDays) || 0)));
+  return due.toISOString();
+}
+
+async function buildBillingInvoicesShadow(period_start) {
+  const { data: periods, error: periodError } = await supabase.from("pool_billing_periods")
+    .select("id,pool_id,period_start,period_end,offer_id,offer_version_id,offer_title_snapshot,billing_status,billing_mode,subscription_price_ar,grace_days,access_status")
+    .eq("period_start", period_start)
+    .order("created_at", { ascending: true });
+  if (periodError) throw periodError;
+  const poolIds = [...new Set((periods || []).map((x) => x.pool_id))];
+  const periodIds = (periods || []).map((x) => x.id);
+  let pools = [], existing = [];
+  if (poolIds.length) {
+    const { data, error } = await supabase.from("internet_pools")
+      .select("id,name,brand_name,radius_nas_id,owner_admin_user_id")
+      .in("id", poolIds);
+    if (error) throw error;
+    pools = data || [];
+  }
+  if (periodIds.length) {
+    const { data, error } = await supabase.from("subscription_invoices")
+      .select("id,invoice_number,pool_id,owner_admin_user_id,billing_period_id,offer_version_id,offer_title_snapshot,period_start,period_end,purpose,amount_due_ar,amount_paid_ar,status,issued_at,due_at,created_at")
+      .eq("purpose", "monthly_subscription")
+      .in("billing_period_id", periodIds);
+    if (error) throw error;
+    existing = data || [];
+  }
+  const items = (periods || []).map((period) => {
+    const pool = pools.find((x) => x.id === period.pool_id) || null;
+    const invoice = existing.find((x) => x.billing_period_id === period.id) || null;
+    const eligible = ["commercial", "trial"].includes(period.billing_status) && period.billing_mode === "subscription";
+    const errors = [];
+    if (eligible && !pool) errors.push("pool_missing");
+    if (eligible && !pool?.owner_admin_user_id) errors.push("pool_owner_missing");
+    if (eligible && (!Number.isInteger(Number(period.subscription_price_ar)) || Number(period.subscription_price_ar) < 0)) errors.push("subscription_price_invalid");
+    const row = !eligible || errors.length ? null : {
+      invoice_number: billingInvoiceNumber(period.period_start, period.pool_id),
+      pool_id: period.pool_id,
+      owner_admin_user_id: pool.owner_admin_user_id,
+      billing_period_id: period.id,
+      billing_change_id: null,
+      offer_version_id: period.offer_version_id,
+      offer_title_snapshot: period.offer_title_snapshot,
+      period_start: period.period_start,
+      period_end: period.period_end,
+      purpose: "monthly_subscription",
+      amount_due_ar: Number(period.subscription_price_ar),
+      amount_paid_ar: 0,
+      status: "issued",
+      due_at: billingInvoiceDueAt(period.period_start, period.grace_days),
+      pdf_snapshot: {
+        schema: "billing-v1-s6-shadow",
+        shadow: true,
+        pool: { id: period.pool_id, name: pool?.name || null, brand_name: pool?.brand_name || null },
+        offer: { id: period.offer_id, version_id: period.offer_version_id, title: period.offer_title_snapshot },
+        line: { description: `Abonnement RAZAFI — ${period.offer_title_snapshot}`, quantity: 1, unit_price_ar: Number(period.subscription_price_ar), total_ar: Number(period.subscription_price_ar) },
+        period: { start: period.period_start, end: period.period_end },
+      },
+    };
+    const skip_reason = eligible ? null : period.billing_mode !== "subscription" ? "not_subscription" : "billing_status_not_invoiceable";
+    return { period, pool, eligible, skip_reason, errors, row, existing: invoice };
+  });
+  return { period_start, items };
+}
+
+app.get("/api/admin/billing/invoices-shadow", requireAdmin, requireSuperadmin, requireBillingInvoicesShadow, async (req, res) => {
+  try {
+    const normalized = normalizeBillingPeriodStart(req.query?.period_start);
+    if (normalized.error) return res.status(400).json({ error: normalized.error });
+    const preview = await buildBillingInvoicesShadow(normalized.value.period_start);
+    return res.json({ ...preview, passive: true, shadow: true });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/admin/billing/invoices-shadow/generate", requireAdmin, requireSuperadmin, requireBillingInvoicesShadow, async (req, res) => {
+  try {
+    const normalized = normalizeBillingPeriodStart(req.body?.period_start);
+    if (normalized.error) return res.status(400).json({ error: normalized.error });
+    const preview = await buildBillingInvoicesShadow(normalized.value.period_start);
+    if (!preview.items.length) return res.status(409).json({ error: "no_period_snapshots_for_month" });
+    const eligible = preview.items.filter((x) => x.eligible);
+    const invalid = eligible.filter((x) => x.errors.length);
+    if (invalid.length) return res.status(409).json({ error: "invoice_shadow_invalid", details: invalid.map((x) => ({ period_id: x.period.id, pool_id: x.period.pool_id, errors: x.errors })) });
+    const rows = eligible.filter((x) => !x.existing).map((x) => x.row);
+    let created = [];
+    if (rows.length) {
+      const { data, error } = await supabase.from("subscription_invoices").insert(rows).select();
+      if (error) return res.status(error.code === "23505" ? 409 : 500).json({ error: error.code === "23505" ? "invoice_already_exists_refresh_preview" : error.message });
+      created = data || [];
+    }
+    await insertAudit({
+      event_type: "billing_invoices_shadow_generated",
+      status: "success",
+      entity_type: "subscription_invoice_batch",
+      actor_type: "admin_user",
+      actor_id: req.admin.id,
+      message: `Factures d'abonnement shadow générées : ${normalized.value.period_start}`,
+      metadata: {
+        shadow: true, no_effect: true, period_start: normalized.value.period_start,
+        snapshot_count: preview.items.length, eligible_count: eligible.length,
+        skipped_count: preview.items.length - eligible.length, created_count: created.length,
+        existing_count: eligible.filter((x) => x.existing).length,
+        created_ids: created.map((x) => x.id),
+      },
+    });
+    return res.json({
+      ok: true, created, created_count: created.length,
+      existing_count: eligible.filter((x) => x.existing).length,
+      skipped_count: preview.items.length - eligible.length,
+      passive: true, shadow: true,
+    });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
