@@ -18,6 +18,7 @@ import cookieParser from "cookie-parser";
 import bcrypt from "bcryptjs";
 import { registerEc1ClientSpace } from "./ec1-client-space.js";
 import { createAirtelMoneyClient, normalizeAirtelInitiationState, normalizeAirtelTransactionState } from "./airtel-money.js";
+import { createSubscriptionInvoicePdf, createSubscriptionReceiptPdf } from "./billing-subscription-pdf.js";
 
 dotenv.config();
 
@@ -15259,7 +15260,7 @@ app.get("/api/owner/billing-shadow", requireAdmin, requireBillingOwnerPortalShad
     if (!poolIds.length) return res.json({
       pools: [], assignments: [], invoices: [], statements: [], payout_records: [], documents: [],
       payment_ui: { enabled: false, provider: null, payable_invoice_ids: [] },
-      passive: true, shadow: true, no_effect: true
+      passive: true, shadow: true, no_effect: true, pdf_available: false
     });
     const [assignmentsResult, invoicesResult, statementsResult, payoutsResult, offersResult] = await Promise.all([
       supabase.from("pool_billing_assignments").select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to,created_at").in("pool_id", poolIds).order("effective_from", { ascending: false }),
@@ -15277,12 +15278,76 @@ app.get("/api/owner/billing-shadow", requireAdmin, requireBillingOwnerPortalShad
     const currentAssignments = poolIds.map((pool_id) => assignments.find((a) => a.pool_id === pool_id && a.effective_from <= nowDate && (!a.effective_to || a.effective_to >= nowDate)) || null).filter(Boolean).map(withOfferTitle);
     const upcomingAssignments = poolIds.map((pool_id) => assignments.filter((a) => a.pool_id === pool_id && a.effective_from > nowDate).sort((a, b) => String(a.effective_from).localeCompare(String(b.effective_from)))[0] || null).filter(Boolean).map(withOfferTitle);
     const documents = [
-      ...invoices.map((x) => ({ id: x.id, type: "subscription_invoice", pool_id: x.pool_id, title: `Facture ${x.invoice_number}`, period_start: x.period_start, status: x.status, amount_ar: x.amount_due_ar, shadow: true, download_available: false })),
+      ...invoices.map((x) => ({ id: x.id, type: "subscription_invoice", pool_id: x.pool_id, title: `Facture ${x.invoice_number}`, period_start: x.period_start, status: x.status, amount_ar: x.amount_due_ar, shadow: !billingPdfLiveEnabled(), download_available: billingPdfLiveEnabled(), download_url: billingPdfLiveEnabled()?`/api/owner/billing/invoices/${encodeURIComponent(x.id)}/pdf`:null })),
+      ...invoices.filter((x)=>x.status==="paid").map((x) => ({ id: x.id, type: "subscription_receipt", pool_id: x.pool_id, title: `Reçu ${x.invoice_number}`, period_start: x.period_start, status: x.status, amount_ar: x.amount_paid_ar, shadow: !billingPdfLiveEnabled(), download_available: billingPdfLiveEnabled(), download_url: billingPdfLiveEnabled()?`/api/owner/billing/invoices/${encodeURIComponent(x.id)}/receipt`:null })),
       ...statements.map((x) => ({ id: x.id, type: "commission_statement", pool_id: x.pool_id, title: `Relevé de commission ${x.period_start}`, period_start: x.period_start, status: x.status, amount_ar: x.owner_gross_amount_ar, shadow: true, download_available: false })),
     ];
     const payment_ui = await billingOwnerPaymentUi(invoices);
-    return res.json({ pools: pools || [], assignments: currentAssignments, upcoming_assignments: upcomingAssignments, invoices, statements, payout_records, documents, payment_ui, passive: true, shadow: true, no_effect: true, pdf_available: false });
+    return res.json({ pools: pools || [], assignments: currentAssignments, upcoming_assignments: upcomingAssignments, invoices, statements, payout_records, documents, payment_ui, passive: true, shadow: true, no_effect: true, pdf_available: billingPdfLiveEnabled() });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+function billingPdfLiveEnabled(){
+  return BILLING_V1_ENABLED && BILLING_V1_PDF && BILLING_V1_OWNER_SELF_SERVICE;
+}
+function requireBillingPdf(_req,res,next){
+  if(!billingPdfLiveEnabled())return res.status(404).json({error:"billing_subscription_pdf_disabled"});
+  next();
+}
+function billingPdfFilename(prefix,value){
+  return `${prefix}-${String(value||"document").replace(/[^A-Za-z0-9_-]/g,"-").slice(0,120)}.pdf`;
+}
+function sendBillingPdf(res,doc,filename){
+  res.setHeader("Content-Type","application/pdf");
+  res.setHeader("Content-Disposition",`attachment; filename="${filename}"`);
+  res.setHeader("Cache-Control","private, no-store, max-age=0");
+  res.setHeader("X-Content-Type-Options","nosniff");
+  doc.on("error",(error)=>{console.error("[BILLING S11.5] PDF stream error",error?.message||error);if(!res.headersSent)res.status(500).end()});
+  doc.pipe(res);doc.end();
+}
+async function loadOwnerSubscriptionInvoice(invoiceId,ownerId){
+  const {data:invoice,error}=await supabase.from("subscription_invoices")
+    .select("id,invoice_number,pool_id,owner_admin_user_id,offer_title_snapshot,period_start,period_end,purpose,amount_due_ar,amount_paid_ar,status,issued_at,due_at,created_at")
+    .eq("id",invoiceId).eq("owner_admin_user_id",ownerId)
+    .eq("purpose","monthly_subscription").maybeSingle();
+  if(error)throw error;if(!invoice)return null;
+  const [{data:pool,error:poolError},{data:owner,error:ownerError}]=await Promise.all([
+    supabase.from("internet_pools").select("id,name,brand_name,radius_nas_id").eq("id",invoice.pool_id).maybeSingle(),
+    supabase.from("admin_users").select("id,email").eq("id",ownerId).maybeSingle(),
+  ]);
+  if(poolError||ownerError)throw poolError||ownerError;
+  const display_name=[pool?.brand_name,pool?.name].filter(Boolean).join(" - ")||pool?.name||"-";
+  return {invoice,pool:{...(pool||{}),display_name},owner:owner||{id:ownerId,email:null}};
+}
+
+app.get("/api/owner/billing/invoices/:id/pdf",requireAdmin,requireBillingPdf,async(req,res)=>{
+  try{
+    if(!ensureSupabase(res))return;
+    const data=await loadOwnerSubscriptionInvoice(req.params.id,String(req.admin?.id||""));
+    if(!data)return res.status(404).json({error:"subscription_invoice_not_found"});
+    if(!["issued","pending","paid","cancelled","refunded","partially_refunded"].includes(data.invoice.status))
+      return res.status(409).json({error:"subscription_invoice_document_unavailable"});
+    const doc=createSubscriptionInvoicePdf(data);
+    return sendBillingPdf(res,doc,billingPdfFilename("facture",data.invoice.invoice_number));
+  }catch(error){console.error("[BILLING S11.5] invoice PDF",error?.message||error);if(!res.headersSent)return res.status(500).json({error:"subscription_invoice_pdf_failed"});}
+});
+
+app.get("/api/owner/billing/invoices/:id/receipt",requireAdmin,requireBillingPdf,async(req,res)=>{
+  try{
+    if(!ensureSupabase(res))return;
+    const data=await loadOwnerSubscriptionInvoice(req.params.id,String(req.admin?.id||""));
+    if(!data)return res.status(404).json({error:"subscription_invoice_not_found"});
+    if(data.invoice.status!=="paid"||Number(data.invoice.amount_paid_ar)<Number(data.invoice.amount_due_ar))
+      return res.status(409).json({error:"subscription_receipt_requires_paid_invoice"});
+    const {data:transaction,error}=await supabase.from("subscription_payment_transactions")
+      .select("id,invoice_id,pool_id,owner_admin_user_id,provider,amount_ar,currency,status,completed_at")
+      .eq("invoice_id",data.invoice.id).eq("owner_admin_user_id",String(req.admin?.id||""))
+      .eq("status","completed").order("completed_at",{ascending:true}).limit(1).maybeSingle();
+    if(error)throw error;if(!transaction)return res.status(409).json({error:"subscription_receipt_payment_not_found"});
+    const receipt_number=`RAZAFI-REC-${String(data.invoice.invoice_number).replace(/^RAZAFI-SUB-/,"")}`;
+    const doc=createSubscriptionReceiptPdf({...data,transaction,receipt_number});
+    return sendBillingPdf(res,doc,billingPdfFilename("recu",receipt_number));
+  }catch(error){console.error("[BILLING S11.5] receipt PDF",error?.message||error);if(!res.headersSent)return res.status(500).json({error:"subscription_receipt_pdf_failed"});}
 });
 
 // S11.1: isolated subscription payment path. Never calls the WiFi poller and

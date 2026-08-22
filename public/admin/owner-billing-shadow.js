@@ -11,6 +11,7 @@ async function api(url,options={}){
   return d;
 }
 function empty(id,text){$(id).innerHTML=`<div class="ob-empty">${esc(text)}</div>`}
+function downloadLink(url,labelText){return url?`<a class="ob-download" href="${esc(url)}">${esc(labelText)}</a>`:""}
 function paymentMarkup(i){
   if(!paymentUi.enabled||!paymentUi.payable_invoice_ids.includes(i.id))return "";
   return `<div class="ob-pay" data-invoice-id="${esc(i.id)}">
@@ -23,7 +24,7 @@ function render(d){
   paymentUi=d.payment_ui||{enabled:false,provider:null,payable_invoice_ids:[]};
   const banner=$("billingBanner");
   if(paymentUi.enabled){banner.classList.add("ob-banner-live");banner.textContent="Paiement d’abonnement disponible uniquement pour les factures et pools autorisés."}
-  else{banner.classList.remove("ob-banner-live");banner.textContent="S11.2 prêt mais désactivé — aperçu personnel en lecture seule. Aucun paiement, transfert, blocage ou effet portail n’est actif."}
+  else{banner.classList.remove("ob-banner-live");banner.textContent="S11.5 prêt mais désactivé — aperçu personnel en lecture seule. Aucun paiement, PDF, transfert, blocage ou effet portail n’est actif."}
   const byPool=Object.fromEntries((d.assignments||[]).map(a=>[a.pool_id,a]));
   const upcomingByPool=Object.fromEntries((d.upcoming_assignments||[]).map(a=>[a.pool_id,a]));
   $("pools").innerHTML=(d.pools||[]).length?(d.pools||[]).map(p=>{
@@ -32,10 +33,10 @@ function render(d){
     const upcoming=u?`<div class="ob-muted" style="margin-top:10px"><strong>Offre prévue : ${esc(u.offer_title||"Offre RAZAFI")}</strong></div><div class="ob-pills"><span class="ob-pill">${esc(label(u.billing_status))}</span><span class="ob-pill">${esc(label(u.billing_mode))}</span></div><div class="ob-muted">Prise d’effet : ${esc(u.effective_from)}</div>`:"";
     return `<article class="ob-card"><h2>${esc([p.brand_name,p.name].filter(Boolean).join(" – ")||p.name)}</h2><div class="ob-muted">${esc(p.radius_nas_id||"")}</div>${current}${upcoming}</article>`;
   }).join(""):'<div class="ob-empty">Aucun pool propriétaire associé à cette session.</div>';
-  $("invoices").innerHTML=(d.invoices||[]).length?(d.invoices||[]).map(i=>`<article class="ob-doc"><strong>${esc(i.invoice_number)}</strong>${esc(i.offer_title_snapshot)} · ${money(i.amount_due_ar)}<br>Période ${esc(i.period_start)} → ${esc(i.period_end)} · ${esc(label(i.status))}<br><span class="ob-muted">Échéance : ${esc(String(i.due_at||"").slice(0,10))} · PDF indisponible en Shadow</span>${paymentMarkup(i)}</article>`).join(""):(empty("invoices","Aucune facture d’abonnement Shadow."),$("invoices").innerHTML);
+  $("invoices").innerHTML=(d.invoices||[]).length?(d.invoices||[]).map(i=>`<article class="ob-doc"><strong>${esc(i.invoice_number)}</strong>${esc(i.offer_title_snapshot)} · ${money(i.amount_due_ar)}<br>Période ${esc(i.period_start)} → ${esc(i.period_end)} · ${esc(label(i.status))}<br><span class="ob-muted">Échéance : ${esc(String(i.due_at||"").slice(0,10))}${d.pdf_available?"":" · PDF désactivé"}</span>${d.pdf_available?downloadLink(`/api/owner/billing/invoices/${encodeURIComponent(i.id)}/pdf`,"Télécharger la facture PDF"):""}${paymentMarkup(i)}</article>`).join(""):(empty("invoices","Aucune facture d’abonnement Shadow."),$("invoices").innerHTML);
   const payoutByStatement=Object.fromEntries((d.payout_records||[]).map(x=>[x.commission_statement_id,x]));
   $("statements").innerHTML=(d.statements||[]).length?(d.statements||[]).map(s=>{const p=payoutByStatement[s.id];return `<article class="ob-doc"><strong>Relevé ${esc(s.period_start)} — ${esc(s.offer_title_snapshot)}</strong>Ventes : ${money(s.gross_sales_ar)} · Commission ${Number(s.commission_pct)} % : ${money(s.commission_amount_ar)}<br>Montant propriétaire avant frais : ${money(s.owner_gross_amount_ar)} · ${Number(s.transaction_count)} vente(s)<br><span class="ob-muted">${p?`Reversement test : ${money(p.net_owner_amount_ar)} (non exécuté)`:"Aucun reversement enregistré"}</span></article>`}).join(""):(empty("statements","Aucun relevé de commission Shadow."),$("statements").innerHTML);
-  $("documents").innerHTML=(d.documents||[]).length?(d.documents||[]).map(x=>`<article class="ob-doc"><strong>${esc(x.title)}</strong>${esc(label(x.status))} · ${money(x.amount_ar)}<br><span class="ob-muted">Document Shadow · téléchargement PDF indisponible</span></article>`).join(""):(empty("documents","Aucun document Shadow."),$("documents").innerHTML);
+  $("documents").innerHTML=(d.documents||[]).length?(d.documents||[]).map(x=>`<article class="ob-doc"><strong>${esc(x.title)}</strong>${esc(label(x.status))} · ${money(x.amount_ar)}<br><span class="ob-muted">${x.download_available?"Document sécurisé disponible":"Document Shadow · téléchargement désactivé"}</span>${x.download_available?downloadLink(x.download_url,"Télécharger le PDF"):""}</article>`).join(""):(empty("documents","Aucun document Shadow."),$("documents").innerHTML);
   wirePaymentForms();
 }
 function validPhone(v){return /^(0(34|37|38)\d{7})$/.test(String(v||"").replace(/\s+/g,""))}
