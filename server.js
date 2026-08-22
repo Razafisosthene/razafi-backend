@@ -14795,7 +14795,7 @@ function billingInvoiceNumber(periodStart, poolId) {
 }
 
 function billingInvoiceDueAt(periodStart, graceDays) {
-  const due = new Date(`${periodStart}T23:59:59.999Z`);
+  const due = new Date(`${periodStart}T20:59:59.999Z`);
   due.setUTCDate(due.getUTCDate() + Math.max(0, Math.min(31, Number(graceDays) || 0)));
   return due.toISOString();
 }
