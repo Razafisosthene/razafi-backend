@@ -12762,6 +12762,9 @@ const BILLING_V1_CHANGES_SHADOW = billingEnvFlag("BILLING_V1_CHANGES_SHADOW", fa
 const BILLING_V1_PERIODS_SHADOW = billingEnvFlag("BILLING_V1_PERIODS_SHADOW", false);
 const BILLING_V1_INVOICES_SHADOW = billingEnvFlag("BILLING_V1_INVOICES_SHADOW", false);
 const BILLING_V1_SUBSCRIPTION_PAYMENTS_SHADOW = billingEnvFlag("BILLING_V1_SUBSCRIPTION_PAYMENTS_SHADOW", false);
+// S8 remains an isolated simulation.  It never changes a pool's actual
+// access status or payment_methods; it records only a Shadow evaluation.
+const BILLING_V1_ACCESS_SHADOW = billingEnvFlag("BILLING_V1_ACCESS_SHADOW", false);
 const BILLING_V1_DEFAULT_GRACE_DAYS = Math.max(
   0,
   Math.min(31, parseInt(process.env.BILLING_V1_DEFAULT_GRACE_DAYS || "5", 10) || 0)
@@ -13884,6 +13887,7 @@ function buildAdminPermissions(admin) {
     billing_periods_shadow_manage: isSuperadmin && BILLING_V1_PERIODS_SHADOW,
     billing_invoices_shadow_manage: isSuperadmin && BILLING_V1_INVOICES_SHADOW,
     billing_subscription_payments_shadow_manage: isSuperadmin && BILLING_V1_SUBSCRIPTION_PAYMENTS_SHADOW,
+    billing_access_shadow_manage: isSuperadmin && BILLING_V1_ACCESS_SHADOW,
   };
 }
 
@@ -14243,6 +14247,11 @@ function requireBillingInvoicesShadow(req, res, next) {
 
 function requireBillingSubscriptionPaymentsShadow(req, res, next) {
   if (!BILLING_V1_SUBSCRIPTION_PAYMENTS_SHADOW) return res.status(404).json({ error: "billing_subscription_payments_shadow_disabled" });
+  return next();
+}
+
+function requireBillingAccessShadow(req, res, next) {
+  if (!BILLING_V1_ACCESS_SHADOW) return res.status(404).json({ error: "billing_access_shadow_disabled" });
   return next();
 }
 
@@ -15013,6 +15022,105 @@ app.patch("/api/admin/billing/subscription-payments-shadow/:id", requireAdmin, r
       metadata: { shadow: true, no_effect: true, provider_call: false, before, after: data },
     });
     return res.json({ ok: true, item: data, passive: true, shadow: true });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+function billingShadowDate(value) {
+  const raw = String(value || "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null;
+}
+
+function billingMadagascarDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Indian/Antananarivo", year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(date).reduce((out, part) => ({ ...out, [part.type]: part.value }), {});
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+async function buildBillingAccessShadow(period_start, as_of_date) {
+  const { data: periods, error: periodError } = await supabase.from("pool_billing_periods")
+    .select("id,pool_id,period_start,period_end,offer_title_snapshot,billing_status,billing_mode,subscription_price_ar,grace_days,access_status")
+    .eq("period_start", period_start).order("created_at", { ascending: true });
+  if (periodError) throw periodError;
+  const poolIds = (periods || []).map((x) => x.pool_id);
+  let pools = [], invoices = [], evaluations = [];
+  if (poolIds.length) {
+    const [poolResult, invoiceResult, evaluationResult] = await Promise.all([
+      supabase.from("internet_pools").select("id,name,brand_name,radius_nas_id,payment_methods").in("id", poolIds),
+      supabase.from("subscription_invoices").select("id,billing_period_id,invoice_number,status,amount_due_ar,amount_paid_ar,due_at").in("billing_period_id", (periods || []).map((x) => x.id)),
+      supabase.from("pool_billing_access_shadow_evaluations").select("id,pool_billing_period_id,evaluation_date,calculated_status,grace_until_date,would_disable_payment_methods,created_at").eq("evaluation_date", as_of_date).in("pool_billing_period_id", (periods || []).map((x) => x.id)),
+    ]);
+    if (poolResult.error) throw poolResult.error;
+    if (invoiceResult.error) throw invoiceResult.error;
+    if (evaluationResult.error) throw evaluationResult.error;
+    pools = poolResult.data || []; invoices = invoiceResult.data || []; evaluations = evaluationResult.data || [];
+  }
+  return {
+    period_start, as_of_date,
+    items: (periods || []).map((period) => {
+      const pool = pools.find((x) => x.id === period.pool_id) || null;
+      const invoice = invoices.find((x) => x.billing_period_id === period.id) || null;
+      const payment_methods_snapshot = normalizePaymentMethods(pool?.payment_methods);
+      const paid = invoice && (invoice.status === "paid" || Number(invoice.amount_paid_ar) >= Number(invoice.amount_due_ar));
+      const invoiceDueDate = billingMadagascarDate(invoice?.due_at);
+      let calculated_status = "active", reason = "Hors abonnement commercial : aucune suspension simulée.";
+      if (["commercial", "trial"].includes(period.billing_status) && period.billing_mode === "subscription") {
+        if (!invoice) { reason = "Aucune facture S6 : aucune suspension simulée."; }
+        else if (paid) { reason = "Facture réglée : accès qui resterait actif."; }
+        else if (as_of_date < period.period_start) { reason = "Période future : accès qui resterait actif."; }
+        else if (invoiceDueDate && as_of_date <= invoiceDueDate) { calculated_status = "grace"; reason = "Facture impayée dans la tolérance configurée."; }
+        else { calculated_status = "suspended"; reason = "Facture impayée après la tolérance : suspension qui serait appliquée."; }
+      }
+      const would_disable_payment_methods = calculated_status === "suspended";
+      return {
+        period, pool, invoice, existing_evaluation: evaluations.find((x) => x.pool_billing_period_id === period.id) || null,
+        calculated_status, grace_until_date: invoiceDueDate, would_disable_payment_methods,
+        payment_methods_snapshot, reason,
+      };
+    }),
+  };
+}
+
+app.get("/api/admin/billing/access-shadow", requireAdmin, requireSuperadmin, requireBillingAccessShadow, async (req, res) => {
+  try {
+    const normalized = normalizeBillingPeriodStart(req.query?.period_start);
+    const as_of_date = billingShadowDate(req.query?.as_of_date) || billingMadagascarDate(new Date());
+    if (normalized.error) return res.status(400).json({ error: normalized.error });
+    return res.json({ ...(await buildBillingAccessShadow(normalized.value.period_start, as_of_date)), passive: true, shadow: true, no_effect: true });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/admin/billing/access-shadow/evaluate", requireAdmin, requireSuperadmin, requireBillingAccessShadow, async (req, res) => {
+  try {
+    const normalized = normalizeBillingPeriodStart(req.body?.period_start);
+    const as_of_date = billingShadowDate(req.body?.as_of_date);
+    if (normalized.error) return res.status(400).json({ error: normalized.error });
+    if (!as_of_date) return res.status(400).json({ error: "as_of_date_invalid" });
+    const preview = await buildBillingAccessShadow(normalized.value.period_start, as_of_date);
+    const rows = preview.items.map((item) => ({
+      pool_billing_period_id: item.period.id, evaluation_date: as_of_date, calculated_status: item.calculated_status,
+      grace_until_date: item.grace_until_date, would_disable_payment_methods: item.would_disable_payment_methods,
+      payment_methods_snapshot: item.payment_methods_snapshot,
+      reason: item.reason, created_by: req.admin.id,
+      metadata: { shadow: true, no_effect: true, invoice_id: item.invoice?.id || null, pool_id: item.period.pool_id },
+    }));
+    const { data, error } = await supabase.from("pool_billing_access_shadow_evaluations")
+      .upsert(rows, { onConflict: "pool_billing_period_id,evaluation_date" }).select();
+    if (error) return res.status(500).json({ error: error.message });
+    await insertAudit({
+      event_type: "billing_access_shadow_evaluated", status: "success", entity_type: "pool_billing_access_shadow_batch",
+      actor_type: "admin_user", actor_id: req.admin.id,
+      message: `États d'accès simulés en shadow : ${normalized.value.period_start} au ${as_of_date}`,
+      metadata: { shadow: true, no_effect: true, period_start: normalized.value.period_start, as_of_date,
+        active_count: rows.filter((x) => x.calculated_status === "active").length,
+        grace_count: rows.filter((x) => x.calculated_status === "grace").length,
+        suspended_count: rows.filter((x) => x.calculated_status === "suspended").length,
+        would_disable_payment_methods_count: rows.filter((x) => x.would_disable_payment_methods).length,
+        evaluation_ids: (data || []).map((x) => x.id), },
+    });
+    return res.json({ ok: true, items: data || [], evaluated_count: rows.length, passive: true, shadow: true, no_effect: true });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 

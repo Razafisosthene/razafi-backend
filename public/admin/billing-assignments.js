@@ -202,12 +202,38 @@ async function updatePayment(id, status) {
   try { await api(`/api/admin/billing/subscription-payments-shadow/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) }); await previewPayments(); }
   catch (e) { error($("error"), e.message); }
 }
+function accessStartValue() { const month = String($("accessMonth").value || ""); return /^\d{4}-\d{2}$/.test(month) ? `${month}-01` : ""; }
+function renderAccessPreview(data, notice = "") {
+  const items = data.items || [];
+  if (!items.length) { $("accessResult").innerHTML = `<strong>Aucun snapshot S5 pour ${esc(data.period_start || "ce mois")}.</strong><br>Aucun état ne sera simulé.`; return; }
+  $("accessResult").innerHTML = `${notice ? `<div style="margin-bottom:10px"><strong>${esc(notice)}</strong></div>` : ""}<strong>Mois : ${esc(data.period_start)} · Date simulée : ${esc(data.as_of_date)}</strong><br>${items.map((item) => {
+    const pool = item.pool ? name(item.pool) : item.period?.pool_id;
+    const invoice = item.invoice;
+    const methods = Object.entries(item.payment_methods_snapshot || {}).filter(([, enabled]) => enabled).map(([key]) => key).join(", ") || "aucun";
+    const stateText = item.calculated_status === "grace" ? "Grâce — accès conservé" : item.calculated_status === "suspended" ? "Suspendu simulé" : "Actif";
+    const paymentText = item.would_disable_payment_methods ? `Moyens qui seraient bloqués : ${methods}` : "Aucun moyen de paiement ne serait bloqué";
+    return `<div style="margin-top:10px"><strong>${esc(pool)}</strong> — <strong>${esc(stateText)}</strong><br>${esc(item.period?.offer_title_snapshot || "Offre")} · ${invoice ? `Facture ${esc(invoice.invoice_number)} · ${money(invoice.amount_due_ar)}` : "Aucune facture"}${item.grace_until_date ? ` · Tolérance jusqu’au ${esc(item.grace_until_date)}` : ""}<br>${esc(item.reason)}<br>${esc(paymentText)}${item.existing_evaluation ? " · Simulation déjà enregistrée" : ""}</div>`;
+  }).join("")}<br><strong>Shadow : aucune modification du pool, des moyens de paiement, du portail ou de l’accès WiFi</strong>`;
+}
+async function previewAccess() {
+  error($("error"), ""); $("previewAccessBtn").disabled = true;
+  try { const start = accessStartValue(), asOf = $("accessAsOf").value; if (!start || !asOf) throw new Error("access_date_invalid"); renderAccessPreview(await api(`/api/admin/billing/access-shadow?period_start=${encodeURIComponent(start)}&as_of_date=${encodeURIComponent(asOf)}`)); }
+  catch (e) { error($("error"), e.message); } finally { $("previewAccessBtn").disabled = false; }
+}
+async function evaluateAccess() {
+  const start = accessStartValue(), asOf = $("accessAsOf").value;
+  if (!start || !asOf) return error($("error"), "access_date_invalid");
+  if (!window.confirm(`Enregistrer uniquement la simulation Shadow au ${asOf} ? Aucun accès ni moyen de paiement ne sera modifié.`)) return;
+  error($("error"), ""); $("evaluateAccessBtn").disabled = true;
+  try { const result = await api("/api/admin/billing/access-shadow/evaluate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ period_start: start, as_of_date: asOf }) }); const preview = await api(`/api/admin/billing/access-shadow?period_start=${encodeURIComponent(start)}&as_of_date=${encodeURIComponent(asOf)}`); renderAccessPreview(preview, `Simulation enregistrée : ${Number(result.evaluated_count)} évaluation(s).`); }
+  catch (e) { error($("error"), e.message); } finally { $("evaluateAccessBtn").disabled = false; }
+}
 async function boot() {
   try {
     const me = await api("/api/admin/me"); if (!me.is_superadmin) location.href = "/admin/";
-    state.changesEnabled = !!me.permissions?.billing_changes_shadow_manage; state.periodsEnabled = !!me.permissions?.billing_periods_shadow_manage; state.invoicesEnabled = !!me.permissions?.billing_invoices_shadow_manage; state.paymentsEnabled = !!me.permissions?.billing_subscription_payments_shadow_manage; $("periodSection").classList.toggle("ba-hidden", !state.periodsEnabled); $("invoiceSection").classList.toggle("ba-hidden", !state.invoicesEnabled); $("paymentSection").classList.toggle("ba-hidden", !state.paymentsEnabled); $("periodMonth").value = nextMonth().slice(0, 7); $("invoiceMonth").value = nextMonth().slice(0, 7); $("paymentMonth").value = nextMonth().slice(0, 7); $("me").textContent = `Connecté : ${me.email || "superadmin"}`; await load();
+    state.changesEnabled = !!me.permissions?.billing_changes_shadow_manage; state.periodsEnabled = !!me.permissions?.billing_periods_shadow_manage; state.invoicesEnabled = !!me.permissions?.billing_invoices_shadow_manage; state.paymentsEnabled = !!me.permissions?.billing_subscription_payments_shadow_manage; state.accessEnabled = !!me.permissions?.billing_access_shadow_manage; $("periodSection").classList.toggle("ba-hidden", !state.periodsEnabled); $("invoiceSection").classList.toggle("ba-hidden", !state.invoicesEnabled); $("paymentSection").classList.toggle("ba-hidden", !state.paymentsEnabled); $("accessSection").classList.toggle("ba-hidden", !state.accessEnabled); $("periodMonth").value = nextMonth().slice(0, 7); $("invoiceMonth").value = nextMonth().slice(0, 7); $("paymentMonth").value = nextMonth().slice(0, 7); $("accessMonth").value = nextMonth().slice(0, 7); $("accessAsOf").value = today(); $("me").textContent = `Connecté : ${me.email || "superadmin"}`; await load();
   } catch (e) { error($("error"), e.message === "billing_assignments_shadow_disabled" ? "Le panneau Shadow est désactivé." : e.message); }
-  $("refreshBtn").onclick = () => load().catch((e) => error($("error"), e.message)); $("closeBtn").onclick = close; $("saveBtn").onclick = save; $("scheduleChangeBtn").onclick = scheduleChange; $("cancelChangeBtn").onclick = cancelChange; $("previewPeriodsBtn").onclick = previewPeriods; $("generatePeriodsBtn").onclick = generatePeriods; $("previewInvoicesBtn").onclick = previewInvoices; $("generateInvoicesBtn").onclick = generateInvoices; $("previewPaymentsBtn").onclick = previewPayments;
+  $("refreshBtn").onclick = () => load().catch((e) => error($("error"), e.message)); $("closeBtn").onclick = close; $("saveBtn").onclick = save; $("scheduleChangeBtn").onclick = scheduleChange; $("cancelChangeBtn").onclick = cancelChange; $("previewPeriodsBtn").onclick = previewPeriods; $("generatePeriodsBtn").onclick = generatePeriods; $("previewInvoicesBtn").onclick = previewInvoices; $("generateInvoicesBtn").onclick = generateInvoices; $("previewPaymentsBtn").onclick = previewPayments; $("previewAccessBtn").onclick = previewAccess; $("evaluateAccessBtn").onclick = evaluateAccess;
   ["status", "mode", "offer"].forEach((id) => { $(id).onchange = syncForm; }); ["targetOffer", "targetMode", "changeEffectiveOn"].forEach((id) => { $(id).onchange = syncChangeForm; });
   $("modal").onclick = (e) => { if (e.target === $("modal")) close(); }; window.onkeydown = (e) => { if (e.key === "Escape") close(); };
 }

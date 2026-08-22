@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>RAZAFI Admin — Abonnements des pools</title>
-  <link rel="stylesheet" href="/admin/admin.css?v=billing-s7">
+  <link rel="stylesheet" href="/admin/admin.css?v=billing-s8">
   <style>
     .ba-shell{width:min(1160px,96%);display:grid;gap:15px}.ba-head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}.ba-banner{padding:12px 14px;border-radius:16px;background:#fff7d6;color:#6b4e00;font-weight:850}.ba-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}.ba-card{padding:17px;border-radius:22px;background:rgba(255,255,255,.84);border:1px solid rgba(17,24,39,.08);box-shadow:0 10px 25px rgba(15,23,42,.07);cursor:pointer}.ba-card h2{margin:0 0 5px;font-size:19px}.ba-muted{color:#667085;font-size:13px}.ba-pills{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.ba-pill{padding:6px 9px;border-radius:999px;background:#eef2f6;font-size:12px;font-weight:850}.ba-pill.ok{background:#dcfce7;color:#166534}.ba-pill.wait{background:#fff1c2;color:#7a4d00}.ba-modal{position:fixed;inset:0;background:rgba(15,23,42,.48);z-index:5000;display:none;align-items:center;justify-content:center;padding:16px}.ba-modal.open{display:flex}.ba-dialog{width:min(760px,100%);max-height:92vh;overflow:auto;background:#fff;border-radius:26px;padding:20px 20px 28px}.ba-dialog-head{display:flex;justify-content:space-between;gap:10px}.ba-dialog-head button{width:auto}.ba-form{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.ba-form .full{grid-column:1/-1}.ba-form label{display:block;font-weight:850;margin-bottom:6px}.ba-form input,.ba-form select{width:100%;box-sizing:border-box}.ba-summary{padding:12px;border-radius:15px;background:#f3f7fb;line-height:1.5}.ba-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}.ba-error{display:none;padding:10px;border-radius:12px;background:#fee4e2;color:#b42318}.ba-change{margin-top:22px;padding-top:20px;border-top:1px solid #d0d5dd}.ba-change h3{margin:0 0 5px}.ba-hidden{display:none!important}.ba-danger{background:#fee4e2!important;color:#b42318!important}body.ba-modal-open{overflow:hidden}body.ba-modal-open .rz-bottom-nav{display:none!important}@media(max-width:650px){.ba-form{grid-template-columns:1fr}.ba-form .full{grid-column:auto}.ba-actions,.ba-actions button{width:100%}}
   </style>
@@ -12,7 +12,7 @@
 <body class="rz-admin-shell">
   <div class="login-container"><main class="card ba-shell">
     <div class="topbar ba-head"><div><h1 class="rz-hero-title">Abonnements des pools</h1><div id="me" class="subtitle">Vérification de la session…</div></div><button id="refreshBtn" class="filter-btn">Actualiser</button></div>
-    <div class="ba-banner">S7 Shadow — snapshots, factures et tentatives de paiement test sont audités, sans appel opérateur, paiement réel, PDF, suspension, revenu, PP ou effet portail.</div>
+    <div class="ba-banner">S8 Shadow — snapshots, factures, tentatives de paiement et états d’accès simulés sont audités, sans appel opérateur, paiement réel, blocage, suspension, revenu, PP ou effet portail.</div>
     <section id="periodSection" class="ba-change ba-hidden">
       <h3>Snapshots mensuels</h3><div class="ba-muted">Prévisualisez d’abord la source de vérité mensuelle, puis générez-la manuellement en Shadow.</div>
       <div class="ba-form"><div><label>Mois</label><input id="periodMonth" type="month"></div><div class="ba-actions" style="align-items:end;margin-top:0"><button id="previewPeriodsBtn" class="filter-btn">Prévisualiser</button><button id="generatePeriodsBtn" class="filter-btn primary">Générer en shadow</button></div><div class="full"><div id="periodResult" class="ba-summary">Aucune prévisualisation.</div></div></div>
@@ -24,6 +24,10 @@
     <section id="paymentSection" class="ba-change ba-hidden">
       <h3>Paiements d’abonnement test</h3><div class="ba-muted">Simulation de tentative reliée à une facture. Aucun numéro n’est demandé et aucun opérateur n’est contacté.</div>
       <div class="ba-form"><div><label>Mois</label><input id="paymentMonth" type="month"></div><div class="ba-actions" style="align-items:end;margin-top:0"><button id="previewPaymentsBtn" class="filter-btn">Prévisualiser</button></div><div class="full"><div id="paymentResult" class="ba-summary">Aucune prévisualisation.</div></div></div>
+    </section>
+    <section id="accessSection" class="ba-change ba-hidden">
+      <h3>Tolérance et suspension test</h3><div class="ba-muted">Simulez l’état au jour choisi. La simulation ne modifie ni l’accès WiFi ni les moyens de paiement du pool.</div>
+      <div class="ba-form"><div><label>Mois de facturation</label><input id="accessMonth" type="month"></div><div><label>Date simulée</label><input id="accessAsOf" type="date"></div><div class="full ba-actions" style="align-items:end;margin-top:0"><button id="previewAccessBtn" class="filter-btn">Prévisualiser</button><button id="evaluateAccessBtn" class="filter-btn primary">Enregistrer la simulation Shadow</button></div><div class="full"><div id="accessResult" class="ba-summary">Aucune prévisualisation.</div></div></div>
     </section>
     <div id="error" class="ba-error"></div><section id="pools" class="ba-grid"><div class="ba-muted">Chargement…</div></section>
   </main></div>
@@ -46,6 +50,6 @@
       <div id="changeNew" class="ba-hidden"><div class="ba-form"><div class="full"><label>Nouvelle offre</label><select id="targetOffer"></select></div><div><label>Nouveau mode</label><select id="targetMode"><option value="commission">Commission</option><option value="subscription">Abonnement</option></select></div><div><label>Date d’effet</label><input id="changeEffectiveOn" type="date"></div><div class="full"><div id="changePreview" class="ba-summary"></div></div></div><div class="ba-actions"><button id="scheduleChangeBtn" class="filter-btn primary">Programmer en shadow</button></div></div>
     </section>
   </div></div>
-  <script src="/admin/nav.js?v=billing-s3"></script><script src="/admin/billing-assignments.js?v=billing-s7"></script>
+  <script src="/admin/nav.js?v=billing-s3"></script><script src="/admin/billing-assignments.js?v=billing-s8"></script>
 </body>
 </html>
