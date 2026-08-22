@@ -15150,7 +15150,7 @@ async function buildCommissionStatementsShadow(period_start) {
   const [poolResult, salesResult, statementResult] = await Promise.all([
     supabase.from("internet_pools").select("id,name,brand_name,radius_nas_id,owner_admin_user_id").in("id", poolIds),
     supabase.from("v_revenue_paid_truth").select("transaction_id,transaction_created_at,amount_num,currency,pool_id,plan_name,transaction_reference,request_ref").in("pool_id", poolIds).gte("transaction_created_at", bounds.from).lt("transaction_created_at", bounds.to).order("transaction_created_at", { ascending: true }).range(0, 1999),
-    supabase.from("pool_billing_commission_shadow_statements").select("id,pool_billing_period_id,pool_id,owner_admin_user_id,gross_sales_ar,commission_pct,commission_amount_ar,owner_gross_amount_ar,transaction_count,status,created_at").in("pool_billing_period_id", (periods || []).map((x) => x.id)),
+    supabase.from("pool_billing_commission_shadow_statements").select("id,pool_billing_period_id,pool_id,owner_admin_user_id,offer_title_snapshot,gross_sales_ar,commission_pct,commission_amount_ar,owner_gross_amount_ar,transaction_count,status,created_at").in("pool_billing_period_id", (periods || []).map((x) => x.id)),
   ]);
   if (poolResult.error || salesResult.error || statementResult.error) throw poolResult.error || salesResult.error || statementResult.error;
   const pools = poolResult.data || [], sales = salesResult.data || [], existing = statementResult.data || [];
