@@ -15256,7 +15256,11 @@ app.get("/api/owner/billing-shadow", requireAdmin, requireBillingOwnerPortalShad
       .eq("owner_admin_user_id", ownerId).order("name", { ascending: true });
     if (poolError) return res.status(500).json({ error: poolError.message });
     const poolIds = (pools || []).map((x) => x.id);
-    if (!poolIds.length) return res.json({ pools: [], assignments: [], invoices: [], statements: [], payout_records: [], documents: [], passive: true, shadow: true, no_effect: true });
+    if (!poolIds.length) return res.json({
+      pools: [], assignments: [], invoices: [], statements: [], payout_records: [], documents: [],
+      payment_ui: { enabled: false, provider: null, payable_invoice_ids: [] },
+      passive: true, shadow: true, no_effect: true
+    });
     const [assignmentsResult, invoicesResult, statementsResult, payoutsResult, offersResult] = await Promise.all([
       supabase.from("pool_billing_assignments").select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to,created_at").in("pool_id", poolIds).order("effective_from", { ascending: false }),
       supabase.from("subscription_invoices").select("id,invoice_number,pool_id,offer_title_snapshot,period_start,period_end,amount_due_ar,amount_paid_ar,status,issued_at,due_at,pdf_snapshot,created_at").eq("owner_admin_user_id", ownerId).eq("purpose", "monthly_subscription").order("period_start", { ascending: false }),
@@ -15276,7 +15280,8 @@ app.get("/api/owner/billing-shadow", requireAdmin, requireBillingOwnerPortalShad
       ...invoices.map((x) => ({ id: x.id, type: "subscription_invoice", pool_id: x.pool_id, title: `Facture ${x.invoice_number}`, period_start: x.period_start, status: x.status, amount_ar: x.amount_due_ar, shadow: true, download_available: false })),
       ...statements.map((x) => ({ id: x.id, type: "commission_statement", pool_id: x.pool_id, title: `Relevé de commission ${x.period_start}`, period_start: x.period_start, status: x.status, amount_ar: x.owner_gross_amount_ar, shadow: true, download_available: false })),
     ];
-    return res.json({ pools: pools || [], assignments: currentAssignments, upcoming_assignments: upcomingAssignments, invoices, statements, payout_records, documents, passive: true, shadow: true, no_effect: true, pdf_available: false });
+    const payment_ui = await billingOwnerPaymentUi(invoices);
+    return res.json({ pools: pools || [], assignments: currentAssignments, upcoming_assignments: upcomingAssignments, invoices, statements, payout_records, documents, payment_ui, passive: true, shadow: true, no_effect: true, pdf_available: false });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
@@ -15290,6 +15295,25 @@ function billingMadagascarToday() {
 }
 function billingLiveMasterEnabled() {
   return BILLING_V1_ENABLED && BILLING_V1_SUBSCRIPTION_PAYMENTS && BILLING_V1_PILOT_EXECUTION;
+}
+async function billingOwnerPaymentUi(invoices) {
+  const disabled={enabled:false,provider:null,payable_invoice_ids:[]};
+  if(!billingLiveMasterEnabled()) return disabled;
+  const candidates=(invoices||[]).filter(i=>
+    i.status==="issued" && Number(i.amount_paid_ar)===0 &&
+    Number.isInteger(Number(i.amount_due_ar)) && Number(i.amount_due_ar)>0
+  );
+  if(!candidates.length) return {enabled:true,provider:"mvola",payable_invoice_ids:[]};
+  const poolIds=[...new Set(candidates.map(i=>i.pool_id).filter(Boolean))];
+  const enabledPools=new Set();
+  await Promise.all(poolIds.map(async poolId=>{
+    if(await billingEnabledMvolaPilot(poolId)) enabledPools.add(poolId);
+  }));
+  return {
+    enabled:true,
+    provider:"mvola",
+    payable_invoice_ids:candidates.filter(i=>enabledPools.has(i.pool_id)).map(i=>i.id),
+  };
 }
 async function billingEnabledMvolaPilot(poolId) {
   const {data,error}=await supabase.from("pool_billing_activation_pilots")
