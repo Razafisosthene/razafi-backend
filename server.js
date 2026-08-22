@@ -12753,6 +12753,8 @@ const BILLING_V1_ENABLED = billingEnvFlag("BILLING_V1_ENABLED", false);
 const BILLING_V1_SHADOW_READ = billingEnvFlag("BILLING_V1_SHADOW_READ", false);
 const BILLING_V1_ENFORCE = billingEnvFlag("BILLING_V1_ENFORCE", false);
 const BILLING_V1_SUBSCRIPTION_PAYMENTS = billingEnvFlag("BILLING_V1_SUBSCRIPTION_PAYMENTS", false);
+// S11.1 independent kill switch: deployment alone cannot call an operator.
+const BILLING_V1_PILOT_EXECUTION = billingEnvFlag("BILLING_V1_PILOT_EXECUTION", false);
 const BILLING_V1_PORTAL_LOCK = billingEnvFlag("BILLING_V1_PORTAL_LOCK", false);
 const BILLING_V1_OWNER_SELF_SERVICE = billingEnvFlag("BILLING_V1_OWNER_SELF_SERVICE", false);
 const BILLING_V1_PDF = billingEnvFlag("BILLING_V1_PDF", false);
@@ -15276,6 +15278,193 @@ app.get("/api/owner/billing-shadow", requireAdmin, requireBillingOwnerPortalShad
     ];
     return res.json({ pools: pools || [], assignments: currentAssignments, upcoming_assignments: upcomingAssignments, invoices, statements, payout_records, documents, passive: true, shadow: true, no_effect: true, pdf_available: false });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+// S11.1: isolated subscription payment path. Never calls the WiFi poller and
+// never writes public.transactions or voucher_sessions.
+function billingMadagascarToday() {
+  const p = new Intl.DateTimeFormat("en-CA", {
+    timeZone:"Indian/Antananarivo",year:"numeric",month:"2-digit",day:"2-digit",
+  }).formatToParts(new Date()).reduce((a,x)=>(x.type!=="literal"&&(a[x.type]=x.value),a),{});
+  return p.year+"-"+p.month+"-"+p.day;
+}
+function billingLiveMasterEnabled() {
+  return BILLING_V1_ENABLED && BILLING_V1_SUBSCRIPTION_PAYMENTS && BILLING_V1_PILOT_EXECUTION;
+}
+async function billingEnabledMvolaPilot(poolId) {
+  const {data,error}=await supabase.from("pool_billing_activation_pilots")
+    .select("id,payment_provider,first_live_at,status,live_subscription_payments_enabled,live_owner_portal_enabled")
+    .eq("pool_id",poolId).maybeSingle();
+  if(error) throw error;
+  return data && data.status==="enabled" && data.payment_provider==="mvola" &&
+    data.first_live_at<=billingMadagascarToday() &&
+    data.live_subscription_payments_enabled===true &&
+    data.live_owner_portal_enabled===true ? data : null;
+}
+function billingProviderRef(x) {
+  return String(x?.transactionReference||x?.providerReference||"").trim()||null;
+}
+async function pollBillingSubscriptionMvola({requestRef,serverCorrelationId}) {
+  const started=Date.now();
+  let attempt=0;
+  while(Date.now()-started<MVOLA_VERIFICATION_TIMEOUT_MS) {
+    attempt++;
+    try {
+      const token=await getAccessToken();
+      const response=await axios.get(
+        MVOLA_BASE+"/mvola/mm/transactions/type/merchantpay/1.0.0/status/"+serverCorrelationId,
+        {headers:mvolaHeaders(token,crypto.randomUUID()),timeout:10000}
+      );
+      const payload=response.data||{};
+      const status=String(payload.status||payload.transactionStatus||"").toLowerCase();
+      if(status==="completed"||status==="success") {
+        const {data,error}=await supabase.rpc("fn_billing_v1_complete_subscription_payment",{
+          p_request_ref:requestRef,p_server_correlation_id:serverCorrelationId,
+          p_provider_reference:billingProviderRef(payload),
+          p_provider_payload:sanitizeMvolaLogPayload(payload),
+        });
+        if(error) throw error;
+        await insertAudit({
+          event_type:"subscription_payment_completed",status:"success",
+          entity_type:"subscription_payment_transaction",actor_type:"payment_provider",
+          request_ref:requestRef,message:"Subscription MVola completed; invoice only",
+          metadata:{billing_v1:true,s11_1:true,voucher_generation:false,result:data},
+        });
+        return {completed:true};
+      }
+      if(["failed","rejected","declined"].includes(status)) {
+        await supabase.from("subscription_payment_transactions").update({
+          status:"failed",failed_at:new Date().toISOString(),updated_at:new Date().toISOString(),
+          metadata:{billing_v1:true,s11_1:true,business_effect:"invoice_only",
+            voucher_generation:false,provider_status:status,
+            provider_payload:sanitizeMvolaLogPayload(payload)},
+        }).eq("request_ref",requestRef).in("status",["initiated","pending"]);
+        await insertAudit({
+          event_type:"subscription_payment_failed",status:"failed",
+          entity_type:"subscription_payment_transaction",actor_type:"payment_provider",
+          request_ref:requestRef,message:"Subscription MVola failed",
+          metadata:{billing_v1:true,s11_1:true,voucher_generation:false,provider_status:status},
+        });
+        return {failed:true};
+      }
+    } catch(e) {
+      console.warn("[BILLING S11.1] status remains pending",{requestRef,attempt,error:e?.message||e});
+    }
+    await waitMs(Math.min(6000,700+attempt*500));
+  }
+  await supabase.from("subscription_payment_transactions")
+    .update({status:"pending",updated_at:new Date().toISOString()})
+    .eq("request_ref",requestRef).in("status",["initiated","pending"]);
+  return {pending:true};
+}
+
+app.post("/api/owner/billing/invoices/:id/pay",
+  requireAdmin,speedLimiter,paymentLimiter,async(req,res)=>{
+  try {
+    if(!billingLiveMasterEnabled())
+      return res.status(404).json({error:"billing_subscription_payment_live_disabled"});
+    if(!ensureSupabase(res)) return;
+    const ownerId=String(req.admin?.id||"").trim();
+    const phone=normalizePhone(req.body?.payer_phone);
+    if(!isValidMGPhone(phone))
+      return res.status(400).json({error:"payer_phone_invalid",message:paymentPhoneValidationMessage("mvola")});
+
+    const {data:invoice,error:invoiceError}=await supabase.from("subscription_invoices")
+      .select("id,invoice_number,pool_id,owner_admin_user_id,purpose,amount_due_ar,amount_paid_ar,status")
+      .eq("id",req.params.id).eq("owner_admin_user_id",ownerId)
+      .eq("purpose","monthly_subscription").maybeSingle();
+    if(invoiceError) return res.status(500).json({error:invoiceError.message});
+    if(!invoice) return res.status(404).json({error:"subscription_invoice_not_found"});
+    const amount=Number(invoice.amount_due_ar);
+    if(invoice.status!=="issued"||Number(invoice.amount_paid_ar)!==0||
+       !Number.isInteger(amount)||amount<=0)
+      return res.status(409).json({error:"subscription_invoice_not_payable"});
+
+    const pilot=await billingEnabledMvolaPilot(invoice.pool_id);
+    if(!pilot) return res.status(409).json({error:"billing_pilot_not_live"});
+    const {data:open,error:openError}=await supabase.from("subscription_payment_transactions")
+      .select("request_ref,status").eq("invoice_id",invoice.id)
+      .in("status",["initiated","pending"]).maybeSingle();
+    if(openError) return res.status(500).json({error:openError.message});
+    if(open) return res.status(409).json({
+      error:"subscription_payment_already_pending",
+      transaction:{request_ref:open.request_ref,status:open.status},
+    });
+
+    const requestRef="RAZAFI-SUB-MVOLA-"+invoice.id.replace(/-/g,"")+"-"+crypto.randomUUID();
+    const correlationId=crypto.randomUUID();
+    const meta={billing_v1:true,milestone:"S11.1",purpose:"monthly_subscription",
+      business_effect:"invoice_only",voucher_generation:false,pilot_id:pilot.id,
+      invoice_number:invoice.invoice_number,provider_call:false};
+    const {data:tx,error:insertError}=await supabase.from("subscription_payment_transactions")
+      .insert({invoice_id:invoice.id,pool_id:invoice.pool_id,owner_admin_user_id:ownerId,
+        payer_phone:phone,provider:"mvola",amount_ar:amount,currency:"Ar",
+        request_ref:requestRef,status:"initiated",initiated_at:new Date().toISOString(),
+        metadata:meta}).select().maybeSingle();
+    if(insertError) return res.status(insertError.code==="23505"?409:500)
+      .json({error:insertError.code==="23505"?"subscription_payment_already_pending":insertError.message});
+
+    const payload={amount:String(amount),currency:"Ar",
+      descriptionText:"Abonnement RAZAFI "+amount+" Ar",
+      requestingOrganisationTransactionReference:requestRef,requestDate:new Date().toISOString(),
+      debitParty:[{key:"msisdn",value:phone}],
+      creditParty:[{key:"msisdn",value:PARTNER_MSISDN}],
+      metadata:[{key:"partnerName",value:PARTNER_NAME}]};
+    let initiated;
+    try {
+      initiated=await initiateMvolaPaymentWithRetry({payload,requestRef,phone,amount,correlationId});
+    } catch(e) {
+      const mapped=mapMvolaInitiateError(e);
+      await supabase.from("subscription_payment_transactions").update({
+        status:"failed",failed_at:new Date().toISOString(),updated_at:new Date().toISOString(),
+        metadata:{...meta,provider_call:true,initiate_failed:true,error_type:mapped.type},
+      }).eq("id",tx.id);
+      await insertAudit({
+        event_type:"subscription_payment_failed",status:"failed",
+        entity_type:"subscription_payment_transaction",entity_id:tx.id,
+        actor_type:"admin_user",actor_id:ownerId,pool_id:invoice.pool_id,
+        request_ref:requestRef,message:"Subscription MVola initiation failed",
+        metadata:{billing_v1:true,s11_1:true,voucher_generation:false,error_type:mapped.type},
+      });
+      return res.status(mapped.httpStatus).json({
+        error:"subscription_payment_initiation_failed",message:mapped.userMessage});
+    }
+    const providerData=initiated.data||{};
+    const serverCorrelationId=providerData.serverCorrelationId||
+      providerData.serverCorrelationID||providerData.serverCorrelationid||null;
+    await supabase.from("subscription_payment_transactions").update({
+      status:"pending",server_correlation_id:serverCorrelationId,
+      provider_reference:billingProviderRef(providerData),updated_at:new Date().toISOString(),
+      metadata:{...meta,provider_call:true,initiation_uncertain:!serverCorrelationId,
+        initiate_retry_used:!!initiated.usedRetry,
+        provider_payload:sanitizeMvolaLogPayload(providerData)},
+    }).eq("id",tx.id);
+    await insertAudit({
+      event_type:"subscription_payment_initiated",status:"info",
+      entity_type:"subscription_payment_transaction",entity_id:tx.id,
+      actor_type:"admin_user",actor_id:ownerId,pool_id:invoice.pool_id,
+      request_ref:requestRef,message:"Subscription MVola initiated",
+      metadata:{billing_v1:true,s11_1:true,amount_ar:amount,voucher_generation:false},
+    });
+    res.status(202).json({ok:true,provider:"mvola",request_ref:requestRef,status:"pending",
+      initiation_uncertain:!serverCorrelationId,
+      verification_timeout_ms:MVOLA_VERIFICATION_TIMEOUT_MS});
+    if(serverCorrelationId) void pollBillingSubscriptionMvola({requestRef,serverCorrelationId});
+  } catch(e) {
+    console.error("[BILLING S11.1] initiation error",e?.message||e);
+    return res.status(500).json({error:"subscription_payment_internal_error"});
+  }
+});
+
+app.get("/api/owner/billing/payments/:requestRef",requireAdmin,lightLimiter,async(req,res)=>{
+  if(!billingLiveMasterEnabled())
+    return res.status(404).json({error:"billing_subscription_payment_live_disabled"});
+  const {data,error}=await supabase.from("subscription_payment_transactions")
+    .select("request_ref,invoice_id,pool_id,provider,amount_ar,currency,status,created_at,completed_at")
+    .eq("request_ref",req.params.requestRef).eq("owner_admin_user_id",req.admin.id).maybeSingle();
+  if(error) return res.status(500).json({error:error.message});
+  if(!data) return res.status(404).json({error:"subscription_payment_not_found"});
+  return res.json({ok:true,payment:data});
 });
 
 function normalizeEmail(e) {
