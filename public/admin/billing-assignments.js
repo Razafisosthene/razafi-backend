@@ -171,12 +171,43 @@ async function generateInvoices() {
     $("invoiceResult").insertAdjacentHTML("afterbegin", `<div style="margin-bottom:10px"><strong>Génération terminée :</strong> ${Number(result.created_count)} créée(s), ${Number(result.existing_count)} existante(s), ${Number(result.skipped_count)} ignorée(s).</div>`);
   } catch (e) { error($("error"), e.message); } finally { $("generateInvoicesBtn").disabled = false; }
 }
+function paymentStartValue() { const month = String($("paymentMonth").value || ""); return /^\d{4}-\d{2}$/.test(month) ? `${month}-01` : ""; }
+function renderPaymentPreview(data) {
+  const items = data.items || [];
+  if (!items.length) { $("paymentResult").innerHTML = `<strong>Aucune facture d’abonnement pour ${esc(data.period_start || "ce mois")}.</strong><br>Aucune tentative ne sera créée.`; return; }
+  $("paymentResult").innerHTML = `<strong>Mois : ${esc(data.period_start)}</strong><br>${items.map((item) => {
+    const i = item.invoice, tx = item.open || (item.transactions || [])[0];
+    const status = tx ? `Tentative ${label(tx.status)} · ${esc(tx.provider)}` : "Aucune tentative";
+    const actions = !item.eligible ? "" : !tx ? `<button class="filter-btn primary s7-init" data-id="${esc(i.id)}">Initier test</button>` : ["initiated","pending"].includes(tx.status) ? `<button class="filter-btn s7-pending" data-id="${esc(tx.id)}">Simuler attente</button> <button class="filter-btn ba-danger s7-fail" data-id="${esc(tx.id)}">Simuler échec</button>` : `<button class="filter-btn primary s7-init" data-id="${esc(i.id)}">Nouvel essai test</button>`;
+    return `<div style="margin-top:10px"><strong>${esc(i.invoice_number)}</strong><br>${esc(i.offer_title_snapshot)} · ${money(i.amount_due_ar)} · Facture ${esc(label(i.status))}<br>${status}<div class="ba-actions" style="margin-top:8px">${actions}</div></div>`;
+  }).join("")}<br><strong>Shadow : aucun appel opérateur, aucun paiement de facture, aucun effet d’accès</strong>`;
+  document.querySelectorAll(".s7-init").forEach((b) => { b.onclick = () => initiatePayment(b.dataset.id); });
+  document.querySelectorAll(".s7-pending").forEach((b) => { b.onclick = () => updatePayment(b.dataset.id, "pending"); });
+  document.querySelectorAll(".s7-fail").forEach((b) => { b.onclick = () => updatePayment(b.dataset.id, "failed"); });
+}
+async function previewPayments() {
+  error($("error"), ""); $("previewPaymentsBtn").disabled = true;
+  try { const start = paymentStartValue(); if (!start) throw new Error("period_start_invalid"); renderPaymentPreview(await api(`/api/admin/billing/subscription-payments-shadow?period_start=${encodeURIComponent(start)}`)); }
+  catch (e) { error($("error"), e.message); } finally { $("previewPaymentsBtn").disabled = false; }
+}
+async function initiatePayment(invoiceId) {
+  if (!window.confirm("Initier une tentative de paiement test Shadow ? Aucun opérateur ne sera contacté.")) return;
+  error($("error"), "");
+  try { await api("/api/admin/billing/subscription-payments-shadow/initiate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ invoice_id: invoiceId, provider: "mvola" }) }); await previewPayments(); }
+  catch (e) { error($("error"), e.message); }
+}
+async function updatePayment(id, status) {
+  if (!window.confirm(status === "failed" ? "Simuler un échec de cette tentative ?" : "Simuler le statut En attente ?")) return;
+  error($("error"), "");
+  try { await api(`/api/admin/billing/subscription-payments-shadow/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) }); await previewPayments(); }
+  catch (e) { error($("error"), e.message); }
+}
 async function boot() {
   try {
     const me = await api("/api/admin/me"); if (!me.is_superadmin) location.href = "/admin/";
-    state.changesEnabled = !!me.permissions?.billing_changes_shadow_manage; state.periodsEnabled = !!me.permissions?.billing_periods_shadow_manage; state.invoicesEnabled = !!me.permissions?.billing_invoices_shadow_manage; $("periodSection").classList.toggle("ba-hidden", !state.periodsEnabled); $("invoiceSection").classList.toggle("ba-hidden", !state.invoicesEnabled); $("periodMonth").value = nextMonth().slice(0, 7); $("invoiceMonth").value = nextMonth().slice(0, 7); $("me").textContent = `Connecté : ${me.email || "superadmin"}`; await load();
+    state.changesEnabled = !!me.permissions?.billing_changes_shadow_manage; state.periodsEnabled = !!me.permissions?.billing_periods_shadow_manage; state.invoicesEnabled = !!me.permissions?.billing_invoices_shadow_manage; state.paymentsEnabled = !!me.permissions?.billing_subscription_payments_shadow_manage; $("periodSection").classList.toggle("ba-hidden", !state.periodsEnabled); $("invoiceSection").classList.toggle("ba-hidden", !state.invoicesEnabled); $("paymentSection").classList.toggle("ba-hidden", !state.paymentsEnabled); $("periodMonth").value = nextMonth().slice(0, 7); $("invoiceMonth").value = nextMonth().slice(0, 7); $("paymentMonth").value = nextMonth().slice(0, 7); $("me").textContent = `Connecté : ${me.email || "superadmin"}`; await load();
   } catch (e) { error($("error"), e.message === "billing_assignments_shadow_disabled" ? "Le panneau Shadow est désactivé." : e.message); }
-  $("refreshBtn").onclick = () => load().catch((e) => error($("error"), e.message)); $("closeBtn").onclick = close; $("saveBtn").onclick = save; $("scheduleChangeBtn").onclick = scheduleChange; $("cancelChangeBtn").onclick = cancelChange; $("previewPeriodsBtn").onclick = previewPeriods; $("generatePeriodsBtn").onclick = generatePeriods; $("previewInvoicesBtn").onclick = previewInvoices; $("generateInvoicesBtn").onclick = generateInvoices;
+  $("refreshBtn").onclick = () => load().catch((e) => error($("error"), e.message)); $("closeBtn").onclick = close; $("saveBtn").onclick = save; $("scheduleChangeBtn").onclick = scheduleChange; $("cancelChangeBtn").onclick = cancelChange; $("previewPeriodsBtn").onclick = previewPeriods; $("generatePeriodsBtn").onclick = generatePeriods; $("previewInvoicesBtn").onclick = previewInvoices; $("generateInvoicesBtn").onclick = generateInvoices; $("previewPaymentsBtn").onclick = previewPayments;
   ["status", "mode", "offer"].forEach((id) => { $(id).onchange = syncForm; }); ["targetOffer", "targetMode", "changeEffectiveOn"].forEach((id) => { $(id).onchange = syncChangeForm; });
   $("modal").onclick = (e) => { if (e.target === $("modal")) close(); }; window.onkeydown = (e) => { if (e.key === "Escape") close(); };
 }

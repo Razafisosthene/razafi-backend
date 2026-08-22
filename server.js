@@ -12761,6 +12761,7 @@ const BILLING_V1_POOL_ASSIGNMENTS_SHADOW = billingEnvFlag("BILLING_V1_POOL_ASSIG
 const BILLING_V1_CHANGES_SHADOW = billingEnvFlag("BILLING_V1_CHANGES_SHADOW", false);
 const BILLING_V1_PERIODS_SHADOW = billingEnvFlag("BILLING_V1_PERIODS_SHADOW", false);
 const BILLING_V1_INVOICES_SHADOW = billingEnvFlag("BILLING_V1_INVOICES_SHADOW", false);
+const BILLING_V1_SUBSCRIPTION_PAYMENTS_SHADOW = billingEnvFlag("BILLING_V1_SUBSCRIPTION_PAYMENTS_SHADOW", false);
 const BILLING_V1_DEFAULT_GRACE_DAYS = Math.max(
   0,
   Math.min(31, parseInt(process.env.BILLING_V1_DEFAULT_GRACE_DAYS || "5", 10) || 0)
@@ -13882,6 +13883,7 @@ function buildAdminPermissions(admin) {
     billing_changes_shadow_manage: isSuperadmin && BILLING_V1_CHANGES_SHADOW,
     billing_periods_shadow_manage: isSuperadmin && BILLING_V1_PERIODS_SHADOW,
     billing_invoices_shadow_manage: isSuperadmin && BILLING_V1_INVOICES_SHADOW,
+    billing_subscription_payments_shadow_manage: isSuperadmin && BILLING_V1_SUBSCRIPTION_PAYMENTS_SHADOW,
   };
 }
 
@@ -14236,6 +14238,11 @@ function requireBillingPeriodsShadow(req, res, next) {
 
 function requireBillingInvoicesShadow(req, res, next) {
   if (!BILLING_V1_INVOICES_SHADOW) return res.status(404).json({ error: "billing_invoices_shadow_disabled" });
+  return next();
+}
+
+function requireBillingSubscriptionPaymentsShadow(req, res, next) {
+  if (!BILLING_V1_SUBSCRIPTION_PAYMENTS_SHADOW) return res.status(404).json({ error: "billing_subscription_payments_shadow_disabled" });
   return next();
 }
 
@@ -14795,6 +14802,8 @@ function billingInvoiceNumber(periodStart, poolId) {
 }
 
 function billingInvoiceDueAt(periodStart, graceDays) {
+  // Madagascar is UTC+03 year-round. Store the end of the local due date,
+  // not the end of the UTC date, so Supabase and PDFs show the same day.
   const due = new Date(`${periodStart}T20:59:59.999Z`);
   due.setUTCDate(due.getUTCDate() + Math.max(0, Math.min(31, Number(graceDays) || 0)));
   return due.toISOString();
@@ -14908,6 +14917,102 @@ app.post("/api/admin/billing/invoices-shadow/generate", requireAdmin, requireSup
       skipped_count: preview.items.length - eligible.length,
       passive: true, shadow: true,
     });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+async function buildSubscriptionPaymentShadow(period_start) {
+  const { data: invoices, error: invoiceError } = await supabase.from("subscription_invoices")
+    .select("id,invoice_number,pool_id,owner_admin_user_id,offer_title_snapshot,period_start,period_end,amount_due_ar,amount_paid_ar,status,due_at")
+    .eq("purpose", "monthly_subscription")
+    .eq("period_start", period_start)
+    .order("created_at", { ascending: true });
+  if (invoiceError) throw invoiceError;
+  const invoiceIds = (invoices || []).map((x) => x.id);
+  let transactions = [];
+  if (invoiceIds.length) {
+    const { data, error } = await supabase.from("subscription_payment_transactions")
+      .select("id,invoice_id,request_ref,provider,amount_ar,currency,status,initiated_at,failed_at,cancelled_at,created_at,metadata")
+      .in("invoice_id", invoiceIds)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    transactions = data || [];
+  }
+  return {
+    period_start,
+    items: (invoices || []).map((invoice) => ({
+      invoice,
+      transactions: transactions.filter((x) => x.invoice_id === invoice.id),
+      open: transactions.find((x) => x.invoice_id === invoice.id && ["initiated", "pending"].includes(x.status)) || null,
+      eligible: invoice.status === "issued" && Number(invoice.amount_paid_ar) === 0,
+    })),
+  };
+}
+
+app.get("/api/admin/billing/subscription-payments-shadow", requireAdmin, requireSuperadmin, requireBillingSubscriptionPaymentsShadow, async (req, res) => {
+  try {
+    const normalized = normalizeBillingPeriodStart(req.query?.period_start);
+    if (normalized.error) return res.status(400).json({ error: normalized.error });
+    return res.json({ ...(await buildSubscriptionPaymentShadow(normalized.value.period_start)), passive: true, shadow: true });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/admin/billing/subscription-payments-shadow/initiate", requireAdmin, requireSuperadmin, requireBillingSubscriptionPaymentsShadow, async (req, res) => {
+  try {
+    const invoice_id = String(req.body?.invoice_id || "").trim();
+    const provider = String(req.body?.provider || "mvola").trim();
+    if (!["mvola", "orange_money", "airtel_money", "visa"].includes(provider)) return res.status(400).json({ error: "provider_invalid" });
+    const { data: invoice, error: invoiceError } = await supabase.from("subscription_invoices")
+      .select("id,invoice_number,pool_id,owner_admin_user_id,amount_due_ar,amount_paid_ar,status,period_start")
+      .eq("id", invoice_id).maybeSingle();
+    if (invoiceError) return res.status(500).json({ error: invoiceError.message });
+    if (!invoice) return res.status(404).json({ error: "invoice_not_found" });
+    if (invoice.status !== "issued" || Number(invoice.amount_paid_ar) !== 0) return res.status(409).json({ error: "invoice_not_payable_in_shadow" });
+    const { data: open, error: openError } = await supabase.from("subscription_payment_transactions")
+      .select("id,invoice_id,request_ref,provider,amount_ar,currency,status,initiated_at,created_at,metadata")
+      .eq("invoice_id", invoice.id).in("status", ["initiated", "pending"]).maybeSingle();
+    if (openError) return res.status(500).json({ error: openError.message });
+    if (open) return res.json({ ok: true, item: open, existing: true, passive: true, shadow: true });
+    const request_ref = "RAZAFI-SUB-SHADOW-" + invoice.id.replace(/-/g, "") + "-" + crypto.randomUUID();
+    const payload = {
+      invoice_id: invoice.id, pool_id: invoice.pool_id, owner_admin_user_id: invoice.owner_admin_user_id,
+      payer_phone: "SHADOW-NO-PHONE", provider, amount_ar: Number(invoice.amount_due_ar), currency: "Ar",
+      request_ref, status: "initiated",
+      metadata: { shadow: true, no_effect: true, provider_call: false, payer_phone_collected: false, invoice_number: invoice.invoice_number },
+    };
+    const { data, error } = await supabase.from("subscription_payment_transactions").insert(payload).select().maybeSingle();
+    if (error) return res.status(error.code === "23505" ? 409 : 500).json({ error: error.code === "23505" ? "payment_already_open_refresh_preview" : error.message });
+    await insertAudit({
+      event_type: "billing_subscription_payment_shadow_initiated", status: "success",
+      entity_type: "subscription_payment_transaction", entity_id: data.id, actor_type: "admin_user", actor_id: req.admin.id, pool_id: invoice.pool_id,
+      message: "Tentative de paiement abonnement initiée en shadow",
+      metadata: { shadow: true, no_effect: true, provider_call: false, invoice_id: invoice.id, invoice_number: invoice.invoice_number, transaction_id: data.id, amount_ar: data.amount_ar, provider: data.provider },
+    });
+    return res.json({ ok: true, item: data, existing: false, passive: true, shadow: true });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.patch("/api/admin/billing/subscription-payments-shadow/:id", requireAdmin, requireSuperadmin, requireBillingSubscriptionPaymentsShadow, async (req, res) => {
+  try {
+    const status = String(req.body?.status || "").trim();
+    if (!["pending", "failed", "cancelled"].includes(status)) return res.status(400).json({ error: "shadow_status_invalid" });
+    const { data: before, error: readError } = await supabase.from("subscription_payment_transactions").select("*").eq("id", req.params.id).maybeSingle();
+    if (readError) return res.status(500).json({ error: readError.message });
+    if (!before) return res.status(404).json({ error: "payment_not_found" });
+    if (before.metadata?.shadow !== true || !["initiated", "pending"].includes(before.status)) return res.status(409).json({ error: "payment_not_mutable_in_shadow" });
+    if (status === "pending" && before.status !== "initiated") return res.status(409).json({ error: "payment_not_pending_transition" });
+    const now = new Date().toISOString();
+    const patch = { status };
+    if (status === "failed") patch.failed_at = now;
+    if (status === "cancelled") patch.cancelled_at = now;
+    const { data, error } = await supabase.from("subscription_payment_transactions").update(patch).eq("id", before.id).select().maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    await insertAudit({
+      event_type: "billing_subscription_payment_shadow_" + status, status: "success",
+      entity_type: "subscription_payment_transaction", entity_id: data.id, actor_type: "admin_user", actor_id: req.admin.id, pool_id: data.pool_id,
+      message: "Tentative de paiement abonnement mise à jour en shadow : " + status,
+      metadata: { shadow: true, no_effect: true, provider_call: false, before, after: data },
+    });
+    return res.json({ ok: true, item: data, passive: true, shadow: true });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
