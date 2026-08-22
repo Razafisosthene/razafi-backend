@@ -15423,16 +15423,28 @@ app.post("/api/owner/billing/invoices/:id/pay",
 
     const requestRef="RAZAFI-SUB-MVOLA-"+invoice.id.replace(/-/g,"")+"-"+crypto.randomUUID();
     const correlationId=crypto.randomUUID();
-    const meta={billing_v1:true,milestone:"S11.1",purpose:"monthly_subscription",
+    const meta={billing_v1:true,milestone:"S11.4",purpose:"monthly_subscription",
       business_effect:"invoice_only",voucher_generation:false,pilot_id:pilot.id,
       invoice_number:invoice.invoice_number,provider_call:false};
-    const {data:tx,error:insertError}=await supabase.from("subscription_payment_transactions")
-      .insert({invoice_id:invoice.id,pool_id:invoice.pool_id,owner_admin_user_id:ownerId,
-        payer_phone:phone,provider:"mvola",amount_ar:amount,currency:"Ar",
-        request_ref:requestRef,status:"initiated",initiated_at:new Date().toISOString(),
-        metadata:meta}).select().maybeSingle();
-    if(insertError) return res.status(insertError.code==="23505"?409:500)
-      .json({error:insertError.code==="23505"?"subscription_payment_already_pending":insertError.message});
+    const {data:prepared,error:prepareError}=await supabase.rpc(
+      "fn_billing_v1_prepare_subscription_payment",{
+        p_invoice_id:invoice.id,p_owner_admin_user_id:ownerId,p_payer_phone:phone,
+        p_request_ref:requestRef,p_server_correlation_id:correlationId,
+      });
+    if(prepareError) {
+      const message=String(prepareError.message||"");
+      const conflict=/already_pending|not_payable|before_pilot|pilot_not_live/.test(message);
+      return res.status(conflict?409:500).json({
+        error:conflict?"subscription_payment_not_prepared":"subscription_payment_prepare_failed",
+        reason:message.replace(/^.*billing_v1:/,"").slice(0,160),
+      });
+    }
+    if(prepared?.already_pending) return res.status(409).json({
+      error:"subscription_payment_already_pending",
+      transaction:{request_ref:prepared.request_ref,status:prepared.status},
+    });
+    const tx={id:prepared?.transaction_id};
+    if(!tx.id) return res.status(500).json({error:"subscription_payment_prepare_invalid_result"});
 
     const payload={amount:String(amount),currency:"Ar",
       descriptionText:"Abonnement RAZAFI "+amount+" Ar",
@@ -15454,7 +15466,7 @@ app.post("/api/owner/billing/invoices/:id/pay",
         entity_type:"subscription_payment_transaction",entity_id:tx.id,
         actor_type:"admin_user",actor_id:ownerId,pool_id:invoice.pool_id,
         request_ref:requestRef,message:"Subscription MVola initiation failed",
-        metadata:{billing_v1:true,s11_1:true,voucher_generation:false,error_type:mapped.type},
+        metadata:{billing_v1:true,s11_4:true,voucher_generation:false,error_type:mapped.type},
       });
       return res.status(mapped.httpStatus).json({
         error:"subscription_payment_initiation_failed",message:mapped.userMessage});
@@ -15474,7 +15486,7 @@ app.post("/api/owner/billing/invoices/:id/pay",
       entity_type:"subscription_payment_transaction",entity_id:tx.id,
       actor_type:"admin_user",actor_id:ownerId,pool_id:invoice.pool_id,
       request_ref:requestRef,message:"Subscription MVola initiated",
-      metadata:{billing_v1:true,s11_1:true,amount_ar:amount,voucher_generation:false},
+      metadata:{billing_v1:true,s11_4:true,amount_ar:amount,voucher_generation:false},
     });
     res.status(202).json({ok:true,provider:"mvola",request_ref:requestRef,status:"pending",
       initiation_uncertain:!serverCorrelationId,
