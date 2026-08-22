@@ -15255,22 +15255,26 @@ app.get("/api/owner/billing-shadow", requireAdmin, requireBillingOwnerPortalShad
     if (poolError) return res.status(500).json({ error: poolError.message });
     const poolIds = (pools || []).map((x) => x.id);
     if (!poolIds.length) return res.json({ pools: [], assignments: [], invoices: [], statements: [], payout_records: [], documents: [], passive: true, shadow: true, no_effect: true });
-    const [assignmentsResult, invoicesResult, statementsResult, payoutsResult] = await Promise.all([
+    const [assignmentsResult, invoicesResult, statementsResult, payoutsResult, offersResult] = await Promise.all([
       supabase.from("pool_billing_assignments").select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to,created_at").in("pool_id", poolIds).order("effective_from", { ascending: false }),
       supabase.from("subscription_invoices").select("id,invoice_number,pool_id,offer_title_snapshot,period_start,period_end,amount_due_ar,amount_paid_ar,status,issued_at,due_at,pdf_snapshot,created_at").eq("owner_admin_user_id", ownerId).eq("purpose", "monthly_subscription").order("period_start", { ascending: false }),
       supabase.from("pool_billing_commission_shadow_statements").select("id,pool_id,offer_title_snapshot,period_start,period_end,commission_pct,gross_sales_ar,commission_amount_ar,owner_gross_amount_ar,transaction_count,status,metadata,created_at").eq("owner_admin_user_id", ownerId).order("period_start", { ascending: false }),
       supabase.from("pool_billing_payout_shadow_records").select("id,commission_statement_id,pool_id,transfer_fee_ar,net_owner_amount_ar,status,metadata,created_at").eq("owner_admin_user_id", ownerId).order("created_at", { ascending: false }),
+      supabase.from("billing_offers").select("id,title"),
     ]);
-    const combinedError = assignmentsResult.error || invoicesResult.error || statementsResult.error || payoutsResult.error;
+    const combinedError = assignmentsResult.error || invoicesResult.error || statementsResult.error || payoutsResult.error || offersResult.error;
     if (combinedError) return res.status(500).json({ error: combinedError.message });
     const assignments = assignmentsResult.data || [], invoices = invoicesResult.data || [], statements = statementsResult.data || [], payout_records = payoutsResult.data || [];
+    const offerTitleById = new Map((offersResult.data || []).map((x) => [x.id, x.title]));
     const nowDate = new Date().toISOString().slice(0, 10);
-    const currentAssignments = poolIds.map((pool_id) => assignments.find((a) => a.pool_id === pool_id && a.effective_from <= nowDate && (!a.effective_to || a.effective_to >= nowDate)) || null).filter(Boolean);
+    const withOfferTitle = (assignment) => ({ ...assignment, offer_title: offerTitleById.get(assignment.offer_id) || null });
+    const currentAssignments = poolIds.map((pool_id) => assignments.find((a) => a.pool_id === pool_id && a.effective_from <= nowDate && (!a.effective_to || a.effective_to >= nowDate)) || null).filter(Boolean).map(withOfferTitle);
+    const upcomingAssignments = poolIds.map((pool_id) => assignments.filter((a) => a.pool_id === pool_id && a.effective_from > nowDate).sort((a, b) => String(a.effective_from).localeCompare(String(b.effective_from)))[0] || null).filter(Boolean).map(withOfferTitle);
     const documents = [
       ...invoices.map((x) => ({ id: x.id, type: "subscription_invoice", pool_id: x.pool_id, title: `Facture ${x.invoice_number}`, period_start: x.period_start, status: x.status, amount_ar: x.amount_due_ar, shadow: true, download_available: false })),
       ...statements.map((x) => ({ id: x.id, type: "commission_statement", pool_id: x.pool_id, title: `Relevé de commission ${x.period_start}`, period_start: x.period_start, status: x.status, amount_ar: x.owner_gross_amount_ar, shadow: true, download_available: false })),
     ];
-    return res.json({ pools: pools || [], assignments: currentAssignments, invoices, statements, payout_records, documents, passive: true, shadow: true, no_effect: true, pdf_available: false });
+    return res.json({ pools: pools || [], assignments: currentAssignments, upcoming_assignments: upcomingAssignments, invoices, statements, payout_records, documents, passive: true, shadow: true, no_effect: true, pdf_available: false });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
