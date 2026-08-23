@@ -15367,18 +15367,23 @@ function billingAccessEnforcementMasterEnabled(){
 async function billingPoolPurchaseAccess(poolId){
   const open={blocked:false,status:"active",enforced:false};
   if(!billingAccessEnforcementMasterEnabled()||!poolId)return open;
-  const [{data:pilot,error:pilotError},{data:control,error:controlError}]=await Promise.all([
+  const [{data:pilot,error:pilotError},{data:control,error:controlError},{data:emergency,error:emergencyError}]=await Promise.all([
     supabase.from("pool_billing_activation_pilots")
       .select("status,first_live_at,live_access_enforcement_enabled")
       .eq("pool_id",poolId).maybeSingle(),
     supabase.from("pool_billing_access_controls")
       .select("status,grace_until,suspended_at,reactivated_at")
       .eq("pool_id",poolId).maybeSingle(),
+    supabase.from("billing_pilot_emergency_controls")
+      .select("emergency_stop")
+      .eq("pool_id",poolId).maybeSingle(),
   ]);
-  if(pilotError||controlError)throw pilotError||controlError;
+  if(pilotError||controlError||emergencyError)throw pilotError||controlError||emergencyError;
   const pilotLive=pilot?.status==="enabled" && pilot?.live_access_enforcement_enabled===true &&
     String(pilot?.first_live_at||"")<=billingMadagascarToday();
   if(!pilotLive)return open;
+  // S11.7: a missing emergency-control row is fail-closed once live gates are armed.
+  if(!emergency||emergency.emergency_stop!==false)throw new Error("billing_pilot_emergency_stop_active");
   if(!control)throw new Error("billing_access_control_missing");
   return {blocked:control?.status==="suspended",status:control?.status||"active",enforced:true};
 }
@@ -15406,10 +15411,17 @@ async function billingOwnerPaymentUi(invoices) {
   };
 }
 async function billingEnabledMvolaPilot(poolId) {
-  const {data,error}=await supabase.from("pool_billing_activation_pilots")
-    .select("id,payment_provider,first_live_at,status,live_subscription_payments_enabled,live_owner_portal_enabled")
-    .eq("pool_id",poolId).maybeSingle();
-  if(error) throw error;
+  const [{data,error},{data:emergency,error:emergencyError}]=await Promise.all([
+    supabase.from("pool_billing_activation_pilots")
+      .select("id,payment_provider,first_live_at,status,live_subscription_payments_enabled,live_owner_portal_enabled")
+      .eq("pool_id",poolId).maybeSingle(),
+    supabase.from("billing_pilot_emergency_controls")
+      .select("emergency_stop")
+      .eq("pool_id",poolId).maybeSingle(),
+  ]);
+  if(error||emergencyError) throw error||emergencyError;
+  // Missing row and emergency_stop=true both refuse operator access.
+  if(!emergency||emergency.emergency_stop!==false) return null;
   return data && data.status==="enabled" && data.payment_provider==="mvola" &&
     data.first_live_at<=billingMadagascarToday() &&
     data.live_subscription_payments_enabled===true &&
