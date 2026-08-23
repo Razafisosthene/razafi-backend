@@ -15522,9 +15522,11 @@ async function billingPoolPurchaseAccess(poolId){
 async function billingOwnerPaymentUi(invoices) {
   const disabled={enabled:false,provider:null,payable_invoice_ids:[]};
   if(!billingLiveMasterEnabled()) return disabled;
+  const businessToday=billingMadagascarToday();
   const candidates=(invoices||[]).filter(i=>
     i.status==="issued" && Number(i.amount_paid_ar)===0 &&
-    Number.isInteger(Number(i.amount_due_ar)) && Number(i.amount_due_ar)>0
+    Number.isInteger(Number(i.amount_due_ar)) && Number(i.amount_due_ar)>0 &&
+    String(i.period_start||"")<=businessToday
   );
   if(!candidates.length) return {enabled:true,provider:"mvola",payable_invoice_ids:[]};
   const poolIds=[...new Set(candidates.map(i=>i.pool_id).filter(Boolean))];
@@ -15538,7 +15540,8 @@ async function billingOwnerPaymentUi(invoices) {
     provider:"mvola",
     payable_invoice_ids:candidates.filter(i=>{
       const pilot=enabledPilots.get(i.pool_id);
-      return pilot && String(i.period_start||"")>=String(pilot.first_live_at||"");
+      return pilot && String(i.period_start||"")>=String(pilot.first_live_at||"") &&
+        String(i.period_start||"")<=businessToday;
     }).map(i=>i.id),
   };
 }
@@ -15637,6 +15640,8 @@ app.post("/api/owner/billing/invoices/:id/pay",
     if(invoice.status!=="issued"||Number(invoice.amount_paid_ar)!==0||
        !Number.isInteger(amount)||amount<=0)
       return res.status(409).json({error:"subscription_invoice_not_payable"});
+    if(String(invoice.period_start||"")>billingMadagascarToday())
+      return res.status(409).json({error:"subscription_invoice_before_period"});
 
     const pilot=await billingEnabledMvolaPilot(invoice.pool_id);
     if(!pilot) return res.status(409).json({error:"billing_pilot_not_live"});
@@ -15663,7 +15668,7 @@ app.post("/api/owner/billing/invoices/:id/pay",
       });
     if(prepareError) {
       const message=String(prepareError.message||"");
-      const conflict=/already_pending|not_payable|before_pilot|pilot_not_live/.test(message);
+      const conflict=/already_pending|not_payable|before_pilot|before_period|pilot_not_live/.test(message);
       return res.status(conflict?409:500).json({
         error:conflict?"subscription_payment_not_prepared":"subscription_payment_prepare_failed",
         reason:message.replace(/^.*billing_v1:/,"").slice(0,160),
