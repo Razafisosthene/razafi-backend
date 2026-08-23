@@ -1449,7 +1449,14 @@ async function requireAdmin(req, res, next) {
       const allowOwnerMarkSeen =
         method === "POST" && fullPath === "/api/admin/dashboard-since-last-visit/mark-seen";
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerMarketingWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat || allowOwnerMarkSeen) {
+      // S11.10 isolated owner UAT. These writes are restricted to dedicated
+      // billing_subscription_uat_* tables; route handlers re-check ownership.
+      const allowOwnerBillingUatWrite = method === "POST" && (
+        fullPath === "/api/owner/billing-uat/start" ||
+        /^\/api\/owner\/billing-uat\/[^/]+\/(simulate-payment|confirm-payment)$/.test(fullPath)
+      );
+
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerMarketingWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat || allowOwnerMarkSeen || allowOwnerBillingUatWrite) {
         return next();
       }
 
@@ -12759,6 +12766,8 @@ const BILLING_V1_PILOT_EXECUTION = billingEnvFlag("BILLING_V1_PILOT_EXECUTION", 
 const BILLING_V1_PORTAL_LOCK = billingEnvFlag("BILLING_V1_PORTAL_LOCK", false);
 const BILLING_V1_OWNER_SELF_SERVICE = billingEnvFlag("BILLING_V1_OWNER_SELF_SERVICE", false);
 const BILLING_V1_PDF = billingEnvFlag("BILLING_V1_PDF", false);
+// S11.10 isolated simulator. It is valid only while every live execution gate is OFF.
+const BILLING_V1_UAT = billingEnvFlag("BILLING_V1_UAT", false);
 const BILLING_V1_ADMIN_OFFERS = billingEnvFlag("BILLING_V1_ADMIN_OFFERS", false);
 const BILLING_V1_POOL_ASSIGNMENTS_SHADOW = billingEnvFlag("BILLING_V1_POOL_ASSIGNMENTS_SHADOW", false);
 const BILLING_V1_CHANGES_SHADOW = billingEnvFlag("BILLING_V1_CHANGES_SHADOW", false);
@@ -15348,6 +15357,123 @@ app.get("/api/owner/billing/invoices/:id/receipt",requireAdmin,requireBillingPdf
     const doc=createSubscriptionReceiptPdf({...data,transaction,receipt_number});
     return sendBillingPdf(res,doc,billingPdfFilename("recu",receipt_number));
   }catch(error){console.error("[BILLING S11.5] receipt PDF",error?.message||error);if(!res.headersSent)return res.status(500).json({error:"subscription_receipt_pdf_failed"});}
+});
+
+// S11.10 — isolated owner subscription UAT. This gate is intentionally
+// incompatible with every live execution gate. No route below calls MVola or
+// touches live invoices, payment transactions, vouchers, access controls or pools.
+function billingOwnerUatEnabled(){
+  return BILLING_V1_UAT && !BILLING_V1_ENABLED &&
+    !BILLING_V1_SUBSCRIPTION_PAYMENTS && !BILLING_V1_ENFORCE &&
+    !BILLING_V1_PILOT_EXECUTION;
+}
+function requireBillingOwnerUat(_req,res,next){
+  if(!billingOwnerUatEnabled())return res.status(404).json({error:"billing_owner_uat_disabled"});
+  next();
+}
+function billingUatPhoneMask(phone){
+  const digits=String(phone||"").replace(/\D/g,"");
+  return digits.length>=4?"*******"+digits.slice(-3):"***";
+}
+async function loadOwnerBillingUatRun(runId,ownerId){
+  const {data:run,error}=await supabase.from("billing_subscription_uat_runs")
+    .select("id,owner_admin_user_id,pool_id,invoice_number,offer_title,amount_ar,currency,simulated_period_start,simulated_period_end,simulated_due_at,provider,status,invoice_status,request_ref,payer_phone_masked,access_status_before,access_status_after,provider_called,live_tables_touched,started_at,payment_requested_at,completed_at,metadata")
+    .eq("id",runId).eq("owner_admin_user_id",ownerId).maybeSingle();
+  if(error)throw error;if(!run)return null;
+  const [{data:pool,error:poolError},{data:owner,error:ownerError}]=await Promise.all([
+    supabase.from("internet_pools").select("id,name,brand_name,radius_nas_id").eq("id",run.pool_id).maybeSingle(),
+    supabase.from("admin_users").select("id,email").eq("id",ownerId).maybeSingle(),
+  ]);
+  if(poolError||ownerError)throw poolError||ownerError;
+  const display_name=[pool?.brand_name,pool?.name].filter(Boolean).join(" - ")||pool?.name||"-";
+  const invoice={id:run.id,invoice_number:run.invoice_number,pool_id:run.pool_id,
+    owner_admin_user_id:run.owner_admin_user_id,offer_title_snapshot:run.offer_title,
+    period_start:run.simulated_period_start,period_end:run.simulated_period_end,
+    purpose:"monthly_subscription_uat",amount_due_ar:run.amount_ar,
+    amount_paid_ar:run.status==="completed"?run.amount_ar:0,status:run.invoice_status,
+    issued_at:run.started_at,due_at:run.simulated_due_at,created_at:run.started_at};
+  return {run,invoice,pool:{...(pool||{}),display_name},owner:owner||{id:ownerId,email:null},uat:true};
+}
+
+app.get("/api/owner/billing-uat",requireAdmin,requireBillingOwnerUat,async(req,res)=>{
+  try{
+    const ownerId=String(req.admin?.id||"");
+    const {data:pools,error:poolError}=await supabase.from("internet_pools")
+      .select("id,name,brand_name,radius_nas_id,owner_admin_user_id")
+      .eq("owner_admin_user_id",ownerId).eq("radius_nas_id","razafi-pool-4").order("name");
+    if(poolError)throw poolError;
+    const {data:runs,error:runError}=await supabase.from("billing_subscription_uat_runs")
+      .select("id,pool_id,invoice_number,offer_title,amount_ar,currency,simulated_period_start,simulated_period_end,simulated_due_at,provider,status,invoice_status,request_ref,payer_phone_masked,access_status_before,access_status_after,provider_called,live_tables_touched,started_at,payment_requested_at,completed_at")
+      .eq("owner_admin_user_id",ownerId).order("started_at",{ascending:false}).limit(20);
+    if(runError)throw runError;
+    const runIds=(runs||[]).map(x=>x.id);
+    let events=[];
+    if(runIds.length){
+      const {data,error}=await supabase.from("billing_subscription_uat_events")
+        .select("id,run_id,event_type,occurred_at,metadata").in("run_id",runIds).order("occurred_at",{ascending:true});
+      if(error)throw error;events=data||[];
+    }
+    return res.json({ok:true,uat:true,live:false,provider:"mvola-simulator",
+      pools:pools||[],runs:runs||[],events,operator_call:false,payment_created_live:false,
+      voucher_created:false,wifi_disconnect:false,payment_methods_overwritten:false});
+  }catch(error){console.error("[BILLING S11.10] load",error?.message||error);return res.status(500).json({error:"billing_owner_uat_load_failed"});}
+});
+
+app.post("/api/owner/billing-uat/start",requireAdmin,requireBillingOwnerUat,async(req,res)=>{
+  try{
+    const ownerId=String(req.admin?.id||"");
+    const poolId=String(req.body?.pool_id||"").trim();
+    if(!UUID_V1_TO_V5_RE.test(poolId))return res.status(400).json({error:"billing_uat_pool_invalid"});
+    const {data,error}=await supabase.rpc("fn_billing_v1_owner_uat_start",{
+      p_owner_admin_user_id:ownerId,p_pool_id:poolId,p_created_by:ownerId,
+    });
+    if(error)throw error;return res.status(201).json({uat:true,live:false,...data});
+  }catch(error){console.error("[BILLING S11.10] start",error?.message||error);return res.status(409).json({error:"billing_owner_uat_start_failed",reason:String(error?.message||"").slice(0,160)});}
+});
+
+app.post("/api/owner/billing-uat/:id/simulate-payment",requireAdmin,requireBillingOwnerUat,async(req,res)=>{
+  try{
+    const phone=normalizePhone(req.body?.payer_phone);
+    if(!isValidMGPhone(phone))return res.status(400).json({error:"payer_phone_invalid",message:"Numéro MVola invalide."});
+    const {data,error}=await supabase.rpc("fn_billing_v1_owner_uat_transition",{
+      p_run_id:req.params.id,p_owner_admin_user_id:req.admin.id,
+      p_action:"simulate_payment",p_payer_phone_masked:billingUatPhoneMask(phone),
+    });
+    if(error)throw error;return res.json({uat:true,live:false,...data});
+  }catch(error){console.error("[BILLING S11.10] simulate",error?.message||error);return res.status(409).json({error:"billing_owner_uat_simulation_failed",reason:String(error?.message||"").slice(0,160)});}
+});
+
+app.post("/api/owner/billing-uat/:id/confirm-payment",requireAdmin,requireBillingOwnerUat,async(req,res)=>{
+  try{
+    const {data,error}=await supabase.rpc("fn_billing_v1_owner_uat_transition",{
+      p_run_id:req.params.id,p_owner_admin_user_id:req.admin.id,
+      p_action:"confirm_payment",p_payer_phone_masked:null,
+    });
+    if(error)throw error;return res.json({uat:true,live:false,...data});
+  }catch(error){console.error("[BILLING S11.10] confirm",error?.message||error);return res.status(409).json({error:"billing_owner_uat_confirmation_failed",reason:String(error?.message||"").slice(0,160)});}
+});
+
+app.get("/api/owner/billing-uat/:id/invoice.pdf",requireAdmin,requireBillingOwnerUat,async(req,res)=>{
+  try{
+    const data=await loadOwnerBillingUatRun(req.params.id,String(req.admin?.id||""));
+    if(!data)return res.status(404).json({error:"billing_uat_run_not_found"});
+    const doc=createSubscriptionInvoicePdf(data);
+    return sendBillingPdf(res,doc,billingPdfFilename("UAT-facture",data.invoice.invoice_number));
+  }catch(error){console.error("[BILLING S11.10] invoice PDF",error?.message||error);if(!res.headersSent)return res.status(500).json({error:"billing_uat_invoice_pdf_failed"});}
+});
+
+app.get("/api/owner/billing-uat/:id/receipt.pdf",requireAdmin,requireBillingOwnerUat,async(req,res)=>{
+  try{
+    const data=await loadOwnerBillingUatRun(req.params.id,String(req.admin?.id||""));
+    if(!data)return res.status(404).json({error:"billing_uat_run_not_found"});
+    if(data.run.status!=="completed")return res.status(409).json({error:"billing_uat_receipt_not_ready"});
+    const transaction={id:data.run.id,invoice_id:data.run.id,pool_id:data.run.pool_id,
+      owner_admin_user_id:data.run.owner_admin_user_id,provider:"MVola Simulator (UAT)",
+      amount_ar:data.run.amount_ar,currency:"MGA",status:"completed",completed_at:data.run.completed_at};
+    const receipt_number=`UAT-RAZAFI-REC-${String(data.run.invoice_number).replace(/^UAT-RAZAFI-SUB-/,"")}`;
+    const doc=createSubscriptionReceiptPdf({...data,transaction,receipt_number});
+    return sendBillingPdf(res,doc,billingPdfFilename("UAT-recu",receipt_number));
+  }catch(error){console.error("[BILLING S11.10] receipt PDF",error?.message||error);if(!res.headersSent)return res.status(500).json({error:"billing_uat_receipt_pdf_failed"});}
 });
 
 // S11.1: isolated subscription payment path. Never calls the WiFi poller and

@@ -21,13 +21,19 @@ function textPair(doc,label,value,x,y,width=230){
   doc.fillColor(COLORS.muted).font("Helvetica").fontSize(9).text(label,x,y,{width});
   doc.fillColor(COLORS.ink).font("Helvetica-Bold").fontSize(10.5).text(safe(value),x,y+14,{width});
 }
-function baseDocument({title,number}){
+function baseDocument({title,number,uat=false}){
   const doc=new PDFDocument({size:"A4",margin:48,info:{Title:`${title} ${number}`,Author:"RAZAFI",Subject:"Abonnement RAZAFI",Creator:"RAZAFI Billing v1 S11.5"}});
   doc.fillColor(COLORS.ink).font("Helvetica-Bold").fontSize(23).text("RAZAFI",48,45);
   doc.fillColor(COLORS.muted).font("Helvetica").fontSize(9.5).text("La plateforme WiFi intelligente",48,72);
   doc.fillColor(COLORS.brand).font("Helvetica-Bold").fontSize(17).text(title,300,46,{width:247,align:"right"});
   doc.fillColor(COLORS.ink).font("Helvetica-Bold").fontSize(9.5).text(safe(number),300,72,{width:247,align:"right"});
   doc.moveTo(48,99).lineTo(547,99).lineWidth(1).strokeColor(COLORS.line).stroke();
+  if(uat){
+    doc.fillColor("#C01048").font("Helvetica-Bold").fontSize(8)
+      .text("TEST / UAT - SANS VALEUR",220,87,{width:155,align:"center"});
+    doc.save().fillOpacity(.08).fillColor("#C01048").font("Helvetica-Bold").fontSize(54)
+      .rotate(-28,{origin:[300,430]}).text("TEST UAT",80,390,{width:470,align:"center"}).restore();
+  }
   return doc;
 }
 function footer(doc){
@@ -89,11 +95,11 @@ function receiptBody(doc,{invoice,pool,owner,transaction,receipt_number}){
 }
 
 export function createSubscriptionInvoicePdf(data){
-  const doc=baseDocument({title:"FACTURE D'ABONNEMENT",number:data.invoice.invoice_number});
+  const doc=baseDocument({title:data.uat?"FACTURE UAT":"FACTURE D'ABONNEMENT",number:data.invoice.invoice_number,uat:!!data.uat});
   invoiceBody(doc,data);return doc;
 }
 export function createSubscriptionReceiptPdf(data){
   const receipt_number=data.receipt_number||`RAZAFI-REC-${safe(data.invoice.invoice_number)}`;
-  const doc=baseDocument({title:"RECU DE PAIEMENT",number:receipt_number});
+  const doc=baseDocument({title:data.uat?"RECU UAT":"RECU DE PAIEMENT",number:receipt_number,uat:!!data.uat});
   receiptBody(doc,{...data,receipt_number});return doc;
 }
