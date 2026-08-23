@@ -15361,6 +15361,27 @@ function billingMadagascarToday() {
 function billingLiveMasterEnabled() {
   return BILLING_V1_ENABLED && BILLING_V1_SUBSCRIPTION_PAYMENTS && BILLING_V1_PILOT_EXECUTION;
 }
+function billingAccessEnforcementMasterEnabled(){
+  return BILLING_V1_ENABLED && BILLING_V1_ENFORCE && BILLING_V1_PILOT_EXECUTION;
+}
+async function billingPoolPurchaseAccess(poolId){
+  const open={blocked:false,status:"active",enforced:false};
+  if(!billingAccessEnforcementMasterEnabled()||!poolId)return open;
+  const [{data:pilot,error:pilotError},{data:control,error:controlError}]=await Promise.all([
+    supabase.from("pool_billing_activation_pilots")
+      .select("status,first_live_at,live_access_enforcement_enabled")
+      .eq("pool_id",poolId).maybeSingle(),
+    supabase.from("pool_billing_access_controls")
+      .select("status,grace_until,suspended_at,reactivated_at")
+      .eq("pool_id",poolId).maybeSingle(),
+  ]);
+  if(pilotError||controlError)throw pilotError||controlError;
+  const pilotLive=pilot?.status==="enabled" && pilot?.live_access_enforcement_enabled===true &&
+    String(pilot?.first_live_at||"")<=billingMadagascarToday();
+  if(!pilotLive)return open;
+  if(!control)throw new Error("billing_access_control_missing");
+  return {blocked:control?.status==="suspended",status:control?.status||"active",enforced:true};
+}
 async function billingOwnerPaymentUi(invoices) {
   const disabled={enabled:false,provider:null,payable_invoice_ids:[]};
   if(!billingLiveMasterEnabled()) return disabled;
@@ -20959,17 +20980,22 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
     // Structural prep: per-pool payment methods (MVola/Orange/Airtel/Visa toggles).
     // Safe-normalized so the portal never sees anything but booleans on known keys.
     const normalizedPaymentMethods = normalizePaymentMethods(pool?.payment_methods);
-    const activePaymentMethods = activePaymentMethodsList(normalizedPaymentMethods);
+    const billingAccess = await billingPoolPurchaseAccess(pool_id);
+    const effectivePaymentMethods = billingAccess.blocked
+      ? Object.fromEntries(PAYMENT_METHOD_KEYS.map((key)=>[key,false]))
+      : normalizedPaymentMethods;
+    const activePaymentMethods = activePaymentMethodsList(effectivePaymentMethods);
 
     return res.json({
       ok:                   true,
       // ap_mac and pool_id removed — not needed by portal UI
       pool_name:            pool?.name ?? null,
-      personalized_plans_enabled: pool?.personalized_plans_enabled === true,
+      personalized_plans_enabled: pool?.personalized_plans_enabled === true && !billingAccess.blocked,
       portal_announcement:  serializePortalAnnouncement(pool),
       plans:                publicPlans,
-      payment_methods:        normalizedPaymentMethods,   // e.g. { mvola: true, orange_money: false, ... }
+      payment_methods:        effectivePaymentMethods,   // original toggles stay unchanged; suspension is an overlay
       active_payment_methods: activePaymentMethods,       // e.g. ["mvola"]
+      billing_access: billingAccess.enforced ? { status: billingAccess.status, purchases_blocked: billingAccess.blocked } : null,
       assistant_history_token: assistantHistoryToken || null, // G.2: null when no client_mac
       assistant_context_token: assistantContextToken || null, // ANU-2: opaque trusted-scope token; dormant until flags ON
     });
@@ -31662,6 +31688,23 @@ if (supabase) {
 
       if (isPersonalizedPayment && (poolErr || !pool?.id)) {
         return res.status(503).json({ ok: false, error: "personalized_pool_unavailable" });
+      }
+
+      // S11.6: billing suspension is an overlay. Never mutate the pool's
+      // configured payment_methods; block only new purchase initiation.
+      if (!poolErr && pool?.id) {
+        try {
+          const billingAccess=await billingPoolPurchaseAccess(pool.id);
+          if(billingAccess.blocked) return res.status(423).json({
+            ok:false,error:"pool_billing_suspended",
+            message:"Les nouvelles ventes sont temporairement suspendues pour ce point WiFi.",
+          });
+        } catch(error) {
+          if(billingAccessEnforcementMasterEnabled()) {
+            console.error("[BILLING S11.6] access check unavailable",error?.message||error);
+            return res.status(503).json({ok:false,error:"pool_billing_access_check_unavailable"});
+          }
+        }
       }
 
       // Enforce the pool payment-method toggle for every paid flow, not only
