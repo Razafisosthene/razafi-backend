@@ -2,7 +2,17 @@ const $=(id)=>document.getElementById(id);
 const esc=(v)=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const money=(v)=>`${Number(v||0).toLocaleString("fr-FR")} Ar`;
 let model={pools:[],runs:[],events:[]};
-async function api(url,options={}){const r=await fetch(url,{credentials:"include",...options}),t=await r.text();let d={};try{d=JSON.parse(t)}catch{d={error:"non_json"}}if(!r.ok){const e=new Error(d.reason||d.message||d.error||"request_failed");e.code=d.error;throw e}return d}
+async function api(url,options={}){
+  const r=await fetch(url,{credentials:"include",...options});
+  const t=await r.text();
+  let d=null;
+  try{d=t?JSON.parse(t):null}catch{}
+  if(!r.ok){
+    const e=new Error(d?.reason||d?.message||d?.error||`request_failed_http_${r.status}`);
+    e.code=d?.error||"non_json_error_response";e.httpStatus=r.status;throw e;
+  }
+  return d||{ok:true,reload_required:true};
+}
 function showError(e){$("error").style.display="block";$("error").textContent=e?.message||String(e)}
 function statusLabel(v){return ({invoice_issued:"Facture émise",payment_pending:"Paiement simulé en attente",completed:"UAT terminé — PASS",failed:"Échec UAT"})[v]||v}
 function eventLabel(v){return ({invoice_issued:"Facture UAT émise",payment_simulated:"Demande MVola simulée",payment_confirmed:"Paiement simulé confirmé",access_reactivated:"Nouvelles ventes réactivées (simulation)",uat_completed:"Parcours UAT terminé"})[v]||v}

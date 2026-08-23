@@ -15427,7 +15427,13 @@ app.post("/api/owner/billing-uat/start",requireAdmin,requireBillingOwnerUat,asyn
     const {data,error}=await supabase.rpc("fn_billing_v1_owner_uat_start",{
       p_owner_admin_user_id:ownerId,p_pool_id:poolId,p_created_by:ownerId,
     });
-    if(error)throw error;return res.status(201).json({uat:true,live:false,...data});
+    if(error)throw error;
+    // S11.11: send a small, explicit JSON envelope. The UAT mutation is already
+    // committed by the RPC, so the client must never depend on spreading the
+    // provider payload to decide whether it should reload the authoritative list.
+    return res.status(201).type("application/json").send(JSON.stringify({
+      ok:true,uat:true,live:false,result:data||null,
+    }));
   }catch(error){console.error("[BILLING S11.10] start",error?.message||error);return res.status(409).json({error:"billing_owner_uat_start_failed",reason:String(error?.message||"").slice(0,160)});}
 });
 

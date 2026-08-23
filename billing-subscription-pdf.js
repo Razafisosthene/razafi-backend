@@ -17,21 +17,27 @@ const dateTimeFR=(value)=>{
 };
 const statusLabel=(value)=>({issued:"Emise",pending:"En attente",paid:"Payee",cancelled:"Annulee",refunded:"Remboursee",partially_refunded:"Partiellement remboursee"})[value]||safe(value);
 
+function typography(doc,font="Helvetica",size=10){
+  // S11.11: reset PDFKit text state before every block. This prevents inherited
+  // spacing/transform state from producing irregular gaps in browser PDF viewers.
+  return doc.font(font).fontSize(size).characterSpacing(0).fillOpacity(1);
+}
+
 function textPair(doc,label,value,x,y,width=230){
-  doc.fillColor(COLORS.muted).font("Helvetica").fontSize(9).text(label,x,y,{width});
-  doc.fillColor(COLORS.ink).font("Helvetica-Bold").fontSize(10.5).text(safe(value),x,y+14,{width});
+  typography(doc,"Helvetica",9).fillColor(COLORS.muted).text(label,x,y,{width,lineGap:0});
+  typography(doc,"Helvetica-Bold",10.5).fillColor(COLORS.ink).text(safe(value),x,y+14,{width,lineGap:0});
 }
 function baseDocument({title,number,uat=false}){
-  const doc=new PDFDocument({size:"A4",margin:48,info:{Title:`${title} ${number}`,Author:"RAZAFI",Subject:"Abonnement RAZAFI",Creator:"RAZAFI Billing v1 S11.5"}});
-  doc.fillColor(COLORS.ink).font("Helvetica-Bold").fontSize(23).text("RAZAFI",48,45);
+  const doc=new PDFDocument({size:"A4",margin:48,info:{Title:`${title} ${number}`,Author:"RAZAFI",Subject:"Abonnement RAZAFI",Creator:"RAZAFI Billing v1 S11.11"}});
+  typography(doc,"Helvetica-Bold",23).fillColor(COLORS.ink).text("RAZAFI",48,45);
   doc.fillColor(COLORS.muted).font("Helvetica").fontSize(9.5).text("La plateforme WiFi intelligente",48,72);
   doc.fillColor(COLORS.brand).font("Helvetica-Bold").fontSize(17).text(title,300,46,{width:247,align:"right"});
   doc.fillColor(COLORS.ink).font("Helvetica-Bold").fontSize(9.5).text(safe(number),300,72,{width:247,align:"right"});
   doc.moveTo(48,99).lineTo(547,99).lineWidth(1).strokeColor(COLORS.line).stroke();
   if(uat){
-    doc.fillColor("#C01048").font("Helvetica-Bold").fontSize(8)
+    typography(doc,"Helvetica-Bold",8).fillColor("#C01048")
       .text("TEST / UAT - SANS VALEUR",220,87,{width:155,align:"center"});
-    doc.save().fillOpacity(.08).fillColor("#C01048").font("Helvetica-Bold").fontSize(54)
+    doc.save();typography(doc,"Helvetica-Bold",54).fillOpacity(.08).fillColor("#C01048")
       .rotate(-28,{origin:[300,430]}).text("TEST UAT",80,390,{width:470,align:"center"}).restore();
   }
   return doc;
