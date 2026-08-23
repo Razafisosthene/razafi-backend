@@ -15692,16 +15692,24 @@ app.post("/api/owner/billing/invoices/:id/pay",
       initiated=await initiateMvolaPaymentWithRetry({payload,requestRef,phone,amount,correlationId});
     } catch(e) {
       const mapped=mapMvolaInitiateError(e);
+      const diagnostic=safeMvolaInitiateDiagnostic(e);
+      console.error("[BILLING S11.12.2][MVOLA INITIATE FAILED]",{
+        requestRef,correlationId,transactionId:tx.id,invoiceId:invoice.id,
+        poolId:invoice.pool_id,mapped:{type:mapped.type,transient:!!mapped.transient,
+          httpStatus:mapped.httpStatus},diagnostic,
+      });
       await supabase.from("subscription_payment_transactions").update({
         status:"failed",failed_at:new Date().toISOString(),updated_at:new Date().toISOString(),
-        metadata:{...meta,provider_call:true,initiate_failed:true,error_type:mapped.type},
+        metadata:{...meta,provider_call:true,initiate_failed:true,error_type:mapped.type,
+          mvola_initiate_diagnostic:diagnostic},
       }).eq("id",tx.id);
       await insertAudit({
         event_type:"subscription_payment_failed",status:"failed",
         entity_type:"subscription_payment_transaction",entity_id:tx.id,
         actor_type:"admin_user",actor_id:ownerId,pool_id:invoice.pool_id,
         request_ref:requestRef,message:"Subscription MVola initiation failed",
-        metadata:{billing_v1:true,s11_4:true,voucher_generation:false,error_type:mapped.type},
+        metadata:{billing_v1:true,s11_4:true,s11_12_2:true,voucher_generation:false,
+          error_type:mapped.type,mvola_initiate_diagnostic:diagnostic},
       });
       return res.status(mapped.httpStatus).json({
         error:"subscription_payment_initiation_failed",message:mapped.userMessage});
@@ -27081,7 +27089,9 @@ app.post("/api/admin/integrations/airtel/test-token", requireAdmin, requireSuper
 
 const MVOLA_SENSITIVE_KEYS = new Set([
   "authorization", "access_token", "token", "password", "secret",
-  "client_secret", "pin", "clientsecret", "accesstoken",
+  "client_secret", "pin", "clientsecret", "accesstoken", "refresh_token",
+  "id_token", "apikey", "api_key", "x-api-key", "consumerkey",
+  "consumer_key", "privatekey", "private_key", "bearer", "cookie", "set-cookie",
 ]);
 
 // Keys whose string values are phone/MSISDN numbers that must be masked.
@@ -27361,6 +27371,43 @@ function getMvolaErrorInfo(err) {
   return { data, code, type, message, description, mmErrorCode, rawText, isNetwork };
 }
 
+// S11.12.2 — diagnostic MVola borné et nettoyé. Cette fonction n'effectue
+// aucun appel réseau et ne modifie aucune décision de retry ou de paiement.
+function safeMvolaInitiateDiagnostic(err) {
+  const info = getMvolaErrorInfo(err);
+  const responseHeaders = err?.response?.headers || {};
+  const safeHeaders = {};
+  for (const key of [
+    "x-correlation-id", "x-request-id", "server-correlation-id",
+    "retry-after", "x-ratelimit-remaining", "x-ratelimit-reset",
+  ]) {
+    const value = responseHeaders?.[key];
+    if (value !== undefined && value !== null && value !== "") {
+      safeHeaders[key] = truncate(maskMsisdnInString(String(value)), 240);
+    }
+  }
+
+  let providerBody = null;
+  if (err?.response?.data !== undefined && err?.response?.data !== null) {
+    const cleaned = sanitizeMvolaLogPayload(err.response.data);
+    providerBody = truncate(
+      typeof cleaned === "string" ? cleaned : JSON.stringify(cleaned),
+      1800
+    );
+  }
+
+  return {
+    diagnostic_version: "S11.12.2",
+    provider_http_status: Number(err?.response?.status || 0) || null,
+    provider_error_code: truncate(info.code || info.mmErrorCode || err?.code || "", 120) || null,
+    provider_error_type: truncate(info.type || err?.name || "", 120) || null,
+    provider_error_message: truncate(maskMsisdnInString(info.message || info.description || ""), 500) || null,
+    provider_response_body: providerBody,
+    provider_response_headers: safeHeaders,
+    network_error: !!info.isNetwork,
+  };
+}
+
 function mapMvolaInitiateError(err) {
   const info = getMvolaErrorInfo(err);
 
@@ -27507,7 +27554,7 @@ async function initiateMvolaPaymentWithRetry({ payload, requestRef, phone, amoun
       requestRef,
       correlationId,
       mapped,
-      raw: err1?.response?.data || err1?.message || err1,
+      diagnostic: safeMvolaInitiateDiagnostic(err1),
     });
 
     await waitMs(1200);
