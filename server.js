@@ -15656,7 +15656,15 @@ app.post("/api/owner/billing/invoices/:id/pay",
       transaction:{request_ref:open.request_ref,status:open.status},
     });
 
-    const requestRef="RAZAFI-SUB-MVOLA-"+invoice.id.replace(/-/g,"")+"-"+crypto.randomUUID();
+    // S11.12.3 — MVola validates this operator-facing reference strictly.
+    // Keep it short (32 ASCII characters); the complete invoice/transaction
+    // UUIDs remain stored separately in Supabase and in the diagnostic logs.
+    const invoiceToken=String(invoice.id||"").replace(/[^a-fA-F0-9]/g,"").slice(0,12);
+    const entropyToken=crypto.randomBytes(6).toString("hex");
+    const requestRef=`RZFSUB-${invoiceToken}-${entropyToken}`.toUpperCase();
+    if(!/^RZFSUB-[A-F0-9]{12}-[A-F0-9]{12}$/.test(requestRef)) {
+      return res.status(500).json({error:"subscription_payment_reference_invalid"});
+    }
     const correlationId=crypto.randomUUID();
     const meta={billing_v1:true,milestone:"S11.4",purpose:"monthly_subscription",
       business_effect:"invoice_only",voucher_generation:false,pilot_id:pilot.id,
@@ -15693,8 +15701,8 @@ app.post("/api/owner/billing/invoices/:id/pay",
     } catch(e) {
       const mapped=mapMvolaInitiateError(e);
       const diagnostic=safeMvolaInitiateDiagnostic(e);
-      console.error("[BILLING S11.12.2][MVOLA INITIATE FAILED]",{
-        requestRef,correlationId,transactionId:tx.id,invoiceId:invoice.id,
+      console.error("[BILLING S11.12.3][MVOLA INITIATE FAILED]",{
+        requestRef,requestRefLength:requestRef.length,correlationId,transactionId:tx.id,invoiceId:invoice.id,
         poolId:invoice.pool_id,mapped:{type:mapped.type,transient:!!mapped.transient,
           httpStatus:mapped.httpStatus},diagnostic,
       });
