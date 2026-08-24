@@ -19619,7 +19619,7 @@ app.get("/api/admin/revenue/payouts", requireAdmin, async (req, res) => {
 
     let q = supabase
       .from("owner_payouts")
-      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by,payout_items:owner_payout_items(count)", { count: "exact" })
+      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by,transfer_method,transfer_reference,transfer_note,transfer_confirmed_at,payout_items:owner_payout_items(count)", { count: "exact" })
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
 
@@ -19701,7 +19701,7 @@ app.get("/api/admin/revenue/payouts/:id", requireAdmin, async (req, res) => {
 
     let q = supabase
       .from("owner_payouts")
-      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by")
+      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by,transfer_method,transfer_reference,transfer_note,transfer_confirmed_at")
       .eq("id", id);
 
     if (!req.admin?.is_superadmin) {
@@ -20058,71 +20058,44 @@ app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadm
 app.post("/api/admin/revenue/payouts/:id/mark-paid", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    if (!BILLING_V1_PAYOUTS) return res.status(404).json({ error: "billing_v1_payouts_disabled" });
 
     const id = String(req.params.id || "").trim();
     if (!id) return res.status(400).json({ error: "id_required" });
+    const transferMethod = String(req.body?.transfer_method || "").trim().toLowerCase();
+    const transferReference = String(req.body?.transfer_reference || "").trim();
+    const transferNote = String(req.body?.transfer_note || "").trim() || null;
+    const allowedMethods = new Set(["mvola", "airtel_money", "orange_money", "bank_transfer", "cash", "other"]);
+    if (!allowedMethods.has(transferMethod)) return res.status(400).json({ error: "transfer_method_invalid" });
+    if (transferReference.length < 6 || transferReference.length > 120) return res.status(400).json({ error: "transfer_reference_invalid" });
+    if (transferNote && transferNote.length > 500) return res.status(400).json({ error: "transfer_note_too_long" });
 
-    const { data: payout, error: payoutErr } = await supabase
-      .from("owner_payouts")
-      .select("id,status,receipt_number,paid_at,pool_id,admin_user_id,paid_by")
-      .eq("id", id)
-      .maybeSingle();
-
-    if (payoutErr) return res.status(500).json({ error: payoutErr.message });
-    if (!payout) return res.status(404).json({ error: "not_found" });
-
-    if (String(payout.status || "").toLowerCase() === "paid") {
-      return res.json({ ok: true, already_paid: true, payout });
+    const { data: rpcData, error } = await supabase.rpc("fn_billing_v1_s12_3_confirm_owner_payout", {
+      p_payout_id: id,
+      p_transfer_method: transferMethod,
+      p_transfer_reference: transferReference,
+      p_transfer_note: transferNote,
+      p_paid_by: req.admin.id,
+    });
+    if (error) {
+      const knownCodes = [
+        "payout_not_found", "payout_cancelled_locked", "payout_not_draft", "payout_has_no_items",
+        "payout_pool_not_commission", "payout_already_paid_reference_mismatch",
+        "payout_confirmation_conflict", "transfer_reference_already_used", "transfer_method_invalid",
+        "transfer_reference_invalid", "transfer_note_too_long"
+      ];
+      const code = knownCodes.find((value) => String(error.message || "").includes(value));
+      return res.status(code === "payout_not_found" ? 404 : 400).json({ error: code || error.message });
     }
-
-    // 🔒 LOCK: cancelled payouts cannot be paid later.
-    if (String(payout.status || "").toLowerCase() === "cancelled") {
-      return res.status(400).json({ error: "payout_cancelled_locked" });
+    let data = Array.isArray(rpcData) ? (rpcData[0] || null) : rpcData;
+    if (typeof data === "string") {
+      try { data = JSON.parse(data); } catch (_) { data = null; }
     }
-
-    // 🔒 Safety: a payout must contain at least one transaction before being marked paid.
-    const { count: itemCount, error: itemCountErr } = await supabase
-      .from("owner_payout_items")
-      .select("id", { count: "exact", head: true })
-      .eq("payout_id", id);
-
-    if (itemCountErr) return res.status(500).json({ error: itemCountErr.message });
-    if (!Number(itemCount || 0)) {
-      return res.status(400).json({ error: "payout_has_no_items" });
-    }
-
-    const patch = {
-      status: "paid",
-      paid_at: new Date().toISOString(),
-      receipt_number: payout.receipt_number || makeOwnerReceiptNumber(),
-      paid_by: req.admin.id,
-      updated_at: new Date().toISOString(),
-    };
-
-    const { data, error } = await supabase
-      .from("owner_payouts")
-      .update(patch)
-      .eq("id", id)
-      .neq("status", "paid")
-      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by")
-      .maybeSingle();
-
-    if (error) return res.status(500).json({ error: error.message });
-
-    if (!data) {
-      const { data: fresh, error: freshErr } = await supabase
-        .from("owner_payouts")
-        .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by")
-        .eq("id", id)
-        .maybeSingle();
-
-      if (freshErr) return res.status(500).json({ error: freshErr.message });
-      if (!fresh) return res.status(404).json({ error: "not_found" });
-      return res.json({ ok: true, payout: fresh });
-    }
+    if (!data || typeof data !== "object") return res.status(500).json({ error: "s12_3_invalid_rpc_response" });
 
     // Best-effort notification: an SMTP outage never rolls back the payout.
     try {
+      if (data.already_paid === true) return res.json({ ok: true, already_paid: true, payout: data });
       const { data: owner } = await supabase
         .from("admin_users")
         .select("email")
@@ -20136,6 +20109,8 @@ app.post("/api/admin/revenue/payouts/:id/mark-paid", requireAdmin, requireSupera
           `Reçu : ${data.receipt_number}`,
           `Montant propriétaire : ${roundMoney2(data.owner_total_ar)} Ar`,
           `Période : ${data.period_from || "—"} → ${data.period_to || "—"}`,
+          `Mode de transfert : ${data.transfer_method || "—"}`,
+          `Référence : ${data.transfer_reference || "—"}`,
           "Le reçu est disponible dans votre espace RAZAFI.",
         ].join("\n")
       );
@@ -20143,7 +20118,7 @@ app.post("/api/admin/revenue/payouts/:id/mark-paid", requireAdmin, requireSupera
       console.error("OWNER PAYOUT EMAIL LOOKUP ERROR", mailLookupError?.message || mailLookupError);
     }
 
-    return res.json({ ok: true, payout: data });
+    return res.json({ ok: true, already_paid: false, payout: data });
   } catch (e) {
     console.error("ADMIN REVENUE PAYOUT MARK PAID EX", e);
     return res.status(500).json({ error: String(e?.message || e) });
@@ -33960,7 +33935,7 @@ app.get("/api/admin/revenue/payouts/:id/receipt", requireAdmin, async (req, res)
 
     let q = supabase
       .from("owner_payouts")
-      .select("id,pool_id,admin_user_id,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,paid_at,created_at")
+      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,paid_at,created_at,transfer_method,transfer_reference,transfer_note,transfer_confirmed_at")
       .eq("id", id);
 
     if (!req.admin?.is_superadmin) {
@@ -34044,6 +34019,7 @@ doc.text(`Numéro: ${payout.receipt_number}`, 60, 130);
 doc.text(`Date paiement: ${new Date(payout.paid_at).toLocaleString()}`, 60, 145);
 doc.text(`Pool: ${poolDisplayName}`, 60, 160);
 doc.text(`Propriétaire: ${owner?.email || "-"}`, 60, 175);
+doc.text(`Période: ${payout.period_from || "-"} → ${payout.period_to || "-"}`, 60, 190);
 
 // ============================
 // AMOUNT SECTION
@@ -34060,6 +34036,10 @@ doc.fontSize(12);
 doc.text(`Montant brut: ${payout.gross_total_ar} Ar`);
 doc.text(`Part plateforme: ${payout.platform_total_ar} Ar`);
 doc.text(`Part propriétaire: ${payout.owner_total_ar} Ar`);
+doc.moveDown();
+doc.text(`Mode de transfert: ${payout.transfer_method || "-"}`);
+doc.text(`Référence du transfert: ${payout.transfer_reference || "-"}`);
+if (payout.transfer_note) doc.text(`Note: ${payout.transfer_note}`);
 
 doc.moveDown(3);
 

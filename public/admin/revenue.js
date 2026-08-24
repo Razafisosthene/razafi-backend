@@ -29,7 +29,15 @@ function humanizeApiError(err) {
     to_invalid: "La date de fin n’est pas valide.",
     provider_invalid: "Le mode de paiement sélectionné n’est pas valide.",
     limit_invalid: "La pagination demandée n’est pas valide.",
-    offset_invalid: "La pagination demandée n’est pas valide."
+    offset_invalid: "La pagination demandée n’est pas valide.",
+    transfer_method_invalid: "Le mode de transfert n’est pas valide.",
+    transfer_reference_invalid: "La référence réelle du transfert doit contenir entre 6 et 120 caractères.",
+    transfer_note_too_long: "La note de transfert ne peut pas dépasser 500 caractères.",
+    transfer_reference_already_used: "Cette référence de transfert est déjà utilisée.",
+    payout_already_paid_reference_mismatch: "Ce reversement est déjà payé avec une autre référence.",
+    payout_pool_not_commission: "Ce reversement ne correspond pas à un pool en mode commission.",
+    payout_has_no_items: "Ce reversement ne contient aucune transaction.",
+    payout_cancelled_locked: "Ce reversement annulé est verrouillé."
   };
   return messages[code] || code || "Une erreur est survenue.";
 }
@@ -1030,7 +1038,7 @@ async function loadPayouts(snapshot = captureRevenueSnapshot()) {
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${pillHTML(payoutLabel(status), payoutTone(status))}</td>
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${it.receipt_number ? `<a href="/api/admin/revenue/payouts/${encodeURIComponent(it.id)}/receipt" target="_blank" rel="noopener" style="color:#2563eb; font-weight:800; text-decoration:none;">${esc(it.receipt_number)}</a>` : "—"}</td>
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);" onclick="event.stopPropagation()">
-            ${canMarkPaid ? `<button class="mark-paid-btn" data-payoutid="${esc(it.id)}" style="padding:8px 10px; border:none; border-radius:10px; background:#16a34a; color:#fff; font-weight:800; cursor:pointer;">Marquer payé</button>` : "—"}
+            ${canMarkPaid ? `<button class="mark-paid-btn" data-payoutid="${esc(it.id)}" style="padding:8px 10px; border:none; border-radius:10px; background:#16a34a; color:#fff; font-weight:800; cursor:pointer;">Confirmer transfert</button>` : "—"}
           </td>
         </tr>
       `;
@@ -1047,12 +1055,43 @@ async function loadPayouts(snapshot = captureRevenueSnapshot()) {
       btn.addEventListener("click", async () => {
         const payoutId = btn.getAttribute("data-payoutid");
         if (!payoutId) return;
-        if (!confirm("Marquer ce reversement comme payé ?")) return;
+        const rawMethod = prompt(
+          "Mode du transfert réel :\nMVola, Airtel Money, Orange Money, Virement bancaire, Espèces ou Autre",
+          "MVola"
+        );
+        if (rawMethod === null) return;
+        const methodKey = String(rawMethod).trim().toLowerCase().replace(/[’']/g, "").replace(/\s+/g, "_");
+        const methodAliases = {
+          mvola: "mvola", airtel: "airtel_money", airtel_money: "airtel_money",
+          orange: "orange_money", orange_money: "orange_money",
+          virement: "bank_transfer", virement_bancaire: "bank_transfer", bank: "bank_transfer", bank_transfer: "bank_transfer",
+          especes: "cash", espèces: "cash", cash: "cash", autre: "other", other: "other"
+        };
+        const transferMethod = methodAliases[methodKey];
+        if (!transferMethod) {
+          alert("Mode invalide. Utilisez MVola, Airtel Money, Orange Money, Virement bancaire, Espèces ou Autre.");
+          return;
+        }
+        const transferReference = prompt("Référence/preuve du transfert réel (obligatoire, 6 caractères minimum) :", "");
+        if (transferReference === null) return;
+        if (String(transferReference).trim().length < 6) {
+          alert("La référence doit contenir au moins 6 caractères.");
+          return;
+        }
+        const transferNote = prompt("Note facultative (maximum 500 caractères) :", "");
+        if (transferNote === null) return;
+        if (!confirm(`Confirmer que le transfert réel a été effectué ?\n\nMode : ${rawMethod}\nRéférence : ${String(transferReference).trim()}\n\nCette action marque définitivement le reversement comme payé.`)) return;
         try {
           await fetchJSON(`/api/admin/revenue/payouts/${encodeURIComponent(payoutId)}/mark-paid`, {
-            method: "POST"
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              transfer_method: transferMethod,
+              transfer_reference: String(transferReference).trim(),
+              transfer_note: String(transferNote).trim() || null
+            })
           });
-          alert("Reversement marqué payé ✅");
+          alert("Transfert confirmé et reversement marqué payé ✅");
           clearTransactionSelection();
           await loadAll();
         } catch (e) {
@@ -1222,6 +1261,12 @@ async function showPayoutDetail(it) {
         <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Période fin</div><div style="font-weight:800;">${fmtDate(payout.period_to)}</div></div>
         <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Payé le</div><div style="font-weight:800;">${fmtDate(payout.paid_at)}</div></div>
         <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Note</div><div style="font-weight:800;">${esc(payout.note || "—")}</div></div>
+      </div>
+      <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:10px;">
+        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Mode de transfert</div><div style="font-weight:800;">${esc(payout.transfer_method || "—")}</div></div>
+        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Référence transfert</div><div style="font-weight:800;">${esc(payout.transfer_reference || "—")}</div></div>
+        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Confirmé le</div><div style="font-weight:800;">${fmtDate(payout.transfer_confirmed_at)}</div></div>
+        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Note transfert</div><div style="font-weight:800;">${esc(payout.transfer_note || "—")}</div></div>
       </div>
     </div>
 
