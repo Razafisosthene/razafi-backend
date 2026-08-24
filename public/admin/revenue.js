@@ -467,7 +467,7 @@ function ensurePayoutUI() {
     box.innerHTML = `
       <div id="txSelectionMeta" class="rz-table-meta">0 sélectionnée</div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <button id="autoCreatePayoutBtn" class="filter-btn primary" type="button">Créer reversements auto</button>
+        <button id="autoCreatePayoutBtn" class="filter-btn primary" type="button">Préparer le mois clôturé</button>
         <button id="createPayoutBtn" class="filter-btn primary" type="button">Créer reversement</button>
         <button id="clearSelectionBtn" class="filter-btn" type="button">Effacer sélection</button>
       </div>
@@ -663,7 +663,7 @@ function wirePayoutActions() {
     if (!confirm(msg)) return;
 
     const btn = byId("autoCreatePayoutBtn");
-    const oldText = btn?.textContent || "Créer reversements auto";
+    const oldText = btn?.textContent || "Préparer le mois clôturé";
 
     try {
       if (btn) {

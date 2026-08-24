@@ -12768,6 +12768,9 @@ const BILLING_V1_OWNER_SELF_SERVICE = billingEnvFlag("BILLING_V1_OWNER_SELF_SERV
 const BILLING_V1_PDF = billingEnvFlag("BILLING_V1_PDF", false);
 // S11.10 isolated simulator. It is valid only while every live execution gate is OFF.
 const BILLING_V1_UAT = billingEnvFlag("BILLING_V1_UAT", false);
+// S12.1: guarded monthly commission payout preparation. This gate never
+// transfers money; it only permits creation of closed-period draft payouts.
+const BILLING_V1_PAYOUTS = billingEnvFlag("BILLING_V1_PAYOUTS", false);
 const BILLING_V1_ADMIN_OFFERS = billingEnvFlag("BILLING_V1_ADMIN_OFFERS", false);
 const BILLING_V1_POOL_ASSIGNMENTS_SHADOW = billingEnvFlag("BILLING_V1_POOL_ASSIGNMENTS_SHADOW", false);
 const BILLING_V1_CHANGES_SHADOW = billingEnvFlag("BILLING_V1_CHANGES_SHADOW", false);
@@ -19885,6 +19888,7 @@ app.post("/api/admin/revenue/payouts/create", requireAdmin, requireSuperadmin, a
 app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    if (!BILLING_V1_PAYOUTS) return res.status(404).json({ error: "billing_v1_payouts_disabled" });
 
     const from = readOptionalDateValue(req.body?.from ?? req.query?.from, "from");
     const to = readOptionalDateValue(req.body?.to ?? req.query?.to, "to");
@@ -19898,7 +19902,7 @@ app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadm
       || "Reversement auto brouillon";
     const requestedPoolId = readOptionalUuidValue(req.body?.pool_id ?? req.query?.pool_id, "pool_id") || "";
 
-    const { data, error } = await supabase.rpc("fn_owner_payouts_auto_create", {
+    const { data, error } = await supabase.rpc("fn_owner_payouts_auto_create_s12", {
       p_from: from || null,
       p_to: to || null,
       p_search: searchPattern || null,
@@ -20038,6 +20042,28 @@ app.post("/api/admin/revenue/payouts/:id/mark-paid", requireAdmin, requireSupera
       if (freshErr) return res.status(500).json({ error: freshErr.message });
       if (!fresh) return res.status(404).json({ error: "not_found" });
       return res.json({ ok: true, payout: fresh });
+    }
+
+    // Best-effort notification: an SMTP outage never rolls back the payout.
+    try {
+      const { data: owner } = await supabase
+        .from("admin_users")
+        .select("email")
+        .eq("id", data.admin_user_id)
+        .maybeSingle();
+      await sendEmailTo(
+        owner?.email,
+        `RAZAFI — reversement ${data.receipt_number}`,
+        [
+          "Votre reversement RAZAFI a été marqué payé.",
+          `Reçu : ${data.receipt_number}`,
+          `Montant propriétaire : ${roundMoney2(data.owner_total_ar)} Ar`,
+          `Période : ${data.period_from || "—"} → ${data.period_to || "—"}`,
+          "Le reçu est disponible dans votre espace RAZAFI.",
+        ].join("\n")
+      );
+    } catch (mailLookupError) {
+      console.error("OWNER PAYOUT EMAIL LOOKUP ERROR", mailLookupError?.message || mailLookupError);
     }
 
     return res.json({ ok: true, payout: data });
@@ -26119,6 +26145,23 @@ async function sendEmailNotification(subject, message) {
     });
   } catch (e) {
     console.error("❌ Email error:", e.message);
+  }
+}
+
+async function sendEmailTo(recipient, subject, message) {
+  try {
+    const to = String(recipient || "").trim();
+    if (!mailer || !to) return false;
+    await mailer.sendMail({
+      from: MAIL_FROM,
+      to,
+      subject,
+      text: typeof message === "string" ? message : JSON.stringify(message, null, 2),
+    });
+    return true;
+  } catch (e) {
+    console.error("❌ Owner email error:", e.message);
+    return false;
   }
 }
 
