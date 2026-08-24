@@ -468,7 +468,7 @@ function ensurePayoutUI() {
       <div id="txSelectionMeta" class="rz-table-meta">0 sélectionnée</div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <button id="autoCreatePayoutBtn" class="filter-btn primary" type="button">Préparer le mois clôturé</button>
-        <button id="createPayoutBtn" class="filter-btn primary" type="button">Créer reversement</button>
+        <button id="createPayoutBtn" class="filter-btn" type="button" disabled title="S12.2 : utilisez la préparation sécurisée du mois clôturé">Création manuelle désactivée</button>
         <button id="clearSelectionBtn" class="filter-btn" type="button">Effacer sélection</button>
       </div>
     `;
@@ -692,38 +692,7 @@ function wirePayoutActions() {
   });
 
   byId("createPayoutBtn")?.addEventListener("click", async () => {
-    if (!currentAdmin?.is_superadmin) return;
-    const ids = Array.from(selectedTxIds);
-    if (!ids.length) {
-      alert("Sélectionnez au moins une transaction.");
-      return;
-    }
-
-    const selectedItems = ids.map(getTxById).filter(Boolean);
-    const pools = Array.from(new Set(selectedItems.map((it) => String(it.pool_id || "")).filter(Boolean)));
-    if (pools.length !== 1) {
-      alert("Un reversement doit contenir des transactions d’un seul pool.");
-      return;
-    }
-
-    if (!confirm(`Créer un reversement avec ${ids.length} transaction(s) ?`)) return;
-
-    try {
-      const r = await fetchJSON("/api/admin/revenue/payouts/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          transaction_ids: ids,
-          mark_paid: false
-        })
-      });
-      alert(`Reversement créé ✅${r?.payout?.owner_total_ar != null ? "\nPart propriétaire: " + fmtAr(r.payout.owner_total_ar) : ""}`);
-      clearTransactionSelection();
-      await loadAll();
-      setTab("payout");
-    } catch (e) {
-      alert("Erreur création reversement : " + humanizeApiError(e));
-    }
+    alert("S12.2 : la création manuelle est désactivée. Utilisez « Préparer le mois clôturé ».");
   });
 
   byId("clearSelectionBtn")?.addEventListener("click", () => {

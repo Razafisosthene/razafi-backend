@@ -12771,6 +12771,9 @@ const BILLING_V1_UAT = billingEnvFlag("BILLING_V1_UAT", false);
 // S12.1: guarded monthly commission payout preparation. This gate never
 // transfers money; it only permits creation of closed-period draft payouts.
 const BILLING_V1_PAYOUTS = billingEnvFlag("BILLING_V1_PAYOUTS", false);
+// S12.2: optional scheduler for closed-month draft payout preparation.
+// It never transfers money and requires BILLING_V1_PAYOUTS as a parent gate.
+const BILLING_V1_PAYOUTS_AUTO = billingEnvFlag("BILLING_V1_PAYOUTS_AUTO", false);
 const BILLING_V1_ADMIN_OFFERS = billingEnvFlag("BILLING_V1_ADMIN_OFFERS", false);
 const BILLING_V1_POOL_ASSIGNMENTS_SHADOW = billingEnvFlag("BILLING_V1_POOL_ASSIGNMENTS_SHADOW", false);
 const BILLING_V1_CHANGES_SHADOW = billingEnvFlag("BILLING_V1_CHANGES_SHADOW", false);
@@ -19758,6 +19761,11 @@ app.get("/api/admin/revenue/payouts/:id", requireAdmin, async (req, res) => {
 app.post("/api/admin/revenue/payouts/create", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    // S12.2 closes the historical bypass. All new payouts must be prepared by
+    // the closed-period, assignment-guarded S12 RPC.
+    if (BILLING_V1_PAYOUTS) {
+      return res.status(409).json({ error: "manual_payout_creation_disabled_s12_2" });
+    }
 
     const transaction_ids = Array.from(new Set((Array.isArray(req.body?.transaction_ids) ? req.body.transaction_ids : [])
       .map((x) => String(x || "").trim())
@@ -19873,6 +19881,75 @@ app.post("/api/admin/revenue/payouts/create", requireAdmin, requireSuperadmin, a
     });
   }
 });
+
+let billingPayoutAutomationRunning = false;
+
+function normalizeBillingAutomationResult(data) {
+  let result = Array.isArray(data) ? (data[0] || null) : data;
+  if (typeof result === "string") {
+    try { result = JSON.parse(result); } catch (_) { return null; }
+  }
+  return result && typeof result === "object" && !Array.isArray(result) ? result : null;
+}
+
+async function runBillingPayoutAutomationS12_2(reason = "interval") {
+  if (!BILLING_V1_PAYOUTS || !BILLING_V1_PAYOUTS_AUTO || !supabase) {
+    return { ok: true, skipped: true, reason: "disabled" };
+  }
+  if (billingPayoutAutomationRunning) {
+    return { ok: true, skipped: true, reason: "already_running" };
+  }
+
+  billingPayoutAutomationRunning = true;
+  try {
+    const { data, error } = await supabase.rpc("fn_billing_v1_s12_2_run_monthly_payouts");
+    if (error) throw error;
+
+    const result = normalizeBillingAutomationResult(data);
+    if (!result) throw new Error("s12_2_invalid_rpc_response");
+
+    console.log("[BILLING S12.2] monthly payout automation", { reason, ...result });
+    if (result.executed === true) {
+      const outcome = String(result.outcome || "unknown");
+      const subject = outcome === "error"
+        ? "[RAZAFI] Échec préparation mensuelle des reversements"
+        : "[RAZAFI] Préparation mensuelle des reversements terminée";
+      await sendEmailNotification(subject, [
+        `Période : ${result.period_from || "—"} → ${result.period_to || "—"}`,
+        `Résultat : ${outcome}`,
+        `Reversements brouillons créés : ${Number(result.created_count || 0)}`,
+        `Transactions incluses : ${Number(result.transaction_count_created || 0)}`,
+        `Part propriétaire : ${roundMoney2(result.owner_total_created_ar || 0)} Ar`,
+        "Aucun transfert d'argent n'a été exécuté automatiquement.",
+      ].join("\n"));
+    }
+    return result;
+  } catch (error) {
+    console.error("[BILLING S12.2] automation failed", error?.message || error);
+    return { ok: false, error: error?.message || String(error) };
+  } finally {
+    billingPayoutAutomationRunning = false;
+  }
+}
+
+let billingPayoutAutomationIntervalHandle = null;
+
+function startBillingPayoutAutomationS12_2() {
+  if (!BILLING_V1_PAYOUTS || !BILLING_V1_PAYOUTS_AUTO) {
+    console.log("[BILLING S12.2] monthly payout automation disabled", {
+      payouts: BILLING_V1_PAYOUTS,
+      auto: BILLING_V1_PAYOUTS_AUTO,
+    });
+    return;
+  }
+  setTimeout(() => {
+    runBillingPayoutAutomationS12_2("startup").catch(() => {});
+  }, 30_000).unref();
+  billingPayoutAutomationIntervalHandle = setInterval(() => {
+    runBillingPayoutAutomationS12_2("interval").catch(() => {});
+  }, 60 * 60 * 1000);
+  billingPayoutAutomationIntervalHandle.unref();
+}
 
 
 // POST /api/admin/revenue/payouts/auto-create
@@ -34182,6 +34259,7 @@ app.listen(PORT, "0.0.0.0", () => {
   });
   startMvolaRecoveryJob();
   startAirtelRecoveryJob();
+  startBillingPayoutAutomationS12_2();
   // P2-A3.2: legacy Bonus cleanup is intentionally not started after the
   // atomic Bonus V2 cutover. The function remains dormant for rollback only.
 });
