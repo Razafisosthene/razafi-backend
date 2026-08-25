@@ -30,7 +30,7 @@
     }).join("") || '<div class="cfg-card">Aucun pool assigné.</div>';
   }
   function renderRequests() {
-    $("#requests").innerHTML = (model?.requests || []).map((r) => `<article class="cfg-request"><strong>${esc(r.request_ref)} — ${esc(r.pool_name)}</strong><div>${esc(r.offer_title)} · ${esc(r.plan_choice)} · ${esc(r.billing_mode)}</div><div class="cfg-status">${esc(r.status)}</div>${r.status === "draft" ? `<button class="cfg-btn cfg-submit" data-submit="${esc(r.id)}">Accepter les conditions et soumettre</button>` : ""}</article>`).join("") || '<div class="cfg-card">Aucune demande.</div>';
+    $("#requests").innerHTML = (model?.requests || []).map((r) => { const s=r.selection_snapshot||{}; return `<article class="cfg-request"><strong>${esc(r.request_ref)} — ${esc(r.pool_name)}</strong><div>${esc(r.offer_title)} · ${esc(r.plan_choice)} · ${esc(r.billing_mode)}</div><div class="cfg-muted">Effet ${esc(r.effective_from)} · abonnement ${esc(s.subscription_price_ar??0)} Ar · commission ${esc(s.commission_pct??0)}% · tolérance ${esc(s.grace_days??0)} jours</div><div class="cfg-status">${esc(r.status)}</div>${r.review_note?`<div class="cfg-muted">Note : ${esc(r.review_note)}</div>`:""}${r.status === "draft" ? `<button class="cfg-btn cfg-submit" data-submit="${esc(r.id)}">Accepter les conditions et soumettre</button>` : ""}</article>`; }).join("") || '<div class="cfg-card">Aucune demande.</div>';
   }
   async function load() { clearError(); model = await json("/api/owner/billing-configuration"); renderPools(); renderRequests(); }
   document.addEventListener("click", async (event) => {

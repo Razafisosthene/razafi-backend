@@ -15337,6 +15337,22 @@ app.post("/api/owner/billing-configuration/:id/submit", requireAdmin, requireBil
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
+app.get("/api/admin/billing/owner-configurations", requireAdmin, requireSuperadmin, requireBillingOwnerConfiguration, async (_req, res) => {
+  try {
+    const { data, error } = await supabase.from("v_billing_v1_s13_3_review_queue").select("*").order("created_at", { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ requests: data || [], capabilities: { begin_review: true, decide: true, activate: false }, passive: true, live_effect: false });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/admin/billing/owner-configurations/:id/begin-review", requireAdmin, requireSuperadmin, requireBillingOwnerConfiguration, async (req, res) => {
+  try {
+    const { data, error } = await supabase.rpc("fn_billing_v1_s13_3_begin_review", { p_actor: req.admin.id, p_request: req.params.id });
+    if (error) return res.status(s132ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
+    return res.json(data);
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
 app.post("/api/admin/billing/owner-configurations/:id/review", requireAdmin, requireSuperadmin, requireBillingOwnerConfiguration, async (req, res) => {
   try {
     const { data, error } = await supabase.rpc("fn_billing_v1_s13_2_review", {

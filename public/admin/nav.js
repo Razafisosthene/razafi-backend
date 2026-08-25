@@ -83,6 +83,9 @@
           <a class="rz-item" data-href="/admin/owner-subscription.html" href="/admin/owner-subscription.html" id="rzNavOwnerSubscription">
             <span class="rz-item-label">Configurer mon offre</span>
           </a>
+          <a class="rz-item" data-href="/admin/owner-configuration-review.html" href="/admin/owner-configuration-review.html" id="rzNavOwnerConfigurationReview">
+            <span class="rz-item-label">Demandes propriétaires</span>
+          </a>
           <a class="rz-item" data-href="/admin/users.html" href="/admin/users.html" id="rzNavUsers">
             <span class="rz-item-label">Utilisateurs</span>
           </a>
@@ -353,6 +356,7 @@
         const elOwnerRevenue = $("#rzNavOwnerRevenue");
         const elOwnerBillingShadow = $("#rzNavOwnerBillingShadow");
         const elOwnerSubscription = $("#rzNavOwnerSubscription");
+        const elOwnerConfigurationReview = $("#rzNavOwnerConfigurationReview");
         const elMaintenance = $("#rzNavMaintenance");
         if (elAPs) elAPs.style.display = "none";
         if (elAudit) elAudit.style.display = "none";
@@ -362,6 +366,7 @@
         if (elOwnerRevenue) elOwnerRevenue.style.display = "none";
         if (elOwnerBillingShadow) elOwnerBillingShadow.style.display = canViewOwnerBillingShadow ? "" : "none";
         if (elOwnerSubscription) elOwnerSubscription.style.display = canConfigureOwnerBilling ? "" : "none";
+        if (elOwnerConfigurationReview) elOwnerConfigurationReview.style.display = "none";
         if (elMaintenance) elMaintenance.style.display = "none";
       } else {
         // Superadmin only: show Users and Owner Revenue (if present)
@@ -371,6 +376,7 @@
         const elOwnerRevenue = $("#rzNavOwnerRevenue");
         const elOwnerBillingShadow = $("#rzNavOwnerBillingShadow");
         const elOwnerSubscription = $("#rzNavOwnerSubscription");
+        const elOwnerConfigurationReview = $("#rzNavOwnerConfigurationReview");
         const elMaintenance = $("#rzNavMaintenance");
         if (elUsers) elUsers.style.display = "";
         if (elBillingOffers) elBillingOffers.style.display = canManageBillingOffers ? "" : "none";
@@ -378,6 +384,7 @@
         if (elOwnerRevenue) elOwnerRevenue.style.display = "";
         if (elOwnerBillingShadow) elOwnerBillingShadow.style.display = canViewOwnerBillingShadow ? "" : "none";
         if (elOwnerSubscription) elOwnerSubscription.style.display = canConfigureOwnerBilling ? "" : "none";
+        if (elOwnerConfigurationReview) elOwnerConfigurationReview.style.display = canConfigureOwnerBilling ? "" : "none";
         if (elMaintenance) elMaintenance.style.display = "";
       }
 
