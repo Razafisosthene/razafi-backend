@@ -1456,7 +1456,14 @@ async function requireAdmin(req, res, next) {
         /^\/api\/owner\/billing-uat\/[^/]+\/(simulate-payment|confirm-payment)$/.test(fullPath)
       );
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerMarketingWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat || allowOwnerMarkSeen || allowOwnerBillingUatWrite) {
+      // S13.2 controlled owner configuration. The handlers call SECURITY DEFINER
+      // functions which re-check pool assignment and commercial ownership.
+      const allowOwnerBillingConfigurationWrite = method === "POST" && (
+        fullPath === "/api/owner/billing-configuration" ||
+        /^\/api\/owner\/billing-configuration\/[^/]+\/submit$/.test(fullPath)
+      );
+
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerMarketingWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat || allowOwnerMarkSeen || allowOwnerBillingUatWrite || allowOwnerBillingConfigurationWrite) {
         return next();
       }
 
@@ -12765,6 +12772,9 @@ const BILLING_V1_SUBSCRIPTION_PAYMENTS = billingEnvFlag("BILLING_V1_SUBSCRIPTION
 const BILLING_V1_PILOT_EXECUTION = billingEnvFlag("BILLING_V1_PILOT_EXECUTION", false);
 const BILLING_V1_PORTAL_LOCK = billingEnvFlag("BILLING_V1_PORTAL_LOCK", false);
 const BILLING_V1_OWNER_SELF_SERVICE = billingEnvFlag("BILLING_V1_OWNER_SELF_SERVICE", false);
+// S13.2: owner commercial-configuration drafts for already assigned pools.
+// This gate never activates billing, creates an invoice or initiates payment.
+const BILLING_V1_OWNER_CONFIGURATION = billingEnvFlag("BILLING_V1_OWNER_CONFIGURATION", false);
 const BILLING_V1_PDF = billingEnvFlag("BILLING_V1_PDF", false);
 // S11.10 isolated simulator. It is valid only while every live execution gate is OFF.
 const BILLING_V1_UAT = billingEnvFlag("BILLING_V1_UAT", false);
@@ -13910,6 +13920,7 @@ function buildAdminPermissions(admin) {
     billing_access_shadow_manage: isSuperadmin && BILLING_V1_ACCESS_SHADOW,
     billing_commission_statements_shadow_manage: isSuperadmin && BILLING_V1_COMMISSION_STATEMENTS_SHADOW,
     billing_owner_portal_shadow_view: BILLING_V1_OWNER_PORTAL_SHADOW,
+    billing_owner_configuration: BILLING_V1_OWNER_CONFIGURATION,
   };
 }
 
@@ -15257,6 +15268,82 @@ app.post("/api/admin/billing/commission-statements-shadow/:id/payout-record", re
     if (error) return res.status(500).json({ error: error.message });
     await insertAudit({ event_type: "billing_commission_payout_shadow_recorded", status: "success", entity_type: "commission_payout_shadow_record", entity_id: data.id, actor_type: "admin_user", actor_id: req.admin.id, pool_id: statement.pool_id, message: "Reversement manuel enregistré en shadow", metadata: { shadow: true, no_effect: true, statement_id: statement.id, payout_record_id: data.id, transfer_fee_ar, net_owner_amount_ar, transfer_executed: false } });
     return res.json({ ok: true, item: data, passive: true, shadow: true });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+function requireBillingOwnerConfiguration(_req, res, next) {
+  if (!BILLING_V1_OWNER_CONFIGURATION) return res.status(404).json({ error: "billing_owner_configuration_disabled" });
+  next();
+}
+
+function s132ErrorStatus(message) {
+  const code = String(message || "s13_2_failed").split("\n")[0];
+  if (/not_found/.test(code)) return 404;
+  if (/required|invalid|must_be|in_past|terms/.test(code)) return 400;
+  if (/not_assigned|mismatch|incoherent|superadmin_required|actor_mismatch/.test(code)) return 403;
+  if (/exists|not_available|only_draft|not_reviewable/.test(code)) return 409;
+  return 500;
+}
+
+app.get("/api/owner/billing-configuration", requireAdmin, requireBillingOwnerConfiguration, async (req, res) => {
+  try {
+    const actorId = String(req.admin?.id || "").trim();
+    const isSuperadmin = !!req.admin?.is_superadmin;
+    let scopeQuery = supabase.from("v_billing_v1_s13_2_owner_pool_scope").select("*").order("name");
+    let requestQuery = supabase.from("v_billing_v1_s13_2_requests").select("*").order("created_at", { ascending: false });
+    if (!isSuperadmin) {
+      scopeQuery = scopeQuery.eq("admin_user_id", actorId);
+      requestQuery = requestQuery.eq("applicant_user_id", actorId);
+    }
+    const [scopeResult, requestResult, offersResult, versionsResult, featuresResult] = await Promise.all([
+      scopeQuery,
+      requestQuery,
+      supabase.from("billing_offers").select("id,code,title,status").eq("status", "active").order("title"),
+      supabase.from("billing_offer_versions").select("id,offer_id,version_no,status,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,effective_from,effective_to").eq("status", "active").order("version_no", { ascending: false }),
+      supabase.from("billing_offer_version_features").select("offer_version_id,feature_key,enabled").eq("feature_key", "personalized_plan").eq("enabled", true),
+    ]);
+    const error = scopeResult.error || requestResult.error || offersResult.error || versionsResult.error || featuresResult.error;
+    if (error) return res.status(500).json({ error: error.message });
+    const personalized = new Set((featuresResult.data || []).map((x) => x.offer_version_id));
+    const versions = (versionsResult.data || []).map((x) => ({ ...x, personalized_plan_enabled: personalized.has(x.id) }));
+    return res.json({
+      pools: scopeResult.data || [], requests: requestResult.data || [], offers: offersResult.data || [], versions,
+      capabilities: { draft: true, submit: true, review: isSuperadmin, activation: false, invoice: false, payment: false },
+      passive: true, live_effect: false,
+    });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/owner/billing-configuration", requireAdmin, requireBillingOwnerConfiguration, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const { data, error } = await supabase.rpc("fn_billing_v1_s13_2_create_draft", {
+      p_actor: req.admin.id, p_pool: body.pool_id, p_offer: body.offer_id,
+      p_plan_choice: body.plan_choice, p_billing_mode: body.billing_mode,
+      p_effective_from: body.effective_from, p_metadata: { source: "owner_admin", ui_version: "S13.2" },
+    });
+    if (error) return res.status(s132ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
+    return res.status(201).json(data);
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/owner/billing-configuration/:id/submit", requireAdmin, requireBillingOwnerConfiguration, async (req, res) => {
+  try {
+    const { data, error } = await supabase.rpc("fn_billing_v1_s13_2_submit", {
+      p_actor: req.admin.id, p_request: req.params.id, p_accept_terms: req.body?.accept_terms === true,
+    });
+    if (error) return res.status(s132ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
+    return res.json(data);
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/admin/billing/owner-configurations/:id/review", requireAdmin, requireSuperadmin, requireBillingOwnerConfiguration, async (req, res) => {
+  try {
+    const { data, error } = await supabase.rpc("fn_billing_v1_s13_2_review", {
+      p_actor: req.admin.id, p_request: req.params.id, p_decision: req.body?.decision, p_note: req.body?.note || null,
+    });
+    if (error) return res.status(s132ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
+    return res.json(data);
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
