@@ -19638,6 +19638,7 @@ app.get("/api/admin/revenue/payouts", requireAdmin, async (req, res) => {
     if (error) return res.status(500).json({ error: error.message });
 
     const rows = data || [];
+    const payoutIdsForReconciliation = rows.map((r) => String(r?.id || "")).filter(Boolean);
     const poolIds = Array.from(new Set(rows.map((r) => String(r?.pool_id || "")).filter(Boolean)));
     const ownerIds = Array.from(new Set(rows.map((r) => String(r?.admin_user_id || "")).filter(Boolean)));
 
@@ -19662,6 +19663,16 @@ app.get("/api/admin/revenue/payouts", requireAdmin, async (req, res) => {
       ownerMap = Object.fromEntries((ownerRows || []).map((u) => [String(u.id || ""), u]));
     }
 
+    let reconciliationMap = {};
+    if (payoutIdsForReconciliation.length) {
+      const { data: reconciliationRows, error: reconciliationErr } = await supabase
+        .from("v_billing_v1_s12_4_payout_reconciliation")
+        .select("payout_id,reconciliation_status,reconciliation_reason,recommended_action,calculated_item_count,totals_match,commission_covers_period,subscription_covers_period")
+        .in("payout_id", payoutIdsForReconciliation);
+      if (reconciliationErr) return res.status(500).json({ error: reconciliationErr.message });
+      reconciliationMap = Object.fromEntries((reconciliationRows || []).map((r) => [String(r.payout_id || ""), r]));
+    }
+
     const items = rows
       .filter((r) => !!poolMap[String(r?.pool_id || "")])
       .map((r) => {
@@ -19673,6 +19684,7 @@ app.get("/api/admin/revenue/payouts", requireAdmin, async (req, res) => {
 
         return {
           ...payout,
+          ...(reconciliationMap[String(r?.id || "")] || {}),
           items_count: itemsCount,
           pool_name: cleanOptionalText(poolMap[String(r?.pool_id || "")]?.name, 120),
           pool_display_name: buildPoolDisplayName(poolMap[String(r?.pool_id || "")] || {}),
@@ -19714,7 +19726,7 @@ app.get("/api/admin/revenue/payouts/:id", requireAdmin, async (req, res) => {
     if (error) return res.status(500).json({ error: error.message });
     if (!payout) return res.status(404).json({ error: "not_found" });
 
-    const [{ data: items, error: itemsErr }, { data: poolRows }, { data: ownerRows }] = await Promise.all([
+    const [{ data: items, error: itemsErr }, { data: poolRows }, { data: ownerRows }, { data: reconciliationRows, error: reconciliationErr }] = await Promise.all([
       supabase
         .from("owner_payout_items")
         .select("id,payout_id,transaction_id,voucher_session_id,pool_id,gross_amount_ar,platform_share_pct,platform_amount_ar,owner_share_pct,owner_amount_ar,transaction_created_at,created_at")
@@ -19730,9 +19742,15 @@ app.get("/api/admin/revenue/payouts/:id", requireAdmin, async (req, res) => {
         .select("id,email")
         .eq("id", payout.admin_user_id)
         .limit(1),
+      supabase
+        .from("v_billing_v1_s12_4_payout_reconciliation")
+        .select("payout_id,reconciliation_status,reconciliation_reason,recommended_action,calculated_item_count,calculated_gross_total_ar,calculated_platform_total_ar,calculated_owner_total_ar,totals_match,commission_covers_period,subscription_covers_period")
+        .eq("payout_id", id)
+        .limit(1),
     ]);
 
     if (itemsErr) return res.status(500).json({ error: itemsErr.message });
+    if (reconciliationErr) return res.status(500).json({ error: reconciliationErr.message });
 
     const pool = Array.isArray(poolRows) ? poolRows[0] : null;
     const owner = Array.isArray(ownerRows) ? ownerRows[0] : null;
@@ -19740,6 +19758,7 @@ app.get("/api/admin/revenue/payouts/:id", requireAdmin, async (req, res) => {
     return res.json({
       item: {
         ...payout,
+        ...((Array.isArray(reconciliationRows) ? reconciliationRows[0] : null) || {}),
         pool_name: cleanOptionalText(pool?.name, 120),
         pool_display_name: buildPoolDisplayName(pool),
         pool_brand_name: cleanOptionalText(pool?.brand_name, 120),
@@ -20070,7 +20089,7 @@ app.post("/api/admin/revenue/payouts/:id/mark-paid", requireAdmin, requireSupera
     if (transferReference.length < 6 || transferReference.length > 120) return res.status(400).json({ error: "transfer_reference_invalid" });
     if (transferNote && transferNote.length > 500) return res.status(400).json({ error: "transfer_note_too_long" });
 
-    const { data: rpcData, error } = await supabase.rpc("fn_billing_v1_s12_3_confirm_owner_payout", {
+    const { data: rpcData, error } = await supabase.rpc("fn_billing_v1_s12_4_confirm_reconciled_owner_payout", {
       p_payout_id: id,
       p_transfer_method: transferMethod,
       p_transfer_reference: transferReference,
@@ -20082,7 +20101,7 @@ app.post("/api/admin/revenue/payouts/:id/mark-paid", requireAdmin, requireSupera
         "payout_not_found", "payout_cancelled_locked", "payout_not_draft", "payout_has_no_items",
         "payout_pool_not_commission", "payout_already_paid_reference_mismatch",
         "payout_confirmation_conflict", "transfer_reference_already_used", "transfer_method_invalid",
-        "transfer_reference_invalid", "transfer_note_too_long"
+        "transfer_reference_invalid", "transfer_note_too_long", "payout_reconciliation_not_payable"
       ];
       const code = knownCodes.find((value) => String(error.message || "").includes(value));
       return res.status(code === "payout_not_found" ? 404 : 400).json({ error: code || error.message });
@@ -20184,31 +20203,32 @@ app.patch("/api/admin/revenue/payouts/:id", requireAdmin, requireSuperadmin, asy
 app.post("/api/admin/revenue/payouts/:id/cancel", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    if (!BILLING_V1_PAYOUTS) return res.status(404).json({ error: "billing_v1_payouts_disabled" });
 
     const id = String(req.params.id || "").trim();
     if (!id) return res.status(400).json({ error: "id_required" });
+    const reason = String(req.body?.reason || "").trim();
+    if (reason.length < 10 || reason.length > 500) return res.status(400).json({ error: "cancellation_reason_invalid" });
 
-    const payout = await loadOwnerPayoutForLockOrThrow(id);
-
-    if (isPayoutPaid(payout)) {
-      return res.status(400).json({ error: "payout_paid_locked" });
+    const { data: rpcData, error } = await supabase.rpc("fn_billing_v1_s12_4_cancel_legacy_payout", {
+      p_payout_id: id,
+      p_reason: reason,
+      p_cancelled_by: req.admin.id,
+    });
+    if (error) {
+      const knownCodes = [
+        "payout_not_found", "payout_paid_locked", "payout_not_cancel_candidate",
+        "payout_cancellation_conflict", "cancellation_reason_invalid", "cancelled_by_required"
+      ];
+      const code = knownCodes.find((value) => String(error.message || "").includes(value));
+      return res.status(code === "payout_not_found" ? 404 : 400).json({ error: code || error.message });
     }
-    if (isPayoutCancelled(payout)) {
-      return res.json({ ok: true, already_cancelled: true, payout });
+    let data = Array.isArray(rpcData) ? (rpcData[0] || null) : rpcData;
+    if (typeof data === "string") {
+      try { data = JSON.parse(data); } catch (_) { data = null; }
     }
-
-    const { data, error } = await supabase
-      .from("owner_payouts")
-      .update({ status: "cancelled", updated_at: new Date().toISOString() })
-      .eq("id", id)
-      .eq("status", "draft")
-      .select("id,pool_id,admin_user_id,period_from,period_to,gross_total_ar,platform_total_ar,owner_total_ar,status,receipt_number,note,paid_at,created_at,updated_at,created_by,paid_by")
-      .maybeSingle();
-
-    if (error) return res.status(500).json({ error: error.message });
-    if (!data) return res.status(400).json({ error: "payout_not_draft_or_locked" });
-
-    return res.json({ ok: true, payout: data });
+    if (!data || typeof data !== "object") return res.status(500).json({ error: "s12_4_invalid_rpc_response" });
+    return res.json({ ok: true, already_cancelled: data.already_cancelled === true, payout: data });
   } catch (e) {
     console.error("ADMIN REVENUE PAYOUT CANCEL EX", e);
     return res.status(e?.httpStatus || 500).json({ error: e?.message || "internal_error" });

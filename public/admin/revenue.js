@@ -37,7 +37,10 @@ function humanizeApiError(err) {
     payout_already_paid_reference_mismatch: "Ce reversement est déjà payé avec une autre référence.",
     payout_pool_not_commission: "Ce reversement ne correspond pas à un pool en mode commission.",
     payout_has_no_items: "Ce reversement ne contient aucune transaction.",
-    payout_cancelled_locked: "Ce reversement annulé est verrouillé."
+    payout_cancelled_locked: "Ce reversement annulé est verrouillé.",
+    payout_reconciliation_not_payable: "Ce brouillon n’est pas classé « à payer ». Vérifiez son rapprochement avant tout transfert.",
+    payout_not_cancel_candidate: "Ce brouillon n’est pas objectivement classé « à annuler ».",
+    cancellation_reason_invalid: "Le motif d’annulation doit contenir entre 10 et 500 caractères."
   };
   return messages[code] || code || "Une erreur est survenue.";
 }
@@ -203,6 +206,22 @@ function payoutTone(status) {
   if (s === "draft") return "warn";
   if (s === "cancelled") return "bad";
   return "neutral";
+}
+
+function reconciliationLabel(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "payable") return "À payer";
+  if (s === "cancel_candidate") return "À annuler";
+  if (s === "review") return "À vérifier";
+  if (s === "closed") return "Clôturé";
+  return "Non classé";
+}
+
+function reconciliationTone(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "payable" || s === "closed") return "ok";
+  if (s === "cancel_candidate") return "bad";
+  return "warn";
 }
 
 // Display-only mapping. Does not affect filtering, totals, or any
@@ -1026,7 +1045,9 @@ async function loadPayouts(snapshot = captureRevenueSnapshot()) {
 
     body.innerHTML = items.map((it, idx) => {
       const status = String(it.status || "draft");
-      const canMarkPaid = currentAdmin?.is_superadmin && status !== "paid" && status !== "cancelled";
+      const action = String(it.recommended_action || "manual_review");
+      const canMarkPaid = currentAdmin?.is_superadmin && status === "draft" && action === "confirm_real_transfer";
+      const canCancel = currentAdmin?.is_superadmin && status === "draft" && action === "cancel_with_reason";
       return `
         <tr data-pi="${idx}" style="cursor:pointer;">
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${fmtDate(it.created_at || it.paid_at)}</td>
@@ -1035,10 +1056,12 @@ async function loadPayouts(snapshot = captureRevenueSnapshot()) {
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.items_count ?? it.transaction_count ?? "—")}</td>
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${fmtAr(it.gross_total_ar)}</td>
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08); font-weight:800;">${fmtAr(it.owner_total_ar)}</td>
-          <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${pillHTML(payoutLabel(status), payoutTone(status))}</td>
+          <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${pillHTML(payoutLabel(status), payoutTone(status))}<div style="margin-top:6px;">${pillHTML(reconciliationLabel(it.reconciliation_status), reconciliationTone(it.reconciliation_status))}</div></td>
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${it.receipt_number ? `<a href="/api/admin/revenue/payouts/${encodeURIComponent(it.id)}/receipt" target="_blank" rel="noopener" style="color:#2563eb; font-weight:800; text-decoration:none;">${esc(it.receipt_number)}</a>` : "—"}</td>
           <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);" onclick="event.stopPropagation()">
-            ${canMarkPaid ? `<button class="mark-paid-btn" data-payoutid="${esc(it.id)}" style="padding:8px 10px; border:none; border-radius:10px; background:#16a34a; color:#fff; font-weight:800; cursor:pointer;">Confirmer transfert</button>` : "—"}
+            ${canMarkPaid ? `<button class="mark-paid-btn" data-payoutid="${esc(it.id)}" style="padding:8px 10px; border:none; border-radius:10px; background:#16a34a; color:#fff; font-weight:800; cursor:pointer;">Confirmer transfert</button>` : ""}
+            ${canCancel ? `<button class="cancel-payout-btn" data-payoutid="${esc(it.id)}" style="padding:8px 10px; border:none; border-radius:10px; background:#dc2626; color:#fff; font-weight:800; cursor:pointer;">Annuler brouillon</button>` : ""}
+            ${!canMarkPaid && !canCancel ? `<span style="font-weight:800; opacity:.7;">${status === "draft" ? "Vérification requise" : "—"}</span>` : ""}
           </td>
         </tr>
       `;
@@ -1093,6 +1116,32 @@ async function loadPayouts(snapshot = captureRevenueSnapshot()) {
           });
           alert("Transfert confirmé et reversement marqué payé ✅");
           clearTransactionSelection();
+          await loadAll();
+        } catch (e) {
+          alert("Erreur : " + humanizeApiError(e));
+        }
+      });
+    });
+
+    Array.from(body.querySelectorAll(".cancel-payout-btn")).forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const payoutId = btn.getAttribute("data-payoutid");
+        if (!payoutId) return;
+        const reason = prompt("Motif précis de l’annulation (10 à 500 caractères) :", "Ancien brouillon couvert par un abonnement sur toute la période");
+        if (reason === null) return;
+        const cleanReason = String(reason).trim();
+        if (cleanReason.length < 10 || cleanReason.length > 500) {
+          alert("Le motif doit contenir entre 10 et 500 caractères.");
+          return;
+        }
+        if (!confirm("Annuler définitivement ce brouillon ?\n\nAucun transfert d’argent ne sera exécuté. La preuve et le motif seront conservés.")) return;
+        try {
+          await fetchJSON(`/api/admin/revenue/payouts/${encodeURIComponent(payoutId)}/cancel`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ reason: cleanReason })
+          });
+          alert("Brouillon annulé avec preuve conservée ✅");
           await loadAll();
         } catch (e) {
           alert("Erreur : " + humanizeApiError(e));
@@ -1242,6 +1291,7 @@ async function showPayoutDetail(it) {
         </div>
         <div style="text-align:right;">
           ${pillHTML(payoutLabel(payout.status || "draft"), payoutTone(payout.status || "draft"))}
+          <div style="margin-top:6px;">${pillHTML(reconciliationLabel(payout.reconciliation_status), reconciliationTone(payout.reconciliation_status))}</div>
           <div style="opacity:.7; font-size:12px; margin-top:10px;">Reçu</div>
           <div style="font-weight:900; font-size:16px; margin-top:4px;">${payout.receipt_number ? `<a href="/api/admin/revenue/payouts/${encodeURIComponent(payout.id)}/receipt" target="_blank" rel="noopener" style="color:#2563eb; text-decoration:none;">${esc(payout.receipt_number)}</a>` : "—"}</div>
         </div>
@@ -1261,6 +1311,11 @@ async function showPayoutDetail(it) {
         <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Période fin</div><div style="font-weight:800;">${fmtDate(payout.period_to)}</div></div>
         <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Payé le</div><div style="font-weight:800;">${fmtDate(payout.paid_at)}</div></div>
         <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Note</div><div style="font-weight:800;">${esc(payout.note || "—")}</div></div>
+      </div>
+      <div style="margin-top:12px; padding:12px; border-radius:12px; background:rgba(245,158,11,.10);">
+        <div style="font-weight:900;">Rapprochement S12.4 : ${esc(reconciliationLabel(payout.reconciliation_status))}</div>
+        <div style="margin-top:5px;">${esc(payout.reconciliation_reason || "Classification indisponible")}</div>
+        <div style="margin-top:5px; opacity:.75;">Transactions recalculées : ${esc(payout.calculated_item_count ?? items.length)} · Totaux concordants : ${payout.totals_match === true ? "oui" : "non"} · Couverture commission : ${payout.commission_covers_period === true ? "oui" : "non"} · Couverture abonnement : ${payout.subscription_covers_period === true ? "oui" : "non"}</div>
       </div>
       <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:10px;">
         <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Mode de transfert</div><div style="font-weight:800;">${esc(payout.transfer_method || "—")}</div></div>
