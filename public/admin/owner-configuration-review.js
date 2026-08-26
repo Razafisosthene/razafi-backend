@@ -35,6 +35,18 @@
     return `<button class="rv-btn rv-approve" data-apply="${esc(request.id)}">Appliquer la configuration</button>`;
   }
 
+  function firstInvoiceAction(request) {
+    if (request.billing_mode === "commission") {
+      return '<div class="rv-meta">Première facture non applicable — mode commission.</div>';
+    }
+    if (request.first_invoice_id) {
+      return `<div class="rv-meta">Première facture ${esc(request.first_invoice_number)} · ${esc(request.first_invoice_amount_due_ar)} Ar · ${esc(request.first_invoice_status)} · émission ${esc(request.first_invoice_issued_at)}</div>`;
+    }
+    if (!request.application_id || request.status !== "approved") return "";
+    if (!capabilities.invoice) return '<button class="rv-btn" type="button" disabled>Première facture désactivée</button>';
+    return `<button class="rv-btn rv-invoice" data-first-invoice="${esc(request.id)}">Générer la première facture</button>`;
+  }
+
   function render(data) {
     capabilities = data.capabilities || {};
     $("#queue").innerHTML = (data.requests || []).map((request) => {
@@ -49,6 +61,7 @@
           ${request.status === "submitted" ? `<button class="rv-btn" data-begin="${esc(request.id)}">Commencer la revue</button>` : ""}
           ${["submitted", "under_review"].includes(request.status) ? `<button class="rv-btn rv-approve" data-decision="approve" data-id="${esc(request.id)}">Approuver</button><button class="rv-btn rv-reject" data-decision="reject" data-id="${esc(request.id)}">Rejeter</button>` : ""}
           ${applicationAction(request)}
+          ${firstInvoiceAction(request)}
         </div>
       </article>`;
     }).join("") || '<div class="rv-card">Aucune demande.</div>';
@@ -64,6 +77,7 @@
       const begin = event.target.closest("[data-begin]");
       const decision = event.target.closest("[data-decision]");
       const apply = event.target.closest("[data-apply]");
+      const firstInvoice = event.target.closest("[data-first-invoice]");
       if (begin) {
         await api(`/api/admin/billing/owner-configurations/${encodeURIComponent(begin.dataset.begin)}/begin-review`, { method: "POST", body: "{}" });
         await load();
@@ -81,6 +95,11 @@
       if (apply) {
         if (!confirm("Appliquer cette configuration commerciale approuvée ? Cette action peut créer une affectation, mais ne crée ni facture, paiement, voucher, ni action WiFi.")) return;
         await api(`/api/admin/billing/owner-configurations/${encodeURIComponent(apply.dataset.apply)}/apply`, { method: "POST", body: "{}" });
+        await load();
+      }
+      if (firstInvoice) {
+        if (!confirm("Générer la première facture d’abonnement après la configuration appliquée ? Le prorata est calculé en base. Aucun paiement, appel opérateur, voucher ou changement WiFi ne sera exécuté.")) return;
+        await api(`/api/admin/billing/owner-configurations/${encodeURIComponent(firstInvoice.dataset.firstInvoice)}/first-invoice`, { method: "POST", body: "{}" });
         await load();
       }
     } catch (error) { fail(error.message); }
