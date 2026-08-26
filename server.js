@@ -12775,6 +12775,9 @@ const BILLING_V1_OWNER_SELF_SERVICE = billingEnvFlag("BILLING_V1_OWNER_SELF_SERV
 // S13.2: owner commercial-configuration drafts for already assigned pools.
 // This gate never activates billing, creates an invoice or initiates payment.
 const BILLING_V1_OWNER_CONFIGURATION = billingEnvFlag("BILLING_V1_OWNER_CONFIGURATION", false);
+// S13.4: separate final-application gate. It may create/reuse only a commercial
+// assignment after approval; it never creates financial or WiFi side effects.
+const BILLING_V1_OWNER_CONFIGURATION_APPLY = billingEnvFlag("BILLING_V1_OWNER_CONFIGURATION_APPLY", false);
 const BILLING_V1_PDF = billingEnvFlag("BILLING_V1_PDF", false);
 // S11.10 isolated simulator. It is valid only while every live execution gate is OFF.
 const BILLING_V1_UAT = billingEnvFlag("BILLING_V1_UAT", false);
@@ -15276,12 +15279,17 @@ function requireBillingOwnerConfiguration(_req, res, next) {
   next();
 }
 
+function requireBillingOwnerConfigurationApply(_req, res, next) {
+  if (!BILLING_V1_OWNER_CONFIGURATION_APPLY) return res.status(404).json({ error: "billing_owner_configuration_apply_disabled" });
+  next();
+}
+
 function s132ErrorStatus(message) {
   const code = String(message || "s13_2_failed").split("\n")[0];
   if (/not_found/.test(code)) return 404;
   if (/required|invalid|must_be|in_past|terms/.test(code)) return 400;
   if (/not_assigned|mismatch|incoherent|superadmin_required|actor_mismatch/.test(code)) return 403;
-  if (/exists|not_available|only_draft|not_reviewable/.test(code)) return 409;
+  if (/exists|not_available|only_draft|not_reviewable|conflict|no_longer_valid|approved_review/.test(code)) return 409;
   return 500;
 }
 
@@ -15339,9 +15347,9 @@ app.post("/api/owner/billing-configuration/:id/submit", requireAdmin, requireBil
 
 app.get("/api/admin/billing/owner-configurations", requireAdmin, requireSuperadmin, requireBillingOwnerConfiguration, async (_req, res) => {
   try {
-    const { data, error } = await supabase.from("v_billing_v1_s13_3_review_queue").select("*").order("created_at", { ascending: false });
+    const { data, error } = await supabase.from("v_billing_v1_s13_4_review_queue").select("*").order("created_at", { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
-    return res.json({ requests: data || [], capabilities: { begin_review: true, decide: true, activate: false }, passive: true, live_effect: false });
+    return res.json({ requests: data || [], capabilities: { begin_review: true, decide: true, apply: BILLING_V1_OWNER_CONFIGURATION_APPLY, invoice: false, payment: false, voucher: false, wifi: false }, passive: !BILLING_V1_OWNER_CONFIGURATION_APPLY, live_effect: false });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
@@ -15357,6 +15365,16 @@ app.post("/api/admin/billing/owner-configurations/:id/review", requireAdmin, req
   try {
     const { data, error } = await supabase.rpc("fn_billing_v1_s13_2_review", {
       p_actor: req.admin.id, p_request: req.params.id, p_decision: req.body?.decision, p_note: req.body?.note || null,
+    });
+    if (error) return res.status(s132ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
+    return res.json(data);
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/admin/billing/owner-configurations/:id/apply", requireAdmin, requireSuperadmin, requireBillingOwnerConfiguration, requireBillingOwnerConfigurationApply, async (req, res) => {
+  try {
+    const { data, error } = await supabase.rpc("fn_billing_v1_s13_4_apply_approved", {
+      p_actor: req.admin.id, p_request: req.params.id,
     });
     if (error) return res.status(s132ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
     return res.json(data);

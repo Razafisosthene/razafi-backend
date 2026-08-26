@@ -1,4 +1,91 @@
-(() => { const $=(s)=>document.querySelector(s); const esc=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-async function api(url,o={}){const r=await fetch(url,{credentials:"include",headers:{"Content-Type":"application/json"},...o});const t=await r.text();let d;try{d=JSON.parse(t)}catch{d={error:"non_json"}}if(!r.ok)throw Error(d.error||"request_failed");return d}
-function fail(m){const e=$("#error");e.textContent=m;e.style.display="block"} function render(d){$("#queue").innerHTML=(d.requests||[]).map(r=>{const snap=r.selection_snapshot||{};return `<article class="rv-card"><h2>${esc(r.request_ref)} — ${esc(r.pool_name)}</h2><div>${esc(r.applicant_email)} · ${esc(r.offer_title)} · ${esc(r.plan_choice)} · ${esc(r.billing_mode)}</div><div class="rv-meta">Effet ${esc(r.effective_from)} · abonnement ${esc(snap.subscription_price_ar??0)} Ar · commission ${esc(snap.commission_pct??0)}% · tolérance ${esc(snap.grace_days??0)} jours</div><span class="rv-status">${esc(r.status)}</span><input class="rv-note" data-note="${esc(r.id)}" placeholder="Note de décision (requise pour un rejet)"><div class="rv-actions">${r.status==="submitted"?`<button class="rv-btn" data-begin="${esc(r.id)}">Commencer la revue</button>`:""}${["submitted","under_review"].includes(r.status)?`<button class="rv-btn rv-approve" data-decision="approve" data-id="${esc(r.id)}">Approuver</button><button class="rv-btn rv-reject" data-decision="reject" data-id="${esc(r.id)}">Rejeter</button>`:""}</div></article>`}).join("")||'<div class="rv-card">Aucune demande.</div>'}
-async function load(){const d=await api("/api/admin/billing/owner-configurations");render(d)} document.addEventListener("click",async e=>{try{const b=e.target.closest("[data-begin]");const d=e.target.closest("[data-decision]");if(b){await api(`/api/admin/billing/owner-configurations/${encodeURIComponent(b.dataset.begin)}/begin-review`,{method:"POST",body:"{}"});await load()}if(d){const note=document.querySelector(`[data-note="${CSS.escape(d.dataset.id)}"]`).value.trim();if(d.dataset.decision==="reject"&&!note)throw Error("note_required_for_rejection");if(!confirm(`${d.dataset.decision==="approve"?"Approuver":"Rejeter"} cette demande ? Aucun effet live.`))return;await api(`/api/admin/billing/owner-configurations/${encodeURIComponent(d.dataset.id)}/review`,{method:"POST",body:JSON.stringify({decision:d.dataset.decision,note})});await load()}}catch(x){fail(x.message)}});$("#refreshBtn").onclick=()=>load().catch(x=>fail(x.message));load().catch(x=>fail(x.message)); })();
+(() => {
+  const $ = (selector) => document.querySelector(selector);
+  const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[character]);
+  let capabilities = {};
+
+  async function api(url, options = {}) {
+    const response = await fetch(url, {
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      ...options,
+    });
+    const text = await response.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = { error: "non_json" }; }
+    if (!response.ok) throw new Error(data.error || "request_failed");
+    return data;
+  }
+
+  function fail(message) {
+    const error = $("#error");
+    error.textContent = message;
+    error.style.display = "block";
+  }
+
+  function applicationAction(request) {
+    if (request.application_id) {
+      return `<div class="rv-meta">Configuration appliquée le ${esc(request.applied_at)} · affectation ${esc(request.assignment_id)} · résultat ${esc(request.application_outcome)}</div>`;
+    }
+    if (request.status !== "approved") return "";
+    if (!capabilities.apply) {
+      return '<button class="rv-btn" type="button" disabled>Application désactivée</button>';
+    }
+    return `<button class="rv-btn rv-approve" data-apply="${esc(request.id)}">Appliquer la configuration</button>`;
+  }
+
+  function render(data) {
+    capabilities = data.capabilities || {};
+    $("#queue").innerHTML = (data.requests || []).map((request) => {
+      const snapshot = request.selection_snapshot || {};
+      return `<article class="rv-card">
+        <h2>${esc(request.request_ref)} — ${esc(request.pool_name)}</h2>
+        <div>${esc(request.applicant_email)} · ${esc(request.offer_title)} · ${esc(request.plan_choice)} · ${esc(request.billing_mode)}</div>
+        <div class="rv-meta">Effet ${esc(request.effective_from)} · abonnement ${esc(snapshot.subscription_price_ar ?? 0)} Ar · commission ${esc(snapshot.commission_pct ?? 0)}% · tolérance ${esc(snapshot.grace_days ?? 0)} jours</div>
+        <span class="rv-status">${esc(request.status)}</span>
+        <input class="rv-note" data-note="${esc(request.id)}" placeholder="Note de décision (requise pour un rejet)">
+        <div class="rv-actions">
+          ${request.status === "submitted" ? `<button class="rv-btn" data-begin="${esc(request.id)}">Commencer la revue</button>` : ""}
+          ${["submitted", "under_review"].includes(request.status) ? `<button class="rv-btn rv-approve" data-decision="approve" data-id="${esc(request.id)}">Approuver</button><button class="rv-btn rv-reject" data-decision="reject" data-id="${esc(request.id)}">Rejeter</button>` : ""}
+          ${applicationAction(request)}
+        </div>
+      </article>`;
+    }).join("") || '<div class="rv-card">Aucune demande.</div>';
+  }
+
+  async function load() {
+    const data = await api("/api/admin/billing/owner-configurations");
+    render(data);
+  }
+
+  document.addEventListener("click", async (event) => {
+    try {
+      const begin = event.target.closest("[data-begin]");
+      const decision = event.target.closest("[data-decision]");
+      const apply = event.target.closest("[data-apply]");
+      if (begin) {
+        await api(`/api/admin/billing/owner-configurations/${encodeURIComponent(begin.dataset.begin)}/begin-review`, { method: "POST", body: "{}" });
+        await load();
+      }
+      if (decision) {
+        const note = document.querySelector(`[data-note="${CSS.escape(decision.dataset.id)}"]`).value.trim();
+        if (decision.dataset.decision === "reject" && !note) throw new Error("note_required_for_rejection");
+        if (!confirm(`${decision.dataset.decision === "approve" ? "Approuver" : "Rejeter"} cette demande ? Aucun effet live.`)) return;
+        await api(`/api/admin/billing/owner-configurations/${encodeURIComponent(decision.dataset.id)}/review`, {
+          method: "POST",
+          body: JSON.stringify({ decision: decision.dataset.decision, note }),
+        });
+        await load();
+      }
+      if (apply) {
+        if (!confirm("Appliquer cette configuration commerciale approuvée ? Cette action peut créer une affectation, mais ne crée ni facture, paiement, voucher, ni action WiFi.")) return;
+        await api(`/api/admin/billing/owner-configurations/${encodeURIComponent(apply.dataset.apply)}/apply`, { method: "POST", body: "{}" });
+        await load();
+      }
+    } catch (error) { fail(error.message); }
+  });
+
+  $("#refreshBtn").onclick = () => load().catch((error) => fail(error.message));
+  load().catch((error) => fail(error.message));
+})();
