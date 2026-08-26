@@ -12778,6 +12778,9 @@ const BILLING_V1_OWNER_CONFIGURATION = billingEnvFlag("BILLING_V1_OWNER_CONFIGUR
 // S13.4: separate final-application gate. It may create/reuse only a commercial
 // assignment after approval; it never creates financial or WiFi side effects.
 const BILLING_V1_OWNER_CONFIGURATION_APPLY = billingEnvFlag("BILLING_V1_OWNER_CONFIGURATION_APPLY", false);
+// S13.4.1: independent gate for explicit atomic replacement of one active
+// commercial assignment. No invoice, payment, voucher or WiFi side effect.
+const BILLING_V1_OWNER_CONFIGURATION_REPLACE = billingEnvFlag("BILLING_V1_OWNER_CONFIGURATION_REPLACE", false);
 // S13.5: explicit, independent gate for the first subscription invoice after
 // an approved configuration has been applied. It never initiates payment.
 const BILLING_V1_OWNER_FIRST_INVOICE = billingEnvFlag("BILLING_V1_OWNER_FIRST_INVOICE", false);
@@ -15287,6 +15290,11 @@ function requireBillingOwnerConfigurationApply(_req, res, next) {
   next();
 }
 
+function requireBillingOwnerConfigurationReplace(_req, res, next) {
+  if (!BILLING_V1_OWNER_CONFIGURATION_REPLACE) return res.status(404).json({ error: "billing_owner_configuration_replace_disabled" });
+  next();
+}
+
 function requireBillingOwnerFirstInvoice(_req, res, next) {
   if (!BILLING_V1_OWNER_FIRST_INVOICE) return res.status(404).json({ error: "billing_owner_first_invoice_disabled" });
   next();
@@ -15357,7 +15365,7 @@ app.get("/api/admin/billing/owner-configurations", requireAdmin, requireSuperadm
   try {
     const { data, error } = await supabase.from("v_billing_v1_s13_5_review_queue").select("*").order("created_at", { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
-    return res.json({ requests: data || [], capabilities: { begin_review: true, decide: true, apply: BILLING_V1_OWNER_CONFIGURATION_APPLY, invoice: BILLING_V1_OWNER_FIRST_INVOICE, payment: false, voucher: false, wifi: false }, passive: !(BILLING_V1_OWNER_CONFIGURATION_APPLY || BILLING_V1_OWNER_FIRST_INVOICE), live_effect: BILLING_V1_OWNER_FIRST_INVOICE });
+    return res.json({ requests: data || [], capabilities: { begin_review: true, decide: true, apply: BILLING_V1_OWNER_CONFIGURATION_APPLY, replace: BILLING_V1_OWNER_CONFIGURATION_REPLACE, invoice: BILLING_V1_OWNER_FIRST_INVOICE, payment: false, voucher: false, wifi: false }, passive: !(BILLING_V1_OWNER_CONFIGURATION_APPLY || BILLING_V1_OWNER_CONFIGURATION_REPLACE || BILLING_V1_OWNER_FIRST_INVOICE), live_effect: BILLING_V1_OWNER_FIRST_INVOICE });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
@@ -15382,6 +15390,17 @@ app.post("/api/admin/billing/owner-configurations/:id/review", requireAdmin, req
 app.post("/api/admin/billing/owner-configurations/:id/apply", requireAdmin, requireSuperadmin, requireBillingOwnerConfiguration, requireBillingOwnerConfigurationApply, async (req, res) => {
   try {
     const { data, error } = await supabase.rpc("fn_billing_v1_s13_4_apply_approved", {
+      p_actor: req.admin.id, p_request: req.params.id,
+    });
+    if (error) return res.status(s132ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
+    return res.json(data);
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/admin/billing/owner-configurations/:id/replace-active-assignment", requireAdmin, requireSuperadmin, requireBillingOwnerConfiguration, requireBillingOwnerConfigurationReplace, async (req, res) => {
+  try {
+    if (req.body?.confirm_replacement !== true) return res.status(400).json({ error: "replacement_confirmation_required" });
+    const { data, error } = await supabase.rpc("fn_billing_v1_s13_4_1_replace_approved", {
       p_actor: req.admin.id, p_request: req.params.id,
     });
     if (error) return res.status(s132ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });

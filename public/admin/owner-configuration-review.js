@@ -30,9 +30,14 @@
     }
     if (request.status !== "approved") return "";
     if (!capabilities.apply) {
-      return '<button class="rv-btn" type="button" disabled>Application désactivée</button>';
+      return capabilities.replace
+        ? `<button class="rv-btn rv-replace" data-replace="${esc(request.id)}">Remplacer l’affectation active</button>`
+        : '<button class="rv-btn" type="button" disabled>Application désactivée</button>';
     }
-    return `<button class="rv-btn rv-approve" data-apply="${esc(request.id)}">Appliquer la configuration</button>`;
+    const replace = capabilities.replace
+      ? `<button class="rv-btn rv-replace" data-replace="${esc(request.id)}">Remplacer l’affectation active</button>`
+      : "";
+    return `<button class="rv-btn rv-approve" data-apply="${esc(request.id)}">Appliquer la configuration</button>${replace}`;
   }
 
   function firstInvoiceAction(request) {
@@ -77,6 +82,7 @@
       const begin = event.target.closest("[data-begin]");
       const decision = event.target.closest("[data-decision]");
       const apply = event.target.closest("[data-apply]");
+      const replace = event.target.closest("[data-replace]");
       const firstInvoice = event.target.closest("[data-first-invoice]");
       if (begin) {
         await api(`/api/admin/billing/owner-configurations/${encodeURIComponent(begin.dataset.begin)}/begin-review`, { method: "POST", body: "{}" });
@@ -95,6 +101,13 @@
       if (apply) {
         if (!confirm("Appliquer cette configuration commerciale approuvée ? Cette action peut créer une affectation, mais ne crée ni facture, paiement, voucher, ni action WiFi.")) return;
         await api(`/api/admin/billing/owner-configurations/${encodeURIComponent(apply.dataset.apply)}/apply`, { method: "POST", body: "{}" });
+        await load();
+      }
+      if (replace) {
+        if (!confirm("Remplacer atomiquement l’affectation commerciale active par cette configuration approuvée ? L’ancienne sera clôturée juste avant la prise d’effet et restera dans l’historique. Aucune facture, paiement, voucher ou action WiFi ne sera créé.")) return;
+        await api(`/api/admin/billing/owner-configurations/${encodeURIComponent(replace.dataset.replace)}/replace-active-assignment`, {
+          method: "POST", body: JSON.stringify({ confirm_replacement: true }),
+        });
         await load();
       }
       if (firstInvoice) {
