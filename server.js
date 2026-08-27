@@ -12799,6 +12799,10 @@ const BILLING_V1_OWNER_PAYMENT_SELF_SERVICE = billingEnvFlag("BILLING_V1_OWNER_P
 // This switch can only query MVola status and reconcile existing evidence. It
 // never initiates a payment and is intentionally independent from self-service.
 const BILLING_V1_OWNER_PAYMENT_RECONCILIATION = billingEnvFlag("BILLING_V1_OWNER_PAYMENT_RECONCILIATION", false);
+// S13.7: activate only the billing purchase-access overlay of the exact pool
+// whose first subscription invoice was fully paid. Never changes pool payment
+// methods, router/WiFi state or another pool owned by the same account.
+const BILLING_V1_OWNER_AUTO_ACTIVATION = billingEnvFlag("BILLING_V1_OWNER_AUTO_ACTIVATION", false);
 const BILLING_S1365_RECONCILIATION_INTERVAL_MS = Math.max(15000,
   Number(process.env.BILLING_S1365_RECONCILIATION_INTERVAL_MS || 30000));
 const BILLING_S1365_RECONCILIATION_BATCH_SIZE = Math.min(25, Math.max(1,
@@ -15440,6 +15444,18 @@ app.post("/api/admin/billing/owner-configurations/:id/first-invoice", requireAdm
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
+async function completeBillingFirstPayment({ requestRef, serverCorrelationId, providerPayload }) {
+  const rpc = BILLING_V1_OWNER_AUTO_ACTIVATION
+    ? "fn_billing_v1_s13_7_complete_and_activate"
+    : "fn_billing_v1_s13_6_complete_first_payment";
+  return supabase.rpc(rpc, {
+    p_request_ref: requestRef,
+    p_server_correlation_id: serverCorrelationId,
+    p_provider_reference: billingProviderRef(providerPayload),
+    p_provider_payload: sanitizeMvolaLogPayload(providerPayload),
+  });
+}
+
 async function pollS136Mvola({ requestRef, serverCorrelationId }) {
   const started = Date.now();
   let attempt = 0;
@@ -15457,10 +15473,7 @@ async function pollS136Mvola({ requestRef, serverCorrelationId }) {
         providerStatus: status || null, payload: sanitizeMvolaLogPayload(payload),
       });
       if (["completed", "success"].includes(status)) {
-        const { error } = await supabase.rpc("fn_billing_v1_s13_6_complete_first_payment", {
-          p_request_ref: requestRef, p_server_correlation_id: serverCorrelationId,
-          p_provider_reference: billingProviderRef(payload), p_provider_payload: sanitizeMvolaLogPayload(payload),
-        });
+        const { error } = await completeBillingFirstPayment({ requestRef, serverCorrelationId, providerPayload: payload });
         if (error) throw error;
         return;
       }
@@ -15514,12 +15527,7 @@ async function reconcileBillingS1365Once() {
           reconciliationCount: row.reconciliation_count,
         });
         if (["completed", "success"].includes(status)) {
-          const { error } = await supabase.rpc("fn_billing_v1_s13_6_complete_first_payment", {
-            p_request_ref: requestRef,
-            p_server_correlation_id: serverCorrelationId,
-            p_provider_reference: billingProviderRef(payload),
-            p_provider_payload: sanitizeMvolaLogPayload(payload),
-          });
+          const { error } = await completeBillingFirstPayment({ requestRef, serverCorrelationId, providerPayload: payload });
           if (error) throw error;
           completed += 1;
           continue;
@@ -15569,6 +15577,47 @@ function startBillingS1365Reconciliation() {
       console.error("[BILLING S13.6.5] scheduled reconciliation", error?.message || error)),
     BILLING_S1365_RECONCILIATION_INTERVAL_MS);
   try { billingS1365ReconciliationTimer.unref?.(); } catch (_) {}
+}
+
+// S13.7 durable activation recovery. The SQL function revalidates payment,
+// invoice, assignment, owner and pool scope under an advisory lock.
+let billingS137ActivationRunning = false;
+let billingS137ActivationTimer = null;
+async function reconcileBillingS137Activations() {
+  if (!BILLING_V1_OWNER_AUTO_ACTIVATION) return { ok: true, skipped: "disabled" };
+  if (billingS137ActivationRunning) return { ok: true, skipped: "already_running" };
+  billingS137ActivationRunning = true;
+  try {
+    const { data: pending, error } = await supabase.from("v_billing_v1_s13_7_pending_activations")
+      .select("invoice_id,pool_id").limit(10);
+    if (error) throw error;
+    let activated = 0;
+    for (const item of pending || []) {
+      const { data, error: activationError } = await supabase.rpc("fn_billing_v1_s13_7_activate_paid_invoice", {
+        p_invoice_id: item.invoice_id,
+      });
+      if (activationError) {
+        console.error("[BILLING S13.7] activation deferred", {
+          invoiceId: item.invoice_id, poolId: item.pool_id, error: activationError.message,
+        });
+        continue;
+      }
+      activated += data?.idempotent ? 0 : 1;
+      console.info("[BILLING S13.7] pool subscription active", {
+        invoiceId: item.invoice_id, poolId: item.pool_id, idempotent: !!data?.idempotent,
+      });
+    }
+    return { ok: true, checked: (pending || []).length, activated };
+  } finally { billingS137ActivationRunning = false; }
+}
+function startBillingS137Activation() {
+  if (!BILLING_V1_OWNER_AUTO_ACTIVATION || billingS137ActivationTimer) return;
+  console.info("[BILLING S13.7] automatic pool activation enabled", { intervalMs: 30000, batchSize: 10 });
+  setTimeout(() => void reconcileBillingS137Activations().catch((error) =>
+    console.error("[BILLING S13.7] startup activation", error?.message || error)), 3000);
+  billingS137ActivationTimer = setInterval(() => void reconcileBillingS137Activations().catch((error) =>
+    console.error("[BILLING S13.7] scheduled activation", error?.message || error)), 30000);
+  try { billingS137ActivationTimer.unref?.(); } catch (_) {}
 }
 
 app.post("/api/admin/billing/owner-configurations/:id/first-payment", requireAdmin, requireSuperadmin,
@@ -15699,7 +15748,7 @@ app.get("/api/owner/billing-shadow", requireAdmin, requireBillingOwnerPortalShad
       payment_ui: { enabled: false, provider: null, payable_invoice_ids: [] },
       passive: true, shadow: true, no_effect: true, pdf_available: false
     });
-    const [assignmentsResult, invoicesResult, statementsResult, payoutsResult, offersResult, paymentsResult] = await Promise.all([
+    const [assignmentsResult, invoicesResult, statementsResult, payoutsResult, offersResult, paymentsResult, activationsResult] = await Promise.all([
       supabase.from("pool_billing_assignments").select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to,created_at").in("pool_id", poolIds).order("effective_from", { ascending: false }),
       supabase.from("subscription_invoices").select("id,invoice_number,pool_id,offer_title_snapshot,period_start,period_end,amount_due_ar,amount_paid_ar,status,issued_at,due_at,pdf_snapshot,created_at").eq("owner_admin_user_id", ownerId).eq("purpose", "monthly_subscription").order("period_start", { ascending: false }),
       supabase.from("pool_billing_commission_shadow_statements").select("id,pool_id,offer_title_snapshot,period_start,period_end,commission_pct,gross_sales_ar,commission_amount_ar,owner_gross_amount_ar,transaction_count,status,metadata,created_at").eq("owner_admin_user_id", ownerId).order("period_start", { ascending: false }),
@@ -15708,11 +15757,14 @@ app.get("/api/owner/billing-shadow", requireAdmin, requireBillingOwnerPortalShad
       supabase.from("subscription_payment_transactions")
         .select("id,invoice_id,request_ref,provider,amount_ar,currency,status,created_at,initiated_at,completed_at,failed_at,updated_at")
         .eq("owner_admin_user_id", ownerId).order("created_at", { ascending: false }),
+      supabase.from("billing_pool_subscription_activations")
+        .select("id,pool_id,invoice_id,payment_transaction_id,assignment_id,billing_period_id,status,activated_at,metadata")
+        .in("pool_id", poolIds).order("activated_at", { ascending: false }),
     ]);
-    const combinedError = assignmentsResult.error || invoicesResult.error || statementsResult.error || payoutsResult.error || offersResult.error || paymentsResult.error;
+    const combinedError = assignmentsResult.error || invoicesResult.error || statementsResult.error || payoutsResult.error || offersResult.error || paymentsResult.error || activationsResult.error;
     if (combinedError) return res.status(500).json({ error: combinedError.message });
     const assignments = assignmentsResult.data || [], invoices = invoicesResult.data || [], statements = statementsResult.data || [], payout_records = payoutsResult.data || [];
-    const payments = paymentsResult.data || [];
+    const payments = paymentsResult.data || [], activations = activationsResult.data || [];
     const offerTitleById = new Map((offersResult.data || []).map((x) => [x.id, x.title]));
     const nowDate = new Date().toISOString().slice(0, 10);
     const withOfferTitle = (assignment) => ({ ...assignment, offer_title: offerTitleById.get(assignment.offer_id) || null });
@@ -15737,7 +15789,7 @@ app.get("/api/owner/billing-shadow", requireAdmin, requireBillingOwnerPortalShad
       guided: true,
     };
     return res.json({ pools: pools || [], assignments: currentAssignments, upcoming_assignments: upcomingAssignments,
-      invoices: guidedInvoices, payments, statements, payout_records, documents, payment_ui,
+      invoices: guidedInvoices, payments, activations, statements, payout_records, documents, payment_ui,
       passive: !BILLING_V1_OWNER_PAYMENT_SELF_SERVICE, shadow: false, no_effect: true,
       pdf_available: billingPdfLiveEnabled() });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
@@ -34700,6 +34752,7 @@ app.listen(PORT, "0.0.0.0", () => {
   });
   startMvolaRecoveryJob();
   startBillingS1365Reconciliation();
+  startBillingS137Activation();
   startAirtelRecoveryJob();
   startBillingPayoutAutomationS12_2();
   // P2-A3.2: legacy Bonus cleanup is intentionally not started after the
