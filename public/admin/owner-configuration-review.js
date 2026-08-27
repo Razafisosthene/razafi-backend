@@ -67,9 +67,12 @@
     if (["initiated", "pending"].includes(request.first_payment_status)) {
       return `<div class="rv-meta">Paiement MVola en attente · ${esc(request.first_payment_request_ref)}. Ne pas relancer.</div>`;
     }
+    const priorFailure = request.first_payment_status === "failed"
+      ? `<div class="rv-meta">Dernière tentative MVola échouée · ${esc(request.first_payment_request_ref)} · motif ${esc(request.first_payment_failure_reason || "non communiqué par MVola")}</div>`
+      : "";
     if (request.first_invoice_status !== "issued") return "";
     if (!capabilities.payment) return '<button class="rv-btn" type="button" disabled>Paiement MVola désactivé</button>';
-    return `<input class="rv-note" inputmode="tel" data-payment-phone="${esc(request.id)}" placeholder="Numéro payeur MVola (ex. 034...)" maxlength="16"><button class="rv-btn rv-approve" data-first-payment="${esc(request.id)}">Demander le paiement MVola</button>`;
+    return `${priorFailure}<input class="rv-note" inputmode="tel" data-payment-phone="${esc(request.id)}" placeholder="Numéro payeur MVola (ex. 034...)" maxlength="16"><button class="rv-btn rv-approve" data-first-payment="${esc(request.id)}">Demander le paiement MVola</button>`;
   }
 
   function render(data) {

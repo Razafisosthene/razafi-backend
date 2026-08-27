@@ -15434,6 +15434,10 @@ async function pollS136Mvola({ requestRef, serverCorrelationId }) {
       });
       const payload = response.data || {};
       const status = String(payload.status || payload.transactionStatus || "").toLowerCase();
+      console.info("[BILLING S13.6][STATUS][RAW]", {
+        requestRef, serverCorrelationId, attempt, httpStatus: response.status,
+        providerStatus: status || null, payload: sanitizeMvolaLogPayload(payload),
+      });
       if (["completed", "success"].includes(status)) {
         const { error } = await supabase.rpc("fn_billing_v1_s13_6_complete_first_payment", {
           p_request_ref: requestRef, p_server_correlation_id: serverCorrelationId,
@@ -15490,6 +15494,10 @@ app.post("/api/admin/billing/owner-configurations/:id/first-payment", requireAdm
     }
     const providerData = initiated.data || {};
     const serverCorrelationId = providerData.serverCorrelationId || providerData.serverCorrelationID || providerData.serverCorrelationid || correlationId;
+    console.info("[BILLING S13.6][INITIATE][ACCEPTED]", {
+      requestRef, requestRefLength: requestRef.length, serverCorrelationId,
+      amountAr: amount, providerPayload: sanitizeMvolaLogPayload(providerData),
+    });
     await supabase.rpc("fn_billing_v1_s13_6_mark_pending", { p_request_ref: requestRef, p_server_correlation_id: serverCorrelationId,
       p_provider_payload: sanitizeMvolaLogPayload(providerData) });
     res.status(202).json({ ok: true, provider: "mvola", request_ref: requestRef, status: "pending", verification_timeout_ms: MVOLA_VERIFICATION_TIMEOUT_MS });
