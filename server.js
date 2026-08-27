@@ -15394,8 +15394,8 @@ app.get("/api/owner/billing/autonomous-catalog", requireAdmin, requireBillingOwn
         .in("pool_id", poolIds).in("status", ["scheduled", "pending_payment"]).order("requested_at", { ascending: false }) : empty.changes,
       offerIds.length ? supabase.from("billing_offer_versions")
         .select("id,offer_id,version_no,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,effective_from,effective_to")
-        .in("offer_id", offerIds).eq("status", "active").lte("effective_from", today)
-        .or(`effective_to.is.null,effective_to.gte.${today}`).order("version_no", { ascending: false }) : empty.versions,
+        .in("offer_id", offerIds).in("status", ["active", "scheduled"]).lte("effective_from", nextEffectiveOn)
+        .or(`effective_to.is.null,effective_to.gte.${nextEffectiveOn}`).order("version_no", { ascending: false }) : empty.versions,
     ]);
     const versionIds = (versionsResult.data || []).map((x) => x.id);
     const featuresResult = versionIds.length ? await supabase.from("billing_offer_version_features")
