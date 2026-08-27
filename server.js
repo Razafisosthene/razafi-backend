@@ -1463,7 +1463,13 @@ async function requireAdmin(req, res, next) {
         /^\/api\/owner\/billing-configuration\/[^/]+\/submit$/.test(fullPath)
       );
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerMarketingWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat || allowOwnerMarkSeen || allowOwnerBillingUatWrite || allowOwnerBillingConfigurationWrite) {
+      // S13.6.4.1: owner may initiate only the guided payment for one invoice.
+      // The route and SQL function independently re-check invoice ownership,
+      // payable state, feature flag and duplicate pending attempts.
+      const allowOwnerGuidedSubscriptionPayment =
+        method === "POST" && /^\/api\/owner\/billing\/invoices\/[^/]+\/pay-guided$/.test(fullPath);
+
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerMarketingWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat || allowOwnerMarkSeen || allowOwnerBillingUatWrite || allowOwnerBillingConfigurationWrite || allowOwnerGuidedSubscriptionPayment) {
         return next();
       }
 
