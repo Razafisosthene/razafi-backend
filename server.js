@@ -1463,13 +1463,19 @@ async function requireAdmin(req, res, next) {
         /^\/api\/owner\/billing-configuration\/[^/]+\/submit$/.test(fullPath)
       );
 
+      // S13.8.1 autonomous scheduling. The route-level flag and SECURITY
+      // DEFINER functions independently re-check owner/pool scope.
+      const allowOwnerAutonomousBillingChange =
+        (method === "POST" && fullPath === "/api/owner/billing/changes") ||
+        (method === "PATCH" && /^\/api\/owner\/billing\/changes\/[^/]+\/cancel$/.test(fullPath));
+
       // S13.6.4.1: owner may initiate only the guided payment for one invoice.
       // The route and SQL function independently re-check invoice ownership,
       // payable state, feature flag and duplicate pending attempts.
       const allowOwnerGuidedSubscriptionPayment =
         method === "POST" && /^\/api\/owner\/billing\/invoices\/[^/]+\/pay-guided$/.test(fullPath);
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerMarketingWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat || allowOwnerMarkSeen || allowOwnerBillingUatWrite || allowOwnerBillingConfigurationWrite || allowOwnerGuidedSubscriptionPayment) {
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerMarketingWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat || allowOwnerMarkSeen || allowOwnerBillingUatWrite || allowOwnerBillingConfigurationWrite || allowOwnerAutonomousBillingChange || allowOwnerGuidedSubscriptionPayment) {
         return next();
       }
 
@@ -12781,6 +12787,11 @@ const BILLING_V1_OWNER_SELF_SERVICE = billingEnvFlag("BILLING_V1_OWNER_SELF_SERV
 // S13.2: owner commercial-configuration drafts for already assigned pools.
 // This gate never activates billing, creates an invoice or initiates payment.
 const BILLING_V1_OWNER_CONFIGURATION = billingEnvFlag("BILLING_V1_OWNER_CONFIGURATION", false);
+// S13.8.1: owner may schedule/cancel a future commercial change for one owned
+// pool. The SQL functions enforce public offers, next-month effective date,
+// immutable commercial snapshots and one open change per pool. This gate never
+// applies an assignment, emits an invoice, initiates payment or changes WiFi.
+const BILLING_V1_OWNER_AUTONOMOUS_CHANGE = billingEnvFlag("BILLING_V1_OWNER_AUTONOMOUS_CHANGE", false);
 // S13.4: separate final-application gate. It may create/reuse only a commercial
 // assignment after approval; it never creates financial or WiFi side effects.
 const BILLING_V1_OWNER_CONFIGURATION_APPLY = billingEnvFlag("BILLING_V1_OWNER_CONFIGURATION_APPLY", false);
@@ -15308,6 +15319,13 @@ function requireBillingOwnerConfiguration(_req, res, next) {
   next();
 }
 
+function requireBillingOwnerAutonomousChange(_req, res, next) {
+  if (!BILLING_V1_OWNER_AUTONOMOUS_CHANGE) {
+    return res.status(404).json({ error: "billing_owner_autonomous_change_disabled" });
+  }
+  next();
+}
+
 function requireBillingOwnerConfigurationApply(_req, res, next) {
   if (!BILLING_V1_OWNER_CONFIGURATION_APPLY) return res.status(404).json({ error: "billing_owner_configuration_apply_disabled" });
   next();
@@ -15336,6 +15354,93 @@ function s132ErrorStatus(message) {
   if (/exists|not_available|not_reached|only_draft|not_reviewable|conflict|no_longer_valid|approved_review/.test(code)) return 409;
   return 500;
 }
+
+function s1381ErrorStatus(message) {
+  const code = String(message || "s13_8_1_failed").split("\n")[0];
+  if (/not_found/.test(code)) return 404;
+  if (/required|invalid|must_be|idempotency|plan_choice/.test(code)) return 400;
+  if (/not_owner|forbidden|actor/.test(code)) return 403;
+  if (/exists|same_as_current|not_cancellable|not_available|no_active|conflict/.test(code)) return 409;
+  return 500;
+}
+
+// S13.8.1 owner catalog and scheduling engine. This projection exposes only
+// active PUBLIC offers. Private/partner offers never leave the server.
+app.get("/api/owner/billing/autonomous-catalog", requireAdmin, requireBillingOwnerAutonomousChange, async (req, res) => {
+  try {
+    const ownerId = String(req.admin?.id || "").trim();
+    if (!ownerId) return res.status(401).json({ error: "owner_id_required" });
+    const today = billingMadagascarToday();
+    const nextMonth = new Date(`${today}T00:00:00Z`);
+    nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1, 1);
+    const nextEffectiveOn = nextMonth.toISOString().slice(0, 10);
+    const [{ data: pools, error: poolError }, { data: offers, error: offerError }] = await Promise.all([
+      supabase.from("internet_pools").select("id,name,brand_name,owner_admin_user_id")
+        .eq("owner_admin_user_id", ownerId).order("name"),
+      supabase.from("billing_offers").select("id,code,title,description,details,sort_order")
+        .eq("status", "active").eq("visibility", "public").order("sort_order"),
+    ]);
+    if (poolError || offerError) return res.status(500).json({ error: poolError?.message || offerError?.message });
+    const poolIds = (pools || []).map((x) => x.id);
+    const offerIds = (offers || []).map((x) => x.id);
+    const empty = { assignments: { data: [], error: null }, changes: { data: [], error: null }, versions: { data: [], error: null }, features: { data: [], error: null } };
+    const [assignmentsResult, changesResult, versionsResult] = await Promise.all([
+      poolIds.length ? supabase.from("pool_billing_assignments")
+        .select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to")
+        .in("pool_id", poolIds).lte("effective_from", today)
+        .or(`effective_to.is.null,effective_to.gte.${today}`).order("effective_from", { ascending: false }) : empty.assignments,
+      poolIds.length ? supabase.from("pool_billing_changes")
+        .select("id,pool_id,current_assignment_id,target_offer_id,target_offer_version_id,target_plan_choice,target_billing_mode,effective_on,status,requested_at,cancelled_at,applied_at,commercial_snapshot")
+        .in("pool_id", poolIds).in("status", ["scheduled", "pending_payment"]).order("requested_at", { ascending: false }) : empty.changes,
+      offerIds.length ? supabase.from("billing_offer_versions")
+        .select("id,offer_id,version_no,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,effective_from,effective_to")
+        .in("offer_id", offerIds).eq("status", "active").lte("effective_from", today)
+        .or(`effective_to.is.null,effective_to.gte.${today}`).order("version_no", { ascending: false }) : empty.versions,
+    ]);
+    const versionIds = (versionsResult.data || []).map((x) => x.id);
+    const featuresResult = versionIds.length ? await supabase.from("billing_offer_version_features")
+      .select("offer_version_id,feature_key,enabled").in("offer_version_id", versionIds).eq("enabled", true) : empty.features;
+    const combinedError = assignmentsResult.error || changesResult.error || versionsResult.error || featuresResult.error;
+    if (combinedError) return res.status(500).json({ error: combinedError.message });
+    const features = featuresResult.data || [];
+    const versions = (versionsResult.data || []).map((version) => ({
+      ...version,
+      features: features.filter((x) => x.offer_version_id === version.id).map((x) => x.feature_key),
+    }));
+    return res.json({
+      pools: pools || [], offers: offers || [], versions,
+      current_assignments: assignmentsResult.data || [], open_changes: changesResult.data || [],
+      rules: { effective_on: nextEffectiveOn, owner_selectable_visibility: "public", one_open_change_per_pool: true, cancellable_before_effective_on: true },
+      capabilities: { schedule: true, cancel: true, apply: false, invoice: false, payment: false, wifi: false },
+    });
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/owner/billing/changes", requireAdmin, requireBillingOwnerAutonomousChange, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const { data, error } = await supabase.rpc("fn_billing_v1_s13_8_1_schedule_owner_change", {
+      p_actor: req.admin.id,
+      p_pool: body.pool_id,
+      p_target_offer: body.offer_id,
+      p_target_mode: body.billing_mode,
+      p_plan_choice: body.plan_choice,
+      p_idempotency_key: body.idempotency_key,
+    });
+    if (error) return res.status(s1381ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
+    return res.status(data?.reused ? 200 : 201).json(data);
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.patch("/api/owner/billing/changes/:id/cancel", requireAdmin, requireBillingOwnerAutonomousChange, async (req, res) => {
+  try {
+    const { data, error } = await supabase.rpc("fn_billing_v1_s13_8_1_cancel_owner_change", {
+      p_actor: req.admin.id, p_change: req.params.id,
+    });
+    if (error) return res.status(s1381ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
+    return res.json(data);
+  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
 
 app.get("/api/owner/billing-configuration", requireAdmin, requireBillingOwnerConfiguration, async (req, res) => {
   try {
