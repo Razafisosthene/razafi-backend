@@ -12795,6 +12795,14 @@ const BILLING_V1_OWNER_FIRST_PAYMENT = billingEnvFlag("BILLING_V1_OWNER_FIRST_PA
 // superadmin first-payment switch so the operational review page can remain
 // passive while owners pay their own invoices.
 const BILLING_V1_OWNER_PAYMENT_SELF_SERVICE = billingEnvFlag("BILLING_V1_OWNER_PAYMENT_SELF_SERVICE", false);
+// S13.6.5: durable recovery of already-created MVola subscription payments.
+// This switch can only query MVola status and reconcile existing evidence. It
+// never initiates a payment and is intentionally independent from self-service.
+const BILLING_V1_OWNER_PAYMENT_RECONCILIATION = billingEnvFlag("BILLING_V1_OWNER_PAYMENT_RECONCILIATION", false);
+const BILLING_S1365_RECONCILIATION_INTERVAL_MS = Math.max(15000,
+  Number(process.env.BILLING_S1365_RECONCILIATION_INTERVAL_MS || 30000));
+const BILLING_S1365_RECONCILIATION_BATCH_SIZE = Math.min(25, Math.max(1,
+  Number(process.env.BILLING_S1365_RECONCILIATION_BATCH_SIZE || 10)));
 const BILLING_V1_PDF = billingEnvFlag("BILLING_V1_PDF", false);
 // S11.10 isolated simulator. It is valid only while every live execution gate is OFF.
 const BILLING_V1_UAT = billingEnvFlag("BILLING_V1_UAT", false);
@@ -15467,6 +15475,100 @@ async function pollS136Mvola({ requestRef, serverCorrelationId }) {
     }
     await waitMs(Math.min(6000, 700 + attempt * 500));
   }
+}
+
+// S13.6.5 — persistent subscription-payment reconciliation. Claims are leased
+// atomically in PostgreSQL, so Render restarts or multiple instances cannot
+// lose work or turn a status check into a second payment request.
+let billingS1365ReconciliationRunning = false;
+let billingS1365ReconciliationTimer = null;
+
+async function reconcileBillingS1365Once() {
+  if (!BILLING_V1_OWNER_PAYMENT_RECONCILIATION)
+    return { ok: true, skipped: "disabled", claimed: 0 };
+  if (billingS1365ReconciliationRunning)
+    return { ok: true, skipped: "already_running", claimed: 0 };
+  billingS1365ReconciliationRunning = true;
+  try {
+    const { data: claimed, error: claimError } = await supabase.rpc(
+      "fn_billing_v1_s13_6_5_claim_reconciliation",
+      { p_limit: BILLING_S1365_RECONCILIATION_BATCH_SIZE, p_lease_seconds: 90 }
+    );
+    if (claimError) throw claimError;
+    const rows = Array.isArray(claimed) ? claimed : [];
+    let completed = 0, failed = 0, pending = 0, errors = 0;
+    for (const row of rows) {
+      const requestRef = String(row.request_ref || "");
+      const serverCorrelationId = String(row.server_correlation_id || "");
+      if (!requestRef || !serverCorrelationId) continue;
+      try {
+        const token = await getAccessToken();
+        const response = await axios.get(
+          `${MVOLA_BASE}/mvola/mm/transactions/type/merchantpay/1.0.0/status/${serverCorrelationId}`,
+          { headers: mvolaHeaders(token, crypto.randomUUID()), timeout: 10000 }
+        );
+        const payload = response.data || {};
+        const status = String(payload.status || payload.transactionStatus || "").trim().toLowerCase();
+        console.info("[BILLING S13.6.5][RECONCILE]", {
+          requestRef, serverCorrelationId, providerStatus: status || null,
+          reconciliationCount: row.reconciliation_count,
+        });
+        if (["completed", "success"].includes(status)) {
+          const { error } = await supabase.rpc("fn_billing_v1_s13_6_complete_first_payment", {
+            p_request_ref: requestRef,
+            p_server_correlation_id: serverCorrelationId,
+            p_provider_reference: billingProviderRef(payload),
+            p_provider_payload: sanitizeMvolaLogPayload(payload),
+          });
+          if (error) throw error;
+          completed += 1;
+          continue;
+        }
+        if (["failed", "rejected", "declined"].includes(status)) {
+          const { error } = await supabase.rpc("fn_billing_v1_s13_6_fail_first_payment", {
+            p_request_ref: requestRef,
+            p_provider_payload: sanitizeMvolaLogPayload(payload),
+          });
+          if (error) throw error;
+          failed += 1;
+          continue;
+        }
+        const { error } = await supabase.rpc("fn_billing_v1_s13_6_5_record_reconciliation", {
+          p_request_ref: requestRef, p_provider_status: status || "pending",
+          p_provider_payload: sanitizeMvolaLogPayload(payload), p_error: null,
+        });
+        if (error) throw error;
+        pending += 1;
+      } catch (error) {
+        errors += 1;
+        console.warn("[BILLING S13.6.5] reconciliation deferred", {
+          requestRef, error: error?.message || String(error),
+        });
+        await supabase.rpc("fn_billing_v1_s13_6_5_record_reconciliation", {
+          p_request_ref: requestRef, p_provider_status: "unknown", p_provider_payload: {},
+          p_error: String(error?.message || error).slice(0, 500),
+        });
+      }
+    }
+    return { ok: true, claimed: rows.length, completed, failed, pending, errors };
+  } finally {
+    billingS1365ReconciliationRunning = false;
+  }
+}
+
+function startBillingS1365Reconciliation() {
+  if (!BILLING_V1_OWNER_PAYMENT_RECONCILIATION || billingS1365ReconciliationTimer) return;
+  console.info("[BILLING S13.6.5] durable MVola reconciliation enabled", {
+    intervalMs: BILLING_S1365_RECONCILIATION_INTERVAL_MS,
+    batchSize: BILLING_S1365_RECONCILIATION_BATCH_SIZE,
+  });
+  setTimeout(() => void reconcileBillingS1365Once().catch((error) =>
+    console.error("[BILLING S13.6.5] startup reconciliation", error?.message || error)), 3000);
+  billingS1365ReconciliationTimer = setInterval(() =>
+    void reconcileBillingS1365Once().catch((error) =>
+      console.error("[BILLING S13.6.5] scheduled reconciliation", error?.message || error)),
+    BILLING_S1365_RECONCILIATION_INTERVAL_MS);
+  try { billingS1365ReconciliationTimer.unref?.(); } catch (_) {}
 }
 
 app.post("/api/admin/billing/owner-configurations/:id/first-payment", requireAdmin, requireSuperadmin,
@@ -34597,6 +34699,7 @@ app.listen(PORT, "0.0.0.0", () => {
     base_host: airtelMoneyClient.publicConfig().base_host,
   });
   startMvolaRecoveryJob();
+  startBillingS1365Reconciliation();
   startAirtelRecoveryJob();
   startBillingPayoutAutomationS12_2();
   // P2-A3.2: legacy Bonus cleanup is intentionally not started after the
