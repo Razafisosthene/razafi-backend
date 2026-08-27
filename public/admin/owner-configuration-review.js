@@ -18,10 +18,21 @@
     return data;
   }
 
-  function fail(message) {
+  function fail(message, anchor) {
     const error = $("#error");
     error.textContent = message;
     error.style.display = "block";
+    document.querySelectorAll(".rv-payment-error").forEach((node) => node.remove());
+    if (anchor) {
+      const inline = document.createElement("div");
+      inline.className = "rv-error rv-payment-error";
+      inline.style.display = "block";
+      inline.textContent = message;
+      anchor.insertAdjacentElement("afterend", inline);
+      inline.scrollIntoView({ behavior: "smooth", block: "center" });
+    } else {
+      error.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
   }
 
   function applicationAction(request) {
@@ -132,7 +143,7 @@
         await api(`/api/admin/billing/owner-configurations/${encodeURIComponent(id)}/first-payment`, { method: "POST", body: JSON.stringify({ payer_phone: payerPhone }) });
         await load();
       }
-    } catch (error) { fail(error.message); }
+    } catch (error) { fail(error.message, event.target.closest("button")); }
   });
 
   $("#refreshBtn").onclick = () => load().catch((error) => fail(error.message));
