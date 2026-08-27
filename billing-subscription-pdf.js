@@ -20,7 +20,7 @@ const statusLabel=(value)=>({issued:"Emise",pending:"En attente",paid:"Payee",ca
 function typography(doc,font="Helvetica",size=10){
   // S11.11: reset PDFKit text state before every block. This prevents inherited
   // spacing/transform state from producing irregular gaps in browser PDF viewers.
-  return doc.font(font).fontSize(size).characterSpacing(0).fillOpacity(1);
+  return doc.font(font).fontSize(size).fillOpacity(1);
 }
 
 function textPair(doc,label,value,x,y,width=230){
