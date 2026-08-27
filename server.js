@@ -15384,7 +15384,7 @@ app.get("/api/owner/billing/autonomous-catalog", requireAdmin, requireBillingOwn
     const poolIds = (pools || []).map((x) => x.id);
     const offerIds = (offers || []).map((x) => x.id);
     const empty = { assignments: { data: [], error: null }, changes: { data: [], error: null }, versions: { data: [], error: null }, features: { data: [], error: null } };
-    const [assignmentsResult, changesResult, versionsResult] = await Promise.all([
+    const [assignmentsResult, changesResult, versionsResult, legacyRequestsResult] = await Promise.all([
       poolIds.length ? supabase.from("pool_billing_assignments")
         .select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to")
         .in("pool_id", poolIds).lte("effective_from", today)
@@ -15396,11 +15396,13 @@ app.get("/api/owner/billing/autonomous-catalog", requireAdmin, requireBillingOwn
         .select("id,offer_id,version_no,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,effective_from,effective_to")
         .in("offer_id", offerIds).in("status", ["active", "scheduled"]).lte("effective_from", nextEffectiveOn)
         .or(`effective_to.is.null,effective_to.gte.${nextEffectiveOn}`).order("version_no", { ascending: false }) : empty.versions,
+      supabase.from("v_billing_v1_s13_2_requests").select("*")
+        .eq("applicant_user_id", ownerId).order("created_at", { ascending: false }).limit(50),
     ]);
     const versionIds = (versionsResult.data || []).map((x) => x.id);
     const featuresResult = versionIds.length ? await supabase.from("billing_offer_version_features")
       .select("offer_version_id,feature_key,enabled").in("offer_version_id", versionIds).eq("enabled", true) : empty.features;
-    const combinedError = assignmentsResult.error || changesResult.error || versionsResult.error || featuresResult.error;
+    const combinedError = assignmentsResult.error || changesResult.error || versionsResult.error || legacyRequestsResult.error || featuresResult.error;
     if (combinedError) return res.status(500).json({ error: combinedError.message });
     const features = featuresResult.data || [];
     const versions = (versionsResult.data || []).map((version) => ({
@@ -15410,7 +15412,8 @@ app.get("/api/owner/billing/autonomous-catalog", requireAdmin, requireBillingOwn
     return res.json({
       pools: pools || [], offers: offers || [], versions,
       current_assignments: assignmentsResult.data || [], open_changes: changesResult.data || [],
-      rules: { effective_on: nextEffectiveOn, owner_selectable_visibility: "public", one_open_change_per_pool: true, cancellable_before_effective_on: true },
+      legacy_requests: legacyRequestsResult.data || [],
+      rules: { today, effective_on: nextEffectiveOn, owner_selectable_visibility: "public", one_open_change_per_pool: true, cancellable_before_effective_on: true },
       capabilities: { schedule: true, cancel: true, apply: false, invoice: false, payment: false, wifi: false },
     });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
