@@ -12778,12 +12778,13 @@ const BILLING_V1_OWNER_CONFIGURATION = billingEnvFlag("BILLING_V1_OWNER_CONFIGUR
 // S13.4: separate final-application gate. It may create/reuse only a commercial
 // assignment after approval; it never creates financial or WiFi side effects.
 const BILLING_V1_OWNER_CONFIGURATION_APPLY = billingEnvFlag("BILLING_V1_OWNER_CONFIGURATION_APPLY", false);
-// S13.4.1: independent gate for explicit atomic replacement of one active
-// commercial assignment. No invoice, payment, voucher or WiFi side effect.
 const BILLING_V1_OWNER_CONFIGURATION_REPLACE = billingEnvFlag("BILLING_V1_OWNER_CONFIGURATION_REPLACE", false);
 // S13.5: explicit, independent gate for the first subscription invoice after
 // an approved configuration has been applied. It never initiates payment.
 const BILLING_V1_OWNER_FIRST_INVOICE = billingEnvFlag("BILLING_V1_OWNER_FIRST_INVOICE", false);
+// S13.6: superadmin-only, one-invoice MVola collection gate. Completion affects
+// only subscription invoice/payment evidence; never vouchers or WiFi.
+const BILLING_V1_OWNER_FIRST_PAYMENT = billingEnvFlag("BILLING_V1_OWNER_FIRST_PAYMENT", false);
 const BILLING_V1_PDF = billingEnvFlag("BILLING_V1_PDF", false);
 // S11.10 isolated simulator. It is valid only while every live execution gate is OFF.
 const BILLING_V1_UAT = billingEnvFlag("BILLING_V1_UAT", false);
@@ -15300,6 +15301,11 @@ function requireBillingOwnerFirstInvoice(_req, res, next) {
   next();
 }
 
+function requireBillingOwnerFirstPayment(_req, res, next) {
+  if (!BILLING_V1_OWNER_FIRST_PAYMENT) return res.status(404).json({ error: "billing_owner_first_payment_disabled" });
+  next();
+}
+
 function s132ErrorStatus(message) {
   const code = String(message || "s13_2_failed").split("\n")[0];
   if (/not_found/.test(code)) return 404;
@@ -15363,9 +15369,9 @@ app.post("/api/owner/billing-configuration/:id/submit", requireAdmin, requireBil
 
 app.get("/api/admin/billing/owner-configurations", requireAdmin, requireSuperadmin, requireBillingOwnerConfiguration, async (_req, res) => {
   try {
-    const { data, error } = await supabase.from("v_billing_v1_s13_5_review_queue").select("*").order("created_at", { ascending: false });
+    const { data, error } = await supabase.from("v_billing_v1_s13_6_review_queue").select("*").order("created_at", { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
-    return res.json({ requests: data || [], capabilities: { begin_review: true, decide: true, apply: BILLING_V1_OWNER_CONFIGURATION_APPLY, replace: BILLING_V1_OWNER_CONFIGURATION_REPLACE, invoice: BILLING_V1_OWNER_FIRST_INVOICE, payment: false, voucher: false, wifi: false }, passive: !(BILLING_V1_OWNER_CONFIGURATION_APPLY || BILLING_V1_OWNER_CONFIGURATION_REPLACE || BILLING_V1_OWNER_FIRST_INVOICE), live_effect: BILLING_V1_OWNER_FIRST_INVOICE });
+    return res.json({ requests: data || [], capabilities: { begin_review: true, decide: true, apply: BILLING_V1_OWNER_CONFIGURATION_APPLY, replace: BILLING_V1_OWNER_CONFIGURATION_REPLACE, invoice: BILLING_V1_OWNER_FIRST_INVOICE, payment: BILLING_V1_OWNER_FIRST_PAYMENT, voucher: false, wifi: false }, passive: !(BILLING_V1_OWNER_CONFIGURATION_APPLY || BILLING_V1_OWNER_CONFIGURATION_REPLACE || BILLING_V1_OWNER_FIRST_INVOICE || BILLING_V1_OWNER_FIRST_PAYMENT), live_effect: BILLING_V1_OWNER_FIRST_INVOICE || BILLING_V1_OWNER_FIRST_PAYMENT });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
@@ -15400,9 +15406,7 @@ app.post("/api/admin/billing/owner-configurations/:id/apply", requireAdmin, requ
 app.post("/api/admin/billing/owner-configurations/:id/replace-active-assignment", requireAdmin, requireSuperadmin, requireBillingOwnerConfiguration, requireBillingOwnerConfigurationReplace, async (req, res) => {
   try {
     if (req.body?.confirm_replacement !== true) return res.status(400).json({ error: "replacement_confirmation_required" });
-    const { data, error } = await supabase.rpc("fn_billing_v1_s13_4_1_replace_approved", {
-      p_actor: req.admin.id, p_request: req.params.id,
-    });
+    const { data, error } = await supabase.rpc("fn_billing_v1_s13_4_1_replace_approved", { p_actor: req.admin.id, p_request: req.params.id });
     if (error) return res.status(s132ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
     return res.json(data);
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
@@ -15416,6 +15420,77 @@ app.post("/api/admin/billing/owner-configurations/:id/first-invoice", requireAdm
     if (error) return res.status(s132ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
     return res.json(data);
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+async function pollS136Mvola({ requestRef, serverCorrelationId }) {
+  const started = Date.now();
+  let attempt = 0;
+  while (Date.now() - started < MVOLA_VERIFICATION_TIMEOUT_MS) {
+    attempt += 1;
+    try {
+      const token = await getAccessToken();
+      const response = await axios.get(`${MVOLA_BASE}/mvola/mm/transactions/type/merchantpay/1.0.0/status/${serverCorrelationId}`, {
+        headers: mvolaHeaders(token, crypto.randomUUID()), timeout: 10000,
+      });
+      const payload = response.data || {};
+      const status = String(payload.status || payload.transactionStatus || "").toLowerCase();
+      if (["completed", "success"].includes(status)) {
+        const { error } = await supabase.rpc("fn_billing_v1_s13_6_complete_first_payment", {
+          p_request_ref: requestRef, p_server_correlation_id: serverCorrelationId,
+          p_provider_reference: billingProviderRef(payload), p_provider_payload: sanitizeMvolaLogPayload(payload),
+        });
+        if (error) throw error;
+        return;
+      }
+      if (["failed", "rejected", "declined"].includes(status)) {
+        await supabase.rpc("fn_billing_v1_s13_6_fail_first_payment", {
+          p_request_ref: requestRef, p_provider_payload: sanitizeMvolaLogPayload(payload),
+        });
+        return;
+      }
+    } catch (error) {
+      console.warn("[BILLING S13.6] MVola verification pending", { requestRef, attempt, error: error?.message || error });
+    }
+    await waitMs(Math.min(6000, 700 + attempt * 500));
+  }
+}
+
+app.post("/api/admin/billing/owner-configurations/:id/first-payment", requireAdmin, requireSuperadmin,
+  requireBillingOwnerConfiguration, requireBillingOwnerFirstPayment, speedLimiter, paymentLimiter, async (req, res) => {
+  try {
+    const phone = normalizePhone(req.body?.payer_phone);
+    if (!isValidMGPhone(phone)) return res.status(400).json({ error: "payer_phone_invalid", message: paymentPhoneValidationMessage("mvola") });
+    const requestRef = `RAZAFI-SUB-${crypto.randomUUID().replace(/-/g, "").slice(0, 20).toUpperCase()}`;
+    const correlationId = crypto.randomUUID();
+    const { data: prepared, error: prepareError } = await supabase.rpc("fn_billing_v1_s13_6_prepare_first_payment", {
+      p_actor: req.admin.id, p_configuration_request: req.params.id, p_payer_phone: phone,
+      p_request_ref: requestRef, p_server_correlation_id: correlationId,
+    });
+    if (prepareError) return res.status(s132ErrorStatus(prepareError.message)).json({ error: String(prepareError.message).split("\n")[0] });
+    if (prepared?.idempotent || prepared?.status === "completed") return res.json(prepared);
+    const amount = Number(prepared.amount_ar);
+    const payload = { amount: String(amount), currency: "Ar", descriptionText: `Abonnement RAZAFI ${amount} Ar`,
+      requestingOrganisationTransactionReference: requestRef, requestDate: new Date().toISOString(),
+      debitParty: [{ key: "msisdn", value: phone }], creditParty: [{ key: "msisdn", value: PARTNER_MSISDN }],
+      metadata: [{ key: "partnerName", value: PARTNER_NAME }] };
+    let initiated;
+    try {
+      initiated = await initiateMvolaPaymentWithRetry({ payload, requestRef, phone, amount, correlationId });
+    } catch (error) {
+      await supabase.rpc("fn_billing_v1_s13_6_fail_first_payment", { p_request_ref: requestRef, p_provider_payload: { initiation_error: true } });
+      const mapped = mapMvolaInitiateError(error);
+      return res.status(mapped.httpStatus).json({ error: "subscription_payment_initiation_failed", message: mapped.userMessage });
+    }
+    const providerData = initiated.data || {};
+    const serverCorrelationId = providerData.serverCorrelationId || providerData.serverCorrelationID || providerData.serverCorrelationid || correlationId;
+    await supabase.rpc("fn_billing_v1_s13_6_mark_pending", { p_request_ref: requestRef, p_server_correlation_id: serverCorrelationId,
+      p_provider_payload: sanitizeMvolaLogPayload(providerData) });
+    res.status(202).json({ ok: true, provider: "mvola", request_ref: requestRef, status: "pending", verification_timeout_ms: MVOLA_VERIFICATION_TIMEOUT_MS });
+    void pollS136Mvola({ requestRef, serverCorrelationId });
+  } catch (error) {
+    console.error("[BILLING S13.6] first payment", error?.message || error);
+    return res.status(500).json({ error: "billing_s13_6_internal_error" });
+  }
 });
 
 // S10 owner portal: read-only projection of the existing Shadow records.
