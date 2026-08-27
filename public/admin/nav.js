@@ -77,11 +77,11 @@
           <a class="rz-item" data-href="/admin/owner-revenue.html" href="/admin/owner-revenue.html" id="rzNavOwnerRevenue">
             <span class="rz-item-label">Revenus propriétaire</span>
           </a>
-          <a class="rz-item" data-href="/admin/owner-billing-shadow.html" href="/admin/owner-billing-shadow.html" id="rzNavOwnerBillingShadow">
-            <span class="rz-item-label">Mon abonnement RAZAFI</span>
+          <a class="rz-item" data-href="/admin/owner-billing-shadow.html" href="/admin/owner-billing-shadow.html" id="rzNavOwnerBillingShadow" style="display:none">
+            <span class="rz-item-label">Ancien aperçu abonnement</span>
           </a>
           <a class="rz-item" data-href="/admin/owner-subscription.html" href="/admin/owner-subscription.html" id="rzNavOwnerSubscription">
-            <span class="rz-item-label">Configurer mon offre</span>
+            <span class="rz-item-label">Mon abonnement RAZAFI</span>
           </a>
           <a class="rz-item" data-href="/admin/owner-configuration-review.html" href="/admin/owner-configuration-review.html" id="rzNavOwnerConfigurationReview">
             <span class="rz-item-label">Demandes propriétaires</span>
@@ -364,8 +364,8 @@
         if (elBillingOffers) elBillingOffers.style.display = "none";
         if (elBillingAssignments) elBillingAssignments.style.display = "none";
         if (elOwnerRevenue) elOwnerRevenue.style.display = "none";
-        if (elOwnerBillingShadow) elOwnerBillingShadow.style.display = canViewOwnerBillingShadow ? "" : "none";
-        if (elOwnerSubscription) elOwnerSubscription.style.display = canConfigureOwnerBilling ? "" : "none";
+        if (elOwnerBillingShadow) elOwnerBillingShadow.style.display = "none";
+        if (elOwnerSubscription) elOwnerSubscription.style.display = (canConfigureOwnerBilling || canViewOwnerBillingShadow) ? "" : "none";
         if (elOwnerConfigurationReview) elOwnerConfigurationReview.style.display = "none";
         if (elMaintenance) elMaintenance.style.display = "none";
       } else {
@@ -382,8 +382,8 @@
         if (elBillingOffers) elBillingOffers.style.display = canManageBillingOffers ? "" : "none";
         if (elBillingAssignments) elBillingAssignments.style.display = canManageBillingAssignments ? "" : "none";
         if (elOwnerRevenue) elOwnerRevenue.style.display = "";
-        if (elOwnerBillingShadow) elOwnerBillingShadow.style.display = canViewOwnerBillingShadow ? "" : "none";
-        if (elOwnerSubscription) elOwnerSubscription.style.display = canConfigureOwnerBilling ? "" : "none";
+        if (elOwnerBillingShadow) elOwnerBillingShadow.style.display = "none";
+        if (elOwnerSubscription) elOwnerSubscription.style.display = (canConfigureOwnerBilling || canViewOwnerBillingShadow) ? "" : "none";
         if (elOwnerConfigurationReview) elOwnerConfigurationReview.style.display = canConfigureOwnerBilling ? "" : "none";
         if (elMaintenance) elMaintenance.style.display = "";
       }

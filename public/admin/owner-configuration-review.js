@@ -71,8 +71,7 @@
       ? `<div class="rv-meta">Dernière tentative MVola échouée · ${esc(request.first_payment_request_ref)} · motif ${esc(request.first_payment_failure_reason || "non communiqué par MVola")}</div>`
       : "";
     if (request.first_invoice_status !== "issued") return "";
-    if (!capabilities.payment) return '<button class="rv-btn" type="button" disabled>Paiement MVola désactivé</button>';
-    return `${priorFailure}<input class="rv-note" inputmode="tel" data-payment-phone="${esc(request.id)}" placeholder="Numéro payeur MVola (ex. 034...)" maxlength="16"><button class="rv-btn rv-approve" data-first-payment="${esc(request.id)}">Demander le paiement MVola</button>`;
+    return `${priorFailure}<div class="rv-meta">Paiement à effectuer par le propriétaire depuis « Mon abonnement RAZAFI ». Superadmin en supervision uniquement.</div>`;
   }
 
   function render(data) {
@@ -108,7 +107,6 @@
       const apply = event.target.closest("[data-apply]");
       const replace = event.target.closest("[data-replace]");
       const firstInvoice = event.target.closest("[data-first-invoice]");
-      const firstPayment = event.target.closest("[data-first-payment]");
       if (begin) {
         await api(`/api/admin/billing/owner-configurations/${encodeURIComponent(begin.dataset.begin)}/begin-review`, { method: "POST", body: "{}" });
         await load();
@@ -136,14 +134,6 @@
       if (firstInvoice) {
         if (!confirm("Générer la première facture d’abonnement après la configuration appliquée ? Le prorata est calculé en base. Aucun paiement, appel opérateur, voucher ou changement WiFi ne sera exécuté.")) return;
         await api(`/api/admin/billing/owner-configurations/${encodeURIComponent(firstInvoice.dataset.firstInvoice)}/first-invoice`, { method: "POST", body: "{}" });
-        await load();
-      }
-      if (firstPayment) {
-        const id = firstPayment.dataset.firstPayment;
-        const payerPhone = document.querySelector(`[data-payment-phone="${CSS.escape(id)}"]`).value.trim();
-        if (!payerPhone) throw new Error("payer_phone_required");
-        if (!confirm("Envoyer une demande réelle de paiement MVola pour le montant exact de cette facture ? Aucun voucher ni changement WiFi ne sera déclenché.")) return;
-        await api(`/api/admin/billing/owner-configurations/${encodeURIComponent(id)}/first-payment`, { method: "POST", body: JSON.stringify({ payer_phone: payerPhone }) });
         await load();
       }
     } catch (error) { fail(error.message, event.target.closest("button")); }

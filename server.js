@@ -12785,6 +12785,10 @@ const BILLING_V1_OWNER_FIRST_INVOICE = billingEnvFlag("BILLING_V1_OWNER_FIRST_IN
 // S13.6: superadmin-only, one-invoice MVola collection gate. Completion affects
 // only subscription invoice/payment evidence; never vouchers or WiFi.
 const BILLING_V1_OWNER_FIRST_PAYMENT = billingEnvFlag("BILLING_V1_OWNER_FIRST_PAYMENT", false);
+// S13.6.4: owner-facing guided collection. Kept independent from the temporary
+// superadmin first-payment switch so the operational review page can remain
+// passive while owners pay their own invoices.
+const BILLING_V1_OWNER_PAYMENT_SELF_SERVICE = billingEnvFlag("BILLING_V1_OWNER_PAYMENT_SELF_SERVICE", false);
 const BILLING_V1_PDF = billingEnvFlag("BILLING_V1_PDF", false);
 // S11.10 isolated simulator. It is valid only while every live execution gate is OFF.
 const BILLING_V1_UAT = billingEnvFlag("BILLING_V1_UAT", false);
@@ -13929,7 +13933,7 @@ function buildAdminPermissions(admin) {
     billing_subscription_payments_shadow_manage: isSuperadmin && BILLING_V1_SUBSCRIPTION_PAYMENTS_SHADOW,
     billing_access_shadow_manage: isSuperadmin && BILLING_V1_ACCESS_SHADOW,
     billing_commission_statements_shadow_manage: isSuperadmin && BILLING_V1_COMMISSION_STATEMENTS_SHADOW,
-    billing_owner_portal_shadow_view: BILLING_V1_OWNER_PORTAL_SHADOW,
+    billing_owner_portal_shadow_view: BILLING_V1_OWNER_PORTAL_SHADOW || BILLING_V1_OWNER_PAYMENT_SELF_SERVICE,
     billing_owner_configuration: BILLING_V1_OWNER_CONFIGURATION,
   };
 }
@@ -14304,7 +14308,7 @@ function requireBillingCommissionStatementsShadow(req, res, next) {
 }
 
 function requireBillingOwnerPortalShadow(req, res, next) {
-  if (!BILLING_V1_OWNER_PORTAL_SHADOW) return res.status(404).json({ error: "billing_owner_portal_shadow_disabled" });
+  if (!BILLING_V1_OWNER_PORTAL_SHADOW && !BILLING_V1_OWNER_PAYMENT_SELF_SERVICE) return res.status(404).json({ error: "billing_owner_portal_shadow_disabled" });
   return next();
 }
 
@@ -15508,6 +15512,68 @@ app.post("/api/admin/billing/owner-configurations/:id/first-payment", requireAdm
   }
 });
 
+// S13.6.4 owner self-service: same atomic S13.6 evidence and exact 32-character
+// MVola reference, but the invoice owner initiates the request from one panel.
+app.post("/api/owner/billing/invoices/:id/pay-guided", requireAdmin, speedLimiter, paymentLimiter, async (req, res) => {
+  try {
+    if (!BILLING_V1_OWNER_PAYMENT_SELF_SERVICE)
+      return res.status(404).json({ error: "billing_owner_payment_self_service_disabled" });
+    const ownerId = String(req.admin?.id || "").trim();
+    const phone = normalizePhone(req.body?.payer_phone);
+    if (!isValidMGPhone(phone)) return res.status(400).json({ error: "payer_phone_invalid", message: paymentPhoneValidationMessage("mvola") });
+    const { data: invoice, error: invoiceError } = await supabase.from("subscription_invoices")
+      .select("id,invoice_number,pool_id,owner_admin_user_id,purpose,amount_due_ar,amount_paid_ar,status")
+      .eq("id", req.params.id).eq("owner_admin_user_id", ownerId).eq("purpose", "monthly_subscription").maybeSingle();
+    if (invoiceError) return res.status(500).json({ error: invoiceError.message });
+    if (!invoice) return res.status(404).json({ error: "subscription_invoice_not_found" });
+    if (invoice.status !== "issued" || Number(invoice.amount_paid_ar) !== 0 || Number(invoice.amount_due_ar) <= 0)
+      return res.status(409).json({ error: "first_invoice_not_payable" });
+    const { data: issuance, error: issuanceError } = await supabase.from("billing_owner_first_invoice_issuances")
+      .select("request_id").eq("invoice_id", invoice.id).maybeSingle();
+    if (issuanceError) return res.status(500).json({ error: issuanceError.message });
+    if (!issuance?.request_id) return res.status(409).json({ error: "first_invoice_issuance_required" });
+    const invoiceToken = String(invoice.id).replace(/-/g, "").slice(0, 12);
+    const entropyToken = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+    const requestRef = `RZFSUB-${invoiceToken}-${entropyToken}`.toUpperCase();
+    if (!/^RZFSUB-[A-F0-9]{12}-[A-F0-9]{12}$/.test(requestRef) || requestRef.length !== 32)
+      return res.status(500).json({ error: "subscription_payment_reference_invalid" });
+    const correlationId = crypto.randomUUID();
+    const { data: prepared, error: prepareError } = await supabase.rpc("fn_billing_v1_s13_6_prepare_first_payment", {
+      p_actor: ownerId, p_configuration_request: issuance.request_id, p_payer_phone: phone,
+      p_request_ref: requestRef, p_server_correlation_id: correlationId,
+    });
+    if (prepareError) return res.status(s132ErrorStatus(prepareError.message)).json({ error: String(prepareError.message).split("\n")[0] });
+    if (prepared?.idempotent || prepared?.status === "completed") return res.json(prepared);
+    const amount = Number(prepared.amount_ar);
+    const payload = { amount: String(amount), currency: "Ar", descriptionText: `Abonnement RAZAFI ${amount} Ar`,
+      requestingOrganisationTransactionReference: requestRef, requestDate: new Date().toISOString(),
+      debitParty: [{ key: "msisdn", value: phone }], creditParty: [{ key: "msisdn", value: PARTNER_MSISDN }],
+      metadata: [{ key: "partnerName", value: PARTNER_NAME }] };
+    let initiated;
+    try {
+      initiated = await initiateMvolaPaymentWithRetry({ payload, requestRef, phone, amount, correlationId });
+    } catch (error) {
+      await supabase.rpc("fn_billing_v1_s13_6_fail_first_payment", { p_request_ref: requestRef,
+        p_provider_payload: { initiation_error: true, message: mapMvolaInitiateError(error).type } });
+      const mapped = mapMvolaInitiateError(error);
+      return res.status(mapped.httpStatus).json({ error: "subscription_payment_initiation_failed", message: mapped.userMessage });
+    }
+    const providerData = initiated.data || {};
+    const serverCorrelationId = providerData.serverCorrelationId || providerData.serverCorrelationID || providerData.serverCorrelationid || correlationId;
+    console.info("[BILLING S13.6.4][OWNER][INITIATE][ACCEPTED]", { requestRef, requestRefLength: requestRef.length,
+      serverCorrelationId, invoiceId: invoice.id, ownerId, amountAr: amount,
+      providerPayload: sanitizeMvolaLogPayload(providerData) });
+    await supabase.rpc("fn_billing_v1_s13_6_mark_pending", { p_request_ref: requestRef,
+      p_server_correlation_id: serverCorrelationId, p_provider_payload: sanitizeMvolaLogPayload(providerData) });
+    res.status(202).json({ ok: true, provider: "mvola", request_ref: requestRef, status: "pending",
+      verification_timeout_ms: MVOLA_VERIFICATION_TIMEOUT_MS });
+    void pollS136Mvola({ requestRef, serverCorrelationId });
+  } catch (error) {
+    console.error("[BILLING S13.6.4] owner guided payment", error?.message || error);
+    return res.status(500).json({ error: "billing_s13_6_4_internal_error" });
+  }
+});
+
 // S10 owner portal: read-only projection of the existing Shadow records.
 // It deliberately has no document renderer, no PDF URL, no payment action and
 // no write route. A user can see only pools they own.
@@ -15525,16 +15591,20 @@ app.get("/api/owner/billing-shadow", requireAdmin, requireBillingOwnerPortalShad
       payment_ui: { enabled: false, provider: null, payable_invoice_ids: [] },
       passive: true, shadow: true, no_effect: true, pdf_available: false
     });
-    const [assignmentsResult, invoicesResult, statementsResult, payoutsResult, offersResult] = await Promise.all([
+    const [assignmentsResult, invoicesResult, statementsResult, payoutsResult, offersResult, paymentsResult] = await Promise.all([
       supabase.from("pool_billing_assignments").select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to,created_at").in("pool_id", poolIds).order("effective_from", { ascending: false }),
       supabase.from("subscription_invoices").select("id,invoice_number,pool_id,offer_title_snapshot,period_start,period_end,amount_due_ar,amount_paid_ar,status,issued_at,due_at,pdf_snapshot,created_at").eq("owner_admin_user_id", ownerId).eq("purpose", "monthly_subscription").order("period_start", { ascending: false }),
       supabase.from("pool_billing_commission_shadow_statements").select("id,pool_id,offer_title_snapshot,period_start,period_end,commission_pct,gross_sales_ar,commission_amount_ar,owner_gross_amount_ar,transaction_count,status,metadata,created_at").eq("owner_admin_user_id", ownerId).order("period_start", { ascending: false }),
       supabase.from("pool_billing_payout_shadow_records").select("id,commission_statement_id,pool_id,transfer_fee_ar,net_owner_amount_ar,status,metadata,created_at").eq("owner_admin_user_id", ownerId).order("created_at", { ascending: false }),
       supabase.from("billing_offers").select("id,title"),
+      supabase.from("subscription_payment_transactions")
+        .select("id,invoice_id,request_ref,provider,amount_ar,currency,status,created_at,initiated_at,completed_at,failed_at,updated_at")
+        .eq("owner_admin_user_id", ownerId).order("created_at", { ascending: false }),
     ]);
-    const combinedError = assignmentsResult.error || invoicesResult.error || statementsResult.error || payoutsResult.error || offersResult.error;
+    const combinedError = assignmentsResult.error || invoicesResult.error || statementsResult.error || payoutsResult.error || offersResult.error || paymentsResult.error;
     if (combinedError) return res.status(500).json({ error: combinedError.message });
     const assignments = assignmentsResult.data || [], invoices = invoicesResult.data || [], statements = statementsResult.data || [], payout_records = payoutsResult.data || [];
+    const payments = paymentsResult.data || [];
     const offerTitleById = new Map((offersResult.data || []).map((x) => [x.id, x.title]));
     const nowDate = new Date().toISOString().slice(0, 10);
     const withOfferTitle = (assignment) => ({ ...assignment, offer_title: offerTitleById.get(assignment.offer_id) || null });
@@ -15545,8 +15615,23 @@ app.get("/api/owner/billing-shadow", requireAdmin, requireBillingOwnerPortalShad
       ...invoices.filter((x)=>x.status==="paid").map((x) => ({ id: x.id, type: "subscription_receipt", pool_id: x.pool_id, title: `Reçu ${x.invoice_number}`, period_start: x.period_start, status: x.status, amount_ar: x.amount_paid_ar, shadow: !billingPdfLiveEnabled(), download_available: billingPdfLiveEnabled(), download_url: billingPdfLiveEnabled()?`/api/owner/billing/invoices/${encodeURIComponent(x.id)}/receipt`:null })),
       ...statements.map((x) => ({ id: x.id, type: "commission_statement", pool_id: x.pool_id, title: `Relevé de commission ${x.period_start}`, period_start: x.period_start, status: x.status, amount_ar: x.owner_gross_amount_ar, shadow: true, download_available: false })),
     ];
-    const payment_ui = await billingOwnerPaymentUi(invoices);
-    return res.json({ pools: pools || [], assignments: currentAssignments, upcoming_assignments: upcomingAssignments, invoices, statements, payout_records, documents, payment_ui, passive: true, shadow: true, no_effect: true, pdf_available: billingPdfLiveEnabled() });
+    const latestPaymentByInvoice = new Map();
+    for (const payment of payments) if (!latestPaymentByInvoice.has(payment.invoice_id)) latestPaymentByInvoice.set(payment.invoice_id, payment);
+    const guidedInvoices = invoices.map((invoice) => ({ ...invoice, latest_payment: latestPaymentByInvoice.get(invoice.id) || null }));
+    const payableInvoiceIds = guidedInvoices.filter((invoice) =>
+      invoice.status === "issued" && Number(invoice.amount_paid_ar) === 0 &&
+      Number(invoice.amount_due_ar) > 0 && !["initiated", "pending"].includes(invoice.latest_payment?.status)
+    ).map((invoice) => invoice.id);
+    const payment_ui = {
+      enabled: BILLING_V1_OWNER_PAYMENT_SELF_SERVICE,
+      provider: BILLING_V1_OWNER_PAYMENT_SELF_SERVICE ? "mvola" : null,
+      payable_invoice_ids: BILLING_V1_OWNER_PAYMENT_SELF_SERVICE ? payableInvoiceIds : [],
+      guided: true,
+    };
+    return res.json({ pools: pools || [], assignments: currentAssignments, upcoming_assignments: upcomingAssignments,
+      invoices: guidedInvoices, payments, statements, payout_records, documents, payment_ui,
+      passive: !BILLING_V1_OWNER_PAYMENT_SELF_SERVICE, shadow: false, no_effect: true,
+      pdf_available: billingPdfLiveEnabled() });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
@@ -16004,7 +16089,7 @@ app.post("/api/owner/billing/invoices/:id/pay",
 });
 
 app.get("/api/owner/billing/payments/:requestRef",requireAdmin,lightLimiter,async(req,res)=>{
-  if(!billingLiveMasterEnabled())
+  if(!billingLiveMasterEnabled() && !BILLING_V1_OWNER_PAYMENT_SELF_SERVICE)
     return res.status(404).json({error:"billing_subscription_payment_live_disabled"});
   const {data,error}=await supabase.from("subscription_payment_transactions")
     .select("request_ref,invoice_id,pool_id,provider,amount_ar,currency,status,created_at,completed_at")
