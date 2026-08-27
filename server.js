@@ -15460,7 +15460,14 @@ app.post("/api/admin/billing/owner-configurations/:id/first-payment", requireAdm
   try {
     const phone = normalizePhone(req.body?.payer_phone);
     if (!isValidMGPhone(phone)) return res.status(400).json({ error: "payer_phone_invalid", message: paymentPhoneValidationMessage("mvola") });
-    const requestRef = `RAZAFI-SUB-${crypto.randomUUID().replace(/-/g, "").slice(0, 20).toUpperCase()}`;
+    // S13.6.2 — reuse the exact operator-facing reference contract that passed
+    // the real MVola subscription payment on 2026-08-23: 32 ASCII characters.
+    const invoiceToken = String(req.params.id || "").replace(/-/g, "").slice(0, 12);
+    const entropyToken = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+    const requestRef = `RZFSUB-${invoiceToken}-${entropyToken}`.toUpperCase();
+    if (!/^RZFSUB-[A-F0-9]{12}-[A-F0-9]{12}$/.test(requestRef) || requestRef.length !== 32) {
+      return res.status(500).json({ error: "subscription_payment_reference_invalid" });
+    }
     const correlationId = crypto.randomUUID();
     const { data: prepared, error: prepareError } = await supabase.rpc("fn_billing_v1_s13_6_prepare_first_payment", {
       p_actor: req.admin.id, p_configuration_request: req.params.id, p_payer_phone: phone,
