@@ -3010,7 +3010,7 @@ function submitToLoginUrl(code, ev) {
       phoneLabel: "Numéro MVola payeur",
       phonePlaceholder: "0341234567 ou +26134xxxxxxx",
       phoneExample: "0341234567",
-      validPrefixes: "034, 037 ou 038",
+      validPrefixes: "034, 036, 037 ou 038",
     },
     orange_money: {
       label: "Orange Money",
@@ -3087,7 +3087,7 @@ function submitToLoginUrl(code, ev) {
     if (p.key === "airtel_money") {
       return "Numéro Airtel Money invalide. Entrez 033xxxxxxx ou +26133xxxxxxx (ex : 0330500592).";
     }
-    return "Numéro MVola invalide. Entrez 034xxxxxxx, 037xxxxxxx, 038xxxxxxx ou le format +261 correspondant.";
+    return "Numéro MVola invalide. Entrez 034xxxxxxx, 036xxxxxxx, 037xxxxxxx ou 038xxxxxxx ou le format +261 correspondant.";
   }
 
   function getOperationalPaymentMethodKeys() {
