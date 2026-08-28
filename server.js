@@ -12811,6 +12811,7 @@ const BILLING_S1383_NOTIFICATION_BATCH_SIZE = Math.min(25, Math.max(1,
 // S13.8.4.1: freezes the closed-month, paid WiFi commission truth once per
 // pool. It prepares no payout, sends no email and performs no money transfer.
 const BILLING_V1_COMMISSION_MONTHLY_SOURCE = billingEnvFlag("BILLING_V1_COMMISSION_MONTHLY_SOURCE", false);
+const BILLING_V1_OWNER_COMMISSION_PANEL = billingEnvFlag("BILLING_V1_OWNER_COMMISSION_PANEL", false);
 const BILLING_S13841_SOURCE_INTERVAL_MS = Math.max(60000,
   Number(process.env.BILLING_S13841_SOURCE_INTERVAL_MS || 3600000));
 // S13.4: separate final-application gate. It may create/reuse only a commercial
@@ -14360,6 +14361,12 @@ function requireBillingCommissionStatementsShadow(req, res, next) {
 function requireBillingOwnerPortalShadow(req, res, next) {
   if (!BILLING_V1_OWNER_PORTAL_SHADOW && !BILLING_V1_OWNER_PAYMENT_SELF_SERVICE) return res.status(404).json({ error: "billing_owner_portal_shadow_disabled" });
   return next();
+}
+
+function requireBillingOwnerCommissionPanel(_req, res, next) {
+  if (!BILLING_V1_OWNER_COMMISSION_PANEL)
+    return res.status(404).json({ error: "billing_owner_commission_panel_disabled" });
+  next();
 }
 
 function billingText(value, max, required = false) {
@@ -16003,6 +16010,29 @@ app.post("/api/owner/billing/invoices/:id/pay-guided", requireAdmin, speedLimite
   } catch (error) {
     console.error("[BILLING S13.6.4] owner guided payment", error?.message || error);
     return res.status(500).json({ error: "billing_s13_6_4_internal_error" });
+  }
+});
+
+// S13.8.4.2 — owner-scoped commission panel. PostgreSQL verifies ownership,
+// keeps the open-month estimate separate from immutable closed statements,
+// and exposes no payout mutation or provider action.
+app.get("/api/owner/billing/commission-panel", requireAdmin, requireBillingOwnerCommissionPanel, async (req, res) => {
+  try {
+    const ownerId = String(req.admin?.id || "").trim();
+    if (!ownerId) return res.status(401).json({ error: "owner_id_required" });
+    const { data, error } = await supabase.rpc("fn_billing_v1_s13_8_4_2_owner_commission_panel", {
+      p_actor: ownerId,
+      p_now: new Date().toISOString(),
+    });
+    if (error) return res.status(500).json({ error: String(error.message || error).split("\n")[0] });
+    return res.json({
+      ...(data || {}),
+      capabilities: { view: true, payout: false, transfer: false, email: false, pdf: false },
+      read_only: true,
+    });
+  } catch (e) {
+    console.error("[BILLING S13.8.4.2] owner commission panel", e?.message || e);
+    return res.status(500).json({ error: "billing_owner_commission_panel_failed" });
   }
 });
 
