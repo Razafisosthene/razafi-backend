@@ -12792,6 +12792,14 @@ const BILLING_V1_OWNER_CONFIGURATION = billingEnvFlag("BILLING_V1_OWNER_CONFIGUR
 // immutable commercial snapshots and one open change per pool. This gate never
 // applies an assignment, emits an invoice, initiates payment or changes WiFi.
 const BILLING_V1_OWNER_AUTONOMOUS_CHANGE = billingEnvFlag("BILLING_V1_OWNER_AUTONOMOUS_CHANGE", false);
+// S13.8.2: independently applies only due, prevalidated scheduled changes.
+// Subscription changes additionally require their exact linked invoice paid.
+// The SQL transaction replaces one assignment and never starts payment/WiFi.
+const BILLING_V1_OWNER_CHANGE_APPLY = billingEnvFlag("BILLING_V1_OWNER_CHANGE_APPLY", false);
+const BILLING_S1382_APPLY_INTERVAL_MS = Math.max(15000,
+  Number(process.env.BILLING_S1382_APPLY_INTERVAL_MS || 30000));
+const BILLING_S1382_APPLY_BATCH_SIZE = Math.min(25, Math.max(1,
+  Number(process.env.BILLING_S1382_APPLY_BATCH_SIZE || 10)));
 // S13.4: separate final-application gate. It may create/reuse only a commercial
 // assignment after approval; it never creates financial or WiFi side effects.
 const BILLING_V1_OWNER_CONFIGURATION_APPLY = billingEnvFlag("BILLING_V1_OWNER_CONFIGURATION_APPLY", false);
@@ -15726,6 +15734,47 @@ function startBillingS137Activation() {
   billingS137ActivationTimer = setInterval(() => void reconcileBillingS137Activations().catch((error) =>
     console.error("[BILLING S13.7] scheduled activation", error?.message || error)), 30000);
   try { billingS137ActivationTimer.unref?.(); } catch (_) {}
+}
+
+// S13.8.2 durable renewal application. PostgreSQL owns the per-pool lock,
+// date/payment checks, atomic replacement and immutable application proof.
+let billingS1382ApplyRunning = false;
+let billingS1382ApplyTimer = null;
+async function reconcileBillingS1382Changes() {
+  if (!BILLING_V1_OWNER_CHANGE_APPLY) return { ok: true, skipped: "disabled" };
+  if (billingS1382ApplyRunning) return { ok: true, skipped: "already_running" };
+  billingS1382ApplyRunning = true;
+  try {
+    const { data, error } = await supabase.rpc("fn_billing_v1_s13_8_2_apply_due_changes", {
+      p_limit: BILLING_S1382_APPLY_BATCH_SIZE,
+    });
+    if (error) throw error;
+    if (Number(data?.checked || 0) > 0) {
+      console.info("[BILLING S13.8.2] due owner changes processed", {
+        checked: data.checked, applied: data.applied,
+        reused: data.reused, failed: data.failed,
+      });
+      for (const item of data.items || []) if (item?.ok === false) {
+        console.error("[BILLING S13.8.2] change deferred", {
+          changeId: item.change_id, error: item.error,
+        });
+      }
+    }
+    return data || { ok: true, checked: 0 };
+  } finally { billingS1382ApplyRunning = false; }
+}
+function startBillingS1382Apply() {
+  if (!BILLING_V1_OWNER_CHANGE_APPLY || billingS1382ApplyTimer) return;
+  console.info("[BILLING S13.8.2] automatic owner change application enabled", {
+    intervalMs: BILLING_S1382_APPLY_INTERVAL_MS,
+    batchSize: BILLING_S1382_APPLY_BATCH_SIZE,
+  });
+  setTimeout(() => void reconcileBillingS1382Changes().catch((error) =>
+    console.error("[BILLING S13.8.2] startup application", error?.message || error)), 3000);
+  billingS1382ApplyTimer = setInterval(() => void reconcileBillingS1382Changes().catch((error) =>
+    console.error("[BILLING S13.8.2] scheduled application", error?.message || error)),
+  BILLING_S1382_APPLY_INTERVAL_MS);
+  try { billingS1382ApplyTimer.unref?.(); } catch (_) {}
 }
 
 app.post("/api/admin/billing/owner-configurations/:id/first-payment", requireAdmin, requireSuperadmin,
@@ -34861,6 +34910,7 @@ app.listen(PORT, "0.0.0.0", () => {
   startMvolaRecoveryJob();
   startBillingS1365Reconciliation();
   startBillingS137Activation();
+  startBillingS1382Apply();
   startAirtelRecoveryJob();
   startBillingPayoutAutomationS12_2();
   // P2-A3.2: legacy Bonus cleanup is intentionally not started after the
