@@ -244,11 +244,11 @@
   // OLD exact MVola normalization/validation (copied behavior)
   function normalizeMvolaNumber(entered) {
     let cleaned = String(entered ?? "").trim().replace(/\s+/g, "");
-    const intRegex = /^(?:\+?261)(34|37|38)(\d{7})$/;
+    const intRegex = /^(?:\+?261)(34|36|37|38)(\d{7})$/;
     if (intRegex.test(cleaned)) {
       cleaned = cleaned.replace(intRegex, "0$1$2");
     }
-    const isMvola = /^0(34|37|38)\d{7}$/.test(cleaned);
+    const isMvola = /^0(34|36|37|38)\d{7}$/.test(cleaned);
     return { cleaned, isMvola };
   }
 
