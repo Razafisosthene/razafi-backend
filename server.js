@@ -12808,6 +12808,11 @@ const BILLING_S1383_NOTIFICATION_INTERVAL_MS = Math.max(15000,
   Number(process.env.BILLING_S1383_NOTIFICATION_INTERVAL_MS || 60000));
 const BILLING_S1383_NOTIFICATION_BATCH_SIZE = Math.min(25, Math.max(1,
   Number(process.env.BILLING_S1383_NOTIFICATION_BATCH_SIZE || 10)));
+// S13.8.4.1: freezes the closed-month, paid WiFi commission truth once per
+// pool. It prepares no payout, sends no email and performs no money transfer.
+const BILLING_V1_COMMISSION_MONTHLY_SOURCE = billingEnvFlag("BILLING_V1_COMMISSION_MONTHLY_SOURCE", false);
+const BILLING_S13841_SOURCE_INTERVAL_MS = Math.max(60000,
+  Number(process.env.BILLING_S13841_SOURCE_INTERVAL_MS || 3600000));
 // S13.4: separate final-application gate. It may create/reuse only a commercial
 // assignment after approval; it never creates financial or WiFi side effects.
 const BILLING_V1_OWNER_CONFIGURATION_APPLY = billingEnvFlag("BILLING_V1_OWNER_CONFIGURATION_APPLY", false);
@@ -15853,6 +15858,41 @@ function startBillingS1383Notifications() {
   setTimeout(() => void reconcileBillingS1383Notifications().catch((error) => console.error("[BILLING S13.8.3] startup", error?.message || error)), 5000);
   billingS1383NotificationTimer = setInterval(() => void reconcileBillingS1383Notifications().catch((error) => console.error("[BILLING S13.8.3] scheduled", error?.message || error)), BILLING_S1383_NOTIFICATION_INTERVAL_MS);
   try { billingS1383NotificationTimer.unref?.(); } catch (_) {}
+}
+
+let billingS13841SourceRunning = false;
+let billingS13841SourceTimer = null;
+async function runBillingS13841MonthlySource(reason = "interval") {
+  if (!BILLING_V1_COMMISSION_MONTHLY_SOURCE) return { ok: true, skipped: "disabled" };
+  if (!supabase) return { ok: false, skipped: "supabase_unavailable" };
+  if (billingS13841SourceRunning) return { ok: true, skipped: "already_running" };
+  billingS13841SourceRunning = true;
+  try {
+    const { data, error } = await supabase.rpc(
+      "fn_billing_v1_s13_8_4_1_generate_monthly_statements",
+      { p_period_month: null, p_now: new Date().toISOString() }
+    );
+    if (error) throw error;
+    const result = Array.isArray(data) ? data[0] : data;
+    if (!result || result.ok !== true) throw new Error("monthly_commission_source_invalid_result");
+    console.info("[BILLING S13.8.4.1] monthly commission source", { reason, ...result });
+    return result;
+  } finally {
+    billingS13841SourceRunning = false;
+  }
+}
+function startBillingS13841MonthlySource() {
+  if (!BILLING_V1_COMMISSION_MONTHLY_SOURCE || billingS13841SourceTimer) return;
+  console.info("[BILLING S13.8.4.1] immutable monthly commission source enabled", {
+    intervalMs: BILLING_S13841_SOURCE_INTERVAL_MS,
+  });
+  const startupTimer = setTimeout(() => void runBillingS13841MonthlySource("startup")
+    .catch((error) => console.error("[BILLING S13.8.4.1] startup", error?.message || error)), 30000);
+  try { startupTimer.unref?.(); } catch (_) {}
+  billingS13841SourceTimer = setInterval(() => void runBillingS13841MonthlySource("interval")
+    .catch((error) => console.error("[BILLING S13.8.4.1] scheduled", error?.message || error)),
+  BILLING_S13841_SOURCE_INTERVAL_MS);
+  try { billingS13841SourceTimer.unref?.(); } catch (_) {}
 }
 
 app.post("/api/admin/billing/owner-configurations/:id/first-payment", requireAdmin, requireSuperadmin,
@@ -34990,6 +35030,7 @@ app.listen(PORT, "0.0.0.0", () => {
   startBillingS137Activation();
   startBillingS1382Apply();
   startBillingS1383Notifications();
+  startBillingS13841MonthlySource();
   startAirtelRecoveryJob();
   startBillingPayoutAutomationS12_2();
   // P2-A3.2: legacy Bonus cleanup is intentionally not started after the
