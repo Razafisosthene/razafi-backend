@@ -12800,6 +12800,14 @@ const BILLING_S1382_APPLY_INTERVAL_MS = Math.max(15000,
   Number(process.env.BILLING_S1382_APPLY_INTERVAL_MS || 30000));
 const BILLING_S1382_APPLY_BATCH_SIZE = Math.min(25, Math.max(1,
   Number(process.env.BILLING_S1382_APPLY_BATCH_SIZE || 10)));
+// S13.8.3: durable, per-pool owner notifications. PostgreSQL owns event
+// deduplication and leases; Node only renders and delivers claimed messages.
+// This does not notify or execute commission payouts.
+const BILLING_V1_OWNER_NOTIFICATIONS = billingEnvFlag("BILLING_V1_OWNER_NOTIFICATIONS", false);
+const BILLING_S1383_NOTIFICATION_INTERVAL_MS = Math.max(15000,
+  Number(process.env.BILLING_S1383_NOTIFICATION_INTERVAL_MS || 60000));
+const BILLING_S1383_NOTIFICATION_BATCH_SIZE = Math.min(25, Math.max(1,
+  Number(process.env.BILLING_S1383_NOTIFICATION_BATCH_SIZE || 10)));
 // S13.4: separate final-application gate. It may create/reuse only a commercial
 // assignment after approval; it never creates financial or WiFi side effects.
 const BILLING_V1_OWNER_CONFIGURATION_APPLY = billingEnvFlag("BILLING_V1_OWNER_CONFIGURATION_APPLY", false);
@@ -15775,6 +15783,76 @@ function startBillingS1382Apply() {
     console.error("[BILLING S13.8.2] scheduled application", error?.message || error)),
   BILLING_S1382_APPLY_INTERVAL_MS);
   try { billingS1382ApplyTimer.unref?.(); } catch (_) {}
+}
+
+// S13.8.3 durable owner notification delivery. The database resolves the
+// recipient from pool ownership and returns only leased, deduplicated events.
+let billingS1383NotificationRunning = false;
+let billingS1383NotificationTimer = null;
+function billingS1383Message(item) {
+  const p = item?.payload || {};
+  const pool = String(p.pool_name || "votre pool");
+  const portalUrl = "https://portal.razafistore.com/admin/owner-subscription.html";
+  const common = `\n\nPool : ${pool}\nConsulter mon abonnement : ${portalUrl}\n\nRAZAFI`;
+  const messages = {
+    change_scheduled: ["Votre changement d’offre RAZAFI est programmé", `Votre changement vers « ${p.offer_title || "la nouvelle offre"} » (${p.billing_mode_label || p.billing_mode || "mode sélectionné"}) est programmé pour le ${p.effective_on || "prochain renouvellement"}. Votre offre actuelle reste active jusque-là.`],
+    change_cancelled: ["Votre changement d’offre RAZAFI est annulé", `Le changement d’offre programmé pour le ${p.effective_on || "prochain renouvellement"} a été annulé. Votre offre actuelle reste inchangée.`],
+    change_applied: ["Votre nouvelle offre RAZAFI est active", `Votre offre « ${p.offer_title || "RAZAFI"} » (${p.billing_mode_label || p.billing_mode || "mode sélectionné"}) est maintenant appliquée à ce pool.`],
+    invoice_issued: ["Votre facture d’abonnement RAZAFI est disponible", `La facture ${p.invoice_number || ""} d’un montant de ${p.amount_ar || 0} Ar est disponible. Échéance : ${p.due_on || "voir la facture"}.`],
+    invoice_due_soon: ["Rappel : facture RAZAFI bientôt échue", `La facture ${p.invoice_number || ""} de ${p.amount_ar || 0} Ar arrive à échéance le ${p.due_on || "prochainement"}.`],
+    invoice_overdue: ["Action requise : facture RAZAFI échue", `La facture ${p.invoice_number || ""} de ${p.amount_ar || 0} Ar est échue depuis le ${p.due_on || "jour indiqué"}. Vous pouvez la régler depuis votre espace sécurisé.`],
+    payment_confirmed: ["Paiement RAZAFI confirmé", `Votre paiement de ${p.amount_ar || 0} Ar pour la facture ${p.invoice_number || ""} est confirmé. La facture et le reçu PDF sont disponibles dans votre espace.`],
+    payment_failed: ["Paiement RAZAFI non confirmé", `La tentative de paiement de la facture ${p.invoice_number || ""} n’a pas été confirmée. Vérifiez qu’aucun débit n’apparaît avant de réessayer.`],
+    subscription_activated: ["Votre abonnement RAZAFI est activé", "Votre abonnement est maintenant actif pour ce pool. Vos documents restent disponibles dans votre espace propriétaire."],
+  };
+  const selected = messages[item?.event_type] || ["Mise à jour de votre abonnement RAZAFI", "Une mise à jour est disponible dans votre espace propriétaire."];
+  return { subject: `[${pool}] ${selected[0]}`, text: selected[1] + common };
+}
+async function sendBillingS1383Notification(item) {
+  if (!mailer) throw new Error("smtp_not_configured");
+  const to = String(item?.recipient_email || "").trim();
+  if (!to) throw new Error("recipient_missing");
+  const rendered = billingS1383Message(item);
+  const messageToken = crypto.createHash("sha256").update(String(item.event_key)).digest("hex").slice(0, 32);
+  const result = await mailer.sendMail({
+    from: MAIL_FROM, to, subject: rendered.subject, text: rendered.text,
+    messageId: `<billing-${messageToken}@razafistore.com>`,
+    headers: { "X-RAZAFI-Notification-Key": String(item.event_key) },
+  });
+  return String(result?.messageId || `<billing-${messageToken}@razafistore.com>`);
+}
+async function reconcileBillingS1383Notifications() {
+  if (!BILLING_V1_OWNER_NOTIFICATIONS) return { ok: true, skipped: "disabled" };
+  if (billingS1383NotificationRunning) return { ok: true, skipped: "already_running" };
+  billingS1383NotificationRunning = true;
+  try {
+    const { error: enqueueError } = await supabase.rpc("fn_billing_v1_s13_8_3_enqueue_owner_notifications");
+    if (enqueueError) throw enqueueError;
+    const { data: claimed, error: claimError } = await supabase.rpc("fn_billing_v1_s13_8_3_claim_owner_notifications", { p_limit: BILLING_S1383_NOTIFICATION_BATCH_SIZE });
+    if (claimError) throw claimError;
+    let sent = 0, failed = 0;
+    for (const item of claimed || []) {
+      try {
+        const providerMessageId = await sendBillingS1383Notification(item);
+        const { error } = await supabase.rpc("fn_billing_v1_s13_8_3_complete_owner_notification", { p_id: item.id, p_lease_token: item.lease_token, p_sent: true, p_provider_message_id: providerMessageId, p_error: null });
+        if (error) throw error;
+        sent += 1;
+      } catch (error) {
+        failed += 1;
+        const { error: completeError } = await supabase.rpc("fn_billing_v1_s13_8_3_complete_owner_notification", { p_id: item.id, p_lease_token: item.lease_token, p_sent: false, p_provider_message_id: null, p_error: String(error?.message || error).slice(0, 1000) });
+        if (completeError) console.error("[BILLING S13.8.3] retry update", completeError.message);
+      }
+    }
+    if ((claimed || []).length) console.info("[BILLING S13.8.3] owner notifications processed", { claimed: claimed.length, sent, failed });
+    return { ok: true, claimed: (claimed || []).length, sent, failed };
+  } finally { billingS1383NotificationRunning = false; }
+}
+function startBillingS1383Notifications() {
+  if (!BILLING_V1_OWNER_NOTIFICATIONS || billingS1383NotificationTimer) return;
+  console.info("[BILLING S13.8.3] durable owner notifications enabled", { intervalMs: BILLING_S1383_NOTIFICATION_INTERVAL_MS, batchSize: BILLING_S1383_NOTIFICATION_BATCH_SIZE });
+  setTimeout(() => void reconcileBillingS1383Notifications().catch((error) => console.error("[BILLING S13.8.3] startup", error?.message || error)), 5000);
+  billingS1383NotificationTimer = setInterval(() => void reconcileBillingS1383Notifications().catch((error) => console.error("[BILLING S13.8.3] scheduled", error?.message || error)), BILLING_S1383_NOTIFICATION_INTERVAL_MS);
+  try { billingS1383NotificationTimer.unref?.(); } catch (_) {}
 }
 
 app.post("/api/admin/billing/owner-configurations/:id/first-payment", requireAdmin, requireSuperadmin,
@@ -34911,6 +34989,7 @@ app.listen(PORT, "0.0.0.0", () => {
   startBillingS1365Reconciliation();
   startBillingS137Activation();
   startBillingS1382Apply();
+  startBillingS1383Notifications();
   startAirtelRecoveryJob();
   startBillingPayoutAutomationS12_2();
   // P2-A3.2: legacy Bonus cleanup is intentionally not started after the
