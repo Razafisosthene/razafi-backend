@@ -95,6 +95,9 @@
           <a class="rz-item" data-href="/admin/billing-assignments.html" href="/admin/billing-assignments.html" id="rzNavBillingAssignments">
             <span class="rz-item-label">Abonnements des pools</span>
           </a>
+          <a class="rz-item" data-href="/admin/commission-payouts.html" href="/admin/commission-payouts.html" id="rzNavCommissionPayouts">
+            <span class="rz-item-label">Reversements commission</span>
+          </a>
           <a class="rz-item" data-href="/admin/audit.html" href="/admin/audit.html" id="rzNavAudit">
             <span class="rz-item-label">AUDIT</span>
           </a>
@@ -352,6 +355,7 @@
         const elUsers = $("#rzNavUsers");
         const elBillingOffers = $("#rzNavBillingOffers");
         const elBillingAssignments = $("#rzNavBillingAssignments");
+        const elCommissionPayouts = $("#rzNavCommissionPayouts");
         const elBlocked = $("#rzNavBlocked");
         const elOwnerRevenue = $("#rzNavOwnerRevenue");
         const elOwnerBillingShadow = $("#rzNavOwnerBillingShadow");
@@ -363,6 +367,7 @@
         if (elUsers) elUsers.style.display = "none";
         if (elBillingOffers) elBillingOffers.style.display = "none";
         if (elBillingAssignments) elBillingAssignments.style.display = "none";
+        if (elCommissionPayouts) elCommissionPayouts.style.display = "none";
         if (elOwnerRevenue) elOwnerRevenue.style.display = "none";
         if (elOwnerBillingShadow) elOwnerBillingShadow.style.display = "none";
         if (elOwnerSubscription) elOwnerSubscription.style.display = (canConfigureOwnerBilling || canViewOwnerBillingShadow) ? "" : "none";
