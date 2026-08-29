@@ -19,6 +19,7 @@ import bcrypt from "bcryptjs";
 import { registerEc1ClientSpace } from "./ec1-client-space.js";
 import { createAirtelMoneyClient, normalizeAirtelInitiationState, normalizeAirtelTransactionState } from "./airtel-money.js";
 import { createSubscriptionInvoicePdf, createSubscriptionReceiptPdf } from "./billing-subscription-pdf.js";
+import { createCommissionStatementPdf, createCommissionPayoutReceiptPdf } from "./billing-commission-pdf.js";
 
 dotenv.config();
 
@@ -12821,6 +12822,9 @@ const BILLING_V1_COMMISSION_MONTHLY_CLOSE = billingEnvFlag("BILLING_V1_COMMISSIO
 const BILLING_V1_COMMISSION_PAYOUT_CONFIRM = billingEnvFlag("BILLING_V1_COMMISSION_PAYOUT_CONFIRM", false);
 const BILLING_S13843_CLOSE_INTERVAL_MS = Math.max(60000,
   Number(process.env.BILLING_S13843_CLOSE_INTERVAL_MS || 3600000));
+// S13.8.4.4: enables commission-document emails and PDF attachments only.
+// It does not close a month, confirm a payout or execute a transfer.
+const BILLING_V1_COMMISSION_DOCUMENT_NOTIFICATIONS = billingEnvFlag("BILLING_V1_COMMISSION_DOCUMENT_NOTIFICATIONS", false);
 // S13.4: separate final-application gate. It may create/reuse only a commercial
 // assignment after approval; it never creates financial or WiFi side effects.
 const BILLING_V1_OWNER_CONFIGURATION_APPLY = billingEnvFlag("BILLING_V1_OWNER_CONFIGURATION_APPLY", false);
@@ -15828,21 +15832,56 @@ function billingS1383Message(item) {
     payment_confirmed: ["Paiement RAZAFI confirmé", `Votre paiement de ${p.amount_ar || 0} Ar pour la facture ${p.invoice_number || ""} est confirmé. La facture et le reçu PDF sont disponibles dans votre espace.`],
     payment_failed: ["Paiement RAZAFI non confirmé", `La tentative de paiement de la facture ${p.invoice_number || ""} n’a pas été confirmée. Vérifiez qu’aucun débit n’apparaît avant de réessayer.`],
     subscription_activated: ["Votre abonnement RAZAFI est activé", "Votre abonnement est maintenant actif pour ce pool. Vos documents restent disponibles dans votre espace propriétaire."],
+    commission_statement_ready: ["Votre relevé mensuel RAZAFI est disponible", `Le relevé ${p.statement_number || ""} pour la période du ${p.period_start || ""} au ${p.period_end || ""} est clôturé. Part propriétaire brute : ${p.owner_gross_amount_ar || 0} Ar. Le PDF est joint et reste disponible dans votre espace.`],
     commission_payout_confirmed: ["Votre reversement RAZAFI est confirmé", `Le reversement ${p.payout_number || ""} de ${p.owner_net_amount_ar || 0} Ar est enregistré. Le relevé mensuel et le reçu propriétaire sont disponibles dans votre espace.`],
   };
   const selected = messages[item?.event_type] || ["Mise à jour de votre abonnement RAZAFI", "Une mise à jour est disponible dans votre espace propriétaire."];
   return { subject: `[${pool}] ${selected[0]}`, text: selected[1] + common };
+}
+async function billingPdfBuffer(doc) {
+  const chunks=[];
+  return await new Promise((resolve,reject)=>{
+    doc.on("data",chunk=>chunks.push(chunk));
+    doc.once("error",reject);
+    doc.once("end",()=>resolve(Buffer.concat(chunks)));
+    doc.end();
+  });
+}
+async function billingS13844Attachments(item) {
+  if (!BILLING_V1_COMMISSION_DOCUMENT_NOTIFICATIONS) return [];
+  if (item?.event_type === "commission_statement_ready") {
+    const row=await loadCommissionDocument(item.source_id,item.owner_admin_user_id);
+    if(!row)throw new Error("commission_statement_document_not_found");
+    return [{filename:billingPdfFilename("releve-commission",row.statement.statement_number),content:await billingPdfBuffer(createCommissionStatementPdf(row)),contentType:"application/pdf"}];
+  }
+  if (item?.event_type === "commission_payout_confirmed") {
+    const {data:payout,error}=await supabase.from("billing_commission_payouts").select("statement_id,status").eq("id",item.source_id).maybeSingle();
+    if(error)throw error;
+    if(!payout||payout.status!=="paid")throw new Error("commission_payout_document_not_ready");
+    const row=await loadCommissionDocument(payout.statement_id,item.owner_admin_user_id);
+    if(!row?.payout)throw new Error("commission_payout_document_not_found");
+    const [statementPdf,receiptPdf]=await Promise.all([
+      billingPdfBuffer(createCommissionStatementPdf(row)),
+      billingPdfBuffer(createCommissionPayoutReceiptPdf(row)),
+    ]);
+    return [
+      {filename:billingPdfFilename("releve-commission",row.statement.statement_number),content:statementPdf,contentType:"application/pdf"},
+      {filename:billingPdfFilename("recu-reversement",row.payout.receipt_number),content:receiptPdf,contentType:"application/pdf"},
+    ];
+  }
+  return [];
 }
 async function sendBillingS1383Notification(item) {
   if (!mailer) throw new Error("smtp_not_configured");
   const to = String(item?.recipient_email || "").trim();
   if (!to) throw new Error("recipient_missing");
   const rendered = billingS1383Message(item);
+  const attachments = await billingS13844Attachments(item);
   const messageToken = crypto.createHash("sha256").update(String(item.event_key)).digest("hex").slice(0, 32);
   const result = await mailer.sendMail({
     from: MAIL_FROM, to, subject: rendered.subject, text: rendered.text,
     messageId: `<billing-${messageToken}@razafistore.com>`,
-    headers: { "X-RAZAFI-Notification-Key": String(item.event_key) },
+    headers: { "X-RAZAFI-Notification-Key": String(item.event_key) }, attachments,
   });
   return String(result?.messageId || `<billing-${messageToken}@razafistore.com>`);
 }
@@ -15853,7 +15892,10 @@ async function reconcileBillingS1383Notifications() {
   try {
     const { error: enqueueError } = await supabase.rpc("fn_billing_v1_s13_8_3_enqueue_owner_notifications");
     if (enqueueError) throw enqueueError;
-    if (BILLING_V1_COMMISSION_MONTHLY_CLOSE || BILLING_V1_COMMISSION_PAYOUT_CONFIRM) {
+    if (BILLING_V1_COMMISSION_DOCUMENT_NOTIFICATIONS) {
+      const { error: payoutEnqueueError } = await supabase.rpc("fn_billing_v1_s13_8_4_4_enqueue_document_notifications");
+      if (payoutEnqueueError) throw payoutEnqueueError;
+    } else if (BILLING_V1_COMMISSION_MONTHLY_CLOSE || BILLING_V1_COMMISSION_PAYOUT_CONFIRM) {
       const { error: payoutEnqueueError } = await supabase.rpc("fn_billing_v1_s13_8_4_3_enqueue_payout_notifications");
       if (payoutEnqueueError) throw payoutEnqueueError;
     }
@@ -16062,7 +16104,7 @@ app.get("/api/owner/billing/commission-panel", requireAdmin, requireBillingOwner
     if (error) return res.status(500).json({ error: String(error.message || error).split("\n")[0] });
     return res.json({
       ...(data || {}),
-      capabilities: { view: true, payout: false, transfer: false, email: false, pdf: true },
+      capabilities: { view: true, payout: false, transfer: false, email: BILLING_V1_COMMISSION_DOCUMENT_NOTIFICATIONS, pdf: true },
       read_only: true,
     });
   } catch (e) {
@@ -16082,26 +16124,8 @@ async function loadCommissionDocument(statementId,ownerId=null){
   ]);if(pe||xe||oe)throw pe||xe||oe;if(ownerId&&pool?.owner_admin_user_id!==ownerId)return null;
   return {statement,pool,owner,payout};
 }
-function commissionPdfBase(title,number){
-  const doc=new PDFDocument({size:"A4",margin:48});doc.fontSize(10).fillColor("#667085").text("RAZAFI",48,45);
-  doc.fontSize(22).fillColor("#155eef").text(title,{align:"right"});doc.fontSize(10).fillColor("#101828").text(number||"",{align:"right"});
-  doc.moveDown(2).strokeColor("#d0d5dd").moveTo(48,105).lineTo(547,105).stroke();return doc;
-}
-function moneyAr(v){return `${Number(v||0).toLocaleString("fr-FR")} Ar`}
-function renderCommissionStatementPdf(row){const {statement:s,pool:p}=row,doc=commissionPdfBase("RELEVÉ DE COMMISSION",s.statement_number);
-  doc.moveDown(3).fontSize(12).fillColor("#101828").text(`Pool : ${[p?.brand_name,p?.name].filter(Boolean).join(" — ")}`)
-    .text(`Période : ${s.period_start} au ${s.period_end}`).text(`Ventes payées : ${moneyAr(s.gross_sales_ar)}`)
-    .text(`Commission RAZAFI (${s.commission_pct} %) : ${moneyAr(s.commission_amount_ar)}`)
-    .text(`Part propriétaire brute : ${moneyAr(s.owner_gross_amount_ar)}`).text(`Transactions : ${s.transaction_count}`);
-  doc.moveDown(2).fontSize(9).fillColor("#667085").text(`Source immuable : ${s.source_checksum}`);return doc}
-function renderCommissionReceiptPdf(row){const {statement:s,pool:p,payout:x}=row,doc=commissionPdfBase("REÇU DE REVERSEMENT",x.receipt_number);
-  doc.moveDown(3).fontSize(12).fillColor("#101828").text(`Pool : ${[p?.brand_name,p?.name].filter(Boolean).join(" — ")}`)
-    .text(`Période : ${s.period_start} au ${s.period_end}`).text(`Part propriétaire brute : ${moneyAr(x.owner_gross_amount_ar)}`)
-    .text(`Frais du transfert final : ${moneyAr(x.transfer_fee_ar)}`).fontSize(16).fillColor("#166534").text(`Montant net reversé : ${moneyAr(x.owner_net_amount_ar)}`)
-    .fontSize(11).fillColor("#101828").text(`Méthode : ${x.transfer_method}`).text(`Référence : ${x.transfer_reference}`).text(`Transféré le : ${new Date(x.transferred_at).toLocaleString("fr-FR",{timeZone:"Indian/Antananarivo"})}`);return doc}
-
-app.get("/api/owner/billing/commission-statements/:id/pdf",requireAdmin,requireBillingOwnerCommissionPanel,async(req,res)=>{try{const row=await loadCommissionDocument(req.params.id,req.admin.id);if(!row)return res.status(404).json({error:"commission_statement_not_found"});sendBillingPdf(res,renderCommissionStatementPdf(row),billingPdfFilename("releve-commission",row.statement.statement_number))}catch(e){res.status(500).json({error:"commission_statement_pdf_failed"})}});
-app.get("/api/owner/billing/commission-payouts/:id/receipt",requireAdmin,requireBillingOwnerCommissionPanel,async(req,res)=>{try{const {data:x,error}=await supabase.from("billing_commission_payouts").select("statement_id,status").eq("id",req.params.id).maybeSingle();if(error)throw error;if(!x||x.status!=="paid")return res.status(404).json({error:"commission_receipt_not_found"});const row=await loadCommissionDocument(x.statement_id,req.admin.id);if(!row)return res.status(404).json({error:"commission_receipt_not_found"});sendBillingPdf(res,renderCommissionReceiptPdf(row),billingPdfFilename("recu-reversement",row.payout.receipt_number))}catch(e){res.status(500).json({error:"commission_receipt_pdf_failed"})}});
+app.get("/api/owner/billing/commission-statements/:id/pdf",requireAdmin,requireBillingOwnerCommissionPanel,async(req,res)=>{try{const row=await loadCommissionDocument(req.params.id,req.admin.id);if(!row)return res.status(404).json({error:"commission_statement_not_found"});sendBillingPdf(res,createCommissionStatementPdf(row),billingPdfFilename("releve-commission",row.statement.statement_number))}catch(e){console.error("[BILLING S13.8.4.4] statement PDF",e?.message||e);res.status(500).json({error:"commission_statement_pdf_failed"})}});
+app.get("/api/owner/billing/commission-payouts/:id/receipt",requireAdmin,requireBillingOwnerCommissionPanel,async(req,res)=>{try{const {data:x,error}=await supabase.from("billing_commission_payouts").select("statement_id,status").eq("id",req.params.id).maybeSingle();if(error)throw error;if(!x||x.status!=="paid")return res.status(404).json({error:"commission_receipt_not_found"});const row=await loadCommissionDocument(x.statement_id,req.admin.id);if(!row)return res.status(404).json({error:"commission_receipt_not_found"});sendBillingPdf(res,createCommissionPayoutReceiptPdf(row),billingPdfFilename("recu-reversement",row.payout.receipt_number))}catch(e){console.error("[BILLING S13.8.4.4] receipt PDF",e?.message||e);res.status(500).json({error:"commission_receipt_pdf_failed"})}});
 
 app.get("/api/admin/billing/commission-payouts",requireAdmin,requireSuperadmin,async(_req,res)=>{try{const {data,error}=await supabase.from("billing_commission_payouts").select("*").order("period_start",{ascending:false}).limit(200);if(error)throw error;const poolIds=[...new Set((data||[]).map(x=>x.pool_id))],ownerIds=[...new Set((data||[]).map(x=>x.owner_admin_user_id))];const [{data:pools},{data:owners}]=await Promise.all([supabase.from("internet_pools").select("id,name,brand_name").in("id",poolIds.length?poolIds:["00000000-0000-0000-0000-000000000000"]),supabase.from("admin_users").select("id,email").in("id",ownerIds.length?ownerIds:["00000000-0000-0000-0000-000000000000"])]);const pm=new Map((pools||[]).map(x=>[x.id,x])),om=new Map((owners||[]).map(x=>[x.id,x]));res.json({items:(data||[]).map(x=>({...x,pool:pm.get(x.pool_id)||null,owner:om.get(x.owner_admin_user_id)||null})),confirmation_enabled:BILLING_V1_COMMISSION_PAYOUT_CONFIRM,automatic_transfer:false})}catch(e){res.status(500).json({error:"commission_payouts_load_failed"})}});
 app.post("/api/admin/billing/commission-payouts/:id/confirm",requireAdmin,requireSuperadmin,requireBillingCommissionPayoutConfirm,async(req,res)=>{try{const {data,error}=await supabase.rpc("fn_billing_v1_s13_8_4_3_confirm_payout",{p_actor:req.admin.id,p_payout_id:req.params.id,p_transfer_method:req.body?.transfer_method,p_transfer_reference:req.body?.transfer_reference,p_transfer_fee_ar:req.body?.transfer_fee_ar,p_owner_net_amount_ar:req.body?.owner_net_amount_ar,p_transferred_at:req.body?.transferred_at,p_transfer_note:req.body?.transfer_note||null});if(error)return res.status(400).json({error:String(error.message||error).split("\n")[0]});res.json(data)}catch(e){res.status(500).json({error:"commission_payout_confirmation_failed"})}});
