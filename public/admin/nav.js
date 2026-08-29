@@ -77,9 +77,6 @@
           <a class="rz-item" data-href="/admin/owner-revenue.html" href="/admin/owner-revenue.html" id="rzNavOwnerRevenue">
             <span class="rz-item-label">Revenus propriétaire</span>
           </a>
-          <a class="rz-item" data-href="/admin/owner-billing-shadow.html" href="/admin/owner-billing-shadow.html" id="rzNavOwnerBillingShadow" style="display:none">
-            <span class="rz-item-label">Ancien aperçu abonnement</span>
-          </a>
           <a class="rz-item" data-href="/admin/owner-subscription.html" href="/admin/owner-subscription.html" id="rzNavOwnerSubscription">
             <span class="rz-item-label">Mon abonnement RAZAFI</span>
           </a>
@@ -344,7 +341,7 @@
       const isSuper = !!admin?.is_superadmin || String(admin?.role || "").toLowerCase() === "superadmin";
       const canManageBillingOffers = isSuper && admin?.permissions?.billing_offers_manage === true;
       const canManageBillingAssignments = isSuper && admin?.permissions?.billing_assignments_shadow_manage === true;
-      const canViewOwnerBillingShadow = admin?.permissions?.billing_owner_portal_shadow_view === true;
+      const canViewOwnerSubscription = admin?.permissions?.billing_owner_subscription_view === true;
       const canConfigureOwnerBilling = admin?.permissions?.billing_owner_configuration === true;
 
       // Hide forbidden nav items for pool_readonly
@@ -358,7 +355,6 @@
         const elCommissionPayouts = $("#rzNavCommissionPayouts");
         const elBlocked = $("#rzNavBlocked");
         const elOwnerRevenue = $("#rzNavOwnerRevenue");
-        const elOwnerBillingShadow = $("#rzNavOwnerBillingShadow");
         const elOwnerSubscription = $("#rzNavOwnerSubscription");
         const elOwnerConfigurationReview = $("#rzNavOwnerConfigurationReview");
         const elMaintenance = $("#rzNavMaintenance");
@@ -369,8 +365,7 @@
         if (elBillingAssignments) elBillingAssignments.style.display = "none";
         if (elCommissionPayouts) elCommissionPayouts.style.display = "none";
         if (elOwnerRevenue) elOwnerRevenue.style.display = "none";
-        if (elOwnerBillingShadow) elOwnerBillingShadow.style.display = "none";
-        if (elOwnerSubscription) elOwnerSubscription.style.display = (canConfigureOwnerBilling || canViewOwnerBillingShadow) ? "" : "none";
+        if (elOwnerSubscription) elOwnerSubscription.style.display = (canConfigureOwnerBilling || canViewOwnerSubscription) ? "" : "none";
         if (elOwnerConfigurationReview) elOwnerConfigurationReview.style.display = "none";
         if (elMaintenance) elMaintenance.style.display = "none";
       } else {
@@ -379,7 +374,6 @@
         const elBillingOffers = $("#rzNavBillingOffers");
         const elBillingAssignments = $("#rzNavBillingAssignments");
         const elOwnerRevenue = $("#rzNavOwnerRevenue");
-        const elOwnerBillingShadow = $("#rzNavOwnerBillingShadow");
         const elOwnerSubscription = $("#rzNavOwnerSubscription");
         const elOwnerConfigurationReview = $("#rzNavOwnerConfigurationReview");
         const elMaintenance = $("#rzNavMaintenance");
@@ -387,8 +381,7 @@
         if (elBillingOffers) elBillingOffers.style.display = canManageBillingOffers ? "" : "none";
         if (elBillingAssignments) elBillingAssignments.style.display = canManageBillingAssignments ? "" : "none";
         if (elOwnerRevenue) elOwnerRevenue.style.display = "";
-        if (elOwnerBillingShadow) elOwnerBillingShadow.style.display = "none";
-        if (elOwnerSubscription) elOwnerSubscription.style.display = (canConfigureOwnerBilling || canViewOwnerBillingShadow) ? "" : "none";
+        if (elOwnerSubscription) elOwnerSubscription.style.display = (canConfigureOwnerBilling || canViewOwnerSubscription) ? "" : "none";
         if (elOwnerConfigurationReview) elOwnerConfigurationReview.style.display = canConfigureOwnerBilling ? "" : "none";
         if (elMaintenance) elMaintenance.style.display = "";
       }

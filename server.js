@@ -1450,13 +1450,6 @@ async function requireAdmin(req, res, next) {
       const allowOwnerMarkSeen =
         method === "POST" && fullPath === "/api/admin/dashboard-since-last-visit/mark-seen";
 
-      // S11.10 isolated owner UAT. These writes are restricted to dedicated
-      // billing_subscription_uat_* tables; route handlers re-check ownership.
-      const allowOwnerBillingUatWrite = method === "POST" && (
-        fullPath === "/api/owner/billing-uat/start" ||
-        /^\/api\/owner\/billing-uat\/[^/]+\/(simulate-payment|confirm-payment)$/.test(fullPath)
-      );
-
       // S13.2 controlled owner configuration. The handlers call SECURITY DEFINER
       // functions which re-check pool assignment and commercial ownership.
       const allowOwnerBillingConfigurationWrite = method === "POST" && (
@@ -1476,7 +1469,7 @@ async function requireAdmin(req, res, next) {
       const allowOwnerGuidedSubscriptionPayment =
         method === "POST" && /^\/api\/owner\/billing\/invoices\/[^/]+\/pay-guided$/.test(fullPath);
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerMarketingWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat || allowOwnerMarkSeen || allowOwnerBillingUatWrite || allowOwnerBillingConfigurationWrite || allowOwnerAutonomousBillingChange || allowOwnerGuidedSubscriptionPayment) {
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerMarketingWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat || allowOwnerMarkSeen || allowOwnerBillingConfigurationWrite || allowOwnerAutonomousBillingChange || allowOwnerGuidedSubscriptionPayment) {
         return next();
       }
 
@@ -13995,7 +13988,7 @@ function buildAdminPermissions(admin) {
     billing_subscription_payments_shadow_manage: isSuperadmin && BILLING_V1_SUBSCRIPTION_PAYMENTS_SHADOW,
     billing_access_shadow_manage: isSuperadmin && BILLING_V1_ACCESS_SHADOW,
     billing_commission_statements_shadow_manage: isSuperadmin && BILLING_V1_COMMISSION_STATEMENTS_SHADOW,
-    billing_owner_portal_shadow_view: BILLING_V1_OWNER_PORTAL_SHADOW || BILLING_V1_OWNER_PAYMENT_SELF_SERVICE,
+    billing_owner_subscription_view: BILLING_V1_ENABLED && BILLING_V1_OWNER_SELF_SERVICE,
     billing_owner_configuration: BILLING_V1_OWNER_CONFIGURATION,
   };
 }
@@ -14369,8 +14362,9 @@ function requireBillingCommissionStatementsShadow(req, res, next) {
   return next();
 }
 
-function requireBillingOwnerPortalShadow(req, res, next) {
-  if (!BILLING_V1_OWNER_PORTAL_SHADOW && !BILLING_V1_OWNER_PAYMENT_SELF_SERVICE) return res.status(404).json({ error: "billing_owner_portal_shadow_disabled" });
+function requireBillingOwnerSubscription(req, res, next) {
+  if (!BILLING_V1_ENABLED || !BILLING_V1_OWNER_SELF_SERVICE)
+    return res.status(404).json({ error: "billing_owner_subscription_disabled" });
   return next();
 }
 
@@ -16130,10 +16124,10 @@ app.get("/api/owner/billing/commission-payouts/:id/receipt",requireAdmin,require
 app.get("/api/admin/billing/commission-payouts",requireAdmin,requireSuperadmin,async(_req,res)=>{try{const {data,error}=await supabase.from("billing_commission_payouts").select("*").order("period_start",{ascending:false}).limit(200);if(error)throw error;const poolIds=[...new Set((data||[]).map(x=>x.pool_id))],ownerIds=[...new Set((data||[]).map(x=>x.owner_admin_user_id))];const [{data:pools},{data:owners}]=await Promise.all([supabase.from("internet_pools").select("id,name,brand_name").in("id",poolIds.length?poolIds:["00000000-0000-0000-0000-000000000000"]),supabase.from("admin_users").select("id,email").in("id",ownerIds.length?ownerIds:["00000000-0000-0000-0000-000000000000"])]);const pm=new Map((pools||[]).map(x=>[x.id,x])),om=new Map((owners||[]).map(x=>[x.id,x]));res.json({items:(data||[]).map(x=>({...x,pool:pm.get(x.pool_id)||null,owner:om.get(x.owner_admin_user_id)||null})),confirmation_enabled:BILLING_V1_COMMISSION_PAYOUT_CONFIRM,automatic_transfer:false})}catch(e){res.status(500).json({error:"commission_payouts_load_failed"})}});
 app.post("/api/admin/billing/commission-payouts/:id/confirm",requireAdmin,requireSuperadmin,requireBillingCommissionPayoutConfirm,async(req,res)=>{try{const {data,error}=await supabase.rpc("fn_billing_v1_s13_8_4_3_confirm_payout",{p_actor:req.admin.id,p_payout_id:req.params.id,p_transfer_method:req.body?.transfer_method,p_transfer_reference:req.body?.transfer_reference,p_transfer_fee_ar:req.body?.transfer_fee_ar,p_owner_net_amount_ar:req.body?.owner_net_amount_ar,p_transferred_at:req.body?.transferred_at,p_transfer_note:req.body?.transfer_note||null});if(error)return res.status(400).json({error:String(error.message||error).split("\n")[0]});res.json(data)}catch(e){res.status(500).json({error:"commission_payout_confirmation_failed"})}});
 
-// S10 owner portal: read-only projection of the existing Shadow records.
-// It deliberately has no document renderer, no PDF URL, no payment action and
-// no write route. A user can see only pools they own.
-app.get("/api/owner/billing-shadow", requireAdmin, requireBillingOwnerPortalShadow, async (req, res) => {
+// S13.9.1.2.1 — canonical owner subscription projection.
+// A user can see only pools they own. Commission statements are served by the
+// dedicated immutable S13.8.4 endpoint, never by the retired Shadow tables.
+app.get("/api/owner/billing", requireAdmin, requireBillingOwnerSubscription, async (req, res) => {
   try {
     const ownerId = String(req.admin?.id || "").trim();
     if (!ownerId) return res.status(401).json({ error: "owner_id_required" });
@@ -16145,13 +16139,11 @@ app.get("/api/owner/billing-shadow", requireAdmin, requireBillingOwnerPortalShad
     if (!poolIds.length) return res.json({
       pools: [], assignments: [], invoices: [], statements: [], payout_records: [], documents: [],
       payment_ui: { enabled: false, provider: null, payable_invoice_ids: [] },
-      passive: true, shadow: true, no_effect: true, pdf_available: false
+      passive: true, shadow: false, no_effect: true, pdf_available: false
     });
-    const [assignmentsResult, invoicesResult, statementsResult, payoutsResult, offersResult, paymentsResult, activationsResult] = await Promise.all([
+    const [assignmentsResult, invoicesResult, offersResult, paymentsResult, activationsResult] = await Promise.all([
       supabase.from("pool_billing_assignments").select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to,created_at").in("pool_id", poolIds).order("effective_from", { ascending: false }),
       supabase.from("subscription_invoices").select("id,invoice_number,pool_id,offer_title_snapshot,period_start,period_end,amount_due_ar,amount_paid_ar,status,issued_at,due_at,pdf_snapshot,created_at").eq("owner_admin_user_id", ownerId).eq("purpose", "monthly_subscription").order("period_start", { ascending: false }),
-      supabase.from("pool_billing_commission_shadow_statements").select("id,pool_id,offer_title_snapshot,period_start,period_end,commission_pct,gross_sales_ar,commission_amount_ar,owner_gross_amount_ar,transaction_count,status,metadata,created_at").eq("owner_admin_user_id", ownerId).order("period_start", { ascending: false }),
-      supabase.from("pool_billing_payout_shadow_records").select("id,commission_statement_id,pool_id,transfer_fee_ar,net_owner_amount_ar,status,metadata,created_at").eq("owner_admin_user_id", ownerId).order("created_at", { ascending: false }),
       supabase.from("billing_offers").select("id,title"),
       supabase.from("subscription_payment_transactions")
         .select("id,invoice_id,request_ref,provider,amount_ar,currency,status,created_at,initiated_at,completed_at,failed_at,updated_at")
@@ -16160,9 +16152,9 @@ app.get("/api/owner/billing-shadow", requireAdmin, requireBillingOwnerPortalShad
         .select("id,pool_id,invoice_id,payment_transaction_id,assignment_id,billing_period_id,status,activated_at,metadata")
         .in("pool_id", poolIds).order("activated_at", { ascending: false }),
     ]);
-    const combinedError = assignmentsResult.error || invoicesResult.error || statementsResult.error || payoutsResult.error || offersResult.error || paymentsResult.error || activationsResult.error;
+    const combinedError = assignmentsResult.error || invoicesResult.error || offersResult.error || paymentsResult.error || activationsResult.error;
     if (combinedError) return res.status(500).json({ error: combinedError.message });
-    const assignments = assignmentsResult.data || [], invoices = invoicesResult.data || [], statements = statementsResult.data || [], payout_records = payoutsResult.data || [];
+    const assignments = assignmentsResult.data || [], invoices = invoicesResult.data || [];
     const payments = paymentsResult.data || [], activations = activationsResult.data || [];
     const offerTitleById = new Map((offersResult.data || []).map((x) => [x.id, x.title]));
     const nowDate = new Date().toISOString().slice(0, 10);
@@ -16172,7 +16164,6 @@ app.get("/api/owner/billing-shadow", requireAdmin, requireBillingOwnerPortalShad
     const documents = [
       ...invoices.map((x) => ({ id: x.id, type: "subscription_invoice", pool_id: x.pool_id, title: `Facture ${x.invoice_number}`, period_start: x.period_start, status: x.status, amount_ar: x.amount_due_ar, shadow: !billingPdfLiveEnabled(), download_available: billingPdfLiveEnabled(), download_url: billingPdfLiveEnabled()?`/api/owner/billing/invoices/${encodeURIComponent(x.id)}/pdf`:null })),
       ...invoices.filter((x)=>x.status==="paid").map((x) => ({ id: x.id, type: "subscription_receipt", pool_id: x.pool_id, title: `Reçu ${x.invoice_number}`, period_start: x.period_start, status: x.status, amount_ar: x.amount_paid_ar, shadow: !billingPdfLiveEnabled(), download_available: billingPdfLiveEnabled(), download_url: billingPdfLiveEnabled()?`/api/owner/billing/invoices/${encodeURIComponent(x.id)}/receipt`:null })),
-      ...statements.map((x) => ({ id: x.id, type: "commission_statement", pool_id: x.pool_id, title: `Relevé de commission ${x.period_start}`, period_start: x.period_start, status: x.status, amount_ar: x.owner_gross_amount_ar, shadow: true, download_available: false })),
     ];
     const latestPaymentByInvoice = new Map();
     for (const payment of payments) if (!latestPaymentByInvoice.has(payment.invoice_id)) latestPaymentByInvoice.set(payment.invoice_id, payment);
@@ -16188,7 +16179,7 @@ app.get("/api/owner/billing-shadow", requireAdmin, requireBillingOwnerPortalShad
       guided: true,
     };
     return res.json({ pools: pools || [], assignments: currentAssignments, upcoming_assignments: upcomingAssignments,
-      invoices: guidedInvoices, payments, activations, statements, payout_records, documents, payment_ui,
+      invoices: guidedInvoices, payments, activations, statements: [], payout_records: [], documents, payment_ui,
       passive: !BILLING_V1_OWNER_PAYMENT_SELF_SERVICE, shadow: false, no_effect: true,
       pdf_available: billingPdfLiveEnabled() });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
