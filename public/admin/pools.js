@@ -193,10 +193,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     return !!currentAdmin?.is_superadmin;
   }
 
-  function canEditOwnerFields() {
-    // Backend remains the source of truth. Owners can edit only safe business fields
-    // for their own pools; superadmin keeps full control.
-    return true;
+  function canEditOwnerFields(poolId) {
+    if (isSuperadmin()) return true;
+    const role = String(currentAdmin?.pool_access?.[String(poolId || "")] || "").toLowerCase();
+    return role === "owner" || role === "manager";
   }
 
   function ownerLabelById(ownerId) {
@@ -254,8 +254,21 @@ document.addEventListener("DOMContentLoaded", async () => {
     const options = [`<option value="">— Choisir un propriétaire —</option>`];
 
     ownerUsers.forEach((u) => {
-      const sel = String(u.id) === current ? "selected" : "";
-      options.push(`<option value="${esc(u.id)}" ${sel}>${esc(u.email)}</option>`);
+      const uid = String(u.id || "");
+      const role = String(u.role || "").toLowerCase();
+      const isCurrent = uid === current;
+
+      // Platform Superadmin can never become a new pool owner. Keep an
+      // already-existing legacy Superadmin owner visible only so the field does
+      // not silently clear before the explicit ownership cutover.
+      if (role === "superadmin" && !isCurrent) return;
+      if (role === "superadmin" && isCurrent) {
+        options.push(`<option value="${esc(uid)}" selected disabled>${esc(u.email)} · Superadmin actuel — à remplacer</option>`);
+        return;
+      }
+
+      const sel = isCurrent ? "selected" : "";
+      options.push(`<option value="${esc(uid)}" ${sel}>${esc(u.email)}</option>`);
     });
 
     return options.join("");
@@ -592,7 +605,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const ownerSharePct = ownerShare(p);
     const ownerAdminUserId = String(p.owner_admin_user_id || p.ownerAdminUserId || "").trim();
     const canManageAll = isSuperadmin();
-    const canEditBusiness = canManageAll || canEditOwnerFields();
+    const canEditBusiness = canManageAll || canEditOwnerFields(pid);
     // Payment methods are superadmin-only. Owners (canEditBusiness) may still
     // edit other business fields but must not toggle payment methods.
     const canEditPaymentMethods = canManageAll;

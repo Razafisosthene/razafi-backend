@@ -144,20 +144,19 @@ document.addEventListener("DOMContentLoaded", async () => {
   let pools = [];
   let items = [];
   let usageByPool = {};
+  let canManageFreeAccess = false;
 
   async function guardSession() {
     try {
       const me = await fetchJSON("/api/admin/me");
       if (meEl) meEl.innerHTML = `Connecté :<strong>${esc(displayAdminName(me))}</strong>`;
 
-      // Phase 2B: Free Access is available to superadmin and owners.
-      // Real security is enforced by the backend: owners are scoped to assigned pools
-      // and each pool still respects free_access_limit.
-      const canManageFreeAccess = me?.permissions?.free_access_manage !== false;
+      // S13.9.2A.3: VIEWER may inspect the page but cannot mutate.
+      canManageFreeAccess = me?.permissions?.free_access_manage === true;
       if (!canManageFreeAccess) {
-        showMsg("Action non autorisée.", true);
-        rowsEl.innerHTML = `<tr><td class="rz-empty-state" colspan="7">Action non autorisée.</td></tr>`;
-        return false;
+        if (openAddModalBtn) openAddModalBtn.style.display = "none";
+        if (addForm) addForm.style.display = "none";
+        showMsg("Lecture seule — les modifications sont désactivées.", false);
       }
       return true;
     } catch {
@@ -305,11 +304,11 @@ document.addEventListener("DOMContentLoaded", async () => {
           <td data-label="Statut">${statusPill(active)}</td>
           <td data-label="Sync" class="rz-free-sub">${esc(synced)}</td>
           <td data-label="Actions">
-            <div class="rz-free-row-actions">
+            ${canManageFreeAccess ? `<div class="rz-free-row-actions">
               <button type="button" data-toggle="${esc(it.id)}" data-active="${active ? "1" : "0"}" class="filter-btn">${active ? "Désactiver" : "Activer"}</button>
               <button type="button" data-syncpool="${esc(it.pool_id)}" class="filter-btn">Synchroniser</button>
               ${deleteButton}
-            </div>
+            </div>` : `<span class="rz-free-sub">Lecture seule</span>`}
           </td>
         </tr>
       `;

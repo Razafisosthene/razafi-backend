@@ -560,7 +560,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const me = await fetchJSON("/api/admin/me");
       currentAdmin = me || {};
       isSuperadminUser = !!currentAdmin?.is_superadmin || String(currentAdmin?.role || "").toLowerCase() === "superadmin";
-      ownerPlanVisibilityOnly = !isSuperadminUser && currentAdmin?.permissions?.plans_visibility_manage !== false;
+      ownerPlanVisibilityOnly = !isSuperadminUser && currentAdmin?.permissions?.plans_visibility_manage === true;
 
       // Owner Phase 2A: keep Plans safe. Owners can only show/hide existing plans.
       // Full create/edit/delete stays visually hidden and server-protected.

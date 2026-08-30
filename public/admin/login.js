@@ -2,8 +2,21 @@ const form = document.getElementById("loginForm");
 const errorBox = document.getElementById("error");
 const googleSignInButton = document.getElementById("googleSignInButton");
 
+function friendlyLoginError(message) {
+  const code = String(message || "").trim();
+  const map = {
+    google_only_account: "Ce compte se connecte avec Google uniquement.",
+    superadmin_password_only: "Le compte Superadmin utilise la connexion email + mot de passe.",
+    superadmin_password_not_configured: "Mot de passe Superadmin non configuré.",
+    google_identity_mismatch: "Ce compte Google ne correspond pas à l’identité déjà liée.",
+    google_identity_bind_conflict: "Cette identité Google est déjà liée différemment.",
+    "Compte non autorisé": "Cette adresse Google n’est pas autorisée dans RAZAFI.",
+  };
+  return map[code] || code;
+}
+
 function showError(message) {
-  errorBox.textContent = message || "";
+  errorBox.textContent = friendlyLoginError(message);
 }
 
 async function readJSONResponse(res) {

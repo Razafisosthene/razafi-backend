@@ -2,59 +2,22 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RAZAFI Admin — Utilisateurs</title>
-  <link rel="stylesheet" href="/admin/admin.css?v=admin-wide-1" />
-
-  <!-- Users page local polish only: no global admin.css change -->
+  <link rel="stylesheet" href="/admin/admin.css?v=rbac-a3-1" />
   <style>
-    .rz-users-shell{display:flex;flex-direction:column;gap:14px;}
-    .rz-users-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;}
-    .rz-users-title-block{min-width:0;}
-    .rz-users-me{white-space:normal;line-height:1.25;}
-    .rz-users-me strong{display:block;color:var(--rz-text,#111827);font-weight:900;margin-top:2px;word-break:break-word;}
-    .rz-users-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
-    .rz-users-actions button{width:auto;}
-    .rz-users-table-card{margin-top:4px;border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);overflow:hidden;}
-    .rz-users-table-wrap{overflow:auto;-webkit-overflow-scrolling:touch;}
-    .rz-users-table{width:100%;border-collapse:separate;border-spacing:0;min-width:860px;}
-    .rz-users-table th{position:sticky;top:0;z-index:2;text-align:left;padding:12px 10px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--rz-muted,#6b7280);background:rgba(248,250,252,.96);border-bottom:1px solid rgba(17,24,39,.08);}
-    .rz-users-table th:last-child{text-align:right;}
-    .rz-users-table td{padding:12px 10px;border-bottom:1px solid rgba(17,24,39,.07);vertical-align:middle;font-size:14px;}
-    .rz-users-table tbody tr:hover{background:rgba(13,110,253,.04);}
-    .rz-user-email{font-weight:900;letter-spacing:-.02em;}
-    .rz-user-pools{max-width:420px;white-space:normal;line-height:1.35;}
-    .rz-status-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 9px;border-radius:999px;font-size:12px;font-weight:900;border:1px solid rgba(17,24,39,.08);background:rgba(255,255,255,.78);white-space:nowrap;}
-    .rz-status-pill.ok{background:rgba(22,163,74,.12);color:#15803d;border-color:rgba(22,163,74,.22);}
-    .rz-status-pill.off{background:rgba(107,114,128,.10);color:#4b5563;border-color:rgba(107,114,128,.18);}
-    .rz-empty-state{padding:16px;color:var(--rz-muted,#6b7280);font-weight:800;}
-    .rz-users-modal-title{margin:0;text-align:left;font-size:24px;letter-spacing:-.04em;color:var(--rz-text,#111827);}
-    .rz-users-modal-sub{text-align:left;margin:6px 0 0 0;color:var(--rz-muted,#6b7280);font-size:13px;line-height:1.35;}
-    .rz-users-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;}
-    .rz-users-form-grid .full{grid-column:1/-1;}
-    .rz-users-form-grid label{display:block;font-weight:850;margin-bottom:6px;color:var(--rz-text,#111827);}
-    .rz-users-pools-select{width:100%;padding:10px;min-height:180px;border-radius:16px;border:1px solid var(--rz-line,rgba(17,24,39,.08));background:rgba(255,255,255,.92);}
-    .rz-users-check{display:flex!important;align-items:center;gap:10px;margin:4px 0 0!important;}
-    .rz-users-check input{width:auto;margin:0;}
-    @media (max-width:700px){
-      .rz-users-actions{width:100%;}
-      .rz-users-actions button{width:100%;}
-      .rz-users-table-card{border-radius:20px;}
-      .rz-users-table th,.rz-users-table td{padding:10px 9px;}
-      .rz-users-form-grid{grid-template-columns:1fr;}
-      .rz-users-form-grid .full{grid-column:auto;}
-    }
+    .rz-users-shell{display:flex;flex-direction:column;gap:14px}.rz-users-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap}.rz-users-title-block{min-width:0}.rz-users-me{white-space:normal;line-height:1.25}.rz-users-me strong{display:block;color:var(--rz-text,#111827);font-weight:900;margin-top:2px;word-break:break-word}.rz-users-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.rz-users-actions button{width:auto}.rz-users-help{padding:12px 14px;border-radius:18px;background:rgba(255,255,255,.68);border:1px solid rgba(17,24,39,.07);font-size:13px;line-height:1.45;color:var(--rz-muted,#64748b);font-weight:750}.rz-users-table-card{margin-top:4px;border-radius:24px;background:rgba(255,255,255,.76);border:1px solid rgba(255,255,255,.88);box-shadow:0 12px 28px rgba(15,23,42,.08);overflow:hidden}.rz-users-table-wrap{overflow:auto;-webkit-overflow-scrolling:touch}.rz-users-table{width:100%;border-collapse:separate;border-spacing:0;min-width:980px}.rz-users-table th{position:sticky;top:0;z-index:2;text-align:left;padding:12px 10px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--rz-muted,#6b7280);background:rgba(248,250,252,.96);border-bottom:1px solid rgba(17,24,39,.08)}.rz-users-table th:last-child{text-align:right}.rz-users-table td{padding:12px 10px;border-bottom:1px solid rgba(17,24,39,.07);vertical-align:middle;font-size:14px}.rz-users-table tbody tr:hover{background:rgba(13,110,253,.04)}.rz-user-email{font-weight:900;letter-spacing:-.02em}.rz-user-meta{font-size:12px;color:#64748b;margin-top:3px;font-weight:700}.rz-user-pools{max-width:480px;white-space:normal;line-height:1.5}.rz-role-chip{display:inline-flex;padding:4px 8px;border-radius:999px;margin:2px 4px 2px 0;background:rgba(15,23,42,.06);font-size:11px;font-weight:900}.rz-role-chip.owner{background:rgba(37,99,235,.10);color:#1d4ed8}.rz-role-chip.manager{background:rgba(22,163,74,.10);color:#15803d}.rz-role-chip.viewer{background:rgba(100,116,139,.12);color:#475569}.rz-status-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 9px;border-radius:999px;font-size:12px;font-weight:900;border:1px solid rgba(17,24,39,.08);background:rgba(255,255,255,.78);white-space:nowrap}.rz-status-pill.ok{background:rgba(22,163,74,.12);color:#15803d;border-color:rgba(22,163,74,.22)}.rz-status-pill.off{background:rgba(107,114,128,.10);color:#4b5563;border-color:rgba(107,114,128,.18)}.rz-empty-state{padding:16px;color:var(--rz-muted,#6b7280);font-weight:800}.rz-users-modal-title{margin:0;text-align:left;font-size:24px;letter-spacing:-.04em;color:var(--rz-text,#111827)}.rz-users-modal-sub{text-align:left;margin:6px 0 0;color:var(--rz-muted,#6b7280);font-size:13px;line-height:1.35}.rz-users-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}.rz-users-form-grid .full{grid-column:1/-1}.rz-users-form-grid label{display:block;font-weight:850;margin-bottom:6px;color:var(--rz-text,#111827)}.rz-pool-role-list{display:flex;flex-direction:column;gap:8px}.rz-pool-role-row{display:grid;grid-template-columns:minmax(0,1fr) 180px;gap:12px;align-items:center;padding:11px 12px;border-radius:16px;background:rgba(248,250,252,.92);border:1px solid rgba(17,24,39,.07)}.rz-pool-role-name{font-weight:900}.rz-pool-role-cap{font-size:11px;color:#64748b;margin-top:3px;font-weight:750}.rz-pool-role-row select{margin:0}.rz-owner-lock{font-size:12px;font-weight:900;color:#1d4ed8}.rz-users-check{display:flex!important;align-items:center;gap:10px;margin:4px 0 0!important}.rz-users-check input{width:auto;margin:0}.rz-actions-cell{display:flex;justify-content:flex-end;gap:7px;flex-wrap:wrap}.rz-actions-cell button{width:auto}.rz-auth-note{padding:10px 12px;border-radius:14px;background:rgba(37,99,235,.06);font-size:12px;line-height:1.4;color:#475569;font-weight:750}
+    @media(max-width:700px){.rz-users-actions{width:100%}.rz-users-actions button{width:100%}.rz-users-table-card{border-radius:20px}.rz-users-table th,.rz-users-table td{padding:10px 9px}.rz-users-form-grid{grid-template-columns:1fr}.rz-users-form-grid .full{grid-column:auto}.rz-pool-role-row{grid-template-columns:1fr}}
   </style>
 </head>
 <body class="rz-admin-shell users-page">
   <div class="login-container">
-    <div class="card rz-users-shell" style="max-width: 1120px; width: 96%;">
+    <div class="card rz-users-shell" style="max-width:1180px;width:96%;">
       <div class="topbar rz-users-header">
         <div class="title rz-users-title-block">
           <h1 class="rz-hero-title">Utilisateurs</h1>
           <div id="me" class="subtitle rz-users-me">Vérification de la session…</div>
         </div>
-
         <div class="rz-users-actions">
           <button id="refreshBtn" type="button" class="filter-btn primary">Actualiser</button>
           <button id="newBtn" type="button" class="filter-btn primary">+ Nouvel utilisateur</button>
@@ -62,70 +25,51 @@
         </div>
       </div>
 
-      <div id="err" class="error" style="display:none; margin-top:10px;"></div>
+      <div id="scopeHelp" class="rz-users-help">Chargement des droits…</div>
+      <div id="err" class="error" style="display:none;margin-top:10px;"></div>
 
       <div class="rz-users-table-card">
         <div class="rz-users-table-wrap">
           <table class="rz-users-table">
-            <thead>
-              <tr>
-                <th>Email</th>
-                <th>Rôle</th>
-                <th>Statut</th>
-                <th>Pools</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody id="tbody">
-              <tr><td colspan="5" class="rz-empty-state">Chargement…</td></tr>
-            </tbody>
+            <thead><tr><th>Email</th><th>Accès</th><th>Statut</th><th>Authentification</th><th>Pools</th><th>Actions</th></tr></thead>
+            <tbody id="tbody"><tr><td colspan="6" class="rz-empty-state">Chargement…</td></tr></tbody>
           </table>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Modal -->
   <div id="modal" class="modal" style="display:none;">
     <div class="modal-card">
       <div class="topbar">
         <div>
           <h1 id="modalTitle" class="rz-users-modal-title">Nouvel utilisateur</h1>
-          <div id="modalSub" class="rz-users-modal-sub">Utilisateur avec accès limité aux pools sélectionnés.</div>
+          <div id="modalSub" class="rz-users-modal-sub">Compte Google préautorisé.</div>
         </div>
         <button id="closeModalBtn" type="button" class="filter-btn" style="width:auto;">Fermer</button>
       </div>
 
       <div id="modalErr" class="error" style="display:none;"></div>
-
       <div class="rz-users-form-grid">
-        <div>
-          <label>Email</label>
-          <input id="emailInput" type="email" placeholder="utilisateur@example.com" />
+        <div class="full">
+          <label>Email Google</label>
+          <input id="emailInput" type="email" placeholder="utilisateur@gmail.com" autocomplete="off" />
         </div>
 
-        <div>
-          <label>Mot de passe optionnel</label>
-          <input id="passwordInput" type="password" placeholder="Vide = Google uniquement" />
-        </div>
+        <div class="full rz-auth-note" id="authNote">Owner, Gestionnaire et Lecture seule se connectent avec Google uniquement. Aucun mot de passe RAZAFI n’est créé.</div>
 
         <div class="full">
-          <label>Pools assignés</label>
-          <select id="poolsSelect" multiple size="8" class="rz-users-pools-select"></select>
+          <label>Accès aux pools</label>
+          <div id="poolRoleList" class="rz-pool-role-list"></div>
         </div>
 
-        <div>
-          <label class="rz-users-check">
-            <input id="activeToggle" type="checkbox" checked />
-            <span>Actif</span>
-          </label>
+        <div id="activeField">
+          <label class="rz-users-check"><input id="activeToggle" type="checkbox" checked /><span>Compte actif</span></label>
         </div>
       </div>
 
-      <!-- IMPORTANT: keep these IDs because users.js binds them -->
       <div class="modal-actions users-modal-actions">
-        <button id="deleteBtn" class="danger" type="button">Supprimer</button>
-
+        <button id="deleteBtn" class="danger" type="button">Retirer</button>
         <div class="users-modal-right-actions">
           <button id="saveBtn" type="button" class="filter-btn primary">Enregistrer</button>
           <button id="closeModalBtn2" type="button" class="filter-btn">Fermer</button>
@@ -134,7 +78,7 @@
     </div>
   </div>
 
-  <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="./users.js?v=admin-wide-1"></script>
+  <script src="/admin/nav.js?v=rbac-a3-1"></script>
+  <script src="./users.js?v=rbac-a3-1"></script>
 </body>
 </html>

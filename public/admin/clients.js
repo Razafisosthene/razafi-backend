@@ -612,8 +612,12 @@ async function requireAdmin() {
   try {
     const admin = await fetchJSON("/api/admin/me");
     window.__ADMIN = admin;
-        const role = String(admin?.role || "").toLowerCase();
-        window.__IS_READONLY = (role === "pool_readonly");
+        const isSuper = !!admin?.is_superadmin || String(admin?.role || "").toLowerCase() === "superadmin";
+        window.__CAN_POOL_WRITE = isSuper || admin?.permissions?.pool_operational_write === true;
+        // Existing bonus/delete client controls remain Superadmin-only. OWNER /
+        // MANAGER gain only the explicitly supported operational actions such as
+        // device rename; VIEWER remains fully read-only.
+        window.__IS_READONLY = !isSuper;
         if (window.__IS_READONLY) {
           const del = document.getElementById("deleteBtn");
           if (del) del.style.display = "none";
@@ -1346,7 +1350,7 @@ async function openDetail(id) {
     // --------------------------------------------------
     // Device rename (Starlink-like) — by client_mac
     // --------------------------------------------------
-    if (it && it.client_mac) {
+    if (it && it.client_mac && window.__CAN_POOL_WRITE) {
       const blockId = `renameBlock_${it.id}`;
       const inputId = `renameInput_${it.id}`;
       const btnId = `renameBtn_${it.id}`;

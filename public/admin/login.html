@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <title>RAZAFI Admin — Connexion</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <link rel="stylesheet" href="/admin/admin.css?v=admin-wide-1" />
+  <link rel="stylesheet" href="/admin/admin.css?v=rbac-a3-1" />
 </head>
 <body class="rz-login-page">
 
@@ -14,6 +14,7 @@
       <p class="subtitle rz-login-subtitle">Accès sécurisé à votre espace administrateur</p>
 
       <div class="rz-login-google-section">
+        <div style="font-size:12px;font-weight:850;color:#64748b;margin-bottom:10px;">Propriétaire · Gestionnaire · Lecture seule</div>
         <div id="googleSignInButton" class="rz-login-google-button"></div>
       </div>
 
@@ -27,7 +28,7 @@
         <input
           type="email"
           id="email"
-          placeholder="Email administrateur"
+          placeholder="Email Superadmin RAZAFI"
           required
           autocomplete="username"
         />
@@ -35,12 +36,12 @@
         <input
           type="password"
           id="password"
-          placeholder="Mot de passe"
+          placeholder="Mot de passe Superadmin"
           required
           autocomplete="current-password"
         />
 
-        <button type="submit" class="rz-login-submit">Se connecter</button>
+        <button type="submit" class="rz-login-submit">Connexion Superadmin</button>
       </form>
 
       <div id="error" class="error rz-login-error"></div>
@@ -60,6 +61,6 @@
   </div>
 
   <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script src="./login.js?v=admin-wide-1"></script>
+  <script src="./login.js?v=rbac-a3-1"></script>
 </body>
 </html>

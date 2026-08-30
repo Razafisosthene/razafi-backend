@@ -1157,16 +1157,48 @@ function verifyPortalPreviewToken(token) {
   return payload;
 }
 
-function canAdminAccessPool(admin, poolRow) {
-  if (!admin || !poolRow) return false;
+function getAdminPoolAccessRole(admin, poolId) {
+  if (!admin) return null;
+  if (admin.is_superadmin) return "superadmin";
+  const pid = String(poolId || "").trim();
+  if (!pid) return null;
+  const role = admin?.pool_access && typeof admin.pool_access === "object"
+    ? String(admin.pool_access[pid] || "").trim().toLowerCase()
+    : "";
+  return ["owner", "manager", "viewer"].includes(role) ? role : null;
+}
+
+function canAdminAccessPool(admin, poolRowOrId) {
+  if (!admin || !poolRowOrId) return false;
   if (admin.is_superadmin) return true;
+  const poolId = typeof poolRowOrId === "object"
+    ? String(poolRowOrId?.id || "").trim()
+    : String(poolRowOrId || "").trim();
+  return !!getAdminPoolAccessRole(admin, poolId);
+}
 
-  const poolId = String(poolRow?.id || "").trim();
-  const ownerId = String(poolRow?.owner_admin_user_id || "").trim();
-  const adminId = String(admin?.id || "").trim();
-  const assigned = Array.isArray(admin?.pool_ids) ? admin.pool_ids.map(String) : [];
+function canAdminWritePool(admin, poolId) {
+  if (!admin) return false;
+  if (admin.is_superadmin) return true;
+  return ["owner", "manager"].includes(getAdminPoolAccessRole(admin, poolId));
+}
 
-  return (!!poolId && assigned.includes(poolId)) || (!!ownerId && !!adminId && ownerId === adminId);
+function canAdminManagePoolUsers(admin, poolId) {
+  if (!admin) return false;
+  if (admin.is_superadmin) return true;
+  return getAdminPoolAccessRole(admin, poolId) === "owner";
+}
+
+function getAdminWritablePoolIds(admin) {
+  if (!admin || admin.is_superadmin) return [];
+  return Object.entries(admin.pool_access || {})
+    .filter(([, role]) => role === "owner" || role === "manager")
+    .map(([poolId]) => poolId);
+}
+
+function getAdminOwnedPoolIds(admin) {
+  if (!admin || admin.is_superadmin) return [];
+  return Array.isArray(admin.owned_pool_ids) ? admin.owned_pool_ids.map(String) : [];
 }
 
 function normalizePreviewGatewayIp(value) {
@@ -1209,6 +1241,12 @@ function cloneAdminSession(admin) {
   return {
     ...admin,
     pool_ids: Array.isArray(admin.pool_ids) ? [...admin.pool_ids] : [],
+    owned_pool_ids: Array.isArray(admin.owned_pool_ids) ? [...admin.owned_pool_ids] : [],
+    manager_pool_ids: Array.isArray(admin.manager_pool_ids) ? [...admin.manager_pool_ids] : [],
+    viewer_pool_ids: Array.isArray(admin.viewer_pool_ids) ? [...admin.viewer_pool_ids] : [],
+    pool_access: admin.pool_access && typeof admin.pool_access === "object"
+      ? { ...admin.pool_access }
+      : {},
   };
 }
 
@@ -1217,7 +1255,6 @@ function getCachedAdminSession(tokenHash) {
   if (!entry) return null;
 
   if (Date.now() - entry.cachedAt > ADMIN_SESSION_CACHE_TTL_MS) {
-    // Expired — remove from both indexes
     if (entry.admin?.id) {
       const s = adminSessionCacheByUserId.get(entry.admin.id);
       if (s) { s.delete(tokenHash); if (!s.size) adminSessionCacheByUserId.delete(entry.admin.id); }
@@ -1231,8 +1268,6 @@ function getCachedAdminSession(tokenHash) {
 
 function setCachedAdminSession(tokenHash, admin) {
   if (!tokenHash || !admin) return;
-  // Evict only the single oldest entry (insertion-order) instead of nuking everything,
-  // so a size spike doesn't cause a simultaneous Supabase stampede.
   if (adminSessionCache.size >= ADMIN_SESSION_CACHE_MAX) {
     const oldestKey = adminSessionCache.keys().next().value;
     if (oldestKey) {
@@ -1245,7 +1280,6 @@ function setCachedAdminSession(tokenHash, admin) {
     }
   }
   adminSessionCache.set(tokenHash, { admin: cloneAdminSession(admin), cachedAt: Date.now() });
-  // Register in reverse index so we can evict by userId
   if (admin.id) {
     if (!adminSessionCacheByUserId.has(admin.id)) adminSessionCacheByUserId.set(admin.id, new Set());
     adminSessionCacheByUserId.get(admin.id).add(tokenHash);
@@ -1262,8 +1296,6 @@ function clearCachedAdminSession(tokenHash) {
   adminSessionCache.delete(tokenHash);
 }
 
-// Evict ALL cached sessions for a given admin user ID.
-// Call this whenever a user is disabled, deleted, or has their pool assignments changed.
 function clearCachedAdminSessionsByUserId(userId) {
   if (!userId) return;
   const hashes = adminSessionCacheByUserId.get(userId);
@@ -1272,10 +1304,26 @@ function clearCachedAdminSessionsByUserId(userId) {
   adminSessionCacheByUserId.delete(userId);
 }
 
+async function clearExpiredImpersonation(sessionId) {
+  try {
+    await supabase
+      .from("admin_sessions")
+      .update({
+        impersonated_admin_user_id: null,
+        impersonation_started_at: null,
+        impersonation_expires_at: null,
+      })
+      .eq("id", sessionId);
+  } catch (_) {}
+}
+
 async function loadAdminIdentityForTokenHash(tokenHash) {
   const cachedAdmin = getCachedAdminSession(tokenHash);
   if (cachedAdmin) return { admin: cachedAdmin, from_cache: true };
 
+  // A.2 introduced a second FK from admin_sessions -> admin_users for safe
+  // impersonation. Always name both relationships explicitly to avoid an
+  // ambiguous PostgREST embed.
   const { data: session, error } = await supabase
     .from("admin_sessions")
     .select(
@@ -1284,7 +1332,15 @@ async function loadAdminIdentityForTokenHash(tokenHash) {
       expires_at,
       revoked_at,
       admin_user_id,
-      admin_users ( id, email, is_active, role )
+      impersonated_admin_user_id,
+      impersonation_started_at,
+      impersonation_expires_at,
+      actor:admin_users!admin_sessions_admin_user_id_fkey (
+        id, email, is_active, role, google_sub
+      ),
+      effective:admin_users!admin_sessions_impersonated_admin_user_id_fkey (
+        id, email, is_active, role, google_sub
+      )
     `
     )
     .eq("session_token_hash", tokenHash)
@@ -1292,6 +1348,7 @@ async function loadAdminIdentityForTokenHash(tokenHash) {
 
   if (error || !session) {
     clearCachedAdminSession(tokenHash);
+    if (error) console.error("ADMIN SESSION LOAD ERROR", error);
     return { status: 401, error: "Invalid session" };
   }
 
@@ -1300,7 +1357,6 @@ async function loadAdminIdentityForTokenHash(tokenHash) {
     return { status: 401, error: "Session revoked" };
   }
 
-  // Expired: best-effort revoke to keep DB clean
   if (new Date(session.expires_at) < new Date()) {
     clearCachedAdminSession(tokenHash);
     try {
@@ -1312,38 +1368,88 @@ async function loadAdminIdentityForTokenHash(tokenHash) {
     return { status: 401, error: "Session expired" };
   }
 
-  if (!session.admin_users?.is_active) {
+  const actor = session.actor || null;
+  if (!actor?.is_active) {
     clearCachedAdminSession(tokenHash);
     return { status: 403, error: "Admin disabled" };
   }
 
-  const role = String(session.admin_users?.role || "pool_readonly").trim() || "pool_readonly";
-  const is_superadmin = role === "superadmin";
+  const actorRole = String(actor.role || "pool_readonly").trim() || "pool_readonly";
+  const actorIsSuperadmin = actorRole === "superadmin";
 
-  let pool_ids = [];
-  if (!is_superadmin) {
+  const impersonationExpiry = session.impersonation_expires_at
+    ? new Date(session.impersonation_expires_at)
+    : null;
+  const impersonationRequested = !!session.impersonated_admin_user_id;
+  const impersonationValid = !!(
+    impersonationRequested &&
+    actorIsSuperadmin &&
+    session.effective?.id &&
+    session.effective?.is_active &&
+    impersonationExpiry &&
+    impersonationExpiry > new Date()
+  );
+
+  if (impersonationRequested && !impersonationValid) {
+    void clearExpiredImpersonation(session.id);
+  }
+
+  const effective = impersonationValid ? session.effective : actor;
+  const effectiveRole = String(effective?.role || "pool_readonly").trim() || "pool_readonly";
+  const effectiveIsSuperadmin = effectiveRole === "superadmin" && !impersonationValid;
+
+  const pool_access = {};
+  const pool_ids = [];
+  const owned_pool_ids = [];
+  const manager_pool_ids = [];
+  const viewer_pool_ids = [];
+
+  if (!effectiveIsSuperadmin) {
     const { data: rows, error: perr } = await supabase
-      .from("admin_user_pools")
-      .select("pool_id")
-      .eq("admin_user_id", session.admin_users.id);
+      .from("v_rbac_effective_pool_access")
+      .select("pool_id,access_role,is_active")
+      .eq("admin_user_id", effective.id)
+      .eq("is_active", true);
 
     if (perr) {
-      console.error("ADMIN POOLS LOAD ERROR", perr);
+      console.error("ADMIN RBAC POOLS LOAD ERROR", perr);
       return { status: 500, error: "Auth error" };
     }
 
-    pool_ids = (rows || [])
-      .map((r) => (r?.pool_id === undefined || r?.pool_id === null ? "" : String(r.pool_id).trim()))
-      .filter(Boolean);
+    for (const row of rows || []) {
+      const poolId = String(row?.pool_id || "").trim();
+      const accessRole = String(row?.access_role || "").trim().toLowerCase();
+      if (!poolId || !["owner", "manager", "viewer"].includes(accessRole)) continue;
+      pool_access[poolId] = accessRole;
+      pool_ids.push(poolId);
+      if (accessRole === "owner") owned_pool_ids.push(poolId);
+      if (accessRole === "manager") manager_pool_ids.push(poolId);
+      if (accessRole === "viewer") viewer_pool_ids.push(poolId);
+    }
   }
 
   const admin = {
-    id: session.admin_users.id,
-    email: session.admin_users.email,
+    // Effective identity used by route authorization and business scoping.
+    id: effective.id,
+    email: effective.email,
+    role: effectiveRole,
+    is_superadmin: effectiveIsSuperadmin,
+
+    // Real authenticated actor retained for audit / impersonation exit.
+    actor_id: actor.id,
+    actor_email: actor.email,
+    actor_role: actorRole,
+    actor_is_superadmin: actorIsSuperadmin,
+    effective_admin_user_id: effective.id,
     session_id: session.id,
-    role,
-    is_superadmin,
-    pool_ids,
+    is_impersonating: impersonationValid,
+    impersonation_expires_at: impersonationValid ? session.impersonation_expires_at : null,
+
+    pool_ids: Array.from(new Set(pool_ids)),
+    owned_pool_ids: Array.from(new Set(owned_pool_ids)),
+    manager_pool_ids: Array.from(new Set(manager_pool_ids)),
+    viewer_pool_ids: Array.from(new Set(viewer_pool_ids)),
+    pool_access,
   };
 
   setCachedAdminSession(tokenHash, admin);
@@ -1370,112 +1476,105 @@ async function requireAdmin(req, res, next) {
     }
 
     req.admin = loaded.admin;
-    const is_superadmin = !!req.admin.is_superadmin;
+    const isSuperadmin = !!req.admin.is_superadmin;
 
-    // ---------------------------
-    // Server-side permission policy (NO frontend trust)
-    // ---------------------------
-    if (!is_superadmin) {
+    // ---------------------------------------------------------------------
+    // S13.9.2A.3 — server-side RBAC policy.
+    // Superadmin bypasses pool RBAC only when NOT impersonating.
+    // OWNER and MANAGER share operational setup rights; VIEWER is read-only.
+    // OWNER alone manages collaborators and owner billing self-service.
+    // ---------------------------------------------------------------------
+    if (!isSuperadmin) {
       const fullPath = String(req.originalUrl || req.url || "").split("?")[0] || "";
       const method = String(req.method || "GET").toUpperCase();
+      const ownedPoolIds = getAdminOwnedPoolIds(req.admin);
+      const writablePoolIds = getAdminWritablePoolIds(req.admin);
+      const hasOwnerRole = ownedPoolIds.length > 0;
+      const hasOperationalWriteRole = writablePoolIds.length > 0;
 
-      // allow logout for everyone
-      if (method === "POST" && fullPath === "/api/admin/logout") {
-        return next();
-      }
+      // Always allow logout. An impersonating Superadmin must also be able to
+      // exit test mode even though the effective identity is not Superadmin.
+      if (method === "POST" && fullPath === "/api/admin/logout") return next();
+      if (
+        method === "POST" &&
+        fullPath === "/api/admin/impersonation/stop" &&
+        req.admin.actor_is_superadmin === true
+      ) return next();
 
-      // Limited write endpoints for pool owners. Route-level checks still enforce
-      // pool ownership and allowed fields. Everything else remains read-only.
-      const allowOwnerPoolPatch = method === "PATCH" && /^\/api\/admin\/pools\/[^/]+$/.test(fullPath);
-      const allowOwnerLogoWrite = (method === "POST" || method === "DELETE") && /^\/api\/admin\/pools\/[^/]+\/logo$/.test(fullPath);
+      // Safe non-mutating/identity-local POST actions allowed to every scoped
+      // user, including VIEWER.
+      const allowScopedSafePost =
+        (method === "POST" && /^\/api\/admin\/pools\/[^/]+\/portal-preview-link$/.test(fullPath)) ||
+        // Read-only live snapshot: POST is used only because the client IDs are
+        // sent in the body. The handler performs pool scoping and does not mutate.
+        (method === "POST" && fullPath === "/api/admin/clients/live-snapshot") ||
+        (method === "POST" && fullPath === "/api/admin/assistant/chat") ||
+        (method === "POST" && fullPath === "/api/admin/dashboard-since-last-visit/mark-seen");
+      if (allowScopedSafePost) return next();
 
-      // EC-4 marketing: owners may manage only the marketing configuration of pools
-      // they are assigned to / own. Route-level checks re-validate pool scope.
-      const allowOwnerMarketingWrite =
-        (method === "PATCH" && /^\/api\/admin\/pools\/[^/]+\/marketing$/.test(fullPath)) ||
-        (method === "POST" && /^\/api\/admin\/pools\/[^/]+\/marketing\/images$/.test(fullPath)) ||
-        (method === "DELETE" && /^\/api\/admin\/pools\/[^/]+\/marketing\/images\/[^/]+$/.test(fullPath)) ||
-        (method === "PATCH" && /^\/api\/admin\/pools\/[^/]+\/marketing\/images\/order$/.test(fullPath));
-
-      // Phase 2A: owner can only show/hide plans. The route below still verifies
-      // pool ownership and accepts only { is_visible } for non-superadmins.
-      const allowOwnerPlanVisibilityPatch = method === "PATCH" && /^\/api\/admin\/plans\/[^/]+$/.test(fullPath);
-
-      // Phase 2B: owner can manage free-access devices only inside assigned pools.
-      // Route-level checks below enforce pool scope and free_access_limit.
-      const allowOwnerFreeAccessWrite =
-        (method === "POST" && fullPath === "/api/admin/free-access-devices") ||
-        (method === "POST" && fullPath === "/api/admin/free-access-devices/sync") ||
-        (method === "PATCH" && /^\/api\/admin\/free-access-devices\/[^/]+$/.test(fullPath)) ||
-        (method === "DELETE" && /^\/api\/admin\/free-access-devices\/[^/]+$/.test(fullPath));
-
-      // Phase 2C: owner can manage blocked devices only inside assigned pools.
-      // Route-level checks below enforce pool scope and sync restrictions.
-      const allowOwnerBlockedDevicesWrite =
-        (method === "POST" && fullPath === "/api/admin/blocked-devices") ||
-        (method === "POST" && fullPath === "/api/admin/blocked-devices/sync") ||
-        (method === "PATCH" && /^\/api\/admin\/blocked-devices\/[^/]+$/.test(fullPath)) ||
-        (method === "DELETE" && /^\/api\/admin\/blocked-devices\/[^/]+$/.test(fullPath));
-
-      // Phase 2D: owner can rename a client label only. The route below still
-      // verifies that the MAC belongs to one of the owner's assigned pools.
-      const allowOwnerClientRename =
-        method === "POST" && fullPath === "/api/admin/client-devices/rename";
-
-      // Phase 3A/3B: owner can use the simulator and create plans only through
-      // controlled endpoints. Route-level checks still re-simulate, enforce pool scope,
-      // duplicate protection, visible-plan limits, and price tolerance.
-      const allowOwnerPlanSimulatorSimulate =
-        method === "POST" && fullPath === "/api/admin/plan-simulator/simulate";
-      const allowOwnerPlanSimulatorCreate =
-        method === "POST" && fullPath === "/api/admin/plan-simulator/create-plan";
-
-      // Phase 3C: owner can duplicate plans only between their own assigned pools.
-      // Route-level checks below enforce source + target pool scope.
-      const allowOwnerPlanDuplicate =
-        method === "POST" && /^\/api\/admin\/plans\/[^/]+\/duplicate$/.test(fullPath);
-
-      // Portal preview: owners may generate a read-only preview link only for their
-      // assigned pools. The route below still enforces pool scope and token signing.
-      const allowOwnerPortalPreviewLink =
-        method === "POST" && /^\/api\/admin\/pools\/[^/]+\/portal-preview-link$/.test(fullPath);
-
-      // Assistant chat: pool owners may call the assistant endpoint.
-      // The route itself enforces context=admin_owner and never modifies owner data.
-      const allowOwnerAssistantChat =
-        method === "POST" && fullPath === "/api/admin/assistant/chat";
-
-      // Phase 1: owner acknowledges the "since last visit" summary card.
-      // Writes only to admin_dashboard_visits keyed by req.admin.id — never touches pool data.
-      const allowOwnerMarkSeen =
-        method === "POST" && fullPath === "/api/admin/dashboard-since-last-visit/mark-seen";
-
-      // S13.8.1 autonomous scheduling. The route-level flag and SECURITY
-      // DEFINER functions independently re-check owner/pool scope.
-      const allowOwnerAutonomousBillingChange =
-        (method === "POST" && fullPath === "/api/owner/billing/changes") ||
-        (method === "PATCH" && /^\/api\/owner\/billing\/changes\/[^/]+\/cancel$/.test(fullPath));
-
-      // S13.9.1.3.1: owner may initiate the final subscription-payment engine.
-      // Keep the guided path authorized only as an immediate rollback bridge;
-      // both routes independently re-check ownership and payable state.
-      const allowOwnerGuidedSubscriptionPayment = method === "POST" && (
-        /^\/api\/owner\/billing\/invoices\/[^/]+\/pay$/.test(fullPath) ||
-        /^\/api\/owner\/billing\/invoices\/[^/]+\/pay-guided$/.test(fullPath)
+      // OWNER-only collaborator administration.
+      const allowOwnerUserWrite = hasOwnerRole && (
+        (method === "POST" && fullPath === "/api/admin/users") ||
+        ((method === "PUT" || method === "DELETE") && /^\/api\/admin\/users\/[^/]+\/pool-access\/[^/]+$/.test(fullPath)) ||
+        (method === "DELETE" && /^\/api\/admin\/users\/[^/]+$/.test(fullPath))
       );
+      if (allowOwnerUserWrite) return next();
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerMarketingWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat || allowOwnerMarkSeen || allowOwnerAutonomousBillingChange || allowOwnerGuidedSubscriptionPayment) {
-        return next();
+      // OWNER-only Billing self-service. Managers/viewers must never schedule,
+      // pay or receive owner contractual actions merely because they can access
+      // the same pool operationally.
+      const allowOwnerBillingWrite = hasOwnerRole && (
+        (method === "POST" && fullPath === "/api/owner/billing/changes") ||
+        (method === "PATCH" && /^\/api\/owner\/billing\/changes\/[^/]+\/cancel$/.test(fullPath)) ||
+        (method === "POST" && /^\/api\/owner\/billing\/invoices\/[^/]+\/(pay|pay-guided)$/.test(fullPath))
+      );
+      if (allowOwnerBillingWrite) return next();
+
+      // Operational setup writes for OWNER / MANAGER. Route handlers still
+      // enforce the exact pool role (owner/manager) for the target pool.
+      if (hasOperationalWriteRole) {
+        const allowOperationalWrite =
+          (method === "PATCH" && /^\/api\/admin\/pools\/[^/]+$/.test(fullPath)) ||
+          ((method === "POST" || method === "DELETE") && /^\/api\/admin\/pools\/[^/]+\/logo$/.test(fullPath)) ||
+          (
+            (method === "PATCH" && /^\/api\/admin\/pools\/[^/]+\/marketing$/.test(fullPath)) ||
+            (method === "POST" && /^\/api\/admin\/pools\/[^/]+\/marketing\/images$/.test(fullPath)) ||
+            (method === "DELETE" && /^\/api\/admin\/pools\/[^/]+\/marketing\/images\/[^/]+$/.test(fullPath)) ||
+            (method === "PATCH" && /^\/api\/admin\/pools\/[^/]+\/marketing\/images\/order$/.test(fullPath))
+          ) ||
+          (method === "PATCH" && /^\/api\/admin\/plans\/[^/]+$/.test(fullPath)) ||
+          (method === "POST" && fullPath === "/api/admin/free-access-devices") ||
+          (method === "POST" && fullPath === "/api/admin/free-access-devices/sync") ||
+          (method === "PATCH" && /^\/api\/admin\/free-access-devices\/[^/]+$/.test(fullPath)) ||
+          (method === "DELETE" && /^\/api\/admin\/free-access-devices\/[^/]+$/.test(fullPath)) ||
+          (method === "POST" && fullPath === "/api/admin/blocked-devices") ||
+          (method === "POST" && fullPath === "/api/admin/blocked-devices/sync") ||
+          (method === "PATCH" && /^\/api\/admin\/blocked-devices\/[^/]+$/.test(fullPath)) ||
+          (method === "DELETE" && /^\/api\/admin\/blocked-devices\/[^/]+$/.test(fullPath)) ||
+          (method === "POST" && fullPath === "/api/admin/client-devices/rename") ||
+          (method === "POST" && fullPath === "/api/admin/plan-simulator/simulate") ||
+          (method === "POST" && fullPath === "/api/admin/plan-simulator/create-plan") ||
+          (method === "POST" && /^\/api\/admin\/plans\/[^/]+\/duplicate$/.test(fullPath));
+        if (allowOperationalWrite) return next();
       }
 
-      // read-only is GET-only
+      // Everything else for scoped identities must be read-only.
       if (method !== "GET" && method !== "HEAD") {
-        return res.status(403).json({ error: "readonly_forbidden" });
+        return res.status(403).json({ error: "rbac_write_forbidden" });
       }
 
-      // allowlist GET endpoints for pool_readonly
+      // OWNER-only financial/contractual GET space.
+      if (fullPath.startsWith("/api/owner/") && !hasOwnerRole) {
+        return res.status(403).json({ error: "owner_only" });
+      }
+
+      if (fullPath === "/api/admin/users" && !hasOwnerRole) {
+        return res.status(403).json({ error: "owner_only" });
+      }
+
       const allow =
         fullPath === "/api/admin/me" ||
+        fullPath === "/api/admin/users" ||
         fullPath === "/api/admin/clients" ||
         fullPath.startsWith("/api/admin/voucher-sessions/") ||
         fullPath === "/api/admin/plans" ||
@@ -1490,11 +1589,10 @@ async function requireAdmin(req, res, next) {
         fullPath === "/api/admin/blocked-devices/usage" ||
         fullPath.startsWith("/api/admin/revenue/") ||
         fullPath.startsWith("/api/owner/") ||
-        // Phase 1: since-last-visit summary card (read-only GET)
         fullPath === "/api/admin/dashboard-since-last-visit";
 
       if (!allow) {
-        return res.status(403).json({ error: "readonly_forbidden" });
+        return res.status(403).json({ error: "rbac_read_forbidden" });
       }
     }
 
@@ -12691,15 +12789,23 @@ async function requireAdminPage(req, res, next) {
     req.admin = loaded.admin;
     const is_superadmin = !!req.admin.is_superadmin;
 
-    // Block forbidden admin pages for pool_readonly (server-side)
+    // S13.9.2A.3 page RBAC. OWNER may manage collaborators; MANAGER and
+    // VIEWER may not open Users or owner-contract pages.
     if (!is_superadmin) {
+      const hasOwnerRole = getAdminOwnedPoolIds(req.admin).length > 0;
+      const hasOperationalWriteRole = getAdminWritablePoolIds(req.admin).length > 0;
       const forbidden = [
         "/aps.html",
         "/audit.html",
-        "/users.html",
         "/settings.html",
         "/maintenance.html",
       ];
+      if (!hasOwnerRole) {
+        forbidden.push("/users.html", "/owner-subscription.html");
+      }
+      if (!hasOperationalWriteRole) {
+        forbidden.push("/pricing-simulator.html");
+      }
       if (forbidden.includes(p)) {
         return res.redirect("/admin/");
       }
@@ -13406,6 +13512,7 @@ async function verifyGoogleIdToken(idToken) {
 
     const aud = String(data?.aud || "").trim();
     const email = String(data?.email || "").trim().toLowerCase();
+    const googleSub = String(data?.sub || "").trim();
     const emailVerified = data?.email_verified === true || String(data?.email_verified).toLowerCase() === "true";
     const issuer = String(data?.iss || "").trim();
     const exp = Number(data?.exp || 0);
@@ -13415,9 +13522,10 @@ async function verifyGoogleIdToken(idToken) {
       return { ok: false, error: "google_issuer_invalid" };
     }
     if (!email || !emailVerified) return { ok: false, error: "google_email_not_verified" };
+    if (!googleSub) return { ok: false, error: "google_subject_missing" };
     if (exp && exp * 1000 < Date.now()) return { ok: false, error: "google_token_expired" };
 
-    return { ok: true, email };
+    return { ok: true, email, sub: googleSub };
   } catch (err) {
     console.error("GOOGLE TOKEN VERIFY ERROR", err?.response?.data || err?.message || err);
     return { ok: false, error: "google_token_invalid" };
@@ -13467,8 +13575,12 @@ console.log(
         return res.status(403).json({ error: "Compte désactivé" });
       }
 
+      if (String(admin.role || "").trim().toLowerCase() !== "superadmin") {
+        return res.status(403).json({ error: "google_only_account" });
+      }
+
       if (!admin.password_hash) {
-        return res.status(400).json({ error: "Utilisez Google pour ce compte." });
+        return res.status(400).json({ error: "superadmin_password_not_configured" });
       }
 
       const ok = await bcrypt.compare(password, admin.password_hash);
@@ -13514,9 +13626,44 @@ app.post(
         return res.status(403).json({ error: "Compte désactivé" });
       }
 
+      if (String(admin.role || "").trim().toLowerCase() === "superadmin") {
+        return res.status(403).json({ error: "superadmin_password_only" });
+      }
+
+      const storedSub = String(admin.google_sub || "").trim();
+      if (storedSub && storedSub !== verified.sub) {
+        return res.status(403).json({ error: "google_identity_mismatch" });
+      }
+
+      if (!storedSub) {
+        const { data: bound, error: bindErr } = await supabase
+          .from("admin_users")
+          .update({ google_sub: verified.sub, google_bound_at: new Date().toISOString() })
+          .eq("id", admin.id)
+          .is("google_sub", null)
+          .select("id,google_sub")
+          .maybeSingle();
+
+        if (bindErr) {
+          console.error("GOOGLE IDENTITY BIND ERROR", bindErr);
+          return res.status(409).json({ error: "google_identity_bind_failed" });
+        }
+
+        if (!bound?.id) {
+          const { data: reloaded } = await supabase
+            .from("admin_users")
+            .select("google_sub")
+            .eq("id", admin.id)
+            .maybeSingle();
+          if (String(reloaded?.google_sub || "").trim() !== verified.sub) {
+            return res.status(409).json({ error: "google_identity_bind_conflict" });
+          }
+        }
+      }
+
       await createAdminSessionCookie(res, admin);
 
-      return res.json({ ok: true, email: admin.email });
+      return res.json({ ok: true, email: admin.email, auth_mode: "google" });
     } catch (err) {
       console.error("ADMIN GOOGLE LOGIN ERROR", err);
       return res.status(500).json({ error: "Erreur serveur" });
@@ -13543,6 +13690,108 @@ app.post("/api/admin/logout", requireAdmin, async (req, res) => {
   } catch (err) {
     console.error("ADMIN LOGOUT ERROR", err);
     return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+
+// ===============================
+// ADMIN AUTH — SUPERADMIN IMPERSONATION (30 min max)
+// ===============================
+app.post("/api/admin/impersonation/start", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    const targetId = String(req.body?.admin_user_id || req.body?.user_id || "").trim();
+    if (!targetId) return res.status(400).json({ error: "admin_user_id_required" });
+    if (targetId === req.admin.id) return res.status(400).json({ error: "cannot_impersonate_self" });
+
+    const { data: target, error: targetErr } = await supabase
+      .from("admin_users")
+      .select("id,email,is_active,role")
+      .eq("id", targetId)
+      .maybeSingle();
+    if (targetErr) return res.status(500).json({ error: "db_error" });
+    if (!target) return res.status(404).json({ error: "user_not_found" });
+    if (!target.is_active) return res.status(409).json({ error: "user_inactive" });
+    if (String(target.role || "").toLowerCase() === "superadmin") {
+      return res.status(400).json({ error: "cannot_impersonate_superadmin" });
+    }
+
+    const { count, error: accessErr } = await supabase
+      .from("v_rbac_effective_pool_access")
+      .select("pool_id", { count: "exact", head: true })
+      .eq("admin_user_id", targetId)
+      .eq("is_active", true);
+    if (accessErr) return res.status(500).json({ error: "db_error" });
+    if (!Number(count || 0)) return res.status(409).json({ error: "user_has_no_pool_access" });
+
+    const startedAt = new Date();
+    const expiresAt = new Date(startedAt.getTime() + 30 * 60 * 1000);
+    const { error } = await supabase
+      .from("admin_sessions")
+      .update({
+        impersonated_admin_user_id: targetId,
+        impersonation_started_at: startedAt.toISOString(),
+        impersonation_expires_at: expiresAt.toISOString(),
+      })
+      .eq("id", req.admin.session_id);
+    if (error) return res.status(500).json({ error: "impersonation_start_failed" });
+
+    await supabase.from("admin_access_audit_log").insert({
+      actor_admin_user_id: req.admin.actor_id || req.admin.id,
+      effective_admin_user_id: targetId,
+      target_admin_user_id: targetId,
+      action: "impersonation_started",
+      new_value: { expires_at: expiresAt.toISOString() },
+      metadata: { source: "S13.9.2A.3" },
+    });
+
+    const token = req.cookies?.[ADMIN_COOKIE_NAME];
+    if (token) clearCachedAdminSession(hashToken(token));
+
+    return res.json({
+      ok: true,
+      effective_user: { id: target.id, email: target.email },
+      expires_at: expiresAt.toISOString(),
+    });
+  } catch (err) {
+    console.error("ADMIN IMPERSONATION START ERROR", err);
+    return res.status(500).json({ error: "impersonation_start_failed" });
+  }
+});
+
+app.post("/api/admin/impersonation/stop", requireAdmin, async (req, res) => {
+  try {
+    if (req.admin?.actor_is_superadmin !== true) {
+      return res.status(403).json({ error: "superadmin_only" });
+    }
+
+    const previousEffectiveId = req.admin.is_impersonating ? req.admin.id : null;
+    const { error } = await supabase
+      .from("admin_sessions")
+      .update({
+        impersonated_admin_user_id: null,
+        impersonation_started_at: null,
+        impersonation_expires_at: null,
+      })
+      .eq("id", req.admin.session_id);
+    if (error) return res.status(500).json({ error: "impersonation_stop_failed" });
+
+    if (previousEffectiveId) {
+      await supabase.from("admin_access_audit_log").insert({
+        actor_admin_user_id: req.admin.actor_id,
+        effective_admin_user_id: previousEffectiveId,
+        target_admin_user_id: previousEffectiveId,
+        action: "impersonation_stopped",
+        metadata: { source: "S13.9.2A.3" },
+      });
+    }
+
+    const token = req.cookies?.[ADMIN_COOKIE_NAME];
+    if (token) clearCachedAdminSession(hashToken(token));
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("ADMIN IMPERSONATION STOP ERROR", err);
+    return res.status(500).json({ error: "impersonation_stop_failed" });
   }
 });
 // ===============================
@@ -13913,9 +14162,11 @@ app.get("/api/admin/pool-live-stats", requireAdmin, async (req, res) => {
 });
 function buildAdminPermissions(admin) {
   const isSuperadmin = !!admin?.is_superadmin;
+  const ownedPoolIds = getAdminOwnedPoolIds(admin);
+  const writablePoolIds = getAdminWritablePoolIds(admin);
+  const hasOwnerRole = ownedPoolIds.length > 0;
+  const hasOperationalWriteRole = writablePoolIds.length > 0;
 
-  // Phase 1: expose a stable permission object without opening new owner actions yet.
-  // Superadmin keeps full power. Owner/current pool_readonly keeps current behavior.
   return {
     dashboard_view: true,
     clients_view: true,
@@ -13923,31 +14174,21 @@ function buildAdminPermissions(admin) {
     plans_view: true,
     pools_view: true,
 
-    // Current safe owner capability already enforced route-by-route on /api/admin/pools/:id.
-    pools_branding_manage: isSuperadmin ? true : true,
-
-    // Existing Plans panel rights.
-    plans_visibility_manage: true,
+    pools_branding_manage: isSuperadmin || hasOperationalWriteRole,
+    plans_visibility_manage: isSuperadmin || hasOperationalWriteRole,
     plans_manage: isSuperadmin,
 
-    // PP-4: Owners keep the controlled simulator workflow in their own pools.
-    // Only Superadmin may edit or activate the global pricing configuration.
-    plan_simulator_simulate: true,
-    plan_simulator_create: true,
-    plan_simulator_publish: true,
+    plan_simulator_simulate: isSuperadmin || hasOperationalWriteRole,
+    plan_simulator_create: isSuperadmin || hasOperationalWriteRole,
+    plan_simulator_publish: isSuperadmin || hasOperationalWriteRole,
     plan_simulator_config_manage: isSuperadmin,
     plan_simulator_versions_manage: isSuperadmin,
 
-    // Phase 2B: owners can manage free-access devices in their assigned pools only.
-    // The pool free_access_limit remains the business limiter (0 = no active devices).
-    free_access_manage: true,
+    free_access_manage: isSuperadmin || hasOperationalWriteRole,
+    blocked_manage: isSuperadmin || hasOperationalWriteRole,
 
-    // Phase 2C: owners can manage blocked devices in their assigned pools only.
-    blocked_manage: true,
-
-    // Technical/admin-only areas.
     aps_manage: isSuperadmin,
-    users_manage: isSuperadmin,
+    users_manage: isSuperadmin || hasOwnerRole,
     audit_view: isSuperadmin,
     settings_manage: isSuperadmin,
     owner_revenue_view: isSuperadmin,
@@ -13955,7 +14196,15 @@ function buildAdminPermissions(admin) {
     billing_offers_manage: isSuperadmin && BILLING_V1_ADMIN_OFFERS,
     billing_assignments_manage: isSuperadmin && BILLING_V1_ENABLED && BILLING_V1_ADMIN_OFFERS,
     billing_changes_manage: isSuperadmin && BILLING_V1_ENABLED && BILLING_V1_ADMIN_OFFERS,
-    billing_owner_subscription_view: BILLING_V1_ENABLED && BILLING_V1_OWNER_SELF_SERVICE,
+    billing_owner_subscription_view:
+      BILLING_V1_ENABLED && BILLING_V1_OWNER_SELF_SERVICE && (isSuperadmin || hasOwnerRole),
+
+    // Explicit RBAC capabilities for UI and future endpoints.
+    pool_operational_write: isSuperadmin || hasOperationalWriteRole,
+    pool_users_manage: isSuperadmin || hasOwnerRole,
+    owner_billing_manage: isSuperadmin || hasOwnerRole,
+    impersonation_start: isSuperadmin && !admin?.is_impersonating,
+    impersonation_stop: admin?.actor_is_superadmin === true && admin?.is_impersonating === true,
   };
 }
 
@@ -13963,9 +14212,18 @@ app.get("/api/admin/me", requireAdmin, async (req, res) => {
   return res.json({
     id: req.admin.id,
     email: req.admin.email,
-    role: req.admin.role || "superadmin",
+    role: req.admin.role || "pool_readonly",
     is_superadmin: !!req.admin.is_superadmin,
+    actor_id: req.admin.actor_id || req.admin.id,
+    actor_email: req.admin.actor_email || req.admin.email,
+    actor_is_superadmin: req.admin.actor_is_superadmin === true,
+    is_impersonating: req.admin.is_impersonating === true,
+    impersonation_expires_at: req.admin.impersonation_expires_at || null,
     pool_ids: Array.isArray(req.admin.pool_ids) ? req.admin.pool_ids : [],
+    owned_pool_ids: Array.isArray(req.admin.owned_pool_ids) ? req.admin.owned_pool_ids : [],
+    manager_pool_ids: Array.isArray(req.admin.manager_pool_ids) ? req.admin.manager_pool_ids : [],
+    viewer_pool_ids: Array.isArray(req.admin.viewer_pool_ids) ? req.admin.viewer_pool_ids : [],
+    pool_access: req.admin.pool_access || {},
     permissions: buildAdminPermissions(req.admin),
   });
 });
@@ -15895,190 +16153,372 @@ function uniqStrings(arr) {
   return out;
 }
 
+function normalizeRbacAccessRole(value) {
+  const role = String(value || "").trim().toLowerCase();
+  return ["manager", "viewer"].includes(role) ? role : null;
+}
+
+function rbacActorId(req) {
+  return String(req.admin?.actor_id || req.admin?.id || "").trim();
+}
+
+function rbacEffectiveId(req) {
+  return String(req.admin?.id || "").trim();
+}
+
+function rbacPublicError(error) {
+  const raw = String(error?.message || error || "");
+  const known = [
+    "rbac_role_invalid",
+    "rbac_actor_invalid",
+    "rbac_effective_user_invalid",
+    "rbac_impersonation_forbidden",
+    "rbac_target_not_found",
+    "rbac_target_inactive",
+    "rbac_superadmin_membership_forbidden",
+    "rbac_pool_not_found",
+    "rbac_pool_user_manage_forbidden",
+    "rbac_owner_is_canonical",
+    "rbac_pool_limit_unavailable",
+    "rbac_pool_user_limit_reached",
+  ];
+  return known.find((code) => raw.includes(code)) || "rbac_update_failed";
+}
+
+async function loadManageableUserPools(req) {
+  let q = supabase
+    .from("internet_pools")
+    .select("id,name,brand_name,radius_nas_id,owner_admin_user_id")
+    .order("name");
+
+  if (!req.admin?.is_superadmin) {
+    const owned = getAdminOwnedPoolIds(req.admin);
+    if (!owned.length) return [];
+    q = q.in("id", owned);
+  }
+
+  const { data, error } = await q;
+  if (error) throw error;
+  return (data || []).map((p) => ({
+    ...p,
+    display_name: buildPoolDisplayName(p) || p.name || p.id,
+  }));
+}
+
+async function setPoolMembershipFromRequest(req, targetUserId, poolId, role) {
+  const { data, error } = await supabase.rpc("fn_rbac_set_pool_membership", {
+    p_actor_admin_user_id: rbacActorId(req),
+    p_effective_admin_user_id: rbacEffectiveId(req),
+    p_target_admin_user_id: targetUserId,
+    p_pool_id: poolId,
+    p_access_role: role,
+  });
+  if (error) {
+    const e = new Error(rbacPublicError(error));
+    e.status = String(e.message) === "rbac_pool_user_limit_reached" ? 409 : 403;
+    throw e;
+  }
+  clearCachedAdminSessionsByUserId(targetUserId);
+  return data;
+}
+
+async function removePoolMembershipFromRequest(req, targetUserId, poolId) {
+  const { data, error } = await supabase.rpc("fn_rbac_remove_pool_membership", {
+    p_actor_admin_user_id: rbacActorId(req),
+    p_effective_admin_user_id: rbacEffectiveId(req),
+    p_target_admin_user_id: targetUserId,
+    p_pool_id: poolId,
+  });
+  if (error) {
+    const e = new Error(rbacPublicError(error));
+    e.status = 403;
+    throw e;
+  }
+  clearCachedAdminSessionsByUserId(targetUserId);
+  return data;
+}
+
 // GET /api/admin/users
-app.get("/api/admin/users", requireAdmin, requireSuperadmin, async (req, res) => {
+// Superadmin: platform-wide identities.
+// Owner: identities visible only through pools they canonically own.
+app.get("/api/admin/users", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
-    const { data: users, error: uerr } = await supabase
-      .from("admin_users")
-      .select("id,email,is_active,role,created_at,last_login_at")
-      .order("created_at", { ascending: false });
+    const manageablePools = await loadManageableUserPools(req);
+    const manageablePoolIds = manageablePools.map((p) => String(p.id));
 
-    if (uerr) return res.status(500).json({ error: uerr.message });
+    let capacityRows = [];
+    if (manageablePoolIds.length) {
+      const { data: caps, error: capErr } = await supabase
+        .from("v_rbac_pool_user_capacity")
+        .select("pool_id,current_user_count,max_user_count,remaining_slots")
+        .in("pool_id", manageablePoolIds);
+      if (capErr) return res.status(500).json({ error: capErr.message });
+      capacityRows = caps || [];
+    }
+    const capacityByPool = new Map(capacityRows.map((c) => [String(c.pool_id), c]));
+    const poolMap = new Map(manageablePools.map((p) => [String(p.id), {
+      ...p,
+      ...(capacityByPool.get(String(p.id)) || {}),
+    }]));
 
-    const ids = (users || []).map((u) => u.id).filter(Boolean);
-    let poolsByUser = {};
-    if (ids.length) {
-      const { data: rows, error: perr } = await supabase
-        .from("admin_user_pools")
-        .select("admin_user_id,pool_id, internet_pools ( id, name, brand_name, radius_nas_id )")
-        .in("admin_user_id", ids);
+    let accessRows = [];
+    if (req.admin?.is_superadmin) {
+      const { data, error } = await supabase
+        .from("v_rbac_effective_pool_access")
+        .select("pool_id,admin_user_id,access_role,access_source");
+      if (error) return res.status(500).json({ error: error.message });
+      accessRows = data || [];
+    } else if (manageablePoolIds.length) {
+      const { data, error } = await supabase
+        .from("v_rbac_effective_pool_access")
+        .select("pool_id,admin_user_id,access_role,access_source")
+        .in("pool_id", manageablePoolIds);
+      if (error) return res.status(500).json({ error: error.message });
+      accessRows = data || [];
+    }
 
-      if (perr) return res.status(500).json({ error: perr.message });
-
-      for (const r of rows || []) {
-        const uid = r.admin_user_id;
-        if (!poolsByUser[uid]) poolsByUser[uid] = [];
-        const poolRow = r.internet_pools || null;
-        const poolPlace = cleanOptionalText(poolRow?.name, 120);
-        const poolBrand = cleanOptionalText(poolRow?.brand_name, 120);
-        const poolNasId = cleanOptionalText(poolRow?.radius_nas_id, 120);
-        const poolDisplayName = buildPoolDisplayName(poolRow) || poolPlace || null;
-
-        poolsByUser[uid].push({
-          pool_id: r.pool_id,
-
-          // Backward-compatible: keep old field as place-only for existing UI.
-          pool_name: poolPlace,
-
-          // New clearer fields for Users UI.
-          pool_display_name: poolDisplayName,
-          pool_brand_name: poolBrand,
-          pool_place: poolPlace,
-          pool_nas_id: poolNasId,
-        });
+    let users = [];
+    if (req.admin?.is_superadmin) {
+      const { data, error } = await supabase
+        .from("admin_users")
+        .select("id,email,is_active,role,google_sub,google_bound_at,created_at,last_login_at")
+        .order("created_at", { ascending: false });
+      if (error) return res.status(500).json({ error: error.message });
+      users = data || [];
+    } else {
+      const ids = Array.from(new Set(accessRows.map((r) => String(r.admin_user_id || "")).filter(Boolean)));
+      if (ids.length) {
+        const { data, error } = await supabase
+          .from("admin_users")
+          .select("id,email,is_active,role,google_sub,google_bound_at,created_at,last_login_at")
+          .in("id", ids)
+          .order("created_at", { ascending: false });
+        if (error) return res.status(500).json({ error: error.message });
+        users = data || [];
       }
     }
 
-    const items = (users || []).map((u) => ({
-      ...u,
-      pools: poolsByUser[u.id] || [],
-    }));
+    const accessByUser = new Map();
+    for (const row of accessRows) {
+      const uid = String(row.admin_user_id || "");
+      const pid = String(row.pool_id || "");
+      if (!uid || !pid) continue;
+      const p = poolMap.get(pid);
+      const item = {
+        pool_id: pid,
+        pool_name: p?.name || null,
+        pool_display_name: p?.display_name || p?.name || pid,
+        pool_brand_name: p?.brand_name || null,
+        pool_nas_id: p?.radius_nas_id || null,
+        access_role: String(row.access_role || "").toLowerCase(),
+        access_source: row.access_source || null,
+      };
+      if (!accessByUser.has(uid)) accessByUser.set(uid, []);
+      accessByUser.get(uid).push(item);
+    }
 
-    return res.json({ items });
+    const items = users.map((u) => {
+      const access = accessByUser.get(String(u.id)) || [];
+      return {
+        id: u.id,
+        email: u.email,
+        is_active: u.is_active,
+        role: u.role,
+        created_at: u.created_at,
+        last_login_at: u.last_login_at,
+        google_bound: !!u.google_sub,
+        auth_mode: String(u.role || "").toLowerCase() === "superadmin" ? "password" : "google",
+        pool_access: access,
+        pools: access, // compatibility for existing callers such as pools.js
+        owns_pool_count: access.filter((x) => x.access_role === "owner").length,
+        can_edit_identity: !!req.admin?.is_superadmin && String(u.role || "").toLowerCase() !== "superadmin",
+        can_impersonate: !!req.admin?.is_superadmin && String(u.role || "").toLowerCase() !== "superadmin" && u.is_active !== false && access.length > 0,
+      };
+    });
+
+    return res.json({
+      items,
+      manageable_pools: manageablePools.map((p) => {
+        const cap = capacityByPool.get(String(p.id)) || {};
+        return {
+          id: p.id,
+          name: p.name,
+          brand_name: p.brand_name,
+          radius_nas_id: p.radius_nas_id,
+          display_name: p.display_name,
+          owner_admin_user_id: p.owner_admin_user_id,
+          current_user_count: Number(cap.current_user_count || 0),
+          max_user_count: cap.max_user_count === null || cap.max_user_count === undefined ? null : Number(cap.max_user_count),
+          remaining_slots: cap.remaining_slots === null || cap.remaining_slots === undefined ? null : Number(cap.remaining_slots),
+        };
+      }),
+      context: {
+        is_superadmin: !!req.admin?.is_superadmin,
+        owned_pool_ids: getAdminOwnedPoolIds(req.admin),
+        actor_is_superadmin: req.admin?.actor_is_superadmin === true,
+        is_impersonating: req.admin?.is_impersonating === true,
+      },
+    });
   } catch (e) {
+    console.error("ADMIN USERS LIST ERROR", e);
     return res.status(500).json({ error: String(e?.message || e) });
   }
 });
 
 // POST /api/admin/users
-app.post("/api/admin/users", requireAdmin, requireSuperadmin, async (req, res) => {
+// Preauthorizes a Google-only non-superadmin identity. Optional pool_access may
+// immediately grant manager/viewer access. Ownership itself is assigned only by
+// Superadmin through the canonical Pool owner field.
+app.post("/api/admin/users", requireAdmin, async (req, res) => {
+  let createdNow = false;
+  let target = null;
+  const applied = [];
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
     const email = normalizeEmail(req.body?.email);
-    const password = String(req.body?.password || "");
-    const pool_ids = uniqStrings(req.body?.pool_ids || []);
-
     if (!isValidEmail(email)) return res.status(400).json({ error: "email_invalid" });
-    if (password && password.length < 6) return res.status(400).json({ error: "password_too_short" });
-    if (!pool_ids.length) return res.status(400).json({ error: "pool_required" });
+    if (req.body?.password !== undefined && String(req.body.password || "").length) {
+      return res.status(400).json({ error: "password_superadmin_only" });
+    }
 
-    // ensure email unique
-    const { data: exists } = await supabase
+    const rawAccess = Array.isArray(req.body?.pool_access) ? req.body.pool_access : [];
+    const desiredAccess = rawAccess.map((x) => ({
+      pool_id: String(x?.pool_id || "").trim(),
+      access_role: normalizeRbacAccessRole(x?.access_role),
+    })).filter((x) => x.pool_id && x.access_role);
+
+    if (!req.admin?.is_superadmin && !desiredAccess.length) {
+      return res.status(400).json({ error: "pool_access_required" });
+    }
+
+    const manageablePools = await loadManageableUserPools(req);
+    const manageable = new Set(manageablePools.map((p) => String(p.id)));
+    const forbidden = desiredAccess.find((x) => !manageable.has(x.pool_id));
+    if (forbidden) return res.status(403).json({ error: "pool_user_manage_forbidden" });
+
+    const { data: existing, error: existingErr } = await supabase
       .from("admin_users")
-      .select("id")
+      .select("id,email,is_active,role")
       .eq("email", email)
       .maybeSingle();
+    if (existingErr) return res.status(500).json({ error: existingErr.message });
 
-    if (exists?.id) return res.status(409).json({ error: "email_exists" });
+    if (existing) {
+      if (String(existing.role || "").toLowerCase() === "superadmin") {
+        return res.status(409).json({ error: "superadmin_account_protected" });
+      }
+      if (!existing.is_active) return res.status(409).json({ error: "user_inactive" });
+      target = existing;
+    } else {
+      const { data: created, error: createErr } = await supabase
+        .from("admin_users")
+        .insert({
+          email,
+          password_hash: null,
+          is_active: true,
+          role: "pool_readonly",
+        })
+        .select("id,email,is_active,role,created_at")
+        .single();
+      if (createErr) return res.status(500).json({ error: createErr.message });
+      target = created;
+      createdNow = true;
+    }
 
-    const password_hash = password ? await bcrypt.hash(password, 10) : null;
+    for (const access of desiredAccess) {
+      await setPoolMembershipFromRequest(req, target.id, access.pool_id, access.access_role);
+      applied.push(access.pool_id);
+    }
 
-    const { data: created, error: cerr } = await supabase
-      .from("admin_users")
-      .insert({
-        email,
-        password_hash,
-        is_active: true,
-        role: "pool_readonly",
-      })
-      .select("id,email,is_active,role,created_at")
-      .single();
+    if (createdNow) {
+      await supabase.from("admin_access_audit_log").insert({
+        actor_admin_user_id: rbacActorId(req),
+        effective_admin_user_id: rbacEffectiveId(req),
+        target_admin_user_id: target.id,
+        action: "admin_identity_preauthorized",
+        new_value: { email: target.email, auth_mode: "google" },
+        metadata: { source: "S13.9.2A.3" },
+      });
+    }
 
-    if (cerr) return res.status(500).json({ error: cerr.message });
-
-    const rows = pool_ids.map((pid) => ({ admin_user_id: created.id, pool_id: pid }));
-    const { error: perr } = await supabase.from("admin_user_pools").insert(rows);
-    if (perr) return res.status(500).json({ error: perr.message });
-
-    return res.json({ ok: true, user: created });
+    return res.json({ ok: true, user: target, reused: !createdNow });
   } catch (e) {
-    return res.status(500).json({ error: String(e?.message || e) });
+    // A newly-created identity has no business history yet. Compensate safely if
+    // a capacity/authorization error occurs while applying initial memberships.
+    if (createdNow && target?.id) {
+      try { await supabase.from("admin_user_pools").delete().eq("admin_user_id", target.id); } catch (_) {}
+      try { await supabase.from("admin_users").delete().eq("id", target.id); } catch (_) {}
+    }
+    return res.status(e?.status || 500).json({ error: String(e?.message || e) });
   }
 });
 
-// PATCH /api/admin/users/:id  (edit email / reset password / disable)
+// PATCH /api/admin/users/:id — platform identity metadata (Superadmin only).
+// Non-superadmin identities remain Google-only; password mutation is forbidden.
 app.patch("/api/admin/users/:id", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
-    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
-
     const id = String(req.params.id || "").trim();
     if (!id) return res.status(400).json({ error: "id_required" });
 
-    if (id === req.admin.id && req.body?.is_active === false) {
-      return res.status(400).json({ error: "cannot_disable_self" });
+    const { data: existing, error: loadErr } = await supabase
+      .from("admin_users")
+      .select("id,email,is_active,role,google_sub")
+      .eq("id", id)
+      .maybeSingle();
+    if (loadErr) return res.status(500).json({ error: loadErr.message });
+    if (!existing) return res.status(404).json({ error: "not_found" });
+    if (String(existing.role || "").toLowerCase() === "superadmin") {
+      return res.status(403).json({ error: "superadmin_account_protected" });
+    }
+    if (req.body?.password !== undefined) {
+      return res.status(400).json({ error: "password_superadmin_only" });
     }
 
     const patch = {};
     if (req.body?.email !== undefined) {
       const email = normalizeEmail(req.body.email);
       if (!isValidEmail(email)) return res.status(400).json({ error: "email_invalid" });
-
-      // ensure email unique (excluding self)
-      const { data: exists } = await supabase
-        .from("admin_users")
-        .select("id")
-        .eq("email", email)
-        .maybeSingle();
-
-      if (exists?.id && exists.id !== id) return res.status(409).json({ error: "email_exists" });
-      patch.email = email;
+      const { data: duplicate } = await supabase.from("admin_users").select("id").eq("email", email).maybeSingle();
+      if (duplicate?.id && duplicate.id !== id) return res.status(409).json({ error: "email_exists" });
+      if (email !== existing.email) {
+        patch.email = email;
+        // Explicit admin email change invalidates the old Google identity binding.
+        patch.google_sub = null;
+        patch.google_bound_at = null;
+      }
     }
-
-    if (req.body?.password !== undefined) {
-      const password = String(req.body.password || "");
-      if (password && password.length < 6) return res.status(400).json({ error: "password_too_short" });
-      if (password) patch.password_hash = await bcrypt.hash(password, 10);
-    }
-
-    if (req.body?.is_active !== undefined) {
-      patch.is_active = !!req.body.is_active;
-    }
-
-    // never allow creating another superadmin from API
-    if (req.body?.role !== undefined) {
-      const role = String(req.body.role || "").trim();
-      if (role && role !== "pool_readonly") return res.status(400).json({ error: "role_forbidden" });
-      if (role) patch.role = "pool_readonly";
-    }
-
-    if (!Object.keys(patch).length) return res.json({ ok: true });
+    if (req.body?.is_active !== undefined) patch.is_active = !!req.body.is_active;
+    if (!Object.keys(patch).length) return res.json({ ok: true, user: existing });
 
     const { data, error } = await supabase
       .from("admin_users")
       .update(patch)
       .eq("id", id)
-      .select("id,email,is_active,role,created_at,last_login_at")
-      .maybeSingle();
-
+      .select("id,email,is_active,role,google_sub,google_bound_at,created_at,last_login_at")
+      .single();
     if (error) return res.status(500).json({ error: error.message });
-    if (!data) return res.status(404).json({ error: "not_found" });
 
-    // A password reset is a security boundary: revoke every existing session for
-    // the target user, clear all cached identities and force a fresh login.
-    if (patch.password_hash !== undefined) {
-      const revokedAt = new Date().toISOString();
-      const { error: revokeErr } = await supabase
+    if (patch.is_active === false || patch.email !== undefined) {
+      await supabase
         .from("admin_sessions")
-        .update({ revoked_at: revokedAt })
+        .update({ revoked_at: new Date().toISOString() })
         .eq("admin_user_id", id)
         .is("revoked_at", null);
-
-      if (revokeErr) {
-        console.error("ADMIN PASSWORD SESSION REVOCATION ERROR", id, revokeErr);
-        return res.status(500).json({ error: "session_revocation_failed" });
-      }
-
-      clearCachedAdminSessionsByUserId(id);
-      if (id === req.admin.id) {
-        res.clearCookie(ADMIN_COOKIE_NAME, adminCookieOptions());
-      }
-    } else if (patch.is_active === false || patch.role !== undefined || patch.email !== undefined) {
-      // Invalidate cache so non-password account changes take effect immediately.
       clearCachedAdminSessionsByUserId(id);
     }
+
+    await supabase.from("admin_access_audit_log").insert({
+      actor_admin_user_id: rbacActorId(req),
+      effective_admin_user_id: rbacEffectiveId(req),
+      target_admin_user_id: id,
+      action: "admin_identity_updated",
+      old_value: { email: existing.email, is_active: existing.is_active },
+      new_value: { email: data.email, is_active: data.is_active },
+      metadata: { source: "S13.9.2A.3" },
+    });
 
     return res.json({ ok: true, user: data });
   } catch (e) {
@@ -16086,60 +16526,106 @@ app.patch("/api/admin/users/:id", requireAdmin, requireSuperadmin, async (req, r
   }
 });
 
-// PUT /api/admin/users/:id/pools  (replace assignments)
-app.put("/api/admin/users/:id/pools", requireAdmin, requireSuperadmin, async (req, res) => {
+// PUT /api/admin/users/:id/pool-access/:poolId — set manager/viewer role.
+app.put("/api/admin/users/:id/pool-access/:poolId", requireAdmin, async (req, res) => {
   try {
-    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
-
-    const id = String(req.params.id || "").trim();
-    if (!id) return res.status(400).json({ error: "id_required" });
-
-    const pool_ids = uniqStrings(req.body?.pool_ids || []);
-    if (!pool_ids.length) return res.status(400).json({ error: "pool_required" });
-
-    // Replace: delete then insert
-    const { error: derr } = await supabase.from("admin_user_pools").delete().eq("admin_user_id", id);
-    if (derr) return res.status(500).json({ error: derr.message });
-
-    const rows = pool_ids.map((pid) => ({ admin_user_id: id, pool_id: pid }));
-    const { error: ierr } = await supabase.from("admin_user_pools").insert(rows);
-    if (ierr) return res.status(500).json({ error: ierr.message });
-
-    // Invalidate cache so new pool scope takes effect immediately
-    clearCachedAdminSessionsByUserId(id);
-
-    return res.json({ ok: true });
+    const targetId = String(req.params.id || "").trim();
+    const poolId = String(req.params.poolId || "").trim();
+    const role = normalizeRbacAccessRole(req.body?.access_role);
+    if (!targetId || !poolId) return res.status(400).json({ error: "id_required" });
+    if (!role) return res.status(400).json({ error: "rbac_role_invalid" });
+    if (targetId === rbacEffectiveId(req) && !req.admin?.is_superadmin) {
+      return res.status(400).json({ error: "cannot_manage_self_access" });
+    }
+    const data = await setPoolMembershipFromRequest(req, targetId, poolId, role);
+    return res.json({ ok: true, result: data });
   } catch (e) {
-    return res.status(500).json({ error: String(e?.message || e) });
+    return res.status(e?.status || 500).json({ error: String(e?.message || e) });
   }
 });
 
-// DELETE /api/admin/users/:id (hard delete - optional)
-app.delete("/api/admin/users/:id", requireAdmin, requireSuperadmin, async (req, res) => {
+// DELETE /api/admin/users/:id/pool-access/:poolId — revoke collaborator access.
+app.delete("/api/admin/users/:id/pool-access/:poolId", requireAdmin, async (req, res) => {
   try {
-    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+    const targetId = String(req.params.id || "").trim();
+    const poolId = String(req.params.poolId || "").trim();
+    if (!targetId || !poolId) return res.status(400).json({ error: "id_required" });
+    if (targetId === rbacEffectiveId(req) && !req.admin?.is_superadmin) {
+      return res.status(400).json({ error: "cannot_manage_self_access" });
+    }
+    const data = await removePoolMembershipFromRequest(req, targetId, poolId);
+    return res.json({ ok: true, result: data });
+  } catch (e) {
+    return res.status(e?.status || 500).json({ error: String(e?.message || e) });
+  }
+});
 
+// Legacy bulk replacement endpoint retired: it had no per-pool roles or atomic
+// capacity enforcement and could overwrite access outside an owner's scope.
+app.put("/api/admin/users/:id/pools", requireAdmin, async (_req, res) => {
+  return res.status(410).json({ error: "legacy_pool_assignment_endpoint_retired" });
+});
+
+// DELETE /api/admin/users/:id
+// Owner => remove this collaborator only from pools the owner controls.
+// Superadmin => soft-delete identity (history-safe) only after ownership transfer.
+app.delete("/api/admin/users/:id", requireAdmin, async (req, res) => {
+  try {
     const id = String(req.params.id || "").trim();
     if (!id) return res.status(400).json({ error: "id_required" });
+    if (id === rbacEffectiveId(req)) return res.status(400).json({ error: "cannot_delete_self" });
 
-    if (id === req.admin.id) return res.status(400).json({ error: "cannot_delete_self" });
+    const { data: target, error: targetErr } = await supabase
+      .from("admin_users")
+      .select("id,email,is_active,role")
+      .eq("id", id)
+      .maybeSingle();
+    if (targetErr) return res.status(500).json({ error: targetErr.message });
+    if (!target) return res.status(404).json({ error: "not_found" });
+    if (String(target.role || "").toLowerCase() === "superadmin") {
+      return res.status(403).json({ error: "superadmin_account_protected" });
+    }
 
-    // revoke sessions
-    await supabase.from("admin_sessions").update({ revoked_at: new Date().toISOString() }).eq("admin_user_id", id);
-    // clear in-memory cache for this user immediately
-    clearCachedAdminSessionsByUserId(id);
-    // delete assignments
+    if (!req.admin?.is_superadmin) {
+      const ownedPools = getAdminOwnedPoolIds(req.admin);
+      let removed = 0;
+      for (const poolId of ownedPools) {
+        const result = await removePoolMembershipFromRequest(req, id, poolId);
+        if (result?.removed) removed += 1;
+      }
+      return res.json({ ok: true, removed_from_owned_pools: removed, identity_preserved: true });
+    }
+
+    const { count: ownerCount, error: ownerErr } = await supabase
+      .from("internet_pools")
+      .select("id", { count: "exact", head: true })
+      .eq("owner_admin_user_id", id);
+    if (ownerErr) return res.status(500).json({ error: ownerErr.message });
+    if (Number(ownerCount || 0) > 0) {
+      return res.status(409).json({ error: "owner_transfer_required", owned_pool_count: Number(ownerCount || 0) });
+    }
+
     await supabase.from("admin_user_pools").delete().eq("admin_user_id", id);
-    // delete user
-    const { error } = await supabase.from("admin_users").delete().eq("id", id);
-    if (error) return res.status(500).json({ error: error.message });
+    await supabase.from("admin_sessions").update({ revoked_at: new Date().toISOString() }).eq("admin_user_id", id).is("revoked_at", null);
+    const { error: disableErr } = await supabase.from("admin_users").update({ is_active: false }).eq("id", id);
+    if (disableErr) return res.status(500).json({ error: disableErr.message });
+    clearCachedAdminSessionsByUserId(id);
 
-    return res.json({ ok: true });
+    await supabase.from("admin_access_audit_log").insert({
+      actor_admin_user_id: rbacActorId(req),
+      effective_admin_user_id: rbacEffectiveId(req),
+      target_admin_user_id: id,
+      action: "admin_identity_soft_deleted",
+      old_value: { is_active: target.is_active },
+      new_value: { is_active: false },
+      metadata: { source: "S13.9.2A.3", history_preserved: true },
+    });
+
+    return res.json({ ok: true, soft_deleted: true, identity_preserved: true });
   } catch (e) {
-    return res.status(500).json({ error: String(e?.message || e) });
+    return res.status(e?.status || 500).json({ error: String(e?.message || e) });
   }
 });
-
 
 // ------------------------------------------------------------
 // ADMIN: Clients (NEW system only)
@@ -17166,14 +17652,14 @@ app.post("/api/admin/client-devices/rename", requireAdmin, async (req, res) => {
     // Owner safety: a pool owner may rename only clients that exist in one of
     // their assigned pools. This is label-only; no voucher/plan/router data changes.
     if (!req.admin?.is_superadmin) {
-      const allowedPools = Array.isArray(req.admin?.pool_ids) ? req.admin.pool_ids : [];
-      if (!allowedPools.length) return res.status(403).json({ error: "no_pools_assigned" });
+      const writablePools = getAdminWritablePoolIds(req.admin);
+      if (!writablePools.length) return res.status(403).json({ error: "pool_write_forbidden" });
 
       const { data: ownedClient, error: ownedErr } = await supabase
         .from("vw_voucher_sessions_truth")
         .select("id")
         .eq("client_mac", clientMacUpper)
-        .in("pool_id", allowedPools)
+        .in("pool_id", writablePools)
         .limit(1)
         .maybeSingle();
 
@@ -17624,10 +18110,11 @@ function getAdminAllowedPoolIds(req) {
 }
 
 function adminCanAccessPool(req, poolId) {
-  if (req?.admin?.is_superadmin) return true;
-  const pid = String(poolId || "").trim();
-  if (!pid) return false;
-  return getAdminAllowedPoolIds(req).includes(pid);
+  return canAdminAccessPool(req?.admin, poolId);
+}
+
+function adminCanWritePool(req, poolId) {
+  return canAdminWritePool(req?.admin, poolId);
 }
 
 function requirePoolScopeForAdmin(req, res, poolId) {
@@ -17639,6 +18126,20 @@ function requirePoolScopeForAdmin(req, res, poolId) {
   }
   if (!adminCanAccessPool(req, poolId)) {
     res.status(403).json({ error: "forbidden_pool" });
+    return false;
+  }
+  return true;
+}
+
+function requirePoolWriteScopeForAdmin(req, res, poolId) {
+  if (req?.admin?.is_superadmin) return true;
+  const pid = String(poolId || "").trim();
+  if (!pid) {
+    res.status(400).json({ error: "pool_id_required" });
+    return false;
+  }
+  if (!adminCanWritePool(req, pid)) {
+    res.status(403).json({ error: "pool_write_forbidden" });
     return false;
   }
   return true;
@@ -17835,7 +18336,7 @@ app.post("/api/admin/free-access-devices", requireAdmin, async (req, res) => {
     if (!person_name) return res.status(400).json({ error: "person_name_required" });
     if (!device_name) return res.status(400).json({ error: "device_name_required" });
     if (!mac_address) return res.status(400).json({ error: "mac_address_invalid" });
-    if (!requirePoolScopeForAdmin(req, res, pool_id)) return;
+    if (!requirePoolWriteScopeForAdmin(req, res, pool_id)) return;
 
     const { data: pool, error: pErr } = await supabase
       .from("internet_pools")
@@ -17913,7 +18414,7 @@ app.patch("/api/admin/free-access-devices/:id", requireAdmin, async (req, res) =
 
     if (existingLoadErr) return res.status(500).json({ error: existingLoadErr.message });
     if (!existingDevice) return res.status(404).json({ error: "not_found" });
-    if (!requirePoolScopeForAdmin(req, res, existingDevice.pool_id)) return;
+    if (!requirePoolWriteScopeForAdmin(req, res, existingDevice.pool_id)) return;
 
     const patch = { updated_at: new Date().toISOString() };
 
@@ -18007,7 +18508,7 @@ app.delete("/api/admin/free-access-devices/:id", requireAdmin, async (req, res) 
 
     if (getErr) return res.status(500).json({ error: getErr.message });
     if (!existing) return res.status(404).json({ error: "not_found" });
-    if (!requirePoolScopeForAdmin(req, res, existing.pool_id)) return;
+    if (!requirePoolWriteScopeForAdmin(req, res, existing.pool_id)) return;
 
     // Safety rule: an active MAC cannot be deleted directly.
     // Disable it first, then delete. This prevents accidental removal of currently allowed access.
@@ -18048,7 +18549,7 @@ app.post("/api/admin/free-access-devices/sync", requireAdmin, async (req, res) =
     }
 
     if (pool_id) {
-      if (!requirePoolScopeForAdmin(req, res, pool_id)) return;
+      if (!requirePoolWriteScopeForAdmin(req, res, pool_id)) return;
       poolIds = [pool_id];
     } else {
       const { data, error } = await supabase
@@ -18452,7 +18953,7 @@ app.post("/api/admin/blocked-devices", requireAdmin, async (req, res) => {
     if (!pool_id) return res.status(400).json({ error: "pool_id_required" });
     if (!person_name) return res.status(400).json({ error: "person_name_required" });
     if (!mac_address) return res.status(400).json({ error: "mac_address_invalid" });
-    if (!requirePoolScopeForAdmin(req, res, pool_id)) return;
+    if (!requirePoolWriteScopeForAdmin(req, res, pool_id)) return;
 
     const { data: pool, error: pErr } = await supabase
       .from("internet_pools")
@@ -18528,7 +19029,7 @@ app.patch("/api/admin/blocked-devices/:id", requireAdmin, async (req, res) => {
 
     if (existingErr) return res.status(500).json({ error: existingErr.message });
     if (!existing) return res.status(404).json({ error: "not_found" });
-    if (!requirePoolScopeForAdmin(req, res, existing.pool_id)) return;
+    if (!requirePoolWriteScopeForAdmin(req, res, existing.pool_id)) return;
 
     const patch = { updated_at: new Date().toISOString() };
 
@@ -18629,7 +19130,7 @@ app.delete("/api/admin/blocked-devices/:id", requireAdmin, async (req, res) => {
 
     if (getErr) return res.status(500).json({ error: getErr.message });
     if (!existing) return res.status(404).json({ error: "not_found" });
-    if (!requirePoolScopeForAdmin(req, res, existing.pool_id)) return;
+    if (!requirePoolWriteScopeForAdmin(req, res, existing.pool_id)) return;
 
     // Safety rule: an active block cannot be deleted directly.
     // Disable it first, then delete. This prevents accidental unblock/delete mistakes.
@@ -18683,7 +19184,7 @@ app.post("/api/admin/blocked-devices/sync", requireAdmin, async (req, res) => {
     }
 
     if (pool_id) {
-      if (!requirePoolScopeForAdmin(req, res, pool_id)) return;
+      if (!requirePoolWriteScopeForAdmin(req, res, pool_id)) return;
       poolIds = [pool_id];
     } else {
       const { data, error } = await supabase
@@ -22357,8 +22858,12 @@ async function requireAccessibleMarketingPool(req, res) {
     res.status(404).json({ error: "pool_not_found" });
     return null;
   }
-  if (!canAdminAccessPool(req.admin, pool)) {
-    res.status(403).json({ error: "pool_forbidden" });
+  const method = String(req.method || "GET").toUpperCase();
+  const allowed = (method === "GET" || method === "HEAD")
+    ? canAdminAccessPool(req.admin, pool)
+    : canAdminWritePool(req.admin, pool.id);
+  if (!allowed) {
+    res.status(403).json({ error: method === "GET" || method === "HEAD" ? "pool_forbidden" : "pool_write_forbidden" });
     return null;
   }
   return pool;
@@ -22892,14 +23397,8 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
     if (currentPoolErr) return res.status(400).json({ error: currentPoolErr.message, details: currentPoolErr });
     if (!currentPool?.id) return res.status(404).json({ error: "not_found" });
 
-    const assignedPools = Array.isArray(req.admin?.pool_ids) ? req.admin.pool_ids.map(String) : [];
-    const canEditThisPool = !!(
-      req.admin?.is_superadmin ||
-      assignedPools.includes(id) ||
-      (currentPool.owner_admin_user_id && String(currentPool.owner_admin_user_id) === String(req.admin?.id || ""))
-    );
-
-    if (!canEditThisPool) return res.status(403).json({ error: "forbidden_pool" });
+    const canEditThisPool = canAdminWritePool(req.admin, id);
+    if (!canEditThisPool) return res.status(403).json({ error: "pool_write_forbidden" });
 
     const isSuperadmin = !!req.admin?.is_superadmin;
     const updates = {};
@@ -23013,6 +23512,7 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       updates.owner_share_pct = Math.round(owner_share_pct);
     }
 
+    let ownerChange = null;
     const hasOwnerAdminUserId = Object.prototype.hasOwnProperty.call(req.body || {}, "owner_admin_user_id");
     if (hasOwnerAdminUserId) {
       if (!isSuperadmin) {
@@ -23023,11 +23523,15 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
         req.body.owner_admin_user_id === null || req.body.owner_admin_user_id === ""
           ? null
           : String(req.body.owner_admin_user_id).trim();
+      const currentOwnerId = currentPool?.owner_admin_user_id
+        ? String(currentPool.owner_admin_user_id).trim()
+        : null;
+      const isChangingOwner = owner_admin_user_id !== currentOwnerId;
 
       if (owner_admin_user_id) {
         const { data: ownerUser, error: ownerErr } = await supabase
           .from("admin_users")
-          .select("id")
+          .select("id,email,is_active,role")
           .eq("id", owner_admin_user_id)
           .maybeSingle();
 
@@ -23037,9 +23541,47 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
         if (!ownerUser) {
           return res.status(400).json({ error: "owner_admin_user_id_invalid" });
         }
+        if (ownerUser.is_active === false) {
+          return res.status(409).json({ error: "owner_admin_user_inactive" });
+        }
+        // Transitional compatibility: an already-existing legacy Superadmin
+        // owner may be saved unchanged, but a new/changed ownership can never
+        // point to a platform Superadmin.
+        if (isChangingOwner && String(ownerUser.role || "").toLowerCase() === "superadmin") {
+          return res.status(409).json({ error: "superadmin_cannot_own_pool" });
+        }
+
+        // Only assigning an owner to an ownerless pool can increase the number
+        // of effective users. Replacing an owner keeps the effective count flat
+        // (and any duplicate membership for the new owner is removed below).
+        if (isChangingOwner && !currentOwnerId) {
+          const { data: existingMembership, error: membershipErr } = await supabase
+            .from("admin_user_pools")
+            .select("admin_user_id")
+            .eq("admin_user_id", owner_admin_user_id)
+            .eq("pool_id", id)
+            .maybeSingle();
+          if (membershipErr) return res.status(500).json({ error: membershipErr.message });
+
+          if (!existingMembership?.admin_user_id) {
+            const [{ data: currentCount, error: countErr }, { data: maxCount, error: limitErr }] = await Promise.all([
+              supabase.rpc("fn_rbac_pool_user_count", { p_pool_id: id }),
+              supabase.rpc("fn_rbac_resolve_pool_user_limit", { p_pool_id: id }),
+            ]);
+            if (countErr || limitErr) {
+              return res.status(500).json({ error: "rbac_pool_limit_check_failed" });
+            }
+            if (Number(currentCount || 0) >= Number(maxCount || 0)) {
+              return res.status(409).json({ error: "rbac_pool_user_limit_reached" });
+            }
+          }
+        }
       }
 
       updates.owner_admin_user_id = owner_admin_user_id || null;
+      if (isChangingOwner) {
+        ownerChange = { old_owner_admin_user_id: currentOwnerId, new_owner_admin_user_id: owner_admin_user_id };
+      }
     }
 
 
@@ -23098,6 +23640,39 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
       .single();
 
     if (error) return res.status(400).json({ error: error.message, details: error });
+
+    if (ownerChange) {
+      const oldOwnerId = ownerChange.old_owner_admin_user_id;
+      const newOwnerId = ownerChange.new_owner_admin_user_id;
+
+      // OWNER is canonical in internet_pools; it must not remain duplicated as
+      // manager/viewer in admin_user_pools.
+      if (newOwnerId) {
+        const { error: cleanupErr } = await supabase
+          .from("admin_user_pools")
+          .delete()
+          .eq("admin_user_id", newOwnerId)
+          .eq("pool_id", id);
+        if (cleanupErr) {
+          console.error("ADMIN POOL OWNER MEMBERSHIP CLEANUP ERROR", cleanupErr);
+        }
+      }
+
+      await supabase.from("admin_access_audit_log").insert({
+        actor_admin_user_id: rbacActorId(req),
+        effective_admin_user_id: rbacEffectiveId(req),
+        target_admin_user_id: newOwnerId || oldOwnerId || null,
+        pool_id: id,
+        action: "pool_owner_changed",
+        old_value: { owner_admin_user_id: oldOwnerId },
+        new_value: { owner_admin_user_id: newOwnerId },
+        metadata: { source: "S13.9.2A.3", canonical_owner: true },
+      });
+
+      if (oldOwnerId) clearCachedAdminSessionsByUserId(oldOwnerId);
+      if (newOwnerId) clearCachedAdminSessionsByUserId(newOwnerId);
+    }
+
     return res.json({ ok: true, pool: withPoolDisplayName(data) });
   } catch (e) {
     console.error("ADMIN POOLS PATCH EX", e);
@@ -23122,14 +23697,8 @@ app.post("/api/admin/pools/:id/logo", requireAdmin, async (req, res) => {
     if (poolErr) return res.status(400).json({ error: poolErr.message, details: poolErr });
     if (!pool?.id) return res.status(404).json({ error: "not_found" });
 
-    const assignedPools = Array.isArray(req.admin?.pool_ids) ? req.admin.pool_ids.map(String) : [];
-    const canEditThisPool = !!(
-      req.admin?.is_superadmin ||
-      assignedPools.includes(id) ||
-      (pool.owner_admin_user_id && String(pool.owner_admin_user_id) === String(req.admin?.id || ""))
-    );
-
-    if (!canEditThisPool) return res.status(403).json({ error: "forbidden_pool" });
+    const canEditThisPool = canAdminWritePool(req.admin, id);
+    if (!canEditThisPool) return res.status(403).json({ error: "pool_write_forbidden" });
 
     const parsed = normalizeLogoPayload(req.body || {});
     if (parsed.error) return res.status(400).json({ error: parsed.error });
@@ -23192,14 +23761,8 @@ app.delete("/api/admin/pools/:id/logo", requireAdmin, async (req, res) => {
     if (poolErr) return res.status(400).json({ error: poolErr.message, details: poolErr });
     if (!pool?.id) return res.status(404).json({ error: "not_found" });
 
-    const assignedPools = Array.isArray(req.admin?.pool_ids) ? req.admin.pool_ids.map(String) : [];
-    const canEditThisPool = !!(
-      req.admin?.is_superadmin ||
-      assignedPools.includes(id) ||
-      (pool.owner_admin_user_id && String(pool.owner_admin_user_id) === String(req.admin?.id || ""))
-    );
-
-    if (!canEditThisPool) return res.status(403).json({ error: "forbidden_pool" });
+    const canEditThisPool = canAdminWritePool(req.admin, id);
+    if (!canEditThisPool) return res.status(403).json({ error: "pool_write_forbidden" });
 
     const oldPath = storagePathFromPublicUrl(pool.branding_logo_url);
 
@@ -25494,7 +26057,7 @@ app.post("/api/admin/plan-simulator/create-plan", requireAdmin, async (req, res)
     const body = req.body || {};
     const pool_id = String(body.pool_id || body.poolId || "").trim();
     if (!pool_id) return res.status(400).json({ ok: false, error: "pool_id_required", message: "Pool requis." });
-    if (!requirePoolScopeForAdmin(req, res, pool_id)) return;
+    if (!requirePoolWriteScopeForAdmin(req, res, pool_id)) return;
 
     const type = normalizePlanSimulatorType(body.type || body.plan_type || body.planType);
     const duration_minutes = normalizePlanSimulatorDurationMinutes(body);
@@ -25684,7 +26247,7 @@ app.post("/api/admin/plan-simulator/simulate", requireAdmin, async (req, res) =>
     if (!pool_id) {
       return res.status(400).json({ ok: false, error: "pool_id_required", message: "Sélectionnez un WiFi avant de simuler." });
     }
-    if (!requirePoolScopeForAdmin(req, res, pool_id)) return;
+    if (!requirePoolWriteScopeForAdmin(req, res, pool_id)) return;
 
     const type = normalizePlanSimulatorType(body.type || body.plan_type || body.planType);
     const duration_minutes = normalizePlanSimulatorDurationMinutes(body);
@@ -25936,10 +26499,10 @@ app.post("/api/admin/plans/:id/duplicate", requireAdmin, async (req, res) => {
     }
 
     if (!req.admin?.is_superadmin) {
-      const allowedPools = Array.isArray(req.admin?.pool_ids) ? req.admin.pool_ids.map(String) : [];
-      if (!allowedPools.length) return res.status(403).json({ error: "no_pools_assigned" });
-      if (!allowedPools.includes(sourcePoolId)) return res.status(403).json({ error: "forbidden_source_pool" });
-      const forbiddenTarget = finalTargetPoolIds.find((pid) => !allowedPools.includes(pid));
+      const writablePools = getAdminWritablePoolIds(req.admin).map(String);
+      if (!writablePools.length) return res.status(403).json({ error: "no_writable_pools" });
+      if (!writablePools.includes(sourcePoolId)) return res.status(403).json({ error: "forbidden_source_pool" });
+      const forbiddenTarget = finalTargetPoolIds.find((pid) => !writablePools.includes(pid));
       if (forbiddenTarget) return res.status(403).json({ error: "forbidden_target_pool" });
     }
 
@@ -26042,12 +26605,9 @@ if (existingPlan.plan_source !== "standard") return res.status(409).json({ error
 // Phase 2A: owners/business operators may only show/hide plans from their own pools.
 // They cannot change price, duration, data, speed, active status, sales limit, or pool.
 if (!req.admin?.is_superadmin) {
-  const allowedPools = Array.isArray(req.admin?.pool_ids) ? req.admin.pool_ids : [];
-  if (!allowedPools.length) return res.status(403).json({ error: "no_pools_assigned" });
-
   const planPoolId = String(existingPlan.pool_id || "").trim();
-  if (!planPoolId || !allowedPools.includes(planPoolId)) {
-    return res.status(403).json({ error: "forbidden_pool" });
+  if (!planPoolId || !canAdminWritePool(req.admin, planPoolId)) {
+    return res.status(403).json({ error: "pool_write_forbidden" });
   }
 
   const keys = Object.keys(b || {});

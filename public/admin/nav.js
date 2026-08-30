@@ -59,7 +59,7 @@
           <a class="rz-item" data-href="/admin/plans.html" href="/admin/plans.html">
             <span class="rz-item-label">Plans</span>
           </a>
-          <a class="rz-item" data-href="/admin/pricing-simulator.html" href="/admin/pricing-simulator.html">
+          <a class="rz-item" data-href="/admin/pricing-simulator.html" href="/admin/pricing-simulator.html" id="rzNavSimulator">
             <span class="rz-item-label">Simulateur de prix</span>
           </a>
           <a class="rz-item" data-href="/admin/pools.html" href="/admin/pools.html" id="rzNavPools">
@@ -327,75 +327,83 @@
     });
   }
 
+  function renderImpersonationBanner(admin) {
+    const old = document.getElementById("rzImpersonationBanner");
+    if (old) old.remove();
+    if (!admin?.is_impersonating) return;
+
+    const bar = document.createElement("div");
+    bar.id = "rzImpersonationBanner";
+    bar.setAttribute("role", "status");
+    bar.style.cssText = "position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:100000;max-width:calc(100vw - 24px);display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:999px;background:#111827;color:#fff;box-shadow:0 14px 34px rgba(15,23,42,.28);font:800 12px/1.2 system-ui,-apple-system,Segoe UI,sans-serif;";
+    const effective = admin?.email || "utilisateur";
+    const actor = admin?.actor_email || "Superadmin";
+    bar.innerHTML = `<span>🧪 Mode test : ${esc(effective)} <span style="opacity:.62">· Superadmin ${esc(actor)}</span></span><button id="rzStopImpersonation" type="button" style="border:0;border-radius:999px;padding:7px 10px;background:#fff;color:#111827;font-weight:900;cursor:pointer;">Quitter</button>`;
+    document.body.appendChild(bar);
+    bar.querySelector("#rzStopImpersonation")?.addEventListener("click", async () => {
+      const btn = bar.querySelector("#rzStopImpersonation");
+      if (btn) btn.disabled = true;
+      try {
+        await fetchJSON("/api/admin/impersonation/stop", { method: "POST" });
+        window.location.href = "/admin/";
+      } catch (e) {
+        if (btn) btn.disabled = false;
+        alert("Impossible de quitter le mode test. Réessayez.");
+      }
+    });
+  }
+
   async function ensureSessionAndFillUI() {
     try {
       const admin = await fetchJSON("/api/admin/me");
       const email = admin?.email || admin?.username || "admin";
-      // Phase 2B-C (v2): derive a stable identity string for pool cache invalidation.
-      // Use email if available, fall back to id, then username. Never expose internally.
       const adminIdentity = String(admin?.email || admin?.id || admin?.username || "").trim() || null;
 
       const isSuper = !!admin?.is_superadmin || String(admin?.role || "").toLowerCase() === "superadmin";
-      const canManageBillingOffers = isSuper && admin?.permissions?.billing_offers_manage === true;
-      const canManageBillingAssignments = isSuper && admin?.permissions?.billing_assignments_shadow_manage === true;
-      const canViewOwnerSubscription = admin?.permissions?.billing_owner_subscription_view === true;
+      const permissions = admin?.permissions || {};
+      const canManageUsers = permissions.users_manage === true;
+      const canManageBillingOffers = isSuper && permissions.billing_offers_manage === true;
+      const canManageBillingAssignments = isSuper && (permissions.billing_assignments_manage === true || permissions.billing_assignments_shadow_manage === true);
+      const canViewOwnerSubscription = permissions.billing_owner_subscription_view === true;
 
-      // Hide forbidden nav items for pool_readonly
-      if (!isSuper) {
-        const elAPs = $("#rzNavAPs");
-        const elPools = $("#rzNavPools");
-        const elAudit = $("#rzNavAudit");
-        const elUsers = $("#rzNavUsers");
-        const elBillingOffers = $("#rzNavBillingOffers");
-        const elBillingAssignments = $("#rzNavBillingAssignments");
-        const elCommissionPayouts = $("#rzNavCommissionPayouts");
-        const elBlocked = $("#rzNavBlocked");
-        const elOwnerRevenue = $("#rzNavOwnerRevenue");
-        const elOwnerSubscription = $("#rzNavOwnerSubscription");
-        const elMaintenance = $("#rzNavMaintenance");
-        if (elAPs) elAPs.style.display = "none";
-        if (elAudit) elAudit.style.display = "none";
-        if (elUsers) elUsers.style.display = "none";
-        if (elBillingOffers) elBillingOffers.style.display = "none";
-        if (elBillingAssignments) elBillingAssignments.style.display = "none";
-        if (elCommissionPayouts) elCommissionPayouts.style.display = "none";
-        if (elOwnerRevenue) elOwnerRevenue.style.display = "none";
-        if (elOwnerSubscription) elOwnerSubscription.style.display = canViewOwnerSubscription ? "" : "none";
-        if (elMaintenance) elMaintenance.style.display = "none";
-      } else {
-        // Superadmin only: show Users and Owner Revenue (if present)
-        const elUsers = $("#rzNavUsers");
-        const elBillingOffers = $("#rzNavBillingOffers");
-        const elBillingAssignments = $("#rzNavBillingAssignments");
-        const elOwnerRevenue = $("#rzNavOwnerRevenue");
-        const elOwnerSubscription = $("#rzNavOwnerSubscription");
-        const elMaintenance = $("#rzNavMaintenance");
-        if (elUsers) elUsers.style.display = "";
-        if (elBillingOffers) elBillingOffers.style.display = canManageBillingOffers ? "" : "none";
-        if (elBillingAssignments) elBillingAssignments.style.display = canManageBillingAssignments ? "" : "none";
-        if (elOwnerRevenue) elOwnerRevenue.style.display = "";
-        if (elOwnerSubscription) elOwnerSubscription.style.display = canViewOwnerSubscription ? "" : "none";
-        if (elMaintenance) elMaintenance.style.display = "";
+      const elAPs = $("#rzNavAPs");
+      const elSimulator = $("#rzNavSimulator");
+      const elAudit = $("#rzNavAudit");
+      const elUsers = $("#rzNavUsers");
+      const elBillingOffers = $("#rzNavBillingOffers");
+      const elBillingAssignments = $("#rzNavBillingAssignments");
+      const elCommissionPayouts = $("#rzNavCommissionPayouts");
+      const elOwnerRevenue = $("#rzNavOwnerRevenue");
+      const elOwnerSubscription = $("#rzNavOwnerSubscription");
+      const elMaintenance = $("#rzNavMaintenance");
+
+      if (elAPs) elAPs.style.display = isSuper ? "" : "none";
+      if (elSimulator) elSimulator.style.display = (isSuper || permissions.plan_simulator_simulate === true) ? "" : "none";
+      if (elAudit) elAudit.style.display = isSuper ? "" : "none";
+      if (elUsers) elUsers.style.display = canManageUsers ? "" : "none";
+      if (elBillingOffers) elBillingOffers.style.display = canManageBillingOffers ? "" : "none";
+      if (elBillingAssignments) elBillingAssignments.style.display = canManageBillingAssignments ? "" : "none";
+      if (elCommissionPayouts) elCommissionPayouts.style.display = isSuper ? "" : "none";
+      if (elOwnerRevenue) elOwnerRevenue.style.display = isSuper ? "" : "none";
+      if (elOwnerSubscription) elOwnerSubscription.style.display = canViewOwnerSubscription ? "" : "none";
+      if (elMaintenance) elMaintenance.style.display = isSuper ? "" : "none";
+
+      const meDrawer = $("#rzDrawerMe");
+      if (meDrawer) {
+        meDrawer.textContent = admin?.is_impersonating
+          ? `Mode test : ${email} · acteur ${admin?.actor_email || "Superadmin"}`
+          : `Connecté en tant que ${email}`;
       }
 
-// drawer label
-      const meDrawer = $("#rzDrawerMe");
-      if (meDrawer) meDrawer.textContent = `Connecté en tant que ${email}`;
-
-      // pages that show #me (support English + French placeholders)
       const meInline = document.getElementById("me");
       if (meInline && /checking session|loading|vérification de la session|verification de la session/i.test(meInline.textContent || "")) {
         meInline.textContent = email;
       }
 
+      renderImpersonationBanner(admin);
       setActiveLink();
 
-      // Phase 2B-C (v2): fetch authoritative accessible pool list for this admin.
-      // Fire-and-forget — failure is silent and does not block UI or navigation.
-      if (adminIdentity) {
-        fetchAndCacheAccessiblePools(adminIdentity).catch(function () {});
-      }
-
+      if (adminIdentity) fetchAndCacheAccessiblePools(adminIdentity).catch(function () {});
       return true;
     } catch (e) {
       window.location.href = "/admin/login.html";
