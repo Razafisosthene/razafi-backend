@@ -1463,11 +1463,13 @@ async function requireAdmin(req, res, next) {
         (method === "POST" && fullPath === "/api/owner/billing/changes") ||
         (method === "PATCH" && /^\/api\/owner\/billing\/changes\/[^/]+\/cancel$/.test(fullPath));
 
-      // S13.6.4.1: owner may initiate only the guided payment for one invoice.
-      // The route and SQL function independently re-check invoice ownership,
-      // payable state, feature flag and duplicate pending attempts.
-      const allowOwnerGuidedSubscriptionPayment =
-        method === "POST" && /^\/api\/owner\/billing\/invoices\/[^/]+\/pay-guided$/.test(fullPath);
+      // S13.9.1.3.1: owner may initiate the final subscription-payment engine.
+      // Keep the guided path authorized only as an immediate rollback bridge;
+      // both routes independently re-check ownership and payable state.
+      const allowOwnerGuidedSubscriptionPayment = method === "POST" && (
+        /^\/api\/owner\/billing\/invoices\/[^/]+\/pay$/.test(fullPath) ||
+        /^\/api\/owner\/billing\/invoices\/[^/]+\/pay-guided$/.test(fullPath)
+      );
 
       if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerMarketingWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat || allowOwnerMarkSeen || allowOwnerBillingConfigurationWrite || allowOwnerAutonomousBillingChange || allowOwnerGuidedSubscriptionPayment) {
         return next();
@@ -15592,11 +15594,14 @@ app.get("/api/owner/billing", requireAdmin, requireBillingOwnerSubscription, asy
       invoice.status === "issued" && Number(invoice.amount_paid_ar) === 0 &&
       Number(invoice.amount_due_ar) > 0 && !["initiated", "pending"].includes(invoice.latest_payment?.status)
     ).map((invoice) => invoice.id);
+    const finalPaymentEnabled = BILLING_V1_ENABLED && BILLING_V1_SUBSCRIPTION_PAYMENTS &&
+      BILLING_V1_OWNER_PAYMENT_SELF_SERVICE;
     const payment_ui = {
-      enabled: BILLING_V1_OWNER_PAYMENT_SELF_SERVICE,
-      provider: BILLING_V1_OWNER_PAYMENT_SELF_SERVICE ? "mvola" : null,
-      payable_invoice_ids: BILLING_V1_OWNER_PAYMENT_SELF_SERVICE ? payableInvoiceIds : [],
-      guided: true,
+      enabled: finalPaymentEnabled,
+      provider: finalPaymentEnabled ? "mvola" : null,
+      payable_invoice_ids: finalPaymentEnabled ? payableInvoiceIds : [],
+      engine: "subscription-payment-final-v1",
+      guided: false,
     };
     return res.json({ pools: pools || [], assignments: currentAssignments, upcoming_assignments: upcomingAssignments,
       invoices: guidedInvoices, payments, activations, statements: [], payout_records: [], documents, payment_ui,
@@ -15800,7 +15805,8 @@ function billingMadagascarToday() {
   return p.year+"-"+p.month+"-"+p.day;
 }
 function billingLiveMasterEnabled() {
-  return BILLING_V1_ENABLED && BILLING_V1_SUBSCRIPTION_PAYMENTS && BILLING_V1_PILOT_EXECUTION;
+  return BILLING_V1_ENABLED && BILLING_V1_SUBSCRIPTION_PAYMENTS &&
+    BILLING_V1_OWNER_PAYMENT_SELF_SERVICE;
 }
 function billingAccessEnforcementMasterEnabled(){
   return BILLING_V1_ENABLED && BILLING_V1_ENFORCE && BILLING_V1_PILOT_EXECUTION;
@@ -15952,10 +15958,6 @@ app.post("/api/owner/billing/invoices/:id/pay",
     if(String(invoice.period_start||"")>billingMadagascarToday())
       return res.status(409).json({error:"subscription_invoice_before_period"});
 
-    const pilot=await billingEnabledMvolaPilot(invoice.pool_id);
-    if(!pilot) return res.status(409).json({error:"billing_pilot_not_live"});
-    if(String(invoice.period_start||"")<String(pilot.first_live_at||""))
-      return res.status(409).json({error:"subscription_invoice_before_pilot"});
     const {data:open,error:openError}=await supabase.from("subscription_payment_transactions")
       .select("request_ref,status").eq("invoice_id",invoice.id)
       .in("status",["initiated","pending"]).maybeSingle();
@@ -15975,8 +15977,8 @@ app.post("/api/owner/billing/invoices/:id/pay",
       return res.status(500).json({error:"subscription_payment_reference_invalid"});
     }
     const correlationId=crypto.randomUUID();
-    const meta={billing_v1:true,milestone:"S11.4",purpose:"monthly_subscription",
-      business_effect:"invoice_only",voucher_generation:false,pilot_id:pilot.id,
+    const meta={billing_v1:true,milestone:"S13.9.1.3.1",purpose:"monthly_subscription",
+      business_effect:"invoice_only",voucher_generation:false,pilot_required:false,
       invoice_number:invoice.invoice_number,provider_call:false};
     const {data:prepared,error:prepareError}=await supabase.rpc(
       "fn_billing_v1_prepare_subscription_payment",{
@@ -15985,7 +15987,7 @@ app.post("/api/owner/billing/invoices/:id/pay",
       });
     if(prepareError) {
       const message=String(prepareError.message||"");
-      const conflict=/already_pending|not_payable|before_pilot|before_period|pilot_not_live/.test(message);
+      const conflict=/already_pending|not_payable|before_period/.test(message);
       return res.status(conflict?409:500).json({
         error:conflict?"subscription_payment_not_prepared":"subscription_payment_prepare_failed",
         reason:message.replace(/^.*billing_v1:/,"").slice(0,160),
