@@ -1450,13 +1450,6 @@ async function requireAdmin(req, res, next) {
       const allowOwnerMarkSeen =
         method === "POST" && fullPath === "/api/admin/dashboard-since-last-visit/mark-seen";
 
-      // S13.2 controlled owner configuration. The handlers call SECURITY DEFINER
-      // functions which re-check pool assignment and commercial ownership.
-      const allowOwnerBillingConfigurationWrite = method === "POST" && (
-        fullPath === "/api/owner/billing-configuration" ||
-        /^\/api\/owner\/billing-configuration\/[^/]+\/submit$/.test(fullPath)
-      );
-
       // S13.8.1 autonomous scheduling. The route-level flag and SECURITY
       // DEFINER functions independently re-check owner/pool scope.
       const allowOwnerAutonomousBillingChange =
@@ -1471,7 +1464,7 @@ async function requireAdmin(req, res, next) {
         /^\/api\/owner\/billing\/invoices\/[^/]+\/pay-guided$/.test(fullPath)
       );
 
-      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerMarketingWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat || allowOwnerMarkSeen || allowOwnerBillingConfigurationWrite || allowOwnerAutonomousBillingChange || allowOwnerGuidedSubscriptionPayment) {
+      if (allowOwnerPoolPatch || allowOwnerLogoWrite || allowOwnerMarketingWrite || allowOwnerPlanVisibilityPatch || allowOwnerFreeAccessWrite || allowOwnerBlockedDevicesWrite || allowOwnerClientRename || allowOwnerPlanSimulatorSimulate || allowOwnerPlanSimulatorCreate || allowOwnerPlanDuplicate || allowOwnerPortalPreviewLink || allowOwnerAssistantChat || allowOwnerMarkSeen || allowOwnerAutonomousBillingChange || allowOwnerGuidedSubscriptionPayment) {
         return next();
       }
 
@@ -12780,9 +12773,6 @@ const BILLING_V1_SUBSCRIPTION_PAYMENTS = billingEnvFlag("BILLING_V1_SUBSCRIPTION
 const BILLING_V1_PILOT_EXECUTION = billingEnvFlag("BILLING_V1_PILOT_EXECUTION", false);
 const BILLING_V1_PORTAL_LOCK = billingEnvFlag("BILLING_V1_PORTAL_LOCK", false);
 const BILLING_V1_OWNER_SELF_SERVICE = billingEnvFlag("BILLING_V1_OWNER_SELF_SERVICE", false);
-// S13.2: owner commercial-configuration drafts for already assigned pools.
-// This gate never activates billing, creates an invoice or initiates payment.
-const BILLING_V1_OWNER_CONFIGURATION = billingEnvFlag("BILLING_V1_OWNER_CONFIGURATION", false);
 // S13.8.1: owner may schedule/cancel a future commercial change for one owned
 // pool. The SQL functions enforce public offers, next-month effective date,
 // immutable commercial snapshots and one open change per pool. This gate never
@@ -12820,16 +12810,6 @@ const BILLING_S13843_CLOSE_INTERVAL_MS = Math.max(60000,
 // S13.8.4.4: enables commission-document emails and PDF attachments only.
 // It does not close a month, confirm a payout or execute a transfer.
 const BILLING_V1_COMMISSION_DOCUMENT_NOTIFICATIONS = billingEnvFlag("BILLING_V1_COMMISSION_DOCUMENT_NOTIFICATIONS", false);
-// S13.4: separate final-application gate. It may create/reuse only a commercial
-// assignment after approval; it never creates financial or WiFi side effects.
-const BILLING_V1_OWNER_CONFIGURATION_APPLY = billingEnvFlag("BILLING_V1_OWNER_CONFIGURATION_APPLY", false);
-const BILLING_V1_OWNER_CONFIGURATION_REPLACE = billingEnvFlag("BILLING_V1_OWNER_CONFIGURATION_REPLACE", false);
-// S13.5: explicit, independent gate for the first subscription invoice after
-// an approved configuration has been applied. It never initiates payment.
-const BILLING_V1_OWNER_FIRST_INVOICE = billingEnvFlag("BILLING_V1_OWNER_FIRST_INVOICE", false);
-// S13.6: superadmin-only, one-invoice MVola collection gate. Completion affects
-// only subscription invoice/payment evidence; never vouchers or WiFi.
-const BILLING_V1_OWNER_FIRST_PAYMENT = billingEnvFlag("BILLING_V1_OWNER_FIRST_PAYMENT", false);
 // S13.6.4: owner-facing guided collection. Kept independent from the temporary
 // superadmin first-payment switch so the operational review page can remain
 // passive while owners pay their own invoices.
@@ -13976,7 +13956,6 @@ function buildAdminPermissions(admin) {
     billing_assignments_manage: isSuperadmin && BILLING_V1_ENABLED && BILLING_V1_ADMIN_OFFERS,
     billing_changes_manage: isSuperadmin && BILLING_V1_ENABLED && BILLING_V1_ADMIN_OFFERS,
     billing_owner_subscription_view: BILLING_V1_ENABLED && BILLING_V1_OWNER_SELF_SERVICE,
-    billing_owner_configuration: BILLING_V1_OWNER_CONFIGURATION,
   };
 }
 
@@ -14774,35 +14753,10 @@ app.patch("/api/admin/billing/changes/:id/cancel", requireAdmin, requireSuperadm
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
-function requireBillingOwnerConfiguration(_req, res, next) {
-  if (!BILLING_V1_OWNER_CONFIGURATION) return res.status(404).json({ error: "billing_owner_configuration_disabled" });
-  next();
-}
-
 function requireBillingOwnerAutonomousChange(_req, res, next) {
   if (!BILLING_V1_OWNER_AUTONOMOUS_CHANGE) {
     return res.status(404).json({ error: "billing_owner_autonomous_change_disabled" });
   }
-  next();
-}
-
-function requireBillingOwnerConfigurationApply(_req, res, next) {
-  if (!BILLING_V1_OWNER_CONFIGURATION_APPLY) return res.status(404).json({ error: "billing_owner_configuration_apply_disabled" });
-  next();
-}
-
-function requireBillingOwnerConfigurationReplace(_req, res, next) {
-  if (!BILLING_V1_OWNER_CONFIGURATION_REPLACE) return res.status(404).json({ error: "billing_owner_configuration_replace_disabled" });
-  next();
-}
-
-function requireBillingOwnerFirstInvoice(_req, res, next) {
-  if (!BILLING_V1_OWNER_FIRST_INVOICE) return res.status(404).json({ error: "billing_owner_first_invoice_disabled" });
-  next();
-}
-
-function requireBillingOwnerFirstPayment(_req, res, next) {
-  if (!BILLING_V1_OWNER_FIRST_PAYMENT) return res.status(404).json({ error: "billing_owner_first_payment_disabled" });
   next();
 }
 
@@ -14905,112 +14859,8 @@ app.patch("/api/owner/billing/changes/:id/cancel", requireAdmin, requireBillingO
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
-app.get("/api/owner/billing-configuration", requireAdmin, requireBillingOwnerConfiguration, async (req, res) => {
-  try {
-    const actorId = String(req.admin?.id || "").trim();
-    const isSuperadmin = !!req.admin?.is_superadmin;
-    let scopeQuery = supabase.from("v_billing_v1_s13_2_owner_pool_scope").select("*").order("name");
-    let requestQuery = supabase.from("v_billing_v1_s13_2_requests").select("*").order("created_at", { ascending: false });
-    if (!isSuperadmin) {
-      scopeQuery = scopeQuery.eq("admin_user_id", actorId);
-      requestQuery = requestQuery.eq("applicant_user_id", actorId);
-    }
-    const [scopeResult, requestResult, offersResult, versionsResult, featuresResult] = await Promise.all([
-      scopeQuery,
-      requestQuery,
-      supabase.from("billing_offers").select("id,code,title,status").eq("status", "active").order("title"),
-      supabase.from("billing_offer_versions").select("id,offer_id,version_no,status,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,effective_from,effective_to").eq("status", "active").order("version_no", { ascending: false }),
-      supabase.from("billing_offer_version_features").select("offer_version_id,feature_key,enabled").eq("feature_key", "personalized_plan").eq("enabled", true),
-    ]);
-    const error = scopeResult.error || requestResult.error || offersResult.error || versionsResult.error || featuresResult.error;
-    if (error) return res.status(500).json({ error: error.message });
-    const personalized = new Set((featuresResult.data || []).map((x) => x.offer_version_id));
-    const versions = (versionsResult.data || []).map((x) => ({ ...x, personalized_plan_enabled: personalized.has(x.id) }));
-    return res.json({
-      pools: scopeResult.data || [], requests: requestResult.data || [], offers: offersResult.data || [], versions,
-      capabilities: { draft: true, submit: true, review: isSuperadmin, activation: false, invoice: false, payment: false },
-      passive: true, live_effect: false,
-    });
-  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
-});
-
-app.post("/api/owner/billing-configuration", requireAdmin, requireBillingOwnerConfiguration, async (req, res) => {
-  try {
-    const body = req.body || {};
-    const { data, error } = await supabase.rpc("fn_billing_v1_s13_2_create_draft", {
-      p_actor: req.admin.id, p_pool: body.pool_id, p_offer: body.offer_id,
-      p_plan_choice: body.plan_choice, p_billing_mode: body.billing_mode,
-      p_effective_from: body.effective_from, p_metadata: { source: "owner_admin", ui_version: "S13.2" },
-    });
-    if (error) return res.status(s132ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
-    return res.status(201).json(data);
-  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
-});
-
-app.post("/api/owner/billing-configuration/:id/submit", requireAdmin, requireBillingOwnerConfiguration, async (req, res) => {
-  try {
-    const { data, error } = await supabase.rpc("fn_billing_v1_s13_2_submit", {
-      p_actor: req.admin.id, p_request: req.params.id, p_accept_terms: req.body?.accept_terms === true,
-    });
-    if (error) return res.status(s132ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
-    return res.json(data);
-  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
-});
-
-app.get("/api/admin/billing/owner-configurations", requireAdmin, requireSuperadmin, requireBillingOwnerConfiguration, async (_req, res) => {
-  try {
-    const { data, error } = await supabase.from("v_billing_v1_s13_6_review_queue").select("*").order("created_at", { ascending: false });
-    if (error) return res.status(500).json({ error: error.message });
-    return res.json({ requests: data || [], capabilities: { begin_review: true, decide: true, apply: BILLING_V1_OWNER_CONFIGURATION_APPLY, replace: BILLING_V1_OWNER_CONFIGURATION_REPLACE, invoice: BILLING_V1_OWNER_FIRST_INVOICE, payment: BILLING_V1_OWNER_FIRST_PAYMENT, voucher: false, wifi: false }, passive: !(BILLING_V1_OWNER_CONFIGURATION_APPLY || BILLING_V1_OWNER_CONFIGURATION_REPLACE || BILLING_V1_OWNER_FIRST_INVOICE || BILLING_V1_OWNER_FIRST_PAYMENT), live_effect: BILLING_V1_OWNER_FIRST_INVOICE || BILLING_V1_OWNER_FIRST_PAYMENT });
-  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
-});
-
-app.post("/api/admin/billing/owner-configurations/:id/begin-review", requireAdmin, requireSuperadmin, requireBillingOwnerConfiguration, async (req, res) => {
-  try {
-    const { data, error } = await supabase.rpc("fn_billing_v1_s13_3_begin_review", { p_actor: req.admin.id, p_request: req.params.id });
-    if (error) return res.status(s132ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
-    return res.json(data);
-  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
-});
-
-app.post("/api/admin/billing/owner-configurations/:id/review", requireAdmin, requireSuperadmin, requireBillingOwnerConfiguration, async (req, res) => {
-  try {
-    const { data, error } = await supabase.rpc("fn_billing_v1_s13_2_review", {
-      p_actor: req.admin.id, p_request: req.params.id, p_decision: req.body?.decision, p_note: req.body?.note || null,
-    });
-    if (error) return res.status(s132ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
-    return res.json(data);
-  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
-});
-
-app.post("/api/admin/billing/owner-configurations/:id/apply", requireAdmin, requireSuperadmin, requireBillingOwnerConfiguration, requireBillingOwnerConfigurationApply, async (req, res) => {
-  try {
-    const { data, error } = await supabase.rpc("fn_billing_v1_s13_4_apply_approved", {
-      p_actor: req.admin.id, p_request: req.params.id,
-    });
-    if (error) return res.status(s132ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
-    return res.json(data);
-  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
-});
-
-app.post("/api/admin/billing/owner-configurations/:id/replace-active-assignment", requireAdmin, requireSuperadmin, requireBillingOwnerConfiguration, requireBillingOwnerConfigurationReplace, async (req, res) => {
-  try {
-    if (req.body?.confirm_replacement !== true) return res.status(400).json({ error: "replacement_confirmation_required" });
-    const { data, error } = await supabase.rpc("fn_billing_v1_s13_4_1_replace_approved", { p_actor: req.admin.id, p_request: req.params.id });
-    if (error) return res.status(s132ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
-    return res.json(data);
-  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
-});
-
-app.post("/api/admin/billing/owner-configurations/:id/first-invoice", requireAdmin, requireSuperadmin, requireBillingOwnerConfiguration, requireBillingOwnerFirstInvoice, async (req, res) => {
-  try {
-    const { data, error } = await supabase.rpc("fn_billing_v1_s13_5_issue_first_invoice", {
-      p_actor: req.admin.id, p_request: req.params.id,
-    });
-    if (error) return res.status(s132ErrorStatus(error.message)).json({ error: String(error.message).split("\n")[0] });
-    return res.json(data);
-  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
-});
+// S13.9.1.3.2 — retired S13.2→S13.5 manual configuration/review HTTP routes.
+// Historical SQL evidence remains read-only for audit and the guided rollback bridge.
 
 async function completeBillingFirstPayment({ requestRef, serverCorrelationId, providerPayload }) {
   const rpc = BILLING_V1_OWNER_AUTO_ACTIVATION
@@ -15395,54 +15245,8 @@ function startBillingS13843MonthlyClose(){
   billingS13843CloseTimer=setInterval(()=>void runBillingS13843MonthlyClose().catch(e=>console.error("[BILLING S13.8.4.3] scheduled",e?.message||e)),BILLING_S13843_CLOSE_INTERVAL_MS);billingS13843CloseTimer.unref?.();
 }
 
-app.post("/api/admin/billing/owner-configurations/:id/first-payment", requireAdmin, requireSuperadmin,
-  requireBillingOwnerConfiguration, requireBillingOwnerFirstPayment, speedLimiter, paymentLimiter, async (req, res) => {
-  try {
-    const phone = normalizePhone(req.body?.payer_phone);
-    if (!isValidMGPhone(phone)) return res.status(400).json({ error: "payer_phone_invalid", message: paymentPhoneValidationMessage("mvola") });
-    // S13.6.2 — reuse the exact operator-facing reference contract that passed
-    // the real MVola subscription payment on 2026-08-23: 32 ASCII characters.
-    const invoiceToken = String(req.params.id || "").replace(/-/g, "").slice(0, 12);
-    const entropyToken = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-    const requestRef = `RZFSUB-${invoiceToken}-${entropyToken}`.toUpperCase();
-    if (!/^RZFSUB-[A-F0-9]{12}-[A-F0-9]{12}$/.test(requestRef) || requestRef.length !== 32) {
-      return res.status(500).json({ error: "subscription_payment_reference_invalid" });
-    }
-    const correlationId = crypto.randomUUID();
-    const { data: prepared, error: prepareError } = await supabase.rpc("fn_billing_v1_s13_6_prepare_first_payment", {
-      p_actor: req.admin.id, p_configuration_request: req.params.id, p_payer_phone: phone,
-      p_request_ref: requestRef, p_server_correlation_id: correlationId,
-    });
-    if (prepareError) return res.status(s132ErrorStatus(prepareError.message)).json({ error: String(prepareError.message).split("\n")[0] });
-    if (prepared?.idempotent || prepared?.status === "completed") return res.json(prepared);
-    const amount = Number(prepared.amount_ar);
-    const payload = { amount: String(amount), currency: "Ar", descriptionText: `Abonnement RAZAFI ${amount} Ar`,
-      requestingOrganisationTransactionReference: requestRef, requestDate: new Date().toISOString(),
-      debitParty: [{ key: "msisdn", value: phone }], creditParty: [{ key: "msisdn", value: PARTNER_MSISDN }],
-      metadata: [{ key: "partnerName", value: PARTNER_NAME }] };
-    let initiated;
-    try {
-      initiated = await initiateMvolaPaymentWithRetry({ payload, requestRef, phone, amount, correlationId });
-    } catch (error) {
-      await supabase.rpc("fn_billing_v1_s13_6_fail_first_payment", { p_request_ref: requestRef, p_provider_payload: { initiation_error: true } });
-      const mapped = mapMvolaInitiateError(error);
-      return res.status(mapped.httpStatus).json({ error: "subscription_payment_initiation_failed", message: mapped.userMessage });
-    }
-    const providerData = initiated.data || {};
-    const serverCorrelationId = providerData.serverCorrelationId || providerData.serverCorrelationID || providerData.serverCorrelationid || correlationId;
-    console.info("[BILLING S13.6][INITIATE][ACCEPTED]", {
-      requestRef, requestRefLength: requestRef.length, serverCorrelationId,
-      amountAr: amount, providerPayload: sanitizeMvolaLogPayload(providerData),
-    });
-    await supabase.rpc("fn_billing_v1_s13_6_mark_pending", { p_request_ref: requestRef, p_server_correlation_id: serverCorrelationId,
-      p_provider_payload: sanitizeMvolaLogPayload(providerData) });
-    res.status(202).json({ ok: true, provider: "mvola", request_ref: requestRef, status: "pending", verification_timeout_ms: MVOLA_VERIFICATION_TIMEOUT_MS });
-    void pollS136Mvola({ requestRef, serverCorrelationId });
-  } catch (error) {
-    console.error("[BILLING S13.6] first payment", error?.message || error);
-    return res.status(500).json({ error: "billing_s13_6_internal_error" });
-  }
-});
+// S13.9.1.3.2 — retired superadmin first-payment HTTP route.
+// The owner guided rollback bridge below remains available behind its independent gate.
 
 // S13.6.4 owner self-service: same atomic S13.6 evidence and exact 32-character
 // MVola reference, but the invoice owner initiates the request from one panel.

@@ -80,9 +80,6 @@
           <a class="rz-item" data-href="/admin/owner-subscription.html" href="/admin/owner-subscription.html" id="rzNavOwnerSubscription">
             <span class="rz-item-label">Mon abonnement RAZAFI</span>
           </a>
-          <a class="rz-item" data-href="/admin/owner-configuration-review.html" href="/admin/owner-configuration-review.html" id="rzNavOwnerConfigurationReview">
-            <span class="rz-item-label">Demandes propriétaires</span>
-          </a>
           <a class="rz-item" data-href="/admin/users.html" href="/admin/users.html" id="rzNavUsers">
             <span class="rz-item-label">Utilisateurs</span>
           </a>
@@ -342,7 +339,6 @@
       const canManageBillingOffers = isSuper && admin?.permissions?.billing_offers_manage === true;
       const canManageBillingAssignments = isSuper && admin?.permissions?.billing_assignments_shadow_manage === true;
       const canViewOwnerSubscription = admin?.permissions?.billing_owner_subscription_view === true;
-      const canConfigureOwnerBilling = admin?.permissions?.billing_owner_configuration === true;
 
       // Hide forbidden nav items for pool_readonly
       if (!isSuper) {
@@ -356,7 +352,6 @@
         const elBlocked = $("#rzNavBlocked");
         const elOwnerRevenue = $("#rzNavOwnerRevenue");
         const elOwnerSubscription = $("#rzNavOwnerSubscription");
-        const elOwnerConfigurationReview = $("#rzNavOwnerConfigurationReview");
         const elMaintenance = $("#rzNavMaintenance");
         if (elAPs) elAPs.style.display = "none";
         if (elAudit) elAudit.style.display = "none";
@@ -365,8 +360,7 @@
         if (elBillingAssignments) elBillingAssignments.style.display = "none";
         if (elCommissionPayouts) elCommissionPayouts.style.display = "none";
         if (elOwnerRevenue) elOwnerRevenue.style.display = "none";
-        if (elOwnerSubscription) elOwnerSubscription.style.display = (canConfigureOwnerBilling || canViewOwnerSubscription) ? "" : "none";
-        if (elOwnerConfigurationReview) elOwnerConfigurationReview.style.display = "none";
+        if (elOwnerSubscription) elOwnerSubscription.style.display = canViewOwnerSubscription ? "" : "none";
         if (elMaintenance) elMaintenance.style.display = "none";
       } else {
         // Superadmin only: show Users and Owner Revenue (if present)
@@ -375,14 +369,12 @@
         const elBillingAssignments = $("#rzNavBillingAssignments");
         const elOwnerRevenue = $("#rzNavOwnerRevenue");
         const elOwnerSubscription = $("#rzNavOwnerSubscription");
-        const elOwnerConfigurationReview = $("#rzNavOwnerConfigurationReview");
         const elMaintenance = $("#rzNavMaintenance");
         if (elUsers) elUsers.style.display = "";
         if (elBillingOffers) elBillingOffers.style.display = canManageBillingOffers ? "" : "none";
         if (elBillingAssignments) elBillingAssignments.style.display = canManageBillingAssignments ? "" : "none";
         if (elOwnerRevenue) elOwnerRevenue.style.display = "";
-        if (elOwnerSubscription) elOwnerSubscription.style.display = (canConfigureOwnerBilling || canViewOwnerSubscription) ? "" : "none";
-        if (elOwnerConfigurationReview) elOwnerConfigurationReview.style.display = canConfigureOwnerBilling ? "" : "none";
+        if (elOwnerSubscription) elOwnerSubscription.style.display = canViewOwnerSubscription ? "" : "none";
         if (elMaintenance) elMaintenance.style.display = "";
       }
 
