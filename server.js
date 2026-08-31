@@ -12900,6 +12900,12 @@ const BILLING_S1383_NOTIFICATION_INTERVAL_MS = Math.max(15000,
   Number(process.env.BILLING_S1383_NOTIFICATION_INTERVAL_MS || 60000));
 const BILLING_S1383_NOTIFICATION_BATCH_SIZE = Math.min(25, Math.max(1,
   Number(process.env.BILLING_S1383_NOTIFICATION_BATCH_SIZE || 10)));
+// S13.9.3.2: canonical monthly Subscription cycle. This is a core Billing
+// responsibility, not a Pilot feature, so it follows BILLING_V1_ENABLED and
+// needs no extra historical live flag. The DB function is transactional and
+// idempotent across startup, interval, restart and multiple Render workers.
+const BILLING_S13932_MONTHLY_INTERVAL_MS = Math.max(60000,
+  Number(process.env.BILLING_S13932_MONTHLY_INTERVAL_MS || 300000));
 // S13.8.4.1: freezes the closed-month, paid WiFi commission truth once per
 // pool. It prepares no payout, sends no email and performs no money transfer.
 const BILLING_V1_COMMISSION_MONTHLY_SOURCE = billingEnvFlag("BILLING_V1_COMMISSION_MONTHLY_SOURCE", false);
@@ -15414,6 +15420,13 @@ async function reconcileBillingS1383Notifications() {
   if (billingS1383NotificationRunning) return { ok: true, skipped: "already_running" };
   billingS1383NotificationRunning = true;
   try {
+    // S13.9.3.2 seeds Subscription financial events first. Event keys are
+    // shared with S13.8.3, so the generic enqueue below becomes a harmless
+    // ON CONFLICT fallback while canonical Owner/timezone rules win.
+    const { error: subscriptionEnqueueError } = await supabase.rpc(
+      "fn_billing_v1_s13_9_3_2_enqueue_subscription_notifications"
+    );
+    if (subscriptionEnqueueError) throw subscriptionEnqueueError;
     const { error: enqueueError } = await supabase.rpc("fn_billing_v1_s13_8_3_enqueue_owner_notifications");
     if (enqueueError) throw enqueueError;
     if (BILLING_V1_COMMISSION_DOCUMENT_NOTIFICATIONS) {
@@ -15448,6 +15461,55 @@ function startBillingS1383Notifications() {
   setTimeout(() => void reconcileBillingS1383Notifications().catch((error) => console.error("[BILLING S13.8.3] startup", error?.message || error)), 5000);
   billingS1383NotificationTimer = setInterval(() => void reconcileBillingS1383Notifications().catch((error) => console.error("[BILLING S13.8.3] scheduled", error?.message || error)), BILLING_S1383_NOTIFICATION_INTERVAL_MS);
   try { billingS1383NotificationTimer.unref?.(); } catch (_) {}
+}
+
+// S13.9.3.2 — global canonical monthly Subscription invoice generation.
+// The SQL engine selects every pool whose canonical assignment is commercial
+// + subscription for the Madagascar business month. It creates no payment,
+// voucher or WiFi effect. DB locks + unique indexes make repeated runs safe.
+let billingS13932MonthlyRunning = false;
+let billingS13932MonthlyTimer = null;
+async function runBillingS13932MonthlySubscription(reason = "interval") {
+  if (!BILLING_V1_ENABLED) return { ok: true, skipped: "billing_master_disabled" };
+  if (!supabase) return { ok: false, skipped: "supabase_unavailable" };
+  if (billingS13932MonthlyRunning) return { ok: true, skipped: "already_running" };
+  billingS13932MonthlyRunning = true;
+  try {
+    const { data, error } = await supabase.rpc(
+      "fn_billing_v1_s13_9_3_2_generate_monthly_invoices",
+      { p_period_month: null, p_now: new Date().toISOString(), p_execute: true }
+    );
+    if (error) throw error;
+    const result = Array.isArray(data) ? data[0] : data;
+    if (!result || result.ok !== true) {
+      const details = JSON.stringify(result?.errors || []).slice(0, 1200);
+      throw new Error(`canonical_monthly_subscription_invalid_result:${details}`);
+    }
+    console.info("[BILLING S13.9.3.2] canonical monthly Subscription", { reason, ...result });
+    if (BILLING_V1_OWNER_NOTIFICATIONS && Number(result.created_invoice_count || 0) > 0) {
+      // Prompt delivery; the normal S13.8.3 interval remains the durable retry.
+      void reconcileBillingS1383Notifications().catch((notificationError) =>
+        console.error("[BILLING S13.9.3.2] invoice notification", notificationError?.message || notificationError));
+    }
+    return result;
+  } finally {
+    billingS13932MonthlyRunning = false;
+  }
+}
+function startBillingS13932MonthlySubscription() {
+  if (!BILLING_V1_ENABLED || billingS13932MonthlyTimer) return;
+  console.info("[BILLING S13.9.3.2] canonical monthly Subscription enabled", {
+    timezone: "Indian/Antananarivo",
+    intervalMs: BILLING_S13932_MONTHLY_INTERVAL_MS,
+    pilotRequired: false,
+  });
+  const startupTimer = setTimeout(() => void runBillingS13932MonthlySubscription("startup")
+    .catch((error) => console.error("[BILLING S13.9.3.2] startup", error?.message || error)), 2500);
+  try { startupTimer.unref?.(); } catch (_) {}
+  billingS13932MonthlyTimer = setInterval(() => void runBillingS13932MonthlySubscription("interval")
+    .catch((error) => console.error("[BILLING S13.9.3.2] scheduled", error?.message || error)),
+  BILLING_S13932_MONTHLY_INTERVAL_MS);
+  try { billingS13932MonthlyTimer.unref?.(); } catch (_) {}
 }
 
 let billingS13841SourceRunning = false;
@@ -15641,7 +15703,7 @@ app.get("/api/owner/billing", requireAdmin, requireBillingOwnerSubscription, asy
     const assignments = assignmentsResult.data || [], invoices = invoicesResult.data || [];
     const payments = paymentsResult.data || [], activations = activationsResult.data || [];
     const offerTitleById = new Map((offersResult.data || []).map((x) => [x.id, x.title]));
-    const nowDate = new Date().toISOString().slice(0, 10);
+    const nowDate = billingMadagascarToday();
     const withOfferTitle = (assignment) => ({ ...assignment, offer_title: offerTitleById.get(assignment.offer_id) || null });
     const currentAssignments = poolIds.map((pool_id) => assignments.find((a) => a.pool_id === pool_id && a.effective_from <= nowDate && (!a.effective_to || a.effective_to >= nowDate)) || null).filter(Boolean).map(withOfferTitle);
     const upcomingAssignments = poolIds.map((pool_id) => assignments.filter((a) => a.pool_id === pool_id && a.effective_from > nowDate).sort((a, b) => String(a.effective_from).localeCompare(String(b.effective_from)))[0] || null).filter(Boolean).map(withOfferTitle);
@@ -15956,7 +16018,7 @@ async function pollBillingSubscriptionMvola({requestRef,serverCorrelationId}) {
       const payload=response.data||{};
       const status=String(payload.status||payload.transactionStatus||"").toLowerCase();
       if(status==="completed"||status==="success") {
-        const {data,error}=await supabase.rpc("fn_billing_v1_complete_subscription_payment",{
+        const {data,error}=await supabase.rpc("fn_billing_v1_s13_9_3_2_complete_subscription_payment",{
           p_request_ref:requestRef,p_server_correlation_id:serverCorrelationId,
           p_provider_reference:billingProviderRef(payload),
           p_provider_payload:sanitizeMvolaLogPayload(payload),
@@ -16039,11 +16101,11 @@ app.post("/api/owner/billing/invoices/:id/pay",
       return res.status(500).json({error:"subscription_payment_reference_invalid"});
     }
     const correlationId=crypto.randomUUID();
-    const meta={billing_v1:true,milestone:"S13.9.1.3.1",purpose:"monthly_subscription",
+    const meta={billing_v1:true,milestone:"S13.9.3.2",purpose:"monthly_subscription",
       business_effect:"invoice_only",voucher_generation:false,pilot_required:false,
       invoice_number:invoice.invoice_number,provider_call:false};
     const {data:prepared,error:prepareError}=await supabase.rpc(
-      "fn_billing_v1_prepare_subscription_payment",{
+      "fn_billing_v1_s13_9_3_2_prepare_subscription_payment",{
         p_invoice_id:invoice.id,p_owner_admin_user_id:ownerId,p_payer_phone:phone,
         p_request_ref:requestRef,p_server_correlation_id:correlationId,
       });
@@ -34930,6 +34992,7 @@ app.listen(PORT, "0.0.0.0", () => {
   startBillingS1365Reconciliation();
   startBillingS137Activation();
   startBillingS1382Apply();
+  startBillingS13932MonthlySubscription();
   startBillingS1383Notifications();
   startBillingS13841MonthlySource();
   startBillingS13843MonthlyClose();
