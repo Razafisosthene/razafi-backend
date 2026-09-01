@@ -12906,6 +12906,11 @@ const BILLING_S1383_NOTIFICATION_BATCH_SIZE = Math.min(25, Math.max(1,
 // idempotent across startup, interval, restart and multiple Render workers.
 const BILLING_S13932_MONTHLY_INTERVAL_MS = Math.max(60000,
   Number(process.env.BILLING_S13932_MONTHLY_INTERVAL_MS || 300000));
+// S13.9.4.1: canonical global Subscription enforcement. This is deliberately
+// independent from the retired Pilot tables. BILLING_V1_ENFORCE remains the
+// single operational kill switch because suspension blocks new WiFi purchases.
+const BILLING_S13941_ENFORCEMENT_INTERVAL_MS = Math.max(15000,
+  Number(process.env.BILLING_S13941_ENFORCEMENT_INTERVAL_MS || 60000));
 // S13.8.4.1: freezes the closed-month, paid WiFi commission truth once per
 // pool. It prepares no payout, sends no email and performs no money transfer.
 const BILLING_V1_COMMISSION_MONTHLY_SOURCE = billingEnvFlag("BILLING_V1_COMMISSION_MONTHLY_SOURCE", false);
@@ -15361,6 +15366,8 @@ function billingS1383Message(item) {
     invoice_overdue: ["Action requise : facture RAZAFI échue", `La facture ${p.invoice_number || ""} de ${p.amount_ar || 0} Ar est échue depuis le ${p.due_on || "jour indiqué"}. Vous pouvez la régler depuis votre espace sécurisé.`],
     payment_confirmed: ["Paiement RAZAFI confirmé", `Votre paiement de ${p.amount_ar || 0} Ar pour la facture ${p.invoice_number || ""} est confirmé. La facture et le reçu PDF sont disponibles dans votre espace.`],
     payment_failed: ["Paiement RAZAFI non confirmé", `La tentative de paiement de la facture ${p.invoice_number || ""} n’a pas été confirmée. Vérifiez qu’aucun débit n’apparaît avant de réessayer.`],
+    subscription_suspended: ["Paiements clients suspendus pour ce pool", `La facture ${p.invoice_number || ""} de ${p.amount_ar || 0} Ar n’a pas été réglée avant la fin de la tolérance. Les nouveaux achats WiFi sont temporairement indisponibles pour ce pool. Les accès déjà actifs ne sont pas déconnectés.`],
+    subscription_reactivated: ["Paiements clients réactivés pour ce pool", `Le paiement de la facture ${p.invoice_number || ""} est confirmé. Les nouveaux achats WiFi sont de nouveau disponibles selon les modes de paiement configurés pour ce pool.`],
     subscription_activated: ["Votre abonnement RAZAFI est activé", "Votre abonnement est maintenant actif pour ce pool. Vos documents restent disponibles dans votre espace propriétaire."],
     commission_statement_ready: ["Votre relevé mensuel RAZAFI est disponible", `Le relevé ${p.statement_number || ""} pour la période du ${p.period_start || ""} au ${p.period_end || ""} est clôturé. Part propriétaire brute : ${p.owner_gross_amount_ar || 0} Ar. Le PDF est joint et reste disponible dans votre espace.`],
     commission_payout_confirmed: ["Votre reversement RAZAFI est confirmé", `Le reversement ${p.payout_number || ""} de ${p.owner_net_amount_ar || 0} Ar est enregistré. Le relevé mensuel et le reçu propriétaire sont disponibles dans votre espace.`],
@@ -15420,9 +15427,13 @@ async function reconcileBillingS1383Notifications() {
   if (billingS1383NotificationRunning) return { ok: true, skipped: "already_running" };
   billingS1383NotificationRunning = true;
   try {
-    // S13.9.3.2 seeds Subscription financial events first. Event keys are
-    // shared with S13.8.3, so the generic enqueue below becomes a harmless
-    // ON CONFLICT fallback while canonical Owner/timezone rules win.
+    // Canonical Subscription event seeds run first. Event keys are durable and
+    // deduplicated in PostgreSQL; the generic S13.8.3 enqueue below remains a
+    // harmless fallback for older event families.
+    const { error: accessEnqueueError } = await supabase.rpc(
+      "fn_billing_v1_s13_9_4_1_enqueue_access_notifications"
+    );
+    if (accessEnqueueError) throw accessEnqueueError;
     const { error: subscriptionEnqueueError } = await supabase.rpc(
       "fn_billing_v1_s13_9_3_2_enqueue_subscription_notifications"
     );
@@ -15510,6 +15521,57 @@ function startBillingS13932MonthlySubscription() {
     .catch((error) => console.error("[BILLING S13.9.3.2] scheduled", error?.message || error)),
   BILLING_S13932_MONTHLY_INTERVAL_MS);
   try { billingS13932MonthlyTimer.unref?.(); } catch (_) {}
+}
+
+// S13.9.4.1 — canonical global Subscription access enforcement.
+// PostgreSQL evaluates every current commercial Subscription pool from its
+// immutable monthly invoice. Only the purchase-access overlay changes:
+// payment-method configuration, vouchers, RADIUS and active sessions stay intact.
+let billingS13941EnforcementRunning = false;
+let billingS13941EnforcementTimer = null;
+async function runBillingS13941Enforcement(reason = "interval") {
+  if (!billingAccessEnforcementMasterEnabled()) return { ok:true, skipped:"enforcement_disabled" };
+  if (!supabase) return { ok:false, skipped:"supabase_unavailable" };
+  if (billingS13941EnforcementRunning) return { ok:true, skipped:"already_running" };
+  billingS13941EnforcementRunning = true;
+  try {
+    const {data,error}=await supabase.rpc(
+      "fn_billing_v1_s13_9_4_1_enforce_subscription_access",
+      {p_now:new Date().toISOString(),p_execute:true}
+    );
+    if(error)throw error;
+    const result=Array.isArray(data)?data[0]:data;
+    if(!result||result.ok!==true){
+      const details=JSON.stringify(result?.errors||[]).slice(0,1200);
+      throw new Error(`canonical_subscription_enforcement_invalid_result:${details}`);
+    }
+    console.info("[BILLING S13.9.4.1] canonical Subscription enforcement",{reason,...result});
+    if(BILLING_V1_OWNER_NOTIFICATIONS &&
+       (Number(result.suspended_count||0)>0||Number(result.reactivated_count||0)>0)){
+      void reconcileBillingS1383Notifications().catch((notificationError)=>
+        console.error("[BILLING S13.9.4.1] access notification",notificationError?.message||notificationError));
+    }
+    return result;
+  } finally {
+    billingS13941EnforcementRunning = false;
+  }
+}
+function startBillingS13941Enforcement(){
+  if(!billingAccessEnforcementMasterEnabled()||billingS13941EnforcementTimer)return;
+  console.info("[BILLING S13.9.4.1] canonical global Subscription enforcement enabled",{
+    timezone:"Indian/Antananarivo",
+    intervalMs:BILLING_S13941_ENFORCEMENT_INTERVAL_MS,
+    pilotRequired:false,
+    configuredPaymentMethodsPreserved:true,
+    activeSessionsDisconnected:false,
+  });
+  const startupTimer=setTimeout(()=>void runBillingS13941Enforcement("startup")
+    .catch((error)=>console.error("[BILLING S13.9.4.1] startup",error?.message||error)),4000);
+  try{startupTimer.unref?.();}catch(_){}
+  billingS13941EnforcementTimer=setInterval(()=>void runBillingS13941Enforcement("interval")
+    .catch((error)=>console.error("[BILLING S13.9.4.1] scheduled",error?.message||error)),
+  BILLING_S13941_ENFORCEMENT_INTERVAL_MS);
+  try{billingS13941EnforcementTimer.unref?.();}catch(_){}
 }
 
 let billingS13841SourceRunning = false;
@@ -15933,30 +15995,52 @@ function billingLiveMasterEnabled() {
     BILLING_V1_OWNER_PAYMENT_SELF_SERVICE;
 }
 function billingAccessEnforcementMasterEnabled(){
-  return BILLING_V1_ENABLED && BILLING_V1_ENFORCE && BILLING_V1_PILOT_EXECUTION;
+  return BILLING_V1_ENABLED && BILLING_V1_ENFORCE;
 }
 async function billingPoolPurchaseAccess(poolId){
   const open={blocked:false,status:"active",enforced:false};
   if(!billingAccessEnforcementMasterEnabled()||!poolId)return open;
-  const [{data:pilot,error:pilotError},{data:control,error:controlError},{data:emergency,error:emergencyError}]=await Promise.all([
-    supabase.from("pool_billing_activation_pilots")
-      .select("status,first_live_at,live_access_enforcement_enabled")
-      .eq("pool_id",poolId).maybeSingle(),
-    supabase.from("pool_billing_access_controls")
-      .select("status,grace_until,suspended_at,reactivated_at")
-      .eq("pool_id",poolId).maybeSingle(),
-    supabase.from("billing_pilot_emergency_controls")
-      .select("emergency_stop")
-      .eq("pool_id",poolId).maybeSingle(),
-  ]);
-  if(pilotError||controlError||emergencyError)throw pilotError||controlError||emergencyError;
-  const pilotLive=pilot?.status==="enabled" && pilot?.live_access_enforcement_enabled===true &&
-    String(pilot?.first_live_at||"")<=billingMadagascarToday();
-  if(!pilotLive)return open;
-  // S11.7: a missing emergency-control row is fail-closed once live gates are armed.
-  if(!emergency||emergency.emergency_stop!==false)throw new Error("billing_pilot_emergency_stop_active");
-  if(!control)throw new Error("billing_access_control_missing");
-  return {blocked:control?.status==="suspended",status:control?.status||"active",enforced:true};
+
+  const businessToday=billingMadagascarToday();
+  const periodStart=`${businessToday.slice(0,7)}-01`;
+
+  const {data:period,error:periodError}=await supabase
+    .from("pool_billing_periods")
+    .select("id,billing_status,billing_mode,period_start,period_end,access_status")
+    .eq("pool_id",poolId)
+    .eq("period_start",periodStart)
+    .maybeSingle();
+  if(periodError)throw periodError;
+
+  // Commission/internal/exempt pools — and pools whose canonical monthly
+  // snapshot does not exist — are never blocked by Subscription enforcement.
+  if(!period || period.billing_status!=="commercial" || period.billing_mode!=="subscription")return open;
+
+  const {data:invoice,error:invoiceError}=await supabase
+    .from("subscription_invoices")
+    .select("id,status,amount_due_ar,amount_paid_ar,due_at,purpose")
+    .eq("billing_period_id",period.id)
+    .eq("purpose","monthly_subscription")
+    .neq("status","cancelled")
+    .maybeSingle();
+  if(invoiceError)throw invoiceError;
+  if(!invoice)return open;
+
+  const amountDue=Number(invoice.amount_due_ar||0);
+  const amountPaid=Number(invoice.amount_paid_ar||0);
+  const paid=["paid","partially_refunded"].includes(String(invoice.status||"")) &&
+    amountDue>0 && amountPaid>=amountDue;
+  const dueAtMs=Date.parse(String(invoice.due_at||""));
+  if(!paid && !Number.isFinite(dueAtMs))throw new Error("billing_subscription_due_at_invalid");
+
+  const blocked=!paid && Date.now()>dueAtMs;
+  return {
+    blocked,
+    status:paid?"active":(blocked?"suspended":"grace"),
+    enforced:true,
+    invoice_id:invoice.id,
+    billing_period_id:period.id,
+  };
 }
 async function billingOwnerPaymentUi(invoices) {
   const disabled={enabled:false,provider:null,payable_invoice_ids:[]};
@@ -21925,7 +22009,7 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
       ok:                   true,
       // ap_mac and pool_id removed — not needed by portal UI
       pool_name:            pool?.name ?? null,
-      personalized_plans_enabled: pool?.personalized_plans_enabled === true && !billingAccess.blocked,
+      personalized_plans_enabled: pool?.personalized_plans_enabled === true,
       portal_announcement:  serializePortalAnnouncement(pool),
       plans:                publicPlans,
       payment_methods:        effectivePaymentMethods,   // original toggles stay unchanged; suspension is an overlay
@@ -34993,6 +35077,7 @@ app.listen(PORT, "0.0.0.0", () => {
   startBillingS137Activation();
   startBillingS1382Apply();
   startBillingS13932MonthlySubscription();
+  startBillingS13941Enforcement();
   startBillingS1383Notifications();
   startBillingS13841MonthlySource();
   startBillingS13843MonthlyClose();
