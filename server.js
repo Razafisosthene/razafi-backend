@@ -3667,9 +3667,21 @@ async function buildPlatformTrustedAssistantContext() {
       future_payment_methods_not_yet_operational: ["Orange Money", "Airtel Money", "Visa"],
       public_offers_status: catalogAvailable ? "available" : "temporarily_unavailable",
       public_offers_effective_on: catalog.effective_on,
-      public_offers: catalog.items,
+      pricing_modes_are_alternatives: true,
+      public_offers: catalog.items.map((offer) => ({
+        ...offer,
+        pricing_relation: "alternative",
+        pricing_modes: [
+          ...(offer.commission_pct !== null
+            ? [{ mode: "commission", commission_pct: offer.commission_pct }]
+            : []),
+          ...(offer.subscription_price_ar !== null
+            ? [{ mode: "subscription", subscription_price_ar: offer.subscription_price_ar }]
+            : []),
+        ],
+      })),
       pricing_note: catalogAvailable
-        ? "Les tarifs publics proviennent du catalogue Billing RAZAFI actuellement applicable. Une offre peut proposer une commission, un abonnement mensuel, ou les deux."
+        ? "Les tarifs publics proviennent du catalogue Billing RAZAFI actuellement applicable. Pour chaque offre, commission et abonnement mensuel sont des modes de facturation alternatifs : le propriétaire choisit l’un OU l’autre. Ils ne s’additionnent jamais."
         : "Les tarifs publics sont temporairement indisponibles. Ne pas inventer ni réutiliser un ancien tarif.",
       demos: ["Démo propriétaire", "Démo client"],
     },
@@ -9563,12 +9575,12 @@ function buildPlatformProspectDynamicAnswer(intent_key, lang, message, liveData)
     });
 
     if (lang === "en") {
-      return `Current public RAZAFI offers: ${parts.join("; ")}. These prices cover the RAZAFI service; equipment and installation costs depend on the project.`;
+      return `Current public RAZAFI offers: ${parts.join("; ")}. For each offer, you choose one billing mode: commission OR monthly subscription; the two are never added together. These prices cover the RAZAFI service; equipment and installation costs depend on the project.`;
     }
     if (lang === "mg") {
-      return `Ireto ny offres publiques RAZAFI amin’izao: ${parts.join("; ")}. Ireo tarifs ireo dia ho an’ny service RAZAFI; ny coût matériel sy installation dia miankina amin’ny projet.`;
+      return `Ireto ny offres publiques RAZAFI amin’izao: ${parts.join("; ")}. Ho an’ny offre tsirairay, mode de facturation iray ihany no fidinao: commission NA abonnement isam-bolana; tsy atambatra izy roa. Ireo tarifs ireo dia ho an’ny service RAZAFI; ny coût matériel sy installation dia miankina amin’ny projet.`;
     }
-    return `Les offres publiques RAZAFI actuelles sont : ${parts.join(" ; ")}. Ces tarifs concernent le service RAZAFI ; le coût du matériel et de l’installation dépend du projet.`;
+    return `Les offres publiques RAZAFI actuelles sont : ${parts.join(" ; ")}. Pour chaque offre, vous choisissez un seul mode de facturation : commission OU abonnement mensuel ; les deux ne s’additionnent jamais. Ces tarifs concernent le service RAZAFI ; le coût du matériel et de l’installation dépend du projet.`;
   }
 
   switch (intent_key) {
@@ -11872,7 +11884,7 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
     "WHATSAPP RULE: Mention WhatsApp only when the prospect asks to contact RAZAFI, start a project, get an exact quote, or after a clear qualification step. Do not push WhatsApp in every answer.",
     "REPETITION RULE: Do not repeat demo or WhatsApp invitations if already mentioned in the recent conversation turns.",
     "ESPACE PROPRIÉTAIRE RULE: NEVER direct a prospect to 'Espace propriétaire' as a contact or start method — that is only for existing owners with an active account.",
-    "PRICING RULE: Public offer names, commission rates and subscription prices come ONLY from SITE KNOWLEDGE / TRUSTED SERVER CONTEXT public_offers. An offer may provide commission, monthly subscription, or both. Never reuse an old price, never invent a price, and never claim there is no fixed monthly fee. Equipment and installation costs are separate and may depend on the project. If public_offers is unavailable, say pricing is temporarily unavailable. Invite WhatsApp only if they want a project-specific quote.",
+    "PRICING RULE: Public offer names, commission rates and subscription prices come ONLY from SITE KNOWLEDGE / TRUSTED SERVER CONTEXT public_offers. For each offer, commission and monthly subscription are MUTUALLY EXCLUSIVE ALTERNATIVE billing modes. When both values exist, ALWAYS present them with OR / OU / NA and state that the owner chooses one billing mode. NEVER use plus, '+', and, together, cumulated, or any wording that implies commission and subscription are both charged. pricing_modes_are_alternatives=true and pricing_relation='alternative' are authoritative. If any KB wording is older, commission-only, or conflicts with the trusted public_offers pricing relation, TRUSTED SERVER CONTEXT wins. Never reuse an old price, never invent a price, and never claim there is no fixed monthly fee. Equipment and installation costs are separate and may depend on the project. If public_offers is unavailable, say pricing is temporarily unavailable. Invite WhatsApp only if they want a project-specific quote.",
     "COMPATIBILITY RULE: Answer compatibility questions directly. Ask one useful qualifying question (zone size, number of users, existing equipment) only if it helps qualify the project.",
     "CONTACT RULE: For project-ready prospects, guide clearly to WhatsApp. Do not mention 'Espace propriétaire'.",
     "Hardware: MikroTik hAP ax² for small/medium sites. Larger sites may use more powerful models.",
