@@ -3552,21 +3552,125 @@ async function buildAdminTrustedAssistantContext({ req, requestedScope }) {
   };
 }
 
-function buildPlatformTrustedAssistantContext() {
+// Public commercial catalog shared by razafistore.com and platform_prospect.
+// Billing remains the single source of truth: only public + active offers and
+// the version effective on the current Madagascar business date are exposed.
+const PUBLIC_OFFER_CATALOG_CACHE_TTL_MS = 30_000;
+let publicOfferCatalogCache = null;
+
+async function loadCurrentPublicOfferCatalog({ force = false } = {}) {
+  const nowMs = Date.now();
+  if (!force && publicOfferCatalogCache?.value && publicOfferCatalogCache.expires_at_ms > nowMs) {
+    return publicOfferCatalogCache.value;
+  }
+
+  const effectiveOn = billingMadagascarToday();
+  const { data: offers, error: offersError } = await supabase
+    .from("billing_offers")
+    .select("id,code,title,description,sort_order")
+    .eq("visibility", "public")
+    .eq("status", "active")
+    .order("sort_order", { ascending: true });
+  if (offersError) throw offersError;
+
+  const offerIds = (offers || []).map((offer) => offer.id).filter(Boolean);
+  let versions = [];
+  if (offerIds.length) {
+    const { data, error } = await supabase
+      .from("billing_offer_versions")
+      .select("id,offer_id,version_no,status,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,effective_from,effective_to")
+      .in("offer_id", offerIds)
+      .in("status", ["active", "scheduled"])
+      .lte("effective_from", effectiveOn)
+      .or(`effective_to.is.null,effective_to.gte.${effectiveOn}`)
+      .order("version_no", { ascending: false });
+    if (error) throw error;
+    versions = data || [];
+  }
+
+  const items = [];
+  for (const offer of offers || []) {
+    const candidates = versions.filter((version) => version.offer_id === offer.id);
+    if (candidates.length > 1) {
+      console.warn("[PUBLIC OFFER CATALOG] overlapping effective versions", {
+        code: cleanOptionalText(offer.code, 80),
+        effective_on: effectiveOn,
+        version_nos: candidates.map((version) => Number(version.version_no || 0)),
+      });
+    }
+
+    // Mirrors canonical Billing semantics after the effective-date filter:
+    // if an overlap exists, the highest version_no wins deterministically.
+    const version = candidates[0] || null;
+    if (!version) continue;
+
+    const name = cleanOptionalText(offer.title, 160);
+    if (!name) continue;
+
+    const commissionRaw = Number(version.commission_pct);
+    const subscriptionRaw = Number(version.subscription_price_ar);
+    const commissionPct = version.commission_enabled === true && Number.isFinite(commissionRaw) && commissionRaw >= 0 && commissionRaw <= 100
+      ? commissionRaw
+      : null;
+    const subscriptionPriceAr = version.subscription_enabled === true && Number.isFinite(subscriptionRaw) && subscriptionRaw >= 0
+      ? Math.trunc(subscriptionRaw)
+      : null;
+
+    // A public offer with no valid commercial mode is not safe to advertise.
+    if (commissionPct === null && subscriptionPriceAr === null) {
+      console.warn("[PUBLIC OFFER CATALOG] offer skipped: no valid public pricing mode", {
+        code: cleanOptionalText(offer.code, 80),
+        effective_on: effectiveOn,
+      });
+      continue;
+    }
+
+    items.push({
+      code: cleanOptionalText(offer.code, 80),
+      name,
+      description: cleanOptionalText(offer.description, 1000),
+      commission_pct: commissionPct,
+      subscription_price_ar: subscriptionPriceAr,
+    });
+  }
+
+  const value = { effective_on: effectiveOn, items };
+  publicOfferCatalogCache = {
+    value,
+    expires_at_ms: nowMs + PUBLIC_OFFER_CATALOG_CACHE_TTL_MS,
+  };
+  return value;
+}
+
+async function buildPlatformTrustedAssistantContext() {
+  let catalog = { effective_on: billingMadagascarToday(), items: [] };
+  let catalogAvailable = true;
+  try {
+    catalog = await loadCurrentPublicOfferCatalog();
+  } catch (error) {
+    catalogAvailable = false;
+    console.error("[ASSISTANT PLATFORM CATALOG] unavailable", String(error?.message || error).slice(0, 160));
+  }
+
   return {
     version: ASSISTANT_ANU_TRUSTED_CONTEXT_VERSION,
     context: "platform_prospect",
     available: true,
     scope_verified: true,
     public_knowledge: {
-      hero_title: "Plateforme pour votre zone WiFi",
-      value_proposition: "RAZAFI aide les propriétaires de connexion Starlink ou fibre à vendre un accès WiFi automatisé.",
-      customer_flow: ["Choix d’un forfait", "Paiement Mobile Money", "Code généré", "Connexion WiFi"],
-      owner_tools: ["Gestion des forfaits", "Suivi des clients", "Suivi des revenus", "Gestion de plusieurs pools"],
-      compatibility: "MikroTik pour le portail et la gestion, avec points d’accès WiFi en mode AP/bridge.",
+      hero_title: "Automatisez votre zone WiFi.",
+      value_proposition: "RAZAFI automatise la vente et la gestion d’accès WiFi : les clients choisissent un forfait, paient et obtiennent leur accès, tandis que le propriétaire suit son activité à distance.",
+      customer_flow: ["Choix d’un forfait", "Paiement", "Activation instantanée", "Connexion WiFi"],
+      owner_tools: ["Gestion des forfaits", "Suivi des clients", "Suivi de l’activité", "Gestion de plusieurs zones WiFi"],
+      compatibility_note: "RAZAFI configure le routeur MikroTik. Le propriétaire choisit et installe ses points d’accès WiFi en mode AP/bridge ; RAZAFI fournit le guide de configuration.",
       operational_payment_methods: ["MVola"],
       future_payment_methods_not_yet_operational: ["Orange Money", "Airtel Money", "Visa"],
-      pricing: "Commission sur les ventes; le coût d’installation dépend du projet.",
+      public_offers_status: catalogAvailable ? "available" : "temporarily_unavailable",
+      public_offers_effective_on: catalog.effective_on,
+      public_offers: catalog.items,
+      pricing_note: catalogAvailable
+        ? "Les tarifs publics proviennent du catalogue Billing RAZAFI actuellement applicable. Une offre peut proposer une commission, un abonnement mensuel, ou les deux."
+        : "Les tarifs publics sont temporairement indisponibles. Ne pas inventer ni réutiliser un ancien tarif.",
       demos: ["Démo propriétaire", "Démo client"],
     },
   };
@@ -6745,6 +6849,10 @@ function detectDynamicIntentFromMessage(msg, context) {
       s.includes("combien coûte") || s.includes("combien coute") ||
       s.includes("prix") || s.includes("tarif") || s.includes("abonnement") ||
       s.includes("commission") || s.includes("conditions") ||
+      s.includes("modèle commercial") || s.includes("modele commercial") ||
+      s.includes("modèle économique") || s.includes("modele economique") ||
+      s.includes("business model") || s.includes("comment gagne razafi") ||
+      s.includes("comment razafi gagne") ||
       s.includes("frais") || s.includes("cost") || s.includes("price") ||
       s.includes("pricing") || s.includes("how much")
     ) return "platform_pricing";
@@ -6823,7 +6931,7 @@ function detectDynamicIntentFromMessage(msg, context) {
       s.includes("contact") || s.includes("whatsapp") ||
       s.includes("ouvrir un pool") || s.includes("créer un pool") ||
       s.includes("lancer mon wifi") || s.includes("get started") ||
-      s.includes("become owner") || s.includes("start")
+      s.includes("devenir owner") || s.includes("become owner") || s.includes("start")
     ) return "platform_owner_start";
 
     // platform_intro — broadest, must be last
@@ -9400,6 +9508,69 @@ function buildPlatformProspectDynamicAnswer(intent_key, lang, message, liveData)
     return fallback;
   }
 
+  function sk_public_offers() {
+    const rawOffers = sk && Array.isArray(sk.public_offers) ? sk.public_offers : [];
+    return rawOffers.map((rawOffer) => {
+      if (!rawOffer || typeof rawOffer !== "object" || Array.isArray(rawOffer)) return null;
+      const name = cleanOptionalText(rawOffer.name, 160);
+      if (!name) return null;
+
+      const commissionRaw = rawOffer.commission_pct === null || rawOffer.commission_pct === undefined
+        ? null
+        : Number(rawOffer.commission_pct);
+      const subscriptionRaw = rawOffer.subscription_price_ar === null || rawOffer.subscription_price_ar === undefined
+        ? null
+        : Number(rawOffer.subscription_price_ar);
+      const commissionPct = commissionRaw !== null && Number.isFinite(commissionRaw) && commissionRaw >= 0 && commissionRaw <= 100
+        ? commissionRaw
+        : null;
+      const subscriptionPriceAr = subscriptionRaw !== null && Number.isFinite(subscriptionRaw) && subscriptionRaw >= 0
+        ? Math.trunc(subscriptionRaw)
+        : null;
+      if (commissionPct === null && subscriptionPriceAr === null) return null;
+      return { name, commission_pct: commissionPct, subscription_price_ar: subscriptionPriceAr };
+    }).filter(Boolean);
+  }
+
+  function formatPublicAriary(value) {
+    return Math.trunc(Number(value) || 0).toLocaleString("fr-FR").replace(/\u202f/g, " ");
+  }
+
+  function buildPublicPricingAnswer() {
+    const offers = sk_public_offers();
+    if (!offers.length) {
+      return t(
+        "Les tarifs publics sont temporairement indisponibles. Consultez la section Offres du site ou contactez RAZAFI si vous avez besoin d’une proposition.",
+        "Public pricing is temporarily unavailable. Check the Offers section on the site or contact RAZAFI if you need a proposal.",
+        "Tsy disponible vetivety ny tarifs publics. Jereo ny section Offres ao amin’ny site na mifandraisa amin’i RAZAFI raha mila proposition ianao."
+      );
+    }
+
+    const parts = offers.map((offer) => {
+      const commission = offer.commission_pct !== null
+        ? (lang === "en" ? `${offer.commission_pct}% commission` : lang === "mg" ? `commission ${offer.commission_pct}%` : `${offer.commission_pct} % de commission`)
+        : null;
+      const subscription = offer.subscription_price_ar !== null
+        ? (lang === "en"
+            ? `${formatPublicAriary(offer.subscription_price_ar)} Ar/month/WiFi zone`
+            : lang === "mg"
+              ? `${formatPublicAriary(offer.subscription_price_ar)} Ar/volana/zone WiFi`
+              : `${formatPublicAriary(offer.subscription_price_ar)} Ar/mois/zone WiFi`)
+        : null;
+      const modes = [commission, subscription].filter(Boolean);
+      const separator = modes.length > 1 ? (lang === "en" ? " or " : lang === "mg" ? " na " : " ou ") : "";
+      return `${offer.name} — ${modes.join(separator)}`;
+    });
+
+    if (lang === "en") {
+      return `Current public RAZAFI offers: ${parts.join("; ")}. These prices cover the RAZAFI service; equipment and installation costs depend on the project.`;
+    }
+    if (lang === "mg") {
+      return `Ireto ny offres publiques RAZAFI amin’izao: ${parts.join("; ")}. Ireo tarifs ireo dia ho an’ny service RAZAFI; ny coût matériel sy installation dia miankina amin’ny projet.`;
+    }
+    return `Les offres publiques RAZAFI actuelles sont : ${parts.join(" ; ")}. Ces tarifs concernent le service RAZAFI ; le coût du matériel et de l’installation dépend du projet.`;
+  }
+
   switch (intent_key) {
 
     case "platform_internal_security":
@@ -9519,8 +9690,9 @@ function buildPlatformProspectDynamicAnswer(intent_key, lang, message, liveData)
 
     case "platform_owner_start":
       return t(
-        "Pour démarrer avec RAZAFI, contactez-nous directement sur WhatsApp. Nous vérifions ensemble votre connexion, votre matériel et votre zone avant de lancer. Avez-vous déjà une connexion Starlink ou fibre en place ?",
-        "To get started with RAZAFI, contact us directly on WhatsApp. We verify your connection, equipment, and zone together before launch. Do you already have a Starlink or fibre connection in place?"
+        "Pour démarrer, vous avez besoin d’une connexion Internet. RAZAFI configure votre routeur MikroTik ; vous choisissez et installez vos points d’accès WiFi, avec le guide de configuration RAZAFI. Si vous souhaitez lancer votre zone WiFi, contactez RAZAFI sur WhatsApp.",
+        "To get started, you need an Internet connection. RAZAFI configures your MikroTik router; you choose and install your WiFi access points using the RAZAFI configuration guide. If you want to launch your WiFi zone, contact RAZAFI on WhatsApp.",
+        "Raha hanomboka dia mila connexion Internet ianao. RAZAFI no manao configuration ny routeur MikroTik; ianao no misafidy sy mametraka ny points d’accès WiFi, ary RAZAFI manome guide de configuration. Raha te hanomboka ny zone WiFi-nao ianao dia mifandraisa amin’i RAZAFI amin’ny WhatsApp."
       );
 
     case "platform_revenue":
@@ -9540,17 +9712,8 @@ function buildPlatformProspectDynamicAnswer(intent_key, lang, message, liveData)
       return lang === "en" ? base_en + question_en : base_fr + question_fr;
     }
 
-    case "platform_pricing": {
-      const pricingNote = sk_str("pricing_note",
-        "Le coût dépend de votre installation, du matériel et du niveau d’accompagnement souhaité. Il n’y a pas d’abonnement mensuel fixe : RAZAFI fonctionne avec une commission sur les ventes réalisées."
-      );
-      const cta = lang === "en"
-        ? " Contact us on WhatsApp for a proposal tailored to your project."
-        : " Contactez-nous sur WhatsApp pour recevoir une proposition adaptée à votre situation.";
-      return lang === "en"
-        ? "The cost depends on your setup, equipment, and the level of support needed. There is no fixed monthly fee: RAZAFI works with a commission on sales." + cta
-        : pricingNote + cta;
-    }
+    case "platform_pricing":
+      return buildPublicPricingAnswer();
 
     case "platform_not_technician":
       return t(
@@ -11709,7 +11872,7 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
     "WHATSAPP RULE: Mention WhatsApp only when the prospect asks to contact RAZAFI, start a project, get an exact quote, or after a clear qualification step. Do not push WhatsApp in every answer.",
     "REPETITION RULE: Do not repeat demo or WhatsApp invitations if already mentioned in the recent conversation turns.",
     "ESPACE PROPRIÉTAIRE RULE: NEVER direct a prospect to 'Espace propriétaire' as a contact or start method — that is only for existing owners with an active account.",
-    "PRICING RULE: Explain that pricing depends on installation, equipment, and project. No fixed monthly fee — RAZAFI works on commission. Invite WhatsApp only if they want an exact quote.",
+    "PRICING RULE: Public offer names, commission rates and subscription prices come ONLY from SITE KNOWLEDGE / TRUSTED SERVER CONTEXT public_offers. An offer may provide commission, monthly subscription, or both. Never reuse an old price, never invent a price, and never claim there is no fixed monthly fee. Equipment and installation costs are separate and may depend on the project. If public_offers is unavailable, say pricing is temporarily unavailable. Invite WhatsApp only if they want a project-specific quote.",
     "COMPATIBILITY RULE: Answer compatibility questions directly. Ask one useful qualifying question (zone size, number of users, existing equipment) only if it helps qualify the project.",
     "CONTACT RULE: For project-ready prospects, guide clearly to WhatsApp. Do not mention 'Espace propriétaire'.",
     "Hardware: MikroTik hAP ax² for small/medium sites. Larger sites may use more powerful models.",
@@ -13179,6 +13342,24 @@ const personalizedQuoteLimiter = rateLimit({
 app.use("/api/send-payment", speedLimiter, paymentLimiter);
 
 // ===============================
+// RAZAFI PUBLIC COMMERCIAL CATALOG
+// GET /api/public/offers
+// Public-safe projection only: no offer/version UUIDs, assignments or private offers.
+// ===============================
+app.get("/api/public/offers", async (_req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const catalog = await loadCurrentPublicOfferCatalog();
+    res.set("Cache-Control", "public, max-age=30");
+    return res.json({ ok: true, ...catalog });
+  } catch (error) {
+    console.error("[PUBLIC OFFER CATALOG ERROR]", String(error?.message || error).slice(0, 160));
+    res.set("Cache-Control", "no-store");
+    return res.status(503).json({ ok: false, error: "public_offers_unavailable" });
+  }
+});
+
+// ===============================
 // RAZAFI ASSISTANT — PUBLIC ENDPOINT
 // POST /api/assistant/chat
 // Allowed contexts: portal_user, platform_prospect
@@ -13229,14 +13410,21 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
     const portalIdentity = anuEnabled && rawContext === "portal_user"
       ? resolvePortalAssistantContextToken(rawContextToken)
       : null;
-    const trustedContext = anuEnabled
-      ? (rawContext === "portal_user"
-          ? await buildPortalTrustedAssistantContext({
-              contextToken: rawContextToken,
-              identity: portalIdentity,
-            })
-          : buildPlatformTrustedAssistantContext())
-      : null;
+
+    // platform_prospect always receives the canonical public catalog from the
+    // server, even when ANU is disabled. This prevents browser-owned/stale prices
+    // from becoming authoritative while leaving portal_user behavior untouched.
+    const trustedContext = rawContext === "platform_prospect"
+      ? await buildPlatformTrustedAssistantContext()
+      : anuEnabled && rawContext === "portal_user"
+        ? await buildPortalTrustedAssistantContext({
+            contextToken: rawContextToken,
+            identity: portalIdentity,
+          })
+        : null;
+    const effectiveLiveData = rawContext === "platform_prospect" && trustedContext?.public_knowledge
+      ? { ...liveData, site_knowledge: trustedContext.public_knowledge }
+      : liveData;
     // Raw scope components remain process-local. Persistent storage receives only
     // a SHA-256 scope hash built by the ANU-3 memory wrapper.
     const publicScopeKey = anuEnabled && rawContext === "portal_user"
@@ -13248,7 +13436,7 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
     const result = await handleAssistantChat({
       context: rawContext,
       rawMessage,
-      liveData,
+      liveData: effectiveLiveData,
       uiSnapshot,
       trustedContext,
       pool_id,
