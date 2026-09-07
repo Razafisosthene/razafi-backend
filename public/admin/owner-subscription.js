@@ -177,10 +177,22 @@
     return `<div data-config-pool="${esc(pool.id)}"><div class="sub-status"><strong>Prise d’effet automatique : ${esc(effective)}</strong><br>${current?"Votre offre actuelle reste active jusque-là.":"Votre première offre prendra effet à cette date."}</div><div class="sub-offers" style="margin-top:12px">${cards||'<div class="sub-empty">Aucun changement différent de votre offre actuelle n’est disponible.</div>'}</div></div>`;
   }
 
+  const DOCUMENT_MONTHS_FR=["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
+
+  function documentPresentation(d){
+    const raw=String(d?.title||"Document").trim()||"Document";
+    const kind=/^facture\b/i.test(raw)?"Facture":/^re[cç]u\b/i.test(raw)?"Reçu":null;
+    const period=raw.match(/(?:^|\D)(20\d{2})(0[1-9]|1[0-2])(?:\D|$)/);
+    const year=period?.[1]||null,monthIndex=period?Number(period[2])-1:-1;
+    const friendly=kind&&year&&monthIndex>=0&&monthIndex<12?`${kind} · ${DOCUMENT_MONTHS_FR[monthIndex]} ${year}`:raw;
+    const reference=kind?raw.replace(/^facture\s+|^re[cç]u\s+/i,"").trim():"";
+    return {title:friendly,reference:reference&&reference!==friendly?reference:null};
+  }
+
   function renderDocumentsSection(pool){
     const docs=(billing?.documents||[]).filter(d=>d.pool_id===pool.id);
     const legacy=(configuration?.legacy_requests||[]).filter(r=>r.pool_id===pool.id);
-    const docHtml=docs.length?`<div class="sub-grid">${docs.map(d=>`<article class="sub-card"><h3>${esc(d.title)}</h3><div>${money(d.amount_ar)} · ${esc(label(d.status))}</div>${d.download_available?`<a class="sub-link" style="margin-top:10px" href="${esc(d.download_url)}">Télécharger</a>`:""}</article>`).join("")}</div>`:'<div class="sub-empty">Aucun document disponible.</div>';
+    const docHtml=docs.length?`<div class="sub-grid">${docs.map(d=>{const view=documentPresentation(d);return `<article class="sub-card"><h3 class="sub-document-title">${esc(view.title)}</h3>${view.reference?`<div class="sub-muted sub-document-ref">Référence ${esc(view.reference)}</div>`:""}<div>${money(d.amount_ar)} · ${esc(label(d.status))}</div>${d.download_available?`<a class="sub-link" style="margin-top:10px" href="${esc(d.download_url)}">Télécharger</a>`:""}</article>`}).join("")}</div>`:'<div class="sub-empty">Aucun document disponible.</div>';
     const legacyHtml=legacy.length?`<div class="sub-history-title">Anciennes demandes — consultation uniquement</div><div class="sub-grid">${legacy.map(r=>`<article class="sub-card"><strong>${esc(r.request_ref||"Demande")}</strong><div>${esc(offerDisplayTitle(r.offer_title||"Offre RAZAFI"))} · ${esc(label(r.billing_mode))}</div><div class="sub-muted">Effet ${esc(r.effective_from||"—")} · statut ${esc(r.status||"—")}</div></article>`).join("")}</div>`:"";
     return `${docHtml}${legacyHtml}`;
   }
