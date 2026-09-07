@@ -92,6 +92,9 @@
           <a class="rz-item" data-href="/admin/commission-payouts.html" href="/admin/commission-payouts.html" id="rzNavCommissionPayouts">
             <span class="rz-item-label">Reversements commission</span>
           </a>
+          <a class="rz-item" data-href="/admin/billing-exceptions.html" href="/admin/billing-exceptions.html" id="rzNavBillingExceptions">
+            <span class="rz-item-label">Exceptions de facturation</span>
+          </a>
           <a class="rz-item" data-href="/admin/audit.html" href="/admin/audit.html" id="rzNavAudit">
             <span class="rz-item-label">AUDIT</span>
           </a>
@@ -373,6 +376,7 @@
       const elBillingOffers = $("#rzNavBillingOffers");
       const elBillingAssignments = $("#rzNavBillingAssignments");
       const elCommissionPayouts = $("#rzNavCommissionPayouts");
+      const elBillingExceptions = $("#rzNavBillingExceptions");
       const elOwnerRevenue = $("#rzNavOwnerRevenue");
       const elOwnerSubscription = $("#rzNavOwnerSubscription");
       const elMaintenance = $("#rzNavMaintenance");
@@ -384,6 +388,7 @@
       if (elBillingOffers) elBillingOffers.style.display = canManageBillingOffers ? "" : "none";
       if (elBillingAssignments) elBillingAssignments.style.display = canManageBillingAssignments ? "" : "none";
       if (elCommissionPayouts) elCommissionPayouts.style.display = isSuper ? "" : "none";
+      if (elBillingExceptions) elBillingExceptions.style.display = isSuper ? "" : "none";
       if (elOwnerRevenue) elOwnerRevenue.style.display = isSuper ? "" : "none";
       if (elOwnerSubscription) elOwnerSubscription.style.display = canViewOwnerSubscription ? "" : "none";
       if (elMaintenance) elMaintenance.style.display = isSuper ? "" : "none";
@@ -468,6 +473,7 @@
       if (p.includes("/users"))             return "users";
       if (p.includes("/billing-offers"))    return "billing_offers";
       if (p.includes("/billing-assignments")) return "billing_assignments";
+      if (p.includes("/billing-exceptions")) return "billing_exceptions";
       if (p.includes("/audit"))             return "audit";
       return "unknown";
     } catch (_) {

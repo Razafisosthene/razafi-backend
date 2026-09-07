@@ -15608,10 +15608,41 @@ async function billingS13844Attachments(item) {
   }
   return [];
 }
+async function billingS13101CanonicalRecipient(item) {
+  const poolId = String(item?.pool_id || "").trim();
+  if (!poolId) throw new Error("notification_pool_missing");
+
+  const { data: pool, error: poolError } = await supabase
+    .from("internet_pools")
+    .select("owner_admin_user_id")
+    .eq("id", poolId)
+    .maybeSingle();
+  if (poolError) throw poolError;
+  const ownerId = String(pool?.owner_admin_user_id || "").trim();
+  if (!ownerId) throw new Error("canonical_owner_unavailable");
+
+  const { data: owner, error: ownerError } = await supabase
+    .from("admin_users")
+    .select("id,email,is_active")
+    .eq("id", ownerId)
+    .maybeSingle();
+  if (ownerError) throw ownerError;
+
+  const canonicalEmail = String(owner?.email || "").trim().toLowerCase();
+  if (!owner?.is_active || !canonicalEmail) throw new Error("canonical_owner_unavailable");
+
+  if (
+    String(item?.owner_admin_user_id || "") !== ownerId ||
+    String(item?.recipient_email || "").trim().toLowerCase() !== canonicalEmail
+  ) {
+    throw new Error("canonical_owner_changed_after_claim");
+  }
+  return canonicalEmail;
+}
+
 async function sendBillingS1383Notification(item) {
   if (!mailer) throw new Error("smtp_not_configured");
-  const to = String(item?.recipient_email || "").trim();
-  if (!to) throw new Error("recipient_missing");
+  const to = await billingS13101CanonicalRecipient(item);
   const rendered = billingS1383Message(item);
   const attachments = await billingS13844Attachments(item);
   const messageToken = crypto.createHash("sha256").update(String(item.event_key)).digest("hex").slice(0, 32);
@@ -15638,8 +15669,10 @@ async function reconcileBillingS1383Notifications() {
       "fn_billing_v1_s13_9_3_2_enqueue_subscription_notifications"
     );
     if (subscriptionEnqueueError) throw subscriptionEnqueueError;
-    const { error: enqueueError } = await supabase.rpc("fn_billing_v1_s13_8_3_enqueue_owner_notifications");
-    if (enqueueError) throw enqueueError;
+    const { error: changeEnqueueError } = await supabase.rpc(
+      "fn_billing_v1_s13_10_1_enqueue_change_notifications"
+    );
+    if (changeEnqueueError) throw changeEnqueueError;
     if (BILLING_V1_COMMISSION_DOCUMENT_NOTIFICATIONS) {
       const { error: payoutEnqueueError } = await supabase.rpc("fn_billing_v1_s13_8_4_4_enqueue_document_notifications");
       if (payoutEnqueueError) throw payoutEnqueueError;
@@ -15647,7 +15680,7 @@ async function reconcileBillingS1383Notifications() {
       const { error: payoutEnqueueError } = await supabase.rpc("fn_billing_v1_s13_8_4_3_enqueue_payout_notifications");
       if (payoutEnqueueError) throw payoutEnqueueError;
     }
-    const { data: claimed, error: claimError } = await supabase.rpc("fn_billing_v1_s13_8_3_claim_owner_notifications", { p_limit: BILLING_S1383_NOTIFICATION_BATCH_SIZE });
+    const { data: claimed, error: claimError } = await supabase.rpc("fn_billing_v1_s13_10_1_claim_owner_notifications", { p_limit: BILLING_S1383_NOTIFICATION_BATCH_SIZE });
     if (claimError) throw claimError;
     let sent = 0, failed = 0;
     for (const item of claimed || []) {
@@ -15931,6 +15964,181 @@ app.get("/api/owner/billing/commission-payouts/:id/receipt",requireAdmin,require
 
 app.get("/api/admin/billing/commission-payouts",requireAdmin,requireSuperadmin,async(_req,res)=>{try{const {data,error}=await supabase.from("billing_commission_payouts").select("*").order("period_start",{ascending:false}).limit(200);if(error)throw error;const poolIds=[...new Set((data||[]).map(x=>x.pool_id))],ownerIds=[...new Set((data||[]).map(x=>x.owner_admin_user_id))];const [{data:pools},{data:owners}]=await Promise.all([supabase.from("internet_pools").select("id,name,brand_name").in("id",poolIds.length?poolIds:["00000000-0000-0000-0000-000000000000"]),supabase.from("admin_users").select("id,email").in("id",ownerIds.length?ownerIds:["00000000-0000-0000-0000-000000000000"])]);const pm=new Map((pools||[]).map(x=>[x.id,x])),om=new Map((owners||[]).map(x=>[x.id,x]));res.json({items:(data||[]).map(x=>({...x,pool:pm.get(x.pool_id)||null,owner:om.get(x.owner_admin_user_id)||null})),confirmation_enabled:BILLING_V1_COMMISSION_PAYOUT_CONFIRM,automatic_transfer:false})}catch(e){res.status(500).json({error:"commission_payouts_load_failed"})}});
 app.post("/api/admin/billing/commission-payouts/:id/confirm",requireAdmin,requireSuperadmin,requireBillingCommissionPayoutConfirm,async(req,res)=>{try{const {data,error}=await supabase.rpc("fn_billing_v1_s13_8_4_3_confirm_payout",{p_actor:req.admin.id,p_payout_id:req.params.id,p_transfer_method:req.body?.transfer_method,p_transfer_reference:req.body?.transfer_reference,p_transfer_fee_ar:req.body?.transfer_fee_ar,p_owner_net_amount_ar:req.body?.owner_net_amount_ar,p_transferred_at:req.body?.transferred_at,p_transfer_note:req.body?.transfer_note||null});if(error)return res.status(400).json({error:String(error.message||error).split("\n")[0]});res.json(data)}catch(e){res.status(500).json({error:"commission_payout_confirmation_failed"})}});
+
+// S13.10.1 — Superadmin Billing notification exceptions.
+function billingS13101ExceptionClass(row, pool, owner) {
+  const status = String(row?.status || "");
+  const now = Date.now();
+  const leaseUntil = row?.lease_until ? new Date(row.lease_until).getTime() : null;
+  const currentOwnerId = String(pool?.owner_admin_user_id || "");
+  const currentOwnerEmail = owner?.is_active ? String(owner?.email || "").trim().toLowerCase() : "";
+  const queuedOwnerId = String(row?.owner_admin_user_id || "");
+  const queuedEmail = String(row?.recipient_email || "").trim().toLowerCase();
+
+  if (!currentOwnerId || !currentOwnerEmail) return "owner_unavailable";
+  if (status !== "sent" && (queuedOwnerId !== currentOwnerId || queuedEmail !== currentOwnerEmail)) {
+    return "recipient_rebind_pending";
+  }
+  if (status === "dead") return "dead";
+  if (status === "sending" && leaseUntil && leaseUntil < now) return "lease_expired";
+  if (status === "sending") return "sending";
+  if (status === "pending" && Number(row?.attempts || 0) > 0) return "retry_pending";
+  if (status === "pending") return "pending";
+  if (status === "sent") return "sent";
+  return status || "unknown";
+}
+
+async function billingS13101DecorateNotificationRows(rows) {
+  const items = Array.isArray(rows) ? rows : [];
+  const poolIds = [...new Set(items.map((x) => x.pool_id).filter(Boolean))];
+
+  let pools = [];
+  if (poolIds.length) {
+    const { data, error } = await supabase
+      .from("internet_pools")
+      .select("id,name,brand_name,owner_admin_user_id")
+      .in("id", poolIds);
+    if (error) throw error;
+    pools = data || [];
+  }
+
+  const ownerIds = [...new Set(pools.map((x) => x.owner_admin_user_id).filter(Boolean))];
+  let owners = [];
+  if (ownerIds.length) {
+    const { data, error } = await supabase
+      .from("admin_users")
+      .select("id,email,is_active")
+      .in("id", ownerIds);
+    if (error) throw error;
+    owners = data || [];
+  }
+
+  const poolMap = new Map(pools.map((x) => [String(x.id), x]));
+  const ownerMap = new Map(owners.map((x) => [String(x.id), x]));
+
+  return items.map((row) => {
+    const pool = poolMap.get(String(row.pool_id)) || null;
+    const owner = pool ? ownerMap.get(String(pool.owner_admin_user_id)) || null : null;
+    const exceptionClass = billingS13101ExceptionClass(row, pool, owner);
+    return {
+      ...row,
+      pool,
+      current_owner_email: owner?.is_active ? String(owner?.email || "").trim().toLowerCase() || null : null,
+      exception_class: exceptionClass,
+      can_manual_retry: exceptionClass === "dead" && row.status === "dead",
+    };
+  });
+}
+
+app.get("/api/admin/billing/exceptions", requireAdmin, requireSuperadmin, async (_req, res) => {
+  try {
+    const columns = "id,event_key,event_type,pool_id,owner_admin_user_id,recipient_email,source_table,source_id,status,attempts,next_attempt_at,lease_token,lease_until,provider_message_id,last_error,created_at,sent_at,updated_at";
+
+    const [
+      { data: unresolved, error: unresolvedError },
+      { data: recentSent, error: sentError },
+    ] = await Promise.all([
+      supabase.from("billing_owner_notification_outbox")
+        .select(columns)
+        .in("status", ["pending", "sending", "dead"])
+        .order("created_at", { ascending: true })
+        .limit(200),
+      supabase.from("billing_owner_notification_outbox")
+        .select(columns)
+        .eq("status", "sent")
+        .order("sent_at", { ascending: false })
+        .limit(60),
+    ]);
+
+    if (unresolvedError || sentError) throw unresolvedError || sentError;
+
+    const unresolvedRows = await billingS13101DecorateNotificationRows(unresolved || []);
+    const history = await billingS13101DecorateNotificationRows(recentSent || []);
+
+    const actionRequired = unresolvedRows.filter((x) =>
+      ["dead", "owner_unavailable"].includes(x.exception_class)
+    );
+    const automatic = unresolvedRows.filter((x) =>
+      !["dead", "owner_unavailable"].includes(x.exception_class)
+    );
+
+    return res.json({
+      summary: {
+        action_required: actionRequired.length,
+        automatic: automatic.length,
+        dead: unresolvedRows.filter((x) => x.exception_class === "dead").length,
+        recent_sent: history.length,
+      },
+      exceptions: actionRequired,
+      automatic,
+      history,
+      manual_retry_scope: "dead_only",
+      recipient_source: "pool.owner_admin_user_id",
+    });
+  } catch (error) {
+    console.error("[BILLING S13.10.1] exceptions load", error?.message || error);
+    return res.status(500).json({ error: "billing_exceptions_load_failed" });
+  }
+});
+
+app.post("/api/admin/billing/exceptions/:id/retry", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    const id = String(req.params?.id || "").trim().toLowerCase();
+    if (!UUID_V1_TO_V5_RE.test(id)) {
+      return res.status(400).json({ error: "notification_id_invalid" });
+    }
+
+    const { data: before, error: beforeError } = await supabase
+      .from("billing_owner_notification_outbox")
+      .select("id,event_key,event_type,pool_id,status,attempts,last_error,recipient_email")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (beforeError) throw beforeError;
+    if (!before) return res.status(404).json({ error: "notification_not_found" });
+    if (before.status !== "dead") {
+      return res.status(409).json({ error: "notification_not_dead" });
+    }
+
+    const { data, error } = await supabase.rpc(
+      "fn_billing_v1_s13_10_1_retry_dead_owner_notification",
+      { p_id: id }
+    );
+    if (error) {
+      const code = String(error.message || error).split("\n")[0];
+      const status = code.includes("canonical_owner_unavailable") ? 409 : 400;
+      return res.status(status).json({ error: code });
+    }
+
+    await insertAudit({
+      event_type: "billing_notification_manual_retry",
+      status: "success",
+      entity_type: "billing_owner_notification_outbox",
+      entity_id: id,
+      actor_type: "admin_user",
+      actor_id: req.admin?.actor_id || req.admin?.id || null,
+      pool_id: before.pool_id || null,
+      message: "Manual retry requested for dead Billing notification",
+      metadata: {
+        source: "S13.10.1",
+        event_key: before.event_key,
+        event_type: before.event_type,
+        previous_attempts: before.attempts,
+        previous_error: before.last_error,
+        previous_recipient_email: before.recipient_email,
+      },
+    });
+
+    setTimeout(() => void reconcileBillingS1383Notifications().catch((e) =>
+      console.error("[BILLING S13.10.1] manual retry wake", e?.message || e)
+    ), 0);
+
+    return res.json({ ok: true, retry: data });
+  } catch (error) {
+    console.error("[BILLING S13.10.1] manual retry", error?.message || error);
+    return res.status(500).json({ error: "billing_notification_retry_failed" });
+  }
+});
 
 // S13.9.1.2.1 — canonical owner subscription projection.
 // A user can see only pools they own. Commission statements are served by the
