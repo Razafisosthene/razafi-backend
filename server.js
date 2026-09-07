@@ -15945,11 +15945,13 @@ app.get("/api/owner/billing", requireAdmin, requireBillingOwnerSubscription, asy
     if (poolError) return res.status(500).json({ error: poolError.message });
     const poolIds = (pools || []).map((x) => x.id);
     if (!poolIds.length) return res.json({
-      pools: [], assignments: [], invoices: [], statements: [], payout_records: [], documents: [],
+      pools: [], assignments: [], upcoming_assignments: [], pool_states: [], invoices: [], statements: [], payout_records: [], documents: [],
       payment_ui: { enabled: false, provider: null, payable_invoice_ids: [] },
       passive: true, shadow: false, no_effect: true, pdf_available: false
     });
-    const [assignmentsResult, invoicesResult, offersResult, paymentsResult, activationsResult] = await Promise.all([
+    const nowDate = billingMadagascarToday();
+    const currentPeriodStart = `${nowDate.slice(0, 7)}-01`;
+    const [assignmentsResult, invoicesResult, offersResult, paymentsResult, activationsResult, periodsResult] = await Promise.all([
       supabase.from("pool_billing_assignments").select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to,created_at").in("pool_id", poolIds).order("effective_from", { ascending: false }),
       supabase.from("subscription_invoices").select("id,invoice_number,pool_id,offer_title_snapshot,period_start,period_end,amount_due_ar,amount_paid_ar,status,issued_at,due_at,pdf_snapshot,created_at").eq("owner_admin_user_id", ownerId).eq("purpose", "monthly_subscription").order("period_start", { ascending: false }),
       supabase.from("billing_offers").select("id,title"),
@@ -15959,16 +15961,39 @@ app.get("/api/owner/billing", requireAdmin, requireBillingOwnerSubscription, asy
       supabase.from("billing_pool_subscription_activations")
         .select("id,pool_id,invoice_id,payment_transaction_id,assignment_id,billing_period_id,status,activated_at,metadata")
         .in("pool_id", poolIds).order("activated_at", { ascending: false }),
+      supabase.from("pool_billing_periods")
+        .select("id,pool_id,assignment_id,period_start,period_end,billing_status,billing_mode,access_status,subscription_price_ar,grace_days")
+        .in("pool_id", poolIds).eq("period_start", currentPeriodStart),
     ]);
-    const combinedError = assignmentsResult.error || invoicesResult.error || offersResult.error || paymentsResult.error || activationsResult.error;
+    const combinedError = assignmentsResult.error || invoicesResult.error || offersResult.error || paymentsResult.error || activationsResult.error || periodsResult.error;
     if (combinedError) return res.status(500).json({ error: combinedError.message });
     const assignments = assignmentsResult.data || [], invoices = invoicesResult.data || [];
     const payments = paymentsResult.data || [], activations = activationsResult.data || [];
     const offerTitleById = new Map((offersResult.data || []).map((x) => [x.id, x.title]));
-    const nowDate = billingMadagascarToday();
     const withOfferTitle = (assignment) => ({ ...assignment, offer_title: offerTitleById.get(assignment.offer_id) || null });
     const currentAssignments = poolIds.map((pool_id) => assignments.find((a) => a.pool_id === pool_id && a.effective_from <= nowDate && (!a.effective_to || a.effective_to >= nowDate)) || null).filter(Boolean).map(withOfferTitle);
     const upcomingAssignments = poolIds.map((pool_id) => assignments.filter((a) => a.pool_id === pool_id && a.effective_from > nowDate).sort((a, b) => String(a.effective_from).localeCompare(String(b.effective_from)))[0] || null).filter(Boolean).map(withOfferTitle);
+    const assignmentByPool = new Map(currentAssignments.map((assignment) => [assignment.pool_id, assignment]));
+    const currentPeriodByPool = new Map((periodsResult.data || []).map((period) => [period.pool_id, period]));
+    const poolStates = (pools || []).map((pool) => {
+      const assignment = assignmentByPool.get(pool.id) || null;
+      if (!assignment) return { pool_id: pool.id, billing_mode: null, status: "unconfigured", access_status: null, source: "assignment" };
+      if (assignment.billing_mode === "commission") {
+        return { pool_id: pool.id, billing_mode: "commission", status: "active", access_status: "active", source: "assignment" };
+      }
+      if (assignment.billing_mode !== "subscription") {
+        return { pool_id: pool.id, billing_mode: assignment.billing_mode || null, status: "active", access_status: null, source: "assignment" };
+      }
+      const period = currentPeriodByPool.get(pool.id) || null;
+      const accessStatus = String(period?.access_status || "").trim().toLowerCase();
+      const status = ["active", "grace", "suspended"].includes(accessStatus) ? accessStatus : "pending";
+      return {
+        pool_id: pool.id, billing_mode: "subscription", status,
+        access_status: accessStatus || null, source: period ? "pool_billing_periods" : "assignment",
+        billing_period_id: period?.id || null, period_start: period?.period_start || currentPeriodStart,
+        period_end: period?.period_end || null, grace_days: period?.grace_days ?? null,
+      };
+    });
     const documents = [
       ...invoices.map((x) => ({ id: x.id, type: "subscription_invoice", pool_id: x.pool_id, title: `Facture ${x.invoice_number}`, period_start: x.period_start, status: x.status, amount_ar: x.amount_due_ar, shadow: !billingPdfLiveEnabled(), download_available: billingPdfLiveEnabled(), download_url: billingPdfLiveEnabled()?`/api/owner/billing/invoices/${encodeURIComponent(x.id)}/pdf`:null })),
       ...invoices.filter((x)=>x.status==="paid").map((x) => ({ id: x.id, type: "subscription_receipt", pool_id: x.pool_id, title: `Reçu ${x.invoice_number}`, period_start: x.period_start, status: x.status, amount_ar: x.amount_paid_ar, shadow: !billingPdfLiveEnabled(), download_available: billingPdfLiveEnabled(), download_url: billingPdfLiveEnabled()?`/api/owner/billing/invoices/${encodeURIComponent(x.id)}/receipt`:null })),
@@ -15989,7 +16014,7 @@ app.get("/api/owner/billing", requireAdmin, requireBillingOwnerSubscription, asy
       engine: "subscription-payment-final-v1",
       guided: false,
     };
-    return res.json({ pools: pools || [], assignments: currentAssignments, upcoming_assignments: upcomingAssignments,
+    return res.json({ pools: pools || [], assignments: currentAssignments, upcoming_assignments: upcomingAssignments, pool_states: poolStates,
       invoices: guidedInvoices, payments, activations, statements: [], payout_records: [], documents, payment_ui,
       passive: !BILLING_V1_OWNER_PAYMENT_SELF_SERVICE, shadow: false, no_effect: true,
       pdf_available: billingPdfLiveEnabled() });
