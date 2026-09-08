@@ -87,6 +87,14 @@
     socialInstagramLink: document.getElementById("socialInstagramLink"),
     socialTikTokLink: document.getElementById("socialTikTokLink"),
     socialFacebookLink: document.getElementById("socialFacebookLink"),
+    ec2SecondaryContent: document.getElementById("ec2SecondaryContent"),
+    appMenuBtn: document.getElementById("appMenuBtn"),
+    appMenuDialog: document.getElementById("appMenuDialog"),
+    appMenuCloseBtn: document.getElementById("appMenuCloseBtn"),
+    menuHomeBtn: document.getElementById("menuHomeBtn"),
+    menuRecentBtn: document.getElementById("menuRecentBtn"),
+    menuPoolName: document.getElementById("menuPoolName"),
+    recentAccessSection: document.getElementById("recentAccessSection"),
   });
 
 
@@ -137,6 +145,20 @@
     return stateName;
   }
 
+  function isPrivateIpv4(raw) {
+    const value = String(raw || "").trim();
+    const parts = value.split(".");
+    if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part))) return false;
+    const octets = parts.map(Number);
+    if (octets.some((part) => part < 0 || part > 255)) return false;
+    const [a, b] = octets;
+    return a === 10
+      || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168)
+      || (a === 100 && b >= 64 && b <= 127)
+      || (a === 169 && b === 254);
+  }
+
   function consumeClaimFragment() {
     const raw = String(window.location.hash || "").replace(/^#/, "");
     if (!raw) return null;
@@ -153,7 +175,7 @@
         /^[0-9a-f]{64}$/.test(challenge) &&
         /^[A-Za-z0-9_.:-]{1,160}$/.test(nasId) &&
         /^[0-9A-Fa-f:-]{12,17}$/.test(clientMac) &&
-        /^(?:10|192\.168|172\.(?:1[6-9]|2\d|3[01]))\./.test(clientIp)
+        isPrivateIpv4(clientIp)
       ) {
         proof = {
           challenge,
@@ -177,8 +199,8 @@
       const parsed = new URL(String(raw || ""));
       const challenge = String(parsed.searchParams.get("var") || "");
       if (
-        parsed.protocol !== "http:" ||
-        parsed.hostname !== "192.168.88.1" ||
+        !["http:", "https:"].includes(parsed.protocol) ||
+        !isPrivateIpv4(parsed.hostname) ||
         parsed.pathname !== "/status" ||
         !/^ec1_[0-9a-f]{64}$/.test(challenge)
       ) {
@@ -202,6 +224,7 @@
       const { response, data } = await apiJson(ENDPOINTS.claim, {
         method: "POST",
         body: JSON.stringify(proof),
+        timeoutMs: 30000,
       });
       if (response.status === 404) {
         showView("unavailable");
@@ -229,6 +252,42 @@
     Object.entries(views).forEach(([key, node]) => {
       node.hidden = key !== name;
     });
+    if (elements.menuRecentBtn) {
+      elements.menuRecentBtn.hidden = name !== "dashboard" || elements.ec2Content?.hidden === true;
+    }
+  }
+
+  function reducedMotionPreferred() {
+    return typeof window.matchMedia === "function"
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  function openAppMenu() {
+    if (!elements.appMenuDialog) return;
+    elements.appMenuBtn?.setAttribute("aria-expanded", "true");
+    if (typeof elements.appMenuDialog.showModal === "function") {
+      if (!elements.appMenuDialog.open) elements.appMenuDialog.showModal();
+      return;
+    }
+    elements.appMenuDialog.setAttribute("open", "");
+  }
+
+  function closeAppMenu() {
+    if (!elements.appMenuDialog) return;
+    elements.appMenuBtn?.setAttribute("aria-expanded", "false");
+    if (typeof elements.appMenuDialog.close === "function" && elements.appMenuDialog.open) {
+      elements.appMenuDialog.close();
+      return;
+    }
+    elements.appMenuDialog.removeAttribute("open");
+  }
+
+  function scrollAppTo(node) {
+    if (!node) return;
+    closeAppMenu();
+    window.requestAnimationFrame(() => {
+      node.scrollIntoView({ block: "start", behavior: reducedMotionPreferred() ? "auto" : "smooth" });
+    });
   }
 
   function clearTimers() {
@@ -243,18 +302,33 @@
   }
 
   async function apiJson(url, options = {}) {
-    const response = await fetch(url, {
-      credentials: "include",
-      cache: "no-store",
-      headers: {
-        Accept: "application/json",
-        ...(options.body ? { "Content-Type": "application/json" } : {}),
-        ...(options.headers || {}),
-      },
-      ...options,
-    });
-    const data = await response.json().catch(() => ({}));
-    return { response, data };
+    const timeoutMs = Math.max(5000, Math.min(45000, Number(options.timeoutMs || 20000)));
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    const { timeoutMs: _timeoutMs, signal: externalSignal, ...fetchOptions } = options;
+
+    if (externalSignal) {
+      if (externalSignal.aborted) controller.abort();
+      else externalSignal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+
+    try {
+      const response = await fetch(url, {
+        credentials: "include",
+        cache: "no-store",
+        headers: {
+          Accept: "application/json",
+          ...(fetchOptions.body ? { "Content-Type": "application/json" } : {}),
+          ...(fetchOptions.headers || {}),
+        },
+        ...fetchOptions,
+        signal: controller.signal,
+      });
+      const data = await response.json().catch(() => ({}));
+      return { response, data };
+    } finally {
+      window.clearTimeout(timer);
+    }
   }
 
   function cleanText(value, fallback = "") {
@@ -320,6 +394,21 @@
     return `${prefix} ${formatted}`;
   }
 
+  function formatSyncLabel(value) {
+    const timestamp = Date.parse(value || "");
+    if (!Number.isFinite(timestamp)) return null;
+    const date = new Date(timestamp);
+    const now = new Date();
+    const sameDay = date.getFullYear() === now.getFullYear()
+      && date.getMonth() === now.getMonth()
+      && date.getDate() === now.getDate();
+    if (sameDay) {
+      const time = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" }).format(date);
+      return `Actualisé à ${time}`;
+    }
+    return formatDateTime(value, "Actualisé le");
+  }
+
   function formatRecentDate(value) {
     const timestamp = Date.parse(value || "");
     if (!Number.isFinite(timestamp)) return "Date indisponible";
@@ -376,9 +465,23 @@
     const metric = createElement("div", "metric");
     metric.appendChild(createElement("span", "metric-label", label));
     const valueNode = createElement("strong", "metric-value", value);
-    if (role) valueNode.dataset.timeRole = role;
+    if (role) {
+      valueNode.dataset.timeRole = role;
+      valueNode.setAttribute("aria-live", "off");
+    }
     metric.appendChild(valueNode);
     grid.appendChild(metric);
+    return valueNode;
+  }
+
+  function addRemainingBlock(parent, label, value, role = null) {
+    const block = createElement("div", "remaining-block");
+    block.appendChild(createElement("span", "remaining-label", label));
+    const valueNode = createElement("strong", "remaining-value", value);
+    valueNode.setAttribute("aria-live", "off");
+    if (role) valueNode.dataset.timeRole = role;
+    block.appendChild(valueNode);
+    parent.appendChild(block);
     return valueNode;
   }
 
@@ -392,7 +495,9 @@
     track.setAttribute("role", "progressbar");
     track.setAttribute("aria-valuemin", "0");
     track.setAttribute("aria-valuemax", "100");
+    track.setAttribute("aria-label", label);
     track.setAttribute("aria-valuenow", String(Math.round(clampPercent(percent))));
+    track.setAttribute("aria-valuetext", formatPercent(percent));
     const fill = createElement("div", "progress-fill");
     fill.style.width = `${clampPercent(percent)}%`;
     track.appendChild(fill);
@@ -423,8 +528,9 @@
     return parts.join(" · ") || "Bonus RAZAFI";
   }
 
-  function createAccessCard(kind, payload, isCurrent) {
+  function createAccessCard(kind, payload, isCurrent, options = {}) {
     const isPrimary = kind === "primary";
+    const remote = options?.remote === true;
     const card = createElement("article", `access-card${isCurrent ? " is-current" : ""}`);
     const head = createElement("div", "access-card-head");
     const titleWrap = createElement("div", "");
@@ -437,7 +543,11 @@
     card.appendChild(head);
 
     if (isCurrent) {
-      card.appendChild(createElement("div", "current-banner", "Cet accès est actuellement consommé."));
+      card.appendChild(createElement(
+        "div",
+        "current-banner",
+        remote ? "Cet accès est encore actif." : "Vous utilisez actuellement cet accès."
+      ));
     }
 
     const consumption = isPrimary ? (payload?.consumption || {}) : payload;
@@ -453,7 +563,6 @@
     const usedHuman = isPrimary ? consumption?.data_used_human : payload?.data_used_human;
     const remainingHuman = isPrimary ? consumption?.data_remaining_human : payload?.data_remaining_human;
 
-    const progressGroup = createElement("div", "progress-group");
     const liveConfig = {
       live: Boolean(isCurrent && payload?.status === "active"),
       total: toFiniteNumber(totalTime),
@@ -465,8 +574,20 @@
       track: null,
       fill: null,
     };
+
+    const remainingSummary = createElement("div", "remaining-summary");
+    if (remainingTime !== null && remainingTime !== undefined) {
+      liveConfig.remainingNode = addRemainingBlock(remainingSummary, "Temps restant", formatDuration(remainingTime), "remaining");
+    }
+    if (!unlimited && totalBytes !== null && totalBytes !== undefined) {
+      addRemainingBlock(remainingSummary, "Data restante", formatBytes(remainingBytes, remainingHuman));
+    }
+    if (remainingSummary.childNodes.length) card.appendChild(remainingSummary);
+
+    const progressGroup = createElement("div", "progress-group");
     if (totalTime !== null && totalTime !== undefined && remainingTime !== null && remainingTime !== undefined) {
-      addProgressRow(progressGroup, "Progression du temps", timePercent, liveConfig);
+      addProgressRow(progressGroup, "Temps utilisé", timePercent, liveConfig);
+      if (liveConfig.track) liveConfig.track.setAttribute("aria-valuetext", `${formatDuration(remainingTime)} restantes`);
     }
 
     if (unlimited) {
@@ -475,25 +596,19 @@
       unlimitedLine.appendChild(createElement("strong", "", `${formatBytes(usedBytes, usedHuman)} · Illimité`));
       progressGroup.appendChild(unlimitedLine);
     } else if (totalBytes !== null && totalBytes !== undefined) {
-      addProgressRow(progressGroup, "Progression de la data", dataPercent);
+      addProgressRow(progressGroup, "Data utilisée", dataPercent);
     }
     if (progressGroup.childNodes.length) card.appendChild(progressGroup);
 
     const grid = createElement("div", "metric-grid");
-    if (remainingTime !== null && remainingTime !== undefined) {
-      liveConfig.remainingNode = addMetric(grid, "Temps restant", formatDuration(remainingTime), "remaining");
-    }
     if (usedTime !== null && usedTime !== undefined) {
       liveConfig.usedNode = addMetric(grid, "Temps utilisé", formatDuration(usedTime), "used");
-    }
-    if (!unlimited && totalBytes !== null && totalBytes !== undefined) {
-      addMetric(grid, "Data restante", formatBytes(remainingBytes, remainingHuman));
     }
     addMetric(grid, "Data utilisée", formatBytes(usedBytes, usedHuman));
     if (isPrimary && payload?.plan?.speed_human) {
       addMetric(grid, "Vitesse", cleanText(payload.plan.speed_human));
     }
-    card.appendChild(grid);
+    if (grid.childNodes.length) card.appendChild(grid);
 
     const dateLine = isCurrent
       ? formatDateTime(payload?.started_at, "Démarré le")
@@ -524,12 +639,14 @@
       elements.liveLabel.textContent = "État inconnu";
     }
 
-    const synced = formatDateTime(live?.updated_at, "Actualisé le");
+    const synced = formatSyncLabel(live?.updated_at);
     elements.syncLabel.textContent = synced || "Dernière synchronisation indisponible";
   }
 
   function renderPool(pool) {
-    elements.poolName.textContent = cleanText(pool?.display_name, "RAZAFI WiFi");
+    const poolName = cleanText(pool?.display_name, "RAZAFI WiFi");
+    elements.poolName.textContent = poolName;
+    if (elements.menuPoolName) elements.menuPoolName.textContent = poolName;
   }
 
   function setRecentExpanded(expanded) {
@@ -646,14 +763,15 @@
   }
 
   function renderEc2(snapshot) {
-    if (snapshot?.ec2?.enabled !== true) {
-      elements.ec2Content.hidden = true;
-      return;
-    }
+    const enabled = snapshot?.ec2?.enabled === true;
+    elements.ec2Content.hidden = !enabled;
+    if (elements.ec2SecondaryContent) elements.ec2SecondaryContent.hidden = !enabled;
+    if (elements.menuRecentBtn) elements.menuRecentBtn.hidden = !enabled;
+    if (!enabled) return;
+
     renderRecentAccesses(snapshot.ec2.recent_accesses || {});
     renderDevice(snapshot);
     renderWhatsApp(snapshot);
-    elements.ec2Content.hidden = false;
   }
 
   function marketingSignature(config) {
@@ -851,14 +969,15 @@
     renderRemoteConsultation(snapshot);
 
     const current = cleanText(snapshot.currently_consumed, "none").toLowerCase();
+    const remote = snapshot?.ec3?.remote_consultation === true;
     if (snapshot.active_bonus) {
-      elements.accessList.appendChild(createAccessCard("bonus", snapshot.active_bonus, current === "bonus"));
+      elements.accessList.appendChild(createAccessCard("bonus", snapshot.active_bonus, current === "bonus", { remote }));
     }
     if (snapshot.primary_voucher) {
-      elements.accessList.appendChild(createAccessCard("primary", snapshot.primary_voucher, current === "primary"));
+      elements.accessList.appendChild(createAccessCard("primary", snapshot.primary_voucher, current === "primary", { remote }));
     }
     if (snapshot.available_bonus) {
-      elements.accessList.appendChild(createAccessCard("bonus", snapshot.available_bonus, false));
+      elements.accessList.appendChild(createAccessCard("bonus", snapshot.available_bonus, false, { remote }));
     }
 
     if (!elements.accessList.childNodes.length) {
@@ -893,7 +1012,10 @@
       const percent = binding.total > 0 && used !== null ? (used / binding.total) * 100 : 0;
       if (binding.percentNode) binding.percentNode.textContent = formatPercent(percent);
       if (binding.fill) binding.fill.style.width = `${clampPercent(percent)}%`;
-      if (binding.track) binding.track.setAttribute("aria-valuenow", String(Math.round(clampPercent(percent))));
+      if (binding.track) {
+        binding.track.setAttribute("aria-valuenow", String(Math.round(clampPercent(percent))));
+        binding.track.setAttribute("aria-valuetext", `${formatDuration(remaining)} restantes`);
+      }
     });
   }
 
@@ -1083,6 +1205,23 @@
       showDetect("Cet espace client a été déconnecté de ce navigateur. Votre forfait WiFi reste inchangé.");
     }
   }
+
+  elements.appMenuBtn?.addEventListener("click", openAppMenu);
+  elements.appMenuCloseBtn?.addEventListener("click", closeAppMenu);
+  elements.menuHomeBtn?.addEventListener("click", () => scrollAppTo(views.dashboard.hidden ? document.getElementById("mainContent") : views.dashboard));
+  elements.menuRecentBtn?.addEventListener("click", () => {
+    if (!elements.menuRecentBtn.hidden) scrollAppTo(elements.recentAccessSection);
+  });
+  elements.appMenuDialog?.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeAppMenu();
+  });
+  elements.appMenuDialog?.addEventListener("close", () => {
+    elements.appMenuBtn?.setAttribute("aria-expanded", "false");
+  });
+  elements.appMenuDialog?.addEventListener("click", (event) => {
+    if (event.target === elements.appMenuDialog) closeAppMenu();
+  });
 
   document.getElementById("retryUnavailableBtn").addEventListener("click", bootstrap);
   document.getElementById("retryDetectBtn").addEventListener("click", () => {

@@ -7,8 +7,8 @@
   <meta name="theme-color" content="#ffffff">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>Espace client — RAZAFI</title>
-  <link rel="stylesheet" href="/espace-client/espace-client.css?v=ec4-marketing-1">
-  <script src="/espace-client/espace-client.js?v=ec4-marketing-1" defer></script>
+  <link rel="stylesheet" href="/espace-client/espace-client.css?v=ec-v2.1.0">
+  <script src="/espace-client/espace-client.js?v=ec-v2.1.0" defer></script>
 </head>
 <body>
   <div class="app-shell">
@@ -22,18 +22,73 @@
           height="32"
         >
       </a>
-      <span class="topbar-label">Espace client</span>
+      <button
+        class="menu-button"
+        id="appMenuBtn"
+        type="button"
+        aria-label="Ouvrir le menu"
+        aria-haspopup="dialog"
+        aria-controls="appMenuDialog"
+        aria-expanded="false"
+      >
+        <span class="menu-button-bars" aria-hidden="true"><span></span><span></span></span>
+      </button>
     </header>
+
+    <dialog class="app-menu-dialog" id="appMenuDialog" aria-labelledby="appMenuTitle">
+      <div class="app-menu-sheet">
+        <div class="app-menu-grabber" aria-hidden="true"></div>
+        <div class="app-menu-head">
+          <div>
+            <p class="app-menu-kicker">Mon espace</p>
+            <h2 id="appMenuTitle">Navigation</h2>
+            <p class="app-menu-pool" id="menuPoolName">RAZAFI WiFi</p>
+          </div>
+          <button class="app-menu-close" id="appMenuCloseBtn" type="button" aria-label="Fermer le menu">×</button>
+        </div>
+
+        <nav class="app-menu-nav" aria-label="Navigation de l’Espace client">
+          <button class="app-menu-row" id="menuHomeBtn" type="button">
+            <span class="app-menu-icon" aria-hidden="true">⌂</span>
+            <span class="app-menu-label">Accueil</span>
+            <span class="app-menu-chevron" aria-hidden="true">›</span>
+          </button>
+
+          <button class="app-menu-row" id="menuRecentBtn" type="button" hidden>
+            <span class="app-menu-icon" aria-hidden="true">◷</span>
+            <span class="app-menu-label">Mes accès récents</span>
+            <span class="app-menu-chevron" aria-hidden="true">›</span>
+          </button>
+
+          <button class="app-menu-row is-disabled" id="menuSpeedTestBtn" type="button" disabled aria-disabled="true">
+            <span class="app-menu-icon" aria-hidden="true">↯</span>
+            <span class="app-menu-label">Speed test</span>
+            <span class="app-menu-badge">Bientôt</span>
+          </button>
+        </nav>
+
+        <div class="app-menu-separator" aria-hidden="true"></div>
+
+        <a class="app-menu-row app-menu-external" href="https://www.razafistore.com" target="_blank" rel="noopener noreferrer">
+          <span class="app-menu-icon" aria-hidden="true">↗</span>
+          <span class="app-menu-label">Retour vers razafistore.com</span>
+        </a>
+
+        <p class="app-menu-footer">RAZAFI · Portail sécurisé</p>
+      </div>
+    </dialog>
 
     <main class="main" id="mainContent">
       <section class="state-card" id="loadingView" aria-live="polite">
         <div class="spinner" aria-hidden="true"></div>
+        <p class="state-kicker">Espace client RAZAFI</p>
         <h1>Vérification de votre espace…</h1>
         <p>RAZAFI recherche une session client sécurisée sur ce navigateur.</p>
       </section>
 
       <section class="state-card" id="unavailableView" hidden aria-live="polite">
         <div class="state-icon" aria-hidden="true">◷</div>
+        <p class="state-kicker">Espace client RAZAFI</p>
         <h1>Espace client indisponible</h1>
         <p>Cette fonctionnalité n’est pas disponible pour le moment. Votre connexion WiFi et votre forfait ne sont pas affectés.</p>
         <button class="primary-button" id="retryUnavailableBtn" type="button">Réessayer</button>
@@ -41,35 +96,39 @@
 
       <section class="state-card" id="detectView" hidden aria-live="polite">
         <div class="state-icon" aria-hidden="true">⌁</div>
+        <p class="state-kicker">Espace client RAZAFI</p>
         <h1>Forfait non détecté</h1>
         <p id="detectMessage">Connectez cet appareil au réseau WiFi RAZAFI sur lequel votre forfait est actif, puis réessayez.</p>
         <button class="primary-button" id="retryDetectBtn" type="button">Rechercher mon forfait</button>
       </section>
 
       <section class="state-card" id="errorView" hidden aria-live="assertive">
-        <div class="state-icon" aria-hidden="true">!</div>
+        <div class="state-icon state-icon-error" aria-hidden="true">!</div>
+        <p class="state-kicker">Espace client RAZAFI</p>
         <h1>Connexion momentanément indisponible</h1>
         <p>Impossible d’actualiser votre consommation. Vérifiez votre connexion puis réessayez.</p>
         <button class="primary-button" id="retryErrorBtn" type="button">Réessayer</button>
       </section>
 
-      <section class="dashboard" id="dashboardView" hidden aria-live="polite">
+      <section class="dashboard" id="dashboardView" hidden>
         <div class="dashboard-head">
           <div class="pool-identity">
-            <div>
-              <p class="eyebrow">Mon espace client</p>
-              <h1 id="poolName">RAZAFI WiFi</h1>
+            <p class="eyebrow">Mon espace client</p>
+            <h1 id="poolName">RAZAFI WiFi</h1>
+            <div class="live-pill live-unknown" id="livePill" aria-live="polite">
+              <span class="live-dot" aria-hidden="true"></span>
+              <span id="liveLabel">État inconnu</span>
             </div>
-          </div>
-          <div class="live-pill live-unknown" id="livePill">
-            <span class="live-dot" aria-hidden="true"></span>
-            <span id="liveLabel">État inconnu</span>
           </div>
         </div>
 
         <div class="sync-line">
           <span id="syncLabel">Dernière synchronisation indisponible</span>
-          <button class="icon-button" id="refreshBtn" type="button" aria-label="Actualiser la consommation" title="Actualiser">↻</button>
+          <button class="icon-button" id="refreshBtn" type="button" aria-label="Actualiser la consommation" title="Actualiser">
+            <svg class="refresh-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M20 11a8 8 0 1 0-2.35 5.65M20 4v7h-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
         </div>
 
         <aside class="remote-consultation-card" id="remoteConsultationCard" hidden aria-live="polite">
@@ -86,6 +145,51 @@
           <span class="info-icon" aria-hidden="true">i</span>
           <p>Le temps évolue chaque seconde. La consommation data est synchronisée régulièrement par le réseau.</p>
         </aside>
+
+        <div class="ec2-content ec2-client-content" id="ec2Content" hidden>
+          <section class="ec2-section" id="recentAccessSection" aria-labelledby="recentAccessTitle">
+            <h2 class="ec2-section-title" id="recentAccessTitle">Mes accès récents</h2>
+            <div class="compact-card recent-access-card">
+              <div class="recent-access-list" id="recentAccessList"></div>
+              <button class="recent-access-toggle" id="recentAccessToggle" type="button" aria-expanded="false" hidden>Voir tous mes accès récents</button>
+            </div>
+          </section>
+
+          <section class="ec2-section" id="deviceSection" aria-labelledby="deviceTitle">
+            <h2 class="ec2-section-title" id="deviceTitle">Cet appareil</h2>
+            <div class="compact-card device-card">
+              <p class="device-connection" id="deviceConnection">Associé à RAZAFI WiFi</p>
+              <dl class="device-details">
+                <div id="deviceZoneRow" hidden>
+                  <dt>Zone associée</dt>
+                  <dd id="deviceZone">RAZAFI WiFi</dd>
+                </div>
+                <div>
+                  <dt>Identifiant</dt>
+                  <dd id="deviceIdentifier">Indisponible</dd>
+                </div>
+                <div>
+                  <dt>Dernière synchronisation</dt>
+                  <dd id="deviceSync">indisponible</dd>
+                </div>
+              </dl>
+            </div>
+          </section>
+
+          <section class="ec2-section" id="supportSection" aria-labelledby="supportTitle">
+            <h2 class="ec2-section-title" id="supportTitle">Assistance</h2>
+            <div class="compact-card support-card">
+              <div>
+                <h3>Besoin d’aide&nbsp;?</h3>
+                <p>Contactez l’assistance RAZAFI sur WhatsApp.</p>
+              </div>
+              <a class="whatsapp-button" id="whatsappLink" href="https://wa.me/261340500592" target="_blank" rel="noopener noreferrer">
+                Contacter sur WhatsApp
+              </a>
+              <p class="support-phone">034 05 005 92</p>
+            </div>
+          </section>
+        </div>
 
         <section class="promo-section" id="promoSection" aria-labelledby="promoTitle">
           <h2 class="promo-section-title" id="promoTitle">À découvrir chez RAZAFI</h2>
@@ -125,51 +229,8 @@
           </div>
         </section>
 
-        <div class="ec2-content" id="ec2Content" hidden>
-          <section class="ec2-section" aria-labelledby="recentAccessTitle">
-            <h2 class="ec2-section-title" id="recentAccessTitle">Mes accès récents</h2>
-            <div class="compact-card recent-access-card">
-              <div class="recent-access-list" id="recentAccessList"></div>
-              <button class="recent-access-toggle" id="recentAccessToggle" type="button" aria-expanded="false" hidden>Voir tous mes accès récents</button>
-            </div>
-          </section>
-
-          <section class="ec2-section" aria-labelledby="deviceTitle">
-            <h2 class="ec2-section-title" id="deviceTitle">Cet appareil</h2>
-            <div class="compact-card device-card">
-              <p class="device-connection" id="deviceConnection">Associé à RAZAFI WiFi</p>
-              <dl class="device-details">
-                <div id="deviceZoneRow" hidden>
-                  <dt>Zone associée</dt>
-                  <dd id="deviceZone">RAZAFI WiFi</dd>
-                </div>
-                <div>
-                  <dt>Identifiant</dt>
-                  <dd id="deviceIdentifier">Indisponible</dd>
-                </div>
-                <div>
-                  <dt>Dernière synchronisation</dt>
-                  <dd id="deviceSync">indisponible</dd>
-                </div>
-              </dl>
-            </div>
-          </section>
-
-          <section class="ec2-section" aria-labelledby="supportTitle">
-            <h2 class="ec2-section-title" id="supportTitle">Assistance</h2>
-            <div class="compact-card support-card">
-              <div>
-                <h3>Besoin d’aide&nbsp;?</h3>
-                <p>Contactez l’assistance RAZAFI sur WhatsApp.</p>
-              </div>
-              <a class="whatsapp-button" id="whatsappLink" href="https://wa.me/261340500592" target="_blank" rel="noopener noreferrer">
-                Contacter sur WhatsApp
-              </a>
-              <p class="support-phone">034 05 005 92</p>
-            </div>
-          </section>
-
-          <details class="quick-help-card">
+        <div class="ec2-content ec2-secondary-content" id="ec2SecondaryContent" hidden>
+          <details class="quick-help-card" id="quickHelpSection">
             <summary>
               <span>Aide rapide</span>
               <span class="details-chevron" aria-hidden="true">›</span>
@@ -191,7 +252,9 @@
           </details>
 
           <aside class="security-note" id="securityNote">
-            <span class="security-icon" aria-hidden="true">🔒</span>
+            <span class="security-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path d="M7 10V8a5 5 0 0 1 10 0v2m-11 0h12v10H6V10Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
             <div class="security-copy">
               <strong id="securityTitle">Espace sécurisé et en lecture seule</strong>
               <p id="securityText">Aucun paiement ni aucune activation ne peut être effectué ici.</p>
@@ -207,7 +270,9 @@
 
       <dialog class="remove-browser-dialog" id="removeBrowserDialog" aria-labelledby="removeBrowserTitle">
         <form method="dialog" class="remove-browser-sheet">
-          <div class="remove-browser-icon" aria-hidden="true">🔒</div>
+          <div class="remove-browser-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path d="M7 10V8a5 5 0 0 1 10 0v2m-11 0h12v10H6V10Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
           <h2 id="removeBrowserTitle">Retirer ce navigateur&nbsp;?</h2>
           <p>Vous ne pourrez plus consulter cet Espace client depuis la 4G ou un autre WiFi sur ce navigateur. Pour le réassocier, ouvrez à nouveau l’Espace client depuis une zone WiFi RAZAFI.</p>
           <div class="remove-browser-actions">
