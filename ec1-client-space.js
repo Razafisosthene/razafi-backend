@@ -343,6 +343,10 @@ export function registerEc1ClientSpace({
   const ec2Enabled = envFlag("CLIENT_SPACE_EC2_ENABLED", false);
   const ec3Enabled = ec2Enabled && envFlag("CLIENT_SPACE_EC3_ENABLED", false);
   const marketingEnabled = envFlag("CLIENT_SPACE_MARKETING_ENABLED", false);
+  const speedTestEnabled = envFlag("CLIENT_SPACE_SPEED_TEST_ENABLED", false);
+  const speedTestTicketTtlSeconds = envInt("CLIENT_SPACE_SPEED_TEST_TICKET_TTL_SECONDS", 90, 30, 180);
+  const speedTestMaxTotalMb = envInt("CLIENT_SPACE_SPEED_TEST_MAX_TOTAL_MB", 20, 5, 30);
+  const speedTestLowDataMinMb = envInt("CLIENT_SPACE_SPEED_TEST_MIN_REMAINING_MB", 25, 10, 100);
   const allowedNasIds = parseNasAllowlist(process.env.CLIENT_SPACE_ALLOWED_NAS_IDS || "");
   const hotspotStatusUrl = normalizeHotspotStatusUrl(
     process.env.CLIENT_SPACE_HOTSPOT_STATUS_URL || "http://192.168.88.1/status"
@@ -371,6 +375,22 @@ export function registerEc1ClientSpace({
   const remoteAssociationCookie = "razafi_client_remote";
   const remoteSessionCookie = "razafi_client_remote_session";
   const normalizedOrigins = new Set((allowedOrigins || []).map((origin) => String(origin || "").trim().replace(/\/$/, "")).filter(Boolean));
+
+  // EC V2.2 — Speed Test RAZAFI. Tickets are intentionally short-lived and
+  // process-local: a Render restart only cancels an in-progress test and never
+  // affects the client session, voucher, RADIUS accounting or remote association.
+  const speedTickets = new Map();
+  const SPEED_TICKET_MAX = 500;
+  const SPEED_WARMUP_BYTES = 256 * 1024;
+  const SPEED_DOWNLOAD_MIN_BYTES = 1024 * 1024;
+  const SPEED_DOWNLOAD_MAX_BYTES = 8 * 1024 * 1024;
+  const SPEED_UPLOAD_MIN_BYTES = 512 * 1024;
+  const SPEED_UPLOAD_MAX_BYTES = 6 * 1024 * 1024;
+  const SPEED_UPLOAD_CHUNK_BYTES = 512 * 1024;
+  const SPEED_MIN_TOTAL_BYTES = SPEED_WARMUP_BYTES + SPEED_DOWNLOAD_MIN_BYTES + SPEED_UPLOAD_MIN_BYTES;
+  const SPEED_DOWNLOAD_TARGET_SECONDS = 5;
+  const SPEED_UPLOAD_TARGET_SECONDS = 3;
+  const SPEED_PAYLOAD = crypto.randomBytes(SPEED_WARMUP_BYTES + SPEED_DOWNLOAD_MAX_BYTES);
 
   function noStore(res) {
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
@@ -525,6 +545,196 @@ export function registerEc1ClientSpace({
       images: [...poolImages, ...globalImages],
       social,
     };
+  }
+
+  function speedMbpsFromHuman(raw) {
+    const value = String(raw || "").trim().replace(",", ".");
+    const match = value.match(/^(\d+(?:\.\d+)?)\s*Mbps$/i);
+    if (!match) return null;
+    const parsed = Number(match[1]);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+
+  function speedClampBytes(value, min, max) {
+    const n = Math.floor(Number(value || 0));
+    return Math.max(min, Math.min(max, Number.isFinite(n) ? n : min));
+  }
+
+  function currentAccessQuota(snapshot) {
+    const current = String(snapshot?.currently_consumed || "none").toLowerCase();
+    if (current === "bonus" && snapshot?.active_bonus) {
+      return {
+        active: true,
+        unlimited: snapshot.active_bonus.data_unlimited === true,
+        remaining_bytes: snapshot.active_bonus.data_unlimited === true ? null : decimalString(snapshot.active_bonus.data_remaining_bytes),
+      };
+    }
+    if (current === "primary" && snapshot?.primary_voucher) {
+      return {
+        active: true,
+        unlimited: snapshot.primary_voucher?.plan?.data_unlimited === true,
+        remaining_bytes: snapshot.primary_voucher?.plan?.data_unlimited === true
+          ? null
+          : decimalString(snapshot.primary_voucher?.consumption?.data_remaining_bytes),
+      };
+    }
+    return { active: false, unlimited: false, remaining_bytes: null };
+  }
+
+  function buildSpeedBudget(snapshot) {
+    const expectedMbps = speedMbpsFromHuman(snapshot?.primary_voucher?.plan?.speed_human);
+    const sizingMbps = Math.max(0.5, Math.min(25, expectedMbps || 5));
+    const bytesPerSecond = (sizingMbps * 1_000_000) / 8;
+
+    let measuredDownloadBytes = speedClampBytes(
+      bytesPerSecond * SPEED_DOWNLOAD_TARGET_SECONDS,
+      SPEED_DOWNLOAD_MIN_BYTES,
+      SPEED_DOWNLOAD_MAX_BYTES
+    );
+    let uploadBytes = speedClampBytes(
+      bytesPerSecond * SPEED_UPLOAD_TARGET_SECONDS,
+      SPEED_UPLOAD_MIN_BYTES,
+      SPEED_UPLOAD_MAX_BYTES
+    );
+
+    const absoluteCap = speedTestMaxTotalMb * 1024 * 1024;
+    const initialTotal = SPEED_WARMUP_BYTES + measuredDownloadBytes + uploadBytes;
+    if (initialTotal > absoluteCap) {
+      const usable = Math.max(SPEED_DOWNLOAD_MIN_BYTES + SPEED_UPLOAD_MIN_BYTES, absoluteCap - SPEED_WARMUP_BYTES);
+      const sum = measuredDownloadBytes + uploadBytes;
+      measuredDownloadBytes = Math.max(SPEED_DOWNLOAD_MIN_BYTES, Math.floor(usable * (measuredDownloadBytes / sum)));
+      uploadBytes = Math.max(SPEED_UPLOAD_MIN_BYTES, usable - measuredDownloadBytes);
+    }
+
+    const quota = currentAccessQuota(snapshot);
+    if (!quota.active) {
+      return { available: false, reason: "no_active_access", expected_mbps: expectedMbps };
+    }
+
+    let quotaLimited = false;
+    if (!quota.unlimited) {
+      if (quota.remaining_bytes === null) {
+        return { available: false, reason: "quota_unknown", expected_mbps: expectedMbps };
+      }
+      const remaining = BigInt(quota.remaining_bytes);
+      const minimumRemaining = BigInt(speedTestLowDataMinMb) * 1024n * 1024n;
+      if (remaining < minimumRemaining) {
+        return {
+          available: false,
+          reason: "low_data",
+          expected_mbps: expectedMbps,
+          data_remaining_bytes: remaining.toString(),
+        };
+      }
+
+      const tenPercent = remaining / 10n;
+      const quotaCap = Number(tenPercent > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : tenPercent);
+      const currentTotal = SPEED_WARMUP_BYTES + measuredDownloadBytes + uploadBytes;
+      if (quotaCap < currentTotal) {
+        if (quotaCap < SPEED_MIN_TOTAL_BYTES) {
+          return {
+            available: false,
+            reason: "low_data",
+            expected_mbps: expectedMbps,
+            data_remaining_bytes: remaining.toString(),
+          };
+        }
+        const usable = quotaCap - SPEED_WARMUP_BYTES;
+        const sum = measuredDownloadBytes + uploadBytes;
+        let nextDownload = Math.max(SPEED_DOWNLOAD_MIN_BYTES, Math.floor(usable * (measuredDownloadBytes / sum)));
+        let nextUpload = Math.max(SPEED_UPLOAD_MIN_BYTES, usable - nextDownload);
+        if (nextDownload + nextUpload > usable) {
+          const overflow = nextDownload + nextUpload - usable;
+          if (nextDownload - SPEED_DOWNLOAD_MIN_BYTES >= overflow) nextDownload -= overflow;
+          else nextUpload = Math.max(SPEED_UPLOAD_MIN_BYTES, nextUpload - overflow);
+        }
+        measuredDownloadBytes = nextDownload;
+        uploadBytes = nextUpload;
+        quotaLimited = true;
+      }
+    }
+
+    const downloadBytes = SPEED_WARMUP_BYTES + measuredDownloadBytes;
+    const estimatedMaxBytes = downloadBytes + uploadBytes;
+    return {
+      available: true,
+      reason: null,
+      expected_mbps: expectedMbps,
+      warmup_bytes: SPEED_WARMUP_BYTES,
+      download_bytes: downloadBytes,
+      upload_bytes: uploadBytes,
+      upload_chunk_bytes: Math.min(SPEED_UPLOAD_CHUNK_BYTES, uploadBytes),
+      estimated_max_bytes: estimatedMaxBytes,
+      quota_limited: quotaLimited,
+      data_unlimited: quota.unlimited,
+      data_remaining_bytes: quota.remaining_bytes,
+    };
+  }
+
+  function buildSpeedCapability(snapshot) {
+    if (!speedTestEnabled) return { enabled: false, available: false, reason: "disabled" };
+    const budget = buildSpeedBudget(snapshot);
+    const online = String(snapshot?.live?.status || "").toLowerCase() === "online";
+    if (!online) {
+      return {
+        enabled: true,
+        available: false,
+        reason: "local_required",
+        expected_mbps: budget?.expected_mbps ?? null,
+        estimated_max_bytes: budget?.estimated_max_bytes ?? null,
+      };
+    }
+    return { enabled: true, ...budget };
+  }
+
+  function requestFingerprint(req) {
+    const ip = String(req.ip || req.socket?.remoteAddress || "").trim();
+    const ua = String(req.get("user-agent") || "").trim();
+    return hashToken(`${ip}|${ua}`);
+  }
+
+  function cleanupSpeedTickets() {
+    const now = Date.now();
+    for (const [key, ticket] of speedTickets.entries()) {
+      if (!ticket || Number(ticket.expires_at || 0) <= now) speedTickets.delete(key);
+    }
+    while (speedTickets.size >= SPEED_TICKET_MAX) {
+      const first = speedTickets.keys().next().value;
+      if (!first) break;
+      speedTickets.delete(first);
+    }
+  }
+
+  function createSpeedTicket(req, session, capability) {
+    cleanupSpeedTickets();
+    const token = randomToken();
+    const key = hashToken(token);
+    speedTickets.set(key, {
+      session_id: session.id || null,
+      pool_id: session.pool_id || null,
+      fingerprint: requestFingerprint(req),
+      expires_at: Date.now() + speedTestTicketTtlSeconds * 1000,
+      ping_count: 0,
+      download_used: false,
+      upload_reserved: 0,
+      upload_received: 0,
+      ...capability,
+    });
+    return token;
+  }
+
+  function loadSpeedTicket(req) {
+    cleanupSpeedTickets();
+    const token = String(req.get("x-razafi-speed-ticket") || "").trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(token)) return null;
+    const key = hashToken(token);
+    const ticket = speedTickets.get(key);
+    if (!ticket || ticket.expires_at <= Date.now()) {
+      speedTickets.delete(key);
+      return null;
+    }
+    if (!safeEqual(ticket.fingerprint, requestFingerprint(req))) return null;
+    return { key, ticket };
   }
 
   function primaryPayload(row) {
@@ -1250,6 +1460,8 @@ export function registerEc1ClientSpace({
       };
     }
 
+    snapshot.speed_test = buildSpeedCapability(snapshot);
+
     return snapshot;
   }
 
@@ -1301,6 +1513,22 @@ export function registerEc1ClientSpace({
     legacyHeaders: false,
     keyGenerator: (req) => ipKeyGenerator(req),
     message: { error: "too_many_requests" },
+  });
+  const speedStartLimiter = rateLimit({
+    windowMs: 10 * 60 * 1000,
+    max: 6,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req),
+    message: { error: "too_many_speed_tests" },
+  });
+  const speedDataLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 40,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req),
+    message: { error: "too_many_speed_test_requests" },
   });
 
   app.get("/api/client/bootstrap", bootstrapLimiter, async (req, res) => {
@@ -1568,6 +1796,139 @@ export function registerEc1ClientSpace({
     }
   });
 
+  // -------------------------------------------------------------------------
+  // EC V2.2 — Speed Test RAZAFI
+  // The test is read-only from a business perspective. Network bytes still
+  // traverse the client's connection and therefore remain visible to normal
+  // MikroTik/RADIUS accounting. No speed result is stored in Supabase.
+  // -------------------------------------------------------------------------
+  app.post("/api/client/speed-test/start", speedStartLimiter, async (req, res) => {
+    noStore(res);
+    if (!enabled || !speedTestEnabled) return hidden(res);
+    if (!originAllowed(req)) return res.status(403).json({ error: "forbidden" });
+    try {
+      if (!supabase) return res.status(503).json({ error: "service_unavailable" });
+      const session = await loadSession(req, res);
+      if (!session) {
+        return res.status(409).json({ error: "speed_test_local_required" });
+      }
+      const snapshot = await buildConsumption(session);
+      const capability = buildSpeedCapability(snapshot);
+      if (!capability.available) {
+        const code = capability.reason === "low_data" ? "speed_test_low_data" : "speed_test_local_required";
+        return res.status(409).json({ error: code, speed_test: capability });
+      }
+      const ticket = createSpeedTicket(req, session, capability);
+      return res.json({
+        ok: true,
+        ticket,
+        expires_in_seconds: speedTestTicketTtlSeconds,
+        pool_name: snapshot?.pool?.display_name || null,
+        speed_test: capability,
+      });
+    } catch (error) {
+      console.error("[EC SPEED] start error", String(error?.message || error).slice(0, 160));
+      return res.status(503).json({ error: "speed_test_unavailable" });
+    }
+  });
+
+  app.get("/api/client/speed-test/ping", speedDataLimiter, (req, res) => {
+    noStore(res);
+    if (!enabled || !speedTestEnabled) return hidden(res);
+    if (!originAllowed(req)) return res.status(403).json({ error: "forbidden" });
+    const loaded = loadSpeedTicket(req);
+    if (!loaded) return res.status(401).json({ error: "speed_test_ticket_invalid" });
+    loaded.ticket.ping_count = Number(loaded.ticket.ping_count || 0) + 1;
+    if (loaded.ticket.ping_count > 8) return res.status(429).json({ error: "speed_test_ping_limit" });
+    return res.status(204).end();
+  });
+
+  app.get("/api/client/speed-test/download", speedDataLimiter, (req, res) => {
+    noStore(res);
+    if (!enabled || !speedTestEnabled) return hidden(res);
+    if (!originAllowed(req)) return res.status(403).json({ error: "forbidden" });
+    const loaded = loadSpeedTicket(req);
+    if (!loaded) return res.status(401).json({ error: "speed_test_ticket_invalid" });
+    if (loaded.ticket.download_used) return res.status(409).json({ error: "speed_test_download_used" });
+
+    const bytes = Math.max(0, Math.min(SPEED_PAYLOAD.length, Number(loaded.ticket.download_bytes || 0)));
+    if (bytes < SPEED_WARMUP_BYTES + SPEED_DOWNLOAD_MIN_BYTES) {
+      return res.status(409).json({ error: "speed_test_budget_invalid" });
+    }
+    loaded.ticket.download_used = true;
+    res.status(200);
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Length", String(bytes));
+    res.setHeader("Content-Encoding", "identity");
+    res.setHeader("Cache-Control", "no-store, no-cache, no-transform, private");
+    return res.end(SPEED_PAYLOAD.subarray(0, bytes));
+  });
+
+  app.post("/api/client/speed-test/upload", speedDataLimiter, (req, res) => {
+    noStore(res);
+    if (!enabled || !speedTestEnabled) return hidden(res);
+    if (!originAllowed(req)) return res.status(403).json({ error: "forbidden" });
+    const loaded = loadSpeedTicket(req);
+    if (!loaded) return res.status(401).json({ error: "speed_test_ticket_invalid" });
+    if (String(req.get("content-type") || "").split(";", 1)[0].trim().toLowerCase() !== "application/octet-stream") {
+      return res.status(415).json({ error: "speed_test_content_type_invalid" });
+    }
+
+    const ticket = loaded.ticket;
+    const maxTotal = Math.max(0, Number(ticket.upload_bytes || 0));
+    const remaining = Math.max(0, maxTotal - Number(ticket.upload_reserved || 0));
+    const declared = Number.parseInt(String(req.get("content-length") || ""), 10);
+    const requestMax = Math.min(SPEED_UPLOAD_CHUNK_BYTES, remaining);
+    if (requestMax <= 0) return res.status(409).json({ error: "speed_test_upload_complete" });
+    if (Number.isFinite(declared) && (declared <= 0 || declared > requestMax)) {
+      req.resume();
+      return res.status(413).json({ error: "speed_test_upload_chunk_too_large" });
+    }
+
+    const reservation = Number.isFinite(declared) && declared > 0 ? declared : requestMax;
+    ticket.upload_reserved = Number(ticket.upload_reserved || 0) + reservation;
+    let received = 0;
+    let failed = false;
+
+    const releaseReservation = () => {
+      ticket.upload_reserved = Math.max(Number(ticket.upload_received || 0), Number(ticket.upload_reserved || 0) - reservation);
+    };
+
+    req.on("data", (chunk) => {
+      if (failed) return;
+      received += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
+      if (received > reservation) {
+        failed = true;
+        releaseReservation();
+        try { req.destroy(); } catch (_) {}
+      }
+    });
+    req.on("aborted", () => {
+      if (!failed) releaseReservation();
+      failed = true;
+    });
+    req.on("error", () => {
+      if (!failed) releaseReservation();
+      failed = true;
+    });
+    req.on("end", () => {
+      if (failed) return;
+      if (received <= 0 || received !== reservation) {
+        releaseReservation();
+        return res.status(400).json({ error: "speed_test_upload_incomplete" });
+      }
+      ticket.upload_received = Number(ticket.upload_received || 0) + received;
+      // reservation becomes committed bytes; keep upload_reserved >= received.
+      ticket.upload_reserved = Math.max(ticket.upload_received, ticket.upload_reserved);
+      return res.json({
+        ok: true,
+        bytes: received,
+        total_received_bytes: ticket.upload_received,
+        remaining_bytes: Math.max(0, maxTotal - ticket.upload_received),
+      });
+    });
+  });
+
   app.post("/api/client/remote/revoke", claimLimiter, async (req, res) => {
     noStore(res);
     if (!enabled || !ec3Enabled) return hidden(res);
@@ -1644,7 +2005,7 @@ export function registerEc1ClientSpace({
     return res.json({ ok: true });
   });
 
-  console.log(`[EC1] backend registered; enabled=${enabled}; ec2=${ec2Enabled}; ec3=${ec3Enabled}; marketing=${marketingEnabled}; auto_detect=${autoDetectReady}; dynamic_nas=${dynamicNasEnabled}; stale_recovery=${staleRecoveryEnabled}; allowed_nas_count=${allowedNasIds.size}; verify_mode=${verifyMode}`);
+  console.log(`[EC1] backend registered; enabled=${enabled}; ec2=${ec2Enabled}; ec3=${ec3Enabled}; marketing=${marketingEnabled}; speed_test=${speedTestEnabled}; auto_detect=${autoDetectReady}; dynamic_nas=${dynamicNasEnabled}; stale_recovery=${staleRecoveryEnabled}; allowed_nas_count=${allowedNasIds.size}; verify_mode=${verifyMode}`);
 }
 
 export const __ec1Test = {

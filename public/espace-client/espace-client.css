@@ -1391,3 +1391,282 @@ body { min-height: 100dvh; }
     font-size: 12px;
   }
 }
+
+/* =============================================================================
+   EC V2.2 — Speed Test RAZAFI
+   Additive UI only. Network test logic lives in espace-client.js / backend EC.
+   ============================================================================= */
+
+.speed-test-section {
+  margin-top: 26px;
+  scroll-margin-top: calc(var(--app-header-height) + env(safe-area-inset-top) + 18px);
+}
+
+.speed-test-card {
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  padding: 20px;
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow-soft);
+}
+
+.speed-test-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+}
+
+.speed-test-heading h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 20px;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.speed-test-heading p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.speed-test-mark {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background: #f4f7fb;
+  color: var(--blue);
+}
+
+.speed-test-mark svg { width: 25px; height: 25px; }
+
+.speed-test-idle,
+.speed-test-progress,
+.speed-test-result {
+  margin-top: 20px;
+}
+
+.speed-test-plan {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 13px 14px;
+  border-radius: 16px;
+  background: #f6f8fb;
+}
+
+.speed-test-plan span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.speed-test-plan strong {
+  color: var(--text);
+  font-size: 16px;
+  white-space: nowrap;
+}
+
+.speed-test-start,
+.speed-test-again {
+  width: 100%;
+  min-height: 52px;
+  border: 0;
+  border-radius: 17px;
+  background: #111318;
+  color: #fff;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 780;
+  cursor: pointer;
+  transition: transform 160ms ease, opacity 160ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.speed-test-start:active,
+.speed-test-again:active { transform: scale(0.985); }
+.speed-test-start:disabled,
+.speed-test-again:disabled { opacity: 0.42; cursor: default; transform: none; }
+
+.speed-test-notice,
+.speed-test-result-note {
+  margin: 12px 2px 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.speed-test-notice.is-warning {
+  color: #8a5a00;
+}
+
+.speed-test-notice.is-blocked {
+  padding: 12px 13px;
+  border-radius: 14px;
+  background: #f7f8fa;
+  color: #68707c;
+}
+
+.speed-test-phase {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 760;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.speed-test-live-value {
+  min-height: 92px;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 7px;
+  padding: 12px 0 6px;
+}
+
+.speed-test-live-value strong {
+  color: var(--text);
+  font-size: clamp(42px, 13vw, 58px);
+  line-height: 1;
+  letter-spacing: -0.045em;
+}
+
+.speed-test-live-value span {
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.speed-test-progress-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e9edf3;
+}
+
+.speed-test-progress-track > span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #18b86b 0%, #1778f2 100%);
+  transition: width 180ms ease;
+}
+
+.speed-test-cancel {
+  display: block;
+  margin: 16px auto 0;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.speed-test-result-main {
+  padding: 18px 14px;
+  border-radius: 18px;
+  background: #f6f8fb;
+  text-align: center;
+}
+
+.speed-test-result-main > span,
+.speed-test-result-grid span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.speed-test-result-main strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--text);
+  font-size: 28px;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+}
+
+.speed-test-result-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.speed-test-result-grid > div {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+}
+
+.speed-test-result-grid strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 17px;
+}
+
+.speed-test-quality {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 16px;
+  background: #f5f8f6;
+}
+
+.speed-test-quality-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: #18b86b;
+}
+
+.speed-test-quality.is-medium { background: #fbf8f1; }
+.speed-test-quality.is-medium .speed-test-quality-dot { background: #d49418; }
+.speed-test-quality.is-low { background: #faf4f4; }
+.speed-test-quality.is-low .speed-test-quality-dot { background: #cc5360; }
+
+.speed-test-quality strong {
+  display: block;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.speed-test-quality p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.speed-test-again { margin-top: 15px; background: #f0f3f7; color: var(--text); }
+
+@media (max-width: 540px) {
+  .speed-test-section { margin-top: 26px; }
+  .speed-test-card { padding: 18px; border-radius: 20px; }
+  .speed-test-heading h3 { font-size: 19px; }
+  .speed-test-result-main strong { font-size: 26px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .speed-test-progress-track > span,
+  .speed-test-start,
+  .speed-test-again { transition: none; }
+}

@@ -7,8 +7,8 @@
   <meta name="theme-color" content="#ffffff">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>Espace client — RAZAFI</title>
-  <link rel="stylesheet" href="/espace-client/espace-client.css?v=ec-v2.1.1">
-  <script src="/espace-client/espace-client.js?v=ec-v2.1.1" defer></script>
+  <link rel="stylesheet" href="/espace-client/espace-client.css?v=ec-v2.2">
+  <script src="/espace-client/espace-client.js?v=ec-v2.2" defer></script>
 </head>
 <body>
   <div class="app-shell">
@@ -63,7 +63,7 @@
           <button class="app-menu-row is-disabled" id="menuSpeedTestBtn" type="button" disabled aria-disabled="true">
             <span class="app-menu-icon" aria-hidden="true">↯</span>
             <span class="app-menu-label">Speed test</span>
-            <span class="app-menu-badge">Bientôt</span>
+            <span class="app-menu-badge" id="menuSpeedTestBadge">Bientôt</span>
           </button>
         </nav>
 
@@ -190,6 +190,60 @@
             </div>
           </section>
         </div>
+
+        <section class="speed-test-section" id="speedTestSection" aria-labelledby="speedTestTitle" hidden>
+          <h2 class="ec2-section-title" id="speedTestTitle">Speed test</h2>
+          <div class="speed-test-card">
+            <div class="speed-test-heading">
+              <span class="speed-test-mark" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                  <path d="M5 16a7 7 0 1 1 14 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                  <path d="M12 16l4-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                  <circle cx="12" cy="16" r="1.4" fill="currentColor"/>
+                </svg>
+              </span>
+              <div>
+                <h3 id="speedTestStatusTitle">Test de vitesse RAZAFI</h3>
+                <p id="speedTestStatusText">Mesurez la qualité de votre connexion actuelle.</p>
+              </div>
+            </div>
+
+            <div class="speed-test-idle" id="speedTestIdle">
+              <div class="speed-test-plan" id="speedTestPlan" hidden>
+                <span>Vitesse du forfait</span>
+                <strong id="speedTestExpected">—</strong>
+              </div>
+              <button class="speed-test-start" id="speedTestStartBtn" type="button">Démarrer le test</button>
+              <p class="speed-test-notice" id="speedTestDataNotice">Le test ajuste automatiquement sa durée pour limiter la consommation de données.</p>
+            </div>
+
+            <div class="speed-test-progress" id="speedTestProgress" hidden aria-live="polite">
+              <p class="speed-test-phase" id="speedTestPhase">Préparation…</p>
+              <div class="speed-test-live-value"><strong id="speedTestLiveValue">—</strong><span id="speedTestLiveUnit"></span></div>
+              <div class="speed-test-progress-track" role="progressbar" aria-label="Progression du test" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="speedTestProgressTrack">
+                <span id="speedTestProgressFill"></span>
+              </div>
+              <button class="speed-test-cancel" id="speedTestCancelBtn" type="button">Annuler</button>
+            </div>
+
+            <div class="speed-test-result" id="speedTestResult" hidden>
+              <div class="speed-test-result-main">
+                <span>Téléchargement</span>
+                <strong><span id="speedDownloadResult">—</span> Mbps</strong>
+              </div>
+              <div class="speed-test-result-grid">
+                <div><span>Envoi</span><strong><span id="speedUploadResult">—</span> Mbps</strong></div>
+                <div><span>Ping</span><strong><span id="speedPingResult">—</span> ms</strong></div>
+              </div>
+              <div class="speed-test-quality" id="speedTestQuality">
+                <span class="speed-test-quality-dot" aria-hidden="true"></span>
+                <div><strong id="speedTestQualityTitle">Résultat disponible</strong><p id="speedTestQualityText"></p></div>
+              </div>
+              <p class="speed-test-result-note">La consommation du test apparaîtra après la prochaine synchronisation réseau.</p>
+              <button class="speed-test-again" id="speedTestAgainBtn" type="button">Tester à nouveau</button>
+            </div>
+          </div>
+        </section>
 
         <section class="promo-section" id="promoSection" aria-labelledby="promoTitle">
           <h2 class="promo-section-title" id="promoTitle">À découvrir chez RAZAFI</h2>

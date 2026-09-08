@@ -7,6 +7,10 @@
     consumption: "/api/client/consumption",
     logout: "/api/client/logout",
     remoteRevoke: "/api/client/remote/revoke",
+    speedStart: "/api/client/speed-test/start",
+    speedPing: "/api/client/speed-test/ping",
+    speedDownload: "/api/client/speed-test/download",
+    speedUpload: "/api/client/speed-test/upload",
   });
 
   const STALE_RECOVERY_STORAGE_KEY = "razafi_ec1_stale_recovery_at";
@@ -45,6 +49,10 @@
     inFlight: false,
     detectionUrl: null,
     timeBindings: [],
+    speedCapability: null,
+    speedTestRunning: false,
+    speedTestHasResult: false,
+    speedTestAbortController: null,
   };
 
   const elements = Object.freeze({
@@ -95,6 +103,31 @@
     menuRecentBtn: document.getElementById("menuRecentBtn"),
     menuPoolName: document.getElementById("menuPoolName"),
     recentAccessSection: document.getElementById("recentAccessSection"),
+    menuSpeedTestBtn: document.getElementById("menuSpeedTestBtn"),
+    menuSpeedTestBadge: document.getElementById("menuSpeedTestBadge"),
+    speedTestSection: document.getElementById("speedTestSection"),
+    speedTestStatusTitle: document.getElementById("speedTestStatusTitle"),
+    speedTestStatusText: document.getElementById("speedTestStatusText"),
+    speedTestIdle: document.getElementById("speedTestIdle"),
+    speedTestPlan: document.getElementById("speedTestPlan"),
+    speedTestExpected: document.getElementById("speedTestExpected"),
+    speedTestStartBtn: document.getElementById("speedTestStartBtn"),
+    speedTestDataNotice: document.getElementById("speedTestDataNotice"),
+    speedTestProgress: document.getElementById("speedTestProgress"),
+    speedTestPhase: document.getElementById("speedTestPhase"),
+    speedTestLiveValue: document.getElementById("speedTestLiveValue"),
+    speedTestLiveUnit: document.getElementById("speedTestLiveUnit"),
+    speedTestProgressTrack: document.getElementById("speedTestProgressTrack"),
+    speedTestProgressFill: document.getElementById("speedTestProgressFill"),
+    speedTestCancelBtn: document.getElementById("speedTestCancelBtn"),
+    speedTestResult: document.getElementById("speedTestResult"),
+    speedDownloadResult: document.getElementById("speedDownloadResult"),
+    speedUploadResult: document.getElementById("speedUploadResult"),
+    speedPingResult: document.getElementById("speedPingResult"),
+    speedTestQuality: document.getElementById("speedTestQuality"),
+    speedTestQualityTitle: document.getElementById("speedTestQualityTitle"),
+    speedTestQualityText: document.getElementById("speedTestQualityText"),
+    speedTestAgainBtn: document.getElementById("speedTestAgainBtn"),
   });
 
 
@@ -255,6 +288,11 @@
     if (elements.menuRecentBtn) {
       elements.menuRecentBtn.hidden = name !== "dashboard" || elements.ec2Content?.hidden === true;
     }
+    if (elements.menuSpeedTestBtn && name !== "dashboard") {
+      elements.menuSpeedTestBtn.disabled = true;
+      elements.menuSpeedTestBtn.setAttribute("aria-disabled", "true");
+      elements.menuSpeedTestBtn.classList.add("is-disabled");
+    }
   }
 
   function reducedMotionPreferred() {
@@ -331,6 +369,31 @@
     }
   }
 
+  async function speedFetch(url, { ticket, method = "GET", body = undefined, signal = undefined, timeoutMs = 10000 } = {}) {
+    const controller = new AbortController();
+    const safeTimeout = Math.max(2000, Math.min(20000, Number(timeoutMs || 10000)));
+    const timer = window.setTimeout(() => controller.abort(), safeTimeout);
+    if (signal) {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+    try {
+      return await fetch(url, {
+        method,
+        body,
+        credentials: "include",
+        cache: "no-store",
+        headers: {
+          "X-RAZAFI-Speed-Ticket": String(ticket || ""),
+          ...(body !== undefined ? { "Content-Type": "application/octet-stream" } : {}),
+        },
+        signal: controller.signal,
+      });
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+
   function cleanText(value, fallback = "") {
     const text = String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim();
     return text || fallback;
@@ -382,6 +445,30 @@
     if (number >= 1024 ** 2) return `${nf.format(number / (1024 ** 2))} Mo`;
     if (number >= 1024) return `${nf.format(number / 1024)} Ko`;
     return `${nf.format(number)} o`;
+  }
+
+  function formatSpeed(value, digits = 1) {
+    const parsed = toFiniteNumber(value);
+    if (parsed === null) return "—";
+    return new Intl.NumberFormat("fr-FR", { maximumFractionDigits: digits, minimumFractionDigits: 0 }).format(Math.max(0, parsed));
+  }
+
+  function median(values) {
+    const list = (Array.isArray(values) ? values : []).filter(Number.isFinite).sort((a, b) => a - b);
+    if (!list.length) return null;
+    const middle = Math.floor(list.length / 2);
+    return list.length % 2 ? list[middle] : (list[middle - 1] + list[middle]) / 2;
+  }
+
+  function delay(ms, signal = null) {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) return reject(new DOMException("Aborted", "AbortError"));
+      const timer = window.setTimeout(resolve, Math.max(0, Number(ms || 0)));
+      signal?.addEventListener("abort", () => {
+        window.clearTimeout(timer);
+        reject(new DOMException("Aborted", "AbortError"));
+      }, { once: true });
+    });
   }
 
   function formatDateTime(value, prefix) {
@@ -774,6 +861,392 @@
     renderWhatsApp(snapshot);
   }
 
+  function setSpeedProgress(percent, phase, value = "—", unit = "") {
+    const pct = Math.max(0, Math.min(100, Number(percent || 0)));
+    if (elements.speedTestPhase) elements.speedTestPhase.textContent = phase;
+    if (elements.speedTestLiveValue) elements.speedTestLiveValue.textContent = value;
+    if (elements.speedTestLiveUnit) elements.speedTestLiveUnit.textContent = unit;
+    if (elements.speedTestProgressFill) elements.speedTestProgressFill.style.width = `${pct}%`;
+    if (elements.speedTestProgressTrack) {
+      elements.speedTestProgressTrack.setAttribute("aria-valuenow", String(Math.round(pct)));
+      elements.speedTestProgressTrack.setAttribute("aria-valuetext", `${phase} — ${Math.round(pct)} %`);
+    }
+  }
+
+  function setSpeedIdleUi() {
+    elements.speedTestIdle.hidden = false;
+    elements.speedTestProgress.hidden = true;
+    elements.speedTestResult.hidden = true;
+    setSpeedProgress(0, "Préparation…", "—", "");
+  }
+
+  function speedBlockedCopy(reason, remote) {
+    if (remote || reason === "local_required") {
+      return {
+        title: "Test indisponible à distance",
+        text: "Connectez cet appareil à la zone WiFi RAZAFI pour mesurer la vitesse de cette connexion.",
+      };
+    }
+    if (reason === "low_data") {
+      return {
+        title: "Données restantes insuffisantes",
+        text: "Il reste trop peu de données pour effectuer un test fiable sans réduire sensiblement votre forfait.",
+      };
+    }
+    if (reason === "no_active_access") {
+      return {
+        title: "Aucun accès actif à tester",
+        text: "Le Speed test sera disponible lorsqu’un forfait ou un bonus sera en cours d’utilisation.",
+      };
+    }
+    return {
+      title: "Speed test momentanément indisponible",
+      text: "Réessayez lorsque votre connexion RAZAFI est active.",
+    };
+  }
+
+  function renderSpeedTest(snapshot) {
+    const capability = snapshot?.speed_test && typeof snapshot.speed_test === "object"
+      ? snapshot.speed_test
+      : { enabled: false, available: false, reason: "disabled" };
+    state.speedCapability = capability;
+    const enabled = capability.enabled === true;
+    const remote = snapshot?.ec3?.remote_consultation === true;
+
+    if (elements.menuSpeedTestBtn) {
+      elements.menuSpeedTestBtn.disabled = !enabled;
+      elements.menuSpeedTestBtn.setAttribute("aria-disabled", enabled ? "false" : "true");
+      elements.menuSpeedTestBtn.classList.toggle("is-disabled", !enabled);
+    }
+    if (elements.menuSpeedTestBadge) elements.menuSpeedTestBadge.hidden = enabled;
+    if (elements.speedTestSection) elements.speedTestSection.hidden = !enabled;
+    if (!enabled || state.speedTestRunning || state.speedTestHasResult) return;
+
+    setSpeedIdleUi();
+    const expected = toFiniteNumber(capability.expected_mbps);
+    elements.speedTestPlan.hidden = expected === null;
+    elements.speedTestExpected.textContent = expected === null ? "—" : `Jusqu’à ${formatSpeed(expected)} Mbps`;
+
+    const available = capability.available === true && !remote;
+    elements.speedTestStartBtn.disabled = !available;
+    elements.speedTestDataNotice.classList.remove("is-warning", "is-blocked");
+
+    if (!available) {
+      const copy = speedBlockedCopy(capability.reason, remote);
+      elements.speedTestStatusTitle.textContent = copy.title;
+      elements.speedTestStatusText.textContent = copy.text;
+      elements.speedTestDataNotice.textContent = copy.text;
+      elements.speedTestDataNotice.classList.add("is-blocked");
+      return;
+    }
+
+    elements.speedTestStatusTitle.textContent = "Test de vitesse RAZAFI";
+    elements.speedTestStatusText.textContent = "Mesurez le ping, le téléchargement et l’envoi de votre connexion actuelle.";
+    const estimated = capability.estimated_max_bytes;
+    const quotaLimited = capability.quota_limited === true;
+    const budgetText = estimated ? `jusqu’à environ ${formatBytes(estimated)}` : "une quantité limitée de données";
+    elements.speedTestDataNotice.textContent = quotaLimited
+      ? `Mode économe activé : ce test utilisera ${budgetText}.`
+      : `Le test utilise ${budgetText} et ajuste automatiquement sa durée.`;
+    if (quotaLimited) elements.speedTestDataNotice.classList.add("is-warning");
+  }
+
+  function createRandomPayload(size) {
+    const length = Math.max(1, Math.floor(Number(size || 1)));
+    const output = new Uint8Array(length);
+    if (window.crypto?.getRandomValues) {
+      for (let offset = 0; offset < output.length; offset += 65536) {
+        window.crypto.getRandomValues(output.subarray(offset, Math.min(output.length, offset + 65536)));
+      }
+    } else {
+      for (let i = 0; i < output.length; i += 1) output[i] = Math.floor(Math.random() * 256);
+    }
+    return output;
+  }
+
+  async function measureSpeedPing(ticket, signal) {
+    const samples = [];
+    for (let index = 0; index < 6; index += 1) {
+      const started = performance.now();
+      const response = await speedFetch(ENDPOINTS.speedPing, { ticket, signal, timeoutMs: 5000 });
+      if (!response.ok) throw new Error("speed_ping_failed");
+      const elapsed = performance.now() - started;
+      if (index > 0) samples.push(elapsed);
+      const current = median(samples);
+      setSpeedProgress(5 + ((index + 1) / 6) * 13, "Mesure du ping", current === null ? "—" : formatSpeed(current, 0), "ms");
+      if (index < 5) await delay(70, signal);
+    }
+    const result = median(samples);
+    if (!Number.isFinite(result)) throw new Error("speed_ping_failed");
+    return result;
+  }
+
+  async function measureSpeedDownload(ticket, config, signal) {
+    const controller = new AbortController();
+    const hardTimer = window.setTimeout(() => controller.abort(), 9000);
+    if (signal) {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+
+    const warmup = Math.max(0, Number(config.warmup_bytes || 0));
+    const expectedMeasured = Math.max(1, Number(config.download_bytes || 0) - warmup);
+    let total = 0;
+    let measured = 0;
+    let measureStartedAt = null;
+    let lastUiAt = 0;
+
+    try {
+      const response = await fetch(ENDPOINTS.speedDownload, {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+        headers: { "X-RAZAFI-Speed-Ticket": ticket },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("speed_download_failed");
+
+      if (!response.body?.getReader) {
+        const started = performance.now();
+        const buffer = await response.arrayBuffer();
+        const elapsed = Math.max(0.2, (performance.now() - started) / 1000);
+        measured = Math.max(0, buffer.byteLength - warmup);
+        if (measured < 128 * 1024) throw new Error("speed_download_too_short");
+        return (measured * 8) / elapsed / 1_000_000;
+      }
+
+      const reader = response.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const length = value?.byteLength || 0;
+        const before = total;
+        total += length;
+        if (measureStartedAt === null && total >= warmup) {
+          measureStartedAt = performance.now();
+          if (before >= warmup) measured += length;
+          else measured += Math.max(0, total - warmup);
+        } else if (measureStartedAt !== null) {
+          measured += length;
+        }
+
+        if (measureStartedAt !== null) {
+          const now = performance.now();
+          const elapsed = Math.max(0.15, (now - measureStartedAt) / 1000);
+          if (now - lastUiAt > 180) {
+            const mbps = (measured * 8) / elapsed / 1_000_000;
+            const fraction = Math.min(1, measured / expectedMeasured);
+            setSpeedProgress(18 + fraction * 44, "Téléchargement", formatSpeed(mbps), "Mbps");
+            lastUiAt = now;
+          }
+        }
+      }
+    } catch (error) {
+      if (error?.name !== "AbortError" || signal?.aborted) throw error;
+    } finally {
+      window.clearTimeout(hardTimer);
+    }
+
+    if (measureStartedAt === null || measured < 128 * 1024) throw new Error("speed_download_too_short");
+    const elapsed = Math.max(0.2, (performance.now() - measureStartedAt) / 1000);
+    const mbps = (measured * 8) / elapsed / 1_000_000;
+    setSpeedProgress(62, "Téléchargement terminé", formatSpeed(mbps), "Mbps");
+    return mbps;
+  }
+
+  async function measureSpeedUpload(ticket, config, signal) {
+    const maxBytes = Math.max(1, Math.floor(Number(config.upload_bytes || 0)));
+    const serverChunk = Math.max(64 * 1024, Math.floor(Number(config.upload_chunk_bytes || 512 * 1024)));
+    const chunkSize = Math.min(serverChunk, 256 * 1024);
+    const payload = createRandomPayload(chunkSize);
+    const controller = new AbortController();
+    const started = performance.now();
+    const deadline = started + 5000;
+    const hardTimer = window.setTimeout(() => controller.abort(), 6200);
+    if (signal) {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+
+    let reserved = 0;
+    let completed = 0;
+    let lastUiAt = 0;
+
+    const takeNextSize = () => {
+      if (performance.now() >= deadline || reserved >= maxBytes) return 0;
+      const size = Math.min(chunkSize, maxBytes - reserved);
+      reserved += size;
+      return size;
+    };
+
+    const worker = async () => {
+      while (!controller.signal.aborted) {
+        const size = takeNextSize();
+        if (!size) break;
+        try {
+          const response = await speedFetch(ENDPOINTS.speedUpload, {
+            ticket,
+            method: "POST",
+            body: size === payload.byteLength ? payload : payload.subarray(0, size),
+            signal: controller.signal,
+            timeoutMs: 7000,
+          });
+          if (!response.ok) {
+            if (response.status === 409) break;
+            throw new Error("speed_upload_failed");
+          }
+          completed += size;
+          const now = performance.now();
+          const elapsed = Math.max(0.2, (now - started) / 1000);
+          if (now - lastUiAt > 160) {
+            const mbps = (completed * 8) / elapsed / 1_000_000;
+            const fraction = Math.min(1, completed / maxBytes);
+            setSpeedProgress(62 + fraction * 33, "Envoi", formatSpeed(mbps), "Mbps");
+            lastUiAt = now;
+          }
+        } catch (error) {
+          if (error?.name === "AbortError") break;
+          throw error;
+        }
+      }
+    };
+
+    try {
+      await Promise.all([worker(), worker()]);
+    } finally {
+      window.clearTimeout(hardTimer);
+    }
+
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const elapsed = Math.max(0.35, (performance.now() - started) / 1000);
+    if (completed < 128 * 1024) throw new Error("speed_upload_too_short");
+    const mbps = (completed * 8) / elapsed / 1_000_000;
+    setSpeedProgress(95, "Envoi terminé", formatSpeed(mbps), "Mbps");
+    return mbps;
+  }
+
+  function speedQuality(downloadMbps, expectedMbps) {
+    const download = Math.max(0, Number(downloadMbps || 0));
+    const expected = Number(expectedMbps);
+    if (Number.isFinite(expected) && expected > 0) {
+      const ratio = download / expected;
+      if (ratio >= 0.8) return { level: "good", title: "Bonne connexion", text: "La vitesse mesurée est proche de la vitesse prévue par votre forfait." };
+      if (ratio >= 0.5) return { level: "medium", title: "Connexion correcte", text: "La connexion fonctionne, mais la vitesse mesurée est inférieure à la vitesse maximale du forfait." };
+      return { level: "low", title: "Connexion plus lente que prévu", text: "La vitesse peut varier selon le signal WiFi, le réseau Internet et le nombre d’appareils connectés." };
+    }
+    if (download >= 5) return { level: "good", title: "Bonne connexion", text: "La connexion est adaptée à la navigation, aux réseaux sociaux et à la vidéo courante." };
+    if (download >= 2) return { level: "medium", title: "Connexion correcte", text: "La connexion convient à la navigation courante, avec une vitesse plus limitée pour les usages lourds." };
+    return { level: "low", title: "Connexion limitée", text: "La vitesse mesurée est faible. Le signal WiFi ou la connexion Internet peut momentanément limiter le débit." };
+  }
+
+  function showSpeedResult({ ping, download, upload, expected }) {
+    state.speedTestRunning = false;
+    state.speedTestHasResult = true;
+    elements.speedTestIdle.hidden = true;
+    elements.speedTestProgress.hidden = true;
+    elements.speedTestResult.hidden = false;
+    elements.speedDownloadResult.textContent = formatSpeed(download);
+    elements.speedUploadResult.textContent = formatSpeed(upload);
+    elements.speedPingResult.textContent = formatSpeed(ping, 0);
+    const quality = speedQuality(download, expected);
+    elements.speedTestQuality.classList.remove("is-medium", "is-low");
+    if (quality.level === "medium") elements.speedTestQuality.classList.add("is-medium");
+    if (quality.level === "low") elements.speedTestQuality.classList.add("is-low");
+    elements.speedTestQualityTitle.textContent = quality.title;
+    elements.speedTestQualityText.textContent = quality.text;
+    elements.speedTestStatusTitle.textContent = "Test terminé";
+    elements.speedTestStatusText.textContent = "Résultats mesurés sur votre connexion RAZAFI actuelle.";
+  }
+
+  function showSpeedFailure(message) {
+    state.speedTestRunning = false;
+    state.speedTestHasResult = false;
+    state.speedTestAbortController = null;
+    setSpeedIdleUi();
+    elements.speedTestStatusTitle.textContent = "Test interrompu";
+    elements.speedTestStatusText.textContent = message;
+    elements.speedTestDataNotice.textContent = message;
+    elements.speedTestDataNotice.classList.remove("is-warning");
+    elements.speedTestDataNotice.classList.add("is-blocked");
+    elements.speedTestStartBtn.disabled = false;
+  }
+
+  function cancelSpeedTest({ silent = false } = {}) {
+    if (state.speedTestAbortController) state.speedTestAbortController.abort();
+    state.speedTestAbortController = null;
+    const wasRunning = state.speedTestRunning;
+    state.speedTestRunning = false;
+    if (!wasRunning) return;
+    if (!silent) {
+      showSpeedFailure("Le test a été annulé. Vous pouvez le relancer quand vous le souhaitez.");
+      return;
+    }
+    state.speedTestHasResult = false;
+    if (state.snapshot) renderSpeedTest(state.snapshot);
+  }
+
+  async function runSpeedTest() {
+    if (state.speedTestRunning) return;
+    const snapshot = state.snapshot;
+    const capability = state.speedCapability || snapshot?.speed_test || {};
+    const remote = snapshot?.ec3?.remote_consultation === true;
+    if (capability.enabled !== true || capability.available !== true || remote) {
+      renderSpeedTest(snapshot || {});
+      return;
+    }
+
+    state.speedTestRunning = true;
+    state.speedTestHasResult = false;
+    const controller = new AbortController();
+    state.speedTestAbortController = controller;
+    elements.speedTestIdle.hidden = true;
+    elements.speedTestResult.hidden = true;
+    elements.speedTestProgress.hidden = false;
+    setSpeedProgress(2, "Préparation", "—", "");
+
+    try {
+      const { response, data } = await apiJson(ENDPOINTS.speedStart, {
+        method: "POST",
+        body: "{}",
+        timeoutMs: 15000,
+        signal: controller.signal,
+      });
+      if (response.status === 409) {
+        const reason = data?.error === "speed_test_low_data" ? "low_data" : "local_required";
+        state.speedCapability = { ...(data?.speed_test || capability), enabled: true, available: false, reason };
+        state.speedTestRunning = false;
+        state.speedTestAbortController = null;
+        renderSpeedTest({ ...snapshot, speed_test: state.speedCapability });
+        return;
+      }
+      if (!response.ok || data?.ok !== true || !/^[0-9a-f]{64}$/.test(String(data?.ticket || ""))) {
+        throw new Error("speed_start_failed");
+      }
+
+      const ticket = String(data.ticket);
+      const config = data.speed_test || capability;
+      const ping = await measureSpeedPing(ticket, controller.signal);
+      const download = await measureSpeedDownload(ticket, config, controller.signal);
+      const upload = await measureSpeedUpload(ticket, config, controller.signal);
+      setSpeedProgress(100, "Terminé", formatSpeed(download), "Mbps");
+      await delay(180, controller.signal);
+      showSpeedResult({ ping, download, upload, expected: config.expected_mbps });
+      state.speedTestAbortController = null;
+      // Refresh the EC snapshot without blocking the result. RADIUS data may still
+      // need the normal accounting interval before the test usage becomes visible.
+      window.setTimeout(() => loadConsumption({ silent: true }), 1200);
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        if (state.speedTestRunning) showSpeedFailure("Le test a été annulé. Vous pouvez le relancer quand vous le souhaitez.");
+        return;
+      }
+      showSpeedFailure("Impossible de terminer le test pour le moment. Vérifiez votre connexion RAZAFI puis réessayez.");
+    } finally {
+      state.speedTestRunning = false;
+      state.speedTestAbortController = null;
+    }
+  }
+
   function marketingSignature(config) {
     try {
       return JSON.stringify({
@@ -989,6 +1462,7 @@
 
     renderMarketing(snapshot);
     renderEc2(snapshot);
+    renderSpeedTest(snapshot);
     renderSecurity(snapshot);
     showView("dashboard");
     startLiveTick();
@@ -1212,6 +1686,9 @@
   elements.menuRecentBtn?.addEventListener("click", () => {
     if (!elements.menuRecentBtn.hidden) scrollAppTo(elements.recentAccessSection);
   });
+  elements.menuSpeedTestBtn?.addEventListener("click", () => {
+    if (!elements.menuSpeedTestBtn.disabled) scrollAppTo(elements.speedTestSection);
+  });
   elements.appMenuDialog?.addEventListener("cancel", (event) => {
     event.preventDefault();
     closeAppMenu();
@@ -1244,6 +1721,13 @@
   elements.recentAccessToggle.addEventListener("click", () => {
     setRecentExpanded(elements.recentAccessToggle.dataset.expanded !== "true");
   });
+  elements.speedTestStartBtn?.addEventListener("click", runSpeedTest);
+  elements.speedTestAgainBtn?.addEventListener("click", () => {
+    state.speedTestHasResult = false;
+    renderSpeedTest(state.snapshot || {});
+    runSpeedTest();
+  });
+  elements.speedTestCancelBtn?.addEventListener("click", () => cancelSpeedTest());
 
   elements.promoDots?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-promo-index]");
@@ -1268,13 +1752,19 @@
       if (state.snapshot && Date.now() - state.snapshotReceivedAt > 20_000) {
         loadConsumption({ silent: true });
       }
-    } else if (state.promoTimer) {
-      window.clearInterval(state.promoTimer);
-      state.promoTimer = null;
+    } else {
+      if (state.promoTimer) {
+        window.clearInterval(state.promoTimer);
+        state.promoTimer = null;
+      }
+      if (state.speedTestRunning) cancelSpeedTest({ silent: true });
     }
   });
 
-  window.addEventListener("pagehide", clearTimers, { once: true });
+  window.addEventListener("pagehide", () => {
+    cancelSpeedTest({ silent: true });
+    clearTimers();
+  }, { once: true });
   const clientSpaceState = consumeClientSpaceStateFragment();
   const claimProof = clientSpaceState ? null : consumeClaimFragment();
   if (claimProof) {
