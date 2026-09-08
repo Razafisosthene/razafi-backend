@@ -16030,53 +16030,469 @@ async function billingS13101DecorateNotificationRows(rows) {
   });
 }
 
-app.get("/api/admin/billing/exceptions", requireAdmin, requireSuperadmin, async (_req, res) => {
+// S13.10.1.2B — backward-compatible scalable read API for Billing notification exceptions.
+// IMPORTANT: requests without ?view= keep the exact S13.10.1 legacy response so
+// S13.10.1.1 UI remains functional while backend and frontend are deployed in phases.
+const BILLING_S131012_COLUMNS = "id,event_key,event_type,pool_id,owner_admin_user_id,recipient_email,source_table,source_id,status,attempts,next_attempt_at,lease_token,lease_until,provider_message_id,last_error,created_at,sent_at,updated_at";
+const BILLING_S131012_VIEWS = new Set(["action", "automatic", "dead", "history"]);
+const BILLING_S131012_EVENT_TYPES = Object.freeze([
+  { value: "change_scheduled", label: "Changement d’offre programmé", group: "offer" },
+  { value: "change_cancelled", label: "Changement d’offre annulé", group: "offer" },
+  { value: "change_applied", label: "Changement d’offre appliqué", group: "offer" },
+  { value: "invoice_issued", label: "Facture émise", group: "billing" },
+  { value: "invoice_due_soon", label: "Rappel avant échéance", group: "billing" },
+  { value: "invoice_overdue", label: "Facture échue", group: "billing" },
+  { value: "payment_confirmed", label: "Paiement confirmé", group: "payment" },
+  { value: "payment_failed", label: "Paiement échoué", group: "payment" },
+  { value: "subscription_activated", label: "Abonnement activé", group: "subscription" },
+  { value: "subscription_suspended", label: "Achats clients suspendus", group: "subscription" },
+  { value: "subscription_reactivated", label: "Achats clients réactivés", group: "subscription" },
+  { value: "commission_statement_ready", label: "Relevé commission disponible", group: "commission" },
+  { value: "commission_payout_confirmed", label: "Reversement commission confirmé", group: "commission" },
+]);
+const BILLING_S131012_EVENT_TYPE_VALUES = new Set(BILLING_S131012_EVENT_TYPES.map((x) => x.value));
+const BILLING_S131012_POOL_CHUNK = 100;
+const BILLING_S131012_POOL_PAGE = 1000;
+const BILLING_S131012_OWNER_SCAN_PAGE = 200;
+
+function billingS131012ApplyCommonFilters(query, { poolId = null, eventType = null } = {}) {
+  let q = query;
+  if (poolId) q = q.eq("pool_id", poolId);
+  if (eventType) q = q.eq("event_type", eventType);
+  return q;
+}
+
+function billingS131012Chunks(values, size = BILLING_S131012_POOL_CHUNK) {
+  const input = Array.isArray(values) ? values : [];
+  const out = [];
+  for (let i = 0; i < input.length; i += size) out.push(input.slice(i, i + size));
+  return out;
+}
+
+function billingS131012ParseQuery(req) {
+  const getSingle = (name) => {
+    const value = req.query?.[name];
+    if (Array.isArray(value)) return { error: `${name}_multiple_values` };
+    if (value === undefined || value === null) return { value: null };
+    return { value: String(value).trim() };
+  };
+
+  const viewRaw = getSingle("view");
+  if (viewRaw.error) return { error: viewRaw.error };
+  const view = String(viewRaw.value || "").toLowerCase();
+  if (!BILLING_S131012_VIEWS.has(view)) return { error: "billing_exceptions_view_invalid" };
+
+  const poolRaw = getSingle("pool_id");
+  if (poolRaw.error) return { error: poolRaw.error };
+  const poolId = poolRaw.value ? String(poolRaw.value).toLowerCase() : null;
+  if (poolId && !UUID_V1_TO_V5_RE.test(poolId)) return { error: "billing_exceptions_pool_id_invalid" };
+
+  const eventRaw = getSingle("event_type");
+  if (eventRaw.error) return { error: eventRaw.error };
+  const eventType = eventRaw.value || null;
+  if (eventType && !BILLING_S131012_EVENT_TYPE_VALUES.has(eventType)) {
+    return { error: "billing_exceptions_event_type_invalid" };
+  }
+
+  const limitRaw = getSingle("limit");
+  if (limitRaw.error) return { error: limitRaw.error };
+  const offsetRaw = getSingle("offset");
+  if (offsetRaw.error) return { error: offsetRaw.error };
+
+  const limitText = limitRaw.value || "20";
+  const offsetText = offsetRaw.value || "0";
+  if (!/^\d+$/.test(limitText)) return { error: "billing_exceptions_limit_invalid" };
+  if (!/^\d+$/.test(offsetText)) return { error: "billing_exceptions_offset_invalid" };
+
+  const limit = Number(limitText);
+  const offset = Number(offsetText);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+    return { error: "billing_exceptions_limit_invalid" };
+  }
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > 1000000) {
+    return { error: "billing_exceptions_offset_invalid" };
+  }
+
+  return { view, poolId, eventType, limit, offset };
+}
+
+async function billingS131012LoadPoolContext() {
+  const pools = [];
+  for (let offset = 0; ; offset += BILLING_S131012_POOL_PAGE) {
+    const { data, error } = await supabase
+      .from("internet_pools")
+      .select("id,name,brand_name,owner_admin_user_id")
+      .order("id", { ascending: true })
+      .range(offset, offset + BILLING_S131012_POOL_PAGE - 1);
+    if (error) throw error;
+    const batch = data || [];
+    pools.push(...batch);
+    if (batch.length < BILLING_S131012_POOL_PAGE) break;
+  }
+
+  const ownerIds = [...new Set(pools.map((x) => x.owner_admin_user_id).filter(Boolean).map(String))];
+  const owners = [];
+  for (const chunk of billingS131012Chunks(ownerIds)) {
+    const { data, error } = await supabase
+      .from("admin_users")
+      .select("id,email,is_active")
+      .in("id", chunk);
+    if (error) throw error;
+    owners.push(...(data || []));
+  }
+
+  const poolMap = new Map(pools.map((x) => [String(x.id), x]));
+  const ownerMap = new Map(owners.map((x) => [String(x.id), x]));
+  const availablePoolIds = pools.filter((pool) => {
+    const owner = ownerMap.get(String(pool.owner_admin_user_id || ""));
+    return Boolean(
+      pool.owner_admin_user_id &&
+      owner?.is_active &&
+      String(owner?.email || "").trim()
+    );
+  }).map((x) => String(x.id));
+  const availablePoolSet = new Set(availablePoolIds);
+
+  return { pools, poolMap, ownerMap, availablePoolIds, availablePoolSet };
+}
+
+function billingS131012DecorateWithContext(rows, context) {
+  const items = Array.isArray(rows) ? rows : [];
+  return items.map((row) => {
+    const pool = context.poolMap.get(String(row.pool_id)) || null;
+    const owner = pool ? context.ownerMap.get(String(pool.owner_admin_user_id || "")) || null : null;
+    const exceptionClass = billingS13101ExceptionClass(row, pool, owner);
+    return {
+      ...row,
+      pool,
+      current_owner_email: owner?.is_active ? String(owner?.email || "").trim().toLowerCase() || null : null,
+      exception_class: exceptionClass,
+      can_manual_retry: row.status === "dead" && exceptionClass === "dead",
+      requires_owner_fix: exceptionClass === "owner_unavailable",
+    };
+  });
+}
+
+async function billingS131012CountRows({ statuses, poolId = null, eventType = null, poolIds = null }) {
+  const statusList = Array.isArray(statuses) ? statuses.filter(Boolean) : [];
+  if (!statusList.length) return 0;
+
+  const countOne = async (ids = null) => {
+    let query = supabase
+      .from("billing_owner_notification_outbox")
+      .select("id", { count: "exact", head: true });
+    query = statusList.length === 1 ? query.eq("status", statusList[0]) : query.in("status", statusList);
+    query = billingS131012ApplyCommonFilters(query, { poolId, eventType });
+    if (Array.isArray(ids)) {
+      if (!ids.length) return 0;
+      query = query.in("pool_id", ids);
+    }
+    const { count, error } = await query;
+    if (error) throw error;
+    return Number(count || 0);
+  };
+
+  if (Array.isArray(poolIds)) {
+    if (!poolIds.length) return 0;
+    let total = 0;
+    for (const chunk of billingS131012Chunks(poolIds)) total += await countOne(chunk);
+    return total;
+  }
+  return countOne(null);
+}
+
+async function billingS131012LoadSummary(filters, context) {
+  const [dead, pendingSending, sent] = await Promise.all([
+    billingS131012CountRows({ statuses: ["dead"], poolId: filters.poolId, eventType: filters.eventType }),
+    billingS131012CountRows({ statuses: ["pending", "sending"], poolId: filters.poolId, eventType: filters.eventType }),
+    billingS131012CountRows({ statuses: ["sent"], poolId: filters.poolId, eventType: filters.eventType }),
+  ]);
+
+  let automatic = 0;
+  if (filters.poolId) {
+    automatic = context.availablePoolSet.has(filters.poolId) ? pendingSending : 0;
+  } else {
+    automatic = await billingS131012CountRows({
+      statuses: ["pending", "sending"],
+      eventType: filters.eventType,
+      poolIds: context.availablePoolIds,
+    });
+  }
+
+  const ownerUnavailableNonDead = Math.max(0, pendingSending - automatic);
+  return {
+    action_required: dead + ownerUnavailableNonDead,
+    automatic,
+    dead,
+    sent,
+    recent_sent: sent,
+  };
+}
+
+async function billingS131012FetchRows({ statuses, poolId = null, eventType = null, poolIds = null, offset = 0, limit = 20, order = "created_asc" }) {
+  if (limit <= 0) return [];
+  let query = supabase
+    .from("billing_owner_notification_outbox")
+    .select(BILLING_S131012_COLUMNS);
+  const statusList = Array.isArray(statuses) ? statuses.filter(Boolean) : [];
+  query = statusList.length === 1 ? query.eq("status", statusList[0]) : query.in("status", statusList);
+  query = billingS131012ApplyCommonFilters(query, { poolId, eventType });
+  if (Array.isArray(poolIds)) {
+    if (!poolIds.length) return [];
+    query = query.in("pool_id", poolIds);
+  }
+
+  if (order === "sent_desc") {
+    query = query.order("sent_at", { ascending: false }).order("id", { ascending: false });
+  } else {
+    query = query.order("created_at", { ascending: true }).order("id", { ascending: true });
+  }
+
+  const { data, error } = await query.range(offset, offset + limit - 1);
+  if (error) throw error;
+  return data || [];
+}
+
+function billingS131012CreatedAsc(a, b) {
+  const ta = Date.parse(a?.created_at || "") || 0;
+  const tb = Date.parse(b?.created_at || "") || 0;
+  if (ta !== tb) return ta - tb;
+  return String(a?.id || "").localeCompare(String(b?.id || ""));
+}
+
+async function billingS131012FetchAutomaticItems(filters, context) {
+  if (filters.poolId) {
+    if (!context.availablePoolSet.has(filters.poolId)) return [];
+    const rows = await billingS131012FetchRows({
+      statuses: ["pending", "sending"],
+      poolId: filters.poolId,
+      eventType: filters.eventType,
+      offset: filters.offset,
+      limit: filters.limit,
+    });
+    return billingS131012DecorateWithContext(rows, context);
+  }
+
+  if (!context.availablePoolIds.length) return [];
+  const need = filters.offset + filters.limit;
+  const candidates = [];
+  for (const chunk of billingS131012Chunks(context.availablePoolIds)) {
+    const rows = await billingS131012FetchRows({
+      statuses: ["pending", "sending"],
+      eventType: filters.eventType,
+      poolIds: chunk,
+      offset: 0,
+      limit: need,
+    });
+    candidates.push(...rows);
+  }
+  candidates.sort(billingS131012CreatedAsc);
+  return billingS131012DecorateWithContext(
+    candidates.slice(filters.offset, filters.offset + filters.limit),
+    context
+  );
+}
+
+async function billingS131012FetchOwnerUnavailableNonDead(filters, context, ownerOffset, limit) {
+  if (limit <= 0) return [];
+  if (filters.poolId) {
+    if (context.availablePoolSet.has(filters.poolId)) return [];
+    const rows = await billingS131012FetchRows({
+      statuses: ["pending", "sending"],
+      poolId: filters.poolId,
+      eventType: filters.eventType,
+      offset: ownerOffset,
+      limit,
+    });
+    return billingS131012DecorateWithContext(rows, context)
+      .filter((x) => x.exception_class === "owner_unavailable");
+  }
+
+  const out = [];
+  let sourceOffset = 0;
+  let matched = 0;
+  while (out.length < limit) {
+    const rows = await billingS131012FetchRows({
+      statuses: ["pending", "sending"],
+      eventType: filters.eventType,
+      offset: sourceOffset,
+      limit: BILLING_S131012_OWNER_SCAN_PAGE,
+    });
+    if (!rows.length) break;
+
+    const decorated = billingS131012DecorateWithContext(rows, context);
+    for (const item of decorated) {
+      if (item.exception_class !== "owner_unavailable") continue;
+      if (matched < ownerOffset) {
+        matched += 1;
+        continue;
+      }
+      out.push(item);
+      matched += 1;
+      if (out.length >= limit) break;
+    }
+
+    sourceOffset += rows.length;
+    if (rows.length < BILLING_S131012_OWNER_SCAN_PAGE) break;
+  }
+  return out;
+}
+
+async function billingS131012FetchActionItems(filters, context, summary) {
+  const out = [];
+  if (filters.offset < summary.dead) {
+    const deadOffset = filters.offset;
+    const deadLimit = Math.min(filters.limit, summary.dead - deadOffset);
+    const deadRows = await billingS131012FetchRows({
+      statuses: ["dead"],
+      poolId: filters.poolId,
+      eventType: filters.eventType,
+      offset: deadOffset,
+      limit: deadLimit,
+    });
+    out.push(...billingS131012DecorateWithContext(deadRows, context));
+  }
+
+  if (out.length < filters.limit) {
+    const ownerOffset = Math.max(0, filters.offset - summary.dead);
+    const ownerRows = await billingS131012FetchOwnerUnavailableNonDead(
+      filters,
+      context,
+      ownerOffset,
+      filters.limit - out.length
+    );
+    out.push(...ownerRows);
+  }
+  return out;
+}
+
+async function billingS131012LoadPagedItems(filters, context, summary) {
+  if (filters.view === "history") {
+    const rows = await billingS131012FetchRows({
+      statuses: ["sent"],
+      poolId: filters.poolId,
+      eventType: filters.eventType,
+      offset: filters.offset,
+      limit: filters.limit,
+      order: "sent_desc",
+    });
+    return billingS131012DecorateWithContext(rows, context);
+  }
+  if (filters.view === "dead") {
+    const rows = await billingS131012FetchRows({
+      statuses: ["dead"],
+      poolId: filters.poolId,
+      eventType: filters.eventType,
+      offset: filters.offset,
+      limit: filters.limit,
+    });
+    return billingS131012DecorateWithContext(rows, context);
+  }
+  if (filters.view === "automatic") {
+    return billingS131012FetchAutomaticItems(filters, context);
+  }
+  return billingS131012FetchActionItems(filters, context, summary);
+}
+
+async function billingS131012LoadLegacyResponse() {
+  const [
+    { data: unresolved, error: unresolvedError },
+    { data: recentSent, error: sentError },
+  ] = await Promise.all([
+    supabase.from("billing_owner_notification_outbox")
+      .select(BILLING_S131012_COLUMNS)
+      .in("status", ["pending", "sending", "dead"])
+      .order("created_at", { ascending: true })
+      .limit(200),
+    supabase.from("billing_owner_notification_outbox")
+      .select(BILLING_S131012_COLUMNS)
+      .eq("status", "sent")
+      .order("sent_at", { ascending: false })
+      .limit(60),
+  ]);
+
+  if (unresolvedError || sentError) throw unresolvedError || sentError;
+
+  const unresolvedRows = await billingS13101DecorateNotificationRows(unresolved || []);
+  const history = await billingS13101DecorateNotificationRows(recentSent || []);
+  const actionRequired = unresolvedRows.filter((x) =>
+    ["dead", "owner_unavailable"].includes(x.exception_class)
+  );
+  const automatic = unresolvedRows.filter((x) =>
+    !["dead", "owner_unavailable"].includes(x.exception_class)
+  );
+
+  return {
+    summary: {
+      action_required: actionRequired.length,
+      automatic: automatic.length,
+      dead: unresolvedRows.filter((x) => x.exception_class === "dead").length,
+      recent_sent: history.length,
+    },
+    exceptions: actionRequired,
+    automatic,
+    history,
+    manual_retry_scope: "dead_only",
+    recipient_source: "pool.owner_admin_user_id",
+  };
+}
+
+app.get("/api/admin/billing/exceptions", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
-    const columns = "id,event_key,event_type,pool_id,owner_admin_user_id,recipient_email,source_table,source_id,status,attempts,next_attempt_at,lease_token,lease_until,provider_message_id,last_error,created_at,sent_at,updated_at";
+    // Compatibility contract for the already-certified S13.10.1.1 frontend.
+    if (!Object.prototype.hasOwnProperty.call(req.query || {}, "view")) {
+      return res.json(await billingS131012LoadLegacyResponse());
+    }
 
-    const [
-      { data: unresolved, error: unresolvedError },
-      { data: recentSent, error: sentError },
-    ] = await Promise.all([
-      supabase.from("billing_owner_notification_outbox")
-        .select(columns)
-        .in("status", ["pending", "sending", "dead"])
-        .order("created_at", { ascending: true })
-        .limit(200),
-      supabase.from("billing_owner_notification_outbox")
-        .select(columns)
-        .eq("status", "sent")
-        .order("sent_at", { ascending: false })
-        .limit(60),
-    ]);
+    const filters = billingS131012ParseQuery(req);
+    if (filters.error) return res.status(400).json({ error: filters.error });
 
-    if (unresolvedError || sentError) throw unresolvedError || sentError;
-
-    const unresolvedRows = await billingS13101DecorateNotificationRows(unresolved || []);
-    const history = await billingS13101DecorateNotificationRows(recentSent || []);
-
-    const actionRequired = unresolvedRows.filter((x) =>
-      ["dead", "owner_unavailable"].includes(x.exception_class)
-    );
-    const automatic = unresolvedRows.filter((x) =>
-      !["dead", "owner_unavailable"].includes(x.exception_class)
-    );
+    const context = await billingS131012LoadPoolContext();
+    const summary = await billingS131012LoadSummary(filters, context);
+    const items = await billingS131012LoadPagedItems(filters, context, summary);
+    const totalByView = {
+      action: summary.action_required,
+      automatic: summary.automatic,
+      dead: summary.dead,
+      history: summary.sent,
+    };
+    const total = Number(totalByView[filters.view] || 0);
+    const inRange = total > 0 && filters.offset < total;
 
     return res.json({
-      summary: {
-        action_required: actionRequired.length,
-        automatic: automatic.length,
-        dead: unresolvedRows.filter((x) => x.exception_class === "dead").length,
-        recent_sent: history.length,
+      ok: true,
+      mode: "paged",
+      summary,
+      page: {
+        view: filters.view,
+        limit: filters.limit,
+        offset: filters.offset,
+        total,
+        from: inRange ? filters.offset + 1 : 0,
+        to: inRange ? Math.min(filters.offset + items.length, total) : 0,
+        has_previous: filters.offset > 0,
+        has_next: filters.offset + items.length < total,
+        page_number: Math.floor(filters.offset / filters.limit) + 1,
+        page_count: total > 0 ? Math.ceil(total / filters.limit) : 0,
       },
-      exceptions: actionRequired,
-      automatic,
-      history,
+      items,
+      filters: {
+        selected: {
+          pool_id: filters.poolId,
+          event_type: filters.eventType,
+        },
+        pools: context.pools.map((pool) => ({
+          id: pool.id,
+          name: pool.name || null,
+          brand_name: pool.brand_name || null,
+        })),
+        event_types: BILLING_S131012_EVENT_TYPES,
+      },
       manual_retry_scope: "dead_only",
       recipient_source: "pool.owner_admin_user_id",
     });
   } catch (error) {
-    console.error("[BILLING S13.10.1] exceptions load", error?.message || error);
+    console.error("[BILLING S13.10.1.2B] exceptions load", error?.message || error);
     return res.status(500).json({ error: "billing_exceptions_load_failed" });
   }
 });
