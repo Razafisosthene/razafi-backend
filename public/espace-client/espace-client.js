@@ -8,6 +8,8 @@
     logout: "/api/client/logout",
     remoteRevoke: "/api/client/remote/revoke",
     speedStart: "/api/client/speed-test/start",
+    speedProofPulse: "/api/client/speed-test/local-proof/pulse",
+    speedProofVerify: "/api/client/speed-test/local-proof/verify",
     speedPing: "/api/client/speed-test/ping",
     speedDownload: "/api/client/speed-test/download",
     speedUpload: "/api/client/speed-test/upload",
@@ -911,7 +913,7 @@
       : { enabled: false, available: false, reason: "disabled" };
     state.speedCapability = capability;
     const enabled = capability.enabled === true;
-    const remote = snapshot?.ec3?.remote_consultation === true;
+    const remoteHint = snapshot?.ec3?.remote_consultation === true || capability.local_hint === false;
 
     if (elements.menuSpeedTestBtn) {
       elements.menuSpeedTestBtn.disabled = !enabled;
@@ -927,12 +929,13 @@
     elements.speedTestPlan.hidden = expected === null;
     elements.speedTestExpected.textContent = expected === null ? "—" : `Jusqu’à ${formatSpeed(expected)} Mbps`;
 
-    const available = capability.available === true && !remote;
+    const available = capability.available === true;
     elements.speedTestStartBtn.disabled = !available;
+    elements.speedTestStartBtn.textContent = remoteHint && available ? "Vérifier et démarrer" : "Démarrer le test";
     elements.speedTestDataNotice.classList.remove("is-warning", "is-blocked");
 
     if (!available) {
-      const copy = speedBlockedCopy(capability.reason, remote);
+      const copy = speedBlockedCopy(capability.reason, false);
       elements.speedTestStatusTitle.textContent = copy.title;
       elements.speedTestStatusText.textContent = copy.text;
       elements.speedTestDataNotice.textContent = copy.text;
@@ -940,14 +943,18 @@
       return;
     }
 
-    elements.speedTestStatusTitle.textContent = "Test de vitesse RAZAFI";
-    elements.speedTestStatusText.textContent = "Mesurez le ping, le téléchargement et l’envoi de votre connexion actuelle.";
+    elements.speedTestStatusTitle.textContent = remoteHint ? "Vérification du WiFi RAZAFI" : "Test de vitesse RAZAFI";
+    elements.speedTestStatusText.textContent = remoteHint
+      ? "RAZAFI vérifiera d’abord que cet appareil utilise réellement le WiFi de cette zone avant de mesurer la vitesse."
+      : "Mesurez le ping, le téléchargement et l’envoi de votre connexion actuelle.";
     const estimated = capability.estimated_max_bytes;
     const quotaLimited = capability.quota_limited === true;
     const budgetText = estimated ? `jusqu’à environ ${formatBytes(estimated)}` : "une quantité limitée de données";
     elements.speedTestDataNotice.textContent = quotaLimited
-      ? `Mode économe activé : ce test utilisera ${budgetText}.`
-      : `Le test utilise ${budgetText} et ajuste automatiquement sa durée.`;
+      ? `Mode économe activé : après vérification du WiFi, ce test utilisera ${budgetText}.`
+      : remoteHint
+        ? `Une vérification locale légère sera effectuée, puis le test utilisera ${budgetText}.`
+        : `Le test utilise ${budgetText} et ajuste automatiquement sa durée.`;
     if (quotaLimited) elements.speedTestDataNotice.classList.add("is-warning");
   }
 
@@ -1189,8 +1196,7 @@
     if (state.speedTestRunning) return;
     const snapshot = state.snapshot;
     const capability = state.speedCapability || snapshot?.speed_test || {};
-    const remote = snapshot?.ec3?.remote_consultation === true;
-    if (capability.enabled !== true || capability.available !== true || remote) {
+    if (capability.enabled !== true || capability.available !== true) {
       renderSpeedTest(snapshot || {});
       return;
     }
@@ -1212,19 +1218,57 @@
         signal: controller.signal,
       });
       if (response.status === 409) {
-        const reason = data?.error === "speed_test_low_data" ? "low_data" : "local_required";
-        state.speedCapability = { ...(data?.speed_test || capability), enabled: true, available: false, reason };
-        state.speedTestRunning = false;
-        state.speedTestAbortController = null;
-        renderSpeedTest({ ...snapshot, speed_test: state.speedCapability });
+        if (data?.error === "speed_test_low_data") {
+          state.speedCapability = { ...(data?.speed_test || capability), enabled: true, available: false, reason: "low_data" };
+          state.speedTestRunning = false;
+          state.speedTestAbortController = null;
+          renderSpeedTest({ ...snapshot, speed_test: state.speedCapability });
+          return;
+        }
+        showSpeedFailure("RAZAFI n’a pas pu confirmer que ce navigateur passe actuellement par le WiFi de cette zone. Vérifiez le WiFi puis réessayez.");
         return;
       }
-      if (!response.ok || data?.ok !== true || !/^[0-9a-f]{64}$/.test(String(data?.ticket || ""))) {
+      const proofToken = String(data?.proof_token || "");
+      const proofBytes = Math.max(1024, Math.min(256 * 1024, Number(data?.proof_bytes || 0)));
+      if (!response.ok || data?.ok !== true || data?.proof_required !== true || !/^[0-9a-f]{64}$/.test(proofToken) || !proofBytes) {
         throw new Error("speed_start_failed");
       }
 
-      const ticket = String(data.ticket);
-      const config = data.speed_test || capability;
+      setSpeedProgress(5, "Vérification WiFi", "—", "");
+      const proofPayload = createRandomPayload(proofBytes);
+      const proofPulse = await fetch(ENDPOINTS.speedProofPulse, {
+        method: "POST",
+        body: proofPayload,
+        credentials: "include",
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-RAZAFI-Speed-Proof": proofToken,
+        },
+        signal: controller.signal,
+      });
+      if (!proofPulse.ok) throw new Error("speed_local_proof_failed");
+      const proofResponseBytes = (await proofPulse.arrayBuffer()).byteLength;
+      if (proofResponseBytes !== proofBytes) throw new Error("speed_local_proof_failed");
+      await delay(180, controller.signal);
+
+      const { response: verifyResponse, data: verifyData } = await apiJson(ENDPOINTS.speedProofVerify, {
+        method: "POST",
+        body: "{}",
+        headers: { "X-RAZAFI-Speed-Proof": proofToken },
+        timeoutMs: 12000,
+        signal: controller.signal,
+      });
+      if (verifyResponse.status === 409) {
+        showSpeedFailure("Ce navigateur ne semble pas utiliser actuellement le WiFi RAZAFI de cette zone. Connectez-vous au WiFi RAZAFI puis réessayez.");
+        return;
+      }
+      const ticket = String(verifyData?.ticket || "");
+      if (!verifyResponse.ok || verifyData?.ok !== true || verifyData?.locally_verified !== true || !/^[0-9a-f]{64}$/.test(ticket)) {
+        throw new Error("speed_local_proof_failed");
+      }
+
+      const config = verifyData.speed_test || data.speed_test || capability;
       const ping = await measureSpeedPing(ticket, controller.signal);
       const download = await measureSpeedDownload(ticket, config, controller.signal);
       const upload = await measureSpeedUpload(ticket, config, controller.signal);
@@ -1240,7 +1284,11 @@
         if (state.speedTestRunning) showSpeedFailure("Le test a été annulé. Vous pouvez le relancer quand vous le souhaitez.");
         return;
       }
-      showSpeedFailure("Impossible de terminer le test pour le moment. Vérifiez votre connexion RAZAFI puis réessayez.");
+      if (String(error?.message || "") === "speed_local_proof_failed") {
+        showSpeedFailure("RAZAFI n’a pas pu confirmer le passage par le WiFi de cette zone. Vérifiez votre connexion WiFi puis réessayez.");
+      } else {
+        showSpeedFailure("Impossible de terminer le test pour le moment. Vérifiez votre connexion RAZAFI puis réessayez.");
+      }
     } finally {
       state.speedTestRunning = false;
       state.speedTestAbortController = null;

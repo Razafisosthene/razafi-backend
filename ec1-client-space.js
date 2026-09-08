@@ -345,6 +345,7 @@ export function registerEc1ClientSpace({
   const marketingEnabled = envFlag("CLIENT_SPACE_MARKETING_ENABLED", false);
   const speedTestEnabled = envFlag("CLIENT_SPACE_SPEED_TEST_ENABLED", false);
   const speedTestTicketTtlSeconds = envInt("CLIENT_SPACE_SPEED_TEST_TICKET_TTL_SECONDS", 90, 30, 180);
+  const speedTestLocalProofTtlSeconds = envInt("CLIENT_SPACE_SPEED_TEST_LOCAL_PROOF_TTL_SECONDS", 25, 10, 60);
   const speedTestMaxTotalMb = envInt("CLIENT_SPACE_SPEED_TEST_MAX_TOTAL_MB", 20, 5, 30);
   const speedTestLowDataMinMb = envInt("CLIENT_SPACE_SPEED_TEST_MIN_REMAINING_MB", 25, 10, 100);
   const allowedNasIds = parseNasAllowlist(process.env.CLIENT_SPACE_ALLOWED_NAS_IDS || "");
@@ -376,11 +377,16 @@ export function registerEc1ClientSpace({
   const remoteSessionCookie = "razafi_client_remote_session";
   const normalizedOrigins = new Set((allowedOrigins || []).map((origin) => String(origin || "").trim().replace(/\/$/, "")).filter(Boolean));
 
-  // EC V2.2 — Speed Test RAZAFI. Tickets are intentionally short-lived and
+  // EC V2.2.1 — Speed Test RAZAFI. Tickets are intentionally short-lived and
   // process-local: a Render restart only cancels an in-progress test and never
   // affects the client session, voucher, RADIUS accounting or remote association.
   const speedTickets = new Map();
+  const speedLocalProofs = new Map();
   const SPEED_TICKET_MAX = 500;
+  const SPEED_LOCAL_PROOF_MAX = 500;
+  const SPEED_LOCAL_PROOF_PULSE_BYTES = 64 * 1024;
+  const SPEED_LOCAL_PROOF_MIN_TOTAL_DELTA_BYTES = 80 * 1024;
+  const SPEED_LOCAL_PROOF_MIN_DIRECTION_DELTA_BYTES = 24 * 1024;
   const SPEED_WARMUP_BYTES = 256 * 1024;
   const SPEED_DOWNLOAD_MIN_BYTES = 1024 * 1024;
   const SPEED_DOWNLOAD_MAX_BYTES = 8 * 1024 * 1024;
@@ -674,17 +680,11 @@ export function registerEc1ClientSpace({
   function buildSpeedCapability(snapshot) {
     if (!speedTestEnabled) return { enabled: false, available: false, reason: "disabled" };
     const budget = buildSpeedBudget(snapshot);
-    const online = String(snapshot?.live?.status || "").toLowerCase() === "online";
-    if (!online) {
-      return {
-        enabled: true,
-        available: false,
-        reason: "local_required",
-        expected_mbps: budget?.expected_mbps ?? null,
-        estimated_max_bytes: budget?.estimated_max_bytes ?? null,
-      };
-    }
-    return { enabled: true, ...budget };
+    const localHint = String(snapshot?.live?.status || "").toLowerCase() === "online";
+    // EC V2.2.1: RADIUS freshness is only a UI hint. It must never be the
+    // authority that allows or blocks a Speed Test. A fresh bidirectional
+    // MikroTik traffic proof is performed when the user starts the test.
+    return { enabled: true, ...budget, local_hint: localHint };
   }
 
   function requestFingerprint(req) {
@@ -735,6 +735,148 @@ export function registerEc1ClientSpace({
     }
     if (!safeEqual(ticket.fingerprint, requestFingerprint(req))) return null;
     return { key, ticket };
+  }
+
+
+  function cleanupSpeedLocalProofs() {
+    const now = Date.now();
+    for (const [key, proof] of speedLocalProofs.entries()) {
+      if (!proof || Number(proof.expires_at || 0) <= now) speedLocalProofs.delete(key);
+    }
+    while (speedLocalProofs.size >= SPEED_LOCAL_PROOF_MAX) {
+      const first = speedLocalProofs.keys().next().value;
+      if (!first) break;
+      speedLocalProofs.delete(first);
+    }
+  }
+
+  function routerCounterBigInt(raw) {
+    const parsed = decimalString(raw);
+    return parsed === null ? null : BigInt(parsed);
+  }
+
+  async function loadSpeedVoucherCode(session) {
+    if (!session?.voucher_session_id) throw new Error("speed_voucher_missing");
+    const { data, error } = await supabase
+      .from("vw_voucher_sessions_truth")
+      .select("voucher_code,client_mac")
+      .eq("id", session.voucher_session_id)
+      .maybeSingle();
+    if (error) throw error;
+    const voucherCode = String(data?.voucher_code || "").trim();
+    if (!voucherCode) throw new Error("speed_voucher_missing");
+    if (normalizeMacStrict(data?.client_mac) !== normalizeMacStrict(session.bound_client_mac)) {
+      throw new Error("speed_voucher_binding_invalid");
+    }
+    return voucherCode;
+  }
+
+  async function readFreshRouterSpeedCounters(session) {
+    const nasId = normalizeNasId(session?.bound_nas_id);
+    const clientMac = normalizeMacStrict(session?.bound_client_mac);
+    const clientIp = normalizePrivateIpv4(session?.bound_client_ip);
+    if (!nasId || !clientMac || !clientIp || !session?.pool_id) {
+      throw new Error("speed_local_binding_invalid");
+    }
+
+    const [{ router, pool }, expectedVoucher] = await Promise.all([
+      loadRouterAndPool(nasId),
+      loadSpeedVoucherCode(session),
+    ]);
+    if (!pool?.id || String(pool.id) !== String(session.pool_id)) {
+      throw new Error("speed_pool_binding_invalid");
+    }
+    if (isProd && !normalizePrivateIpv4(router.api_host)) {
+      throw new Error("router_host_not_private");
+    }
+
+    const api = new RouterOsApiClient({
+      host: router.api_host,
+      port: router.api_port || 8728,
+      user: router.api_user,
+      password: router.api_password,
+      timeoutMs: routerTimeoutMs,
+    });
+
+    try {
+      await api.connect();
+      await api.login();
+
+      const identityRows = rosRows(await api.command(["/system/identity/print"]));
+      const identities = Array.from(new Set(
+        (identityRows || []).map((row) => normalizeNasId(row?.name)).filter(Boolean)
+      ));
+      if (identities.length !== 1 || !safeEqual(identities[0], nasId)) {
+        throw new Error("router_identity_mismatch");
+      }
+
+      const rows = rosRows(await api.command(["/ip/hotspot/active/print", `?mac-address=${clientMac}`]));
+      const matching = (rows || []).filter((row) =>
+        normalizeMacStrict(row?.["mac-address"]) === clientMac &&
+        String(row?.address || "").trim() === clientIp &&
+        String(row?.user || "").trim().toLowerCase() === expectedVoucher.toLowerCase()
+      );
+      if (matching.length !== 1) throw new Error("speed_router_session_not_unique");
+
+      const row = matching[0];
+      const bytesIn = routerCounterBigInt(row?.["bytes-in"]);
+      const bytesOut = routerCounterBigInt(row?.["bytes-out"]);
+      if (bytesIn === null || bytesOut === null) throw new Error("speed_router_counters_missing");
+
+      return {
+        bytes_in: bytesIn,
+        bytes_out: bytesOut,
+        total_bytes: bytesIn + bytesOut,
+      };
+    } finally {
+      api.close();
+    }
+  }
+
+  function createSpeedLocalProof(req, session, capability, counters) {
+    cleanupSpeedLocalProofs();
+    const token = randomToken();
+    const key = hashToken(token);
+    speedLocalProofs.set(key, {
+      session_id: session.id || null,
+      voucher_session_id: session.voucher_session_id || null,
+      pool_id: session.pool_id || null,
+      bound_nas_id: session.bound_nas_id || null,
+      bound_client_mac: normalizeMacStrict(session.bound_client_mac),
+      bound_client_ip: normalizePrivateIpv4(session.bound_client_ip),
+      fingerprint: requestFingerprint(req),
+      expires_at: Date.now() + speedTestLocalProofTtlSeconds * 1000,
+      initial_bytes_in: counters.bytes_in.toString(),
+      initial_bytes_out: counters.bytes_out.toString(),
+      pulse_completed: false,
+      ...capability,
+    });
+    return token;
+  }
+
+  function loadSpeedLocalProof(req) {
+    cleanupSpeedLocalProofs();
+    const token = String(req.get("x-razafi-speed-proof") || "").trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(token)) return null;
+    const key = hashToken(token);
+    const proof = speedLocalProofs.get(key);
+    if (!proof || Number(proof.expires_at || 0) <= Date.now()) {
+      speedLocalProofs.delete(key);
+      return null;
+    }
+    if (!safeEqual(proof.fingerprint, requestFingerprint(req))) return null;
+    return { key, proof };
+  }
+
+  function speedProofMatchesSession(proof, session) {
+    return Boolean(
+      proof && session &&
+      proof.session_id && session.id && safeEqual(proof.session_id, session.id) &&
+      String(proof.pool_id || "") === String(session.pool_id || "") &&
+      normalizeNasId(proof.bound_nas_id) === normalizeNasId(session.bound_nas_id) &&
+      normalizeMacStrict(proof.bound_client_mac) === normalizeMacStrict(session.bound_client_mac) &&
+      normalizePrivateIpv4(proof.bound_client_ip) === normalizePrivateIpv4(session.bound_client_ip)
+    );
   }
 
   function primaryPayload(row) {
@@ -1809,26 +1951,164 @@ export function registerEc1ClientSpace({
     try {
       if (!supabase) return res.status(503).json({ error: "service_unavailable" });
       const session = await loadSession(req, res);
-      if (!session) {
-        return res.status(409).json({ error: "speed_test_local_required" });
-      }
+      if (!session) return res.status(409).json({ error: "speed_test_local_required" });
+
       const snapshot = await buildConsumption(session);
       const capability = buildSpeedCapability(snapshot);
       if (!capability.available) {
-        const code = capability.reason === "low_data" ? "speed_test_low_data" : "speed_test_local_required";
+        const code = capability.reason === "low_data" ? "speed_test_low_data" : "speed_test_unavailable";
         return res.status(409).json({ error: code, speed_test: capability });
       }
-      const ticket = createSpeedTicket(req, session, capability);
+
+      // EC V2.2.1 local proof stage 1: capture fresh MikroTik counters for the
+      // exact bound hotspot session. No RADIUS freshness decision is used here.
+      let counters;
+      try {
+        counters = await readFreshRouterSpeedCounters(session);
+      } catch (proofStartError) {
+        console.warn("[EC SPEED] local proof start rejected", String(proofStartError?.message || proofStartError).slice(0, 140));
+        return res.status(409).json({ error: "speed_test_local_required", speed_test: capability });
+      }
+
+      const proofToken = createSpeedLocalProof(req, session, capability, counters);
       return res.json({
         ok: true,
-        ticket,
-        expires_in_seconds: speedTestTicketTtlSeconds,
+        proof_required: true,
+        proof_token: proofToken,
+        proof_bytes: SPEED_LOCAL_PROOF_PULSE_BYTES,
+        proof_expires_in_seconds: speedTestLocalProofTtlSeconds,
         pool_name: snapshot?.pool?.display_name || null,
         speed_test: capability,
       });
     } catch (error) {
       console.error("[EC SPEED] start error", String(error?.message || error).slice(0, 160));
       return res.status(503).json({ error: "speed_test_unavailable" });
+    }
+  });
+
+  app.post("/api/client/speed-test/local-proof/pulse", speedDataLimiter, (req, res) => {
+    noStore(res);
+    if (!enabled || !speedTestEnabled) return hidden(res);
+    if (!originAllowed(req)) return res.status(403).json({ error: "forbidden" });
+    const loaded = loadSpeedLocalProof(req);
+    if (!loaded) return res.status(401).json({ error: "speed_test_local_proof_invalid" });
+    if (loaded.proof.pulse_completed) return res.status(409).json({ error: "speed_test_local_proof_used" });
+    if (!/^application\/octet-stream(?:\s*;|$)/i.test(String(req.get("content-type") || ""))) {
+      req.resume();
+      return res.status(415).json({ error: "speed_test_content_type_invalid" });
+    }
+
+    const expected = SPEED_LOCAL_PROOF_PULSE_BYTES;
+    const declared = Number.parseInt(String(req.get("content-length") || ""), 10);
+    if (Number.isFinite(declared) && declared !== expected) {
+      req.resume();
+      return res.status(413).json({ error: "speed_test_local_proof_size_invalid" });
+    }
+
+    let received = 0;
+    let failed = false;
+    req.on("data", (chunk) => {
+      if (failed) return;
+      received += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
+      if (received > expected) {
+        failed = true;
+        try { req.destroy(); } catch (_) {}
+      }
+    });
+    req.on("aborted", () => { failed = true; });
+    req.on("error", () => { failed = true; });
+    req.on("end", () => {
+      if (failed) return;
+      if (received !== expected) {
+        return res.status(400).json({ error: "speed_test_local_proof_size_invalid" });
+      }
+      loaded.proof.pulse_completed = true;
+      res.status(200);
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader("Content-Length", String(expected));
+      res.setHeader("Content-Encoding", "identity");
+      res.setHeader("Cache-Control", "no-store, no-cache, no-transform, private");
+      return res.end(SPEED_PAYLOAD.subarray(0, expected));
+    });
+  });
+
+  app.post("/api/client/speed-test/local-proof/verify", speedDataLimiter, async (req, res) => {
+    noStore(res);
+    if (!enabled || !speedTestEnabled) return hidden(res);
+    if (!originAllowed(req)) return res.status(403).json({ error: "forbidden" });
+    const loaded = loadSpeedLocalProof(req);
+    if (!loaded) return res.status(401).json({ error: "speed_test_local_proof_invalid" });
+    if (loaded.proof.pulse_completed !== true) {
+      return res.status(409).json({ error: "speed_test_local_proof_incomplete" });
+    }
+
+    try {
+      const session = await loadSession(req, res);
+      if (!session || !speedProofMatchesSession(loaded.proof, session)) {
+        speedLocalProofs.delete(loaded.key);
+        return res.status(409).json({ error: "speed_test_local_required" });
+      }
+
+      const initialIn = BigInt(String(loaded.proof.initial_bytes_in || "0"));
+      const initialOut = BigInt(String(loaded.proof.initial_bytes_out || "0"));
+      let finalCounters = null;
+      let deltaIn = 0n;
+      let deltaOut = 0n;
+
+      // RouterOS counters can trail the HTTP completion by a few milliseconds.
+      // Retry briefly, but fail closed if the bidirectional pulse is not visible.
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 140));
+        finalCounters = await readFreshRouterSpeedCounters(session);
+        deltaIn = finalCounters.bytes_in > initialIn ? finalCounters.bytes_in - initialIn : 0n;
+        deltaOut = finalCounters.bytes_out > initialOut ? finalCounters.bytes_out - initialOut : 0n;
+        const totalDelta = deltaIn + deltaOut;
+        const enoughTotal = totalDelta >= BigInt(SPEED_LOCAL_PROOF_MIN_TOTAL_DELTA_BYTES);
+        const enoughBothDirections =
+          deltaIn >= BigInt(SPEED_LOCAL_PROOF_MIN_DIRECTION_DELTA_BYTES) &&
+          deltaOut >= BigInt(SPEED_LOCAL_PROOF_MIN_DIRECTION_DELTA_BYTES);
+        if (enoughTotal && enoughBothDirections) break;
+      }
+
+      const totalDelta = deltaIn + deltaOut;
+      const verified =
+        totalDelta >= BigInt(SPEED_LOCAL_PROOF_MIN_TOTAL_DELTA_BYTES) &&
+        deltaIn >= BigInt(SPEED_LOCAL_PROOF_MIN_DIRECTION_DELTA_BYTES) &&
+        deltaOut >= BigInt(SPEED_LOCAL_PROOF_MIN_DIRECTION_DELTA_BYTES);
+      if (!verified) {
+        speedLocalProofs.delete(loaded.key);
+        console.warn(`[EC SPEED] local traffic proof failed; in=${deltaIn}; out=${deltaOut}; total=${totalDelta}`);
+        return res.status(409).json({ error: "speed_test_local_required" });
+      }
+
+      const capability = {
+        enabled: true,
+        available: true,
+        reason: null,
+        expected_mbps: loaded.proof.expected_mbps ?? null,
+        warmup_bytes: loaded.proof.warmup_bytes,
+        download_bytes: loaded.proof.download_bytes,
+        upload_bytes: loaded.proof.upload_bytes,
+        upload_chunk_bytes: loaded.proof.upload_chunk_bytes,
+        estimated_max_bytes: loaded.proof.estimated_max_bytes,
+        quota_limited: loaded.proof.quota_limited === true,
+        data_unlimited: loaded.proof.data_unlimited === true,
+        data_remaining_bytes: loaded.proof.data_remaining_bytes ?? null,
+        local_hint: true,
+      };
+      const ticket = createSpeedTicket(req, session, capability);
+      speedLocalProofs.delete(loaded.key);
+      return res.json({
+        ok: true,
+        locally_verified: true,
+        ticket,
+        expires_in_seconds: speedTestTicketTtlSeconds,
+        speed_test: capability,
+      });
+    } catch (error) {
+      speedLocalProofs.delete(loaded.key);
+      console.warn("[EC SPEED] local proof verify rejected", String(error?.message || error).slice(0, 140));
+      return res.status(409).json({ error: "speed_test_local_required" });
     }
   });
 
