@@ -4,14 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>RAZAFI — Exceptions de facturation</title>
-  <link rel="stylesheet" href="/admin/admin.css?v=s13-10-1">
+  <link rel="stylesheet" href="/admin/admin.css?v=s13-10-1-1">
   <style>
     .be-shell{width:min(1120px,96%);display:grid;gap:15px}
     .be-head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
     .be-banner{padding:14px 16px;border-radius:18px;background:#eef8ff;color:#1849a9;font-weight:800;line-height:1.45}
     .be-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
-    .be-stat{padding:14px;border-radius:18px;background:#fff;border:1px solid #e4e7ec}
+    .be-stat{appearance:none;width:100%;padding:14px;border-radius:18px;background:#fff;border:1px solid #e4e7ec;text-align:left;font:inherit;color:inherit;cursor:pointer;transition:border-color .18s ease,background .18s ease,transform .18s ease}
     .be-stat strong{display:block;font-size:22px;margin-top:4px}
+    .be-stat:hover{border-color:#b9c7da}
+    .be-stat:focus-visible{outline:3px solid rgba(22,119,255,.22);outline-offset:2px}
+    .be-stat[aria-pressed="true"]{border-color:#1677ff;background:#eef6ff}
+    .be-stat[aria-pressed="true"] .be-muted{color:#2457a6}
     .be-section{display:grid;gap:10px}
     .be-section h2{margin:4px 0 0;font-size:19px}
     .be-list{display:grid;gap:10px}
@@ -54,24 +58,14 @@
       <div id="error" class="be-error"></div>
       <section id="summary" class="be-summary"></section>
 
-      <section class="be-section">
-        <h2>Exceptions à traiter</h2>
-        <div id="exceptions" class="be-list"><div class="be-muted">Chargement…</div></div>
-      </section>
-
-      <section class="be-section">
-        <h2>Traitements automatiques en cours</h2>
-        <div id="automatic" class="be-list"><div class="be-muted">Chargement…</div></div>
-      </section>
-
-      <section class="be-section">
-        <h2>Historique récent</h2>
-        <div id="history" class="be-list"><div class="be-muted">Chargement…</div></div>
+      <section class="be-section" aria-live="polite">
+        <h2 id="resultsTitle">À traiter</h2>
+        <div id="results" class="be-list"><div class="be-muted">Chargement…</div></div>
       </section>
     </main>
   </div>
 
-  <script src="/admin/nav.js?v=s13-10-1"></script>
-  <script src="/admin/billing-exceptions.js?v=s13-10-1"></script>
+  <script src="/admin/nav.js?v=s13-10-1-1"></script>
+  <script src="/admin/billing-exceptions.js?v=s13-10-1-1"></script>
 </body>
 </html>
