@@ -1243,3 +1243,151 @@ body { min-height: 100dvh; }
   .icon-button.is-loading .refresh-icon { animation: none; }
   .app-menu-dialog::backdrop { backdrop-filter: none; }
 }
+
+/* =============================================================================
+   EC V2.1.1 — Mobile full-screen app navigation
+   Targeted navigation-only patch. No business/API/session behavior is changed.
+   ============================================================================= */
+
+.menu-button,
+.app-menu-close,
+.app-menu-row {
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (max-width: 540px) {
+  /* Replace the V2.1 bottom sheet with a full-screen app navigation view. */
+  .app-menu-dialog {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100dvh;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    border-radius: 0;
+    background: #fff;
+    box-shadow: none;
+  }
+
+  .app-menu-dialog::backdrop {
+    background: #fff;
+    backdrop-filter: none;
+  }
+
+  .app-menu-sheet {
+    position: relative;
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 100dvh;
+    padding:
+      calc(82px + env(safe-area-inset-top))
+      max(26px, env(safe-area-inset-right))
+      calc(24px + env(safe-area-inset-bottom))
+      max(26px, env(safe-area-inset-left));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border: 0;
+    border-radius: 0;
+    background: #fff;
+    box-shadow: none;
+  }
+
+  /* RAZAFI app bar inside the modal so the navigation feels like a real screen. */
+  .app-menu-sheet::before {
+    content: "";
+    position: absolute;
+    top: calc(23px + env(safe-area-inset-top));
+    left: max(26px, env(safe-area-inset-left));
+    width: 108px;
+    height: 30px;
+    background: url("/espace-client/assets/img/RAZAFI.png") left center / contain no-repeat;
+    pointer-events: none;
+  }
+
+  .app-menu-grabber { display: none; }
+
+  .app-menu-head {
+    padding: 20px 2px 22px;
+  }
+
+  .app-menu-kicker {
+    margin-bottom: 5px;
+    font-size: 12px;
+  }
+
+  .app-menu-head h2 {
+    font-size: clamp(29px, 8.2vw, 36px);
+    line-height: 1.06;
+  }
+
+  .app-menu-pool {
+    margin-top: 8px;
+    font-size: 14px;
+  }
+
+  .app-menu-close {
+    position: absolute;
+    top: calc(14px + env(safe-area-inset-top));
+    right: max(16px, env(safe-area-inset-right));
+    z-index: 2;
+    width: 48px;
+    height: 48px;
+    flex-basis: 48px;
+    border-radius: 14px;
+    background: transparent;
+    font-size: 33px;
+    font-weight: 300;
+  }
+
+  .app-menu-close:hover { background: rgba(17, 19, 24, 0.045); }
+  .app-menu-close:active { background: rgba(17, 19, 24, 0.075); transform: scale(0.96); }
+
+  .app-menu-nav {
+    gap: 4px;
+  }
+
+  .app-menu-row {
+    min-height: 66px;
+    padding: 0 8px;
+    border-radius: 18px;
+    grid-template-columns: 42px minmax(0, 1fr) auto;
+    gap: 12px;
+  }
+
+  .app-menu-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+    font-size: 19px;
+  }
+
+  .app-menu-label {
+    font-size: 17px;
+    font-weight: 780;
+  }
+
+  .app-menu-chevron {
+    padding-right: 4px;
+    font-size: 28px;
+  }
+
+  .app-menu-badge {
+    padding: 6px 10px;
+    font-size: 11px;
+  }
+
+  .app-menu-separator {
+    margin: 14px 4px;
+  }
+
+  .app-menu-external {
+    margin-top: 2px;
+  }
+
+  .app-menu-footer {
+    margin: clamp(42px, 11vh, 96px) 0 0;
+    padding-bottom: 4px;
+    font-size: 12px;
+  }
+}
