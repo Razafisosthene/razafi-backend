@@ -837,6 +837,94 @@ export function registerEc1ClientSpace({
       throw new Error("router_host_not_private");
     }
 
+    // EC V2.2.3 — Render must not connect directly to private WireGuard
+    // MikroTik addresses. In production, read the exact Hotspot row through the
+    // existing HTTPS verification agent on the VPS, which already has WireGuard
+    // reachability and the router allowlist/identity checks. Local development
+    // may keep the direct path for diagnostics when explicitly not in prod.
+    const useAgent = isProd || verifyMode === "agent";
+    if (useAgent) {
+      if (!verifyAgentUrl || !verifyAgentSecret) {
+        throw new Error("speed_verify_agent_not_configured");
+      }
+      if (isProd && !/^https:\/\//i.test(verifyAgentUrl)) {
+        throw new Error("speed_verify_agent_https_required");
+      }
+
+      let response;
+      try {
+        response = await axios.post(
+          verifyAgentUrl,
+          {
+            nas_id: nasId,
+            router_ip: router.api_host,
+            router_port: router.api_port || 8728,
+            api_user: router.api_user,
+            api_password: router.api_password,
+            client_mac: clientMac,
+            // The first proof read intentionally allows the VPS agent to obtain
+            // the current Hotspot IP from RouterOS. Subsequent reads pin both the
+            // IP and RouterOS row id captured before the browser pulse.
+            client_ip: requiredClientIp || null,
+            expected_username: expectedVoucher,
+            required_router_row_id: requiredRouterRowId || null,
+            include_counters: true,
+          },
+          {
+            headers: { "Content-Type": "application/json", "x-secret": verifyAgentSecret },
+            timeout: routerTimeoutMs + 3000,
+            validateStatus: () => true,
+          }
+        );
+      } catch (error) {
+        const code = String(error?.code || "").trim().toLowerCase();
+        if (code === "econnaborted" || code === "etimedout") {
+          throw new Error("speed_verify_agent_timeout");
+        }
+        throw new Error("speed_verify_agent_unavailable");
+      }
+
+      const body = response?.data && typeof response.data === "object" ? response.data : {};
+      if (response.status < 200 || response.status >= 300 || body.ok !== true || body.active !== true) {
+        const publicReason = String(body?.error || "agent_rejected").replace(/[^a-z0-9_:-]/gi, "").slice(0, 80);
+        throw new Error(`speed_verify_agent_rejected:${response.status}:${publicReason || "agent_rejected"}`);
+      }
+
+      const bodyNasId = normalizeNasId(body.nas_id);
+      const bodyMac = normalizeMacStrict(body.client_mac || clientMac);
+      const bodyIp = normalizePrivateIpv4(body.client_ip);
+      const bodyUsername = String(body.username || "").trim();
+      const bodyRowId = String(body.router_row_id || "").trim();
+      const bytesIn = routerCounterBigInt(body.bytes_in);
+      const bytesOut = routerCounterBigInt(body.bytes_out);
+
+      if (bodyNasId !== nasId || bodyMac !== clientMac) {
+        throw new Error("speed_verify_agent_binding_mismatch");
+      }
+      if (!bodyUsername || bodyUsername.toLowerCase() !== expectedVoucher.toLowerCase()) {
+        throw new Error("speed_verify_agent_username_mismatch");
+      }
+      if (!bodyIp) throw new Error("speed_router_ip_missing");
+      if (requiredClientIp && bodyIp !== requiredClientIp) {
+        throw new Error("speed_verify_agent_ip_mismatch");
+      }
+      if (!bodyRowId) throw new Error("speed_router_row_missing");
+      if (requiredRouterRowId && bodyRowId !== requiredRouterRowId) {
+        throw new Error("speed_verify_agent_row_mismatch");
+      }
+      if (bytesIn === null || bytesOut === null) {
+        throw new Error("speed_router_counters_missing");
+      }
+
+      return {
+        bytes_in: bytesIn,
+        bytes_out: bytesOut,
+        total_bytes: bytesIn + bytesOut,
+        bound_client_ip: bodyIp,
+        router_row_id: bodyRowId,
+      };
+    }
+
     const api = new RouterOsApiClient({
       host: router.api_host,
       port: router.api_port || 8728,
