@@ -687,10 +687,13 @@ export function registerEc1ClientSpace({
     return { enabled: true, ...budget, local_hint: localHint };
   }
 
+  // EC_V2_2_4_STABLE_SPEED_FINGERPRINT
+  // Speed-test proof/ticket requests can traverse different Cloudflare/Render
+  // proxy hops between consecutive fetches. Binding to req.ip therefore risks
+  // rejecting the same browser mid-proof. Reuse the normalized browser profile
+  // already used by EC3 instead: stable for the browser, independent of proxy IP.
   function requestFingerprint(req) {
-    const ip = String(req.ip || req.socket?.remoteAddress || "").trim();
-    const ua = String(req.get("user-agent") || "").trim();
-    return hashToken(`${ip}|${ua}`);
+    return browserProfileHash(req);
   }
 
   function cleanupSpeedTickets() {
