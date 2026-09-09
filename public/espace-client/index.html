@@ -230,16 +230,30 @@
               <div class="speed-test-result-main">
                 <span>Téléchargement</span>
                 <strong><span id="speedDownloadResult">—</span> Mbps</strong>
+                <p class="speed-test-result-compare" id="speedDownloadComparison">—</p>
+                <p class="speed-test-result-help">Pour naviguer, regarder des vidéos et télécharger.</p>
               </div>
               <div class="speed-test-result-grid">
-                <div><span>Envoi</span><strong><span id="speedUploadResult">—</span> Mbps</strong></div>
-                <div><span>Ping</span><strong><span id="speedPingResult">—</span> ms</strong></div>
+                <div class="speed-test-result-metric">
+                  <span>Envoi</span>
+                  <strong><span id="speedUploadResult">—</span> Mbps</strong>
+                  <p>Pour envoyer photos, vidéos et fichiers.</p>
+                </div>
+                <div class="speed-test-result-metric">
+                  <span>Ping</span>
+                  <strong><span id="speedPingResult">—</span> ms</strong>
+                  <p>Temps de réaction · plus bas = mieux.</p>
+                </div>
               </div>
               <div class="speed-test-quality" id="speedTestQuality">
                 <span class="speed-test-quality-dot" aria-hidden="true"></span>
                 <div><strong id="speedTestQualityTitle">Résultat disponible</strong><p id="speedTestQualityText"></p></div>
               </div>
-              <p class="speed-test-result-note">La consommation du test apparaîtra après la prochaine synchronisation réseau.</p>
+              <div class="speed-test-result-context" aria-label="Contexte du test">
+                <strong id="speedTestContext">Test effectué sur le Wi-Fi RAZAFI</strong>
+                <span id="speedTestTimestamp"></span>
+              </div>
+              <p class="speed-test-result-note" id="speedTestResultNote">La consommation du test apparaîtra après la prochaine synchronisation réseau.</p>
               <button class="speed-test-again" id="speedTestAgainBtn" type="button">Tester à nouveau</button>
             </div>
           </div>

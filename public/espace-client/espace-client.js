@@ -55,6 +55,7 @@
     speedTestRunning: false,
     speedTestHasResult: false,
     speedTestAbortController: null,
+    speedTestAgainTimer: null,
   };
 
   const elements = Object.freeze({
@@ -124,11 +125,15 @@
     speedTestCancelBtn: document.getElementById("speedTestCancelBtn"),
     speedTestResult: document.getElementById("speedTestResult"),
     speedDownloadResult: document.getElementById("speedDownloadResult"),
+    speedDownloadComparison: document.getElementById("speedDownloadComparison"),
     speedUploadResult: document.getElementById("speedUploadResult"),
     speedPingResult: document.getElementById("speedPingResult"),
     speedTestQuality: document.getElementById("speedTestQuality"),
     speedTestQualityTitle: document.getElementById("speedTestQualityTitle"),
     speedTestQualityText: document.getElementById("speedTestQualityText"),
+    speedTestContext: document.getElementById("speedTestContext"),
+    speedTestTimestamp: document.getElementById("speedTestTimestamp"),
+    speedTestResultNote: document.getElementById("speedTestResultNote"),
     speedTestAgainBtn: document.getElementById("speedTestAgainBtn"),
   });
 
@@ -863,15 +868,23 @@
     renderWhatsApp(snapshot);
   }
 
-  function setSpeedProgress(percent, phase, value = "—", unit = "") {
+  function setSpeedProgress(percent, phase, value = "—", unit = "", { indeterminate = false } = {}) {
     const pct = Math.max(0, Math.min(100, Number(percent || 0)));
     if (elements.speedTestPhase) elements.speedTestPhase.textContent = phase;
     if (elements.speedTestLiveValue) elements.speedTestLiveValue.textContent = value;
     if (elements.speedTestLiveUnit) elements.speedTestLiveUnit.textContent = unit;
-    if (elements.speedTestProgressFill) elements.speedTestProgressFill.style.width = `${pct}%`;
     if (elements.speedTestProgressTrack) {
-      elements.speedTestProgressTrack.setAttribute("aria-valuenow", String(Math.round(pct)));
-      elements.speedTestProgressTrack.setAttribute("aria-valuetext", `${phase} — ${Math.round(pct)} %`);
+      elements.speedTestProgressTrack.classList.toggle("is-indeterminate", indeterminate);
+      if (indeterminate) {
+        elements.speedTestProgressTrack.removeAttribute("aria-valuenow");
+        elements.speedTestProgressTrack.setAttribute("aria-valuetext", `${phase} — en cours`);
+      } else {
+        elements.speedTestProgressTrack.setAttribute("aria-valuenow", String(Math.round(pct)));
+        elements.speedTestProgressTrack.setAttribute("aria-valuetext", `${phase} — ${Math.round(pct)} %`);
+      }
+    }
+    if (elements.speedTestProgressFill) {
+      elements.speedTestProgressFill.style.width = indeterminate ? "" : `${pct}%`;
     }
   }
 
@@ -1132,21 +1145,48 @@
     return mbps;
   }
 
-  function speedQuality(downloadMbps, expectedMbps) {
+  function speedQuality(downloadMbps, expectedMbps, pingMs) {
     const download = Math.max(0, Number(downloadMbps || 0));
     const expected = Number(expectedMbps);
+    const ping = Number(pingMs);
+    // The RAZAFI ping is an HTTP round-trip through the service, not an ICMP ping.
+    // Use a deliberately broad threshold so latency only changes the summary when
+    // the response time is clearly high (for example the 500+ ms UAT measurements).
+    const slowResponse = Number.isFinite(ping) && ping >= 350;
+
     if (Number.isFinite(expected) && expected > 0) {
       const ratio = download / expected;
-      if (ratio >= 0.8) return { level: "good", title: "Bonne connexion", text: "La vitesse mesurée est proche de la vitesse prévue par votre forfait." };
-      if (ratio >= 0.5) return { level: "medium", title: "Connexion correcte", text: "La connexion fonctionne, mais la vitesse mesurée est inférieure à la vitesse maximale du forfait." };
+      if (ratio >= 0.8 && slowResponse) {
+        return {
+          level: "medium",
+          title: "Bonne vitesse, réponse lente",
+          text: `Le téléchargement est proche des ${formatSpeed(expected)} Mbps maximum du forfait, mais le réseau met plus de temps à réagir.`,
+        };
+      }
+      if (ratio >= 0.8) return { level: "good", title: "Bonne connexion", text: "La vitesse de téléchargement est proche du maximum de votre forfait et le réseau répond correctement." };
+      if (ratio >= 0.5 && slowResponse) return { level: "medium", title: "Connexion correcte, réponse lente", text: "Le débit reste utilisable, mais il est inférieur au maximum du forfait et le réseau répond plus lentement." };
+      if (ratio >= 0.5) return { level: "medium", title: "Connexion correcte", text: "La connexion fonctionne, mais la vitesse de téléchargement est inférieure au maximum de votre forfait." };
       return { level: "low", title: "Connexion plus lente que prévu", text: "La vitesse peut varier selon le signal WiFi, le réseau Internet et le nombre d’appareils connectés." };
     }
+
+    if (download >= 5 && slowResponse) return { level: "medium", title: "Bonne vitesse, réponse lente", text: "Le téléchargement est rapide, mais le réseau met plus de temps à réagir." };
     if (download >= 5) return { level: "good", title: "Bonne connexion", text: "La connexion est adaptée à la navigation, aux réseaux sociaux et à la vidéo courante." };
     if (download >= 2) return { level: "medium", title: "Connexion correcte", text: "La connexion convient à la navigation courante, avec une vitesse plus limitée pour les usages lourds." };
     return { level: "low", title: "Connexion limitée", text: "La vitesse mesurée est faible. Le signal WiFi ou la connexion Internet peut momentanément limiter le débit." };
   }
 
-  function showSpeedResult({ ping, download, upload, expected }) {
+  function startSpeedAgainCooldown() {
+    if (!elements.speedTestAgainBtn) return;
+    if (state.speedTestAgainTimer) window.clearTimeout(state.speedTestAgainTimer);
+    elements.speedTestAgainBtn.disabled = true;
+    elements.speedTestAgainBtn.textContent = "Tester à nouveau";
+    state.speedTestAgainTimer = window.setTimeout(() => {
+      state.speedTestAgainTimer = null;
+      elements.speedTestAgainBtn.disabled = false;
+    }, 5000);
+  }
+
+  function showSpeedResult({ ping, download, upload, expected, estimatedMaxBytes }) {
     state.speedTestRunning = false;
     state.speedTestHasResult = true;
     elements.speedTestIdle.hidden = true;
@@ -1155,14 +1195,39 @@
     elements.speedDownloadResult.textContent = formatSpeed(download);
     elements.speedUploadResult.textContent = formatSpeed(upload);
     elements.speedPingResult.textContent = formatSpeed(ping, 0);
-    const quality = speedQuality(download, expected);
+
+    if (elements.speedDownloadComparison) {
+      const expectedNumber = Number(expected);
+      elements.speedDownloadComparison.textContent = Number.isFinite(expectedNumber) && expectedNumber > 0
+        ? `${formatSpeed(download)} sur ${formatSpeed(expectedNumber)} Mbps maximum`
+        : "Vitesse de téléchargement mesurée";
+    }
+
+    const quality = speedQuality(download, expected, ping);
     elements.speedTestQuality.classList.remove("is-medium", "is-low");
     if (quality.level === "medium") elements.speedTestQuality.classList.add("is-medium");
     if (quality.level === "low") elements.speedTestQuality.classList.add("is-low");
     elements.speedTestQualityTitle.textContent = quality.title;
     elements.speedTestQualityText.textContent = quality.text;
+
+    const poolName = cleanText(state.snapshot?.pool?.display_name);
+    if (elements.speedTestContext) {
+      elements.speedTestContext.textContent = `Test effectué sur le Wi-Fi RAZAFI${poolName ? ` · ${poolName}` : ""}`;
+    }
+    if (elements.speedTestTimestamp) {
+      const time = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
+      elements.speedTestTimestamp.textContent = `Aujourd’hui à ${time}`;
+    }
+    if (elements.speedTestResultNote) {
+      const budget = Number(estimatedMaxBytes);
+      elements.speedTestResultNote.textContent = Number.isFinite(budget) && budget > 0
+        ? `Ce test a utilisé jusqu’à environ ${formatBytes(budget)}. La consommation apparaîtra après la prochaine synchronisation réseau.`
+        : "La consommation du test apparaîtra après la prochaine synchronisation réseau.";
+    }
+
     elements.speedTestStatusTitle.textContent = "Test terminé";
-    elements.speedTestStatusText.textContent = "Résultats mesurés sur votre connexion RAZAFI actuelle.";
+    elements.speedTestStatusText.textContent = "Voici ce que signifient les mesures de votre connexion RAZAFI.";
+    startSpeedAgainCooldown();
   }
 
   function showSpeedFailure(message) {
@@ -1208,7 +1273,7 @@
     elements.speedTestIdle.hidden = true;
     elements.speedTestResult.hidden = true;
     elements.speedTestProgress.hidden = false;
-    setSpeedProgress(2, "Préparation", "—", "");
+    setSpeedProgress(0, "Préparation", "—", "", { indeterminate: true });
 
     try {
       const { response, data } = await apiJson(ENDPOINTS.speedStart, {
@@ -1234,7 +1299,7 @@
         throw new Error("speed_start_failed");
       }
 
-      setSpeedProgress(5, "Vérification WiFi", "—", "");
+      setSpeedProgress(0, "Vérification WiFi", "—", "", { indeterminate: true });
       const proofPayload = createRandomPayload(proofBytes);
       const proofPulse = await fetch(ENDPOINTS.speedProofPulse, {
         method: "POST",
@@ -1274,7 +1339,13 @@
       const upload = await measureSpeedUpload(ticket, config, controller.signal);
       setSpeedProgress(100, "Terminé", formatSpeed(download), "Mbps");
       await delay(180, controller.signal);
-      showSpeedResult({ ping, download, upload, expected: config.expected_mbps });
+      showSpeedResult({
+        ping,
+        download,
+        upload,
+        expected: config.expected_mbps,
+        estimatedMaxBytes: config.estimated_max_bytes,
+      });
       state.speedTestAbortController = null;
       // Refresh the EC snapshot without blocking the result. RADIUS data may still
       // need the normal accounting interval before the test usage becomes visible.
@@ -1771,6 +1842,11 @@
   });
   elements.speedTestStartBtn?.addEventListener("click", runSpeedTest);
   elements.speedTestAgainBtn?.addEventListener("click", () => {
+    if (elements.speedTestAgainBtn.disabled) return;
+    if (state.speedTestAgainTimer) {
+      window.clearTimeout(state.speedTestAgainTimer);
+      state.speedTestAgainTimer = null;
+    }
     state.speedTestHasResult = false;
     renderSpeedTest(state.snapshot || {});
     runSpeedTest();

@@ -1393,8 +1393,8 @@ body { min-height: 100dvh; }
 }
 
 /* =============================================================================
-   EC V2.2 — Speed Test RAZAFI
-   Additive UI only. Network test logic lives in espace-client.js / backend EC.
+   EC V2.2.5 — Speed Test RAZAFI · Result & Progress UX Polish
+   Frontend polish only. Network proof/measurement logic remains unchanged.
    ============================================================================= */
 
 .speed-test-section {
@@ -1546,7 +1546,7 @@ body { min-height: 100dvh; }
 }
 
 .speed-test-progress-track {
-  height: 8px;
+  height: 6px;
   overflow: hidden;
   border-radius: 999px;
   background: #e9edf3;
@@ -1559,6 +1559,17 @@ body { min-height: 100dvh; }
   border-radius: inherit;
   background: linear-gradient(90deg, #18b86b 0%, #1778f2 100%);
   transition: width 180ms ease;
+}
+
+.speed-test-progress-track.is-indeterminate > span {
+  width: 34%;
+  animation: speed-test-indeterminate 1.05s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes speed-test-indeterminate {
+  0% { transform: translateX(-115%); }
+  55% { transform: translateX(115%); }
+  100% { transform: translateX(300%); }
 }
 
 .speed-test-cancel {
@@ -1598,6 +1609,21 @@ body { min-height: 100dvh; }
   letter-spacing: -0.03em;
 }
 
+.speed-test-result-compare {
+  margin: 7px 0 0;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.speed-test-result-help,
+.speed-test-result-metric p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .speed-test-result-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1606,6 +1632,7 @@ body { min-height: 100dvh; }
 }
 
 .speed-test-result-grid > div {
+  min-width: 0;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 16px;
@@ -1656,6 +1683,32 @@ body { min-height: 100dvh; }
   line-height: 1.45;
 }
 
+.speed-test-result-context {
+  margin-top: 14px;
+  padding: 12px 13px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: #fff;
+}
+
+.speed-test-result-context strong,
+.speed-test-result-context span {
+  display: block;
+}
+
+.speed-test-result-context strong {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.speed-test-result-context span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .speed-test-again { margin-top: 15px; background: #f0f3f7; color: var(--text); }
 
 @media (max-width: 540px) {
@@ -1669,4 +1722,9 @@ body { min-height: 100dvh; }
   .speed-test-progress-track > span,
   .speed-test-start,
   .speed-test-again { transition: none; }
+  .speed-test-progress-track.is-indeterminate > span {
+    width: 48%;
+    animation: none;
+    transform: none;
+  }
 }
