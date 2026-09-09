@@ -1567,9 +1567,9 @@ body { min-height: 100dvh; }
 }
 
 @keyframes speed-test-indeterminate {
-  0% { transform: translateX(-115%); }
-  55% { transform: translateX(115%); }
-  100% { transform: translateX(300%); }
+  0% { transform: translateX(-55%); }
+  55% { transform: translateX(80%); }
+  100% { transform: translateX(190%); }
 }
 
 .speed-test-cancel {

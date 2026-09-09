@@ -1175,6 +1175,31 @@
     return { level: "low", title: "Connexion limitée", text: "La vitesse mesurée est faible. Le signal WiFi ou la connexion Internet peut momentanément limiter le débit." };
   }
 
+  function speedTestLocationName(rawName) {
+    const name = cleanText(rawName);
+    if (!name || /^RAZAFI$/i.test(name)) return "";
+    const withoutBrand = name.replace(/^RAZAFI(?:\s*[-–—·:]\s*|\s+)/i, "").trim();
+    return withoutBrand || name;
+  }
+
+  function keepSpeedTestHeadingVisible() {
+    const section = elements.speedTestSection;
+    if (!section) return;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const header = document.querySelector(".topbar");
+        const headerBottom = header?.getBoundingClientRect?.().bottom || 0;
+        const sectionTop = section.getBoundingClientRect().top;
+        if (sectionTop < headerBottom + 12 || sectionTop > headerBottom + 70) {
+          section.scrollIntoView({
+            block: "start",
+            behavior: reducedMotionPreferred() ? "auto" : "smooth",
+          });
+        }
+      });
+    });
+  }
+
   function startSpeedAgainCooldown() {
     if (!elements.speedTestAgainBtn) return;
     if (state.speedTestAgainTimer) window.clearTimeout(state.speedTestAgainTimer);
@@ -1210,7 +1235,7 @@
     elements.speedTestQualityTitle.textContent = quality.title;
     elements.speedTestQualityText.textContent = quality.text;
 
-    const poolName = cleanText(state.snapshot?.pool?.display_name);
+    const poolName = speedTestLocationName(state.snapshot?.pool?.display_name);
     if (elements.speedTestContext) {
       elements.speedTestContext.textContent = `Test effectué sur le Wi-Fi RAZAFI${poolName ? ` · ${poolName}` : ""}`;
     }
@@ -1228,6 +1253,7 @@
     elements.speedTestStatusTitle.textContent = "Test terminé";
     elements.speedTestStatusText.textContent = "Voici ce que signifient les mesures de votre connexion RAZAFI.";
     startSpeedAgainCooldown();
+    keepSpeedTestHeadingVisible();
   }
 
   function showSpeedFailure(message) {
