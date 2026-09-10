@@ -1,6 +1,22 @@
 (() => {
   "use strict";
 
+  // EC V3.1 — PWA foundation. Registration is intentionally silent and
+  // does not alter the current Espace Client UI or application flow.
+  function registerClientPwa() {
+    if (!("serviceWorker" in navigator)) return;
+    window.addEventListener("load", () => {
+      navigator.serviceWorker
+        .register("/espace-client/sw.js", {
+          scope: "/espace-client/",
+          updateViaCache: "none",
+        })
+        .catch(() => {});
+    }, { once: true });
+  }
+
+  registerClientPwa();
+
   const ENDPOINTS = Object.freeze({
     bootstrap: "/api/client/bootstrap",
     claim: "/api/client/claim",

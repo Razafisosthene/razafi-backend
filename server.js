@@ -13018,6 +13018,9 @@ app.use((req, res, next) => {
     // The page contains no inline script/style and talks only to this origin.
     if (req.path === "/espace-client" || req.path.startsWith("/espace-client/")) {
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+      if (req.path === "/espace-client/sw.js") {
+        res.setHeader("Service-Worker-Allowed", "/espace-client/");
+      }
       res.setHeader("Pragma", "no-cache");
       res.setHeader("Referrer-Policy", "no-referrer");
       res.setHeader("X-Content-Type-Options", "nosniff");
@@ -13026,7 +13029,7 @@ app.use((req, res, next) => {
       res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
       res.setHeader(
         "Content-Security-Policy",
-        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
+        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
       );
     }
   } catch (_) {}
