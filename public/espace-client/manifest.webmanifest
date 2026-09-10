@@ -1,7 +1,7 @@
 {
   "id": "/espace-client/",
   "name": "RAZAFI Espace Client",
-  "short_name": "RAZAFI Client",
+  "short_name": "Client RAZAFI",
   "description": "Accès direct à votre Espace Client RAZAFI.",
   "lang": "fr",
   "dir": "ltr",
