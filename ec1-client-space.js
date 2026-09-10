@@ -1728,7 +1728,9 @@ export function registerEc1ClientSpace({
       currently_consumed: bonusActive ? "bonus" : (primaryActive ? "primary" : "none"),
       pool: {
         display_name: buildPoolDisplayName(pool) || cleanOptionalText(pool?.name, 120),
-        logo_url: cleanOptionalText(pool?.branding_logo_url, 2000),
+        brand_name: cleanOptionalText(pool?.brand_name, 120),
+        place: cleanOptionalText(pool?.name, 120),
+        logo_url: marketingImageUrl(pool?.branding_logo_url),
         contact_phone: cleanOptionalText(pool?.contact_phone, 80),
       },
       primary_voucher: primary,

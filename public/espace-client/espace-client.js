@@ -59,7 +59,10 @@
   };
 
   const elements = Object.freeze({
+    poolBrandLogoWrap: document.getElementById("poolBrandLogoWrap"),
+    poolBrandLogo: document.getElementById("poolBrandLogo"),
     poolName: document.getElementById("poolName"),
+    poolPlace: document.getElementById("poolPlace"),
     livePill: document.getElementById("livePill"),
     liveLabel: document.getElementById("liveLabel"),
     syncLabel: document.getElementById("syncLabel"),
@@ -74,6 +77,10 @@
     deviceIdentifier: document.getElementById("deviceIdentifier"),
     deviceSync: document.getElementById("deviceSync"),
     whatsappLink: document.getElementById("whatsappLink"),
+    poolContactBlock: document.getElementById("poolContactBlock"),
+    poolContactPhone: document.getElementById("poolContactPhone"),
+    poolCallLink: document.getElementById("poolCallLink"),
+    poolContactSeparator: document.getElementById("poolContactSeparator"),
     remoteConsultationCard: document.getElementById("remoteConsultationCard"),
     remoteConsultationMessage: document.getElementById("remoteConsultationMessage"),
     deviceZoneRow: document.getElementById("deviceZoneRow"),
@@ -737,10 +744,54 @@
     elements.syncLabel.textContent = synced || "Dernière synchronisation indisponible";
   }
 
+  function renderPoolLogo(pool) {
+    if (!elements.poolBrandLogoWrap || !elements.poolBrandLogo) return;
+
+    const logoUrl = cleanText(pool?.logo_url);
+    const brandName = cleanText(pool?.brand_name);
+    const image = elements.poolBrandLogo;
+    const wrap = elements.poolBrandLogoWrap;
+
+    wrap.hidden = true;
+    image.onload = null;
+    image.onerror = null;
+
+    if (!logoUrl) {
+      image.removeAttribute("src");
+      image.alt = "";
+      return;
+    }
+
+    image.alt = brandName ? `Logo ${brandName}` : "Logo de cette zone WiFi";
+    image.onload = () => {
+      if (image.dataset.logoUrl === logoUrl) wrap.hidden = false;
+    };
+    image.onerror = () => {
+      if (image.dataset.logoUrl !== logoUrl) return;
+      wrap.hidden = true;
+      image.removeAttribute("src");
+      image.alt = "";
+    };
+    image.dataset.logoUrl = logoUrl;
+    image.src = logoUrl;
+  }
+
   function renderPool(pool) {
-    const poolName = cleanText(pool?.display_name, "RAZAFI WiFi");
-    elements.poolName.textContent = poolName;
-    if (elements.menuPoolName) elements.menuPoolName.textContent = poolName;
+    const brandName = cleanText(pool?.brand_name);
+    const place = cleanText(pool?.place);
+    const displayName = cleanText(pool?.display_name) || place || brandName || "Zone WiFi";
+
+    elements.poolName.hidden = !brandName;
+    elements.poolName.textContent = brandName || "";
+
+    if (elements.poolPlace) {
+      elements.poolPlace.hidden = !place;
+      elements.poolPlace.textContent = place || "";
+      elements.poolPlace.classList.toggle("is-primary", !brandName);
+    }
+
+    if (elements.menuPoolName) elements.menuPoolName.textContent = displayName;
+    renderPoolLogo(pool);
   }
 
   function setRecentExpanded(expanded) {
@@ -835,6 +886,35 @@
     elements.deviceSync.textContent = formatRelativeSync(snapshot?.live?.updated_at);
   }
 
+  function callablePhoneHref(value) {
+    const raw = cleanText(value);
+    if (!raw) return null;
+    const hasPlus = raw.trim().startsWith("+");
+    const digits = raw.replace(/\D/g, "");
+    if (digits.length < 6 || digits.length > 18) return null;
+    return `tel:${hasPlus ? "+" : ""}${digits}`;
+  }
+
+  function renderPoolContact(snapshot) {
+    if (!elements.poolContactBlock || !elements.poolContactPhone || !elements.poolCallLink) return;
+
+    const phone = cleanText(snapshot?.pool?.contact_phone);
+    const href = callablePhoneHref(phone);
+    const visible = Boolean(phone);
+
+    elements.poolContactBlock.hidden = !visible;
+    if (elements.poolContactSeparator) elements.poolContactSeparator.hidden = !visible;
+    elements.poolContactPhone.textContent = phone || "";
+
+    if (visible && href) {
+      elements.poolCallLink.hidden = false;
+      elements.poolCallLink.href = href;
+    } else {
+      elements.poolCallLink.hidden = true;
+      elements.poolCallLink.removeAttribute("href");
+    }
+  }
+
   function renderWhatsApp(snapshot) {
     const planName = cleanText(snapshot?.primary_voucher?.plan?.name, "mon forfait WiFi RAZAFI");
     const poolName = cleanText(snapshot?.pool?.display_name);
@@ -865,6 +945,7 @@
 
     renderRecentAccesses(snapshot.ec2.recent_accesses || {});
     renderDevice(snapshot);
+    renderPoolContact(snapshot);
     renderWhatsApp(snapshot);
   }
 
@@ -1313,7 +1394,7 @@
     elements.speedTestQualityTitle.textContent = quality.title;
     elements.speedTestQualityText.textContent = quality.text;
 
-    const poolName = speedTestLocationName(state.snapshot?.pool?.display_name);
+    const poolName = speedTestLocationName(state.snapshot?.pool?.place || state.snapshot?.pool?.display_name);
     if (elements.speedTestContext) {
       elements.speedTestContext.textContent = `Test effectué sur le Wi-Fi RAZAFI${poolName ? ` · ${poolName}` : ""}`;
     }

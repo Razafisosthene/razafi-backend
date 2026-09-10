@@ -7,21 +7,22 @@
   <meta name="theme-color" content="#ffffff">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <title>Espace client — RAZAFI</title>
-  <link rel="stylesheet" href="/espace-client/espace-client.css?v=ec-v2.2">
-  <script src="/espace-client/espace-client.js?v=ec-v2.2" defer></script>
+  <link rel="stylesheet" href="/espace-client/espace-client.css?v=ec-v2.3">
+  <script src="/espace-client/espace-client.js?v=ec-v2.3" defer></script>
 </head>
 <body>
   <div class="app-shell">
     <header class="topbar">
-      <a class="brand" href="https://www.razafistore.com" aria-label="Accueil RAZAFI">
+      <div class="brand pool-brand" id="poolBrandLogoWrap" hidden>
         <img
           class="brand-logo"
-          src="/espace-client/assets/img/RAZAFI.png"
-          alt="RAZAFI"
+          id="poolBrandLogo"
+          alt=""
           width="120"
           height="32"
+          decoding="async"
         >
-      </a>
+      </div>
       <button
         class="menu-button"
         id="appMenuBtn"
@@ -114,7 +115,8 @@
         <div class="dashboard-head">
           <div class="pool-identity">
             <p class="eyebrow">Mon espace client</p>
-            <h1 id="poolName">RAZAFI WiFi</h1>
+            <h1 id="poolName" hidden></h1>
+            <p class="pool-place is-primary" id="poolPlace">Zone WiFi</p>
             <div class="live-pill live-unknown" id="livePill" aria-live="polite">
               <span class="live-dot" aria-hidden="true"></span>
               <span id="liveLabel">État inconnu</span>
@@ -179,14 +181,24 @@
           <section class="ec2-section" id="supportSection" aria-labelledby="supportTitle">
             <h2 class="ec2-section-title" id="supportTitle">Assistance</h2>
             <div class="compact-card support-card">
-              <div>
-                <h3>Besoin d’aide&nbsp;?</h3>
-                <p>Contactez l’assistance RAZAFI sur WhatsApp.</p>
+              <div class="pool-contact" id="poolContactBlock" hidden>
+                <p class="support-kicker">Contact de cette zone</p>
+                <p class="pool-contact-phone" id="poolContactPhone"></p>
+                <a class="call-button" id="poolCallLink" href="tel:">Appeler</a>
               </div>
-              <a class="whatsapp-button" id="whatsappLink" href="https://wa.me/261340500592" target="_blank" rel="noopener noreferrer">
-                Contacter sur WhatsApp
-              </a>
-              <p class="support-phone">034 05 005 92</p>
+
+              <div class="support-separator" id="poolContactSeparator" hidden aria-hidden="true"></div>
+
+              <div class="razafi-support">
+                <div>
+                  <h3>Besoin d’aide&nbsp;?</h3>
+                  <p>Contactez l’assistance RAZAFI sur WhatsApp.</p>
+                </div>
+                <a class="whatsapp-button" id="whatsappLink" href="https://wa.me/261340500592" target="_blank" rel="noopener noreferrer">
+                  Contacter sur WhatsApp
+                </a>
+                <p class="support-phone">034 05 005 92</p>
+              </div>
             </div>
           </section>
         </div>

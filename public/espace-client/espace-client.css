@@ -77,9 +77,11 @@ button:focus-visible, a:focus-visible {
   display: block;
   width: 120px;
   height: 32px;
+  max-width: 38vw;
   object-fit: contain;
   object-position: left center;
 }
+.pool-brand { min-width: 0; max-width: min(220px, 55vw); }
 
 .topbar-label { color: var(--muted); font-size: 14px; font-weight: 700; }
 
@@ -201,6 +203,23 @@ button:focus-visible, a:focus-visible {
   line-height: 1.08;
   letter-spacing: -0.035em;
   overflow-wrap: anywhere;
+}
+
+.pool-place {
+  margin: -2px 0 0;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.pool-place.is-primary {
+  margin-top: 0;
+  color: var(--text);
+  font-size: clamp(24px, 5.7vw, 32px);
+  font-weight: 850;
+  line-height: 1.08;
+  letter-spacing: -0.035em;
 }
 
 .live-pill {
@@ -463,6 +482,43 @@ button:focus-visible, a:focus-visible {
 .support-card { padding: 18px; }
 .support-card h3 { margin: 0; font-size: 17px; letter-spacing: -0.015em; }
 .support-card p { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+.pool-contact { display: grid; gap: 10px; }
+.support-card .support-kicker {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+.support-card .pool-contact-phone {
+  margin: 0;
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 850;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.call-button {
+  min-height: 48px;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--text);
+  color: #fff;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 850;
+  transition: transform 120ms ease, opacity 120ms ease;
+}
+.call-button:active { transform: scale(0.985); }
+.support-separator {
+  height: 1px;
+  margin: 18px 0;
+  background: rgba(229, 232, 238, 0.95);
+}
+.razafi-support { min-width: 0; }
 .whatsapp-button {
   min-height: 50px;
   margin-top: 16px;
@@ -855,6 +911,7 @@ body { min-height: 100dvh; }
 }
 
 .menu-button {
+  margin-left: auto;
   width: 48px;
   height: 48px;
   padding: 0;
