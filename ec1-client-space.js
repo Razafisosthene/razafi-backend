@@ -391,8 +391,11 @@ export function registerEc1ClientSpace({
   const SPEED_DOWNLOAD_MIN_BYTES = 1024 * 1024;
   const SPEED_DOWNLOAD_MAX_BYTES = 8 * 1024 * 1024;
   const SPEED_UPLOAD_MIN_BYTES = 512 * 1024;
-  const SPEED_UPLOAD_MAX_BYTES = 6 * 1024 * 1024;
-  const SPEED_UPLOAD_CHUNK_BYTES = 512 * 1024;
+  // EC V2.2.6 — allow one bounded upload request for the full adaptive budget.
+  // The previous 512 KiB chunks forced several request/response RTTs into the
+  // measurement and could materially under-report upload on high-latency links.
+  const SPEED_UPLOAD_MAX_BYTES = 8 * 1024 * 1024;
+  const SPEED_UPLOAD_CHUNK_BYTES = SPEED_UPLOAD_MAX_BYTES;
   const SPEED_MIN_TOTAL_BYTES = SPEED_WARMUP_BYTES + SPEED_DOWNLOAD_MIN_BYTES + SPEED_UPLOAD_MIN_BYTES;
   const SPEED_DOWNLOAD_TARGET_SECONDS = 5;
   const SPEED_UPLOAD_TARGET_SECONDS = 3;

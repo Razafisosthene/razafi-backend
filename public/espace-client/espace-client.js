@@ -985,18 +985,39 @@
   }
 
   async function measureSpeedPing(ticket, signal) {
+    // EC V2.2.6 — warm the existing HTTPS path before taking the latency sample.
+    // The result is still an HTTP round-trip to RAZAFI (not ICMP), but two warm-up
+    // requests reduce connection/setup noise and six samples make the median more
+    // stable. One single worst sample is trimmed as transient browser/network jitter.
+    const warmupCount = 2;
+    const measuredCount = 6;
+    const totalCount = warmupCount + measuredCount;
     const samples = [];
-    for (let index = 0; index < 6; index += 1) {
+
+    for (let index = 0; index < totalCount; index += 1) {
       const started = performance.now();
       const response = await speedFetch(ENDPOINTS.speedPing, { ticket, signal, timeoutMs: 5000 });
       if (!response.ok) throw new Error("speed_ping_failed");
       const elapsed = performance.now() - started;
-      if (index > 0) samples.push(elapsed);
-      const current = median(samples);
-      setSpeedProgress(5 + ((index + 1) / 6) * 13, "Mesure du ping", current === null ? "—" : formatSpeed(current, 0), "ms");
-      if (index < 5) await delay(70, signal);
+      if (index >= warmupCount) samples.push(elapsed);
+
+      const previewSamples = samples.length >= 5
+        ? [...samples].sort((a, b) => a - b).slice(0, -1)
+        : samples;
+      const current = median(previewSamples);
+      setSpeedProgress(
+        5 + ((index + 1) / totalCount) * 13,
+        "Mesure du ping",
+        current === null ? "—" : formatSpeed(current, 0),
+        "ms"
+      );
+      if (index < totalCount - 1) await delay(45, signal);
     }
-    const result = median(samples);
+
+    if (samples.length < 4) throw new Error("speed_ping_failed");
+    const sorted = [...samples].sort((a, b) => a - b);
+    const calibrated = sorted.length >= 5 ? sorted.slice(0, -1) : sorted;
+    const result = median(calibrated);
     if (!Number.isFinite(result)) throw new Error("speed_ping_failed");
     return result;
   }
@@ -1075,74 +1096,131 @@
   }
 
   async function measureSpeedUpload(ticket, config, signal) {
+    // EC V2.2.6 — measure the browser's upload body phase, not the time spent
+    // waiting for each HTTP response. XHR upload progress/load events let us
+    // separate transmitted-body time from Cloudflare/Render response latency.
     const maxBytes = Math.max(1, Math.floor(Number(config.upload_bytes || 0)));
-    const serverChunk = Math.max(64 * 1024, Math.floor(Number(config.upload_chunk_bytes || 512 * 1024)));
-    const chunkSize = Math.min(serverChunk, 256 * 1024);
-    const payload = createRandomPayload(chunkSize);
-    const controller = new AbortController();
-    const started = performance.now();
-    const deadline = started + 5000;
-    const hardTimer = window.setTimeout(() => controller.abort(), 6200);
-    if (signal) {
-      if (signal.aborted) controller.abort();
-      else signal.addEventListener("abort", () => controller.abort(), { once: true });
-    }
+    const serverChunk = Math.max(64 * 1024, Math.floor(Number(config.upload_chunk_bytes || maxBytes)));
+    const uploadBytes = Math.min(maxBytes, serverChunk);
+    if (uploadBytes < 128 * 1024) throw new Error("speed_upload_too_short");
 
-    let reserved = 0;
-    let completed = 0;
-    let lastUiAt = 0;
+    const payload = createRandomPayload(uploadBytes);
+    const minMeasuredBytes = 128 * 1024;
+    const sampleWindowMs = 6000;
 
-    const takeNextSize = () => {
-      if (performance.now() >= deadline || reserved >= maxBytes) return 0;
-      const size = Math.min(chunkSize, maxBytes - reserved);
-      reserved += size;
-      return size;
-    };
+    return await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      let settled = false;
+      let startedAt = null;
+      let uploadEndedAt = null;
+      let lastLoaded = 0;
+      let lastUiAt = 0;
+      let sampleTimer = null;
+      let deliberateSampleStop = false;
 
-    const worker = async () => {
-      while (!controller.signal.aborted) {
-        const size = takeNextSize();
-        if (!size) break;
-        try {
-          const response = await speedFetch(ENDPOINTS.speedUpload, {
-            ticket,
-            method: "POST",
-            body: size === payload.byteLength ? payload : payload.subarray(0, size),
-            signal: controller.signal,
-            timeoutMs: 7000,
-          });
-          if (!response.ok) {
-            if (response.status === 409) break;
-            throw new Error("speed_upload_failed");
-          }
-          completed += size;
-          const now = performance.now();
-          const elapsed = Math.max(0.2, (now - started) / 1000);
-          if (now - lastUiAt > 160) {
-            const mbps = (completed * 8) / elapsed / 1_000_000;
-            const fraction = Math.min(1, completed / maxBytes);
-            setSpeedProgress(62 + fraction * 33, "Envoi", formatSpeed(mbps), "Mbps");
-            lastUiAt = now;
-          }
-        } catch (error) {
-          if (error?.name === "AbortError") break;
-          throw error;
+      const cleanup = () => {
+        if (sampleTimer) window.clearTimeout(sampleTimer);
+        sampleTimer = null;
+        signal?.removeEventListener?.("abort", onExternalAbort);
+      };
+
+      const rejectOnce = (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+
+      const resolveMeasured = (endedAt = performance.now(), loadedBytes = lastLoaded) => {
+        if (settled) return;
+        const start = Number(startedAt);
+        const loaded = Math.max(0, Number(loadedBytes || 0));
+        if (!Number.isFinite(start) || loaded < minMeasuredBytes) {
+          rejectOnce(new Error("speed_upload_too_short"));
+          return;
         }
+        const elapsed = Math.max(0.35, (endedAt - start) / 1000);
+        const mbps = (loaded * 8) / elapsed / 1_000_000;
+        settled = true;
+        cleanup();
+        setSpeedProgress(95, "Envoi terminé", formatSpeed(mbps), "Mbps");
+        resolve(mbps);
+      };
+
+      const onExternalAbort = () => {
+        try { xhr.abort(); } catch (_) {}
+        rejectOnce(new DOMException("Aborted", "AbortError"));
+      };
+
+      if (signal?.aborted) {
+        rejectOnce(new DOMException("Aborted", "AbortError"));
+        return;
       }
-    };
+      signal?.addEventListener("abort", onExternalAbort, { once: true });
 
-    try {
-      await Promise.all([worker(), worker()]);
-    } finally {
-      window.clearTimeout(hardTimer);
-    }
+      xhr.open("POST", ENDPOINTS.speedUpload, true);
+      xhr.withCredentials = true;
+      xhr.timeout = 9000;
+      xhr.setRequestHeader("X-RAZAFI-Speed-Ticket", String(ticket || ""));
+      xhr.setRequestHeader("Content-Type", "application/octet-stream");
+      xhr.setRequestHeader("Accept", "application/json");
 
-    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    const elapsed = Math.max(0.35, (performance.now() - started) / 1000);
-    if (completed < 128 * 1024) throw new Error("speed_upload_too_short");
-    const mbps = (completed * 8) / elapsed / 1_000_000;
-    setSpeedProgress(95, "Envoi terminé", formatSpeed(mbps), "Mbps");
-    return mbps;
+      xhr.upload.addEventListener("loadstart", () => {
+        startedAt = performance.now();
+      });
+
+      xhr.upload.addEventListener("progress", (event) => {
+        const now = performance.now();
+        if (startedAt === null) startedAt = now;
+        lastLoaded = Math.max(lastLoaded, Number(event.loaded || 0));
+        if (now - lastUiAt > 120) {
+          const elapsed = Math.max(0.2, (now - startedAt) / 1000);
+          const mbps = (lastLoaded * 8) / elapsed / 1_000_000;
+          const fraction = Math.min(1, lastLoaded / uploadBytes);
+          setSpeedProgress(62 + fraction * 33, "Envoi", formatSpeed(mbps), "Mbps");
+          lastUiAt = now;
+        }
+      });
+
+      xhr.upload.addEventListener("load", () => {
+        uploadEndedAt = performance.now();
+        lastLoaded = uploadBytes;
+      });
+
+      xhr.addEventListener("load", () => {
+        if (xhr.status < 200 || xhr.status >= 300) {
+          rejectOnce(new Error("speed_upload_failed"));
+          return;
+        }
+        resolveMeasured(uploadEndedAt || performance.now(), Math.max(lastLoaded, uploadBytes));
+      });
+
+      xhr.addEventListener("error", () => rejectOnce(new Error("speed_upload_failed")));
+      xhr.addEventListener("timeout", () => {
+        if (lastLoaded >= minMeasuredBytes) resolveMeasured(performance.now(), lastLoaded);
+        else rejectOnce(new Error("speed_upload_too_short"));
+      });
+      xhr.addEventListener("abort", () => {
+        if (settled) return;
+        if (deliberateSampleStop && lastLoaded >= minMeasuredBytes) {
+          resolveMeasured(performance.now(), lastLoaded);
+          return;
+        }
+        rejectOnce(new DOMException("Aborted", "AbortError"));
+      });
+
+      sampleTimer = window.setTimeout(() => {
+        if (settled || uploadEndedAt !== null) return;
+        if (lastLoaded >= minMeasuredBytes) {
+          deliberateSampleStop = true;
+          try { xhr.abort(); } catch (_) {
+            resolveMeasured(performance.now(), lastLoaded);
+          }
+        }
+      }, sampleWindowMs);
+
+      xhr.send(payload);
+    });
   }
 
   function speedQuality(downloadMbps, expectedMbps, pingMs) {
