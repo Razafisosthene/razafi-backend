@@ -1134,6 +1134,23 @@
     });
     body.appendChild(starterQuestions);
 
+    // ASSISTANT QUESTIONS RECALL V1 — additive recall control.
+    // Hidden during the initial onboarding state. After the first message,
+    // it stays available so the owner can reopen the same starter questions
+    // without clearing chat history or changing the Assistant send path.
+    const starterRecallRow = document.createElement("div");
+    starterRecallRow.className = "rz-aa-recall-row";
+    starterRecallRow.hidden = true;
+    const starterRecallBtn = document.createElement("button");
+    starterRecallBtn.type = "button";
+    starterRecallBtn.className = "rz-aa-recall-btn";
+    starterRecallBtn.setAttribute("aria-expanded", "false");
+    starterRecallBtn.setAttribute("aria-controls", "rzAdminAssistStarterQuestions");
+    starterRecallBtn.innerHTML = '<span aria-hidden="true">💡</span><span>Questions utiles</span><span class="rz-aa-recall-chevron" aria-hidden="true">⌄</span>';
+    starterQuestions.id = "rzAdminAssistStarterQuestions";
+    starterRecallRow.appendChild(starterRecallBtn);
+    panel.appendChild(starterRecallRow);
+
     // Input row
     const inputRow = document.createElement("div");
     inputRow.className = "rz-aa-input-row";
@@ -1203,6 +1220,19 @@
       try { body.scrollTop = body.scrollHeight; } catch (_) {}
     }
 
+    function setStarterQuestionsVisible(visible) {
+      try {
+        const shouldShow = !!visible;
+        if (shouldShow) {
+          if (starterQuestions.parentNode !== body) body.appendChild(starterQuestions);
+        } else if (starterQuestions.parentNode === body) {
+          starterQuestions.remove();
+        }
+        starterRecallBtn.setAttribute("aria-expanded", shouldShow ? "true" : "false");
+        if (shouldShow) scrollToBottom();
+      } catch (_) {}
+    }
+
     function appendMsg(text, kind) {
       const bubble = document.createElement("div");
       bubble.className = "rz-aa-msg rz-aa-msg-" + (kind || "assistant");
@@ -1240,8 +1270,10 @@
       const msg = String(text || "").trim();
       if (!msg || isLoading) return;
 
-      // Onboarding only: once the user starts talking, the normal chat takes over.
-      try { if (starterQuestions && starterQuestions.parentNode === body) starterQuestions.remove(); } catch (_) {}
+      // Onboarding remains non-intrusive: hide starters while sending, then keep
+      // a compact recall control available for the rest of the conversation.
+      setStarterQuestionsVisible(false);
+      starterRecallRow.hidden = false;
 
       appendMsg(msg, "user");
       input.value = "";
@@ -1392,6 +1424,11 @@
         e.preventDefault();
         sendMessage(input.value);
       }
+    });
+    starterRecallBtn.addEventListener("click", function () {
+      if (isLoading) return;
+      const isVisible = starterQuestions.parentNode === body;
+      setStarterQuestionsVisible(!isVisible);
     });
     sendBtn.addEventListener("click", function () {
       sendMessage(input.value);
