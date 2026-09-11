@@ -2,6 +2,63 @@
 (() => {
   const $ = (sel, root = document) => root.querySelector(sel);
 
+  // Admin PWA V1.1 — foundation only.
+  // This silently adds PWA metadata to the shared Admin shell and registers a
+  // dedicated /admin/ service worker. It does not change Admin UI, RBAC, auth,
+  // billing, Assistant behavior, or cache any authenticated Admin data.
+  function ensureAdminPwaHead() {
+    try {
+      const head = document.head;
+      if (!head) return;
+
+      const ensureMeta = (name, content) => {
+        let el = head.querySelector(`meta[name="${name}"]`);
+        if (!el) {
+          el = document.createElement("meta");
+          el.setAttribute("name", name);
+          head.appendChild(el);
+        }
+        el.setAttribute("content", content);
+      };
+
+      const ensureLink = (rel, href, attrs = {}) => {
+        let el = head.querySelector(`link[rel="${rel}"]`);
+        if (!el) {
+          el = document.createElement("link");
+          el.setAttribute("rel", rel);
+          head.appendChild(el);
+        }
+        el.setAttribute("href", href);
+        Object.entries(attrs).forEach(([key, value]) => el.setAttribute(key, value));
+      };
+
+      ensureMeta("theme-color", "#ffffff");
+      ensureMeta("mobile-web-app-capable", "yes");
+      ensureMeta("apple-mobile-web-app-capable", "yes");
+      ensureMeta("apple-mobile-web-app-status-bar-style", "default");
+      ensureMeta("apple-mobile-web-app-title", "Admin RAZAFI");
+      ensureLink("manifest", "/admin/manifest.webmanifest");
+      ensureLink("apple-touch-icon", "/admin/assets/pwa/icon-180.png", { sizes: "180x180" });
+    } catch (_) {}
+  }
+
+  function registerAdminPwa() {
+    if (!("serviceWorker" in navigator)) return;
+    window.addEventListener("load", () => {
+      navigator.serviceWorker
+        .register("/admin/sw.js", {
+          scope: "/admin/",
+          updateViaCache: "none",
+        })
+        .catch(() => {});
+    }, { once: true });
+  }
+
+  if (!(window.location.pathname || "").endsWith("/admin/login.html")) {
+    ensureAdminPwaHead();
+    registerAdminPwa();
+  }
+
   async function fetchJSON(url, opts = {}) {
     const res = await fetch(url, { credentials: "include", ...opts });
     const text = await res.text();

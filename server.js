@@ -12926,14 +12926,28 @@ app.use((req, res, next) => {
 // (redirect to login BEFORE serving HTML)
 // ===============================
 async function requireAdminPage(req, res, next) {
-  // allow the login page + its assets without auth
+  // Allow the login page and static assets without auth.
+  // Admin PWA V1.1 adds only a minimal public shell (manifest + offline page).
+  // Real Admin pages and all API data remain protected and are never made public.
   const p = req.path || "";
+  const isAdminPwaPublicShell =
+    p === "/manifest.webmanifest" ||
+    p === "/offline.html";
+
   if (
     p === "/login" ||
     p === "/login.html" ||
+    isAdminPwaPublicShell ||
     p.startsWith("/assets/") ||
     p.match(/\.(css|js|png|jpg|jpeg|svg|ico|map)$/i)
   ) {
+    // Keep the service worker updateable immediately after a Render deploy.
+    if (p === "/sw.js") {
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      res.setHeader("Service-Worker-Allowed", "/admin/");
+    } else if (p === "/manifest.webmanifest" || p === "/offline.html") {
+      res.setHeader("Cache-Control", "no-cache");
+    }
     return next();
   }
 
@@ -13018,9 +13032,6 @@ app.use((req, res, next) => {
     // The page contains no inline script/style and talks only to this origin.
     if (req.path === "/espace-client" || req.path.startsWith("/espace-client/")) {
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
-      if (req.path === "/espace-client/sw.js") {
-        res.setHeader("Service-Worker-Allowed", "/espace-client/");
-      }
       res.setHeader("Pragma", "no-cache");
       res.setHeader("Referrer-Policy", "no-referrer");
       res.setHeader("X-Content-Type-Options", "nosniff");
@@ -13029,7 +13040,7 @@ app.use((req, res, next) => {
       res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
       res.setHeader(
         "Content-Security-Policy",
-        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
+        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
       );
     }
   } catch (_) {}
