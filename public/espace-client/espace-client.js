@@ -17,6 +17,12 @@
 
   registerClientPwa();
 
+  // EC V3.2 — Install UX. The app never prompts automatically; installation
+  // is offered only from the existing navigation menu.
+  let deferredInstallPrompt = null;
+  const IOS_INSTALL_SEEN_KEY = "razafi_client_pwa_ios_installed_seen_at";
+  const IOS_INSTALL_SEEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
   const ENDPOINTS = Object.freeze({
     bootstrap: "/api/client/bootstrap",
     claim: "/api/client/claim",
@@ -131,6 +137,9 @@
     recentAccessSection: document.getElementById("recentAccessSection"),
     menuSpeedTestBtn: document.getElementById("menuSpeedTestBtn"),
     menuSpeedTestBadge: document.getElementById("menuSpeedTestBadge"),
+    installClientAppBtn: document.getElementById("installClientAppBtn"),
+    installHelpDialog: document.getElementById("installHelpDialog"),
+    installHelpCloseBtn: document.getElementById("installHelpCloseBtn"),
     speedTestSection: document.getElementById("speedTestSection"),
     speedTestStatusTitle: document.getElementById("speedTestStatusTitle"),
     speedTestStatusText: document.getElementById("speedTestStatusText"),
@@ -328,6 +337,98 @@
   function reducedMotionPreferred() {
     return typeof window.matchMedia === "function"
       && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  function isStandaloneClientApp() {
+    return (typeof window.matchMedia === "function" && window.matchMedia("(display-mode: standalone)").matches)
+      || window.navigator.standalone === true;
+  }
+
+  function isIosDevice() {
+    const ua = String(window.navigator.userAgent || "");
+    return /iPad|iPhone|iPod/i.test(ua)
+      || (window.navigator.platform === "MacIntel" && Number(window.navigator.maxTouchPoints || 0) > 1);
+  }
+
+  function recentlySeenInstalledIosApp() {
+    if (!isIosDevice()) return false;
+    try {
+      const timestamp = Number(window.localStorage.getItem(IOS_INSTALL_SEEN_KEY));
+      return Number.isFinite(timestamp) && timestamp > 0 && Date.now() - timestamp < IOS_INSTALL_SEEN_TTL_MS;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function markInstalledIosAppSeen() {
+    if (!isIosDevice()) return;
+    try {
+      window.localStorage.setItem(IOS_INSTALL_SEEN_KEY, String(Date.now()));
+    } catch (_) {}
+  }
+
+  function syncInstallClientAppVisibility() {
+    const button = elements.installClientAppBtn;
+    if (!button) return;
+
+    if (isStandaloneClientApp()) {
+      button.hidden = true;
+      if (isIosDevice()) markInstalledIosAppSeen();
+      return;
+    }
+
+    if (deferredInstallPrompt) {
+      button.hidden = false;
+      return;
+    }
+
+    button.hidden = !(isIosDevice() && !recentlySeenInstalledIosApp());
+  }
+
+  function openInstallHelpDialog() {
+    if (!elements.installHelpDialog) return;
+    if (typeof elements.installHelpDialog.showModal === "function") {
+      if (!elements.installHelpDialog.open) elements.installHelpDialog.showModal();
+      return;
+    }
+    elements.installHelpDialog.setAttribute("open", "");
+  }
+
+  function closeInstallHelpDialog() {
+    if (!elements.installHelpDialog) return;
+    if (typeof elements.installHelpDialog.close === "function" && elements.installHelpDialog.open) {
+      elements.installHelpDialog.close();
+      return;
+    }
+    elements.installHelpDialog.removeAttribute("open");
+  }
+
+  async function installClientApp() {
+    if (isStandaloneClientApp()) {
+      syncInstallClientAppVisibility();
+      closeAppMenu();
+      return;
+    }
+
+    if (deferredInstallPrompt) {
+      const promptEvent = deferredInstallPrompt;
+      deferredInstallPrompt = null;
+      closeAppMenu();
+      try {
+        await promptEvent.prompt();
+        const choice = await promptEvent.userChoice;
+        if (choice?.outcome !== "accepted") deferredInstallPrompt = promptEvent;
+      } catch (_) {
+        deferredInstallPrompt = promptEvent;
+      }
+      syncInstallClientAppVisibility();
+      return;
+    }
+
+    if (isIosDevice()) {
+      closeAppMenu();
+      openInstallHelpDialog();
+    }
   }
 
   function openAppMenu() {
@@ -2009,6 +2110,15 @@
   elements.menuSpeedTestBtn?.addEventListener("click", () => {
     if (!elements.menuSpeedTestBtn.disabled) scrollAppTo(elements.speedTestSection);
   });
+  elements.installClientAppBtn?.addEventListener("click", installClientApp);
+  elements.installHelpCloseBtn?.addEventListener("click", closeInstallHelpDialog);
+  elements.installHelpDialog?.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeInstallHelpDialog();
+  });
+  elements.installHelpDialog?.addEventListener("click", (event) => {
+    if (event.target === elements.installHelpDialog) closeInstallHelpDialog();
+  });
   elements.appMenuDialog?.addEventListener("cancel", (event) => {
     event.preventDefault();
     closeAppMenu();
@@ -2070,6 +2180,26 @@
     scrollPromoTo(state.promoIndex + (event.key === "ArrowRight" ? 1 : -1));
   });
   window.addEventListener("resize", () => scrollPromoTo(state.promoIndex, "auto"));
+
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+    syncInstallClientAppVisibility();
+  });
+
+  window.addEventListener("appinstalled", () => {
+    deferredInstallPrompt = null;
+    syncInstallClientAppVisibility();
+  });
+
+  if (typeof window.matchMedia === "function") {
+    const displayModeQuery = window.matchMedia("(display-mode: standalone)");
+    if (typeof displayModeQuery.addEventListener === "function") {
+      displayModeQuery.addEventListener("change", syncInstallClientAppVisibility);
+    }
+  }
+
+  syncInstallClientAppVisibility();
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {

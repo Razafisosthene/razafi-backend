@@ -13,8 +13,8 @@
   <title>Espace client — RAZAFI</title>
   <link rel="manifest" href="/espace-client/manifest.webmanifest">
   <link rel="apple-touch-icon" sizes="180x180" href="/espace-client/assets/pwa/icon-180.png">
-  <link rel="stylesheet" href="/espace-client/espace-client.css?v=ec-v2.3">
-  <script src="/espace-client/espace-client.js?v=ec-v3.1" defer></script>
+  <link rel="stylesheet" href="/espace-client/espace-client.css?v=ec-v3.2">
+  <script src="/espace-client/espace-client.js?v=ec-v3.2" defer></script>
 </head>
 <body>
   <div class="app-shell">
@@ -72,6 +72,15 @@
             <span class="app-menu-label">Speed test</span>
             <span class="app-menu-badge" id="menuSpeedTestBadge">Bientôt</span>
           </button>
+
+          <button class="app-menu-row app-install-row" id="installClientAppBtn" type="button" hidden>
+            <span class="app-menu-icon" aria-hidden="true">↓</span>
+            <span class="app-menu-copy">
+              <span class="app-menu-label">Installer RAZAFI Client</span>
+              <span class="app-menu-note">Ajouter l’app à votre écran d’accueil</span>
+            </span>
+            <span class="app-menu-chevron" aria-hidden="true">›</span>
+          </button>
         </nav>
 
         <div class="app-menu-separator" aria-hidden="true"></div>
@@ -82,6 +91,15 @@
         </a>
 
         <p class="app-menu-footer">RAZAFI · Portail sécurisé</p>
+      </div>
+    </dialog>
+
+    <dialog class="install-help-dialog" id="installHelpDialog" aria-labelledby="installHelpTitle">
+      <div class="install-help-sheet">
+        <div class="install-help-icon" aria-hidden="true">↓</div>
+        <h2 id="installHelpTitle">Installer RAZAFI Client</h2>
+        <p>Sur iPhone ou iPad, ouvrez le menu <strong>Partager</strong>, puis choisissez <strong>Ajouter à l’écran d’accueil</strong>.</p>
+        <button class="install-help-close" id="installHelpCloseBtn" type="button">Compris</button>
       </div>
     </dialog>
 
