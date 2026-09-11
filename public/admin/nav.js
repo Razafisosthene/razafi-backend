@@ -54,6 +54,236 @@
     }, { once: true });
   }
 
+  // Admin PWA V1.2 — install UX only.
+  // No automatic popup: the native browser prompt is triggered only after the
+  // administrator explicitly taps “Installer RAZAFI Admin” in the shared drawer.
+  let deferredAdminInstallPrompt = null;
+  const ADMIN_IOS_INSTALL_SEEN_KEY = "razafi_admin_pwa_ios_installed_seen_at";
+  const ADMIN_IOS_INSTALL_SEEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+  function isStandaloneAdminApp() {
+    return (typeof window.matchMedia === "function" && window.matchMedia("(display-mode: standalone)").matches)
+      || window.navigator.standalone === true;
+  }
+
+  function isIosDevice() {
+    const ua = String(window.navigator.userAgent || "");
+    return /iPad|iPhone|iPod/i.test(ua)
+      || (window.navigator.platform === "MacIntel" && Number(window.navigator.maxTouchPoints || 0) > 1);
+  }
+
+  function recentlySeenInstalledIosAdminApp() {
+    if (!isIosDevice()) return false;
+    try {
+      const timestamp = Number(window.localStorage.getItem(ADMIN_IOS_INSTALL_SEEN_KEY));
+      return Number.isFinite(timestamp) && timestamp > 0 && Date.now() - timestamp < ADMIN_IOS_INSTALL_SEEN_TTL_MS;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function markInstalledIosAdminAppSeen() {
+    if (!isIosDevice()) return;
+    try {
+      window.localStorage.setItem(ADMIN_IOS_INSTALL_SEEN_KEY, String(Date.now()));
+    } catch (_) {}
+  }
+
+  function syncInstallAdminAppVisibility() {
+    const button = document.getElementById("rzInstallAdminAppBtn");
+    if (!button) return;
+
+    if (isStandaloneAdminApp()) {
+      button.hidden = true;
+      if (isIosDevice()) markInstalledIosAdminAppSeen();
+      return;
+    }
+
+    if (deferredAdminInstallPrompt) {
+      button.hidden = false;
+      return;
+    }
+
+    button.hidden = !(isIosDevice() && !recentlySeenInstalledIosAdminApp());
+  }
+
+  function openAdminInstallHelpDialog() {
+    const dialog = document.getElementById("rzAdminInstallHelpDialog");
+    if (!dialog) return;
+    if (typeof dialog.showModal === "function") {
+      if (!dialog.open) dialog.showModal();
+      return;
+    }
+    dialog.setAttribute("open", "");
+  }
+
+  function closeAdminInstallHelpDialog() {
+    const dialog = document.getElementById("rzAdminInstallHelpDialog");
+    if (!dialog) return;
+    if (typeof dialog.close === "function" && dialog.open) {
+      dialog.close();
+      return;
+    }
+    dialog.removeAttribute("open");
+  }
+
+  async function installAdminApp() {
+    if (isStandaloneAdminApp()) {
+      syncInstallAdminAppVisibility();
+      closeDrawer();
+      return;
+    }
+
+    if (deferredAdminInstallPrompt) {
+      const promptEvent = deferredAdminInstallPrompt;
+      deferredAdminInstallPrompt = null;
+      closeDrawer();
+      try {
+        await promptEvent.prompt();
+        const choice = await promptEvent.userChoice;
+        if (choice?.outcome !== "accepted") deferredAdminInstallPrompt = promptEvent;
+      } catch (_) {
+        deferredAdminInstallPrompt = promptEvent;
+      }
+      syncInstallAdminAppVisibility();
+      return;
+    }
+
+    if (isIosDevice()) {
+      closeDrawer();
+      openAdminInstallHelpDialog();
+    }
+  }
+
+  function ensureAdminInstallUxStyles() {
+    if (document.getElementById("rzAdminInstallUxStyles")) return;
+    const style = document.createElement("style");
+    style.id = "rzAdminInstallUxStyles";
+    style.textContent = `
+      .rz-admin-install-item[hidden] { display: none !important; }
+      button.rz-admin-install-item {
+        width: 100%;
+        border: 0;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      button.rz-admin-install-item:hover { background: rgba(13,110,253,.06); }
+      .rz-admin-install-icon {
+        flex: 0 0 34px;
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        border-radius: 12px;
+        background: rgba(13,110,253,.10);
+        color: #0d6efd;
+        font-size: 18px;
+        font-weight: 950;
+      }
+      .rz-admin-install-copy { min-width: 0; display: grid; gap: 2px; }
+      .rz-admin-install-note {
+        color: rgba(17,24,39,.58);
+        font-size: 11px;
+        font-weight: 650;
+        line-height: 1.3;
+        overflow-wrap: anywhere;
+      }
+      .rz-admin-install-dialog {
+        width: min(calc(100% - 28px), 430px);
+        max-width: 430px;
+        margin: auto;
+        padding: 0;
+        border: 0;
+        border-radius: 26px;
+        background: transparent;
+        color: #111827;
+        box-shadow: 0 28px 80px rgba(15,23,42,.24);
+      }
+      .rz-admin-install-dialog::backdrop {
+        background: rgba(12,16,24,.38);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+      }
+      .rz-admin-install-sheet {
+        padding: 24px;
+        border: 1px solid rgba(229,232,238,.95);
+        border-radius: inherit;
+        background: rgba(255,255,255,.985);
+        text-align: center;
+      }
+      .rz-admin-install-help-icon {
+        width: 48px;
+        height: 48px;
+        margin: 0 auto 14px;
+        display: grid;
+        place-items: center;
+        border-radius: 16px;
+        background: rgba(13,110,253,.08);
+        color: #0d6efd;
+        font-size: 24px;
+        font-weight: 900;
+      }
+      .rz-admin-install-sheet h2 {
+        margin: 0;
+        color: #111827;
+        font-size: 21px;
+        line-height: 1.2;
+        letter-spacing: -.025em;
+      }
+      .rz-admin-install-sheet p {
+        margin: 11px 0 20px;
+        color: #6b7280;
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      .rz-admin-install-close {
+        width: 100%;
+        min-height: 48px;
+        padding: 0 16px;
+        border: 0;
+        border-radius: 15px;
+        background: #111827;
+        color: #fff;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 850;
+      }
+      .rz-admin-install-close:hover { background: #111827; }
+      .rz-admin-install-close:active { transform: scale(.99); }
+      @media (max-width: 540px) {
+        .rz-admin-install-note { font-size: 12px; }
+        .rz-admin-install-dialog { width: calc(100% - 28px); border-radius: 24px; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .rz-admin-install-dialog::backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; }
+        .rz-admin-install-close:active { transform: none; }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    deferredAdminInstallPrompt = event;
+    syncInstallAdminAppVisibility();
+  });
+
+  window.addEventListener("appinstalled", () => {
+    deferredAdminInstallPrompt = null;
+    syncInstallAdminAppVisibility();
+  });
+
+  if (typeof window.matchMedia === "function") {
+    const displayModeQuery = window.matchMedia("(display-mode: standalone)");
+    if (typeof displayModeQuery.addEventListener === "function") {
+      displayModeQuery.addEventListener("change", syncInstallAdminAppVisibility);
+    }
+  }
+
   if (!(window.location.pathname || "").endsWith("/admin/login.html")) {
     ensureAdminPwaHead();
     registerAdminPwa();
@@ -116,6 +346,13 @@
           <a class="rz-item" data-href="/admin/plans.html" href="/admin/plans.html">
             <span class="rz-item-label">Plans</span>
           </a>
+          <button class="rz-item rz-admin-install-item" id="rzInstallAdminAppBtn" type="button" hidden>
+            <span class="rz-admin-install-icon" aria-hidden="true">↓</span>
+            <span class="rz-admin-install-copy">
+              <span class="rz-item-label">Installer RAZAFI Admin</span>
+              <span class="rz-admin-install-note">Ajouter l’app à votre écran d’accueil</span>
+            </span>
+          </button>
           <a class="rz-item" data-href="/admin/pricing-simulator.html" href="/admin/pricing-simulator.html" id="rzNavSimulator">
             <span class="rz-item-label">Simulateur de prix</span>
           </a>
@@ -164,6 +401,15 @@
           <button class="rz-logout" id="rzLogoutBtn" type="button">Déconnexion</button>
         </div>
       </aside>
+
+      <dialog class="rz-admin-install-dialog" id="rzAdminInstallHelpDialog" aria-labelledby="rzAdminInstallHelpTitle">
+        <div class="rz-admin-install-sheet">
+          <div class="rz-admin-install-help-icon" aria-hidden="true">↑</div>
+          <h2 id="rzAdminInstallHelpTitle">Installer RAZAFI Admin</h2>
+          <p>Sur iPhone ou iPad, ouvrez le menu Partager, puis choisissez Ajouter à l’écran d’accueil.</p>
+          <button class="rz-admin-install-close" id="rzAdminInstallHelpClose" type="button">Compris</button>
+        </div>
+      </dialog>
     `;
   }
 
@@ -368,6 +614,22 @@
     const portalPreviewBtn = $("#rzPortalPreviewBtn");
     portalPreviewBtn?.addEventListener("click", handlePortalPreviewClick);
 
+    // PWA install UX — user initiated only.
+    const installAdminAppBtn = $("#rzInstallAdminAppBtn");
+    installAdminAppBtn?.addEventListener("click", installAdminApp);
+
+    const installHelpClose = $("#rzAdminInstallHelpClose");
+    installHelpClose?.addEventListener("click", closeAdminInstallHelpDialog);
+
+    const installHelpDialog = $("#rzAdminInstallHelpDialog");
+    installHelpDialog?.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      closeAdminInstallHelpDialog();
+    });
+    installHelpDialog?.addEventListener("click", (event) => {
+      if (event.target === installHelpDialog) closeAdminInstallHelpDialog();
+    });
+
     // Logout
     const logout = $("#rzLogoutBtn");
     logout?.addEventListener("click", async () => {
@@ -481,6 +743,7 @@
     if (!topbar) return;
 
     document.body.classList.add("rz-admin-shell");
+    ensureAdminInstallUxStyles();
 
     // Avoid double inject
     if ($("#rzNavBtn")) return;
@@ -504,6 +767,7 @@
     }
 
     bindEvents();
+    syncInstallAdminAppVisibility();
     ensureSessionAndFillUI();
     // V2: initialize admin assistant widget (read-only, advise-only, no write actions)
     try { initAdminAssistantWidget(); } catch (_) {}
