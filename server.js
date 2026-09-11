@@ -6972,7 +6972,7 @@ function detectDynamicIntentFromMessage(msg, context) {
 
   if (context === "admin_owner") {
     // Smart Sales Analyst V1 — explicit decision brief wins over generic coaching.
-    if (isAdminSmartSalesAnalysisMessage(message)) return "admin_smart_sales_analysis";
+    if (isAdminSmartSalesAnalysisMessage(msg)) return "admin_smart_sales_analysis";
 
     // ---- Phase 4: diagnostic / coaching — checked FIRST to avoid collision ----
 
