@@ -1102,6 +1102,38 @@
     body.setAttribute("aria-atomic", "false");
     panel.appendChild(body);
 
+    // SMART SALES ANALYST V1 — starter questions (additive only).
+    // They disappear as soon as a conversation starts. Every click reuses the
+    // existing sendMessage() path so normal Assistant behavior remains intact.
+    const starterQuestions = document.createElement("div");
+    starterQuestions.className = "rz-aa-starters";
+    starterQuestions.setAttribute("aria-label", "Questions utiles");
+
+    const starterTitle = document.createElement("div");
+    starterTitle.className = "rz-aa-starters-title";
+    starterTitle.textContent = "Questions utiles";
+    starterQuestions.appendChild(starterTitle);
+
+    const starterItems = [
+      { label: "📊 Analyse mes ventes et dis-moi quoi faire", prompt: "Analyse mes ventes et dis-moi quoi faire" },
+      { label: "➕ Comment créer un nouveau forfait ?", prompt: "Comment créer un nouveau forfait ?" },
+      { label: "💳 Comment fonctionne mon abonnement RAZAFI ?", prompt: "Comment fonctionne mon abonnement RAZAFI ?" },
+      { label: "👥 Comment ajouter un utilisateur ?", prompt: "Comment ajouter un utilisateur ?" },
+    ];
+
+    starterItems.forEach(function (item) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "rz-aa-starter-btn";
+      button.textContent = item.label;
+      button.addEventListener("click", function () {
+        if (isLoading) return;
+        sendMessage(item.prompt);
+      });
+      starterQuestions.appendChild(button);
+    });
+    body.appendChild(starterQuestions);
+
     // Input row
     const inputRow = document.createElement("div");
     inputRow.className = "rz-aa-input-row";
@@ -1207,6 +1239,9 @@
     function sendMessage(text) {
       const msg = String(text || "").trim();
       if (!msg || isLoading) return;
+
+      // Onboarding only: once the user starts talking, the normal chat takes over.
+      try { if (starterQuestions && starterQuestions.parentNode === body) starterQuestions.remove(); } catch (_) {}
 
       appendMsg(msg, "user");
       input.value = "";

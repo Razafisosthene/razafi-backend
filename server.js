@@ -3395,7 +3395,331 @@ async function buildPortalTrustedAssistantContext({ contextToken, identity: veri
   }
 }
 
-async function buildAdminTrustedAssistantContext({ req, requestedScope }) {
+// =============================================================================
+// SMART SALES ANALYST V1 — trusted, read-only 30d vs previous 30d analysis
+// =============================================================================
+// Additive only. These helpers never mutate plans, revenue, pools or billing data.
+// Internal plan/pool IDs are used only to attribute trusted SQL results correctly;
+// the returned Smart Sales payload contains display-safe business facts only.
+function isAdminSmartSalesAnalysisMessage(raw) {
+  const s = String(raw || "").trim().toLowerCase();
+  if (!s) return false;
+  return (
+    s.includes("analyse mes ventes") || s.includes("analyser mes ventes") ||
+    s.includes("analyse de mes ventes") || s.includes("analyse ventes") ||
+    s.includes("analyse des ventes") || s.includes("sales analysis") ||
+    s.includes("analyze my sales") || s.includes("analyse my sales") ||
+    s.includes("smart sales") || s.includes("sales analyst") ||
+    (s.includes("ventes") && (s.includes("dis-moi quoi faire") || s.includes("dis moi quoi faire")))
+  );
+}
+
+function assistantBusinessDateShift(isoDate, deltaDays) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(isoDate || ""));
+  if (!m) return null;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  if (!Number.isFinite(d.getTime())) return null;
+  d.setUTCDate(d.getUTCDate() + Number(deltaDays || 0));
+  return d.toISOString().slice(0, 10);
+}
+
+function assistantSmartSalesPctChange(currentRaw, previousRaw) {
+  const current = Number(currentRaw || 0);
+  const previous = Number(previousRaw || 0);
+  if (!Number.isFinite(current) || !Number.isFinite(previous)) return null;
+  if (previous <= 0) return current > 0 ? null : 0;
+  return Math.round((((current - previous) / previous) * 100) * 10) / 10;
+}
+
+function assistantSmartSalesTrend(currentRaw, previousRaw) {
+  const current = Number(currentRaw || 0);
+  const previous = Number(previousRaw || 0);
+  if (previous <= 0 && current <= 0) return "no_sales";
+  if (previous <= 0 && current > 0) return "new_activity";
+  const pct = assistantSmartSalesPctChange(current, previous);
+  if (pct !== null && pct >= 10) return "up";
+  if (pct !== null && pct <= -10) return "down";
+  return "stable";
+}
+
+function validateAdminSmartSalesAiAnswer({ answer, smartSales }) {
+  if (!smartSales?.available) return true;
+  const s = String(answer || "").toLowerCase();
+  if (!s.trim()) return false;
+  // A Smart Sales result is a decision brief, not a new interview.
+  if (s.includes("?")) return false;
+
+  const actionTypes = new Set();
+  for (const pool of (Array.isArray(smartSales.pools) ? smartSales.pools : [])) {
+    for (const action of (Array.isArray(pool?.actions) ? pool.actions : [])) {
+      if (action?.action) actionTypes.add(String(action.action));
+    }
+  }
+
+  const hasAny = (needles) => needles.some((needle) => s.includes(needle));
+  if (!actionTypes.has("hide") && hasAny(["masquez", "masquer", "cachez", "cacher", "hide this", "hide the"])) return false;
+  if (!actionTypes.has("reshow") && hasAny(["réaffichez", "reaffichez", "réafficher", "reafficher", "remettez visible", "show again", "re-show"])) return false;
+  if (!actionTypes.has("create") && hasAny(["créez un forfait", "creez un forfait", "créer un forfait", "creer un forfait", "create a plan", "create a new plan"])) return false;
+
+  // Never allow the naturalizer to invent a fifth action category.
+  if (hasAny([
+    "baissez le prix", "baisser le prix", "augmentez le prix", "augmenter le prix",
+    "changez le prix", "modifier le prix", "modifiez le débit", "changez le débit",
+    "modifiez la vitesse", "changez la vitesse", "faites une promotion", "lancez une promotion",
+    "offrez une remise", "discount the", "lower the price", "raise the price", "change the speed",
+    "delete the plan", "supprimez le forfait", "désactivez le forfait", "desactivez le forfait"
+  ])) return false;
+
+  return true;
+}
+
+async function buildAdminSmartSalesSnapshot({ poolIds, poolsInternal, planRows, displayByPool }) {
+  const ids = (Array.isArray(poolIds) ? poolIds : []).map((v) => String(v || "")).filter(Boolean);
+  const today = billingMadagascarToday();
+  const currentFrom = assistantBusinessDateShift(today, -29);
+  const previousTo = assistantBusinessDateShift(today, -30);
+  const previousFrom = assistantBusinessDateShift(today, -59);
+
+  const base = {
+    available: false,
+    period_days: 30,
+    comparison: "previous_30_days",
+    current_period: { from: currentFrom, to: today },
+    previous_period: { from: previousFrom, to: previousTo },
+    advisory_only: true,
+    allowed_owner_actions: ["keep_visible", "hide", "reshow", "create"],
+    overall: null,
+    pools: [],
+  };
+
+  if (!ids.length || !currentFrom || !previousFrom || !previousTo) {
+    return { ...base, available: true, overall: { current: { paid_transactions: 0, total_amount_ar: 0 }, previous: { paid_transactions: 0, total_amount_ar: 0 }, revenue_change_pct: 0, sales_change_pct: 0, trend: "no_sales" } };
+  }
+
+  try {
+    const rpcArgs = (from, to) => ({ p_from: from, p_to: to, p_search: null, p_pool_ids: ids });
+    const [
+      currentTotalsResult, currentByPlanResult, currentByPoolResult,
+      previousTotalsResult, previousByPlanResult, previousByPoolResult,
+    ] = await Promise.all([
+      supabase.rpc("fn_revenue_paid_totals_scoped", rpcArgs(currentFrom, today)),
+      supabase.rpc("fn_revenue_paid_by_plan_scoped", rpcArgs(currentFrom, today)),
+      supabase.rpc("fn_revenue_paid_by_pool_scoped", rpcArgs(currentFrom, today)),
+      supabase.rpc("fn_revenue_paid_totals_scoped", rpcArgs(previousFrom, previousTo)),
+      supabase.rpc("fn_revenue_paid_by_plan_scoped", rpcArgs(previousFrom, previousTo)),
+      supabase.rpc("fn_revenue_paid_by_pool_scoped", rpcArgs(previousFrom, previousTo)),
+    ]);
+
+    const results = [
+      currentTotalsResult, currentByPlanResult, currentByPoolResult,
+      previousTotalsResult, previousByPlanResult, previousByPoolResult,
+    ];
+    const firstError = results.find((r) => r?.error)?.error;
+    if (firstError) {
+      console.warn("[SMART SALES V1] period revenue unavailable:", String(firstError?.message || firstError).slice(0, 120));
+      return { ...base, reason: "period_revenue_unavailable" };
+    }
+
+    const metric = (row) => ({
+      paid_transactions: Math.max(0, Number(row?.paid_transactions ?? row?.paid_count ?? 0) || 0),
+      total_amount_ar: Math.max(0, Number(row?.total_amount_ar || 0) || 0),
+    });
+    const currentTotals = metric(currentTotalsResult.data?.[0]);
+    const previousTotals = metric(previousTotalsResult.data?.[0]);
+
+    const planById = new Map();
+    const plansByPool = new Map(ids.map((id) => [id, []]));
+    for (const plan of (Array.isArray(planRows) ? planRows : [])) {
+      const planId = String(plan?.id || "").trim();
+      const poolId = String(plan?.pool_id || "").trim();
+      if (planId) planById.set(planId, plan);
+      if (poolId && plansByPool.has(poolId)) plansByPool.get(poolId).push(plan);
+    }
+
+    const buildPlanMetricMap = (rows) => {
+      const out = new Map(ids.map((id) => [id, new Map()]));
+      for (const row of (Array.isArray(rows) ? rows : [])) {
+        const planId = String(row?.plan_id || "").trim();
+        const plan = planId ? planById.get(planId) : null;
+        // Multi-pool attribution is ID-based only. For a validated single-pool
+        // scope, an old RPC without plan_id may still be safely assigned to it.
+        const poolId = plan ? String(plan.pool_id || "") : (ids.length === 1 ? ids[0] : "");
+        if (!poolId || !out.has(poolId) || !planId || !plan) continue;
+        out.get(poolId).set(planId, metric(row));
+      }
+      return out;
+    };
+
+    const currentPlanMetrics = buildPlanMetricMap(currentByPlanResult.data);
+    const previousPlanMetrics = buildPlanMetricMap(previousByPlanResult.data);
+
+    const buildPoolMetricMap = (rows) => {
+      const out = new Map(ids.map((id) => [id, { paid_transactions: 0, total_amount_ar: 0 }]));
+      for (const row of (Array.isArray(rows) ? rows : [])) {
+        const poolId = String(row?.pool_id || "").trim();
+        if (poolId && out.has(poolId)) out.set(poolId, metric(row));
+      }
+      return out;
+    };
+    const currentPoolMetrics = buildPoolMetricMap(currentByPoolResult.data);
+    const previousPoolMetrics = buildPoolMetricMap(previousByPoolResult.data);
+    if (ids.length === 1) {
+      // Totals are authoritative for the selected single pool and protect us
+      // against older by-pool RPC variants that omit a zero/only row.
+      currentPoolMetrics.set(ids[0], currentTotals);
+      previousPoolMetrics.set(ids[0], previousTotals);
+    }
+
+    const nowMs = Date.now();
+    const poolResults = [];
+    for (const poolId of ids) {
+      const current = currentPoolMetrics.get(poolId) || { paid_transactions: 0, total_amount_ar: 0 };
+      const previous = previousPoolMetrics.get(poolId) || { paid_transactions: 0, total_amount_ar: 0 };
+      const revenueChangePct = assistantSmartSalesPctChange(current.total_amount_ar, previous.total_amount_ar);
+      const salesChangePct = assistantSmartSalesPctChange(current.paid_transactions, previous.paid_transactions);
+      const trend = assistantSmartSalesTrend(current.total_amount_ar, previous.total_amount_ar);
+      const dataStrength = (current.paid_transactions + previous.paid_transactions) >= 5 ? "enough" : "low";
+      const poolPlans = plansByPool.get(poolId) || [];
+      const currentByPlan = currentPlanMetrics.get(poolId) || new Map();
+      const previousByPlan = previousPlanMetrics.get(poolId) || new Map();
+
+      const isStandard = (p) => String(p?.plan_source || "standard") !== "personalized";
+      const isPaid = (p) => Number(p?.price_ar || 0) > 0;
+      const isActive = (p) => p?.is_active === true;
+      const isVisible = (p) => p?.is_visible === true;
+      const standardPaid = poolPlans.filter((p) => isStandard(p) && isPaid(p));
+      const visiblePaid = standardPaid.filter((p) => isActive(p) && isVisible(p));
+      const hiddenPaid = standardPaid.filter((p) => isActive(p) && !isVisible(p));
+
+      const salesFor = (map, plan) => map.get(String(plan?.id || "")) || { paid_transactions: 0, total_amount_ar: 0 };
+      const currentRanked = visiblePaid
+        .map((plan) => ({ plan, metric: salesFor(currentByPlan, plan) }))
+        .filter((item) => item.metric.paid_transactions > 0)
+        .sort((a, b) => (b.metric.total_amount_ar - a.metric.total_amount_ar) || (b.metric.paid_transactions - a.metric.paid_transactions));
+      const top = currentRanked[0] || null;
+      const topPlan = top ? {
+        name: cleanOptionalText(top.plan.name, 120),
+        paid_transactions: top.metric.paid_transactions,
+        total_amount_ar: top.metric.total_amount_ar,
+      } : null;
+
+      const actions = [];
+      let priorityAction = null;
+
+      if (dataStrength === "enough") {
+        const changeActions = [];
+
+        // Re-show only when the whole pool is materially down and a previously
+        // proven hidden plan has gone to zero in the current period.
+        if (previous.paid_transactions >= 5 && revenueChangePct !== null && revenueChangePct <= -20) {
+          const candidate = hiddenPaid
+            .map((plan) => ({
+              plan,
+              current: salesFor(currentByPlan, plan),
+              previous: salesFor(previousByPlan, plan),
+            }))
+            .filter((item) => item.current.paid_transactions === 0 && item.previous.paid_transactions >= 2)
+            .sort((a, b) => (b.previous.paid_transactions - a.previous.paid_transactions) || (b.previous.total_amount_ar - a.previous.total_amount_ar))[0];
+          if (candidate) {
+            changeActions.push({
+              action: "reshow",
+              plan_name: cleanOptionalText(candidate.plan.name, 120),
+              reason: "previous_demand_and_pool_decline",
+              evidence: { previous_sales: candidate.previous.paid_transactions, current_sales: 0 },
+            });
+          }
+        }
+
+        // Hide only a mature, active visible plan with zero paid sales in BOTH
+        // 30-day windows, and never collapse a small catalogue below 2 choices.
+        if (visiblePaid.length > 2) {
+          const staleCandidate = visiblePaid
+            .filter((plan) => !top || String(plan.id) !== String(top.plan.id))
+            .map((plan) => {
+              const createdMs = Date.parse(plan?.created_at || "");
+              const ageDays = Number.isFinite(createdMs) ? Math.floor((nowMs - createdMs) / 86400000) : -1;
+              return { plan, ageDays, current: salesFor(currentByPlan, plan), previous: salesFor(previousByPlan, plan) };
+            })
+            .filter((item) => item.ageDays >= 60 && item.current.paid_transactions === 0 && item.previous.paid_transactions === 0)
+            .sort((a, b) => b.ageDays - a.ageDays)[0];
+          if (staleCandidate) {
+            changeActions.push({
+              action: "hide",
+              plan_name: cleanOptionalText(staleCandidate.plan.name, 120),
+              reason: "zero_sales_60_days",
+              evidence: { current_sales: 0, previous_sales: 0, age_days: staleCandidate.ageDays },
+            });
+          }
+        }
+
+        // Create only to fill a clear catalogue gap; never invent a concrete
+        // price beyond the existing safe entry-plan threshold.
+        if (visiblePaid.length > 0) {
+          const hasEntryPlan = visiblePaid.some((plan) => Number(plan.price_ar || 0) > 0 && Number(plan.price_ar || 0) < 1000);
+          const hasDailyPlan = visiblePaid.some((plan) => {
+            const minutes = Number(plan.duration_minutes ?? (Number(plan.duration_hours || 0) * 60));
+            return Number.isFinite(minutes) && minutes >= 720 && minutes <= 2160;
+          });
+          if (!hasEntryPlan) {
+            changeActions.push({
+              action: "create",
+              suggestion: "entry_plan_under_1000_ar",
+              reason: "no_affordable_entry_plan",
+            });
+          } else if (!hasDailyPlan) {
+            changeActions.push({
+              action: "create",
+              suggestion: "daily_plan",
+              reason: "no_daily_plan",
+            });
+          }
+        }
+
+        if (topPlan) {
+          actions.push({
+            action: "keep_visible",
+            plan_name: topPlan.name,
+            reason: "current_top_plan",
+            evidence: { current_sales: topPlan.paid_transactions, current_revenue_ar: topPlan.total_amount_ar },
+          });
+        }
+        actions.push(...changeActions.slice(0, Math.max(0, 3 - actions.length)));
+        priorityAction = changeActions[0] || actions[0] || null;
+      }
+
+      poolResults.push({
+        pool_name: displayByPool[String(poolId)] || "Pool",
+        current,
+        previous,
+        revenue_change_pct: revenueChangePct,
+        sales_change_pct: salesChangePct,
+        trend,
+        data_strength: dataStrength,
+        top_plan: topPlan,
+        actions: actions.slice(0, 3),
+        priority_action: priorityAction,
+      });
+    }
+
+    return {
+      ...base,
+      available: true,
+      overall: {
+        current: currentTotals,
+        previous: previousTotals,
+        revenue_change_pct: assistantSmartSalesPctChange(currentTotals.total_amount_ar, previousTotals.total_amount_ar),
+        sales_change_pct: assistantSmartSalesPctChange(currentTotals.paid_transactions, previousTotals.paid_transactions),
+        trend: assistantSmartSalesTrend(currentTotals.total_amount_ar, previousTotals.total_amount_ar),
+      },
+      pools: poolResults,
+    };
+  } catch (error) {
+    console.warn("[SMART SALES V1] analysis unavailable:", String(error?.message || error).slice(0, 120));
+    return { ...base, reason: "smart_sales_unavailable" };
+  }
+}
+
+async function buildAdminTrustedAssistantContext({ req, requestedScope, includeSmartSales = false }) {
   const admin = req?.admin;
   if (!admin || !supabase) {
     return {
@@ -3436,6 +3760,17 @@ async function buildAdminTrustedAssistantContext({ req, requestedScope }) {
           permissions: buildAdminPermissions(admin),
         },
         scope: { mode: "no_pool", pool_count: 0, selected_pool_name: null },
+        ...(includeSmartSales ? { smart_sales: {
+          available: true,
+          period_days: 30,
+          comparison: "previous_30_days",
+          current_period: { from: assistantBusinessDateShift(billingMadagascarToday(), -29), to: billingMadagascarToday() },
+          previous_period: { from: assistantBusinessDateShift(billingMadagascarToday(), -59), to: assistantBusinessDateShift(billingMadagascarToday(), -30) },
+          advisory_only: true,
+          allowed_owner_actions: ["keep_visible", "hide", "reshow", "create"],
+          overall: { current: { paid_transactions: 0, total_amount_ar: 0 }, previous: { paid_transactions: 0, total_amount_ar: 0 }, revenue_change_pct: 0, sales_change_pct: 0, trend: "no_sales" },
+          pools: [],
+        } } : {}),
         pools: [],
         plans: [],
         plans_summary: { total: 0, visible: 0, hidden: 0, active: 0, inactive: 0, free: 0, paid: 0, unlimited: 0, data_limited: 0 },
@@ -3454,7 +3789,7 @@ async function buildAdminTrustedAssistantContext({ req, requestedScope }) {
   if (poolIds.length) {
     const { data, error } = await supabase
       .from("plans")
-      .select("name,price_ar,duration_minutes,duration_hours,data_mb,mikrotik_rate_limit,plan_source,is_active,is_visible,pool_id,sort_order")
+      .select("id,name,price_ar,duration_minutes,duration_hours,data_mb,mikrotik_rate_limit,plan_source,is_active,is_visible,pool_id,sort_order,created_at")
       .in("pool_id", poolIds)
       .eq("system", "mikrotik")
       .order("sort_order", { ascending: true, nullsFirst: false })
@@ -3521,6 +3856,10 @@ async function buildAdminTrustedAssistantContext({ req, requestedScope }) {
     }
   }
 
+  const smartSales = includeSmartSales
+    ? await buildAdminSmartSalesSnapshot({ poolIds, poolsInternal, planRows, displayByPool })
+    : null;
+
   const safePools = poolsInternal.map((pool) => ({
     display_name: assistantSafePoolDisplay(pool),
     capacity_max: Number.isFinite(Number(pool.capacity_max)) ? Math.max(0, Math.trunc(Number(pool.capacity_max))) : null,
@@ -3545,6 +3884,7 @@ async function buildAdminTrustedAssistantContext({ req, requestedScope }) {
       pool_count: safePools.length,
       selected_pool_name: requestedPoolId ? safePools[0]?.display_name || null : null,
     },
+    ...(includeSmartSales ? { smart_sales: smartSales } : {}),
     pools: safePools,
     plans: safePlans,
     plans_summary: plansSummary,
@@ -3778,6 +4118,7 @@ function buildAnuAssistantData({ context, trustedContext, uiSnapshot }) {
     const bestRevenue = byPlan.slice().sort((a, b) => Number(b.total_amount_ar || 0) - Number(a.total_amount_ar || 0))[0];
     return {
       panel: cleanOptionalText(ui.panel, 40) || "unknown",
+      smart_sales: trusted.smart_sales && typeof trusted.smart_sales === "object" ? trusted.smart_sales : null,
       plans: Array.isArray(trusted.plans) ? trusted.plans : [],
       plans_summary: trusted.plans_summary || null,
       pools: Array.isArray(trusted.pools) ? trusted.pools : [],
@@ -6630,6 +6971,9 @@ function detectDynamicIntentFromMessage(msg, context) {
   }
 
   if (context === "admin_owner") {
+    // Smart Sales Analyst V1 — explicit decision brief wins over generic coaching.
+    if (isAdminSmartSalesAnalysisMessage(message)) return "admin_smart_sales_analysis";
+
     // ---- Phase 4: diagnostic / coaching — checked FIRST to avoid collision ----
 
     // Low sales reason — diagnostic intent (must come before admin_best_selling_plan
@@ -8048,6 +8392,126 @@ function buildAdminOwnerDynamicAnswer(intent_key, lang, liveData) {
     );
   }
 
+  // ---- Smart Sales Analyst V1 ----
+  if (intent_key === "admin_smart_sales_analysis") {
+    const smart = ld.smart_sales && typeof ld.smart_sales === "object" ? ld.smart_sales : null;
+    if (!smart || smart.available !== true) {
+      return t(
+        "Je ne peux pas vérifier la comparaison 30 jours pour le moment. Aucun changement n’est recommandé tant que les données ne sont pas vérifiées.",
+        "Tsy afaka manamarina ny comparaison 30 jours aho izao. Aleo tsy manova forfait raha mbola tsy voamarina ny données.",
+        "I can’t verify the 30-day comparison right now. I recommend making no changes until the data can be verified."
+      );
+    }
+
+    const pools = Array.isArray(smart.pools) ? smart.pools : [];
+    if (!pools.length) {
+      return t(
+        "Aucun pool accessible à analyser. Aucun changement recommandé.",
+        "Tsy misy pool azo anaovana analyse. Tsy misy changement recommandé.",
+        "There is no accessible pool to analyze. No change is recommended."
+      );
+    }
+
+    const pctText = (v) => {
+      if (v === null || v === undefined || !Number.isFinite(Number(v))) return "—";
+      const n = Number(v);
+      return `${n > 0 ? "+" : ""}${String(Math.round(n * 10) / 10).replace(".", ",")}%`;
+    };
+    const trendText = (trend) => {
+      if (trend === "up") return t("en hausse", "miakatra", "up");
+      if (trend === "down") return t("en baisse", "midina", "down");
+      if (trend === "new_activity") return t("nouvelle activité", "activité vaovao", "new activity");
+      if (trend === "no_sales") return t("sans vente", "tsy misy vente", "no sales");
+      return t("stable", "stable", "stable");
+    };
+    const actionText = (action) => {
+      if (!action || typeof action !== "object") return null;
+      if (action.action === "keep_visible" && action.plan_name) {
+        return t(
+          `Gardez « ${action.plan_name} » visible : c’est le forfait le plus solide sur les 30 derniers jours.`,
+          `Avelao visible « ${action.plan_name} » : io no forfait matanjaka indrindra tao anatin’ny 30 jours.`,
+          `Keep “${action.plan_name}” visible: it is the strongest plan over the last 30 days.`
+        );
+      }
+      if (action.action === "hide" && action.plan_name) {
+        return t(
+          `Masquez « ${action.plan_name} » : aucune vente payée sur les deux périodes de 30 jours.`,
+          `Afeno « ${action.plan_name} » : tsy nisy vente payée nandritra ireo période 30 jours roa.`,
+          `Hide “${action.plan_name}”: it had no paid sales in either 30-day period.`
+        );
+      }
+      if (action.action === "reshow" && action.plan_name) {
+        return t(
+          `Réaffichez « ${action.plan_name} » : il avait une demande récente avant la baisse actuelle.`,
+          `Avereno visible « ${action.plan_name} » : nisy demande izy talohan’ny baisse actuelle.`,
+          `Re-show “${action.plan_name}”: it had recent demand before the current decline.`
+        );
+      }
+      if (action.action === "create") {
+        if (action.suggestion === "entry_plan_under_1000_ar") {
+          return t(
+            "Créez un forfait d’entrée à moins de 1 000 Ar pour compléter l’offre.",
+            "Mamoròna forfait d’entrée latsaky ny 1 000 Ar mba hameno ny offre.",
+            "Create an entry plan under 1,000 Ar to fill the catalogue gap."
+          );
+        }
+        if (action.suggestion === "daily_plan") {
+          return t(
+            "Créez un forfait journalier pour compléter l’offre.",
+            "Mamoròna forfait journalier mba hameno ny offre.",
+            "Create a daily plan to fill the catalogue gap."
+          );
+        }
+      }
+      return null;
+    };
+
+    if (pools.length === 1) {
+      const p = pools[0];
+      const current = p.current || {};
+      const previous = p.previous || {};
+      const header = t(
+        `${p.pool_name} — 30 derniers jours : ${Number(current.paid_transactions || 0)} vente(s), ${fmtAr(current.total_amount_ar || 0)}. Période précédente : ${Number(previous.paid_transactions || 0)} vente(s), ${fmtAr(previous.total_amount_ar || 0)}. Tendance : ${trendText(p.trend)} (${pctText(p.revenue_change_pct)} de revenus).`,
+        `${p.pool_name} — 30 jours farany : vente ${Number(current.paid_transactions || 0)}, ${fmtAr(current.total_amount_ar || 0)}. Période teo aloha : vente ${Number(previous.paid_transactions || 0)}, ${fmtAr(previous.total_amount_ar || 0)}. Tendance : ${trendText(p.trend)} (${pctText(p.revenue_change_pct)} revenus).`,
+        `${p.pool_name} — last 30 days: ${Number(current.paid_transactions || 0)} sale(s), ${fmtAr(current.total_amount_ar || 0)}. Previous period: ${Number(previous.paid_transactions || 0)} sale(s), ${fmtAr(previous.total_amount_ar || 0)}. Trend: ${trendText(p.trend)} (${pctText(p.revenue_change_pct)} revenue).`
+      );
+
+      if (p.data_strength !== "enough") {
+        return [header, t(
+          "Les données sont encore trop faibles pour justifier un changement. Je vous conseille de garder les forfaits actuels visibles et de réévaluer après davantage de ventes.",
+          "Mbola kely ny données ka tsy ampy hanaovana changement. Aleo tazonina aloha ny forfait actuelle dia averina jerena rehefa betsaka kokoa ny ventes.",
+          "There is not enough data yet to justify a change. Keep the current plans as they are and reassess after more sales."
+        )].join("\n");
+      }
+
+      const lines = (Array.isArray(p.actions) ? p.actions : []).map(actionText).filter(Boolean).slice(0, 3);
+      if (!lines.length) {
+        return [header, t(
+          "Aucun changement n’est recommandé actuellement.",
+          "Tsy misy changement recommandé amin’izao.",
+          "No change is recommended right now."
+        )].join("\n");
+      }
+      return [header, ...lines.map((line) => `• ${line}`)].join("\n");
+    }
+
+    const heading = t(
+      "Analyse 30 jours vs 30 jours précédents — par pool :",
+      "Analyse 30 jours vs 30 jours teo aloha — isaky ny pool :",
+      "Last 30 days vs previous 30 days — by pool:"
+    );
+    const lines = pools.slice(0, 8).map((p) => {
+      let decision = null;
+      if (p.data_strength !== "enough") {
+        decision = t("données insuffisantes, ne changez rien", "données mbola kely, aza ovaina", "not enough data, make no change");
+      } else {
+        decision = actionText(p.priority_action) || t("aucun changement recommandé", "tsy misy changement recommandé", "no change recommended");
+      }
+      return `• ${p.pool_name} : ${Number(p.current?.paid_transactions || 0)} vente(s), ${fmtAr(p.current?.total_amount_ar || 0)}, ${trendText(p.trend)} (${pctText(p.revenue_change_pct)}) — ${decision}`;
+    });
+    return [heading, ...lines].join("\n");
+  }
+
   // ---- Phase 2: Plans + Revenue BI ----
 
   // Helper: format Ariary amount
@@ -9368,6 +9832,8 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
     "admin_best_selling_plan", "admin_best_revenue_plan",
     "admin_visible_hidden_plans", "admin_plan_pricing_advice",
     "admin_plan_to_show_hide", "admin_create_plan_advice",
+    // Smart Sales Analyst V1
+    "admin_smart_sales_analysis",
     // Phase 4: business coach
     "admin_business_coach", "admin_improve_sales",
     "admin_keep_hide_plans", "admin_create_next_plan",
@@ -9421,6 +9887,11 @@ function buildDynamicAssistantAnswer(context, intentKey, message, lang, liveData
     // Multi-turn PP follow-up: keep the PP topic even if the short fragment is
     // generically detected as plan_list/payment_method.
     resolvedIntent = intentKey;
+  } else if (
+    context === "admin_owner" &&
+    detectedIntent === "admin_smart_sales_analysis"
+  ) {
+    resolvedIntent = detectedIntent;
   } else if (
     context === "platform_prospect" &&
     String(intentKey || "").startsWith("platform_pp_") &&
@@ -10559,7 +11030,14 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
         trustedContext,
       });
 
-      if (aiSafe) {
+      const smartSalesAiSafe = context !== "admin_owner" || !isAdminSmartSalesAnalysisMessage(message)
+        ? true
+        : validateAdminSmartSalesAiAnswer({
+            answer: aiRaw,
+            smartSales: trustedContext?.smart_sales || liveData?.smart_sales || null,
+          });
+
+      if (aiSafe && smartSalesAiSafe) {
         finalAnswer = aiRaw;
         aiUsed = true;
         console.info("[AI ASSISTANT]", {
@@ -11869,6 +12347,14 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
     "Use 'Je vous conseille…', 'Vous pouvez…', 'D'après les données vérifiées…' — never say 'I created/deleted/changed' anything.",
     "Do not suggest actions that require platform-level access the authenticated actor does not have.",
     "Do not expose secrets, internal IDs, platform revenue share figures, or infrastructure details.",
+    ...(isAdminSmartSalesAnalysisMessage(rawMessage) ? [
+      "SMART SALES ANALYST TURN: Go straight to the decision brief. Do not ask a clarifying question when smart_sales is available.",
+      "Use ONLY TRUSTED SERVER CONTEXT.smart_sales for the 30-day comparison and recommendations.",
+      "Compare last 30 days with the previous 30 days. If scope is all pools, keep it concise and give one priority decision per pool.",
+      "You may recommend ONLY actions already present in smart_sales.pools[].actions: keep visible, hide, re-show, or create. Never invent price changes, promotions, speed/data/duration changes, deletion, or automatic actions.",
+      "If data_strength is low or there are no trusted actions, explicitly say no change is recommended yet.",
+      "This is advisory only: never claim that a plan was changed, hidden, re-shown or created.",
+    ] : []),
   ].join("\n- ");
 
   const prospectRules = [
@@ -14482,7 +14968,8 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
     const liveData = sanitizeAssistantLiveData(req.body?.live_data || {}, rawContext);
     const uiSnapshot = sanitizeAssistantUiSnapshot(req.body?.ui_snapshot || req.body?.live_data || {}, rawContext);
     const anuEnabled = isAssistantAnuEnabledForContext(rawContext);
-    const requestedScope = anuEnabled
+    const smartSalesRequested = isAdminSmartSalesAnalysisMessage(rawMessage);
+    const requestedScope = (anuEnabled || smartSalesRequested)
       ? normalizeAssistantRequestedScope(req.body?.requested_scope)
       : { pool_id: null };
 
@@ -14492,9 +14979,13 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
     const conversationId = normalizeAssistantConversationId(rawConvId) || null;
     const rawMemoryToken = String(req.body?.memory_token || "").trim() || null;
     let trustedContext = null;
-    if (anuEnabled) {
+    if (anuEnabled || smartSalesRequested) {
       try {
-        trustedContext = await buildAdminTrustedAssistantContext({ req, requestedScope });
+        trustedContext = await buildAdminTrustedAssistantContext({
+          req,
+          requestedScope,
+          includeSmartSales: smartSalesRequested,
+        });
       } catch (contextError) {
         if (contextError?.httpStatus === 400 || contextError?.httpStatus === 403) throw contextError;
         console.warn("[ANU-2 ADMIN CONTEXT] unavailable:", String(contextError?.message || contextError).slice(0, 100));
@@ -14514,10 +15005,14 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
           : "admin_" + String(req.admin.id).slice(0, 16) + (requestedScope.pool_id ? "_" + requestedScope.pool_id.slice(0, 8) : "_all"))
       : null;
 
+    const assistantLiveData = (!anuEnabled && smartSalesRequested && trustedContext?.smart_sales)
+      ? { ...liveData, smart_sales: trustedContext.smart_sales }
+      : liveData;
+
     const result = await handleAssistantChat({
       context: rawContext,
       rawMessage,
-      liveData,
+      liveData: assistantLiveData,
       uiSnapshot,
       trustedContext,
       pool_id: null,
