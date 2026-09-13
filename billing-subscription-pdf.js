@@ -48,9 +48,7 @@ function issuerBlock(doc,y){
   typography(doc,"Helvetica-Bold",9).fillColor(COLORS.ink).text("ÉMIS PAR",48,y,{width:210,lineGap:0});
   typography(doc,"Helvetica-Bold",11).fillColor(COLORS.ink).text("RAZAFI",48,y+17,{width:210,lineGap:0});
   typography(doc,"Helvetica",8.8).fillColor(COLORS.muted)
-    .text("Exploité par RAZAFINDRAMASY Sosthène",48,y+34,{width:260,lineGap:1})
-    .text("Lot IBI 34, Amboasarikely, Madagascar",48,y+48,{width:260,lineGap:1})
-    .text("Document généré électroniquement",48,y+62,{width:260,lineGap:1});
+    .text("Exploité par RAZAFINDRAMASY Sosthène",48,y+34,{width:260,lineGap:1});
 }
 function baseDocument({title,number,uat=false}){
   const doc=new PDFDocument({size:"A4",margin:48,info:{Title:`${title} ${number}`,Author:"RAZAFI - RAZAFINDRAMASY Sosthène",Subject:"Abonnement RAZAFI",Creator:"RAZAFI Billing v1 S13.7.1"}});
