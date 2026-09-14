@@ -118,7 +118,7 @@ function baseDocument(payload) {
       Title: `${safe(d.title, "Rapport annuel RAZAFI")} ${safe(d.year, "")}`.trim(),
       Author: "RAZAFI - RAZAFINDRAMASY Sosthène",
       Subject: "Rapport annuel d’activité et de revenus RAZAFI",
-      Creator: "RAZAFI Financial Reporting v1 S14.7.3C.2",
+      Creator: "RAZAFI Financial Reporting v1 S14.7.3C.3",
     },
   });
 
@@ -410,7 +410,11 @@ function renderPoolSummaries(doc, payload) {
   const rows = Array.isArray(payload?.body?.pool_summaries) ? payload.body.pool_summaries : [];
   if (!rows.length) return;
 
+  // S14.7.3C.3: never orphan the section title at the bottom of a page.
+  // Reserve the title plus the first pool card before drawing either.
+  ensureSpace(doc, payload, 148);
   sectionTitle(doc, payload, "Détail par pool");
+
   rows.forEach((r) => {
     ensureSpace(doc, payload, 108);
     const y = doc.y;
@@ -503,7 +507,9 @@ function renderMonthlyTable(doc, payload) {
     doc.y = y + 30;
   });
 
-  doc.y += 12;
+  // Single-pool Owner reports are deliberately a little tighter so the
+  // economic-history + reading-notes block can remain on the same page.
+  doc.y += payload?.document?.scope_type === "owner_pool" ? 6 : 12;
 }
 
 function buildModelHistory(rows) {
@@ -548,9 +554,12 @@ function renderModelHistory(doc, payload) {
   // continuation page, and reserve enough room for the reading notes below it.
   // This prevents a short model-history block from being split awkwardly over
   // two pages after a long monthly table.
+  const compactOwnerPool = payload?.document?.scope_type === "owner_pool";
+  const historyRowHeight = compactOwnerPool ? 24 : 28;
   const continuationCapacity = PAGE.contentBottom - 92;
-  const historyHeight = 40 + groups.length * 28 + 8;
-  const notesReserve = 150;
+  const historyHeight = 40 + groups.length * historyRowHeight + 8;
+  const notesReserve = compactOwnerPool ? 128 : 150;
+
   if (
     historyHeight <= continuationCapacity &&
     doc.y + historyHeight + notesReserve > PAGE.contentBottom
@@ -560,7 +569,7 @@ function renderModelHistory(doc, payload) {
 
   sectionTitle(doc, payload, "Historique des modèles économiques");
   groups.forEach((g) => {
-    ensureSpace(doc, payload, 34);
+    ensureSpace(doc, payload, compactOwnerPool ? 30 : 34);
     const y = doc.y;
     typography(doc, "Helvetica-Bold", 8.8).fillColor(COLORS.ink).text(safe(g.pool_name), PAGE.left, y, { width: 180 });
     typography(doc, "Helvetica", 8.5).fillColor(COLORS.ink).text(regimeLabel(g.regime), 240, y, { width: 100 });
@@ -571,14 +580,14 @@ function renderModelHistory(doc, payload) {
       : `${monthFromKey(g.startKey)} - ${monthFromKey(g.endKey)}`;
 
     typography(doc, "Helvetica", 8.5).fillColor(COLORS.muted).text(period, 350, y, { width: 197, align: "right" });
-    doc.moveTo(PAGE.left, y + 20).lineTo(PAGE.right, y + 20).lineWidth(0.5).strokeColor(COLORS.line).stroke();
-    doc.y = y + 28;
+    const ruleY = compactOwnerPool ? y + 17 : y + 20;
+    doc.moveTo(PAGE.left, ruleY).lineTo(PAGE.right, ruleY).lineWidth(0.5).strokeColor(COLORS.line).stroke();
+    doc.y = y + historyRowHeight;
   });
-  doc.y += 8;
+  doc.y += compactOwnerPool ? 4 : 8;
 }
 
 function renderNotes(doc, payload) {
-  sectionTitle(doc, payload, "Notes de lecture");
   const provisional = payload?.document?.mode === "provisional";
   const notes = [
     "Les ventes historiques sans ventilation certifiable sont conservées dans les ventes reportables mais ne génèrent aucune commission supposée.",
@@ -588,15 +597,37 @@ function renderNotes(doc, payload) {
       : "Ce rapport final est fondé sur un snapshot annuel immuable. Toute correction ultérieure doit faire l’objet d’une nouvelle révision.",
   ];
 
+  const compactOwnerPool = payload?.document?.scope_type === "owner_pool";
+  const fontSize = compactOwnerPool ? 8.1 : 8.5;
+  const lineGap = compactOwnerPool ? 1 : 2;
+  const afterNote = compactOwnerPool ? 6 : 10;
+
+  // S14.7.3C.3: the reading notes are one logical block. Measure the whole
+  // block before drawing it so a single note can never spill onto a new page.
+  typography(doc, "Helvetica", fontSize);
+  const notesTextHeight = notes.reduce(
+    (sum, note) =>
+      sum +
+      doc.heightOfString(note, { width: 475, lineGap }) +
+      afterNote,
+    0,
+  );
+  const blockHeight = 40 + notesTextHeight;
+
+  if (blockHeight <= PAGE.contentBottom - 92) {
+    ensureSpace(doc, payload, blockHeight);
+  }
+
+  sectionTitle(doc, payload, "Notes de lecture");
+
   notes.forEach((note) => {
-    ensureSpace(doc, payload, 34);
     const y = doc.y;
     doc.circle(54, y + 5, 2).fill(COLORS.brand);
-    typography(doc, "Helvetica", 8.5).fillColor(COLORS.muted).text(note, 64, y, {
+    typography(doc, "Helvetica", fontSize).fillColor(COLORS.muted).text(note, 64, y, {
       width: 475,
-      lineGap: 2,
+      lineGap,
     });
-    doc.y += doc.heightOfString(note, { width: 475, lineGap: 2 }) + 10;
+    doc.y += doc.heightOfString(note, { width: 475, lineGap }) + afterNote;
   });
 }
 
