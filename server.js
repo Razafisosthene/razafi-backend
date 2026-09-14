@@ -20,6 +20,7 @@ import { registerEc1ClientSpace } from "./ec1-client-space.js";
 import { createAirtelMoneyClient, normalizeAirtelInitiationState, normalizeAirtelTransactionState } from "./airtel-money.js";
 import { createSubscriptionInvoicePdf, createSubscriptionReceiptPdf } from "./billing-subscription-pdf.js";
 import { createCommissionStatementPdf, createCommissionPayoutReceiptPdf } from "./billing-commission-pdf.js";
+import { createFinancialAnnualReportPdf } from "./financial-report-pdf.js";
 
 dotenv.config();
 
@@ -1564,7 +1565,25 @@ async function requireAdmin(req, res, next) {
       }
 
       // OWNER-only financial/contractual GET space.
-      if (fullPath.startsWith("/api/owner/") && !hasOwnerRole) {
+      //
+      // S14.7.3B: annual financial reports are the one deliberate exception to
+      // the "currently owns a pool" shortcut. A former canonical Owner may need
+      // to retrieve a report for a year/pool they historically owned. The route
+      // itself delegates authorization to the Financial Reporting RPCs, whose
+      // source of truth is pool_owner_periods. Manager/Viewer membership never
+      // grants financial-report access.
+      const allowHistoricalOwnerFinancialReportRead =
+        (method === "GET" || method === "HEAD") &&
+        (
+          /^\/api\/owner\/financial-reports\/\d{4}\/pdf$/.test(fullPath) ||
+          /^\/api\/owner\/financial-reports\/final\/[0-9a-f-]{36}\/pdf$/i.test(fullPath)
+        );
+
+      if (
+        fullPath.startsWith("/api/owner/") &&
+        !hasOwnerRole &&
+        !allowHistoricalOwnerFinancialReportRead
+      ) {
         return res.status(403).json({ error: "owner_only" });
       }
 
@@ -17172,6 +17191,464 @@ function sendBillingPdf(res,doc,filename){
   doc.on("error",(error)=>{console.error("[BILLING S11.5] PDF stream error",error?.message||error);if(!res.headersSent)res.status(500).end()});
   doc.pipe(res);doc.end();
 }
+
+// =============================================================================
+// S14.7.3B — ANNUAL FINANCIAL REPORT PDF ROUTES
+// =============================================================================
+// Financial calculations, historical ownership and final-snapshot authorization
+// remain entirely inside the canonical PostgreSQL Financial Reporting functions.
+// This backend layer validates HTTP inputs, requests the canonical document
+// payload and streams it through financial-report-pdf.js.
+//
+// OWNER routes:
+//   GET /api/owner/financial-reports/:year/pdf
+//       ?pool_id=<uuid>                     optional; absent = consolidated
+//
+//   GET /api/owner/financial-reports/final/:snapshotId/pdf
+//
+// SUPERADMIN routes:
+//   GET /api/admin/financial-reports/platform/:year/pdf
+//
+//   GET /api/admin/financial-reports/final/:snapshotId/pdf
+//
+// No route creates/finalizes a snapshot. Finalization remains a separate,
+// explicit year-close operation.
+// =============================================================================
+
+function financialReportYearParam(raw) {
+  const value = String(raw ?? "").trim();
+  if (!/^\d{4}$/.test(value)) {
+    throw makeRequestValidationError("financial_report_year_invalid");
+  }
+  const year = Number(value);
+  if (!Number.isInteger(year) || year < 2020 || year > 2100) {
+    throw makeRequestValidationError("financial_report_year_invalid");
+  }
+  return year;
+}
+
+function financialReportRpcErrorCode(error) {
+  const raw = String(
+    error?.message ||
+    error?.details ||
+    error?.hint ||
+    error ||
+    ""
+  ).trim();
+
+  const known = [
+    "financial_reporting_snapshot_not_found_or_forbidden",
+    "financial_reporting_actor_required",
+    "financial_reporting_actor_not_found",
+    "financial_reporting_snapshot_id_required",
+    "financial_reporting_year_invalid",
+    "financial_reporting_as_of_required",
+    "financial_reporting_document_scope_invalid",
+    "financial_reporting_pool_required",
+    "financial_reporting_pool_scope_invalid",
+    "financial_reporting_snapshot_year_mismatch",
+    "financial_reporting_snapshot_scope_mismatch",
+    "financial_reporting_snapshot_pool_mismatch",
+    "financial_reporting_document_owner_missing",
+    "financial_reporting_pool_not_found",
+  ];
+
+  for (const code of known) {
+    if (raw.includes(code)) return code;
+  }
+
+  // Owner/superadmin authorization error names may evolve while preserving
+  // the common financial_reporting_* namespace. Keep the HTTP mapping safe
+  // without exposing raw PostgreSQL details.
+  if (
+    raw.includes("financial_reporting") &&
+    (
+      raw.includes("forbidden") ||
+      raw.includes("not_authorized") ||
+      raw.includes("not_owner") ||
+      raw.includes("superadmin")
+    )
+  ) {
+    return "financial_reporting_forbidden";
+  }
+
+  return "financial_reporting_failed";
+}
+
+function sendFinancialReportRpcError(res, error) {
+  const code = financialReportRpcErrorCode(error);
+
+  if (code === "financial_reporting_snapshot_not_found_or_forbidden") {
+    // Deliberately indistinguishable: prevents snapshot UUID probing.
+    return res.status(404).json({ error: code });
+  }
+
+  if (
+    code === "financial_reporting_actor_required" ||
+    code === "financial_reporting_actor_not_found" ||
+    code === "financial_reporting_forbidden"
+  ) {
+    return res.status(403).json({ error: "financial_reporting_forbidden" });
+  }
+
+  if (
+    code === "financial_reporting_snapshot_year_mismatch" ||
+    code === "financial_reporting_snapshot_scope_mismatch" ||
+    code === "financial_reporting_snapshot_pool_mismatch"
+  ) {
+    return res.status(409).json({ error: code });
+  }
+
+  if (
+    code === "financial_reporting_snapshot_id_required" ||
+    code === "financial_reporting_year_invalid" ||
+    code === "financial_reporting_as_of_required" ||
+    code === "financial_reporting_document_scope_invalid" ||
+    code === "financial_reporting_pool_required" ||
+    code === "financial_reporting_pool_scope_invalid"
+  ) {
+    return res.status(400).json({ error: code });
+  }
+
+  if (
+    code === "financial_reporting_document_owner_missing" ||
+    code === "financial_reporting_pool_not_found"
+  ) {
+    return res.status(404).json({ error: code });
+  }
+
+  return res.status(500).json({ error: "financial_reporting_failed" });
+}
+
+function financialReportPdfFilename(payload) {
+  const d = payload?.document || {};
+  const year = String(d.year || "annee");
+  const mode = d.mode === "final" ? "final" : "provisoire";
+
+  if (d.report_number) {
+    return billingPdfFilename("rapport-annuel", d.report_number);
+  }
+
+  if (d.scope_type === "platform") {
+    return billingPdfFilename(
+      "rapport-annuel-revenus-RAZAFI",
+      `${year}-${mode}`
+    );
+  }
+
+  if (d.scope_type === "owner_pool") {
+    return billingPdfFilename(
+      "rapport-annuel-activite-revenus",
+      `${d.pool_name || "pool"}-${year}-${mode}`
+    );
+  }
+
+  return billingPdfFilename(
+    "rapport-annuel-activite-revenus",
+    `${year}-${mode}`
+  );
+}
+
+function sendFinancialReportPdf(res, doc, filename, payload) {
+  const d = payload?.document || {};
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.setHeader("Cache-Control", "private, no-store, max-age=0");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-RAZAFI-Report-Mode", String(d.mode || "unknown"));
+  res.setHeader("X-RAZAFI-Report-Scope", String(d.scope_type || "unknown"));
+
+  doc.on("error", (error) => {
+    console.error(
+      "[FINANCIAL REPORTING S14.7.3B] PDF stream error",
+      error?.message || error
+    );
+    if (!res.headersSent) res.status(500).end();
+  });
+
+  doc.pipe(res);
+  doc.end();
+}
+
+async function financialReportDocumentPayload({
+  actorId,
+  year,
+  scopeType,
+  poolId = null,
+  snapshotId = null,
+}) {
+  const { data, error } = await supabase.rpc(
+    "fn_financial_reporting_v1_document_payload",
+    {
+      p_actor: actorId,
+      p_year: year,
+      p_scope_type: scopeType,
+      p_pool_id: poolId,
+      p_snapshot_id: snapshotId,
+      p_as_of: new Date().toISOString(),
+    }
+  );
+
+  if (error) {
+    const err = new Error(financialReportRpcErrorCode(error));
+    err.financialReportRpcError = error;
+    throw err;
+  }
+
+  if (!data || data.ok !== true || !data.document || !data.body) {
+    const err = new Error("financial_reporting_payload_invalid");
+    err.httpStatus = 500;
+    throw err;
+  }
+
+  return data;
+}
+
+async function financialReportFinalMetadata(actorId, snapshotId) {
+  const { data, error } = await supabase.rpc(
+    "fn_financial_reporting_v1_get_final_report",
+    {
+      p_actor: actorId,
+      p_snapshot_id: snapshotId,
+    }
+  );
+
+  if (error) {
+    const err = new Error(financialReportRpcErrorCode(error));
+    err.financialReportRpcError = error;
+    throw err;
+  }
+
+  const report = data?.report || null;
+  const year = Number(report?.report_year);
+  const scopeType = String(report?.report_type || "");
+  const poolId = report?.pool_id ? String(report.pool_id) : null;
+
+  if (
+    !report ||
+    !Number.isInteger(year) ||
+    !["platform", "owner_consolidated", "owner_pool"].includes(scopeType)
+  ) {
+    const err = new Error("financial_reporting_snapshot_metadata_invalid");
+    err.httpStatus = 500;
+    throw err;
+  }
+
+  return { year, scopeType, poolId };
+}
+
+function handleFinancialReportRouteError(res, error, logLabel) {
+  console.error(
+    logLabel,
+    error?.financialReportRpcError?.message ||
+    error?.message ||
+    error
+  );
+
+  if (sendRequestValidationError(res, error)) return;
+
+  if (error?.financialReportRpcError) {
+    return sendFinancialReportRpcError(res, error.financialReportRpcError);
+  }
+
+  if (error?.message === "financial_reporting_snapshot_metadata_invalid") {
+    return res.status(500).json({ error: "financial_reporting_snapshot_metadata_invalid" });
+  }
+
+  if (error?.message === "financial_reporting_payload_invalid") {
+    return res.status(500).json({ error: "financial_reporting_payload_invalid" });
+  }
+
+  if (!res.headersSent) {
+    return res.status(500).json({ error: "financial_reporting_pdf_failed" });
+  }
+}
+
+// OWNER — live provisional annual report.
+// pool_id omitted => consolidated report across pools historically owned in year.
+// pool_id present => one historically-owned pool.
+app.get(
+  "/api/owner/financial-reports/:year/pdf",
+  requireAdmin,
+  async (req, res) => {
+    try {
+      if (!ensureSupabase(res)) return;
+
+      const actorId = String(req.admin?.id || "").trim();
+      if (!actorId) return res.status(401).json({ error: "Not authenticated" });
+
+      const year = financialReportYearParam(req.params.year);
+      const poolId = readOptionalUuidParam(req.query, "pool_id");
+      const scopeType = poolId ? "owner_pool" : "owner_consolidated";
+
+      const payload = await financialReportDocumentPayload({
+        actorId,
+        year,
+        scopeType,
+        poolId,
+        snapshotId: null,
+      });
+
+      const doc = createFinancialAnnualReportPdf(payload);
+      return sendFinancialReportPdf(
+        res,
+        doc,
+        financialReportPdfFilename(payload),
+        payload
+      );
+    } catch (error) {
+      return handleFinancialReportRouteError(
+        res,
+        error,
+        "[FINANCIAL REPORTING S14.7.3B] owner provisional PDF"
+      );
+    }
+  }
+);
+
+// OWNER — immutable final annual report.
+// Snapshot authorization is done by fn_financial_reporting_v1_get_final_report.
+// Its frozen metadata determines year/scope/pool; the browser cannot override it.
+app.get(
+  "/api/owner/financial-reports/final/:snapshotId/pdf",
+  requireAdmin,
+  async (req, res) => {
+    try {
+      if (!ensureSupabase(res)) return;
+
+      const actorId = String(req.admin?.id || "").trim();
+      if (!actorId) return res.status(401).json({ error: "Not authenticated" });
+
+      const snapshotId = readOptionalUuidValue(
+        req.params.snapshotId,
+        "snapshot_id"
+      );
+      if (!snapshotId) {
+        throw makeRequestValidationError("snapshot_id_required");
+      }
+
+      const meta = await financialReportFinalMetadata(actorId, snapshotId);
+
+      // Owner route must never render a platform snapshot, even if a future
+      // authorization change accidentally broadens the lower-level reader.
+      if (!["owner_consolidated", "owner_pool"].includes(meta.scopeType)) {
+        return res.status(404).json({
+          error: "financial_reporting_snapshot_not_found_or_forbidden",
+        });
+      }
+
+      const payload = await financialReportDocumentPayload({
+        actorId,
+        year: meta.year,
+        scopeType: meta.scopeType,
+        poolId: meta.poolId,
+        snapshotId,
+      });
+
+      const doc = createFinancialAnnualReportPdf(payload);
+      return sendFinancialReportPdf(
+        res,
+        doc,
+        financialReportPdfFilename(payload),
+        payload
+      );
+    } catch (error) {
+      return handleFinancialReportRouteError(
+        res,
+        error,
+        "[FINANCIAL REPORTING S14.7.3B] owner final PDF"
+      );
+    }
+  }
+);
+
+// SUPERADMIN — live provisional platform revenue report.
+app.get(
+  "/api/admin/financial-reports/platform/:year/pdf",
+  requireAdmin,
+  requireSuperadmin,
+  async (req, res) => {
+    try {
+      if (!ensureSupabase(res)) return;
+
+      const actorId = String(req.admin?.id || "").trim();
+      const year = financialReportYearParam(req.params.year);
+
+      const payload = await financialReportDocumentPayload({
+        actorId,
+        year,
+        scopeType: "platform",
+        poolId: null,
+        snapshotId: null,
+      });
+
+      const doc = createFinancialAnnualReportPdf(payload);
+      return sendFinancialReportPdf(
+        res,
+        doc,
+        financialReportPdfFilename(payload),
+        payload
+      );
+    } catch (error) {
+      return handleFinancialReportRouteError(
+        res,
+        error,
+        "[FINANCIAL REPORTING S14.7.3B] platform provisional PDF"
+      );
+    }
+  }
+);
+
+// SUPERADMIN — immutable final report reader.
+// Superadmin may render any final scope; authorization remains enforced by the
+// immutable snapshot reader before the PDF renderer receives a payload.
+app.get(
+  "/api/admin/financial-reports/final/:snapshotId/pdf",
+  requireAdmin,
+  requireSuperadmin,
+  async (req, res) => {
+    try {
+      if (!ensureSupabase(res)) return;
+
+      const actorId = String(req.admin?.id || "").trim();
+      const snapshotId = readOptionalUuidValue(
+        req.params.snapshotId,
+        "snapshot_id"
+      );
+      if (!snapshotId) {
+        throw makeRequestValidationError("snapshot_id_required");
+      }
+
+      const meta = await financialReportFinalMetadata(actorId, snapshotId);
+
+      const payload = await financialReportDocumentPayload({
+        actorId,
+        year: meta.year,
+        scopeType: meta.scopeType,
+        poolId: meta.poolId,
+        snapshotId,
+      });
+
+      const doc = createFinancialAnnualReportPdf(payload);
+      return sendFinancialReportPdf(
+        res,
+        doc,
+        financialReportPdfFilename(payload),
+        payload
+      );
+    } catch (error) {
+      return handleFinancialReportRouteError(
+        res,
+        error,
+        "[FINANCIAL REPORTING S14.7.3B] superadmin final PDF"
+      );
+    }
+  }
+);
+
+// =============================================================================
+// END S14.7.3B — ANNUAL FINANCIAL REPORT PDF ROUTES
+// =============================================================================
 async function loadOwnerSubscriptionInvoice(invoiceId,ownerId){
   const {data:invoice,error}=await supabase.from("subscription_invoices")
     .select("id,invoice_number,pool_id,owner_admin_user_id,offer_title_snapshot,period_start,period_end,purpose,amount_due_ar,amount_paid_ar,status,issued_at,due_at,created_at")
