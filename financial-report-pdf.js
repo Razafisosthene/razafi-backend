@@ -118,7 +118,7 @@ function baseDocument(payload) {
       Title: `${safe(d.title, "Rapport annuel RAZAFI")} ${safe(d.year, "")}`.trim(),
       Author: "RAZAFI - RAZAFINDRAMASY Sosthène",
       Subject: "Rapport annuel d’activité et de revenus RAZAFI",
-      Creator: "RAZAFI Financial Reporting v1 S14.7.3C.1",
+      Creator: "RAZAFI Financial Reporting v1 S14.7.3C.2",
     },
   });
 
@@ -275,48 +275,94 @@ function metricCard(doc, x, y, width, label, value, note = null) {
 function renderOwnerSummary(doc, payload) {
   const s = payload?.body?.owner_summary || {};
   sectionTitle(doc, payload, "Synthèse financière");
-  ensureSpace(doc, payload, 192);
+
+  // S14.7.3C.2 — Owner clarification:
+  // show the sales-linked RAZAFI subtotal, paid subscription and documented
+  // RAZAFI total separately so an Owner cannot read the subscription twice.
+  //
+  // This is presentation-only: every component comes from the canonical
+  // document payload. No historical split or business rule is reconstructed.
+  const subscriptionPaid = num(s.subscription_fee_paid_ar);
+  const subscriptionBilled = num(s.subscription_fee_billed_ar);
+  const hasExplicitSalesLinkedComponents =
+    Object.prototype.hasOwnProperty.call(s, "legacy_razafi_share_documented_ar") ||
+    Object.prototype.hasOwnProperty.call(s, "canonical_commission_revenue_ar");
+  const explicitSalesLinkedFees =
+    num(s.legacy_razafi_share_documented_ar) +
+    num(s.canonical_commission_revenue_ar);
+  const salesLinkedFees = hasExplicitSalesLinkedComponents
+    ? explicitSalesLinkedFees
+    : Math.max(0, num(s.razafi_fees_documented_ar) - subscriptionPaid);
+  const hasSubscription = subscriptionPaid > 0 || subscriptionBilled > 0;
+
+  ensureSpace(doc, payload, hasSubscription ? 282 : 192);
 
   const gap = 11;
   const w = (PAGE.width - gap) / 2;
   const y = doc.y;
-  metricCard(doc, PAGE.left, y, w, "Ventes WiFi reportables", amount(s.wifi_sales_reportable_ar));
-  metricCard(doc, PAGE.left + w + gap, y, w, "Frais RAZAFI documentés", amount(s.razafi_fees_documented_ar));
+
   metricCard(
     doc,
     PAGE.left,
-    y + 87,
+    y,
     w,
-    "Part propriétaire documentée",
-    amount(s.owner_sales_share_documented_ar),
-    "Montant documenté avant prise en compte d’éventuels frais fixes non inclus dans cette ligne.",
+    "Ventes WiFi reportables",
+    amount(s.wifi_sales_reportable_ar),
   );
   metricCard(
     doc,
     PAGE.left + w + gap,
-    y + 87,
+    y,
+    w,
+    "Frais RAZAFI liés aux ventes",
+    amount(salesLinkedFees),
+    "Hors abonnement RAZAFI.",
+  );
+
+  if (hasSubscription) {
+    metricCard(
+      doc,
+      PAGE.left,
+      y + 101,
+      w,
+      "Abonnement RAZAFI payé",
+      amount(subscriptionPaid),
+      subscriptionBilled !== subscriptionPaid
+        ? `Facturé : ${amount(subscriptionBilled)}`
+        : "Inclus dans le total RAZAFI documenté.",
+    );
+    metricCard(
+      doc,
+      PAGE.left + w + gap,
+      y + 101,
+      w,
+      "Total RAZAFI documenté",
+      amount(s.razafi_fees_documented_ar),
+      "Frais liés aux ventes + abonnement payé.",
+    );
+  }
+
+  const lastRowY = hasSubscription ? y + 202 : y + 101;
+  metricCard(
+    doc,
+    PAGE.left,
+    lastRowY,
+    w,
+    "Part propriétaire documentée",
+    amount(s.owner_sales_share_documented_ar),
+    "Part issue des ventes documentées ; l’historique non ventilé reste exclu.",
+  );
+  metricCard(
+    doc,
+    PAGE.left + w + gap,
+    lastRowY,
     w,
     "Historique sans ventilation certifiable",
     amount(s.historical_unallocated_sales_ar),
     "Inclus dans les ventes, mais aucune commission historique n’est extrapolée.",
   );
-  doc.y = y + 190;
 
-  if (num(s.subscription_fee_paid_ar) > 0 || num(s.subscription_fee_billed_ar) > 0) {
-    ensureSpace(doc, payload, 54);
-    const yy = doc.y;
-    doc.roundedRect(PAGE.left, yy, PAGE.width, 44, 10).fill(COLORS.infoSoft);
-    typography(doc, "Helvetica-Bold", 8.8).fillColor(COLORS.ink).text("ABONNEMENT RAZAFI", 64, yy + 9, {
-      width: 150,
-    });
-    typography(doc, "Helvetica", 8.8)
-      .fillColor(COLORS.ink)
-      .text(`Facturé : ${amount(s.subscription_fee_billed_ar)} · Payé : ${amount(s.subscription_fee_paid_ar)}`, 210, yy + 9, {
-        width: 320,
-        align: "right",
-      });
-    doc.y = yy + 56;
-  }
+  doc.y = hasSubscription ? y + 304 : y + 203;
 }
 
 function renderPlatformSummary(doc, payload) {
