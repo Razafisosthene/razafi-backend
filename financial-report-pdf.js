@@ -101,6 +101,9 @@ const regimeLabel = (value) =>
     subscription: "Abonnement",
   })[value] || safe(value);
 
+const razafiAmountLabel = (payload) =>
+  payload?.document?.scope_type === "platform" ? "REVENU RAZAFI" : "FRAIS RAZAFI";
+
 function typography(doc, font = "Helvetica", size = 10) {
   return doc.font(font).fontSize(size).fillOpacity(1);
 }
@@ -115,7 +118,7 @@ function baseDocument(payload) {
       Title: `${safe(d.title, "Rapport annuel RAZAFI")} ${safe(d.year, "")}`.trim(),
       Author: "RAZAFI - RAZAFINDRAMASY Sosthène",
       Subject: "Rapport annuel d’activité et de revenus RAZAFI",
-      Creator: "RAZAFI Financial Reporting v1 S14.7.3A",
+      Creator: "RAZAFI Financial Reporting v1 S14.7.3C.1",
     },
   });
 
@@ -371,7 +374,7 @@ function renderPoolSummaries(doc, payload) {
 
     typography(doc, "Helvetica", 7.8).fillColor(COLORS.muted).text("VENTES", 304, y + 13, { width: 95, align: "right" });
     typography(doc, "Helvetica-Bold", 10).fillColor(COLORS.ink).text(amount(r.wifi_sales_reportable_ar), 304, y + 28, { width: 95, align: "right" });
-    typography(doc, "Helvetica", 7.8).fillColor(COLORS.muted).text("FRAIS RAZAFI", 415, y + 13, { width: 115, align: "right" });
+    typography(doc, "Helvetica", 7.8).fillColor(COLORS.muted).text(razafiAmountLabel(payload), 415, y + 13, { width: 115, align: "right" });
     typography(doc, "Helvetica-Bold", 10).fillColor(COLORS.ink).text(amount(r.razafi_revenue_documented_ar), 415, y + 28, { width: 115, align: "right" });
 
     const line2 = [
@@ -413,7 +416,7 @@ function renderMonthlyTable(doc, payload) {
     { label: "POOL", x: 116, width: 100 },
     { label: "MODÈLE", x: 220, width: 64 },
     { label: "VENTES", x: 288, width: 77, align: "right" },
-    { label: "FRAIS RAZAFI", x: 369, width: 82, align: "right" },
+    { label: razafiAmountLabel(payload), x: 369, width: 82, align: "right" },
     { label: "NON VENTILÉ", x: 455, width: 84, align: "right" },
   ];
 
@@ -495,13 +498,32 @@ function renderModelHistory(doc, payload) {
   const groups = buildModelHistory(monthly);
   if (!groups.length) return;
 
+  // S14.7.3C.1: keep this compact section together when it can fit on one
+  // continuation page, and reserve enough room for the reading notes below it.
+  // This prevents a short model-history block from being split awkwardly over
+  // two pages after a long monthly table.
+  const continuationCapacity = PAGE.contentBottom - 92;
+  const historyHeight = 40 + groups.length * 28 + 8;
+  const notesReserve = 150;
+  if (
+    historyHeight <= continuationCapacity &&
+    doc.y + historyHeight + notesReserve > PAGE.contentBottom
+  ) {
+    addPage(doc, payload);
+  }
+
   sectionTitle(doc, payload, "Historique des modèles économiques");
   groups.forEach((g) => {
     ensureSpace(doc, payload, 34);
     const y = doc.y;
     typography(doc, "Helvetica-Bold", 8.8).fillColor(COLORS.ink).text(safe(g.pool_name), PAGE.left, y, { width: 180 });
     typography(doc, "Helvetica", 8.5).fillColor(COLORS.ink).text(regimeLabel(g.regime), 240, y, { width: 100 });
-    const period = g.startKey === g.endKey ? monthFromKey(g.startKey) : `${monthFromKey(g.startKey)} → ${monthFromKey(g.endKey)}`;
+
+    // Use a plain ASCII separator for maximum renderer/font portability.
+    const period = g.startKey === g.endKey
+      ? monthFromKey(g.startKey)
+      : `${monthFromKey(g.startKey)} - ${monthFromKey(g.endKey)}`;
+
     typography(doc, "Helvetica", 8.5).fillColor(COLORS.muted).text(period, 350, y, { width: 197, align: "right" });
     doc.moveTo(PAGE.left, y + 20).lineTo(PAGE.right, y + 20).lineWidth(0.5).strokeColor(COLORS.line).stroke();
     doc.y = y + 28;
