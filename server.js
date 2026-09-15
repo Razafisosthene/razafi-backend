@@ -17193,6 +17193,302 @@ function sendBillingPdf(res,doc,filename){
 }
 
 // =============================================================================
+// S14.8.2A.1 — SUPERADMIN OWNER LEGAL PROFILE API
+// =============================================================================
+// Canonical legal identity is attached to the Owner account, never to a pool.
+// The same profile therefore applies to every pool owned by that account and is
+// consumed by Financial Reporting for Owner annual-report footers/snapshots.
+//
+// Superadmin only:
+//   GET /api/admin/owner-legal-profiles/:ownerId
+//   PUT /api/admin/owner-legal-profiles/:ownerId
+//
+// No Owner/Manager/Viewer self-service is exposed here. The endpoint deliberately
+// returns only the legal-profile whitelist below and never raw admin-user data.
+// =============================================================================
+
+const OWNER_LEGAL_PROFILE_SELECT =
+  "owner_admin_user_id,entity_type,legal_name,trade_name,nif,stat,rcs,legal_address,phone";
+
+const OWNER_LEGAL_PROFILE_FIELDS = Object.freeze([
+  "entity_type",
+  "legal_name",
+  "trade_name",
+  "nif",
+  "stat",
+  "rcs",
+  "legal_address",
+  "phone",
+]);
+
+const OWNER_LEGAL_ENTITY_TYPES = new Set(["individual", "company"]);
+
+function ownerLegalApiError(code, httpStatus = 400) {
+  const err = new Error(String(code || "owner_legal_profile_error"));
+  err.publicCode = String(code || "owner_legal_profile_error");
+  err.httpStatus = httpStatus;
+  return err;
+}
+
+function ownerLegalProfileText(raw, field, maxCodePoints) {
+  if (raw === undefined || raw === null) return null;
+  if (Array.isArray(raw) || (typeof raw === "object" && raw !== null)) {
+    throw ownerLegalApiError(`owner_legal_${field}_invalid`, 400);
+  }
+
+  const value = normalizeRequestText(raw);
+  if ([...value].length > maxCodePoints) {
+    throw ownerLegalApiError(`owner_legal_${field}_too_long`, 400);
+  }
+  return value || null;
+}
+
+function normalizeOwnerLegalProfileBody(body = {}) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw ownerLegalApiError("owner_legal_profile_body_invalid", 400);
+  }
+
+  const entityType = String(body.entity_type ?? "").trim().toLowerCase();
+  if (!OWNER_LEGAL_ENTITY_TYPES.has(entityType)) {
+    throw ownerLegalApiError("owner_legal_entity_type_invalid", 400);
+  }
+
+  return {
+    entity_type: entityType,
+    legal_name: ownerLegalProfileText(body.legal_name, "legal_name", 180),
+    trade_name: ownerLegalProfileText(body.trade_name, "trade_name", 180),
+    nif: ownerLegalProfileText(body.nif, "nif", 80),
+    stat: ownerLegalProfileText(body.stat, "stat", 120),
+    rcs: ownerLegalProfileText(body.rcs, "rcs", 120),
+    legal_address: ownerLegalProfileText(body.legal_address, "legal_address", 500),
+    phone: ownerLegalProfileText(body.phone, "phone", 80),
+  };
+}
+
+function serializeOwnerLegalProfile(ownerId, row = null) {
+  const source = row && typeof row === "object" ? row : {};
+  return {
+    owner_admin_user_id: ownerId,
+    entity_type: source.entity_type || null,
+    legal_name: source.legal_name || null,
+    trade_name: source.trade_name || null,
+    nif: source.nif || null,
+    stat: source.stat || null,
+    rcs: source.rcs || null,
+    legal_address: source.legal_address || null,
+    phone: source.phone || null,
+  };
+}
+
+async function loadOwnerLegalProfileTarget(ownerId) {
+  const [{ data: owner, error: ownerError }, currentResult, historicalResult] = await Promise.all([
+    supabase
+      .from("admin_users")
+      .select("id,email,is_active,role")
+      .eq("id", ownerId)
+      .maybeSingle(),
+    supabase
+      .from("internet_pools")
+      .select("id")
+      .eq("owner_admin_user_id", ownerId)
+      .limit(1),
+    supabase
+      .from("pool_owner_periods")
+      .select("pool_id")
+      .eq("owner_admin_user_id", ownerId)
+      .limit(1),
+  ]);
+
+  if (ownerError) throw ownerLegalApiError("owner_legal_profile_target_load_failed", 500);
+  if (currentResult.error || historicalResult.error) {
+    throw ownerLegalApiError("owner_legal_profile_ownership_load_failed", 500);
+  }
+  if (!owner?.id) throw ownerLegalApiError("owner_legal_profile_target_not_found", 404);
+
+  // The platform Superadmin legal identity is separate from Owner legal profiles.
+  if (String(owner.role || "").toLowerCase() === "superadmin") {
+    throw ownerLegalApiError("owner_legal_profile_superadmin_not_allowed", 409);
+  }
+
+  const isCurrentOwner = Array.isArray(currentResult.data) && currentResult.data.length > 0;
+  const isHistoricalOwner = Array.isArray(historicalResult.data) && historicalResult.data.length > 0;
+
+  // A manager/viewer account may also have global role pool_readonly, so role
+  // alone is never enough. Canonical current/historical ownership is required.
+  if (!isCurrentOwner && !isHistoricalOwner) {
+    throw ownerLegalApiError("owner_legal_profile_target_not_owner", 409);
+  }
+
+  return {
+    id: owner.id,
+    email: owner.email || null,
+    is_active: owner.is_active !== false,
+    is_current_owner: isCurrentOwner,
+    is_historical_owner: isHistoricalOwner,
+  };
+}
+
+async function loadOwnerLegalProfileRow(ownerId) {
+  const { data, error } = await supabase
+    .from("owner_legal_profiles")
+    .select(OWNER_LEGAL_PROFILE_SELECT)
+    .eq("owner_admin_user_id", ownerId)
+    .maybeSingle();
+
+  if (error) throw ownerLegalApiError("owner_legal_profile_load_failed", 500);
+  return data || null;
+}
+
+function sendOwnerLegalProfileError(res, error, logLabel) {
+  console.error(logLabel, error?.message || error);
+  const status = Number(error?.httpStatus || 500);
+  const code = String(error?.publicCode || error?.message || "owner_legal_profile_failed");
+  return res.status(status >= 400 && status <= 599 ? status : 500).json({ error: code });
+}
+
+app.get(
+  "/api/admin/owner-legal-profiles/:ownerId",
+  requireAdmin,
+  requireSuperadmin,
+  async (req, res) => {
+    try {
+      if (!ensureSupabase(res)) return;
+
+      const ownerId = readOptionalUuidValue(req.params.ownerId, "owner_id");
+      if (!ownerId) throw ownerLegalApiError("owner_id_required", 400);
+
+      const owner = await loadOwnerLegalProfileTarget(ownerId);
+      const row = await loadOwnerLegalProfileRow(ownerId);
+
+      return res.json({
+        ok: true,
+        configured: !!row,
+        owner,
+        profile: serializeOwnerLegalProfile(ownerId, row),
+      });
+    } catch (error) {
+      return sendOwnerLegalProfileError(
+        res,
+        error,
+        "[FINANCIAL REPORTING S14.8.2A.1] owner legal profile GET"
+      );
+    }
+  }
+);
+
+app.put(
+  "/api/admin/owner-legal-profiles/:ownerId",
+  requireAdmin,
+  requireSuperadmin,
+  async (req, res) => {
+    try {
+      if (!ensureSupabase(res)) return;
+
+      const ownerId = readOptionalUuidValue(req.params.ownerId, "owner_id");
+      if (!ownerId) throw ownerLegalApiError("owner_id_required", 400);
+
+      const owner = await loadOwnerLegalProfileTarget(ownerId);
+      const values = normalizeOwnerLegalProfileBody(req.body || {});
+      const existing = await loadOwnerLegalProfileRow(ownerId);
+
+      const changedFields = OWNER_LEGAL_PROFILE_FIELDS.filter((field) => {
+        const before = existing?.[field] ?? null;
+        const after = values[field] ?? null;
+        return String(before ?? "") !== String(after ?? "");
+      });
+
+      if (existing && changedFields.length === 0) {
+        return res.json({
+          ok: true,
+          changed: false,
+          configured: true,
+          owner,
+          profile: serializeOwnerLegalProfile(ownerId, existing),
+        });
+      }
+
+      const now = new Date().toISOString();
+      let saved = null;
+
+      if (existing) {
+        const { data, error } = await supabase
+          .from("owner_legal_profiles")
+          .update({ ...values, updated_at: now })
+          .eq("owner_admin_user_id", ownerId)
+          .select(OWNER_LEGAL_PROFILE_SELECT)
+          .single();
+        if (error) throw ownerLegalApiError("owner_legal_profile_update_failed", 500);
+        saved = data;
+      } else {
+        const insertPayload = {
+          owner_admin_user_id: ownerId,
+          ...values,
+          updated_at: now,
+        };
+
+        let insertResult = await supabase
+          .from("owner_legal_profiles")
+          .insert(insertPayload)
+          .select(OWNER_LEGAL_PROFILE_SELECT)
+          .single();
+
+        // Defensive retry for a concurrent first save if the canonical schema's
+        // one-profile-per-owner uniqueness constraint wins the race.
+        if (insertResult.error?.code === "23505") {
+          insertResult = await supabase
+            .from("owner_legal_profiles")
+            .update({ ...values, updated_at: now })
+            .eq("owner_admin_user_id", ownerId)
+            .select(OWNER_LEGAL_PROFILE_SELECT)
+            .single();
+        }
+
+        if (insertResult.error) {
+          throw ownerLegalApiError("owner_legal_profile_insert_failed", 500);
+        }
+        saved = insertResult.data;
+      }
+
+      // Audit field names only — never duplicate legal identifiers/addresses in
+      // audit_logs. The canonical values remain solely in owner_legal_profiles.
+      try {
+        await insertAudit({
+          event_type: "owner_legal_profile_updated",
+          status: "success",
+          entity_type: "admin_user",
+          entity_id: ownerId,
+          actor_type: "admin",
+          actor_id: req.admin?.id || null,
+          message: "Owner legal profile updated by Superadmin",
+          metadata: {
+            changed_fields: changedFields,
+            owner_email: owner.email || null,
+          },
+        });
+      } catch (_) {}
+
+      return res.json({
+        ok: true,
+        changed: true,
+        configured: true,
+        owner,
+        profile: serializeOwnerLegalProfile(ownerId, saved),
+      });
+    } catch (error) {
+      return sendOwnerLegalProfileError(
+        res,
+        error,
+        "[FINANCIAL REPORTING S14.8.2A.1] owner legal profile PUT"
+      );
+    }
+  }
+);
+
+// =============================================================================
+// END S14.8.2A.1 — SUPERADMIN OWNER LEGAL PROFILE API
+// =============================================================================
+
+// =============================================================================
 // S14.7.3B — ANNUAL FINANCIAL REPORT PDF ROUTES
 // =============================================================================
 // Financial calculations, historical ownership and final-snapshot authorization
