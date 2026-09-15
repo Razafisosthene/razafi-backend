@@ -1602,6 +1602,9 @@ async function requireAdmin(req, res, next) {
         fullPath === "/api/admin/plan-simulator/options" ||
         fullPath === "/api/admin/portal-preview/validate" ||
         fullPath === "/api/admin/pool-live-stats" ||
+        // S14.8.2B.1 — Annual-report catalog is read-only. Its handler/RPC
+        // performs the historical Owner / Superadmin authorization.
+        fullPath === "/api/admin/financial-reports/catalog" ||
         fullPath === "/api/admin/free-access-devices" ||
         fullPath === "/api/admin/free-access-devices/usage" ||
         fullPath === "/api/admin/blocked-devices" ||
