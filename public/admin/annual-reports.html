@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>RAZAFI Admin — Rapports annuels</title>
+  <link rel="stylesheet" href="/admin/admin.css?v=admin-wide-1" />
+
+  <style>
+    /* S14.8.2C — Annual reports page only. No global admin.css changes. */
+    .rz-annual-page{
+      width:min(1080px,96%);
+    }
+
+    .rz-annual-shell{
+      display:grid;
+      gap:16px;
+    }
+
+    .rz-annual-head{
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:14px;
+      flex-wrap:wrap;
+    }
+
+    .rz-annual-head-actions{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      flex-wrap:wrap;
+    }
+
+    .rz-annual-status{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      margin-top:9px;
+      padding:8px 12px;
+      border-radius:999px;
+      background:rgba(255,255,255,.72);
+      border:1px solid rgba(17,24,39,.08);
+      color:#64748b;
+      font-size:12px;
+      font-weight:850;
+      max-width:100%;
+    }
+
+    .rz-annual-status::before{
+      content:"";
+      width:8px;
+      height:8px;
+      border-radius:999px;
+      background:#16a34a;
+      box-shadow:0 0 0 4px rgba(22,163,74,.12);
+      flex:0 0 auto;
+    }
+
+    .rz-annual-banner{
+      padding:14px 16px;
+      border-radius:22px;
+      background:linear-gradient(135deg,rgba(13,110,253,.09),rgba(22,163,74,.07));
+      border:1px solid rgba(13,110,253,.11);
+      color:#334155;
+      font-size:13px;
+      font-weight:760;
+      line-height:1.5;
+    }
+
+    .rz-annual-section{
+      display:grid;
+      gap:11px;
+    }
+
+    .rz-annual-section-head{
+      display:flex;
+      align-items:flex-end;
+      justify-content:space-between;
+      gap:12px;
+      flex-wrap:wrap;
+      padding:0 2px;
+    }
+
+    .rz-annual-section-title{
+      margin:0;
+      color:#0f172a;
+      font-size:19px;
+      line-height:1.2;
+      font-weight:950;
+      letter-spacing:-.025em;
+    }
+
+    .rz-annual-section-sub{
+      margin-top:4px;
+      color:#64748b;
+      font-size:12px;
+      font-weight:750;
+      line-height:1.4;
+    }
+
+    .rz-annual-grid{
+      display:grid;
+      grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:12px;
+    }
+
+    .rz-annual-card{
+      display:grid;
+      gap:12px;
+      min-width:0;
+      padding:17px;
+      border-radius:26px;
+      background:linear-gradient(180deg,rgba(255,255,255,.96),rgba(255,255,255,.80));
+      border:1px solid rgba(255,255,255,.94);
+      box-shadow:0 14px 32px rgba(15,23,42,.08);
+    }
+
+    .rz-annual-card-primary{
+      background:
+        radial-gradient(circle at top right,rgba(13,110,253,.12),transparent 34%),
+        linear-gradient(180deg,rgba(255,255,255,.98),rgba(248,251,255,.88));
+      border-color:rgba(13,110,253,.13);
+    }
+
+    .rz-annual-card-top{
+      display:flex;
+      justify-content:space-between;
+      align-items:flex-start;
+      gap:10px;
+    }
+
+    .rz-annual-card-copy{
+      min-width:0;
+    }
+
+    .rz-annual-card-title{
+      color:#111827;
+      font-size:17px;
+      font-weight:950;
+      line-height:1.25;
+      letter-spacing:-.018em;
+      overflow-wrap:anywhere;
+    }
+
+    .rz-annual-card-meta{
+      margin-top:5px;
+      color:#667085;
+      font-size:12px;
+      font-weight:760;
+      line-height:1.45;
+      overflow-wrap:anywhere;
+    }
+
+    .rz-annual-pill{
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      flex:0 0 auto;
+      min-height:30px;
+      padding:6px 9px;
+      border-radius:999px;
+      background:#eef2f6;
+      color:#475467;
+      font-size:11px;
+      font-weight:950;
+      white-space:nowrap;
+    }
+
+    .rz-annual-pill-provisional{
+      background:#fff3cd;
+      color:#7a4d00;
+    }
+
+    .rz-annual-pill-final{
+      background:#dcfce7;
+      color:#166534;
+    }
+
+    .rz-annual-actions{
+      display:flex;
+      gap:8px;
+      flex-wrap:wrap;
+      margin-top:auto;
+    }
+
+    .rz-annual-download{
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      min-height:44px;
+      padding:10px 14px;
+      border-radius:14px;
+      background:linear-gradient(135deg,#0d6efd,#2563eb);
+      color:#fff;
+      text-decoration:none;
+      font-size:13px;
+      font-weight:900;
+      box-shadow:0 10px 22px rgba(13,110,253,.18);
+    }
+
+    .rz-annual-download:hover{
+      color:#fff;
+      text-decoration:none;
+    }
+
+    .rz-annual-download:active{
+      transform:scale(.99);
+    }
+
+    .rz-annual-empty,
+    .rz-annual-loading,
+    .rz-annual-error{
+      padding:17px;
+      border-radius:22px;
+      border:1px solid rgba(17,24,39,.07);
+      background:rgba(255,255,255,.78);
+      color:#667085;
+      font-size:13px;
+      font-weight:780;
+      line-height:1.5;
+    }
+
+    .rz-annual-error{
+      color:#b42318;
+      background:#fff1f0;
+      border-color:rgba(180,35,24,.12);
+    }
+
+    .rz-annual-final-list{
+      display:grid;
+      gap:10px;
+    }
+
+    .rz-annual-final-row{
+      display:grid;
+      grid-template-columns:minmax(0,1fr) auto;
+      gap:12px;
+      align-items:center;
+      padding:14px 15px;
+      border-radius:20px;
+      background:rgba(255,255,255,.82);
+      border:1px solid rgba(17,24,39,.07);
+      box-shadow:0 8px 20px rgba(15,23,42,.045);
+    }
+
+    .rz-annual-final-main{
+      min-width:0;
+      display:grid;
+      gap:4px;
+    }
+
+    .rz-annual-final-title{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      flex-wrap:wrap;
+      color:#111827;
+      font-size:14px;
+      font-weight:930;
+      line-height:1.35;
+    }
+
+    .rz-annual-final-meta{
+      color:#667085;
+      font-size:11px;
+      font-weight:740;
+      line-height:1.45;
+      overflow-wrap:anywhere;
+    }
+
+    .rz-annual-final-row .rz-annual-download{
+      min-width:118px;
+    }
+
+    @media (max-width:760px){
+      .rz-annual-page{width:100%;}
+      .rz-annual-grid{grid-template-columns:1fr;}
+      .rz-annual-head-actions{width:100%;}
+      .rz-annual-head-actions .filter-btn{width:100%;}
+      .rz-annual-final-row{grid-template-columns:1fr;}
+      .rz-annual-final-row .rz-annual-download{width:100%;}
+      .rz-annual-card{border-radius:24px;padding:15px;}
+    }
+
+    @media (prefers-reduced-motion:reduce){
+      .rz-annual-download:active{transform:none;}
+    }
+  </style>
+</head>
+
+<body class="rz-admin-shell">
+  <div class="login-container">
+    <main class="card rz-annual-page">
+      <div class="rz-annual-shell">
+        <div class="topbar rz-annual-head">
+          <div>
+            <h1 class="rz-hero-title">Rapports annuels</h1>
+            <div class="rz-hero-subtitle">Vos rapports annuels d’activité et de revenus RAZAFI.</div>
+            <div id="me" class="rz-annual-status">Vérification de la session…</div>
+          </div>
+
+          <div class="rz-annual-head-actions">
+            <button id="annualRefreshBtn" class="filter-btn primary" type="button">Actualiser</button>
+          </div>
+        </div>
+
+        <div class="rz-annual-banner">
+          Les rapports provisoires utilisent les données disponibles au moment du téléchargement et peuvent évoluer jusqu’à la clôture annuelle.
+          Les rapports <strong>FINAL</strong> sont issus d’un snapshot annuel immuable ; toute correction ultérieure crée une nouvelle révision.
+        </div>
+
+        <div id="annualError" class="rz-annual-error" hidden></div>
+
+        <section class="rz-annual-section" aria-labelledby="annualCurrentTitle">
+          <div class="rz-annual-section-head">
+            <div>
+              <h2 id="annualCurrentTitle" class="rz-annual-section-title">Exercice en cours</h2>
+              <div id="annualCurrentSub" class="rz-annual-section-sub">Chargement du catalogue…</div>
+            </div>
+          </div>
+          <div id="annualProvisional" class="rz-annual-loading">Chargement…</div>
+        </section>
+
+        <section class="rz-annual-section" aria-labelledby="annualFinalTitle">
+          <div class="rz-annual-section-head">
+            <div>
+              <h2 id="annualFinalTitle" class="rz-annual-section-title">Rapports définitifs</h2>
+              <div class="rz-annual-section-sub">Historique des rapports FINAL disponibles pour votre compte.</div>
+            </div>
+          </div>
+          <div id="annualFinalReports" class="rz-annual-loading">Chargement…</div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="/admin/nav.js?v=admin-wide-1"></script>
+  <script src="/admin/annual-reports.js?v=s14-8-2c"></script>
+</body>
+</html>
