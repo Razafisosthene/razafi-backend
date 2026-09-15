@@ -1,6 +1,6 @@
 /**
  * RAZAFI Financial Reporting V1
- * S14.9.4 — Controlled annual-close cron runner
+ * S14.9.4.2 — Controlled annual-close cron runner + production calendar guard
  *
  * Intended runtime:
  *   Render Cron Job -> node annual-close-job.js
@@ -10,8 +10,10 @@
  *   2) Always performs an explicit global DRY-RUN first.
  *   3) If preflight is not 100% PASS, execution is NOT attempted.
  *   4) Execution requires an explicit env gate.
- *   5) Any failure exits non-zero so Render can emit a cron failure notification.
- *   6) The PostgreSQL S14.9.3 orchestrator remains the canonical atomicity/RBAC layer.
+ *   5) Real execution is allowed only on 2 January in Madagascar time.
+ *   6) Real execution may target only the immediately previous Madagascar year.
+ *   7) Any failure exits non-zero so Render can emit a cron failure notification.
+ *   8) The PostgreSQL S14.9.3 orchestrator remains the canonical atomicity/RBAC layer.
  *
  * Required env:
  *   SUPABASE_URL
@@ -28,7 +30,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 
-const JOB_VERSION = "financial-reporting-v1/S14.9.4.1-render-cron";
+const JOB_VERSION = "financial-reporting-v1/S14.9.4.2-render-cron";
 const MADAGASCAR_TZ = "Indian/Antananarivo";
 
 function envFlag(name, fallback = false) {
@@ -63,20 +65,53 @@ function fail(code, data = {}) {
   throw error;
 }
 
-function madagascarYearNow() {
-  const parts = new Intl.DateTimeFormat("en", {
+function madagascarNowParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: MADAGASCAR_TZ,
     year: "numeric",
-  }).formatToParts(new Date());
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
 
-  const year = Number(parts.find((p) => p.type === "year")?.value);
-  if (!Number.isInteger(year)) {
-    fail("madagascar_year_resolution_failed");
+  const value = (type) =>
+    Number(parts.find((part) => part.type === type)?.value);
+
+  const now = {
+    year: value("year"),
+    month: value("month"),
+    day: value("day"),
+    hour: value("hour"),
+    minute: value("minute"),
+    second: value("second"),
+  };
+
+  if (
+    !Number.isInteger(now.year) ||
+    !Number.isInteger(now.month) ||
+    !Number.isInteger(now.day) ||
+    !Number.isInteger(now.hour) ||
+    !Number.isInteger(now.minute) ||
+    !Number.isInteger(now.second)
+  ) {
+    fail("madagascar_time_resolution_failed");
   }
-  return year;
+
+  now.local_iso =
+    `${String(now.year).padStart(4, "0")}-` +
+    `${String(now.month).padStart(2, "0")}-` +
+    `${String(now.day).padStart(2, "0")}T` +
+    `${String(now.hour).padStart(2, "0")}:` +
+    `${String(now.minute).padStart(2, "0")}:` +
+    `${String(now.second).padStart(2, "0")}`;
+
+  return now;
 }
 
-function resolveTargetYear() {
+function resolveTargetYear(madagascarNow) {
   const override = String(process.env.RAZAFI_ANNUAL_CLOSE_YEAR || "").trim();
 
   if (override) {
@@ -88,9 +123,40 @@ function resolveTargetYear() {
   }
 
   return {
-    year: madagascarYearNow() - 1,
+    year: madagascarNow.year - 1,
     source: "previous_madagascar_year",
   };
+}
+
+function executionCalendarWindow(target, madagascarNow) {
+  const expectedReportYear = madagascarNow.year - 1;
+  const dateAllowed =
+    madagascarNow.month === 1 &&
+    madagascarNow.day === 2;
+  const yearAllowed = target.year === expectedReportYear;
+
+  return {
+    open: dateAllowed && yearAllowed,
+    timezone: MADAGASCAR_TZ,
+    local_time: madagascarNow.local_iso,
+    allowed_month: 1,
+    allowed_day: 2,
+    report_year: target.year,
+    expected_report_year: expectedReportYear,
+    year_source: target.source,
+    date_allowed: dateAllowed,
+    year_allowed: yearAllowed,
+  };
+}
+
+function assertExecutionCalendarWindow(target, madagascarNow) {
+  const window = executionCalendarWindow(target, madagascarNow);
+
+  if (!window.open) {
+    fail("annual_close_execution_window_closed", window);
+  }
+
+  return window;
 }
 
 function int(value) {
@@ -215,7 +281,9 @@ async function run() {
   const supabaseUrl = requiredEnv("SUPABASE_URL");
   const serviceRoleKey = requiredEnv("SUPABASE_SERVICE_ROLE_KEY");
   const actorId = requiredEnv("FINANCIAL_REPORTING_SUPERADMIN_ID");
-  const target = resolveTargetYear();
+  const madagascarNow = madagascarNowParts();
+  const target = resolveTargetYear(madagascarNow);
+  const calendarWindow = executionCalendarWindow(target, madagascarNow);
 
   const supabase = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false },
@@ -226,6 +294,8 @@ async function run() {
     year_source: target.source,
     execute_enabled: executeEnabled,
     render_service_type: renderServiceType || null,
+    madagascar_local_time: madagascarNow.local_iso,
+    execution_window_open: calendarWindow.open,
   });
 
   // ------------------------------------------------------------------------
@@ -266,6 +336,21 @@ async function run() {
     });
     return;
   }
+
+  // ------------------------------------------------------------------------
+  // Production calendar guard.
+  //
+  // Even with RAZAFI_ANNUAL_CLOSE_EXECUTE=true, FINAL creation is permitted
+  // only on 2 January in Madagascar time, and only for the immediately
+  // preceding Madagascar calendar year. Manual runs outside that window fail
+  // closed after the read-only preflight and before any p_execute=true RPC.
+  // ------------------------------------------------------------------------
+  const executionWindow = assertExecutionCalendarWindow(
+    target,
+    madagascarNow
+  );
+
+  log("execution_window_pass", executionWindow);
 
   // ------------------------------------------------------------------------
   // Phase 2 — controlled atomic execution.
