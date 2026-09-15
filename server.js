@@ -21,6 +21,7 @@ import { createAirtelMoneyClient, normalizeAirtelInitiationState, normalizeAirte
 import { createSubscriptionInvoicePdf, createSubscriptionReceiptPdf } from "./billing-subscription-pdf.js";
 import { createCommissionStatementPdf, createCommissionPayoutReceiptPdf } from "./billing-commission-pdf.js";
 import { createFinancialAnnualReportPdf } from "./financial-report-pdf.js";
+import { startAnnualFinalReportNotifications } from "./annual-final-report-notifications.js";
 
 dotenv.config();
 
@@ -37507,6 +37508,7 @@ app.listen(PORT, "0.0.0.0", () => {
   startBillingS13932MonthlySubscription();
   startBillingS13941Enforcement();
   startBillingS1383Notifications();
+startAnnualFinalReportNotifications();
   startBillingS13841MonthlySource();
   startBillingS13843MonthlyClose();
   startAirtelRecoveryJob();
