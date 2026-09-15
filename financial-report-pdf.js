@@ -118,7 +118,7 @@ function baseDocument(payload) {
       Title: `${safe(d.title, "Rapport annuel RAZAFI")} ${safe(d.year, "")}`.trim(),
       Author: "RAZAFI - RAZAFINDRAMASY Sosthène",
       Subject: "Rapport annuel d’activité et de revenus RAZAFI",
-      Creator: "RAZAFI Financial Reporting v1 S14.7.4C.2",
+      Creator: "RAZAFI Financial Reporting v1 S14.8.2C.1",
     },
   });
 
@@ -661,37 +661,125 @@ function compactLegalParts(data = {}) {
   return parts;
 }
 
+// S14.8.2C.1 — identify the same legal entity only from a strong identifier.
+// We deliberately do not merge entities merely because names look similar.
+function normalizedLegalIdentifier(value) {
+  return String(value ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+}
+
+function sameLegalEntity(issuer = {}, owner = {}) {
+  const issuerNif = normalizedLegalIdentifier(issuer.nif);
+  const ownerNif = normalizedLegalIdentifier(owner.nif);
+  return !!issuerNif && issuerNif === ownerNif;
+}
+
+function compactMergedLegalParts(issuer = {}, owner = {}) {
+  const parts = [];
+  const seen = new Set();
+
+  const pushUnique = (value) => {
+    const raw = String(value ?? "").trim();
+    if (!raw) return;
+    const key = raw.toLocaleLowerCase("fr").replace(/\s+/g, " ");
+    if (seen.has(key)) return;
+    seen.add(key);
+    parts.push(raw);
+  };
+
+  const pushLabeled = (label, value) => {
+    const raw = String(value ?? "").trim();
+    if (!raw) return;
+    pushUnique(`${label} ${raw}`);
+  };
+
+  // Preserve the RAZAFI brand and the platform legal holder. If the Owner
+  // profile repeats "RAZAFI" as its legal/trade name, pushUnique removes it.
+  pushUnique(issuer.brand_name || owner.brand_name || owner.trade_name);
+  pushUnique(issuer.legal_name);
+  pushUnique(owner.legal_name);
+
+  // The Superadmin-managed Owner profile is the preferred source for legal
+  // details when the Owner and issuer share the same NIF.
+  pushLabeled("NIF", owner.nif || issuer.nif);
+  pushLabeled("STAT", owner.stat || issuer.stat);
+  pushLabeled("RCS", owner.rcs || issuer.rcs);
+
+  const address = owner.legal_address || issuer.legal_address;
+  const country = owner.country || issuer.country;
+  pushUnique(address);
+  if (country && !String(address || "").toLocaleLowerCase("fr").includes(String(country).toLocaleLowerCase("fr"))) {
+    pushUnique(country);
+  }
+
+  pushUnique(owner.phone || issuer.phone);
+  pushUnique(owner.email || issuer.email);
+  pushUnique(issuer.website || owner.website);
+
+  return parts;
+}
+
 function renderFooterOnPage(doc, payload, pageIndex, pageCount) {
   const d = payload.document || {};
   const issuer = payload?.footer?.issuer || {};
   const owner = payload?.footer?.owner || {};
-  const issuerText = compactLegalParts(issuer).join(" · ");
-  const ownerText = compactLegalParts(owner).join(" · ");
+  const scopeType = String(d.scope_type || "");
+
+  const isOwnerScope = scopeType === "owner_consolidated" || scopeType === "owner_pool";
+  const isSameEntity = isOwnerScope && sameLegalEntity(issuer, owner);
+
+  let firstLine = "";
+  let secondLine = "";
+
+  if (scopeType === "platform") {
+    firstLine = compactLegalParts(issuer).join(" · ");
+  } else if (isSameEntity) {
+    firstLine = `Émetteur & propriétaire · ${compactMergedLegalParts(issuer, owner).join(" · ")}`;
+  } else {
+    const issuerText = compactLegalParts(issuer).join(" · ");
+    const ownerText = compactLegalParts(owner).join(" · ");
+    firstLine = issuerText ? `Émetteur · ${issuerText}` : "";
+    secondLine = ownerText ? `Propriétaire · ${ownerText}` : "";
+  }
 
   const y = 738;
   doc.moveTo(PAGE.left, y - 8).lineTo(PAGE.right, y - 8).lineWidth(0.7).strokeColor(COLORS.line).stroke();
 
-  typography(doc, "Helvetica", 6.8).fillColor(COLORS.muted);
-  const issuerH = Math.min(17, doc.heightOfString(issuerText, { width: PAGE.width, align: "center", lineGap: 0 }));
-  doc.text(issuerText, PAGE.left, y, {
-    width: PAGE.width,
-    height: 17,
-    align: "center",
-    lineGap: 0,
-  });
+  let lineY = y;
 
-  let lineY = y + issuerH + 2;
-  if (ownerText) {
-    const ownerLine = `Propriétaire · ${ownerText}`;
-    typography(doc, "Helvetica", 6.6).fillColor(COLORS.muted);
-    const ownerH = Math.min(17, doc.heightOfString(ownerLine, { width: PAGE.width, align: "center", lineGap: 0 }));
-    doc.text(ownerLine, PAGE.left, lineY, {
+  if (firstLine) {
+    const firstFontSize = isSameEntity ? 6.35 : 6.6;
+    typography(doc, "Helvetica", firstFontSize).fillColor(COLORS.muted);
+    const firstH = Math.min(18, doc.heightOfString(firstLine, {
       width: PAGE.width,
-      height: 17,
+      align: "center",
+      lineGap: 0,
+    }));
+    doc.text(firstLine, PAGE.left, lineY, {
+      width: PAGE.width,
+      height: 18,
       align: "center",
       lineGap: 0,
     });
-    lineY += ownerH + 2;
+    lineY += firstH + 2;
+  }
+
+  if (secondLine) {
+    typography(doc, "Helvetica", 6.5).fillColor(COLORS.muted);
+    const secondH = Math.min(18, doc.heightOfString(secondLine, {
+      width: PAGE.width,
+      align: "center",
+      lineGap: 0,
+    }));
+    doc.text(secondLine, PAGE.left, lineY, {
+      width: PAGE.width,
+      height: 18,
+      align: "center",
+      lineGap: 0,
+    });
+    lineY += secondH + 2;
   }
 
   const reportRef = d.report_number ? `${d.report_number}${d.revision ? ` · R${String(d.revision).padStart(3, "0")}` : ""}` : `Exercice ${safe(d.year)}`;
