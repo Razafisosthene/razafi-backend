@@ -863,6 +863,21 @@ document.addEventListener("DOMContentLoaded", async () => {
                   </div>
                 ` : ``}
               </div>
+
+              <div class="rz-owner-legal-wrap">
+                <div class="rz-owner-legal-head">
+                  <div>
+                    <div class="rz-owner-legal-title">Informations légales du propriétaire</div>
+                    <div class="rz-owner-legal-sub">
+                      Liées au propriétaire canonique, pas au pool. Elles alimentent dynamiquement le pied de page de ses rapports annuels lorsque les champs sont renseignés.
+                    </div>
+                  </div>
+                  <span class="rz-owner-legal-badge" id="modalOwnerLegalBadge">Chargement…</span>
+                </div>
+                <div id="modalOwnerLegalProfile" class="rz-owner-legal-body" data-canonical-owner-id="${esc(ownerAdminUserId)}">
+                  <div class="rz-owner-legal-empty">Chargement du profil légal…</div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -899,6 +914,232 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
+  function ownerLegalEmptyProfile(ownerId) {
+    return {
+      owner_admin_user_id: String(ownerId || "").trim(),
+      entity_type: null,
+      legal_name: null,
+      trade_name: null,
+      nif: null,
+      stat: null,
+      rcs: null,
+      legal_address: null,
+      phone: null,
+    };
+  }
+
+  function ownerLegalSelectedOwnerId() {
+    return String($id("modalOwnerAdmin")?.value || "").trim();
+  }
+
+  function ownerLegalCanonicalOwnerId(pid) {
+    const pool = poolById(pid);
+    return String(pool?.owner_admin_user_id || pool?.ownerAdminUserId || "").trim();
+  }
+
+  function setOwnerLegalBadge(text, tone = "neutral") {
+    const badge = $id("modalOwnerLegalBadge");
+    if (!badge) return;
+    badge.textContent = text || "—";
+    badge.classList.toggle("is-ok", tone === "ok");
+    badge.classList.toggle("is-warn", tone === "warn");
+    badge.classList.toggle("is-bad", tone === "bad");
+  }
+
+  function ownerLegalFormHtml(owner, profile, configured) {
+    const p = { ...ownerLegalEmptyProfile(owner?.id), ...(profile || {}) };
+    const entityType = String(p.entity_type || "").toLowerCase();
+    const ownerEmail = String(owner?.email || ownerLabelById(owner?.id) || "").trim();
+
+    return `
+      <div class="rz-owner-legal-owner">
+        <span>Propriétaire</span>
+        <strong>${esc(ownerEmail || "—")}</strong>
+      </div>
+      <div class="rz-owner-legal-grid">
+        <div class="rz-field">
+          <label for="modalOwnerLegalEntityType">Type d’entité *</label>
+          <select id="modalOwnerLegalEntityType">
+            <option value="" ${!entityType ? "selected" : ""}>— Choisir —</option>
+            <option value="individual" ${entityType === "individual" ? "selected" : ""}>Particulier</option>
+            <option value="company" ${entityType === "company" ? "selected" : ""}>Entreprise / société</option>
+          </select>
+        </div>
+        <div class="rz-field">
+          <label for="modalOwnerLegalName">Nom légal</label>
+          <input id="modalOwnerLegalName" maxlength="180" value="${esc(p.legal_name || "")}" placeholder="Nom / raison sociale" />
+        </div>
+        <div class="rz-field">
+          <label for="modalOwnerTradeName">Nom commercial (optionnel)</label>
+          <input id="modalOwnerTradeName" maxlength="180" value="${esc(p.trade_name || "")}" placeholder="Nom commercial" />
+        </div>
+        <div class="rz-field">
+          <label for="modalOwnerNif">NIF</label>
+          <input id="modalOwnerNif" maxlength="80" value="${esc(p.nif || "")}" placeholder="NIF" />
+        </div>
+        <div class="rz-field">
+          <label for="modalOwnerStat">STAT</label>
+          <input id="modalOwnerStat" maxlength="120" value="${esc(p.stat || "")}" placeholder="STAT" />
+        </div>
+        <div class="rz-field">
+          <label for="modalOwnerRcs">RCS</label>
+          <input id="modalOwnerRcs" maxlength="120" value="${esc(p.rcs || "")}" placeholder="RCS" />
+        </div>
+        <div class="rz-field rz-owner-legal-address-field">
+          <label for="modalOwnerLegalAddress">Adresse légale</label>
+          <textarea id="modalOwnerLegalAddress" maxlength="500" placeholder="Adresse légale complète">${esc(p.legal_address || "")}</textarea>
+        </div>
+        <div class="rz-field">
+          <label for="modalOwnerLegalPhone">Téléphone</label>
+          <input id="modalOwnerLegalPhone" maxlength="80" value="${esc(p.phone || "")}" placeholder="Téléphone légal / administratif" />
+        </div>
+      </div>
+      <div class="rz-owner-legal-note">
+        Seuls les champs renseignés apparaîtront dans le rapport. Pour un rapport FINAL, ces informations seront figées dans le snapshot annuel immuable.
+      </div>
+      <div class="rz-owner-legal-actions">
+        <span id="modalOwnerLegalStatus" class="rz-owner-legal-status">${configured ? "Profil légal configuré" : "Profil légal non configuré"}</span>
+        <button type="button" id="modalOwnerLegalSaveBtn" class="filter-btn primary">Enregistrer les informations légales</button>
+      </div>
+    `;
+  }
+
+  function renderOwnerLegalUnavailable(message, tone = "warn") {
+    const target = $id("modalOwnerLegalProfile");
+    if (!target) return;
+    target.innerHTML = `<div class="rz-owner-legal-empty">${esc(message)}</div>`;
+    setOwnerLegalBadge(tone === "bad" ? "Indisponible" : "À configurer", tone);
+  }
+
+  async function loadOwnerLegalProfileForModal(pid, ownerId) {
+    if (!isSuperadmin()) return;
+    const target = $id("modalOwnerLegalProfile");
+    if (!target) return;
+
+    const selectedOwnerId = String(ownerId || "").trim();
+    const canonicalOwnerId = ownerLegalCanonicalOwnerId(pid);
+    target.dataset.canonicalOwnerId = canonicalOwnerId;
+
+    if (!selectedOwnerId) {
+      renderOwnerLegalUnavailable("Aucun propriétaire canonique sélectionné pour ce pool.");
+      return;
+    }
+
+    // The legal profile belongs to the canonical Owner. If the selector was
+    // changed but the pool ownership change has not yet been saved, do not
+    // write legal data against a different account from this pool context.
+    if (selectedOwnerId !== canonicalOwnerId) {
+      renderOwnerLegalUnavailable(
+        "Le propriétaire sélectionné n’est pas encore le propriétaire canonique de ce pool. Enregistrez d’abord le changement de propriétaire, puis rouvrez le pool pour renseigner ses informations légales."
+      );
+      return;
+    }
+
+    target.innerHTML = `<div class="rz-owner-legal-empty">Chargement du profil légal…</div>`;
+    setOwnerLegalBadge("Chargement…", "neutral");
+
+    try {
+      const data = await fetchJSON(`/api/admin/owner-legal-profiles/${encodeURIComponent(selectedOwnerId)}`);
+
+      // Ignore stale async responses after modal close / owner selector change.
+      if (currentModalPoolId !== pid) return;
+      if (ownerLegalSelectedOwnerId() !== selectedOwnerId) return;
+
+      target.innerHTML = ownerLegalFormHtml(
+        data?.owner || { id: selectedOwnerId, email: ownerLabelById(selectedOwnerId) },
+        data?.profile || ownerLegalEmptyProfile(selectedOwnerId),
+        data?.configured === true
+      );
+      setOwnerLegalBadge(data?.configured === true ? "Configuré" : "Non configuré", data?.configured === true ? "ok" : "warn");
+
+      $id("modalOwnerLegalSaveBtn")?.addEventListener("click", () => saveOwnerLegalProfileFromModal(pid, selectedOwnerId));
+    } catch (e) {
+      if (currentModalPoolId !== pid) return;
+      renderOwnerLegalUnavailable(`Impossible de charger le profil légal : ${e.message}`, "bad");
+    }
+  }
+
+  async function saveOwnerLegalProfileFromModal(pid, ownerId) {
+    if (!isSuperadmin()) return;
+
+    const selectedOwnerId = ownerLegalSelectedOwnerId();
+    const canonicalOwnerId = ownerLegalCanonicalOwnerId(pid);
+    const targetOwnerId = String(ownerId || "").trim();
+
+    if (!targetOwnerId || selectedOwnerId !== targetOwnerId || canonicalOwnerId !== targetOwnerId) {
+      renderOwnerLegalUnavailable(
+        "Le propriétaire a changé. Enregistrez d’abord le propriétaire canonique du pool, puis rechargez ses informations légales."
+      );
+      return;
+    }
+
+    const entity_type = String($id("modalOwnerLegalEntityType")?.value || "").trim();
+    if (!entity_type) {
+      const status = $id("modalOwnerLegalStatus");
+      if (status) {
+        status.textContent = "Choisissez le type d’entité.";
+        status.classList.add("is-error");
+      }
+      return;
+    }
+
+    const payload = {
+      entity_type,
+      legal_name: String($id("modalOwnerLegalName")?.value || "").trim() || null,
+      trade_name: String($id("modalOwnerTradeName")?.value || "").trim() || null,
+      nif: String($id("modalOwnerNif")?.value || "").trim() || null,
+      stat: String($id("modalOwnerStat")?.value || "").trim() || null,
+      rcs: String($id("modalOwnerRcs")?.value || "").trim() || null,
+      legal_address: String($id("modalOwnerLegalAddress")?.value || "").trim() || null,
+      phone: String($id("modalOwnerLegalPhone")?.value || "").trim() || null,
+    };
+
+    const btn = $id("modalOwnerLegalSaveBtn");
+    const status = $id("modalOwnerLegalStatus");
+    try {
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Enregistrement…";
+      }
+      if (status) {
+        status.textContent = "Enregistrement du profil légal…";
+        status.classList.remove("is-error");
+      }
+
+      const data = await fetchJSON(`/api/admin/owner-legal-profiles/${encodeURIComponent(targetOwnerId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (currentModalPoolId !== pid) return;
+      const target = $id("modalOwnerLegalProfile");
+      if (target) {
+        target.innerHTML = ownerLegalFormHtml(
+          data?.owner || { id: targetOwnerId, email: ownerLabelById(targetOwnerId) },
+          data?.profile || payload,
+          true
+        );
+        setOwnerLegalBadge("Configuré", "ok");
+        const nextStatus = $id("modalOwnerLegalStatus");
+        if (nextStatus) nextStatus.textContent = data?.changed === false ? "Aucune modification" : "Informations légales enregistrées ✅";
+        $id("modalOwnerLegalSaveBtn")?.addEventListener("click", () => saveOwnerLegalProfileFromModal(pid, targetOwnerId));
+      }
+      showMsg(msgEl, data?.changed === false ? "Informations légales inchangées." : "Informations légales enregistrées ✅", false);
+    } catch (e) {
+      if (status) {
+        status.textContent = `Échec : ${e.message}`;
+        status.classList.add("is-error");
+      }
+    } finally {
+      const currentBtn = $id("modalOwnerLegalSaveBtn");
+      if (currentBtn) {
+        currentBtn.disabled = false;
+        currentBtn.textContent = "Enregistrer les informations légales";
+      }
+    }
+  }
+
   function bindModalEvents(pid) {
     const annMessage = $id("modalAnnMessage");
     const annPreview = $id("modalAnnPreview");
@@ -910,6 +1151,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const logoChooseBtn = $id("modalLogoChooseBtn");
     const logoFile = $id("modalLogoFile");
     const logoDeleteBtn = $id("modalLogoDeleteBtn");
+    const ownerAdminSelect = $id("modalOwnerAdmin");
 
     annMessage?.addEventListener("input", () => {
       const msg = String(annMessage.value || "").trim();
@@ -925,6 +1167,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     logoChooseBtn?.addEventListener("click", () => logoFile?.click());
     logoFile?.addEventListener("change", () => uploadPoolLogo(pid, logoFile));
     logoDeleteBtn?.addEventListener("click", () => deletePoolLogo(pid));
+
+    if (isSuperadmin() && ownerAdminSelect) {
+      ownerAdminSelect.addEventListener("change", () => {
+        loadOwnerLegalProfileForModal(pid, String(ownerAdminSelect.value || "").trim()).catch(() => {});
+      });
+      loadOwnerLegalProfileForModal(pid, String(ownerAdminSelect.value || "").trim()).catch(() => {});
+    }
 
     const personalizedToggle = $id("modalPersonalizedPlans");
     personalizedToggle?.addEventListener("change", () => {

@@ -421,6 +421,35 @@
     }
     .rz-modal-actions button{width:auto;margin:0;}
     .rz-modal-actions .danger{margin-right:auto;}
+
+    /* S14.8.2A.2 — Superadmin Owner legal profile editor (pool modal only) */
+    .rz-owner-legal-wrap{
+      margin-top:16px;
+      padding:14px;
+      border-radius:22px;
+      border:1px solid rgba(13,110,253,.14);
+      background:linear-gradient(180deg,rgba(255,255,255,.88),rgba(239,246,255,.66));
+    }
+    .rz-owner-legal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+    .rz-owner-legal-title{font-size:14px;font-weight:950;color:#111827;letter-spacing:-.015em;}
+    .rz-owner-legal-sub{margin-top:4px;max-width:680px;color:#667085;font-size:12px;font-weight:750;line-height:1.4;}
+    .rz-owner-legal-badge{display:inline-flex;align-items:center;justify-content:center;padding:6px 9px;border-radius:999px;background:#eef2f6;color:#667085;font-size:11px;font-weight:900;white-space:nowrap;}
+    .rz-owner-legal-badge.is-ok{background:#dcfce7;color:#166534;}
+    .rz-owner-legal-badge.is-warn{background:#fff1c2;color:#7a4d00;}
+    .rz-owner-legal-badge.is-bad{background:#fee4e2;color:#b42318;}
+    .rz-owner-legal-body{margin-top:12px;}
+    .rz-owner-legal-empty{padding:12px 13px;border-radius:16px;background:rgba(255,255,255,.74);border:1px dashed rgba(17,24,39,.12);color:#667085;font-size:12px;font-weight:800;line-height:1.45;}
+    .rz-owner-legal-owner{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:10px 12px;margin-bottom:10px;border-radius:16px;background:rgba(17,24,39,.045);font-size:12px;color:#667085;font-weight:800;}
+    .rz-owner-legal-owner strong{color:#111827;font-weight:950;word-break:break-word;}
+    .rz-owner-legal-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+    .rz-owner-legal-grid textarea{width:100%;min-height:94px;margin:0;padding:12px;border-radius:16px;border:1px solid #ddd;font:inherit;resize:vertical;}
+    .rz-owner-legal-address-field{grid-column:1 / -1;}
+    .rz-owner-legal-note{margin-top:10px;color:#667085;font-size:11.5px;font-weight:750;line-height:1.4;}
+    .rz-owner-legal-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid rgba(17,24,39,.08);}
+    .rz-owner-legal-actions button{width:auto!important;margin:0!important;}
+    .rz-owner-legal-status{color:#667085;font-size:12px;font-weight:850;}
+    .rz-owner-legal-status.is-error{color:#b42318;}
+
     .rz-pool-success-pill{
       display:inline-flex;
       align-items:center;
@@ -526,6 +555,10 @@
         .rz-pool-modal{max-height:calc(100vh - 20px);}
       }
       .rz-form-grid{grid-template-columns:1fr;}
+      .rz-owner-legal-grid{grid-template-columns:1fr;}
+      .rz-owner-legal-address-field{grid-column:auto;}
+      .rz-owner-legal-actions{align-items:stretch;}
+      .rz-owner-legal-actions button{width:100%!important;}
       .rz-marketing-images{grid-template-columns:repeat(2,minmax(0,1fr));}
       .rz-marketing-social-field{grid-template-columns:36px minmax(0,1fr);}
       .rz-marketing-social-icon{width:36px;height:36px;}
@@ -677,6 +710,6 @@
 
   <!-- NEW shared drawer -->
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="/admin/pools.js?v=pool-accordion-1"></script>
+  <script src="/admin/pools.js?v=financial-reporting-s14-8-2a-2"></script>
 </body>
 </html>
