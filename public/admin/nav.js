@@ -368,6 +368,9 @@
           <a class="rz-item" data-href="/admin/revenue.html" href="/admin/revenue.html">
             <span class="rz-item-label">Revenus</span>
           </a>
+          <a class="rz-item" data-href="/admin/annual-reports.html" href="/admin/annual-reports.html" id="rzNavAnnualReports" style="display:none;">
+            <span class="rz-item-label">Rapports annuels</span>
+          </a>
           <a class="rz-item" data-href="/admin/owner-revenue.html" href="/admin/owner-revenue.html" id="rzNavOwnerRevenue">
             <span class="rz-item-label">Revenus propriétaire</span>
           </a>
@@ -675,6 +678,46 @@
     });
   }
 
+  // S14.8.2D — Annual reports drawer visibility.
+  // UI visibility is not authorization: the catalog/PDF endpoints remain the
+  // canonical RBAC boundary. Current Owners use the owned_pool_ids fast path;
+  // former Owners are resolved through the historical pool_owner_periods-aware
+  // catalog so ownership transfers do not remove access to their old reports.
+  async function syncAnnualReportsVisibility(admin, isSuper) {
+    const link = $("#rzNavAnnualReports");
+    if (!link) return;
+
+    link.style.display = "none";
+
+    if (isSuper) {
+      link.style.display = "";
+      return;
+    }
+
+    const ownedPoolIds = Array.isArray(admin?.owned_pool_ids)
+      ? admin.owned_pool_ids.filter(Boolean)
+      : [];
+
+    if (ownedPoolIds.length > 0) {
+      link.style.display = "";
+      return;
+    }
+
+    try {
+      const catalog = await fetchJSON("/api/admin/financial-reports/catalog");
+      if (
+        catalog?.ok === true &&
+        catalog?.can_view === true &&
+        catalog?.viewer_type === "owner"
+      ) {
+        link.style.display = "";
+      }
+    } catch (_) {
+      // Manager/Viewer or any unavailable/forbidden catalog stays hidden.
+      link.style.display = "none";
+    }
+  }
+
   async function ensureSessionAndFillUI() {
     try {
       const admin = await fetchJSON("/api/admin/me");
@@ -698,6 +741,7 @@
       const elBillingExceptions = $("#rzNavBillingExceptions");
       const elOwnerRevenue = $("#rzNavOwnerRevenue");
       const elOwnerSubscription = $("#rzNavOwnerSubscription");
+      const elAnnualReports = $("#rzNavAnnualReports");
       const elMaintenance = $("#rzNavMaintenance");
 
       if (elAPs) elAPs.style.display = isSuper ? "" : "none";
@@ -710,7 +754,10 @@
       if (elBillingExceptions) elBillingExceptions.style.display = isSuper ? "" : "none";
       if (elOwnerRevenue) elOwnerRevenue.style.display = isSuper ? "" : "none";
       if (elOwnerSubscription) elOwnerSubscription.style.display = canViewOwnerSubscription ? "" : "none";
+      if (elAnnualReports) elAnnualReports.style.display = "none";
       if (elMaintenance) elMaintenance.style.display = isSuper ? "" : "none";
+
+      await syncAnnualReportsVisibility(admin, isSuper);
 
       const meDrawer = $("#rzDrawerMe");
       if (meDrawer) {
@@ -788,6 +835,7 @@
       if (p.includes("/plans"))             return "plans";
       if (p.includes("/pricing-simulator")) return "simulator";
       if (p.includes("/revenue"))           return "revenue";
+      if (p.includes("/annual-reports"))    return "annual_reports";
       if (p.includes("/pools"))             return "pools";
       if (p.includes("/free-access"))       return "free_access";
       if (p.includes("/block-devices"))     return "blocked_devices";
