@@ -17489,6 +17489,300 @@ app.put(
 // =============================================================================
 
 // =============================================================================
+// S14.8.2B — ANNUAL FINANCIAL REPORT CATALOG (READ-ONLY)
+// =============================================================================
+// UI metadata only. This endpoint never calculates financial amounts, never
+// finalizes a year and never creates a snapshot. Final-report authorization is
+// delegated to fn_financial_reporting_v1_list_final_reports. Owner provisional
+// scopes come only from canonical pool_owner_periods history.
+//
+//   GET /api/admin/financial-reports/catalog?year=YYYY
+//
+// V1 presentation:
+//   - Superadmin: current-year RAZAFI platform provisional + platform FINALs.
+//   - Owner: current-year historically-owned pool scopes + own FINALs.
+//   - Manager/Viewer: forbidden; admin_user_pools membership grants no access.
+// =============================================================================
+
+function financialReportCatalogCurrentYear() {
+  const today = String(billingMadagascarToday() || "");
+  const match = today.match(/^(\d{4})-/);
+  const year = match ? Number(match[1]) : NaN;
+  if (!Number.isInteger(year) || year < 2020 || year > 2100) {
+    const err = new Error("financial_report_catalog_current_year_invalid");
+    err.httpStatus = 500;
+    throw err;
+  }
+  return year;
+}
+
+function financialReportCatalogYearBounds(year) {
+  return {
+    start: `${year}-01-01T00:00:00+03:00`,
+    endExclusive: `${year + 1}-01-01T00:00:00+03:00`,
+  };
+}
+
+function financialReportCatalogPeriodOverlapsYear(period, bounds) {
+  const from = Date.parse(String(period?.effective_from || ""));
+  const toRaw = period?.effective_to;
+  const to = toRaw ? Date.parse(String(toRaw)) : null;
+  const start = Date.parse(bounds.start);
+  const endExclusive = Date.parse(bounds.endExclusive);
+
+  if (!Number.isFinite(from) || !Number.isFinite(start) || !Number.isFinite(endExclusive)) {
+    return false;
+  }
+  if (toRaw && !Number.isFinite(to)) return false;
+
+  // Canonical ownership periods are treated as half-open [from, to).
+  return from < endExclusive && (to === null || to > start);
+}
+
+function financialReportCatalogFinalItem(row, isSuperadmin) {
+  if (!row || typeof row !== "object") return null;
+
+  const snapshotId = String(row.snapshot_id || "").trim();
+  const reportType = String(row.report_type || "").trim();
+  const reportNumber = String(row.report_number || "").trim();
+  const reportYear = Number(row.report_year);
+  const revision = Number(row.report_revision);
+
+  if (!UUID_V1_TO_V5_RE.test(snapshotId)) return null;
+  if (!Number.isInteger(reportYear) || reportYear < 2020 || reportYear > 2100) return null;
+  if (!Number.isInteger(revision) || revision < 1) return null;
+  if (!reportNumber) return null;
+
+  if (isSuperadmin) {
+    if (reportType !== "platform") return null;
+  } else if (!["owner_consolidated", "owner_pool"].includes(reportType)) {
+    return null;
+  }
+
+  const poolId = row.pool_id && UUID_V1_TO_V5_RE.test(String(row.pool_id))
+    ? String(row.pool_id).toLowerCase()
+    : null;
+
+  return {
+    snapshot_id: snapshotId.toLowerCase(),
+    report_number: reportNumber,
+    report_year: reportYear,
+    report_type: reportType,
+    report_revision: revision,
+    pool_id: poolId,
+    pool_name: cleanOptionalText(row.pool_name, 160),
+    period_start: row.period_start || null,
+    period_end: row.period_end || null,
+    data_cutoff_at: row.data_cutoff_at || null,
+    generated_at: row.generated_at || null,
+    status: "final",
+    download_url: isSuperadmin
+      ? `/api/admin/financial-reports/final/${encodeURIComponent(snapshotId)}/pdf`
+      : `/api/owner/financial-reports/final/${encodeURIComponent(snapshotId)}/pdf`,
+  };
+}
+
+async function financialReportCatalogFinalReports(actorId, isSuperadmin) {
+  const { data, error } = await supabase.rpc(
+    "fn_financial_reporting_v1_list_final_reports",
+    {
+      p_actor: actorId,
+      p_year: null,
+    }
+  );
+
+  if (error) {
+    const err = new Error(financialReportRpcErrorCode(error));
+    err.financialReportRpcError = error;
+    throw err;
+  }
+
+  if (!data || data.ok !== true || !Array.isArray(data.reports)) {
+    const err = new Error("financial_report_catalog_final_list_invalid");
+    err.httpStatus = 500;
+    throw err;
+  }
+
+  return data.reports
+    .map((row) => financialReportCatalogFinalItem(row, isSuperadmin))
+    .filter(Boolean);
+}
+
+async function financialReportCatalogOwnerPeriods(actorId) {
+  const { data, error } = await supabase
+    .from("pool_owner_periods")
+    .select("pool_id,effective_from,effective_to")
+    .eq("owner_admin_user_id", actorId)
+    .order("effective_from", { ascending: true });
+
+  if (error) {
+    const err = new Error("financial_report_catalog_owner_periods_failed");
+    err.httpStatus = 500;
+    throw err;
+  }
+
+  return Array.isArray(data) ? data : [];
+}
+
+async function financialReportCatalogOwnerPoolsForYear(actorId, year, periods = null) {
+  const allPeriods = Array.isArray(periods)
+    ? periods
+    : await financialReportCatalogOwnerPeriods(actorId);
+  const bounds = financialReportCatalogYearBounds(year);
+  const poolIds = Array.from(new Set(
+    allPeriods
+      .filter((period) => financialReportCatalogPeriodOverlapsYear(period, bounds))
+      .map((period) => String(period?.pool_id || "").trim().toLowerCase())
+      .filter((poolId) => UUID_V1_TO_V5_RE.test(poolId))
+  ));
+
+  if (!poolIds.length) return [];
+
+  const { data, error } = await supabase
+    .from("internet_pools")
+    .select("id,name,brand_name")
+    .in("id", poolIds);
+
+  if (error) {
+    const err = new Error("financial_report_catalog_pools_failed");
+    err.httpStatus = 500;
+    throw err;
+  }
+
+  const rowById = new Map(
+    (Array.isArray(data) ? data : []).map((row) => [String(row?.id || "").toLowerCase(), row])
+  );
+
+  return poolIds
+    .map((poolId) => {
+      const row = rowById.get(poolId) || null;
+      const displayName = cleanOptionalText(buildPoolDisplayName(row), 160)
+        || cleanOptionalText(row?.name, 160)
+        || "Pool historique";
+      return {
+        id: poolId,
+        display_name: displayName,
+        download_url: `/api/owner/financial-reports/${year}/pdf?pool_id=${encodeURIComponent(poolId)}`,
+      };
+    })
+    .sort((a, b) => String(a.display_name).localeCompare(String(b.display_name), "fr"));
+}
+
+function sendFinancialReportCatalogError(res, error) {
+  console.error(
+    "[FINANCIAL REPORTING S14.8.2B] catalog",
+    error?.financialReportRpcError?.message || error?.message || error
+  );
+
+  if (sendRequestValidationError(res, error)) return;
+  if (error?.financialReportRpcError) {
+    return sendFinancialReportRpcError(res, error.financialReportRpcError);
+  }
+
+  const status = Number(error?.httpStatus || 500);
+  const code = String(error?.publicCode || error?.message || "financial_report_catalog_failed");
+  return res.status(status >= 400 && status <= 599 ? status : 500).json({ error: code });
+}
+
+app.get(
+  "/api/admin/financial-reports/catalog",
+  requireAdmin,
+  async (req, res) => {
+    try {
+      if (!ensureSupabase(res)) return;
+
+      const actorId = String(req.admin?.id || "").trim();
+      if (!UUID_V1_TO_V5_RE.test(actorId)) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const currentYear = financialReportCatalogCurrentYear();
+      const selectedYear = req.query?.year === undefined
+        ? currentYear
+        : financialReportYearParam(req.query.year);
+      const isSuperadmin = !!req.admin?.is_superadmin
+        || String(req.admin?.role || "").trim().toLowerCase() === "superadmin";
+
+      const finalReports = await financialReportCatalogFinalReports(actorId, isSuperadmin);
+
+      if (isSuperadmin) {
+        const provisionalAvailable = selectedYear === currentYear;
+        return res.json({
+          ok: true,
+          can_view: true,
+          viewer_type: "superadmin",
+          current_year: currentYear,
+          selected_year: selectedYear,
+          provisional: {
+            available: provisionalAvailable,
+            status: "provisional",
+            report_type: "platform",
+            label: `RAZAFI — Rapport annuel des revenus · ${selectedYear}`,
+            download_url: provisionalAvailable
+              ? `/api/admin/financial-reports/platform/${selectedYear}/pdf`
+              : null,
+            reason: provisionalAvailable ? null : "not_current_year",
+          },
+          final_report_count: finalReports.length,
+          final_reports: finalReports,
+        });
+      }
+
+      // Owner entitlement is historical ownership, never admin_user_pools.
+      // This preserves access after ownership transfer while managers/viewers
+      // remain excluded even if they currently belong to a pool.
+      const ownerPeriods = await financialReportCatalogOwnerPeriods(actorId);
+      const hasHistoricalOwnership = ownerPeriods.length > 0;
+
+      if (!hasHistoricalOwnership && finalReports.length === 0) {
+        return res.status(403).json({
+          error: "financial_report_catalog_owner_required",
+          can_view: false,
+        });
+      }
+
+      const provisionalPools = selectedYear === currentYear
+        ? await financialReportCatalogOwnerPoolsForYear(actorId, selectedYear, ownerPeriods)
+        : [];
+      const provisionalAvailable = selectedYear === currentYear && provisionalPools.length > 0;
+      const consolidatedAvailable = provisionalAvailable && provisionalPools.length > 1;
+
+      return res.json({
+        ok: true,
+        can_view: true,
+        viewer_type: "owner",
+        current_year: currentYear,
+        selected_year: selectedYear,
+        provisional: {
+          available: provisionalAvailable,
+          status: "provisional",
+          report_type: "owner",
+          reason: selectedYear !== currentYear
+            ? "not_current_year"
+            : (provisionalAvailable ? null : "no_historical_ownership_in_year"),
+          consolidated: {
+            available: consolidatedAvailable,
+            label: "Tous mes pools",
+            download_url: consolidatedAvailable
+              ? `/api/owner/financial-reports/${selectedYear}/pdf`
+              : null,
+          },
+          pools: provisionalPools,
+        },
+        final_report_count: finalReports.length,
+        final_reports: finalReports,
+      });
+    } catch (error) {
+      return sendFinancialReportCatalogError(res, error);
+    }
+  }
+);
+
+// =============================================================================
+// END S14.8.2B — ANNUAL FINANCIAL REPORT CATALOG
+// =============================================================================
+
+// =============================================================================
 // S14.7.3B — ANNUAL FINANCIAL REPORT PDF ROUTES
 // =============================================================================
 // Financial calculations, historical ownership and final-snapshot authorization
