@@ -26,11 +26,9 @@
  *   RAZAFI_ANNUAL_CLOSE_YEAR=2026      // otherwise previous Madagascar year
  */
 
-"use strict";
+import { createClient } from "@supabase/supabase-js";
 
-const { createClient } = require("@supabase/supabase-js");
-
-const JOB_VERSION = "financial-reporting-v1/S14.9.4-render-cron";
+const JOB_VERSION = "financial-reporting-v1/S14.9.4.1-render-cron";
 const MADAGASCAR_TZ = "Indian/Antananarivo";
 
 function envFlag(name, fallback = false) {
