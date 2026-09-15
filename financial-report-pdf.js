@@ -118,7 +118,7 @@ function baseDocument(payload) {
       Title: `${safe(d.title, "Rapport annuel RAZAFI")} ${safe(d.year, "")}`.trim(),
       Author: "RAZAFI - RAZAFINDRAMASY Sosthène",
       Subject: "Rapport annuel d’activité et de revenus RAZAFI",
-      Creator: "RAZAFI Financial Reporting v1 S14.7.3C.3",
+      Creator: "RAZAFI Financial Reporting v1 S14.7.4C.2",
     },
   });
 
@@ -211,7 +211,22 @@ function metaBox(doc, payload) {
   rows.push(["Période", `${dateFR(d.period_start)} au ${dateFR(d.period_end)}`]);
   rows.push(["Données arrêtées au", dateTimeFR(d.data_cutoff_at)]);
   if (d.report_number) rows.push(["N° rapport", d.report_number]);
-  if (d.revision) rows.push(["Révision", `R${String(d.revision).padStart(3, "0")}`]);
+
+  // S14.7.4C.2 — FINAL status must be explicitly visible in the report
+  // metadata. Combine it with the revision so FINAL reports gain no extra
+  // metadata row and therefore no pagination/layout regression.
+  if (d.mode === "final") {
+    const status = safe(d.status_label, "FINAL");
+    const revision = d.revision
+      ? `R${String(d.revision).padStart(3, "0")}`
+      : null;
+    rows.push([
+      revision ? "Statut · Révision" : "Statut",
+      [status, revision].filter(Boolean).join(" · "),
+    ]);
+  } else if (d.revision) {
+    rows.push(["Révision", `R${String(d.revision).padStart(3, "0")}`]);
+  }
 
   const pairs = Math.ceil(rows.length / 2);
   const height = 20 + pairs * 48;
