@@ -14030,7 +14030,7 @@ function normalizePhone(phone) {
 
 function isValidAirtelMGPhone(phone) {
   const s = String(phone || "").trim().replace(/\s+/g, "");
-  return /^(033\d{7})$|^(\+26133\d{7})$|^(26133\d{7})$/.test(s);
+  return /^(0(33|35)\d{7})$|^(\+261(33|35)\d{7})$|^(261(33|35)\d{7})$/.test(s);
 }
 
 function isValidPhoneForPaymentProvider(phone, provider) {
@@ -14040,7 +14040,7 @@ function isValidPhoneForPaymentProvider(phone, provider) {
 
 function paymentPhoneValidationMessage(provider) {
   if (provider === "airtel") {
-    return "Numéro Airtel Money invalide. Format attendu: 033xxxxxxx ou +26133xxxxxxx.";
+    return "Numéro Airtel Money invalide. Format attendu: 033xxxxxxx, 035xxxxxxx ou format +261.";
   }
   return "Numéro MVola invalide. Format attendu: 034xxxxxxx, 037xxxxxxx, 038xxxxxxx ou format +261.";
 }
