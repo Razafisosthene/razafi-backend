@@ -35958,7 +35958,7 @@ const { error: vsErr } = await supabase
         phone,
         amount,
         // Airtel-documented reference; payment payload remains unchanged in PROD.
-        reference: "Testing transaction",
+        reference: "RAZAFI WiFi",
         transactionId: airtelTransactionId,
       });
       providerResponse = initiated?.data || {};
