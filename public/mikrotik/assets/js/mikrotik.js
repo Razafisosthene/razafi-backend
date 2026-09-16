@@ -1648,6 +1648,7 @@
       portalPreviewState.active = true;
       portalPreviewState.pool = data.pool || null;
       portalPreviewState.expiresAt = data.expires_at || null;
+      renderPoolSupportPhone(extractPoolContactPhone(portalPreviewState.pool));
       ensurePortalPreviewBanner("Mode aperçu — Paiement désactivé");
       return true;
     } catch (e) {
@@ -2026,23 +2027,44 @@
       }, 8000);
     }
   }
+  // Pool assistance phone: never borrow a number from another pool.
+  // The card stays hidden until a phone belonging to the current pool is resolved.
+  function extractPoolContactPhone(source) {
+    try {
+      if (!source || typeof source !== "object") return "";
+      const candidates = [
+        source.contact_phone,
+        source.owner_contact_phone,
+        source.owner_phone,
+        source.support_phone,
+        source.assistance_phone,
+      ];
+      for (const value of candidates) {
+        const phone = String(value ?? "").trim();
+        if (phone) return phone;
+      }
+    } catch (_) {}
+    return "";
+  }
+
+  function renderPoolSupportPhone(value) {
+    try {
+      const phone = String(value ?? "").trim();
+      const el = document.getElementById("supportPhone");
+      const card = document.getElementById("supportCard") || (el?.closest ? el.closest(".faq") : null);
+      if (el) el.textContent = phone;
+      if (card) card.hidden = !phone;
+    } catch (_) {}
+  }
+
   function applyPortalStatus(j) {
     const status = String(j?.status || "none").toLowerCase();
     portalTruthStatus = status;
 
     // ------------------------------
-// Support phone (by pool) — System 3
-// ------------------------------
-try {
-  const phone =
-    (j?.contact_phone && String(j.contact_phone).trim()) ||
-    "038 75 00 592";
-
-  const el = document.getElementById("supportPhone");
-  if (el) el.textContent = phone;
-} catch (_) {
-  // fail-safe: do nothing
-}
+    // Support phone — current pool only; no cross-pool/global fallback.
+    // ------------------------------
+    renderPoolSupportPhone(extractPoolContactPhone(j));
 
     const code = String(j?.voucher_code || "").trim();
     const plan = j?.plan || {};
@@ -2995,7 +3017,7 @@ function submitToLoginUrl(code, ev) {
   }
 
   // -------- Pool context (AP -> Pool) --------
-  let poolContext = { pool_name: null, display_name: null, brand_name: null, branding_logo_url: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
+  let poolContext = { pool_name: null, display_name: null, brand_name: null, branding_logo_url: null, contact_phone: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
 
   // ── Per-pool payment methods (structural prep) ──────────────────────────
   // Populated from /api/mikrotik/plans (payment_methods / active_payment_methods).
@@ -3486,6 +3508,13 @@ function saturationLabel(pct) {
 
     try { renderOwnerLogo(buildOwnerLogoProxyUrl()); } catch (_) {}
 
+    // Resolve assistance from the same current-pool context used for branding.
+    // Do not hide/overwrite an already resolved status phone when this endpoint omits the field.
+    try {
+      const contextPhone = extractPoolContactPhone(poolContext);
+      if (contextPhone) renderPoolSupportPhone(contextPhone);
+    } catch (_) {}
+
     // Network info card: update snapshot values as soon as poolContext is known
     try { renderNetworkInfo({ animate: false }); } catch (_) {}
   }
@@ -3519,7 +3548,7 @@ function saturationLabel(pct) {
 
   async function fetchPortalContext() {
     if (!nasId && !apMac) {
-      poolContext = { pool_name: null, display_name: null, brand_name: null, branding_logo_url: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
+      poolContext = { pool_name: null, display_name: null, brand_name: null, branding_logo_url: null, contact_phone: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
       poolIsFull = false;
       applyPoolContextUI();
       return;
@@ -3538,6 +3567,7 @@ function saturationLabel(pct) {
         display_name: j.display_name ?? j.pool_display_name ?? j.pool_name ?? null,
         brand_name: j.brand_name ?? null,
         branding_logo_url: j.branding_logo_url ?? null,
+        contact_phone: extractPoolContactPhone(j) || null,
         pool_percent: (j.pool_percent === null || j.pool_percent === undefined) ? null : Number(j.pool_percent),
         is_full: !!j.is_full,
         active_clients: (j.active_clients === null || j.active_clients === undefined) ? null : Number(j.active_clients),
@@ -3546,7 +3576,7 @@ function saturationLabel(pct) {
           poolIsFull = !!j.is_full;
     } catch (e) {
       console.warn("[RAZAFI] portal context fetch failed", e?.message || e);
-      poolContext = { pool_name: null, display_name: null, brand_name: null, branding_logo_url: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
+      poolContext = { pool_name: null, display_name: null, brand_name: null, branding_logo_url: null, contact_phone: null, pool_percent: null, is_full: false, active_clients: null, capacity_max: null };
       poolIsFull = false;
     } finally {
       applyPoolContextUI();
@@ -4732,6 +4762,13 @@ function saturationLabel(pct) {
       if (!res.ok) throw new Error(data?.error || "Erreur chargement plans");
 
       renderPortalAnnouncement(data.portal_announcement);
+
+      // Some backend responses also expose the current pool contact. Use it when present.
+      // Never invent or reuse another pool's phone if the field is absent.
+      try {
+        const plansPhone = extractPoolContactPhone(data);
+        if (plansPhone) renderPoolSupportPhone(plansPhone);
+      } catch (_) {}
 
       // Structural prep: capture per-pool payment methods for plan card rendering,
       // subtitle copy, and assistant live data. Safe default keeps MVola active,
