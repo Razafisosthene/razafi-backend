@@ -2051,8 +2051,22 @@
     try {
       const phone = String(value ?? "").trim();
       const el = document.getElementById("supportPhone");
+      const link = document.getElementById("supportCallLink");
       const card = document.getElementById("supportCard") || (el?.closest ? el.closest(".faq") : null);
+
       if (el) el.textContent = phone;
+
+      if (link) {
+        const dial = phone.replace(/[^+\d]/g, "");
+        if (phone && dial) {
+          link.setAttribute("href", `tel:${dial}`);
+          link.setAttribute("aria-label", `Appeler ${phone}`);
+        } else {
+          link.removeAttribute("href");
+          link.setAttribute("aria-label", "Appeler l’assistance de cette zone");
+        }
+      }
+
       if (card) card.hidden = !phone;
     } catch (_) {}
   }

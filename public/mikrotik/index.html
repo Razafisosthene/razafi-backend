@@ -522,6 +522,87 @@
     .portal-announcement{margin-top:18px!important;padding:14px 15px!important;animation:razafiFadeUp .38s ease both;}
     #networkInfoCard{display:none!important;}
     .faq,.terms-card{margin-top:18px!important;animation:razafiFadeUp .38s ease both;}
+
+    /* iPhone-style 2026 call action — pool owner contact */
+    #supportCard{
+      padding:11px 13px 11px 16px!important;
+      border-radius:999px!important;
+    }
+    .support-call-row{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      min-width:0;
+    }
+    .support-call-label{
+      flex:0 0 auto;
+      font-size:14px;
+      font-weight:850;
+      letter-spacing:-.01em;
+      color:var(--ios-text);
+      white-space:nowrap;
+    }
+    .support-call-link{
+      margin-left:auto;
+      min-width:0;
+      display:inline-flex;
+      align-items:center;
+      justify-content:flex-end;
+      gap:10px;
+      color:var(--ios-text);
+      text-decoration:none;
+      -webkit-tap-highlight-color:transparent;
+    }
+    #supportPhone{
+      font-size:14px;
+      font-weight:900;
+      letter-spacing:-.012em;
+      white-space:nowrap;
+    }
+    .support-call-action{
+      width:40px;
+      height:40px;
+      min-width:40px;
+      border-radius:999px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      color:var(--ios-blue);
+      background:rgba(118,118,128,.10);
+      border:1px solid rgba(17,24,39,.07);
+      box-shadow:0 5px 14px rgba(15,23,42,.08), inset 0 1px 0 rgba(255,255,255,.72);
+      backdrop-filter:blur(14px);
+      -webkit-backdrop-filter:blur(14px);
+      transition:transform .12s ease, background .16s ease, box-shadow .16s ease;
+    }
+    .support-call-action svg{
+      width:18px;
+      height:18px;
+      display:block;
+      stroke:currentColor;
+      stroke-width:2;
+      stroke-linecap:round;
+      stroke-linejoin:round;
+      fill:none;
+    }
+    .support-call-link:active .support-call-action{
+      transform:scale(.94);
+      background:rgba(0,122,255,.12);
+      box-shadow:0 2px 8px rgba(15,23,42,.06), inset 0 1px 0 rgba(255,255,255,.55);
+    }
+    body.theme-dark .support-call-action{
+      color:#6eb2ff;
+      background:rgba(255,255,255,.09);
+      border-color:rgba(255,255,255,.10);
+      box-shadow:0 5px 16px rgba(0,0,0,.26), inset 0 1px 0 rgba(255,255,255,.08);
+    }
+    @media (max-width:360px){
+      #supportCard{padding-left:14px!important;padding-right:11px!important;}
+      .support-call-row{gap:7px;}
+      .support-call-link{gap:7px;}
+      .support-call-action{width:38px;height:38px;min-width:38px;}
+      .support-call-label,#supportPhone{font-size:13px;}
+    }
     .network-card{padding:16px!important;}
     .network-title{font-weight:900;letter-spacing:-.02em;}
     .network-speed-value{
@@ -960,7 +1041,17 @@
 
     <!-- ========= ASSISTANCE (contact du pool courant uniquement) ========= -->
     <section id="supportCard" class="card faq" hidden>
-      <p style="margin:0;font-size:14px;font-weight:800;">🛟 Assistance : <strong id="supportPhone"></strong></p>
+      <div class="support-call-row">
+        <span class="support-call-label">🛟 Assistance :</span>
+        <a id="supportCallLink" class="support-call-link" aria-label="Appeler l’assistance de cette zone">
+          <strong id="supportPhone"></strong>
+          <span class="support-call-action" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.68 2.8a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.32 1.85.55 2.8.68A2 2 0 0 1 22 16.92z"></path>
+            </svg>
+          </span>
+        </a>
+      </div>
     </section>
 
     <!-- ========= RÈGLES D’UTILISATION ========= -->
