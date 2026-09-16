@@ -3918,19 +3918,26 @@ async function buildAdminTrustedAssistantContext({ req, requestedScope, includeS
 // Public commercial catalog shared by razafistore.com and platform_prospect.
 // Billing remains the single source of truth: only public + active offers and
 // the version effective on the current Madagascar business date are exposed.
+// The default/base projection intentionally stays identical for Assistant IA;
+// website-only details are opt-in via includeDetails.
 const PUBLIC_OFFER_CATALOG_CACHE_TTL_MS = 30_000;
-let publicOfferCatalogCache = null;
+let publicOfferCatalogCache = { base: null, detailed: null };
 
-async function loadCurrentPublicOfferCatalog({ force = false } = {}) {
+async function loadCurrentPublicOfferCatalog({ force = false, includeDetails = false } = {}) {
   const nowMs = Date.now();
-  if (!force && publicOfferCatalogCache?.value && publicOfferCatalogCache.expires_at_ms > nowMs) {
-    return publicOfferCatalogCache.value;
+  const cacheKey = includeDetails ? "detailed" : "base";
+  const cached = publicOfferCatalogCache?.[cacheKey] || null;
+  if (!force && cached?.value && cached.expires_at_ms > nowMs) {
+    return cached.value;
   }
 
   const effectiveOn = billingMadagascarToday();
+  const offerSelect = includeDetails
+    ? "id,code,title,description,details,sort_order"
+    : "id,code,title,description,sort_order";
   const { data: offers, error: offersError } = await supabase
     .from("billing_offers")
-    .select("id,code,title,description,sort_order")
+    .select(offerSelect)
     .eq("visibility", "public")
     .eq("status", "active")
     .order("sort_order", { ascending: true });
@@ -3988,17 +3995,28 @@ async function loadCurrentPublicOfferCatalog({ force = false } = {}) {
       continue;
     }
 
-    items.push({
+    const item = {
       code: cleanOptionalText(offer.code, 80),
       name,
       description: cleanOptionalText(offer.description, 1000),
       commission_pct: commissionPct,
       subscription_price_ar: subscriptionPriceAr,
-    });
+    };
+
+    // Details/advantages are exposed only to the public website projection.
+    // The platform-prospect Assistant keeps using the default base projection,
+    // so its existing dynamic offer name/pricing knowledge remains unchanged.
+    if (includeDetails) {
+      item.details = Array.isArray(offer.details)
+        ? offer.details.map((detail) => cleanOptionalText(detail, 240)).filter(Boolean).slice(0, 30)
+        : [];
+    }
+
+    items.push(item);
   }
 
   const value = { effective_on: effectiveOn, items };
-  publicOfferCatalogCache = {
+  publicOfferCatalogCache[cacheKey] = {
     value,
     expires_at_ms: nowMs + PUBLIC_OFFER_CATALOG_CACHE_TTL_MS,
   };
@@ -13884,7 +13902,7 @@ app.use("/api/send-payment", speedLimiter, paymentLimiter);
 app.get("/api/public/offers", async (_req, res) => {
   try {
     if (!ensureSupabase(res)) return;
-    const catalog = await loadCurrentPublicOfferCatalog();
+    const catalog = await loadCurrentPublicOfferCatalog({ includeDetails: true });
     res.set("Cache-Control", "public, max-age=30");
     return res.json({ ok: true, ...catalog });
   } catch (error) {

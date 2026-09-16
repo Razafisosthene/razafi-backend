@@ -156,6 +156,12 @@
     return current?.offer_id===offerId?`Passer en ${label(mode)}`:"Choisir cette offre";
   }
 
+  function offerDetailsHtml(value){
+    const details=Array.isArray(value)?value.map(x=>String(x||"").trim()).filter(Boolean).slice(0,30):[];
+    if(!details.length)return"";
+    return `<details class="sub-offer-details"><summary><span>Voir les détails</span><span class="sub-offer-details-chevron" aria-hidden="true">›</span></summary><div class="sub-offer-details-list">${details.map(detail=>`<div class="sub-offer-detail"><span class="sub-offer-detail-check" aria-hidden="true">✓</span><span>${esc(detail)}</span></div>`).join("")}</div></details>`;
+  }
+
   function renderConfigurationSection(pool){
     if(!configuration)return '<div class="sub-status">Le changement autonome est temporairement désactivé.</div>';
     const offers=configuration.offers||[],effective=configuration.rules?.effective_on||"—",today=configuration.rules?.today||"9999-12-31";
@@ -172,7 +178,7 @@
       if(v.subscription_enabled&&!(current?.offer_id===o.id&&current?.billing_mode==="subscription"))modes.push({value:"subscription",text:`Abonnement · ${money(v.subscription_price_ar)}/mois`});
       if(!modes.length)return"";
       const initialMode=modes[0].value,sameOffer=current?.offer_id===o.id;
-      return `<article class="sub-offer" data-offer="${esc(o.id)}" data-plan="${personalized?"personalized":"base"}" data-same-offer="${sameOffer?"1":"0"}"><div class="sub-offer-head"><div><strong>${esc(offerDisplayTitle({...o,offer_id:o.id}))}</strong><div class="sub-muted">${esc(o.description||"")}</div></div>${sameOffer?'<span class="sub-pill">Offre actuelle · autre mode disponible</span>':""}</div><div class="sub-pills">${personalized?'<span class="sub-pill sub-ok">Plan Personnalisé inclus</span>':'<span class="sub-pill">RAZAFI Base</span>'}</div><label>Mode de facturation<select data-field="mode">${modes.map(m=>`<option value="${esc(m.value)}">${esc(m.text)}</option>`).join("")}</select></label><button class="sub-btn" data-create-config type="button">${esc(configCtaLabel(current,o.id,initialMode))}</button></article>`;
+      return `<article class="sub-offer" data-offer="${esc(o.id)}" data-plan="${personalized?"personalized":"base"}" data-same-offer="${sameOffer?"1":"0"}"><div class="sub-offer-head"><div><strong>${esc(offerDisplayTitle({...o,offer_id:o.id}))}</strong><div class="sub-muted">${esc(o.description||"")}</div></div>${sameOffer?'<span class="sub-pill">Offre actuelle · autre mode disponible</span>':""}</div><div class="sub-pills">${personalized?'<span class="sub-pill sub-ok">Plan Personnalisé inclus</span>':'<span class="sub-pill">RAZAFI Base</span>'}</div>${offerDetailsHtml(o.details)}<label>Mode de facturation<select data-field="mode">${modes.map(m=>`<option value="${esc(m.value)}">${esc(m.text)}</option>`).join("")}</select></label><button class="sub-btn" data-create-config type="button">${esc(configCtaLabel(current,o.id,initialMode))}</button></article>`;
     }).filter(Boolean).join("");
     return `<div data-config-pool="${esc(pool.id)}"><div class="sub-status"><strong>Prise d’effet automatique : ${esc(effective)}</strong><br>${current?"Votre offre actuelle reste active jusque-là.":"Votre première offre prendra effet à cette date."}</div><div class="sub-offers" style="margin-top:12px">${cards||'<div class="sub-empty">Aucun changement différent de votre offre actuelle n’est disponible.</div>'}</div></div>`;
   }
