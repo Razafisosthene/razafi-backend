@@ -253,15 +253,15 @@
   }
 
   // Airtel Money Madagascar payer validation. The portal always sends the
-  // canonical local form (033xxxxxxx); the backend remains responsible for
-  // converting it to the UAT MSISDN format selected by AIRTEL_MSISDN_FORMAT.
+  // canonical local form (033xxxxxxx or 035xxxxxxx); the backend remains
+  // responsible for converting it to the configured Airtel MSISDN format.
   function normalizeAirtelNumber(entered) {
     let cleaned = String(entered ?? "").trim().replace(/[\s()-]+/g, "");
-    const intRegex = /^(?:\+?261)33(\d{7})$/;
+    const intRegex = /^(?:\+?261)(33|35)(\d{7})$/;
     if (intRegex.test(cleaned)) {
-      cleaned = cleaned.replace(intRegex, "033$1");
+      cleaned = cleaned.replace(intRegex, "0$1$2");
     }
-    const isAirtel = /^033\d{7}$/.test(cleaned);
+    const isAirtel = /^0(33|35)\d{7}$/.test(cleaned);
     return { cleaned, isAirtel };
   }
 
@@ -3024,9 +3024,9 @@ function submitToLoginUrl(code, ev) {
       operational: true,
       backendProvider: "airtel",
       phoneLabel: "Numéro Airtel Money payeur",
-      phonePlaceholder: "0330500592 ou +26133xxxxxxx",
+      phonePlaceholder: "033xxxxxxx ou 035xxxxxxx",
       phoneExample: "0330500592",
-      validPrefixes: "033",
+      validPrefixes: "033 ou 035",
     },
     visa: {
       label: "Visa",
@@ -3085,7 +3085,7 @@ function submitToLoginUrl(code, ev) {
   function providerInvalidNumberMessage(provider) {
     const p = provider || {};
     if (p.key === "airtel_money") {
-      return "Numéro Airtel Money invalide. Entrez 033xxxxxxx ou +26133xxxxxxx (ex : 0330500592).";
+      return "Numéro Airtel Money invalide. Entrez 033xxxxxxx ou 035xxxxxxx (formats +26133 / +26135 acceptés).";
     }
     return "Numéro MVola invalide. Entrez 034xxxxxxx, 036xxxxxxx, 037xxxxxxx ou 038xxxxxxx ou le format +261 correspondant.";
   }

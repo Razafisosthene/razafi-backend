@@ -30,7 +30,7 @@ export class AirtelApiError extends Error {
 export function formatAirtelMsisdn(phone, format = "national") {
   let digits = String(phone || "").replace(/\D/g, "");
   if (digits.startsWith("261")) digits = `0${digits.slice(3)}`;
-  if (!/^033\d{7}$/.test(digits)) {
+  if (!/^0(33|35)\d{7}$/.test(digits)) {
     throw new AirtelApiError("Invalid Airtel MSISDN", {
       code: "airtel_msisdn_invalid",
       transient: false,
