@@ -122,6 +122,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const poolIdEl = $id("poolId");
   const poolFilterEl = $id("poolFilter");
+  const poolSwitcherEl = $id("poolSwitcher");
+  const poolSwitcherCardEl = $id("poolSwitcherCard");
+  const poolContextTitleEl = $id("poolContextTitle");
+  const poolContextMetaEl = $id("poolContextMeta");
+  const tableEl = rowsEl?.closest("table");
   const personNameEl = $id("personName");
   const roleEl = $id("role");
   const deviceNameEl = $id("deviceName");
@@ -167,6 +172,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function openModal() {
     if (!modalBackdrop) return;
+    preselectModalPoolFromView();
     showMsg("", false);
     modalBackdrop.classList.add("is-open");
     modalBackdrop.setAttribute("aria-hidden", "false");
@@ -182,6 +188,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.body.classList.remove("rz-free-modal-open");
   }
 
+  function currentViewPoolId() {
+    const value = String(poolFilterEl?.value || "all").trim();
+    return value && value !== "all" ? value : "all";
+  }
+
+  function preselectModalPoolFromView() {
+    const viewPool = currentViewPoolId();
+    if (viewPool === "all" || !poolIdEl) return;
+    const exists = Array.from(poolIdEl.options || []).some((opt) => String(opt.value) === viewPool);
+    if (exists) poolIdEl.value = viewPool;
+  }
+
   function poolLimitById(poolId) {
     const p = pools.find((x) => String(x.id || "") === String(poolId || ""));
     const effective = Number(p?.effective_free_access_limit);
@@ -195,13 +213,70 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function selectedPoolForLimit() {
-    const modalPool = String(poolIdEl?.value || "").trim();
-    if (modalPool) return modalPool;
+    const filterPool = currentViewPoolId();
+    if (filterPool !== "all") return filterPool;
 
-    const filterPool = String(poolFilterEl?.value || "").trim();
-    if (filterPool && filterPool !== "all") return filterPool;
+    if (modalBackdrop?.classList.contains("is-open")) {
+      const modalPool = String(poolIdEl?.value || "").trim();
+      if (modalPool) return modalPool;
+    }
 
     return "";
+  }
+
+  function freeUsageForPool(poolId) {
+    const usage = usageByPool[poolId] || null;
+    const used = usage ? Number(usage.used || 0) : getLocalActiveUsage(poolId);
+    const limitRaw = usage ? Number(usage.limit) : poolLimitById(poolId);
+    const limit = Number.isFinite(limitRaw) && limitRaw >= 0 ? Math.round(limitRaw) : poolLimitById(poolId);
+    return { usage, used, limit, remaining: Math.max(0, limit - used) };
+  }
+
+  function renderPoolSwitcher() {
+    if (!poolSwitcherEl || !poolSwitcherCardEl) return;
+    if (pools.length <= 1) {
+      poolSwitcherCardEl.style.display = "none";
+      poolSwitcherEl.innerHTML = "";
+      return;
+    }
+
+    poolSwitcherCardEl.style.display = "";
+    const selected = currentViewPoolId();
+    const totalUsed = pools.reduce((sum, p) => sum + freeUsageForPool(String(p.id || "")).used, 0);
+    const allTab = `<button type="button" class="rz-free-pool-tab ${selected === "all" ? "is-active" : ""}" data-pool-tab="all" role="tab" aria-selected="${selected === "all" ? "true" : "false"}"><span class="rz-free-pool-tab-name">Tous</span><span class="rz-free-pool-tab-meta">${totalUsed} actif(s)</span></button>`;
+    const poolTabs = pools.map((pool) => {
+      const id = String(pool.id || "");
+      const { used, limit } = freeUsageForPool(id);
+      return `<button type="button" class="rz-free-pool-tab ${selected === id ? "is-active" : ""}" data-pool-tab="${esc(id)}" role="tab" aria-selected="${selected === id ? "true" : "false"}"><span class="rz-free-pool-tab-name">${esc(poolDisplayName(pool) || id)}</span><span class="rz-free-pool-tab-meta">${used} / ${limit} accès</span></button>`;
+    }).join("");
+    poolSwitcherEl.innerHTML = allTab + poolTabs;
+  }
+
+  function renderPoolContext() {
+    if (!poolContextTitleEl || !poolContextMetaEl) return;
+    if (!pools.length) {
+      poolContextTitleEl.textContent = "Aucun pool MikroTik";
+      poolContextMetaEl.textContent = "Aucune zone WiFi disponible pour ce compte.";
+      return;
+    }
+
+    const selected = currentViewPoolId();
+    if (selected === "all") {
+      poolContextTitleEl.textContent = "Tous les pools";
+      poolContextMetaEl.textContent = `Vue globale organisée par pool · ${pools.length} pool(s).`;
+      return;
+    }
+
+    const pool = pools.find((x) => String(x.id || "") === selected);
+    const { used, limit, remaining } = freeUsageForPool(selected);
+    poolContextTitleEl.textContent = poolDisplayName(pool) || selected;
+    poolContextMetaEl.textContent = `${used} / ${limit} accès utilisés · ${remaining} disponible(s).`;
+  }
+
+  function poolGroupHeader(poolId) {
+    const pool = pools.find((x) => String(x.id || "") === String(poolId || ""));
+    const { used, limit } = freeUsageForPool(poolId);
+    return `<tr class="rz-free-pool-group-row"><td colspan="7"><div class="rz-free-pool-group-head"><span class="rz-free-pool-group-name">${esc(poolDisplayName(pool) || poolId || "Pool")}</span><span class="rz-free-pool-group-meta">${used} / ${limit} accès</span></div></td></tr>`;
   }
 
   function updateLimitBox() {
@@ -244,6 +319,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       console.warn("Free-access usage load failed:", e?.message || e);
     }
     updateLimitBox();
+    renderPoolSwitcher();
+    renderPoolContext();
   }
 
   async function loadPools() {
@@ -251,7 +328,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     pools = data.pools || data.data || [];
     const opts = pools.map((p) => `<option value="${esc(p.id)}">${esc(poolDisplayName(p) || p.id)}</option>`).join("");
     if (poolIdEl) poolIdEl.innerHTML = opts || `<option value="">Aucun pool MikroTik</option>`;
-    if (poolFilterEl) poolFilterEl.innerHTML = `<option value="all">Tous les pools</option>` + opts;
+    if (poolFilterEl) {
+      poolFilterEl.innerHTML = `<option value="all">Tous les pools</option>` + opts;
+      if (pools.length === 1) poolFilterEl.value = String(pools[0].id || "");
+    }
+    renderPoolSwitcher();
+    renderPoolContext();
     updateLimitBox();
   }
 
@@ -262,7 +344,39 @@ document.addEventListener("DOMContentLoaded", async () => {
     const data = await fetchJSON(url);
     items = data.items || [];
     render();
+    renderPoolSwitcher();
+    renderPoolContext();
     updateLimitBox();
+  }
+
+  function renderItemRow(it) {
+    const active = it.is_active === true;
+    const poolName = itemPoolDisplayName(it, pools);
+    const synced = it.last_synced_at ? new Date(it.last_synced_at).toLocaleString("fr-FR") : "—";
+    const deleteButton = active
+      ? `<button type="button" data-delete-blocked="${esc(it.id)}" class="danger rz-free-delete-disabled" title="Désactivez d’abord cet appareil avant suppression.">Supprimer</button>`
+      : `<button type="button" data-delete="${esc(it.id)}" class="danger">Supprimer</button>`;
+
+    return `
+      <tr data-free-row="${esc(it.id)}">
+        <td data-label="Personne">
+          <div class="rz-free-person">${esc(it.person_name)}</div>
+          <div class="rz-free-sub">${esc(roleLabel(it.role))}</div>
+        </td>
+        <td data-label="Appareil">${esc(it.device_name)}</td>
+        <td data-label="MAC" class="rz-mono">${esc(it.mac_address)}</td>
+        <td data-label="Pool">${esc(poolName)}</td>
+        <td data-label="Statut">${statusPill(active)}</td>
+        <td data-label="Sync" class="rz-free-sub">${esc(synced)}</td>
+        <td data-label="Actions">
+          ${canManageFreeAccess ? `<div class="rz-free-row-actions">
+            <button type="button" data-toggle="${esc(it.id)}" data-active="${active ? "1" : "0"}" class="filter-btn">${active ? "Désactiver" : "Activer"}</button>
+            <button type="button" data-syncpool="${esc(it.pool_id)}" class="filter-btn">Synchroniser</button>
+            ${deleteButton}
+          </div>` : `<span class="rz-free-sub">Lecture seule</span>`}
+        </td>
+      </tr>
+    `;
   }
 
   function render() {
@@ -286,39 +400,31 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     if (!filtered.length) {
+      if (tableEl) tableEl.classList.toggle("is-pool-scoped", currentViewPoolId() !== "all");
       rowsEl.innerHTML = `<tr><td class="rz-empty-state" colspan="7">Aucun appareil autorisé.</td></tr>`;
       return;
     }
 
-    rowsEl.innerHTML = filtered.map((it) => {
-      const active = it.is_active === true;
-      const poolName = itemPoolDisplayName(it, pools);
-      const synced = it.last_synced_at ? new Date(it.last_synced_at).toLocaleString("fr-FR") : "—";
-      const deleteButton = active
-        ? `<button type="button" data-delete-blocked="${esc(it.id)}" class="danger rz-free-delete-disabled" title="Désactivez d’abord cet appareil avant suppression.">Supprimer</button>`
-        : `<button type="button" data-delete="${esc(it.id)}" class="danger">Supprimer</button>`;
+    const selected = currentViewPoolId();
+    if (tableEl) tableEl.classList.toggle("is-pool-scoped", selected !== "all");
 
-      return `
-        <tr data-free-row="${esc(it.id)}">
-          <td data-label="Personne">
-            <div class="rz-free-person">${esc(it.person_name)}</div>
-            <div class="rz-free-sub">${esc(roleLabel(it.role))}</div>
-          </td>
-          <td data-label="Appareil">${esc(it.device_name)}</td>
-          <td data-label="MAC" class="rz-mono">${esc(it.mac_address)}</td>
-          <td data-label="Pool">${esc(poolName)}</td>
-          <td data-label="Statut">${statusPill(active)}</td>
-          <td data-label="Sync" class="rz-free-sub">${esc(synced)}</td>
-          <td data-label="Actions">
-            ${canManageFreeAccess ? `<div class="rz-free-row-actions">
-              <button type="button" data-toggle="${esc(it.id)}" data-active="${active ? "1" : "0"}" class="filter-btn">${active ? "Désactiver" : "Activer"}</button>
-              <button type="button" data-syncpool="${esc(it.pool_id)}" class="filter-btn">Synchroniser</button>
-              ${deleteButton}
-            </div>` : `<span class="rz-free-sub">Lecture seule</span>`}
-          </td>
-        </tr>
-      `;
-    }).join("");
+    if (selected !== "all") {
+      rowsEl.innerHTML = filtered.map(renderItemRow).join("");
+      return;
+    }
+
+    const knownPoolIds = new Set(pools.map((p) => String(p.id || "")));
+    const sections = [];
+    pools.forEach((pool) => {
+      const poolId = String(pool.id || "");
+      const poolItems = filtered.filter((it) => String(it.pool_id || "") === poolId);
+      if (poolItems.length) sections.push(poolGroupHeader(poolId) + poolItems.map(renderItemRow).join(""));
+    });
+    const unmatched = filtered.filter((it) => !knownPoolIds.has(String(it.pool_id || "")));
+    if (unmatched.length) {
+      sections.push(`<tr class="rz-free-pool-group-row"><td colspan="7"><div class="rz-free-pool-group-head"><span class="rz-free-pool-group-name">Autres</span><span class="rz-free-pool-group-meta">${unmatched.length} appareil(s)</span></div></td></tr>` + unmatched.map(renderItemRow).join(""));
+    }
+    rowsEl.innerHTML = sections.join("");
   }
 
   async function syncPool(poolId) {
@@ -432,7 +538,20 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const refreshList = () => loadDevices().then(loadUsage).catch((e) => showMsg(friendlyError(e.message), true));
   refreshListBtn?.addEventListener("click", refreshList);
-  poolFilterEl?.addEventListener("change", refreshList);
+  poolFilterEl?.addEventListener("change", () => {
+    renderPoolSwitcher();
+    renderPoolContext();
+    updateLimitBox();
+    refreshList();
+  });
+  poolSwitcherEl?.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-pool-tab]");
+    if (!btn || !poolFilterEl) return;
+    const next = String(btn.getAttribute("data-pool-tab") || "all");
+    if (String(poolFilterEl.value || "all") === next) return;
+    poolFilterEl.value = next;
+    poolFilterEl.dispatchEvent(new Event("change"));
+  });
   statusFilterEl?.addEventListener("change", render);
   qEl?.addEventListener("input", render);
   poolIdEl?.addEventListener("change", updateLimitBox);

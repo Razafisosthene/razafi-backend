@@ -172,6 +172,83 @@
     .rz-free-modal-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:16px;}
     .rz-free-modal-actions button{width:auto;}
 
+
+
+    /* S14.4A — organisation multipool locale uniquement */
+    .rz-free-pool-switcher-card{
+      padding:12px;
+      border-radius:24px;
+      background:rgba(255,255,255,.76);
+      border:1px solid rgba(255,255,255,.88);
+      box-shadow:0 12px 28px rgba(15,23,42,.08);
+    }
+    .rz-free-pool-switcher-label{
+      margin:0 0 9px;
+      color:var(--rz-muted,#6b7280);
+      font-size:12px;
+      font-weight:900;
+      text-transform:uppercase;
+      letter-spacing:.05em;
+    }
+    .rz-free-pool-tabs{
+      display:flex;
+      gap:8px;
+      overflow-x:auto;
+      padding:2px 1px 4px;
+      scrollbar-width:none;
+      -webkit-overflow-scrolling:touch;
+    }
+    .rz-free-pool-tabs::-webkit-scrollbar{display:none;}
+    .rz-free-pool-tab{
+      flex:0 0 auto;
+      width:auto!important;
+      min-height:44px;
+      padding:8px 13px!important;
+      border-radius:16px!important;
+      border:1px solid rgba(17,24,39,.08)!important;
+      background:rgba(255,255,255,.88)!important;
+      color:var(--rz-text,#111827)!important;
+      box-shadow:none!important;
+      text-align:left;
+      white-space:nowrap;
+    }
+    .rz-free-pool-tab.is-active{
+      border-color:rgba(13,110,253,.24)!important;
+      background:rgba(13,110,253,.10)!important;
+      box-shadow:0 8px 18px rgba(13,110,253,.08)!important;
+    }
+    .rz-free-pool-tab-name{display:block;font-size:13px;font-weight:950;line-height:1.1;}
+    .rz-free-pool-tab-meta{display:block;margin-top:4px;font-size:11px;font-weight:800;color:var(--rz-muted,#6b7280);}
+    .rz-free-pool-tab.is-active .rz-free-pool-tab-meta{color:#1d4ed8;}
+    .rz-free-pool-filter-internal{display:none!important;}
+    .rz-free-filters{grid-template-columns:minmax(240px,1fr) minmax(170px,.5fr) auto;}
+
+    .rz-free-pool-context{
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+      padding:14px;
+      border-radius:24px;
+      background:rgba(255,255,255,.76);
+      border:1px solid rgba(255,255,255,.88);
+      box-shadow:0 12px 28px rgba(15,23,42,.08);
+    }
+    .rz-free-pool-context-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+    .rz-free-pool-context-title{font-size:18px;font-weight:950;letter-spacing:-.03em;color:var(--rz-text,#111827);}
+    .rz-free-pool-context-meta{margin-top:4px;color:var(--rz-muted,#6b7280);font-size:13px;font-weight:750;}
+    .rz-free-pool-context button{width:auto;}
+
+    .rz-free-pool-group-row td{
+      padding:10px 12px!important;
+      background:rgba(248,250,252,.96);
+      border-bottom:1px solid rgba(17,24,39,.08)!important;
+    }
+    .rz-free-pool-group-head{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+    .rz-free-pool-group-name{font-size:13px;font-weight:950;color:var(--rz-text,#111827);}
+    .rz-free-pool-group-meta{font-size:12px;font-weight:900;color:#1d4ed8;white-space:nowrap;}
+    .rz-free-table.is-pool-scoped th:nth-child(4),
+    .rz-free-table.is-pool-scoped td:nth-child(4){display:none;}
+
     @media (max-width:980px){
       .rz-free-filters{grid-template-columns:1fr 1fr;}
       .rz-free-filters .filter-search{grid-column:1/-1;}
@@ -211,8 +288,18 @@
       .rz-free-table td:last-child{border-bottom:0;display:block;text-align:left;}
       .rz-free-table td:last-child::before{display:block;margin-bottom:8px;}
       .rz-free-person,.rz-free-sub{text-align:right;}
+      .rz-free-pool-group-row{margin:4px 0 6px!important;border:0!important;box-shadow:none!important;background:transparent!important;}
+      .rz-free-pool-group-row td{display:block!important;text-align:left!important;border-radius:16px;border:1px solid rgba(17,24,39,.06)!important;}
+      .rz-free-pool-group-row td::before{display:none!important;}
+      .rz-free-pool-group-head{align-items:center;}
     }
     @media (max-width:640px){
+
+      .rz-free-pool-switcher-card,.rz-free-pool-context{border-radius:20px;}
+      .rz-free-pool-tab{min-height:42px;padding:8px 11px!important;}
+      .rz-free-pool-context-head{align-items:stretch;}
+      .rz-free-pool-context-head > div{min-width:0;}
+      .rz-free-pool-context button{width:100%;}
       .rz-free-filters{grid-template-columns:1fr;}
       .rz-free-card,.rz-free-table-card,.rz-free-bottom-add{border-radius:20px;}
       .rz-free-table th,.rz-free-table td{padding:10px 9px;}
@@ -250,10 +337,34 @@
         </div>
       </div>
 
+      <section id="poolSwitcherCard" class="rz-free-pool-switcher-card" aria-label="Navigation par pool">
+        <div class="rz-free-pool-switcher-label">Pools</div>
+        <div id="poolSwitcher" class="rz-free-pool-tabs" role="tablist" aria-label="Choisir un pool"></div>
+      </section>
+
+      <section id="poolContextCard" class="rz-free-pool-context">
+        <div class="rz-free-pool-context-head">
+          <div>
+            <div id="poolContextTitle" class="rz-free-pool-context-title">Tous les pools</div>
+            <div id="poolContextMeta" class="rz-free-pool-context-meta">Vue globale organisée par pool.</div>
+          </div>
+          <button id="openAddModalBtn" type="button" class="filter-btn primary">+ Ajouter un appareil</button>
+        </div>
+
+        <div id="freeAccessLimitBox" class="rz-free-limit-box" style="display:none;">
+          <div>
+            <div class="rz-free-limit-title">Limite accès gratuit</div>
+            <div id="freeAccessLimitText" class="rz-free-limit-sub">Sélectionnez un pool.</div>
+            <div id="freeAccessLimitWarning" class="rz-free-limit-warning">Limite atteinte : désactivez ou supprimez un appareil avant d’en ajouter un autre.</div>
+          </div>
+          <span id="freeAccessLimitPill" class="rz-free-limit-pill">—</span>
+        </div>
+      </section>
+
       <div class="sticky-bar">
         <div class="filters rz-free-filters">
           <input id="q" class="filter-search" placeholder="Rechercher : nom / MAC / appareil…" />
-          <select id="poolFilter" class="filter-select"><option value="all">Tous les pools</option></select>
+          <select id="poolFilter" class="rz-free-pool-filter-internal" aria-hidden="true" tabindex="-1"><option value="all">Tous les pools</option></select>
           <select id="statusFilter" class="filter-select">
             <option value="all">Tous les statuts</option>
             <option value="active">Actifs seulement</option>
@@ -286,24 +397,6 @@
         </div>
       </section>
 
-      <section class="rz-free-bottom-add">
-        <div class="rz-free-bottom-add-head">
-          <div>
-            <div class="rz-free-bottom-title">Ajouter un appareil</div>
-            <div class="rz-free-bottom-sub">Ajoutez un appareil autorisé dans un pool MikroTik.</div>
-          </div>
-          <button id="openAddModalBtn" type="button" class="filter-btn primary">+ Ajouter un appareil</button>
-        </div>
-
-        <div id="freeAccessLimitBox" class="rz-free-limit-box" style="display:none;">
-          <div>
-            <div class="rz-free-limit-title">Limite accès gratuit</div>
-            <div id="freeAccessLimitText" class="rz-free-limit-sub">Sélectionnez un pool.</div>
-            <div id="freeAccessLimitWarning" class="rz-free-limit-warning">Limite atteinte : désactivez ou supprimez un appareil avant d’en ajouter un autre.</div>
-          </div>
-          <span id="freeAccessLimitPill" class="rz-free-limit-pill">—</span>
-        </div>
-      </section>
     </div>
   </div>
 
@@ -357,6 +450,6 @@
   </div>
 
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="./free-access.js?v=s14-3"></script>
+  <script src="./free-access.js?v=s14-4a"></script>
 </body>
 </html>
