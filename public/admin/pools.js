@@ -400,7 +400,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     const hasLogo = !!cleanText(p.branding_logo_url);
     const contactPhone = String(p.contact_phone ?? p.contactPhone ?? "").trim();
     const share = ownerShare(p);
-    const freeLimit = Number.isFinite(Number(p.free_access_limit)) ? Number(p.free_access_limit) : 5;
+    const freeFallbackLimit = Number.isFinite(Number(p.free_access_limit)) ? Number(p.free_access_limit) : 5;
+    const freeLimit = Number.isFinite(Number(p.effective_free_access_limit))
+      ? Number(p.effective_free_access_limit)
+      : freeFallbackLimit;
+    const freeLimitSource = String(p.free_access_limit_source || "").toLowerCase() === "offer" ? "Offre" : "Pool";
     const ann = announcementState(p);
     const system = String(p.system || "portal").toLowerCase();
     const personalizedEnabled =
@@ -424,7 +428,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           <span class="rz-pill ${hasLogo ? "rz-pill-ok" : "rz-pill-muted"}">Logo : <strong>${hasLogo ? "Oui" : "Non"}</strong></span>
           <span class="rz-pill">📞 <strong>${esc(contactPhone || "Téléphone non défini")}</strong></span>
           <span class="rz-pill">Part propriétaire : <strong>${esc(share)}%</strong></span>
-          <span class="rz-pill">Accès gratuit : <strong>${esc(freeLimit)} max</strong></span>
+          <span class="rz-pill">Accès gratuit : <strong>${esc(freeLimit)} max · ${esc(freeLimitSource)}</strong></span>
           <span class="rz-pill ${ann.active ? "rz-pill-ok" : "rz-pill-muted"}">Annonce portail : <strong>${ann.active ? "Actif" : "Inactif"}</strong></span>
           ${system === "mikrotik" ? `<span class="rz-pill ${personalizedEnabled ? "rz-pill-ok" : "rz-pill-muted"}">Plan personnalisé : <strong>${personalizedEnabled ? "Actif" : "Inactif"}</strong></span>` : ""}
           ${system === "mikrotik" ? `<span class="rz-pill">Majoration PP : <strong>${esc(personalizedMarkupLabel)}</strong></span>` : ""}
@@ -596,6 +600,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     const hasLogo = !!cleanText(p.branding_logo_url);
     const cap = (p.capacity_max === null || p.capacity_max === undefined) ? "" : String(p.capacity_max);
     const freeAccessLimit = (p.free_access_limit === null || p.free_access_limit === undefined) ? "5" : String(p.free_access_limit);
+    const freeAccessEffective = Number.isFinite(Number(p.effective_free_access_limit))
+      ? Number(p.effective_free_access_limit)
+      : Number(freeAccessLimit || 5);
+    const freeAccessSource = String(p.free_access_limit_source || "").toLowerCase() === "offer" ? "offer" : "pool";
+    const freeAccessOfferTitle = cleanText(p.free_access_offer_title || "");
+    const freeAccessEffectiveLabel = freeAccessSource === "offer"
+      ? `${freeAccessEffective} — ${freeAccessOfferTitle || "Offre"}`
+      : `${freeAccessEffective} — Pool`;
     const contactPhone = String(p.contact_phone ?? p.contactPhone ?? "");
     const system = String(p.system || "portal").toLowerCase() === "mikrotik" ? "mikrotik" : "portal";
     const isMikrotik = system === "mikrotik";
@@ -705,8 +717,14 @@ document.addEventListener("DOMContentLoaded", async () => {
               <input id="modalPoolCap" type="number" min="0" value="${esc(cap)}" placeholder="—" ${canManageAll ? "" : "readonly disabled"} />
             </div>
             <div class="rz-field">
-              <label>Limite accès gratuit</label>
+              <label>Limite effective</label>
+              <div class="rz-readonly-box">${esc(freeAccessEffectiveLabel)}</div>
+              <div class="rz-logo-note">${freeAccessSource === "offer" ? "Cette limite est imposée par l’offre active." : "Aucune limite d’offre : le fallback du pool est appliqué."}</div>
+            </div>
+            <div class="rz-field">
+              <label>Fallback accès gratuit du pool</label>
               <input id="modalFreeAccessLimit" type="number" min="0" value="${esc(freeAccessLimit)}" placeholder="5" ${canManageAll ? "" : "readonly disabled"} />
+              <div class="rz-logo-note">Utilisé seulement si l’offre active ne définit pas de limite.</div>
             </div>
           </div>
         </div>

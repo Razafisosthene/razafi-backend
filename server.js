@@ -15362,15 +15362,20 @@ function billingVersionPayload(body = {}) {
   const price = subscriptionEnabled ? Number(body.subscription_price_ar) : null;
   const grace = body.grace_days === null || body.grace_days === undefined || body.grace_days === ""
     ? null : Number(body.grace_days);
+  const freeAccessRaw = body.free_access_limit;
+  const freeAccessLimit = freeAccessRaw === null || freeAccessRaw === undefined || String(freeAccessRaw).trim() === ""
+    ? null : Number(freeAccessRaw);
   if (commissionEnabled && (!Number.isFinite(commissionPct) || commissionPct < 0 || commissionPct > 100)) return null;
   if (subscriptionEnabled && (!Number.isInteger(price) || price < 0)) return null;
   if (grace !== null && (!Number.isInteger(grace) || grace < 0 || grace > 31)) return null;
+  if (freeAccessLimit !== null && (!Number.isInteger(freeAccessLimit) || freeAccessLimit < 0)) return null;
   return {
     commission_enabled: commissionEnabled,
     subscription_enabled: subscriptionEnabled,
     commission_pct: commissionPct,
     subscription_price_ar: price,
     grace_days: grace,
+    free_access_limit: freeAccessLimit,
   };
 }
 
@@ -15386,7 +15391,7 @@ app.get("/api/admin/billing/offers", requireAdmin, requireSuperadmin, requireBil
     let versions = [];
     if (ids.length) {
       const { data, error } = await supabase.from("billing_offer_versions")
-        .select("id,offer_id,version_no,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,effective_from,effective_to,status,created_at")
+        .select("id,offer_id,version_no,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,free_access_limit,effective_from,effective_to,status,created_at")
         .in("offer_id", ids).order("version_no", { ascending: false });
       if (error) return res.status(500).json({ error: error.message });
       versions = data || [];
@@ -15499,7 +15504,7 @@ app.post("/api/admin/billing/offers/:id/versions", requireAdmin, requireSuperadm
 app.patch("/api/admin/billing/offer-versions/:id", requireAdmin, requireSuperadmin, requireBillingAdminOffers, async (req, res) => {
   try {
     const { data: current, error: readError } = await supabase.from("billing_offer_versions")
-      .select("id,offer_id,version_no,status,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,effective_from,effective_to")
+      .select("id,offer_id,version_no,status,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,free_access_limit,effective_from,effective_to")
       .eq("id", req.params.id).maybeSingle();
     if (readError) return res.status(500).json({ error: readError.message });
     if (!current) return res.status(404).json({ error: "not_found" });
@@ -15606,7 +15611,7 @@ app.get("/api/admin/billing/assignments", requireAdmin, requireSuperadmin, requi
     let versions = [];
     let versionFeatures = [];
     if (offerIds.length) {
-      const { data, error } = await supabase.from("billing_offer_versions").select("id,offer_id,version_no,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,status").in("offer_id", offerIds).order("version_no", { ascending: false });
+      const { data, error } = await supabase.from("billing_offer_versions").select("id,offer_id,version_no,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,free_access_limit,status").in("offer_id", offerIds).order("version_no", { ascending: false });
       if (error) return res.status(500).json({ error: error.message });
       versions = data || [];
       const versionIds = versions.map((v) => v.id);
@@ -15826,7 +15831,7 @@ app.get("/api/owner/billing/autonomous-catalog", requireAdmin, requireBillingOwn
         .select("id,pool_id,current_assignment_id,target_offer_id,target_offer_version_id,target_plan_choice,target_billing_mode,effective_on,status,requested_at,cancelled_at,applied_at,commercial_snapshot")
         .in("pool_id", poolIds).in("status", ["scheduled", "pending_payment"]).order("requested_at", { ascending: false }) : empty.changes,
       offerIds.length ? supabase.from("billing_offer_versions")
-        .select("id,offer_id,version_no,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,effective_from,effective_to")
+        .select("id,offer_id,version_no,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,free_access_limit,effective_from,effective_to")
         .in("offer_id", offerIds).in("status", ["active", "scheduled"]).lte("effective_from", nextEffectiveOn)
         .or(`effective_to.is.null,effective_to.gte.${nextEffectiveOn}`).order("version_no", { ascending: false }) : empty.versions,
       supabase.from("v_billing_v1_s13_2_requests").select("*")
@@ -20327,6 +20332,155 @@ function normalizeFreeAccessLimit(value, fallback = 5) {
   return Math.max(0, Math.round(n));
 }
 
+// S14.3: resolve the effective free-access entitlement from Billing.
+// Priority:
+//   1) current offer version free_access_limit, when explicitly configured;
+//   2) internet_pools.free_access_limit as the Superadmin fallback.
+//
+// NULL on the offer version never means "unlimited": it means "use pool fallback".
+// Existing devices are never deactivated here; this helper only resolves the limit
+// used by create/reactivate guards and admin projections.
+async function loadEffectiveFreeAccessLimitsForPools(poolRows, effectiveOn = billingMadagascarToday()) {
+  const rows = Array.isArray(poolRows) ? poolRows.filter((row) => row?.id) : [];
+  const result = {};
+
+  for (const pool of rows) {
+    const poolId = String(pool.id || "").trim();
+    if (!poolId) continue;
+    const fallbackLimit = normalizeFreeAccessLimit(pool.free_access_limit, 5);
+    result[poolId] = {
+      pool_id: poolId,
+      fallback_limit: fallbackLimit,
+      effective_limit: fallbackLimit,
+      source: "pool",
+      offer_id: null,
+      offer_code: null,
+      offer_title: null,
+      offer_version_id: null,
+      offer_version_no: null,
+      offer_free_access_limit: null,
+      effective_on: effectiveOn,
+    };
+  }
+
+  if (!supabase || !rows.length) return result;
+
+  const poolIds = rows.map((row) => String(row.id)).filter(Boolean);
+  const { data: assignments, error: assignmentsError } = await supabase
+    .from("pool_billing_assignments")
+    .select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to,created_at")
+    .in("pool_id", poolIds)
+    .lte("effective_from", effectiveOn)
+    .or(`effective_to.is.null,effective_to.gte.${effectiveOn}`)
+    .order("effective_from", { ascending: false })
+    .order("created_at", { ascending: false });
+
+  if (assignmentsError) throw assignmentsError;
+
+  const assignmentByPool = new Map();
+  for (const assignment of assignments || []) {
+    const poolId = String(assignment?.pool_id || "").trim();
+    if (poolId && !assignmentByPool.has(poolId)) assignmentByPool.set(poolId, assignment);
+  }
+
+  const offerIds = [...new Set(
+    [...assignmentByPool.values()].map((assignment) => String(assignment?.offer_id || "").trim()).filter(Boolean)
+  )];
+  if (!offerIds.length) return result;
+
+  const [versionsResult, offersResult] = await Promise.all([
+    supabase
+      .from("billing_offer_versions")
+      .select("id,offer_id,version_no,status,effective_from,effective_to,free_access_limit")
+      .in("offer_id", offerIds)
+      .in("status", ["active", "scheduled", "retired"])
+      .lte("effective_from", effectiveOn)
+      .or(`effective_to.is.null,effective_to.gte.${effectiveOn}`)
+      .order("version_no", { ascending: false }),
+    supabase
+      .from("billing_offers")
+      .select("id,code,title")
+      .in("id", offerIds),
+  ]);
+
+  if (versionsResult.error) throw versionsResult.error;
+  if (offersResult.error) throw offersResult.error;
+
+  const versionByOffer = new Map();
+  for (const version of versionsResult.data || []) {
+    const offerId = String(version?.offer_id || "").trim();
+    if (offerId && !versionByOffer.has(offerId)) versionByOffer.set(offerId, version);
+  }
+
+  const offerById = new Map(
+    (offersResult.data || []).map((offer) => [String(offer?.id || "").trim(), offer])
+  );
+
+  for (const pool of rows) {
+    const poolId = String(pool.id || "").trim();
+    const assignment = assignmentByPool.get(poolId);
+    if (!assignment) continue;
+
+    const offerId = String(assignment.offer_id || "").trim();
+    const version = versionByOffer.get(offerId) || null;
+    const offer = offerById.get(offerId) || null;
+    const rawOfferLimit = version?.free_access_limit;
+    const hasOfferLimit =
+      rawOfferLimit !== null &&
+      rawOfferLimit !== undefined &&
+      rawOfferLimit !== "" &&
+      Number.isFinite(Number(rawOfferLimit)) &&
+      Number(rawOfferLimit) >= 0;
+
+    if (!hasOfferLimit) {
+      result[poolId] = {
+        ...result[poolId],
+        offer_id: offerId || null,
+        offer_code: cleanOptionalText(offer?.code, 80),
+        offer_title: cleanOptionalText(offer?.title, 160),
+        offer_version_id: version?.id || null,
+        offer_version_no: version?.version_no ?? null,
+      };
+      continue;
+    }
+
+    const offerLimit = normalizeFreeAccessLimit(rawOfferLimit, result[poolId].fallback_limit);
+    result[poolId] = {
+      ...result[poolId],
+      effective_limit: offerLimit,
+      source: "offer",
+      offer_id: offerId || null,
+      offer_code: cleanOptionalText(offer?.code, 80),
+      offer_title: cleanOptionalText(offer?.title, 160),
+      offer_version_id: version?.id || null,
+      offer_version_no: version?.version_no ?? null,
+      offer_free_access_limit: offerLimit,
+    };
+  }
+
+  return result;
+}
+
+function withEffectiveFreeAccessLimit(pool, entitlement) {
+  if (!pool || typeof pool !== "object") return pool;
+  const resolved = entitlement || {
+    fallback_limit: normalizeFreeAccessLimit(pool.free_access_limit, 5),
+    effective_limit: normalizeFreeAccessLimit(pool.free_access_limit, 5),
+    source: "pool",
+  };
+  return {
+    ...pool,
+    effective_free_access_limit: resolved.effective_limit,
+    free_access_limit_source: resolved.source,
+    offer_free_access_limit: resolved.offer_free_access_limit ?? null,
+    free_access_offer_id: resolved.offer_id ?? null,
+    free_access_offer_code: resolved.offer_code ?? null,
+    free_access_offer_title: resolved.offer_title ?? null,
+    free_access_offer_version_id: resolved.offer_version_id ?? null,
+    free_access_offer_version_no: resolved.offer_version_no ?? null,
+  };
+}
+
 async function getFreeAccessUsageForPool(poolId) {
   const cleanPoolId = String(poolId || "").trim();
   if (!cleanPoolId || !supabase) {
@@ -20346,7 +20500,9 @@ async function getFreeAccessUsageForPool(poolId) {
     throw err;
   }
 
-  const limit = normalizeFreeAccessLimit(pool.free_access_limit, 5);
+  const entitlementMap = await loadEffectiveFreeAccessLimitsForPools([pool]);
+  const entitlement = entitlementMap[cleanPoolId] || null;
+  const limit = entitlement?.effective_limit ?? normalizeFreeAccessLimit(pool.free_access_limit, 5);
   const { count, error: countErr } = await supabase
     .from("free_access_devices")
     .select("id", { count: "exact", head: true })
@@ -20366,6 +20522,14 @@ async function getFreeAccessUsageForPool(poolId) {
     pool_nas_id: cleanOptionalText(pool?.radius_nas_id, 120),
     used,
     limit,
+    pool_fallback_limit: entitlement?.fallback_limit ?? normalizeFreeAccessLimit(pool.free_access_limit, 5),
+    offer_free_access_limit: entitlement?.offer_free_access_limit ?? null,
+    limit_source: entitlement?.source || "pool",
+    offer_id: entitlement?.offer_id || null,
+    offer_code: entitlement?.offer_code || null,
+    offer_title: entitlement?.offer_title || null,
+    offer_version_id: entitlement?.offer_version_id || null,
+    offer_version_no: entitlement?.offer_version_no ?? null,
     remaining: Math.max(0, limit - used),
     limit_reached: used >= limit,
   };
@@ -20885,10 +21049,12 @@ app.get("/api/admin/free-access-devices/usage", requireAdmin, async (req, res) =
       if (pid) counts[pid] = (counts[pid] || 0) + 1;
     }
 
+    const entitlementByPool = await loadEffectiveFreeAccessLimitsForPools(pools || []);
     const usage_by_pool = {};
     for (const p of pools || []) {
       const pid = String(p?.id || "").trim();
-      const limit = normalizeFreeAccessLimit(p?.free_access_limit, 5);
+      const entitlement = entitlementByPool[pid] || null;
+      const limit = entitlement?.effective_limit ?? normalizeFreeAccessLimit(p?.free_access_limit, 5);
       const used = Number(counts[pid] || 0);
       const poolDisplayName = buildPoolDisplayName(p) || p?.name || null;
       usage_by_pool[pid] = {
@@ -20900,6 +21066,14 @@ app.get("/api/admin/free-access-devices/usage", requireAdmin, async (req, res) =
         pool_nas_id: cleanOptionalText(p?.radius_nas_id, 120),
         used,
         limit,
+        pool_fallback_limit: entitlement?.fallback_limit ?? normalizeFreeAccessLimit(p?.free_access_limit, 5),
+        offer_free_access_limit: entitlement?.offer_free_access_limit ?? null,
+        limit_source: entitlement?.source || "pool",
+        offer_id: entitlement?.offer_id || null,
+        offer_code: entitlement?.offer_code || null,
+        offer_title: entitlement?.offer_title || null,
+        offer_version_id: entitlement?.offer_version_id || null,
+        offer_version_no: entitlement?.offer_version_no ?? null,
         remaining: Math.max(0, limit - used),
         limit_reached: used >= limit,
       };
@@ -25790,7 +25964,13 @@ app.get("/api/admin/pools", requireAdmin, async (req, res) => {
       return res.status(500).json({ error: "db_error" });
     }
 
-    return res.json({ ok: true, pools: (data || []).map(withPoolDisplayName), total: count ?? (data ? data.length : 0) });
+    const entitlementByPool = await loadEffectiveFreeAccessLimitsForPools(data || []);
+    const poolItems = (data || []).map((pool) => {
+      const poolId = String(pool?.id || "").trim();
+      return withPoolDisplayName(withEffectiveFreeAccessLimit(pool, entitlementByPool[poolId]));
+    });
+
+    return res.json({ ok: true, pools: poolItems, total: count ?? (data ? data.length : 0) });
   } catch (e) {
     if (sendRequestValidationError(res, e)) return;
     console.error("ADMIN POOLS LIST EX", e);

@@ -184,8 +184,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function poolLimitById(poolId) {
     const p = pools.find((x) => String(x.id || "") === String(poolId || ""));
-    const n = Number(p?.free_access_limit);
-    return Number.isFinite(n) && n >= 0 ? Math.round(n) : 5;
+    const effective = Number(p?.effective_free_access_limit);
+    if (Number.isFinite(effective) && effective >= 0) return Math.round(effective);
+    const fallback = Number(p?.free_access_limit);
+    return Number.isFinite(fallback) && fallback >= 0 ? Math.round(fallback) : 5;
   }
 
   function getLocalActiveUsage(poolId) {
@@ -222,6 +224,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       ? `${poolDisplayName(pool) || "Ce pool"} : aucune place restante.`
       : `${poolDisplayName(pool) || "Ce pool"} : ${remaining} place(s) restante(s).`;
     limitPillEl.textContent = `${used} / ${limit} utilisé(s)`;
+    const source = usage?.limit_source === "offer"
+      ? `Offre${usage?.offer_title ? ` : ${usage.offer_title}` : ""}`
+      : "Fallback du pool";
+    limitPillEl.title = `Limite effective — ${source}`;
 
     if (addBtn) {
       addBtn.disabled = full;

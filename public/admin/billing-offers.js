@@ -30,6 +30,7 @@ function render() {
       <div class="bo-pills">
         ${v?.commission_enabled ? `<span class="bo-pill ok">Commission ${Number(v.commission_pct)} %</span>` : ""}
         ${v?.subscription_enabled ? `<span class="bo-pill ok">${money(v.subscription_price_ar)}/mois</span>` : ""}
+        ${v ? `<span class="bo-pill">Accès gratuits : ${v.free_access_limit === null || v.free_access_limit === undefined ? "fallback pool" : `${Number(v.free_access_limit)} max`}</span>` : ""}
         ${(v?.features || []).map((f) => `<span class="bo-pill">${esc(featureLabel(f))}</span>`).join("")}
       </div></article>`;
   }).join("") : `<div class="bo-empty">Aucune offre.</div>`;
@@ -48,9 +49,11 @@ function setVersion(v) {
   state.version = v;
   $("commissionEnabled").checked = !!v?.commission_enabled; $("commissionPct").value = v?.commission_pct ?? "";
   $("subscriptionEnabled").checked = !!v?.subscription_enabled; $("subscriptionPrice").value = v?.subscription_price_ar ?? "";
-  $("graceDays").value = v?.grace_days ?? ""; featureInputs(v?.features || []);
+  $("graceDays").value = v?.grace_days ?? "";
+  $("freeAccessLimit").value = v?.free_access_limit ?? "";
+  featureInputs(v?.features || []);
   const editable = !v || v.status === "draft";
-  ["commissionEnabled","commissionPct","subscriptionEnabled","subscriptionPrice","graceDays"].forEach((id) => $(id).disabled = !editable);
+  ["commissionEnabled","commissionPct","subscriptionEnabled","subscriptionPrice","graceDays","freeAccessLimit"].forEach((id) => $(id).disabled = !editable);
   $("featuresBox").querySelectorAll("input").forEach((input) => input.disabled = !editable);
   $("versionNote").textContent = v ? `Version ${v.version_no} — ${statusLabel(v.status)}${editable ? "" : " (immuable)"}` : "La première sauvegarde créera la version 1.";
   $("newVersionBtn").style.display = state.editing && v && !editable ? "" : "none";
@@ -71,7 +74,14 @@ function openEdit(id) {
   setVersion(latestVersion(offer)); err($("modalError"), ""); showModal();
 }
 function versionBody() {
-  return { commission_enabled: $("commissionEnabled").checked, commission_pct: $("commissionPct").value, subscription_enabled: $("subscriptionEnabled").checked, subscription_price_ar: $("subscriptionPrice").value, grace_days: $("graceDays").value };
+  return {
+    commission_enabled: $("commissionEnabled").checked,
+    commission_pct: $("commissionPct").value,
+    subscription_enabled: $("subscriptionEnabled").checked,
+    subscription_price_ar: $("subscriptionPrice").value,
+    grace_days: $("graceDays").value,
+    free_access_limit: $("freeAccessLimit").value,
+  };
 }
 function selectedFeatures() { return [...document.querySelectorAll("[data-feature]:checked")].map((x) => x.dataset.feature); }
 async function save() {
