@@ -98,7 +98,40 @@ async function save() {
     closeModal(); await load();
   } catch (e) { err($("modalError"), e.message); } finally { $("saveBtn").disabled = false; }
 }
-function newVersion() { if (!state.editing) return; setVersion(null); $("versionNote").textContent = "Nouvelle version brouillon — enregistrer pour la créer."; }
+function newVersion() {
+  if (!state.editing) return;
+
+  // Clone the version currently displayed into a new, unsaved draft.
+  // Keep state.version = null so save() creates a new version instead of
+  // attempting to PATCH the immutable scheduled/active source version.
+  const source = state.version ? {
+    commission_enabled: !!state.version.commission_enabled,
+    commission_pct: state.version.commission_pct,
+    subscription_enabled: !!state.version.subscription_enabled,
+    subscription_price_ar: state.version.subscription_price_ar,
+    grace_days: state.version.grace_days,
+    free_access_limit: state.version.free_access_limit,
+    features: [...(state.version.features || [])],
+  } : null;
+
+  setVersion(null);
+
+  if (source) {
+    $("commissionEnabled").checked = source.commission_enabled;
+    $("commissionPct").value = source.commission_pct ?? "";
+    $("subscriptionEnabled").checked = source.subscription_enabled;
+    $("subscriptionPrice").value = source.subscription_price_ar ?? "";
+    $("graceDays").value = source.grace_days ?? "";
+    $("freeAccessLimit").value = source.free_access_limit ?? "";
+    featureInputs(source.features);
+
+    // This is a fresh draft: all commercial fields/features are editable.
+    ["commissionEnabled","commissionPct","subscriptionEnabled","subscriptionPrice","graceDays","freeAccessLimit"].forEach((id) => $(id).disabled = false);
+    $("featuresBox").querySelectorAll("input").forEach((input) => input.disabled = false);
+  }
+
+  $("versionNote").textContent = "Nouvelle version brouillon — valeurs reprises de la version précédente. Modifiez uniquement ce qui change, puis enregistrez.";
+}
 
 async function boot() {
   try { await requireSuperadmin(); await load(); } catch (e) { err($("error"), e.message === "billing_admin_disabled" ? "Le panneau Offres est désactivé par le feature flag S2." : e.message); }
