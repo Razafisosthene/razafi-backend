@@ -22775,7 +22775,7 @@ async function loadOwnerPayoutForLockOrThrow(id) {
 
 // GET /api/admin/revenue/share-transactions?from=&to=&search=&limit=200&offset=0
 // System 3 only (internet_pools.system = 'mikrotik')
-// Extends paid revenue truth with commission split + payout status
+// Extends paid revenue truth with commission split + canonical S13 reversement status
 app.get("/api/admin/revenue/share-transactions", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
@@ -22908,41 +22908,98 @@ app.get("/api/admin/revenue/share-transactions", requireAdmin, async (req, res) 
     const itemsRaw = Array.isArray(txRows) ? txRows : [];
     const txIds = Array.from(new Set(itemsRaw.map((r) => String(r?.transaction_id || "")).filter(Boolean)));
 
-    let payoutItems = [];
-    if (txIds.length) {
-      const { data: payoutItemRows, error: payoutItemErr } = await supabase
-        .from("owner_payout_items")
-        .select("transaction_id,payout_id")
-        .in("transaction_id", txIds);
+    // STEP 2 — Revenue is now a READ-ONLY projection of canonical S13 commission truth.
+    // S12 owner_payouts / owner_payout_items are deliberately NOT consulted here.
+    // Closed-month transaction membership comes from immutable S13 statement items;
+    // the open month is resolved from the canonical pool billing period.
+    const currentCommissionMonth = `${billingMadagascarToday().slice(0, 7)}-01`;
+    const monthStartMG = (value) => {
+      const d = new Date(value);
+      if (!Number.isFinite(d.getTime())) return null;
+      const p = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Indian/Antananarivo",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).formatToParts(d).reduce((a, x) => (x.type !== "literal" && (a[x.type] = x.value), a), {});
+      return p.year && p.month ? `${p.year}-${p.month}-01` : null;
+    };
 
-      if (payoutItemErr) return res.status(500).json({ error: payoutItemErr.message });
-      payoutItems = Array.isArray(payoutItemRows) ? payoutItemRows : [];
-    }
-
-    const payoutItemByTxId = {};
-    const payoutIds = [];
-    for (const row of payoutItems) {
+    const txMonthById = new Map();
+    const txMonths = new Set();
+    for (const row of itemsRaw) {
       const txId = String(row?.transaction_id || "").trim();
-      const payoutId = String(row?.payout_id || "").trim();
-      if (!txId || !payoutId) continue;
-      payoutItemByTxId[txId] = payoutId;
-      payoutIds.push(payoutId);
+      const month = monthStartMG(row?.transaction_created_at);
+      if (txId && month) txMonthById.set(txId, month);
+      if (month) txMonths.add(month);
     }
 
-    let payoutById = {};
-    const uniquePayoutIds = Array.from(new Set(payoutIds)).filter(Boolean);
-    if (uniquePayoutIds.length) {
-      const { data: payoutRows, error: payoutErr } = await supabase
-        .from("owner_payouts")
-        .select("id,status,receipt_number,paid_at")
-        .in("id", uniquePayoutIds);
+    const fetchInChunks = async ({ table, select, column, values, decorate = null }) => {
+      const unique = Array.from(new Set((values || []).map((v) => String(v || "")).filter(Boolean)));
+      const rows = [];
+      for (let i = 0; i < unique.length; i += 100) {
+        let query = supabase.from(table).select(select).in(column, unique.slice(i, i + 100));
+        if (decorate) query = decorate(query);
+        const { data, error } = await query;
+        if (error) throw error;
+        rows.push(...(data || []));
+      }
+      return rows;
+    };
 
-      if (payoutErr) return res.status(500).json({ error: payoutErr.message });
+    const monthsSorted = Array.from(txMonths).sort();
+    const [commissionItemRows, exclusionRows, periodResult] = await Promise.all([
+      txIds.length
+        ? fetchInChunks({
+            table: "billing_commission_monthly_items",
+            select: "source_transaction_id,statement_id",
+            column: "source_transaction_id",
+            values: txIds,
+          })
+        : Promise.resolve([]),
+      txIds.length
+        ? fetchInChunks({
+            table: "financial_reporting_exclusions",
+            select: "source_id",
+            column: "source_id",
+            values: txIds,
+            decorate: (query) => query.eq("source_kind", "wifi_sale_transaction").is("revoked_at", null),
+          })
+        : Promise.resolve([]),
+      (poolIds.length && monthsSorted.length)
+        ? supabase
+            .from("pool_billing_periods")
+            .select("id,pool_id,period_start,period_end,billing_status,billing_mode")
+            .in("pool_id", poolIds)
+            .gte("period_start", monthsSorted[0])
+            .lte("period_start", monthsSorted[monthsSorted.length - 1])
+        : Promise.resolve({ data: [], error: null }),
+    ]);
 
-      payoutById = Object.fromEntries(
-        (payoutRows || []).map((r) => [String(r?.id || ""), r])
-      );
-    }
+    if (periodResult?.error) return res.status(500).json({ error: periodResult.error.message });
+
+    const commissionItemByTxId = new Map(
+      (commissionItemRows || []).map((row) => [String(row?.source_transaction_id || ""), row])
+    );
+    const excludedTxIds = new Set((exclusionRows || []).map((row) => String(row?.source_id || "")).filter(Boolean));
+    const periodByPoolMonth = new Map(
+      (periodResult?.data || []).map((row) => [`${String(row?.pool_id || "")}|${String(row?.period_start || "")}`, row])
+    );
+
+    const statementIds = Array.from(new Set(
+      (commissionItemRows || []).map((row) => String(row?.statement_id || "")).filter(Boolean)
+    ));
+    const s13PayoutRows = statementIds.length
+      ? await fetchInChunks({
+          table: "billing_commission_payouts",
+          select: "id,statement_id,status,period_start,period_end,transferred_at",
+          column: "statement_id",
+          values: statementIds,
+        })
+      : [];
+    const payoutByStatementId = new Map(
+      (s13PayoutRows || []).map((row) => [String(row?.statement_id || ""), row])
+    );
 
     const items = itemsRaw.map((r) => {
       const poolId = String(r?.pool_id || "").trim();
@@ -22963,9 +23020,32 @@ app.get("/api/admin/revenue/share-transactions", requireAdmin, async (req, res) 
       const owner_amount_ar = roundMoney2((gross_amount_ar * owner_share_pct) / 100);
 
       const txId = String(r?.transaction_id || "").trim();
-      const payoutId = payoutItemByTxId[txId] || null;
-      const payout = payoutId ? payoutById[payoutId] || null : null;
-      const payout_status = payout?.status || "unpaid";
+      const transactionMonth = txMonthById.get(txId) || monthStartMG(r?.transaction_created_at);
+      const statementItem = commissionItemByTxId.get(txId) || null;
+      const statementId = statementItem?.statement_id ? String(statementItem.statement_id) : null;
+      const s13Payout = statementId ? (payoutByStatementId.get(statementId) || null) : null;
+      const billingPeriod = transactionMonth
+        ? (periodByPoolMonth.get(`${poolId}|${transactionMonth}`) || null)
+        : null;
+
+      let reversement_status = "not_applicable";
+      if (!excludedTxIds.has(txId) && statementId) {
+        const payoutStatus = String(s13Payout?.status || "").trim().toLowerCase();
+        reversement_status = payoutStatus === "paid"
+          ? "paid"
+          : (payoutStatus === "ready" ? "ready" : "preparing");
+      } else if (!excludedTxIds.has(txId) && billingPeriod) {
+        const eligibleCommissionPeriod =
+          String(billingPeriod.billing_mode || "").toLowerCase() === "commission" &&
+          ["commercial", "trial"].includes(String(billingPeriod.billing_status || "").toLowerCase());
+        if (eligibleCommissionPeriod) {
+          if (transactionMonth === currentCommissionMonth) reversement_status = "current";
+          else if (transactionMonth && transactionMonth < currentCommissionMonth) reversement_status = "preparing";
+        }
+      }
+
+      const reversementPayoutId = s13Payout?.id || null;
+      const reversementTransferredAt = s13Payout?.transferred_at || null;
 
       return {
         ...r,
@@ -22980,11 +23060,22 @@ app.get("/api/admin/revenue/share-transactions", requireAdmin, async (req, res) 
         owner_share_pct,
         platform_amount_ar,
         owner_amount_ar,
-        payout_id: payoutId,
-        payout_status,
-        is_paid_to_owner: payout_status === "paid",
-        receipt_number: payout?.receipt_number || null,
-        paid_at: payout?.paid_at || null,
+        // Canonical Revenue reversement projection — S13 only, read-only.
+        reversement_source: "s13",
+        reversement_status,
+        reversement_period_start: transactionMonth,
+        reversement_statement_id: statementId,
+        reversement_payout_id: reversementPayoutId,
+        reversement_transferred_at: reversementTransferredAt,
+        reversement_excluded: excludedTxIds.has(txId),
+
+        // Backward-compatible aliases for any existing read-only consumer.
+        // They no longer reference S12 and Revenue intentionally exposes no receipt.
+        payout_id: reversementPayoutId,
+        payout_status: reversement_status,
+        is_paid_to_owner: reversement_status === "paid",
+        receipt_number: null,
+        paid_at: reversementTransferredAt,
       };
     });
 

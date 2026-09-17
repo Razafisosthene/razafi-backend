@@ -181,13 +181,21 @@ function pillHTML(text, tone = "neutral") {
 }
 
 
-function payoutLabel(status) {
+function reversementLabel(status) {
   const s = String(status || "").toLowerCase();
-  if (s === "paid") return "Payé";
-  if (s === "draft") return "Brouillon";
-  if (s === "cancelled") return "Annulé";
-  if (s === "unpaid") return "Non payé";
-  return status || "—";
+  if (s === "current") return "Mois en cours";
+  if (s === "preparing") return "En préparation";
+  if (s === "ready") return "Prêt à reverser";
+  if (s === "paid") return "Reversé";
+  if (s === "not_applicable") return "Non applicable";
+  return "À vérifier";
+}
+
+function reversementTone(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "paid") return "ok";
+  if (s === "ready" || s === "current" || s === "preparing") return "warn";
+  return "neutral";
 }
 
 function transactionLabel(status) {
@@ -198,30 +206,6 @@ function transactionLabel(status) {
   if (s === "cancelled") return "Annulée";
   if (s === "expired") return "Expirée";
   return status || "—";
-}
-
-function payoutTone(status) {
-  const s = String(status || "").toLowerCase();
-  if (s === "paid") return "ok";
-  if (s === "draft") return "warn";
-  if (s === "cancelled") return "bad";
-  return "neutral";
-}
-
-function reconciliationLabel(status) {
-  const s = String(status || "").toLowerCase();
-  if (s === "payable") return "À payer";
-  if (s === "cancel_candidate") return "À annuler";
-  if (s === "review") return "À vérifier";
-  if (s === "closed") return "Clôturé";
-  return "Non classé";
-}
-
-function reconciliationTone(status) {
-  const s = String(status || "").toLowerCase();
-  if (s === "payable" || s === "closed") return "ok";
-  if (s === "cancel_candidate") return "bad";
-  return "warn";
 }
 
 // Display-only mapping. Does not affect filtering, totals, or any
@@ -267,18 +251,15 @@ async function requireAdmin() {
 let txOffset = 0;
 let txLimit = 200;
 let lastTxItems = [];
-let lastPayoutItems = [];
 // V2 Phase 2 — safe in-memory captures for assistant (no forbidden fields)
 let lastRevenueTotals = null;
 let lastRevenueByPlan = [];
 let lastRevenueByPool = [];
 let currentTab = "tx";
-const selectedTxIds = new Set();
 
 const revenueRequestGroups = {
   aggregates: { generation: 0, controller: null },
-  transactions: { generation: 0, controller: null },
-  payouts: { generation: 0, controller: null }
+  transactions: { generation: 0, controller: null }
 };
 
 function beginRevenueRequest(groupName) {
@@ -315,48 +296,12 @@ function cancelRevenueRequest(groupName) {
   group.controller = null;
 }
 
-function clearTransactionSelection() {
-  selectedTxIds.clear();
-  updateSelectionMeta();
-  renderSelectionChecks();
-}
-
-// -------------------------
-// Selection helpers / protection
-// -------------------------
-function getTxById(txId) {
-  return lastTxItems.find((it) => String(it?.transaction_id || "") === String(txId || ""));
-}
-
-function getSelectionContext() {
-  const firstId = Array.from(selectedTxIds)[0];
-  const first = firstId ? getTxById(firstId) : null;
-  if (!first) return null;
-  return {
-    pool_id: String(first.pool_id || ""),
-    pool_name: poolDisplayName(first),
-    owner_label: first.owner_email || first.owner_name || null
-  };
-}
-
-function isTxLocked(it) {
-  const payoutStatus = String(it?.payout_status || "unpaid").toLowerCase();
-  return payoutStatus !== "unpaid";
-}
-
-function isTxCompatibleWithSelection(it) {
-  const ctx = getSelectionContext();
-  if (!ctx) return true;
-  return String(it?.pool_id || "") === ctx.pool_id;
-}
-
 function syncTxHeaders() {
   const txTable = byId("txBody")?.closest("table");
   const theadRow = txTable?.querySelector("thead tr");
   if (!theadRow) return;
 
   theadRow.innerHTML = `
-    <th style="text-align:left; padding:10px;">Sel</th>
     <th style="text-align:left; padding:10px;">Date</th>
     <th style="text-align:left; padding:10px;">Montant brut</th>
     <th style="text-align:left; padding:10px;">Part plateforme</th>
@@ -367,46 +312,14 @@ function syncTxHeaders() {
     <th style="text-align:left; padding:10px;">Plan</th>
     <th style="text-align:left; padding:10px;">Pool</th>
     <th style="text-align:left; padding:10px;">Statut reversement</th>
-    <th style="text-align:left; padding:10px;">Reçu</th>
     <th style="text-align:left; padding:10px;">Statut transaction</th>
   `;
 }
 
-function updateSelectionMeta() {
-  const el = byId("txSelectionMeta");
-  if (!el) return;
-  const n = selectedTxIds.size;
-  if (!n) {
-    el.textContent = "0 sélectionnée";
-    return;
-  }
-  const ctx = getSelectionContext();
-  const poolTxt = ctx?.pool_name ? ` • Pool: ${ctx.pool_name}` : "";
-  el.textContent = `${n} sélectionnée${n > 1 ? "s" : ""}${poolTxt}`;
-}
-
-function renderSelectionChecks() {
-  const ctx = getSelectionContext();
-  Array.from(document.querySelectorAll(".tx-select")).forEach((cb) => {
-    const txId = cb.getAttribute("data-txid");
-    const it = getTxById(txId);
-    const locked = isTxLocked(it);
-    const compatible = isTxCompatibleWithSelection(it);
-    cb.checked = selectedTxIds.has(txId);
-    cb.disabled = locked || (!!ctx && !cb.checked && !compatible);
-
-    const row = cb.closest("tr");
-    if (row) {
-      row.style.opacity = cb.disabled && !cb.checked ? ".55" : "1";
-      row.title = locked
-        ? "Déjà rattachée à un reversement"
-        : (!!ctx && !cb.checked && !compatible ? "Un reversement doit contenir un seul pool" : "");
-    }
-  });
-}
-
 // -------------------------
 // UI wiring
+// STEP 2: Revenue is analysis-only; canonical reversement truth comes from S13.
+// No payout creation, confirmation, cancellation, or receipt is available here.
 // -------------------------
 
 function setupRevenueFilterDisclosure() {
@@ -436,99 +349,25 @@ function wireNav() {
   };
 }
 
-function ensurePayoutUI() {
-  if (!byId("tabPayout")) {
-    const btn = document.createElement("button");
-    btn.id = "tabPayout";
-    btn.textContent = "Reversements";
-    btn.type = "button";
-    btn.className = byId("tabTx")?.className || "filter-btn rz-tab-btn";
-        byId("tabPool")?.insertAdjacentElement("afterend", btn);
-  }
-
-  if (!byId("panelPayout")) {
-    const panel = document.createElement("div");
-    panel.id = "panelPayout";
-    panel.style.display = "none";
-    panel.className = "rz-panel-card";
-    panel.innerHTML = `
-      <div class="rz-panel-note">Liste des reversements propriétaires. Cliquez sur une ligne pour voir les détails.</div>
-      <!-- P1-06 : portée explicite des filtres sur ce tableau (décision approuvée). -->
-      <div class="rz-panel-note" style="opacity:.8;">⚠ La recherche ne s'applique pas aux reversements. Les dates « Du / Au » filtrent la date de <strong>création du reversement</strong> (heure de Madagascar).</div>
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin:0 0 10px;">
-        <div id="payoutMeta" class="rz-table-meta">—</div>
-        <div id="payoutActions" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
-      </div>
-
-      <div class="rz-table-wrap">
-        <table class="rz-data-table" style="min-width:900px;">
-          <thead>
-            <tr>
-              <th style="text-align:left; padding:10px;">Date</th>
-              <th style="text-align:left; padding:10px;">Pool</th>
-              <th style="text-align:left; padding:10px;">Propriétaire</th>
-              <th style="text-align:left; padding:10px;">Transactions</th>
-              <th style="text-align:left; padding:10px;">Brut</th>
-              <th style="text-align:left; padding:10px;">Part propriétaire</th>
-              <th style="text-align:left; padding:10px;">Statut</th>
-              <th style="text-align:left; padding:10px;">Reçu</th>
-              <th style="text-align:left; padding:10px;">Action</th>
-            </tr>
-          </thead>
-          <tbody id="payoutBody"></tbody>
-        </table>
-      </div>
-    `;
-    byId("panelPool")?.insertAdjacentElement("afterend", panel);
-  }
-
-  if (!byId("txActionsBar")) {
-    const box = document.createElement("div");
-    box.id = "txActionsBar";
-    box.style.display = "flex";
-    box.style.justifyContent = "space-between";
-    box.style.alignItems = "center";
-    box.style.gap = "12px";
-    box.style.flexWrap = "wrap";
-    box.style.margin = "12px 0 8px";
-    box.innerHTML = `
-      <div id="txSelectionMeta" class="rz-table-meta">0 sélectionnée</div>
-      <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <button id="autoCreatePayoutBtn" class="filter-btn primary" type="button">Préparer le mois clôturé</button>
-        <button id="createPayoutBtn" class="filter-btn" type="button" disabled title="S12.2 : utilisez la préparation sécurisée du mois clôturé">Création manuelle désactivée</button>
-        <button id="clearSelectionBtn" class="filter-btn" type="button">Effacer sélection</button>
-      </div>
-    `;
-    const txPanel = byId("panelTx");
-    const txTable = byId("txBody")?.closest("table");
-    if (txPanel && txTable) txTable.insertAdjacentElement("beforebegin", box);
-  }
-
+function enforceRevenueS13ReadOnlyUI() {
+  // STEP 2: Revenue is analysis-only. Remove every legacy S12 payout surface.
+  byId("tabPayout")?.remove();
+  byId("panelPayout")?.remove();
+  byId("txActionsBar")?.remove();
   syncTxHeaders();
-  updateActionVisibility();
-}
-
-function updateActionVisibility() {
-  const canWrite = !!currentAdmin?.is_superadmin;
-  const autoCreateBtn = byId("autoCreatePayoutBtn");
-  const createBtn = byId("createPayoutBtn");
-  const clearBtn = byId("clearSelectionBtn");
-  if (autoCreateBtn) autoCreateBtn.style.display = canWrite ? "" : "none";
-  if (createBtn) createBtn.style.display = canWrite ? "" : "none";
-  if (clearBtn) clearBtn.style.display = canWrite ? "" : "none";
 }
 
 function setTab(tab) {
-  currentTab = tab;
-  byId("panelTx").style.display = tab === "tx" ? "" : "none";
-  byId("panelPlan").style.display = tab === "plan" ? "" : "none";
-  byId("panelPool").style.display = tab === "pool" ? "" : "none";
-  if (byId("panelPayout")) byId("panelPayout").style.display = tab === "payout" ? "" : "none";
+  const safeTab = ["tx", "plan", "pool"].includes(tab) ? tab : "tx";
+  currentTab = safeTab;
+  byId("panelTx").style.display = safeTab === "tx" ? "" : "none";
+  byId("panelPlan").style.display = safeTab === "plan" ? "" : "none";
+  byId("panelPool").style.display = safeTab === "pool" ? "" : "none";
 
-  const map = { tx: "tabTx", plan: "tabPlan", pool: "tabPool", payout: "tabPayout" };
+  const map = { tx: "tabTx", plan: "tabPlan", pool: "tabPool" };
   Object.entries(map).forEach(([key, id]) => {
     const btn = byId(id);
-    if (btn) btn.classList.toggle("active", key === tab);
+    if (btn) btn.classList.toggle("active", key === safeTab);
   });
 }
 
@@ -536,7 +375,6 @@ function wireTabs() {
   byId("tabTx").onclick = () => setTab("tx");
   byId("tabPlan").onclick = () => setTab("plan");
   byId("tabPool").onclick = () => setTab("pool");
-  byId("tabPayout").onclick = () => setTab("payout");
 }
 
 function wireFilters() {
@@ -549,7 +387,6 @@ function wireFilters() {
   const refreshAll = () => {
     cancelSearchTimer();
     txOffset = 0;
-    clearTransactionSelection();
     loadAll();
   };
 
@@ -562,7 +399,6 @@ function wireFilters() {
     byId("to").value = "";
     byId("providerFilter").value = "";
     txOffset = 0;
-    clearTransactionSelection();
     loadAll();
   };
 
@@ -570,7 +406,6 @@ function wireFilters() {
   byId("providerFilter").addEventListener("change", () => {
     cancelSearchTimer();
     txOffset = 0;
-    clearTransactionSelection();
     loadTransactions(captureRevenueSnapshot());
   });
 
@@ -581,7 +416,6 @@ function wireFilters() {
     cancelRevenueRequest("aggregates");
     cancelRevenueRequest("transactions");
     txOffset = 0;
-    clearTransactionSelection();
     searchTimer = setTimeout(() => {
       const length = Array.from(byId("search")?.value?.trim() || "").length;
       // Empty search restores the complete scope. One character remains available
@@ -598,7 +432,6 @@ function wireFilters() {
   const onDateChange = () => {
     cancelSearchTimer();
     txOffset = 0;
-    clearTransactionSelection();
     loadAll();
   };
   byId("from").addEventListener("change", onDateChange);
@@ -607,126 +440,13 @@ function wireFilters() {
   byId("prevBtn").onclick = () => {
     cancelSearchTimer();
     txOffset = Math.max(0, txOffset - txLimit);
-    clearTransactionSelection();
     loadTransactions(captureRevenueSnapshot());
   };
   byId("nextBtn").onclick = () => {
     cancelSearchTimer();
     txOffset = txOffset + txLimit;
-    clearTransactionSelection();
     loadTransactions(captureRevenueSnapshot());
   };
-}
-
-function buildAutoPayoutResultMessage(result) {
-  const outcome = String(result?.outcome || "partial");
-  const createdCount = Math.max(0, Number(result?.created_count || 0) || 0);
-  const transactionCount = Math.max(0, Number(result?.transaction_count_created || 0) || 0);
-  const skippedPoolCount = Math.max(0, Number(result?.skipped_pool_count || 0) || 0);
-  const skippedTransactionCount = Math.max(0, Number(result?.skipped_transaction_count || 0) || 0);
-  const alreadyAttachedCount = Math.max(0, Number(result?.already_attached_count || 0) || 0);
-  const ownerTotal = Number(result?.owner_total_created_ar || 0) || 0;
-  const grossTotal = Number(result?.gross_total_created_ar || 0) || 0;
-
-  const lines = [];
-  if (outcome === "created") {
-    lines.push("Reversements automatiques créés ✅");
-  } else if (outcome === "nothing_to_create") {
-    lines.push("Aucun reversement à créer ✅");
-  } else {
-    lines.push("Création partielle des reversements ⚠️");
-  }
-
-  if (createdCount > 0) {
-    lines.push(`Reversements créés : ${createdCount}`);
-    lines.push(`Transactions incluses : ${transactionCount}`);
-    lines.push(`Montant brut : ${fmtAr(grossTotal)}`);
-    lines.push(`Part propriétaire : ${fmtAr(ownerTotal)}`);
-  }
-
-  if (outcome === "nothing_to_create") {
-    lines.push("Aucune transaction payée non encore reversée au propriétaire n’a été trouvée.");
-  }
-
-  if (skippedPoolCount > 0) {
-    lines.push(`Pools ignorés : ${skippedPoolCount}`);
-    lines.push("Vérifiez que chaque pool concerné possède un propriétaire.");
-  }
-  if (skippedTransactionCount > 0) {
-    lines.push(`Transactions ignorées : ${skippedTransactionCount}`);
-  }
-  if (alreadyAttachedCount > 0) {
-    lines.push(`Transactions déjà rattachées pendant l’opération : ${alreadyAttachedCount}`);
-  }
-
-  if (result?.scan_exhaustive === true) {
-    lines.push("Sélection exhaustive : oui");
-  }
-
-  return lines.join("\n");
-}
-
-function wirePayoutActions() {
-  byId("autoCreatePayoutBtn")?.addEventListener("click", async () => {
-    if (!currentAdmin?.is_superadmin) return;
-
-    const params = buildCommonParams();
-    const body = {
-      search: params.get("search") || "",
-      from: params.get("from") || null,
-      to: params.get("to") || null,
-      note: "Reversement auto brouillon"
-    };
-
-    const filterText = [];
-    if (body.search) filterText.push(`Recherche: ${body.search}`);
-    if (body.from) filterText.push(`Depuis: ${fmtDate(body.from)}`);
-    if (body.to) filterText.push(`Jusqu'à: ${fmtDate(body.to)}`);
-
-    const msg = filterText.length
-      ? `Créer automatiquement les reversements brouillons pour les transactions payées non encore reversées au propriétaire avec ces filtres ?\n\n${filterText.join("\n")}`
-      : "Créer automatiquement les reversements brouillons pour toutes les transactions payées non encore reversées au propriétaire ?";
-
-    if (!confirm(msg)) return;
-
-    const btn = byId("autoCreatePayoutBtn");
-    const oldText = btn?.textContent || "Préparer le mois clôturé";
-
-    try {
-      if (btn) {
-        btn.disabled = true;
-        btn.textContent = "Création...";
-      }
-
-      const result = await fetchJSON("/api/admin/revenue/payouts/auto-create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
-
-      alert(buildAutoPayoutResultMessage(result));
-      clearTransactionSelection();
-      await loadAll();
-      setTab("payout");
-    } catch (e) {
-      alert("Erreur création reversements auto : " + humanizeApiError(e));
-    } finally {
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = oldText;
-      }
-    }
-  });
-
-  byId("createPayoutBtn")?.addEventListener("click", async () => {
-    alert("S12.2 : la création manuelle est désactivée. Utilisez « Préparer le mois clôturé ».");
-  });
-
-  byId("clearSelectionBtn")?.addEventListener("click", () => {
-    selectedTxIds.clear();
-    updateSelectionMeta();
-    renderSelectionChecks();
-  });
 }
 
 function wireModal() {
@@ -917,7 +637,7 @@ function updateRevenueAssistantBridge() {
 async function loadTransactions(snapshot = captureRevenueSnapshot()) {
   const request = beginRevenueRequest("transactions");
   const body = byId("txBody");
-  body.innerHTML = `<tr><td colspan="13" style="padding:12px; opacity:.75;">Chargement...</td></tr>`;
+  body.innerHTML = `<tr><td colspan="11" style="padding:12px; opacity:.75;">Chargement...</td></tr>`;
   syncTxHeaders();
 
   const params = buildCommonParams(snapshot);
@@ -938,25 +658,14 @@ async function loadTransactions(snapshot = captureRevenueSnapshot()) {
       `${items.length} affichée${items.length > 1 ? "s" : ""} / ${total} (page ${Math.floor(snapshot.txOffset / txLimit) + 1})`;
 
     if (!items.length) {
-      body.innerHTML = `<tr><td colspan="13" style="padding:12px; opacity:.75;">Aucun résultat.</td></tr>`;
-      updateSelectionMeta();
+      body.innerHTML = `<tr><td colspan="11" style="padding:12px; opacity:.75;">Aucun résultat.</td></tr>`;
       return;
     }
 
     body.innerHTML = items.map((it, idx) => {
-      const txId = String(it.transaction_id || "");
-      const checked = selectedTxIds.has(txId) ? "checked" : "";
-      const payoutStatus = String(it.payout_status || "unpaid");
-      const tone = payoutStatus === "paid" ? "ok" : payoutStatus === "draft" ? "warn" : "neutral";
-      const locked = isTxLocked(it);
-      const compatible = isTxCompatibleWithSelection(it);
-      const disabled = locked || (selectedTxIds.size > 0 && !checked && !compatible);
-
+      const reversementStatus = String(it.reversement_status || it.payout_status || "not_applicable");
       return `
-        <tr data-i="${idx}" style="cursor:pointer; ${disabled && !checked ? "opacity:.55;" : ""}">
-          <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);" onclick="event.stopPropagation()">
-            ${currentAdmin?.is_superadmin ? `<input class="tx-select" data-txid="${esc(txId)}" type="checkbox" ${checked} ${disabled ? "disabled" : ""} />` : ""}
-          </td>
+        <tr data-i="${idx}" style="cursor:pointer;">
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtDate(it.transaction_created_at)}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08); font-weight:700;">${fmtAr(it.gross_amount_ar ?? it.amount_num)}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${fmtAr(it.platform_amount_ar)}</td>
@@ -966,8 +675,7 @@ async function loadTransactions(snapshot = captureRevenueSnapshot()) {
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.voucher_code || it.transaction_voucher || "—")}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.plan_name || "—")}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(poolDisplayName(it))}</td>
-          <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${pillHTML(payoutLabel(payoutStatus), tone)}</td>
-          <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(it.receipt_number || "—")}</td>
+          <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${pillHTML(reversementLabel(reversementStatus), reversementTone(reversementStatus))}</td>
           <td style="padding:10px; border-bottom: 1px solid rgba(0,0,0,.08);">${esc(transactionLabel(it.transaction_status))}</td>
         </tr>
       `;
@@ -980,179 +688,11 @@ async function loadTransactions(snapshot = captureRevenueSnapshot()) {
       });
     });
 
-    Array.from(body.querySelectorAll(".tx-select")).forEach(cb => {
-      cb.addEventListener("change", (e) => {
-        const txId = cb.getAttribute("data-txid");
-        const it = getTxById(txId);
-        if (cb.checked) {
-          const ctx = getSelectionContext();
-          if (ctx && String(it?.pool_id || "") !== ctx.pool_id) {
-            cb.checked = false;
-            alert("Un reversement doit contenir des transactions d’un seul pool.");
-            e.stopPropagation();
-            return;
-          }
-          if (isTxLocked(it)) {
-            cb.checked = false;
-            e.stopPropagation();
-            return;
-          }
-          selectedTxIds.add(txId);
-        } else {
-          selectedTxIds.delete(txId);
-        }
-        updateSelectionMeta();
-        renderSelectionChecks();
-        e.stopPropagation();
-      });
-    });
-
-    updateSelectionMeta();
-    renderSelectionChecks();
 
   } catch (e) {
     if (isAbortError(e) || !isRevenueRequestCurrent(request)) return;
-    body.innerHTML = `<tr><td colspan="13" style="padding:12px; color:#c0392b;">${esc(humanizeApiError(e))}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="11" style="padding:12px; color:#c0392b;">${esc(humanizeApiError(e))}</td></tr>`;
     byId("txMeta").textContent = "—";
-  } finally {
-    finishRevenueRequest(request);
-  }
-}
-
-async function loadPayouts(snapshot = captureRevenueSnapshot()) {
-  const request = beginRevenueRequest("payouts");
-  const body = byId("payoutBody");
-  body.innerHTML = `<tr><td colspan="9" style="padding:12px; opacity:.75;">Chargement...</td></tr>`;
-
-  try {
-    // P1-06 : la recherche ne s'applique pas aux reversements (décision
-    // approuvée) — on cesse d'envoyer un paramètre que le backend ignorait
-    // silencieusement. Les dates restent transmises : elles filtrent la date
-    // de création du reversement (created_at), côté serveur, comme avant.
-    const params = buildCommonParams(snapshot);
-    params.delete("search");
-    const r = await fetchJSON("/api/admin/revenue/payouts?" + params.toString(), { signal: request.signal });
-    if (!isRevenueRequestCurrent(request)) return;
-    const items = r.items || [];
-    lastPayoutItems = items;
-
-    byId("payoutMeta").textContent = `${items.length} reversement${items.length > 1 ? "s" : ""}`;
-
-    if (!items.length) {
-      body.innerHTML = `<tr><td colspan="9" style="padding:12px; opacity:.75;">Aucun reversement.</td></tr>`;
-      return;
-    }
-
-    body.innerHTML = items.map((it, idx) => {
-      const status = String(it.status || "draft");
-      const action = String(it.recommended_action || "manual_review");
-      const canMarkPaid = currentAdmin?.is_superadmin && status === "draft" && action === "confirm_real_transfer";
-      const canCancel = currentAdmin?.is_superadmin && status === "draft" && action === "cancel_with_reason";
-      return `
-        <tr data-pi="${idx}" style="cursor:pointer;">
-          <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${fmtDate(it.created_at || it.paid_at)}</td>
-          <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(poolDisplayName(it))}</td>
-          <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.admin_email || it.owner_email || "—")}</td>
-          <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(it.items_count ?? it.transaction_count ?? "—")}</td>
-          <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${fmtAr(it.gross_total_ar)}</td>
-          <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08); font-weight:800;">${fmtAr(it.owner_total_ar)}</td>
-          <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${pillHTML(payoutLabel(status), payoutTone(status))}<div style="margin-top:6px;">${pillHTML(reconciliationLabel(it.reconciliation_status), reconciliationTone(it.reconciliation_status))}</div></td>
-          <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);">${it.receipt_number ? `<a href="/api/admin/revenue/payouts/${encodeURIComponent(it.id)}/receipt" target="_blank" rel="noopener" style="color:#2563eb; font-weight:800; text-decoration:none;">${esc(it.receipt_number)}</a>` : "—"}</td>
-          <td style="padding:10px; border-bottom:1px solid rgba(0,0,0,.08);" onclick="event.stopPropagation()">
-            ${canMarkPaid ? `<button class="mark-paid-btn" data-payoutid="${esc(it.id)}" style="padding:8px 10px; border:none; border-radius:10px; background:#16a34a; color:#fff; font-weight:800; cursor:pointer;">Confirmer transfert</button>` : ""}
-            ${canCancel ? `<button class="cancel-payout-btn" data-payoutid="${esc(it.id)}" style="padding:8px 10px; border:none; border-radius:10px; background:#dc2626; color:#fff; font-weight:800; cursor:pointer;">Annuler brouillon</button>` : ""}
-            ${!canMarkPaid && !canCancel ? `<span style="font-weight:800; opacity:.7;">${status === "draft" ? "Vérification requise" : "—"}</span>` : ""}
-          </td>
-        </tr>
-      `;
-    }).join("");
-
-    Array.from(body.querySelectorAll("tr[data-pi]")).forEach(tr => {
-      tr.addEventListener("click", () => {
-        const i = Number(tr.getAttribute("data-pi"));
-        showPayoutDetail(lastPayoutItems[i]);
-      });
-    });
-
-    Array.from(body.querySelectorAll(".mark-paid-btn")).forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const payoutId = btn.getAttribute("data-payoutid");
-        if (!payoutId) return;
-        const rawMethod = prompt(
-          "Mode du transfert réel :\nMVola, Airtel Money, Orange Money, Virement bancaire, Espèces ou Autre",
-          "MVola"
-        );
-        if (rawMethod === null) return;
-        const methodKey = String(rawMethod).trim().toLowerCase().replace(/[’']/g, "").replace(/\s+/g, "_");
-        const methodAliases = {
-          mvola: "mvola", airtel: "airtel_money", airtel_money: "airtel_money",
-          orange: "orange_money", orange_money: "orange_money",
-          virement: "bank_transfer", virement_bancaire: "bank_transfer", bank: "bank_transfer", bank_transfer: "bank_transfer",
-          especes: "cash", espèces: "cash", cash: "cash", autre: "other", other: "other"
-        };
-        const transferMethod = methodAliases[methodKey];
-        if (!transferMethod) {
-          alert("Mode invalide. Utilisez MVola, Airtel Money, Orange Money, Virement bancaire, Espèces ou Autre.");
-          return;
-        }
-        const transferReference = prompt("Référence/preuve du transfert réel (obligatoire, 6 caractères minimum) :", "");
-        if (transferReference === null) return;
-        if (String(transferReference).trim().length < 6) {
-          alert("La référence doit contenir au moins 6 caractères.");
-          return;
-        }
-        const transferNote = prompt("Note facultative (maximum 500 caractères) :", "");
-        if (transferNote === null) return;
-        if (!confirm(`Confirmer que le transfert réel a été effectué ?\n\nMode : ${rawMethod}\nRéférence : ${String(transferReference).trim()}\n\nCette action marque définitivement le reversement comme payé.`)) return;
-        try {
-          await fetchJSON(`/api/admin/revenue/payouts/${encodeURIComponent(payoutId)}/mark-paid`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              transfer_method: transferMethod,
-              transfer_reference: String(transferReference).trim(),
-              transfer_note: String(transferNote).trim() || null
-            })
-          });
-          alert("Transfert confirmé et reversement marqué payé ✅");
-          clearTransactionSelection();
-          await loadAll();
-        } catch (e) {
-          alert("Erreur : " + humanizeApiError(e));
-        }
-      });
-    });
-
-    Array.from(body.querySelectorAll(".cancel-payout-btn")).forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const payoutId = btn.getAttribute("data-payoutid");
-        if (!payoutId) return;
-        const reason = prompt("Motif précis de l’annulation (10 à 500 caractères) :", "Ancien brouillon couvert par un abonnement sur toute la période");
-        if (reason === null) return;
-        const cleanReason = String(reason).trim();
-        if (cleanReason.length < 10 || cleanReason.length > 500) {
-          alert("Le motif doit contenir entre 10 et 500 caractères.");
-          return;
-        }
-        if (!confirm("Annuler définitivement ce brouillon ?\n\nAucun transfert d’argent ne sera exécuté. La preuve et le motif seront conservés.")) return;
-        try {
-          await fetchJSON(`/api/admin/revenue/payouts/${encodeURIComponent(payoutId)}/cancel`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ reason: cleanReason })
-          });
-          alert("Brouillon annulé avec preuve conservée ✅");
-          await loadAll();
-        } catch (e) {
-          alert("Erreur : " + humanizeApiError(e));
-        }
-      });
-    });
-
-  } catch (e) {
-    if (isAbortError(e) || !isRevenueRequestCurrent(request)) return;
-    body.innerHTML = `<tr><td colspan="9" style="padding:12px; color:#c0392b;">${esc(humanizeApiError(e))}</td></tr>`;
-    byId("payoutMeta").textContent = "—";
   } finally {
     finishRevenueRequest(request);
   }
@@ -1197,7 +737,7 @@ function showTxDetail(it) {
           <div style="opacity:.7; font-size:12px;">Montant brut</div>
           <div style="font-weight:1000; font-size:22px; margin-top:4px;">${fmtAr(it.gross_amount_ar ?? it.amount_num)}</div>
           <div style="opacity:.7; font-size:12px; margin-top:6px;">Statut reversement</div>
-          <div style="margin-top:4px;">${pillHTML(payoutLabel(it.payout_status || "unpaid"), payoutTone(it.payout_status || "unpaid"))}</div>
+          <div style="margin-top:4px;">${pillHTML(reversementLabel(it.reversement_status || it.payout_status || "not_applicable"), reversementTone(it.reversement_status || it.payout_status || "not_applicable"))}</div>
         </div>
         <div style="text-align:right;">
           <div style="opacity:.7; font-size:12px;">Client</div>
@@ -1226,109 +766,7 @@ function showTxDetail(it) {
     ) : "") + row2(
       kv("MAC client", esc(it.client_mac || "—")),
       kv("MAC AP", esc(it.ap_mac || "—"))
-    ) + row2(
-      kv("Reçu", esc(it.receipt_number || "—")),
-      kv("Payé le", fmtDate(it.paid_at))
     ))}
-  `;
-
-  modal.style.display = "block";
-}
-
-async function showPayoutDetail(it) {
-  if (!it) return;
-
-  const modal = byId("modal");
-  const bodyEl = byId("modalBody");
-
-  byId("modalTitle").textContent = "Détails reversement";
-  byId("modalSub").textContent =
-    `Reversement ${it.id || "—"} • ${fmtDate(it.created_at)}`;
-
-  let detail = null;
-  try {
-    detail = await fetchJSON(`/api/admin/revenue/payouts/${encodeURIComponent(it.id)}`);
-  } catch (_) {
-    detail = { item: it, items: [] };
-  }
-
-  const payout = detail.item || detail.payout || it;
-  const items = detail.items || [];
-
-  const itemRows = items.length
-    ? `
-      <div style="overflow:auto;">
-        <table style="width:100%; border-collapse:collapse;">
-          <thead>
-            <tr>
-              <th style="text-align:left; padding:8px;">Date</th>
-              <th style="text-align:left; padding:8px;">Transaction</th>
-              <th style="text-align:left; padding:8px;">Brut</th>
-              <th style="text-align:left; padding:8px;">Propriétaire</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${items.map(x => `
-              <tr>
-                <td style="padding:8px; border-bottom:1px solid rgba(0,0,0,.08);">${fmtDate(x.transaction_created_at)}</td>
-                <td style="padding:8px; border-bottom:1px solid rgba(0,0,0,.08);">${esc(x.transaction_id || "—")}</td>
-                <td style="padding:8px; border-bottom:1px solid rgba(0,0,0,.08);">${fmtAr(x.gross_amount_ar)}</td>
-                <td style="padding:8px; border-bottom:1px solid rgba(0,0,0,.08); font-weight:800;">${fmtAr(x.owner_amount_ar)}</td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
-      </div>
-    `
-    : `<div style="opacity:.75;">Aucune transaction.</div>`;
-
-  bodyEl.innerHTML = `
-    <div style="padding:12px; border-radius:14px; background: rgba(0,0,0,.03);">
-      <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:flex-start;">
-        <div>
-          <div style="opacity:.7; font-size:12px;">Part propriétaire</div>
-          <div style="font-weight:1000; font-size:22px; margin-top:4px;">${fmtAr(payout.owner_total_ar)}</div>
-        </div>
-        <div style="text-align:right;">
-          ${pillHTML(payoutLabel(payout.status || "draft"), payoutTone(payout.status || "draft"))}
-          <div style="margin-top:6px;">${pillHTML(reconciliationLabel(payout.reconciliation_status), reconciliationTone(payout.reconciliation_status))}</div>
-          <div style="opacity:.7; font-size:12px; margin-top:10px;">Reçu</div>
-          <div style="font-weight:900; font-size:16px; margin-top:4px;">${payout.receipt_number ? `<a href="/api/admin/revenue/payouts/${encodeURIComponent(payout.id)}/receipt" target="_blank" rel="noopener" style="color:#2563eb; text-decoration:none;">${esc(payout.receipt_number)}</a>` : "—"}</div>
-        </div>
-      </div>
-    </div>
-
-    <div style="margin-top:14px;">
-      <div style="font-weight:900; margin-bottom:8px;">Résumé</div>
-      <div style="display:flex; gap:14px; flex-wrap:wrap;">
-        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Pool</div><div style="font-weight:800;">${esc(poolDisplayName(payout))}</div></div>
-        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Propriétaire</div><div style="font-weight:800;">${esc(payout.admin_email || payout.owner_email || "—")}</div></div>
-        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Montant brut</div><div style="font-weight:800;">${fmtAr(payout.gross_total_ar)}</div></div>
-        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Plateforme</div><div style="font-weight:800;">${fmtAr(payout.platform_total_ar)}</div></div>
-      </div>
-      <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:10px;">
-        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Période début</div><div style="font-weight:800;">${fmtDate(payout.period_from)}</div></div>
-        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Période fin</div><div style="font-weight:800;">${fmtDate(payout.period_to)}</div></div>
-        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Payé le</div><div style="font-weight:800;">${fmtDate(payout.paid_at)}</div></div>
-        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Note</div><div style="font-weight:800;">${esc(payout.note || "—")}</div></div>
-      </div>
-      <div style="margin-top:12px; padding:12px; border-radius:12px; background:rgba(245,158,11,.10);">
-        <div style="font-weight:900;">Rapprochement S12.4 : ${esc(reconciliationLabel(payout.reconciliation_status))}</div>
-        <div style="margin-top:5px;">${esc(payout.reconciliation_reason || "Classification indisponible")}</div>
-        <div style="margin-top:5px; opacity:.75;">Transactions recalculées : ${esc(payout.calculated_item_count ?? items.length)} · Totaux concordants : ${payout.totals_match === true ? "oui" : "non"} · Couverture commission : ${payout.commission_covers_period === true ? "oui" : "non"} · Couverture abonnement : ${payout.subscription_covers_period === true ? "oui" : "non"}</div>
-      </div>
-      <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:10px;">
-        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Mode de transfert</div><div style="font-weight:800;">${esc(payout.transfer_method || "—")}</div></div>
-        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Référence transfert</div><div style="font-weight:800;">${esc(payout.transfer_reference || "—")}</div></div>
-        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Confirmé le</div><div style="font-weight:800;">${fmtDate(payout.transfer_confirmed_at)}</div></div>
-        <div style="min-width:220px; flex:1;"><div style="opacity:.7; font-size:12px;">Note transfert</div><div style="font-weight:800;">${esc(payout.transfer_note || "—")}</div></div>
-      </div>
-    </div>
-
-    <div style="margin-top:14px;">
-      <div style="font-weight:900; margin-bottom:8px;">Transactions du reversement</div>
-      ${itemRows}
-    </div>
   `;
 
   modal.style.display = "block";
@@ -1358,8 +796,7 @@ async function loadAggregates(snapshot = captureRevenueSnapshot()) {
 async function loadAll(snapshot = captureRevenueSnapshot()) {
   await Promise.all([
     loadAggregates(snapshot),
-    loadTransactions(snapshot),
-    loadPayouts(snapshot)
+    loadTransactions(snapshot)
   ]);
 }
 
@@ -1369,13 +806,11 @@ async function loadAll(snapshot = captureRevenueSnapshot()) {
 (async function init() {
   await requireAdmin();
   wireNav();
-  ensurePayoutUI();
+  enforceRevenueS13ReadOnlyUI();
   setupRevenueFilterDisclosure();
   wireTabs();
   wireFilters();
-  wirePayoutActions();
   wireModal();
   setTab("tx");
-  updateSelectionMeta();
   await loadAll();
 })();
