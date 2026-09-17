@@ -13668,6 +13668,20 @@ const BILLING_V1_PAYOUTS = billingEnvFlag("BILLING_V1_PAYOUTS", false);
 // S12.2: optional scheduler for closed-month draft payout preparation.
 // It never transfers money and requires BILLING_V1_PAYOUTS as a parent gate.
 const BILLING_V1_PAYOUTS_AUTO = billingEnvFlag("BILLING_V1_PAYOUTS_AUTO", false);
+
+// S12 RETIREMENT — 2026-09-17
+// owner_payouts / owner_payout_items are now legacy read-only evidence.
+// All NEW commission payout preparation / mutation must use the canonical S13
+// billing_commission_monthly_statements + billing_commission_payouts flow.
+// This hard code gate intentionally overrides any stale Render S12 flags.
+const BILLING_S12_OWNER_PAYOUTS_RETIRED = true;
+
+function rejectRetiredS12OwnerPayoutMutation(res) {
+  return res.status(410).json({
+    error: "billing_s12_owner_payouts_retired",
+    replacement: "billing_s13_commission_payouts",
+  });
+}
 const BILLING_V1_ADMIN_OFFERS = billingEnvFlag("BILLING_V1_ADMIN_OFFERS", false);
 const BILLING_V1_DEFAULT_GRACE_DAYS = Math.max(
   0,
@@ -23156,6 +23170,7 @@ app.get("/api/admin/revenue/payouts/:id", requireAdmin, async (req, res) => {
 // body: { transaction_ids: [], note?, period_from?, period_to?, mark_paid? }
 app.post("/api/admin/revenue/payouts/create", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
+    if (BILLING_S12_OWNER_PAYOUTS_RETIRED) return rejectRetiredS12OwnerPayoutMutation(res);
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
     // S12.2 closes the historical bypass. All new payouts must be prepared by
     // the closed-period, assignment-guarded S12 RPC.
@@ -23289,6 +23304,9 @@ function normalizeBillingAutomationResult(data) {
 }
 
 async function runBillingPayoutAutomationS12_2(reason = "interval") {
+  if (BILLING_S12_OWNER_PAYOUTS_RETIRED) {
+    return { ok: true, skipped: true, reason: "retired_s13_cutover" };
+  }
   if (!BILLING_V1_PAYOUTS || !BILLING_V1_PAYOUTS_AUTO || !supabase) {
     return { ok: true, skipped: true, reason: "disabled" };
   }
@@ -23331,6 +23349,10 @@ async function runBillingPayoutAutomationS12_2(reason = "interval") {
 let billingPayoutAutomationIntervalHandle = null;
 
 function startBillingPayoutAutomationS12_2() {
+  if (BILLING_S12_OWNER_PAYOUTS_RETIRED) {
+    console.log("[BILLING S12] legacy owner payout automation retired; S13 is canonical");
+    return;
+  }
   if (!BILLING_V1_PAYOUTS || !BILLING_V1_PAYOUTS_AUTO) {
     console.log("[BILLING S12.2] monthly payout automation disabled", {
       payouts: BILLING_V1_PAYOUTS,
@@ -23360,6 +23382,7 @@ function startBillingPayoutAutomationS12_2() {
 // - Cancelled payout items remain attached and therefore locked
 app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
+    if (BILLING_S12_OWNER_PAYOUTS_RETIRED) return rejectRetiredS12OwnerPayoutMutation(res);
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
     if (!BILLING_V1_PAYOUTS) return res.status(404).json({ error: "billing_v1_payouts_disabled" });
 
@@ -23453,6 +23476,7 @@ app.post("/api/admin/revenue/payouts/auto-create", requireAdmin, requireSuperadm
 // POST /api/admin/revenue/payouts/:id/mark-paid
 app.post("/api/admin/revenue/payouts/:id/mark-paid", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
+    if (BILLING_S12_OWNER_PAYOUTS_RETIRED) return rejectRetiredS12OwnerPayoutMutation(res);
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
     if (!BILLING_V1_PAYOUTS) return res.status(404).json({ error: "billing_v1_payouts_disabled" });
 
@@ -23526,6 +23550,7 @@ app.post("/api/admin/revenue/payouts/:id/mark-paid", requireAdmin, requireSupera
 // 🔒 Draft-only payout update. Paid payouts are immutable.
 app.patch("/api/admin/revenue/payouts/:id", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
+    if (BILLING_S12_OWNER_PAYOUTS_RETIRED) return rejectRetiredS12OwnerPayoutMutation(res);
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
     const id = String(req.params.id || "").trim();
@@ -23579,6 +23604,7 @@ app.patch("/api/admin/revenue/payouts/:id", requireAdmin, requireSuperadmin, asy
 // 🔒 Draft-only cancel. Paid payouts are immutable and keep their receipt.
 app.post("/api/admin/revenue/payouts/:id/cancel", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
+    if (BILLING_S12_OWNER_PAYOUTS_RETIRED) return rejectRetiredS12OwnerPayoutMutation(res);
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
     if (!BILLING_V1_PAYOUTS) return res.status(404).json({ error: "billing_v1_payouts_disabled" });
 
