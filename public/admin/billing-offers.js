@@ -30,7 +30,7 @@ function render() {
       <div class="bo-pills">
         ${v?.commission_enabled ? `<span class="bo-pill ok">Commission ${Number(v.commission_pct)} %</span>` : ""}
         ${v?.subscription_enabled ? `<span class="bo-pill ok">${money(v.subscription_price_ar)}/mois</span>` : ""}
-        ${v ? `<span class="bo-pill">Accès gratuits : ${v.free_access_limit === null || v.free_access_limit === undefined ? "fallback pool" : `${Number(v.free_access_limit)} max`}</span>` : ""}
+        ${v ? `<span class="bo-pill">Accès gratuits : ${v.free_access_limit === null || v.free_access_limit === undefined ? "selon le pool" : `${Number(v.free_access_limit)} max`}</span>` : ""}
         ${(v?.features || []).map((f) => `<span class="bo-pill">${esc(featureLabel(f))}</span>`).join("")}
       </div></article>`;
   }).join("") : `<div class="bo-empty">Aucune offre.</div>`;

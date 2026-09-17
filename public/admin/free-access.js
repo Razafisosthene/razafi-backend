@@ -301,7 +301,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     limitPillEl.textContent = `${used} / ${limit} utilisé(s)`;
     const source = usage?.limit_source === "offer"
       ? `Offre${usage?.offer_title ? ` : ${usage.offer_title}` : ""}`
-      : "Fallback du pool";
+      : "Selon le pool";
     limitPillEl.title = `Limite effective — ${source}`;
 
     if (addBtn) {

@@ -719,10 +719,10 @@ document.addEventListener("DOMContentLoaded", async () => {
             <div class="rz-field">
               <label>Limite effective</label>
               <div class="rz-readonly-box">${esc(freeAccessEffectiveLabel)}</div>
-              <div class="rz-logo-note">${freeAccessSource === "offer" ? "Cette limite est imposée par l’offre active." : "Aucune limite d’offre : le fallback du pool est appliqué."}</div>
+              <div class="rz-logo-note">${freeAccessSource === "offer" ? "Cette limite est imposée par l’offre active." : "Aucune limite d’offre : la limite du pool est appliquée."}</div>
             </div>
             <div class="rz-field">
-              <label>Fallback accès gratuit du pool</label>
+              <label>Limite accès gratuit du pool</label>
               <input id="modalFreeAccessLimit" type="number" min="0" value="${esc(freeAccessLimit)}" placeholder="5" ${canManageAll ? "" : "readonly disabled"} />
               <div class="rz-logo-note">Utilisé seulement si l’offre active ne définit pas de limite.</div>
             </div>
