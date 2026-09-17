@@ -1,3 +1,8 @@
+// RAZAFI Admin navigation
+// STEP 3 — 2026-09-17
+// "Revenus propriétaire" retired from active navigation.
+// Canonical commission views: Owner = Mon abonnement RAZAFI; Superadmin = Reversements commission.
+
 // /admin/nav.js
 (() => {
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -371,9 +376,6 @@
           <a class="rz-item" data-href="/admin/annual-reports.html" href="/admin/annual-reports.html" id="rzNavAnnualReports" style="display:none;">
             <span class="rz-item-label">Rapports annuels</span>
           </a>
-          <a class="rz-item" data-href="/admin/owner-revenue.html" href="/admin/owner-revenue.html" id="rzNavOwnerRevenue">
-            <span class="rz-item-label">Revenus propriétaire</span>
-          </a>
           <a class="rz-item" data-href="/admin/owner-subscription.html" href="/admin/owner-subscription.html" id="rzNavOwnerSubscription">
             <span class="rz-item-label">Mon abonnement RAZAFI</span>
           </a>
@@ -739,7 +741,6 @@
       const elBillingAssignments = $("#rzNavBillingAssignments");
       const elCommissionPayouts = $("#rzNavCommissionPayouts");
       const elBillingExceptions = $("#rzNavBillingExceptions");
-      const elOwnerRevenue = $("#rzNavOwnerRevenue");
       const elOwnerSubscription = $("#rzNavOwnerSubscription");
       const elAnnualReports = $("#rzNavAnnualReports");
       const elMaintenance = $("#rzNavMaintenance");
@@ -752,7 +753,6 @@
       if (elBillingAssignments) elBillingAssignments.style.display = canManageBillingAssignments ? "" : "none";
       if (elCommissionPayouts) elCommissionPayouts.style.display = isSuper ? "" : "none";
       if (elBillingExceptions) elBillingExceptions.style.display = isSuper ? "" : "none";
-      if (elOwnerRevenue) elOwnerRevenue.style.display = isSuper ? "" : "none";
       if (elOwnerSubscription) elOwnerSubscription.style.display = canViewOwnerSubscription ? "" : "none";
       if (elAnnualReports) elAnnualReports.style.display = "none";
       if (elMaintenance) elMaintenance.style.display = isSuper ? "" : "none";
