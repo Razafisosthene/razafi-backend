@@ -12213,6 +12213,110 @@ function platformConversationLog(level, event, details = {}) {
   }
 }
 
+// =============================================================================
+// RAZAFI ASSISTANT — ANU-CONVERSATION-1A.2: Safe Streaming UX
+// =============================================================================
+// The existing Conversation Core still generates and validates the complete
+// answer first. Only the already-validated final answer is then streamed to the
+// browser. This preserves all current RAZAFI safety validators and memory side
+// effects while giving Platform visitors a progressive ChatGPT-like rendering.
+const ASSISTANT_PLATFORM_STREAMING_VERSION = "ANU-CONVERSATION-1A.2";
+
+function isPlatformAssistantStreamingEnabled() {
+  return String(process.env.ASSISTANT_PLATFORM_STREAMING_V1_ENABLED || "false")
+    .trim().toLowerCase() === "true";
+}
+
+function wantsPlatformAssistantStream(req, context) {
+  if (context !== "platform_prospect") return false;
+  if (!isPlatformConversationCoreEnabled() || !isPlatformAssistantStreamingEnabled()) return false;
+  const explicit = req?.body?.stream === true || String(req?.body?.stream || "").toLowerCase() === "true";
+  const accept = String(req?.headers?.accept || "").toLowerCase();
+  return explicit || accept.includes("text/event-stream");
+}
+
+function platformStreamingLog(level, event, details = {}) {
+  const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+  try {
+    fn(`[${ASSISTANT_PLATFORM_STREAMING_VERSION}] ${event}`, details && typeof details === "object" ? details : {});
+  } catch (_) {
+    fn(`[${ASSISTANT_PLATFORM_STREAMING_VERSION}] ${event}`);
+  }
+}
+
+function writePlatformAssistantSse(res, event, payload = {}) {
+  if (!res || res.writableEnded || res.destroyed) return false;
+  try {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function splitPlatformAssistantStreamText(text, maxChars = 22) {
+  const source = String(text || "");
+  if (!source) return [];
+
+  // Preserve whitespace/newlines while avoiding splitting surrogate pairs.
+  const tokens = source.match(/\s+|[^\s]+/gu) || Array.from(source);
+  const chunks = [];
+  let current = "";
+
+  for (const token of tokens) {
+    const candidate = current + token;
+    if (current && Array.from(candidate).length > maxChars) {
+      chunks.push(current);
+      current = token;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function platformAssistantStreamDelay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function streamValidatedPlatformAssistantResult(res, result) {
+  const answer = String(result?.answer || "");
+  const chunks = splitPlatformAssistantStreamText(answer, 22);
+  const startedAt = Date.now();
+
+  writePlatformAssistantSse(res, "meta", {
+    conversation_id: result?.conversation_id || null,
+    memory_token: result?.memory_token || null,
+    lang: result?.lang || null,
+    ai_enhanced: result?.ai_enhanced === true,
+    version: ASSISTANT_PLATFORM_STREAMING_VERSION,
+  });
+
+  for (const delta of chunks) {
+    if (res.writableEnded || res.destroyed) break;
+    writePlatformAssistantSse(res, "delta", { text: delta });
+    // Small paced reveal: fast enough not to slow the answer materially, but
+    // visibly progressive on both desktop and mobile.
+    await platformAssistantStreamDelay(16);
+  }
+
+  if (!res.writableEnded && !res.destroyed) {
+    writePlatformAssistantSse(res, "done", {
+      ok: true,
+      conversation_id: result?.conversation_id || null,
+      memory_token: result?.memory_token || null,
+    });
+    res.end();
+  }
+
+  platformStreamingLog("info", "stream complete", {
+    chunks: chunks.length,
+    chars: answer.length,
+    reveal_ms: Date.now() - startedAt,
+  });
+}
+
 
 // =============================================================================
 // RAZAFI ASSISTANT — ANU-1: Natural Understanding Orchestrator
@@ -15025,6 +15129,7 @@ app.get("/api/public/offers", async (_req, res) => {
 // No auth required. platform_prospect uses ANU-WEB-1.1 live website knowledge when enabled.
 // ===============================
 app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
+  let platformStreamActive = false;
   try {
     if (!ensureSupabase(res)) return;
 
@@ -15041,6 +15146,23 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
     const rawMessage = String(req.body?.message || "").trim();
     if (!rawMessage) {
       return res.status(400).json({ ok: false, error: "message_required" });
+    }
+
+    const platformStreamRequested = wantsPlatformAssistantStream(req, rawContext);
+    if (platformStreamRequested) {
+      res.status(200);
+      res.set({
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+      if (typeof res.flushHeaders === "function") res.flushHeaders();
+      platformStreamActive = true;
+      writePlatformAssistantSse(res, "status", { phase: "thinking" });
+      platformStreamingLog("info", "stream started", {
+        page_path: String(req.body?.page_path || "").trim().slice(0, 120) || "/",
+      });
     }
 
     // Legacy data remains unchanged while ANU flags are off. ANU-2 receives the same
@@ -15106,9 +15228,23 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
       historyToken: rawHistoryToken, // G.2: opaque; null unless portal_user
     });
 
+    if (platformStreamActive) {
+      writePlatformAssistantSse(res, "status", { phase: "answering" });
+      await streamValidatedPlatformAssistantResult(res, result);
+      return;
+    }
+
     return res.json(result);
   } catch (e) {
     console.error("[ASSISTANT PUBLIC CHAT ERROR]", e?.message || e);
+    if (platformStreamActive) {
+      platformStreamingLog("warn", "stream failed", {
+        code: String(e?.message || "assistant_error").slice(0, 160),
+      });
+      writePlatformAssistantSse(res, "error", { error: "assistant_error" });
+      if (!res.writableEnded && !res.destroyed) res.end();
+      return;
+    }
     return res.status(500).json({ ok: false, error: "assistant_error" });
   }
 });
