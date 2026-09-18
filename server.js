@@ -12601,6 +12601,106 @@ function portalConversationLog(level, event, details = {}) {
   }
 }
 
+
+// =============================================================================
+// RAZAFI ASSISTANT — ANU-CONVERSATION-1B.2: Portal Safe Streaming UX
+// =============================================================================
+// Mirrors the already-validated Platform 1A.2 architecture: the Portal
+// Conversation Core and all deterministic critical-state gates run to
+// completion first; only the final validated answer is progressively revealed
+// to the browser. No payment/voucher/bonus business logic is changed.
+// Rollback: ASSISTANT_PORTAL_STREAMING_V1_ENABLED=false.
+const ASSISTANT_PORTAL_STREAMING_VERSION = "ANU-CONVERSATION-1B.2";
+
+function isPortalAssistantStreamingEnabled() {
+  return String(process.env.ASSISTANT_PORTAL_STREAMING_V1_ENABLED || "false")
+    .trim().toLowerCase() === "true";
+}
+
+function wantsPortalAssistantStream(req, context) {
+  if (context !== "portal_user") return false;
+  if (!isPortalConversationCoreEnabled() || !isPortalAssistantStreamingEnabled()) return false;
+  const explicit = req?.body?.stream === true || String(req?.body?.stream || "").toLowerCase() === "true";
+  const accept = String(req?.headers?.accept || "").toLowerCase();
+  return explicit || accept.includes("text/event-stream");
+}
+
+function portalStreamingLog(level, event, details = {}) {
+  const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+  try {
+    fn(`[${ASSISTANT_PORTAL_STREAMING_VERSION}] ${event}`, details && typeof details === "object" ? details : {});
+  } catch (_) {
+    fn(`[${ASSISTANT_PORTAL_STREAMING_VERSION}] ${event}`);
+  }
+}
+
+function writePortalAssistantSse(res, event, payload = {}) {
+  if (!res || res.writableEnded || res.destroyed) return false;
+  try {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function splitPortalAssistantStreamText(text, maxChars = 22) {
+  const source = String(text || "");
+  if (!source) return [];
+
+  const tokens = source.match(/\s+|[^\s]+/gu) || Array.from(source);
+  const chunks = [];
+  let current = "";
+
+  for (const token of tokens) {
+    const candidate = current + token;
+    if (current && Array.from(candidate).length > maxChars) {
+      chunks.push(current);
+      current = token;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+async function streamValidatedPortalAssistantResult(res, result) {
+  const answer = String(result?.answer || "");
+  const chunks = splitPortalAssistantStreamText(answer, 22);
+  const startedAt = Date.now();
+
+  writePortalAssistantSse(res, "meta", {
+    conversation_id: result?.conversation_id || null,
+    memory_token: result?.memory_token || null,
+    lang: result?.lang || null,
+    ai_enhanced: result?.ai_enhanced === true,
+    version: ASSISTANT_PORTAL_STREAMING_VERSION,
+  });
+
+  for (const delta of chunks) {
+    if (res.writableEnded || res.destroyed) break;
+    writePortalAssistantSse(res, "delta", { text: delta });
+    await platformAssistantStreamDelay(16);
+  }
+
+  if (!res.writableEnded && !res.destroyed) {
+    writePortalAssistantSse(res, "done", {
+      ok: true,
+      conversation_id: result?.conversation_id || null,
+      memory_token: result?.memory_token || null,
+      buttons: Array.isArray(result?.buttons) ? result.buttons : [],
+    });
+    res.end();
+  }
+
+  portalStreamingLog("info", "stream complete", {
+    chunks: chunks.length,
+    chars: answer.length,
+    reveal_ms: Date.now() - startedAt,
+  });
+}
+
 // =============================================================================
 // RAZAFI ASSISTANT — ANU-CONVERSATION-1A.2: Safe Streaming UX
 // =============================================================================
@@ -16019,6 +16119,7 @@ app.get("/api/public/offers", async (_req, res) => {
 // ===============================
 app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
   let platformStreamActive = false;
+  let portalStreamActive = false;
   let platformLowLatencyBridge = null;
   try {
     if (!ensureSupabase(res)) return;
@@ -16060,6 +16161,23 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
         });
       }
       writePlatformAssistantSse(res, "status", { phase: "thinking" });
+    }
+
+    const portalStreamRequested = wantsPortalAssistantStream(req, rawContext);
+    if (portalStreamRequested) {
+      res.status(200);
+      res.set({
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+      if (typeof res.flushHeaders === "function") res.flushHeaders();
+      portalStreamActive = true;
+      portalStreamingLog("info", "stream started", {
+        page_path: String(req.body?.page_path || "").trim().slice(0, 120) || "/mikrotik/",
+      });
+      writePortalAssistantSse(res, "status", { phase: "thinking" });
     }
 
     // Legacy data remains unchanged while ANU flags are off. ANU-2 receives the same
@@ -16126,6 +16244,12 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
       platformStream: platformLowLatencyBridge,
     });
 
+    if (portalStreamActive) {
+      writePortalAssistantSse(res, "status", { phase: "answering" });
+      await streamValidatedPortalAssistantResult(res, result);
+      return;
+    }
+
     if (platformStreamActive) {
       if (platformLowLatencyBridge) {
         await platformLowLatencyBridge.finalize(result);
@@ -16139,6 +16263,14 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
     return res.json(result);
   } catch (e) {
     console.error("[ASSISTANT PUBLIC CHAT ERROR]", e?.message || e);
+    if (portalStreamActive) {
+      portalStreamingLog("warn", "stream failed", {
+        code: String(e?.message || "assistant_error").slice(0, 160),
+      });
+      writePortalAssistantSse(res, "error", { error: "assistant_error" });
+      if (!res.writableEnded && !res.destroyed) res.end();
+      return;
+    }
     if (platformStreamActive) {
       platformStreamingLog("warn", "stream failed", {
         code: String(e?.message || "assistant_error").slice(0, 160),
