@@ -11281,11 +11281,42 @@ function buildPortalDirectCriticalStateAnswer({ type, lang, trustedContext }) {
 
   if (type === "payment") {
     const state = String(critical.payment_state || "unknown");
-    if (state === "completed") return lang === "mg"
-      ? "Voamarina ao amin’ny RAZAFI ny paiement mifandray amin’ity portail ity. Raha efa vonona ny code dia ampiasao ilay bouton aseho eo amin’ny portail."
+    const codeState = String(critical.code_state || "none");
+    const timeAgo = cleanOptionalText(critical.payment_time_ago, 80);
+
+    // ANU-CONVERSATION-1B.3a — answer the payment question from the full
+    // verified lifecycle, not from payment_state alone. A completed payment
+    // whose voucher was already consumed must not be presented as if a fresh
+    // code were still waiting on the Portal.
+    if (state === "completed" && codeState === "used") return lang === "mg"
+      ? `Voamarina ny paiement mifandray amin’ity portail ity${timeAgo ? ` (${timeAgo})` : ""}, ary efa nampiasaina tanteraka ny voucher mifandray aminy. Raha mila connexion vaovao ianao dia misafidiana forfait vaovao mba hahazoana code vaovao.`
       : lang === "en"
-        ? "RAZAFI shows the payment linked to this portal as confirmed. If the code is ready, use the button shown on the portal."
-        : "RAZAFI indique que le paiement associé à ce portail est confirmé. Si le code est prêt, utilisez le bouton affiché sur le portail.";
+        ? `The payment linked to this portal was completed${timeAgo ? ` (${timeAgo})` : ""}, and its voucher has already been fully used. To get online again, buy a new plan to receive a new code.`
+        : `Le paiement associé à ce portail a bien été effectué${timeAgo ? ` ${timeAgo}` : ""}, et le voucher correspondant a déjà été consommé. Pour vous reconnecter, achetez un nouveau forfait afin d’obtenir un nouveau code.`;
+
+    if (state === "completed" && codeState === "expired") return lang === "mg"
+      ? `Voamarina ny paiement mifandray amin’ity portail ity${timeAgo ? ` (${timeAgo})` : ""}, fa efa lany daty ny voucher mifandray aminy. Raha mila connexion vaovao ianao dia misafidiana forfait vaovao.`
+      : lang === "en"
+        ? `The payment linked to this portal was completed${timeAgo ? ` (${timeAgo})` : ""}, but its voucher has expired. Choose a new plan if you need a new connection.`
+        : `Le paiement associé à ce portail a bien été effectué${timeAgo ? ` ${timeAgo}` : ""}, mais le voucher correspondant a expiré. Choisissez un nouveau forfait si vous avez besoin d’un nouvel accès.`;
+
+    if (state === "completed" && codeState === "active") return lang === "mg"
+      ? `Voamarina ny paiement mifandray amin’ity portail ity${timeAgo ? ` (${timeAgo})` : ""}. Actif ny voucher ary mbola misy session mifandray aminy.`
+      : lang === "en"
+        ? `The payment linked to this portal was completed${timeAgo ? ` (${timeAgo})` : ""}. Its voucher is active and the associated session is still active.`
+        : `Le paiement associé à ce portail a bien été effectué${timeAgo ? ` ${timeAgo}` : ""}. Le voucher est actif et la session associée est encore active.`;
+
+    if (state === "completed" && codeState === "ready") return lang === "mg"
+      ? `Voamarina ny paiement mifandray amin’ity portail ity${timeAgo ? ` (${timeAgo})` : ""}. Vonona ny code; ampiasao ilay bouton aseho eo amin’ny portail.`
+      : lang === "en"
+        ? `The payment linked to this portal was completed${timeAgo ? ` (${timeAgo})` : ""}. The code is ready; use the button shown on the portal.`
+        : `Le paiement associé à ce portail a bien été effectué${timeAgo ? ` ${timeAgo}` : ""}. Le code est prêt ; utilisez le bouton affiché sur le portail.`;
+
+    if (state === "completed") return lang === "mg"
+      ? `Voamarina ny paiement mifandray amin’ity portail ity${timeAgo ? ` (${timeAgo})` : ""}, fa tsy mahita voucher vaovao vonona amin’ity contexte ity aho.${support}`
+      : lang === "en"
+        ? `The payment linked to this portal was completed${timeAgo ? ` (${timeAgo})` : ""}, but I do not see a new ready voucher in this context.${support}`
+        : `Le paiement associé à ce portail a bien été effectué${timeAgo ? ` ${timeAgo}` : ""}, mais aucun nouveau voucher prêt n’est visible dans ce contexte.${support}`;
     if (state === "pending") return lang === "mg"
       ? "Mbola en attente ny confirmation an’ilay paiement. Aza mandoa fanindroany raha efa nihena ny solde; andraso ny valin’ny portail."
       : lang === "en"
