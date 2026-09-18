@@ -11202,35 +11202,56 @@ function buildPlatformProspectNumericFollowUpAnswer({ message, lang, thread }) {
 }
 
 
+function normalizePortalCriticalQuestionText(message) {
+  try {
+    return String(message || "")
+      .trim()
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[’`]/g, "'")
+      .replace(/[–—-]/g, " ")
+      .replace(/\s+/g, " ");
+  } catch (_) {
+    return String(message || "").trim().toLowerCase();
+  }
+}
+
 function detectPortalDirectCriticalQuestionType(message) {
-  const s = String(message || "").trim().toLowerCase().replace(/[’`]/g, "'");
+  const s = normalizePortalCriticalQuestionText(message);
   if (!s) return null;
 
-  const refund = /(rembours[eé]|remboursement|refund(?:ed)?|money back|averina.*vola|vola.*averina)/i.test(s);
+  // Refund/dispute state stays deterministic even when phrased as a request.
+  const refund = /(rembours|remboursement|refund(?:ed)?|money back|averina.*vola|vola.*averina)/i.test(s);
   if (refund) return "refund";
 
-  const payment = [
-    /\b(mon|ma|le|ce|the|my)\s+(paiement|payment)\b.{0,50}\b(confirm[eé]|valid[eé]|r[eé]ussi|pass[eé]|accept[eé]|en attente|pending|failed|[eé]chou[eé]|status|statut)/i,
-    /\b(paiement|payment)\s+(est|is|a-t-il|a il|ve)\b.{0,40}\b(confirm[eé]|valid[eé]|r[eé]ussi|pass[eé]|pending|en attente)/i,
-    /\b(did my payment go through|is my payment confirmed|payment status)\b/i,
-    /\b(efa|voamarina|voaloa)\b.{0,30}\b(paiement|vola)\b/i,
-  ].some((re) => re.test(s));
-  if (payment) return "payment";
+  // Payment-state questions. Be deliberately tolerant of common Portal typing
+  // variants (paiement/payement/paiment, confirme/confirmer/confirmation, etc.)
+  // while leaving educational questions such as "comment payer" to NATURAL_AI.
+  const paymentSubject = /\b(paiement|payement|paiment|payment|transaction)\b/i.test(s);
+  const paymentState = /\b(confirm(?:e|er|ee|ation)?|valid(?:e|er|ee|ation)?|reussi(?:e)?|passe(?:e)?|accepte(?:e)?|en attente|attente|pending|failed|fail|echoue(?:e)?|status|statut|effectue(?:e)?|abouti(?:e)?|debite(?:e)?)\b/i.test(s);
+  const paymentPossessiveOrStatusQuestion = /\b(mon|ma|mes|le|la|ce|cet|cette|the|my|status|statut|etat|state)\b/i.test(s) || /\b(est ce que|est il|a t il|did|is|has|have|efa|voamarina|voaloa)\b/i.test(s);
+  const directDebitQuestion = (
+    /\b(solde|argent|money|vola)\b.{0,35}\b(debite(?:e)?|retire(?:e)?|deduit(?:e)?)\b/i.test(s) ||
+    /\b(debite(?:e)?|retire(?:e)?|deduit(?:e)?)\b.{0,35}\b(solde|argent|money|vola)\b/i.test(s)
+  );
+  const explicitEnglishPayment = /\b(did my payment go through|is my payment confirmed|payment status|has my payment gone through)\b/i.test(s);
+  const explicitMalagasyPayment = /\b(efa|voamarina|voaloa)\b.{0,30}\b(paiement|payement|paiment|vola)\b/i.test(s);
+  if ((paymentSubject && paymentState && paymentPossessiveOrStatusQuestion) || directDebitQuestion || explicitEnglishPayment || explicitMalagasyPayment) {
+    return "payment";
+  }
 
-  const code = [
-    /\b(mon|le|my|the)\s+code\b.{0,40}\b(pr[eê]t|disponible|arriv[eé]|re[cç]u|ready|available|received|actif|active|valide|valid|expir[eé]|expired|utilis[eé]|used|marche|work)/i,
-    /\b(o[uù] est|where is|ai-je re[cç]u|did i receive|ai-je|do i have|misy ve)\b.{0,30}\b(code)\b/i,
-    /\b(code)\b.{0,40}\b(vonona|tonga|azo|active|valide|lany|expir[eé])/i,
-    /\b(efa|vonona|tonga|misy)\b.{0,30}\b(code)\b/i,
-  ].some((re) => re.test(s));
-  if (code) return "code";
+  const codeSubject = /\b(code|voucher)\b/i.test(s);
+  const codeState = /\b(pret|disponible|arrive|recu|ready|available|received|actif|active|valide|valid|expire|expired|utilise|used|marche|work|working|vonona|tonga|azo|lany)\b/i.test(s);
+  const codeStatusQuestion = /\b(mon|le|ce|my|the|ou est|where is|ai je|do i have|did i receive|misy ve|efa|vonona|tonga|misy|encore|still)\b/i.test(s);
+  if (codeSubject && codeState && codeStatusQuestion) return "code";
 
   const connection = [
-    /\b(suis-je|est-ce que je suis|am i)\b.{0,30}\b(connect[eé]|connected|online)/i,
-    /\b(ma|my|the)\s+(connexion|connection|internet)\b.{0,35}\b(active|actif|connected|connect[eé]|online)/i,
-    /\b(internet|connexion|connection)\b.{0,30}\b(marche|fonctionne|working|mandeha)/i,
-    /\b(pourquoi|why|ahoana)\b.{0,40}\b(pas connect[eé]|not connected|tsy connect)/i,
-    /\b(efa connect[eé]|connexion active ve|internet mandeha ve)\b/i,
+    /\b(suis je|est ce que je suis|am i)\b.{0,30}\b(connecte|connected|online)\b/i,
+    /\b(ma|my|the)\s+(connexion|connection|internet)\b.{0,35}\b(active|actif|connected|connecte|online)\b/i,
+    /\b(internet|connexion|connection)\b.{0,30}\b(marche|fonctionne|working|mandeha)\b/i,
+    /\b(pourquoi|why|ahoana)\b.{0,40}\b(pas connecte|not connected|tsy connect)\b/i,
+    /\b(efa connecte|connexion active ve|internet mandeha ve)\b/i,
   ].some((re) => re.test(s));
   if (connection) return "connection";
 
@@ -11720,7 +11741,7 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
   }
   // ── End no-code gate ──────────────────────────────────────────────────────
 
-  // ── ANU-CONVERSATION-1B.1: direct critical-state truth gate ─────────────
+  // ── ANU-CONVERSATION-1B.1a: hardened direct critical-state truth gate ─────────────
   // This closes the gap between free-form conversation and transaction truth when
   // the traditional intent/answer KB is disabled. Real payment/code/connection/
   // refund questions are answered only from trusted server state, never by AI.
@@ -11733,6 +11754,11 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
         trustedContext,
       });
       if (criticalAnswer) {
+        console.info("[ANU-CONVERSATION-1B.1a] deterministic critical gate", {
+          type: criticalType,
+          trusted_scope: trustedContext?.scope_verified === true,
+          ai_bypassed: true,
+        });
         updateAssistantThread({ thread, userMessage: message, assistantAnswer: criticalAnswer, lang, slots: {} });
         await logAssistantInteraction({
           context,
@@ -12901,35 +12927,10 @@ function classifyAssistantSafetyLane({ context, message, thread, diagnosticResul
     return ASSISTANT_ANU_LANES.HARD_DETERMINISTIC;
   }
 
-  const s = raw.toLowerCase().replace(/[’`]/g, "'");
-
-  // Direct requests for a real payment, code, connection or refund state must
-  // never be answered by free-form AI. These are facts owned by RAZAFI.
-  const asksPaymentStatus = [
-    /\b(mon|ma|le|ce|the|my)\s+(paiement|payment)\b.{0,45}\b(confirm[eé]|valid[eé]|r[eé]ussi|pass[eé]|accept[eé]|en attente|pending|failed|[eé]chou[eé]|status|statut)/i,
-    /\b(paiement|payment)\s+(est|is|a-t-il|a il|ve)\b.{0,35}\b(confirm[eé]|valid[eé]|r[eé]ussi|pass[eé]|pending|en attente)/i,
-    /\b(did my payment go through|is my payment confirmed|payment status)\b/i,
-    /\b(efa|voamarina|voaloa)\b.{0,30}\b(paiement|vola)\b/i,
-  ].some((re) => re.test(s));
-
-  const asksCodeStatus = [
-    /\b(mon|le|my|the)\s+code\b.{0,35}\b(pr[eê]t|disponible|arriv[eé]|re[cç]u|ready|available|received|actif|active|valide|valid|expir[eé]|expired|utilis[eé]|used)/i,
-    /\b(o[uù] est|where is|ai-je re[cç]u|did i receive|ai-je|do i have|misy ve)\b.{0,25}\b(code)\b/i,
-    /\b(code)\b.{0,35}\b(vonona|tonga|azo|active|valide|lany|expir[eé])/i,
-    /\b(efa|vonona|tonga|misy)\b.{0,25}\b(code)\b/i,
-  ].some((re) => re.test(s));
-
-  const asksConnectionStatus = [
-    /\b(suis-je|est-ce que je suis|am i)\b.{0,25}\b(connect[eé]|connected|online)/i,
-    /\b(ma|my|the)\s+(connexion|connection|internet)\b.{0,30}\b(active|actif|connected|connect[eé]|online)/i,
-    /\b(internet|connexion|connection)\b.{0,25}\b(marche|fonctionne|working|mandeha)/i,
-    /\b(pourquoi|why|ahoana)\b.{0,35}\b(pas connect[eé]|not connected|tsy connect)/i,
-    /\b(efa connect[eé]|connexion active ve|internet mandeha ve)\b/i,
-  ].some((re) => re.test(s));
-
-  const asksRefundState = /\b(rembours[eé]|remboursement|refund(?:ed)?|money back|averina.*vola|vola.*averina)/i.test(s);
-
-  if (asksPaymentStatus || asksCodeStatus || asksConnectionStatus || asksRefundState) {
+  // Single source of truth for direct critical-state classification. Keeping this
+  // shared with the early deterministic gate prevents routing drift.
+  const directCriticalType = detectPortalDirectCriticalQuestionType(raw);
+  if (directCriticalType) {
     return ASSISTANT_ANU_LANES.HARD_DETERMINISTIC;
   }
 
