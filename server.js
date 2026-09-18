@@ -11373,7 +11373,7 @@ function buildPortalDirectCriticalStateAnswer({ type, lang, trustedContext }) {
   return null;
 }
 
-async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapshot, trustedContext, pool_id, page_path, conversationId, scopeKey, historyToken, threadStoreKey = null, platformStream = null }) {
+async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapshot, trustedContext, pool_id, page_path, conversationId, scopeKey, historyToken, threadStoreKey = null, platformStream = null, portalStream = null }) {
   const message = cleanAssistantMessage(rawMessage);
   const detectedLang = detectAssistantLang(message);
 
@@ -12068,9 +12068,11 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
       const forbiddenPhones = [];
       if (thread?.slots?.phone) forbiddenPhones.push(String(thread.slots.phone).replace(/\s+/g, ""));
 
-      // 1A.3 is Platform-only. Malagasy keeps the already validated 1A.2 reveal
-      // because its final surface-polish pass intentionally rewrites terminology.
-      const progressiveGate = (
+      // Low-latency streaming is context-isolated. Malagasy remains on the
+      // already-validated reveal because the final G.2.3 polish can rewrite
+      // terminology after the model response. Portal low-latency is allowed
+      // only on NATURAL_AI turns; deterministic critical-state turns never call AI.
+      const platformProgressiveGate = (
         context === "platform_prospect" &&
         platformStream?.enabled === true &&
         typeof platformStream?.emitDelta === "function" &&
@@ -12091,6 +12093,31 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
             }),
           })
         : null;
+
+      const portalProgressiveGate = (
+        context === "portal_user" &&
+        portalConversationNaturalTurn &&
+        portalStream?.enabled === true &&
+        typeof portalStream?.emitDelta === "function" &&
+        lang !== "mg"
+      )
+        ? createPortalProgressiveSafetyGate({
+            emitDelta: portalStream.emitDelta,
+            validatePrefix: (candidate) => validateRazafiAiAnswer({
+              answer: candidate,
+              context,
+              liveData,
+              canonicalAnswer,
+              diagnosticResult,
+              forbiddenPhones,
+              rawMessage: message,
+              naturalUnderstandingMode,
+              trustedContext,
+            }),
+          })
+        : null;
+
+      const progressiveGate = platformProgressiveGate || portalProgressiveGate;
 
       const aiRaw = await generateRazafiGroundedAiAnswer({
         context,
@@ -12699,6 +12726,176 @@ async function streamValidatedPortalAssistantResult(res, result) {
     chars: answer.length,
     reveal_ms: Date.now() - startedAt,
   });
+}
+
+
+// =============================================================================
+// RAZAFI ASSISTANT — ANU-CONVERSATION-1B.3: Portal Low-Latency Streaming
+// =============================================================================
+// Natural Portal turns consume OpenAI Responses SSE while the model is still
+// generating. RAZAFI retains a trailing guard window, validates the cumulative
+// prefix with the existing answer validator, and only releases text that has
+// safely moved outside that guard. Deterministic payment/code/connection/refund
+// gates never call the model and therefore fall back to the already-validated
+// 1B.2 reveal path inside finalize(). Malagasy also keeps the validated reveal
+// because the final G.2.3 language-polish pass can rewrite surface wording.
+// Rollback: ASSISTANT_PORTAL_LOW_LATENCY_STREAMING_V1_ENABLED=false.
+const ASSISTANT_PORTAL_LOW_LATENCY_STREAMING_VERSION = "ANU-CONVERSATION-1B.3";
+const ASSISTANT_PORTAL_STREAM_GUARD_CHARS = 180;
+const ASSISTANT_PORTAL_STREAM_FIRST_COMMIT_CHARS = 220;
+
+function isPortalLowLatencyStreamingEnabled() {
+  return String(process.env.ASSISTANT_PORTAL_LOW_LATENCY_STREAMING_V1_ENABLED || "false")
+    .trim().toLowerCase() === "true";
+}
+
+function portalLowLatencyStreamingLog(level, event, details = {}) {
+  const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+  try {
+    fn(`[${ASSISTANT_PORTAL_LOW_LATENCY_STREAMING_VERSION}] ${event}`, details && typeof details === "object" ? details : {});
+  } catch (_) {
+    fn(`[${ASSISTANT_PORTAL_LOW_LATENCY_STREAMING_VERSION}] ${event}`);
+  }
+}
+
+function findPortalStreamingCommitBoundary(text, limit, floor = 0) {
+  const source = String(text || "");
+  let i = Math.min(Math.max(0, Number(limit) || 0), source.length);
+  const min = Math.max(0, Number(floor) || 0);
+  while (i > min && !/[\s,.;:!?)]/.test(source[i - 1] || "")) i -= 1;
+  return i > min ? i : min;
+}
+
+function createPortalProgressiveSafetyGate({ validatePrefix, emitDelta }) {
+  let generated = "";
+  let committedChars = 0;
+  let blocked = false;
+
+  return {
+    async push(delta) {
+      if (blocked) return;
+      const piece = String(delta || "");
+      if (!piece) return;
+      generated += piece;
+
+      if (generated.length < ASSISTANT_PORTAL_STREAM_FIRST_COMMIT_CHARS) return;
+
+      // Validate everything generated so far, including the still-hidden guard
+      // tail, before any new prefix is released to the browser.
+      if (!validatePrefix(generated)) {
+        blocked = true;
+        portalLowLatencyStreamingLog("warn", "progressive guard blocked model stream", {
+          generated_chars: generated.length,
+          committed_chars: committedChars,
+        });
+        return;
+      }
+
+      const guardedLimit = generated.length - ASSISTANT_PORTAL_STREAM_GUARD_CHARS;
+      if (guardedLimit <= committedChars) return;
+      const boundary = findPortalStreamingCommitBoundary(generated, guardedLimit, committedChars);
+      if (boundary <= committedChars) return;
+
+      const safeDelta = generated.slice(committedChars, boundary);
+      committedChars = boundary;
+      if (safeDelta) await emitDelta(safeDelta);
+    },
+    get blocked() { return blocked; },
+    get generated() { return generated; },
+    get committedChars() { return committedChars; },
+  };
+}
+
+function createPortalLowLatencyBridge(res) {
+  const startedAt = Date.now();
+  let streamedText = "";
+  let chunks = 0;
+  let firstDeltaAt = 0;
+  let answeringSent = false;
+
+  async function emitDelta(delta) {
+    const text = String(delta || "");
+    if (!text || res.writableEnded || res.destroyed) return;
+    if (!answeringSent) {
+      answeringSent = true;
+      writePortalAssistantSse(res, "status", { phase: "answering" });
+    }
+    if (!firstDeltaAt) {
+      firstDeltaAt = Date.now();
+      portalLowLatencyStreamingLog("info", "first safe delta", {
+        first_delta_ms: firstDeltaAt - startedAt,
+      });
+    }
+    if (writePortalAssistantSse(res, "delta", { text })) {
+      streamedText += text;
+      chunks += 1;
+    }
+  }
+
+  async function finalize(result) {
+    const answer = String(result?.answer || "");
+    writePortalAssistantSse(res, "meta", {
+      conversation_id: result?.conversation_id || null,
+      memory_token: result?.memory_token || null,
+      lang: result?.lang || null,
+      ai_enhanced: result?.ai_enhanced === true,
+      version: ASSISTANT_PORTAL_LOW_LATENCY_STREAMING_VERSION,
+    });
+
+    let reconcile = "suffix";
+    if (!streamedText) {
+      // Deterministic critical answers, Malagasy, safety-blocked model streams,
+      // and model fallbacks all arrive here already fully validated.
+      reconcile = "validated_fallback";
+      for (const delta of splitPortalAssistantStreamText(answer, 22)) {
+        if (res.writableEnded || res.destroyed) break;
+        await emitDelta(delta);
+        await platformAssistantStreamDelay(12);
+      }
+    } else if (answer.startsWith(streamedText)) {
+      const remaining = answer.slice(streamedText.length);
+      for (const delta of splitPortalAssistantStreamText(remaining, 22)) {
+        if (res.writableEnded || res.destroyed) break;
+        await emitDelta(delta);
+        await platformAssistantStreamDelay(10);
+      }
+    } else {
+      // A final validator, legacy fallback, or language polish changed the
+      // definitive answer. Replace the provisional safe prefix so UI, memory,
+      // and the stored assistant turn all end with the exact validated answer.
+      reconcile = "replace";
+      if (!res.writableEnded && !res.destroyed) {
+        writePortalAssistantSse(res, "replace", { text: answer });
+        streamedText = answer;
+      }
+    }
+
+    if (!res.writableEnded && !res.destroyed) {
+      writePortalAssistantSse(res, "done", {
+        ok: true,
+        conversation_id: result?.conversation_id || null,
+        memory_token: result?.memory_token || null,
+        buttons: Array.isArray(result?.buttons) ? result.buttons : [],
+      });
+      res.end();
+    }
+
+    portalLowLatencyStreamingLog("info", "stream complete", {
+      chunks,
+      chars: answer.length,
+      first_delta_ms: firstDeltaAt ? firstDeltaAt - startedAt : null,
+      total_ms: Date.now() - startedAt,
+      reconcile,
+    });
+  }
+
+  return {
+    enabled: true,
+    emitDelta,
+    finalize,
+    hasEmitted: () => streamedText.length > 0,
+    currentText: () => streamedText,
+  };
 }
 
 // =============================================================================
@@ -14332,6 +14529,7 @@ async function generateRazafiPortalConversationAnswer({
   liveData,
   conversationContext,
   trustedContext,
+  onTextDelta = null,
 }) {
   const provider = getPortalAssistantAiProvider();
   const model = getPortalAssistantAiModel();
@@ -14366,6 +14564,7 @@ async function generateRazafiPortalConversationAnswer({
   const startedAt = Date.now();
 
   try {
+    const useOpenAiStream = typeof onTextDelta === "function";
     const resp = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       signal: controller.signal,
@@ -14381,6 +14580,7 @@ async function generateRazafiPortalConversationAnswer({
         max_output_tokens: maxOutputTokens,
         store: false,
         truncation: "auto",
+        ...(useOpenAiStream ? { stream: true, stream_options: { include_obfuscation: false } } : {}),
         metadata: {
           razafi_context: "portal_user",
           conversation_core: ASSISTANT_PORTAL_CONVERSATION_VERSION,
@@ -14388,22 +14588,41 @@ async function generateRazafiPortalConversationAnswer({
       }),
     });
 
-    let data = null;
-    try { data = await resp.json(); } catch (_) { data = null; }
     if (!resp.ok) {
+      let data = null;
+      try { data = await resp.json(); } catch (_) { data = null; }
       const apiMessage = cleanOptionalText(data?.error?.message, 180) || `openai_http_${resp.status}`;
       throw new Error(apiMessage);
     }
 
-    const rawText = extractOpenAiResponsesText(data);
+    let rawText = "";
+    let usage = null;
+    let firstOutputMs = null;
+
+    if (useOpenAiStream) {
+      const streamed = await readOpenAiResponsesTextStream(resp, {
+        onTextDelta,
+        maxOutputChars,
+        startedAt,
+      });
+      rawText = streamed.text;
+      usage = streamed.usage;
+      firstOutputMs = streamed.first_output_ms;
+    } else {
+      let data = null;
+      try { data = await resp.json(); } catch (_) { data = null; }
+      rawText = extractOpenAiResponsesText(data);
+      usage = data?.usage || null;
+    }
+
     if (!rawText) throw new Error("openai_empty_response");
 
-    const usage = data?.usage || null;
     portalConversationLog("info", "portal response", {
       provider,
       model,
       reasoning_effort: reasoningEffort,
       duration_ms: Date.now() - startedAt,
+      ...(useOpenAiStream ? { first_output_ms: firstOutputMs } : {}),
       history_messages: history.length,
       trusted_scope: trustedContext?.scope_verified === true,
       plan_count: Array.isArray(trustedContext?.plans) ? trustedContext.plans.length : 0,
@@ -14775,7 +14994,7 @@ async function generateRazafiGroundedAiAnswer({
   ) {
     try {
       return await generateRazafiPortalConversationAnswer({
-        pageHint, rawMessage, liveData, conversationContext, trustedContext,
+        pageHint, rawMessage, liveData, conversationContext, trustedContext, onTextDelta,
       });
     } catch (portalConversationError) {
       // Per-request fallback: rebuild the legacy Portal grounding only after a
@@ -16121,6 +16340,7 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
   let platformStreamActive = false;
   let portalStreamActive = false;
   let platformLowLatencyBridge = null;
+  let portalLowLatencyBridge = null;
   try {
     if (!ensureSupabase(res)) return;
 
@@ -16174,9 +16394,16 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
       });
       if (typeof res.flushHeaders === "function") res.flushHeaders();
       portalStreamActive = true;
-      portalStreamingLog("info", "stream started", {
-        page_path: String(req.body?.page_path || "").trim().slice(0, 120) || "/mikrotik/",
-      });
+      if (isPortalLowLatencyStreamingEnabled()) {
+        portalLowLatencyBridge = createPortalLowLatencyBridge(res);
+        portalLowLatencyStreamingLog("info", "stream started", {
+          page_path: String(req.body?.page_path || "").trim().slice(0, 120) || "/mikrotik/",
+        });
+      } else {
+        portalStreamingLog("info", "stream started", {
+          page_path: String(req.body?.page_path || "").trim().slice(0, 120) || "/mikrotik/",
+        });
+      }
       writePortalAssistantSse(res, "status", { phase: "thinking" });
     }
 
@@ -16242,11 +16469,16 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
       scopeKey: publicScopeKey,
       historyToken: rawHistoryToken, // G.2: opaque; null unless portal_user
       platformStream: platformLowLatencyBridge,
+      portalStream: portalLowLatencyBridge,
     });
 
     if (portalStreamActive) {
-      writePortalAssistantSse(res, "status", { phase: "answering" });
-      await streamValidatedPortalAssistantResult(res, result);
+      if (portalLowLatencyBridge) {
+        await portalLowLatencyBridge.finalize(result);
+      } else {
+        writePortalAssistantSse(res, "status", { phase: "answering" });
+        await streamValidatedPortalAssistantResult(res, result);
+      }
       return;
     }
 
@@ -16264,7 +16496,8 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
   } catch (e) {
     console.error("[ASSISTANT PUBLIC CHAT ERROR]", e?.message || e);
     if (portalStreamActive) {
-      portalStreamingLog("warn", "stream failed", {
+      const portalStreamLogger = portalLowLatencyBridge ? portalLowLatencyStreamingLog : portalStreamingLog;
+      portalStreamLogger("warn", "stream failed", {
         code: String(e?.message || "assistant_error").slice(0, 160),
       });
       writePortalAssistantSse(res, "error", { error: "assistant_error" });
