@@ -11165,7 +11165,7 @@ function buildPlatformProspectNumericFollowUpAnswer({ message, lang, thread }) {
 }
 
 
-async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapshot, trustedContext, pool_id, page_path, conversationId, scopeKey, historyToken, threadStoreKey = null }) {
+async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapshot, trustedContext, pool_id, page_path, conversationId, scopeKey, historyToken, threadStoreKey = null, platformStream = null }) {
   const message = cleanAssistantMessage(rawMessage);
   const detectedLang = detectAssistantLang(message);
 
@@ -11795,6 +11795,34 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
     try {
       const pageHint = buildAssistantPageHint(context, page_path, liveData);
 
+      // Patch F.3 Fix 7: build forbidden phone list from thread slots (user payment phone)
+      const forbiddenPhones = [];
+      if (thread?.slots?.phone) forbiddenPhones.push(String(thread.slots.phone).replace(/\s+/g, ""));
+
+      // 1A.3 is Platform-only. Malagasy keeps the already validated 1A.2 reveal
+      // because its final surface-polish pass intentionally rewrites terminology.
+      const progressiveGate = (
+        context === "platform_prospect" &&
+        platformStream?.enabled === true &&
+        typeof platformStream?.emitDelta === "function" &&
+        lang !== "mg"
+      )
+        ? createPlatformProgressiveSafetyGate({
+            emitDelta: platformStream.emitDelta,
+            validatePrefix: (candidate) => validateRazafiAiAnswer({
+              answer: candidate,
+              context,
+              liveData,
+              canonicalAnswer,
+              diagnosticResult,
+              forbiddenPhones,
+              rawMessage: message,
+              naturalUnderstandingMode,
+              trustedContext,
+            }),
+          })
+        : null;
+
       const aiRaw = await generateRazafiGroundedAiAnswer({
         context,
         pageHint,
@@ -11809,11 +11837,8 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
         safetyLane: anuSafetyLane,
         trustedContext,
         uiSnapshot: sanitizedUiSnapshot,
+        onTextDelta: progressiveGate ? (delta) => progressiveGate.push(delta) : null,
       });
-
-      // Patch F.3 Fix 7: build forbidden phone list from thread slots (user payment phone)
-      const forbiddenPhones = [];
-      if (thread?.slots?.phone) forbiddenPhones.push(String(thread.slots.phone).replace(/\s+/g, ""));
 
       const aiSafe = validateRazafiAiAnswer({
         answer: aiRaw,
@@ -12316,6 +12341,173 @@ async function streamValidatedPlatformAssistantResult(res, result) {
     reveal_ms: Date.now() - startedAt,
   });
 }
+
+// =============================================================================
+// RAZAFI ASSISTANT — ANU-CONVERSATION-1A.3: Low-Latency Streaming
+// =============================================================================
+// OpenAI Responses is consumed as SSE. Before any model text reaches the
+// browser, RAZAFI keeps a trailing guard window and validates the cumulative
+// generated prefix with the existing Platform safety validator. This prevents
+// short forbidden phrases from crossing an emitted chunk boundary. The final
+// answer still passes the full existing validator and is reconciled with the
+// browser before the stream is closed.
+const ASSISTANT_PLATFORM_LOW_LATENCY_STREAMING_VERSION = "ANU-CONVERSATION-1A.3";
+const ASSISTANT_PLATFORM_STREAM_GUARD_CHARS = 180;
+const ASSISTANT_PLATFORM_STREAM_FIRST_COMMIT_CHARS = 220;
+
+function isPlatformLowLatencyStreamingEnabled() {
+  return String(process.env.ASSISTANT_PLATFORM_LOW_LATENCY_STREAMING_V1_ENABLED || "false")
+    .trim().toLowerCase() === "true";
+}
+
+function platformLowLatencyStreamingLog(level, event, details = {}) {
+  const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+  try {
+    fn(`[${ASSISTANT_PLATFORM_LOW_LATENCY_STREAMING_VERSION}] ${event}`, details && typeof details === "object" ? details : {});
+  } catch (_) {
+    fn(`[${ASSISTANT_PLATFORM_LOW_LATENCY_STREAMING_VERSION}] ${event}`);
+  }
+}
+
+function findPlatformStreamingCommitBoundary(text, limit, floor = 0) {
+  const source = String(text || "");
+  let i = Math.min(Math.max(0, Number(limit) || 0), source.length);
+  const min = Math.max(0, Number(floor) || 0);
+  while (i > min && !/[\s,.;:!?)]/.test(source[i - 1] || "")) i -= 1;
+  return i > min ? i : min;
+}
+
+function createPlatformProgressiveSafetyGate({ validatePrefix, emitDelta }) {
+  let generated = "";
+  let committedChars = 0;
+  let blocked = false;
+
+  return {
+    async push(delta) {
+      if (blocked) return;
+      const piece = String(delta || "");
+      if (!piece) return;
+      generated += piece;
+
+      if (generated.length < ASSISTANT_PLATFORM_STREAM_FIRST_COMMIT_CHARS) return;
+
+      // Validate everything seen so far, including the non-emitted guard tail.
+      // Any forbidden phrase must therefore be detected before its first chars
+      // can leave the guard window and reach the browser.
+      if (!validatePrefix(generated)) {
+        blocked = true;
+        platformLowLatencyStreamingLog("warn", "progressive guard blocked model stream", {
+          generated_chars: generated.length,
+          committed_chars: committedChars,
+        });
+        return;
+      }
+
+      const guardedLimit = generated.length - ASSISTANT_PLATFORM_STREAM_GUARD_CHARS;
+      if (guardedLimit <= committedChars) return;
+      const boundary = findPlatformStreamingCommitBoundary(generated, guardedLimit, committedChars);
+      if (boundary <= committedChars) return;
+
+      const safeDelta = generated.slice(committedChars, boundary);
+      committedChars = boundary;
+      if (safeDelta) await emitDelta(safeDelta);
+    },
+    get blocked() { return blocked; },
+    get generated() { return generated; },
+    get committedChars() { return committedChars; },
+  };
+}
+
+function createPlatformLowLatencyBridge(res) {
+  const startedAt = Date.now();
+  let streamedText = "";
+  let chunks = 0;
+  let firstDeltaAt = 0;
+  let answeringSent = false;
+
+  async function emitDelta(delta) {
+    const text = String(delta || "");
+    if (!text || res.writableEnded || res.destroyed) return;
+    if (!answeringSent) {
+      answeringSent = true;
+      writePlatformAssistantSse(res, "status", { phase: "answering" });
+    }
+    if (!firstDeltaAt) {
+      firstDeltaAt = Date.now();
+      platformLowLatencyStreamingLog("info", "first safe delta", {
+        first_delta_ms: firstDeltaAt - startedAt,
+      });
+    }
+    if (writePlatformAssistantSse(res, "delta", { text })) {
+      streamedText += text;
+      chunks += 1;
+    }
+  }
+
+  async function finalize(result) {
+    const answer = String(result?.answer || "");
+    writePlatformAssistantSse(res, "meta", {
+      conversation_id: result?.conversation_id || null,
+      memory_token: result?.memory_token || null,
+      lang: result?.lang || null,
+      ai_enhanced: result?.ai_enhanced === true,
+      version: ASSISTANT_PLATFORM_LOW_LATENCY_STREAMING_VERSION,
+    });
+
+    let reconcile = "suffix";
+    if (!streamedText) {
+      reconcile = "validated_fallback";
+      const tailChunks = splitPlatformAssistantStreamText(answer, 22);
+      for (const delta of tailChunks) {
+        if (res.writableEnded || res.destroyed) break;
+        await emitDelta(delta);
+        await platformAssistantStreamDelay(12);
+      }
+    } else if (answer.startsWith(streamedText)) {
+      const remaining = answer.slice(streamedText.length);
+      for (const delta of splitPlatformAssistantStreamText(remaining, 22)) {
+        if (res.writableEnded || res.destroyed) break;
+        await emitDelta(delta);
+        await platformAssistantStreamDelay(10);
+      }
+    } else {
+      // A full-answer validator, fallback, or surface polish changed the final
+      // answer. Replace the provisional safe prefix so the stored conversation
+      // and the visitor-visible answer end in the exact same validated text.
+      reconcile = "replace";
+      if (!res.writableEnded && !res.destroyed) {
+        writePlatformAssistantSse(res, "replace", { text: answer });
+        streamedText = answer;
+      }
+    }
+
+    if (!res.writableEnded && !res.destroyed) {
+      writePlatformAssistantSse(res, "done", {
+        ok: true,
+        conversation_id: result?.conversation_id || null,
+        memory_token: result?.memory_token || null,
+      });
+      res.end();
+    }
+
+    platformLowLatencyStreamingLog("info", "stream complete", {
+      chunks,
+      chars: answer.length,
+      first_delta_ms: firstDeltaAt ? firstDeltaAt - startedAt : null,
+      total_ms: Date.now() - startedAt,
+      reconcile,
+    });
+  }
+
+  return {
+    enabled: true,
+    emitDelta,
+    finalize,
+    hasEmitted: () => streamedText.length > 0,
+    currentText: () => streamedText,
+  };
+}
+
 
 
 // =============================================================================
@@ -13701,12 +13893,93 @@ function extractOpenAiResponsesText(data) {
   return pieces.join("\n").trim();
 }
 
+async function readOpenAiResponsesTextStream(resp, { onTextDelta = null, maxOutputChars = 12000, startedAt = Date.now() } = {}) {
+  if (!resp?.body || typeof resp.body.getReader !== "function") {
+    throw new Error("openai_stream_body_unavailable");
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let rawText = "";
+  let completedResponse = null;
+  let firstOutputMs = null;
+
+  async function processBlock(block) {
+    if (!block || !block.trim()) return;
+    const dataLines = [];
+    for (const rawLine of String(block).split("\n")) {
+      const line = rawLine.replace(/\r$/, "");
+      if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+    }
+    if (!dataLines.length) return;
+    const payloadText = dataLines.join("\n").trim();
+    if (!payloadText || payloadText === "[DONE]") return;
+
+    let event = null;
+    try { event = JSON.parse(payloadText); } catch (_) { return; }
+    const type = String(event?.type || "");
+
+    if (type === "response.output_text.delta" && typeof event?.delta === "string") {
+      const room = Math.max(0, maxOutputChars - rawText.length);
+      if (!room) return;
+      const delta = event.delta.slice(0, room);
+      if (!delta) return;
+      rawText += delta;
+      if (firstOutputMs === null) firstOutputMs = Date.now() - startedAt;
+      if (typeof onTextDelta === "function") await onTextDelta(delta);
+      return;
+    }
+
+    if (type === "response.output_text.done" && !rawText && typeof event?.text === "string") {
+      rawText = event.text.slice(0, maxOutputChars);
+      return;
+    }
+
+    if (type === "response.completed") {
+      completedResponse = event?.response || null;
+      if (!rawText && completedResponse) {
+        rawText = extractOpenAiResponsesText(completedResponse).slice(0, maxOutputChars);
+      }
+      return;
+    }
+
+    if (type === "response.failed" || type === "error") {
+      const msg = cleanOptionalText(event?.response?.error?.message || event?.message || event?.error?.message, 180);
+      throw new Error(msg || "openai_stream_failed");
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const block = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      await processBlock(block);
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
+
+  buffer += decoder.decode().replace(/\r\n/g, "\n");
+  if (buffer.trim()) await processBlock(buffer);
+
+  return {
+    text: String(rawText || "").trim(),
+    usage: completedResponse?.usage || null,
+    first_output_ms: firstOutputMs,
+  };
+}
+
 async function generateRazafiPlatformConversationAnswer({
   pageHint,
   rawMessage,
   liveData,
   conversationContext,
   trustedContext,
+  onTextDelta = null,
 }) {
   const provider = getPlatformAssistantAiProvider();
   const model = getPlatformAssistantAiModel();
@@ -13737,6 +14010,7 @@ async function generateRazafiPlatformConversationAnswer({
   const startedAt = Date.now();
 
   try {
+    const useOpenAiStream = typeof onTextDelta === "function";
     const resp = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       signal: controller.signal,
@@ -13752,6 +14026,7 @@ async function generateRazafiPlatformConversationAnswer({
         max_output_tokens: maxOutputTokens,
         store: false,
         truncation: "auto",
+        ...(useOpenAiStream ? { stream: true, stream_options: { include_obfuscation: false } } : {}),
         metadata: {
           razafi_context: "platform_prospect",
           conversation_core: ASSISTANT_PLATFORM_CONVERSATION_VERSION,
@@ -13759,14 +14034,33 @@ async function generateRazafiPlatformConversationAnswer({
       }),
     });
 
-    let data = null;
-    try { data = await resp.json(); } catch (_) { data = null; }
     if (!resp.ok) {
+      let data = null;
+      try { data = await resp.json(); } catch (_) { data = null; }
       const apiMessage = cleanOptionalText(data?.error?.message, 180) || `openai_http_${resp.status}`;
       throw new Error(apiMessage);
     }
 
-    const rawText = extractOpenAiResponsesText(data);
+    let rawText = "";
+    let usage = null;
+    let firstOutputMs = null;
+
+    if (useOpenAiStream) {
+      const streamed = await readOpenAiResponsesTextStream(resp, {
+        onTextDelta,
+        maxOutputChars,
+        startedAt,
+      });
+      rawText = streamed.text;
+      usage = streamed.usage;
+      firstOutputMs = streamed.first_output_ms;
+    } else {
+      let data = null;
+      try { data = await resp.json(); } catch (_) { data = null; }
+      rawText = extractOpenAiResponsesText(data);
+      usage = data?.usage || null;
+    }
+
     if (!rawText) throw new Error("openai_empty_response");
 
     platformConversationLog("info", "platform response", {
@@ -13774,14 +14068,15 @@ async function generateRazafiPlatformConversationAnswer({
       model,
       reasoning_effort: reasoningEffort,
       duration_ms: Date.now() - startedAt,
+      ...(useOpenAiStream ? { first_output_ms: firstOutputMs } : {}),
       history_messages: history.length,
       website_status: trustedContext?.website_knowledge?.status || null,
       website_sources: Array.isArray(trustedContext?.website_knowledge?.sources)
         ? trustedContext.website_knowledge.sources.length
         : 0,
-      input_tokens: Number(data?.usage?.input_tokens) || null,
-      output_tokens: Number(data?.usage?.output_tokens) || null,
-      total_tokens: Number(data?.usage?.total_tokens) || null,
+      input_tokens: Number(usage?.input_tokens) || null,
+      output_tokens: Number(usage?.output_tokens) || null,
+      total_tokens: Number(usage?.total_tokens) || null,
       result: "success",
     });
 
@@ -13816,11 +14111,12 @@ async function generateRazafiGroundedAiAnswer({
   safetyLane = null,
   trustedContext = null,
   uiSnapshot = null,
+  onTextDelta = null,
 }) {
   if (context === "platform_prospect" && isPlatformConversationCoreEnabled()) {
     try {
       return await generateRazafiPlatformConversationAnswer({
-        pageHint, rawMessage, liveData, conversationContext, trustedContext,
+        pageHint, rawMessage, liveData, conversationContext, trustedContext, onTextDelta,
       });
     } catch (platformConversationError) {
       // Instant per-request fallback: preserve the currently validated legacy AI
@@ -15130,6 +15426,7 @@ app.get("/api/public/offers", async (_req, res) => {
 // ===============================
 app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
   let platformStreamActive = false;
+  let platformLowLatencyBridge = null;
   try {
     if (!ensureSupabase(res)) return;
 
@@ -15159,10 +15456,17 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
       });
       if (typeof res.flushHeaders === "function") res.flushHeaders();
       platformStreamActive = true;
+      if (isPlatformLowLatencyStreamingEnabled()) {
+        platformLowLatencyBridge = createPlatformLowLatencyBridge(res);
+        platformLowLatencyStreamingLog("info", "stream started", {
+          page_path: String(req.body?.page_path || "").trim().slice(0, 120) || "/",
+        });
+      } else {
+        platformStreamingLog("info", "stream started", {
+          page_path: String(req.body?.page_path || "").trim().slice(0, 120) || "/",
+        });
+      }
       writePlatformAssistantSse(res, "status", { phase: "thinking" });
-      platformStreamingLog("info", "stream started", {
-        page_path: String(req.body?.page_path || "").trim().slice(0, 120) || "/",
-      });
     }
 
     // Legacy data remains unchanged while ANU flags are off. ANU-2 receives the same
@@ -15226,11 +15530,16 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
       memoryToken: rawMemoryToken,
       scopeKey: publicScopeKey,
       historyToken: rawHistoryToken, // G.2: opaque; null unless portal_user
+      platformStream: platformLowLatencyBridge,
     });
 
     if (platformStreamActive) {
-      writePlatformAssistantSse(res, "status", { phase: "answering" });
-      await streamValidatedPlatformAssistantResult(res, result);
+      if (platformLowLatencyBridge) {
+        await platformLowLatencyBridge.finalize(result);
+      } else {
+        writePlatformAssistantSse(res, "status", { phase: "answering" });
+        await streamValidatedPlatformAssistantResult(res, result);
+      }
       return;
     }
 
