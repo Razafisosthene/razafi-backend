@@ -6716,6 +6716,11 @@ function selectPlanCardOnly(card) {
           }
           if (eventName === "delta") {
             appendAssistantDelta(payload && payload.text);
+          } else if (eventName === "replace") {
+            streamedText = String((payload && payload.text) || "");
+            var replaceBubble = ensureAssistantStreamBubble();
+            replaceBubble.textContent = streamedText;
+            scrollBodyToBottom();
           } else if (eventName === "done") {
             return {
               done: true,
