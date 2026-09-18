@@ -6608,7 +6608,7 @@ function selectPlanCardOnly(card) {
       }
 
       // Thinking indicator
-      var thinkingBubble = appendMsg("…", "thinking");
+      var thinkingBubble = appendMsg("RAZAFI écrit…", "thinking");
       isLoading = true;
       sendBtn.disabled = true;
 
@@ -6626,65 +6626,200 @@ function selectPlanCardOnly(card) {
       // Never stored in localStorage/sessionStorage/DOM/window/URL.
       var tokenToSend = assistantHistoryToken || undefined;
       assistantHistoryToken = null;
-      fetch(apiUrl("/api/assistant/chat"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "omit",
-        body: JSON.stringify({
-          context: "portal_user",
-          message: msg,
-          live_data: liveData, // legacy path; unchanged while ANU flags are OFF
-          ui_snapshot: liveData, // ANU-2: explicitly untrusted browser state
-          assistant_context_token: assistantContextToken || undefined,
-          page_path: (function () {
-            try { return String(window.location.pathname || "").slice(0, 200); } catch (_) { return null; }
-          })(),
-          conversation_id: assistantConversationId,
-          memory_token: readAssistantMemoryToken(RAZAFI_PORTAL_ASSISTANT_MEMORY_TOKEN_KEY) || undefined,
-          history_token: tokenToSend, // G.2: opaque; undefined when no token
-        }),
-      })
-        .then(function (res) {
-          return res.json().catch(function () { return {}; });
-        })
-        .then(function (data) {
-          removeMsg(thinkingBubble);
-          isLoading = false;
+      var canStreamAssistant = !!(
+        typeof window.ReadableStream !== "undefined" &&
+        typeof window.TextDecoder !== "undefined"
+      );
 
-          // Patch F.2: persist conversation_id for multi-turn memory
-          if (data && data.conversation_id) {
-            writeAssistantConversationId(RAZAFI_PORTAL_ASSISTANT_CID_KEY, data.conversation_id);
+      var assistantRequestPayload = {
+        context: "portal_user",
+        message: msg,
+        stream: canStreamAssistant,
+        live_data: liveData, // legacy path; unchanged while ANU flags are OFF
+        ui_snapshot: liveData, // ANU-2: explicitly untrusted browser state
+        assistant_context_token: assistantContextToken || undefined,
+        page_path: (function () {
+          try { return String(window.location.pathname || "").slice(0, 200); } catch (_) { return null; }
+        })(),
+        conversation_id: assistantConversationId,
+        memory_token: readAssistantMemoryToken(RAZAFI_PORTAL_ASSISTANT_MEMORY_TOKEN_KEY) || undefined,
+        history_token: tokenToSend, // G.2: opaque; undefined when no token
+      };
+
+      (async function () {
+        var streamedText = "";
+        var assistantBubble = null;
+        var chipsRendered = false;
+
+        function persistAssistantTokens(payload) {
+          if (payload && payload.conversation_id) {
+            writeAssistantConversationId(RAZAFI_PORTAL_ASSISTANT_CID_KEY, payload.conversation_id);
           }
-          if (data && data.memory_token) {
-            writeAssistantMemoryToken(RAZAFI_PORTAL_ASSISTANT_MEMORY_TOKEN_KEY, data.memory_token);
+          if (payload && payload.memory_token) {
+            writeAssistantMemoryToken(RAZAFI_PORTAL_ASSISTANT_MEMORY_TOKEN_KEY, payload.memory_token);
+          }
+        }
+
+        function ensureAssistantStreamBubble() {
+          if (assistantBubble) return assistantBubble;
+          if (thinkingBubble && thinkingBubble.parentNode === body) {
+            thinkingBubble.className = "rz-msg rz-msg-assistant";
+            thinkingBubble.textContent = "";
+            assistantBubble = thinkingBubble;
+          } else {
+            assistantBubble = appendMsg("", "assistant");
+          }
+          return assistantBubble;
+        }
+
+        function appendAssistantDelta(delta) {
+          var piece = String(delta || "");
+          if (!piece) return;
+          streamedText += piece;
+          var bubble = ensureAssistantStreamBubble();
+          bubble.textContent = streamedText;
+          scrollBodyToBottom();
+        }
+
+        function finalizeAssistantStream(buttons) {
+          var bubble = ensureAssistantStreamBubble();
+          if (!streamedText.trim()) {
+            streamedText = "Désolé, je n’ai pas pu répondre. Réessayez.";
+            bubble.textContent = streamedText;
+          }
+          if (!chipsRendered && Array.isArray(buttons) && buttons.length) {
+            appendResponseChips(buttons, bubble);
+            chipsRendered = true;
+          }
+          scrollBodyToBottom();
+        }
+
+        function handleAssistantSseBlock(block) {
+          if (!String(block || "").trim()) return { done: false, buttons: [] };
+          var eventName = "message";
+          var dataLines = [];
+          String(block).split("\n").forEach(function (rawLine) {
+            var line = String(rawLine || "").replace(/\r$/, "");
+            if (line.indexOf("event:") === 0) {
+              eventName = line.slice(6).trim() || "message";
+            } else if (line.indexOf("data:") === 0) {
+              dataLines.push(line.slice(5).replace(/^\s/, ""));
+            }
+          });
+          if (!dataLines.length) return { done: false, buttons: [] };
+
+          var payload = {};
+          try { payload = JSON.parse(dataLines.join("\n")); } catch (_) { return { done: false, buttons: [] }; }
+
+          if (eventName === "meta" || eventName === "done") {
+            persistAssistantTokens(payload);
+          }
+          if (eventName === "delta") {
+            appendAssistantDelta(payload && payload.text);
+          } else if (eventName === "done") {
+            return {
+              done: true,
+              buttons: (payload && Array.isArray(payload.buttons)) ? payload.buttons : [],
+            };
+          } else if (eventName === "error") {
+            throw new Error(String(payload?.error || "assistant_stream_error"));
+          }
+          return { done: false, buttons: [] };
+        }
+
+        try {
+          var response = await fetch(apiUrl("/api/assistant/chat"), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Accept": canStreamAssistant ? "text/event-stream, application/json" : "application/json",
+            },
+            credentials: "omit",
+            body: JSON.stringify(assistantRequestPayload),
+          });
+
+          var contentType = String(response.headers.get("content-type") || "").toLowerCase();
+
+          // Backward/rollback compatibility: if 1B.2 is disabled (or an older
+          // backend is live), /api/assistant/chat still returns the exact JSON
+          // shape used before this patch.
+          if (contentType.indexOf("text/event-stream") === -1) {
+            var data = await response.json().catch(function () { return {}; });
+            if (!response.ok) throw new Error(data?.error || "assistant_error");
+
+            removeMsg(thinkingBubble);
+            persistAssistantTokens(data);
+
+            var answer = String(
+              (data && data.answer) ? data.answer :
+              (data && !data.ok && data.error) ? "Désolé, une erreur est survenue. Réessayez." :
+              "Désolé, je n’ai pas pu répondre. Réessayez."
+            );
+            assistantBubble = appendMsg(answer, "assistant");
+            streamedText = answer;
+
+            if (data && Array.isArray(data.buttons) && data.buttons.length) {
+              appendResponseChips(data.buttons, assistantBubble);
+              chipsRendered = true;
+            }
+            return;
           }
 
-          var answer = String(
-            (data && data.answer) ? data.answer :
-            (data && !data.ok && data.error) ? "Désolé, une erreur est survenue. Réessayez." :
-            "Désolé, je n’ai pas pu répondre. Réessayez."
-          );
-
-          var bubble = appendMsg(answer, "assistant");
-
-          // Render safe KB buttons if present
-          if (data && Array.isArray(data.buttons) && data.buttons.length) {
-            appendResponseChips(data.buttons, bubble);
+          if (!response.ok || !response.body || typeof response.body.getReader !== "function") {
+            throw new Error("assistant_stream_unavailable");
           }
-        })
-        .catch(function () {
-          removeMsg(thinkingBubble);
+
+          var reader = response.body.getReader();
+          var decoder = new TextDecoder();
+          var buffer = "";
+          var streamDone = false;
+          var doneButtons = [];
+
+          while (!streamDone) {
+            var part = await reader.read();
+            if (part.done) break;
+            buffer += decoder.decode(part.value, { stream: true }).replace(/\r\n/g, "\n");
+
+            var boundary = buffer.indexOf("\n\n");
+            while (boundary !== -1) {
+              var block = buffer.slice(0, boundary);
+              buffer = buffer.slice(boundary + 2);
+              var parsed = handleAssistantSseBlock(block);
+              if (parsed.done) {
+                streamDone = true;
+                doneButtons = parsed.buttons || [];
+              }
+              boundary = buffer.indexOf("\n\n");
+            }
+          }
+
+          buffer += decoder.decode().replace(/\r\n/g, "\n");
+          if (buffer.trim() && !streamDone) {
+            var parsedTail = handleAssistantSseBlock(buffer);
+            if (parsedTail.done) {
+              streamDone = true;
+              doneButtons = parsedTail.buttons || [];
+            }
+          }
+
+          finalizeAssistantStream(doneButtons);
+        } catch (error) {
+          if (streamedText.trim()) {
+            // If a validated answer already started revealing, keep it rather
+            // than replacing useful text with a generic transport error.
+            finalizeAssistantStream([]);
+          } else {
+            removeMsg(thinkingBubble);
+            appendMsg(
+              "Connexion instable. Vérifiez votre réseau et réessayez.",
+              "assistant"
+            );
+          }
+        } finally {
           isLoading = false;
-          appendMsg(
-            "Connexion instable. Vérifiez votre réseau et réessayez.",
-            "assistant"
-          );
-        })
-        .finally(function () {
-          isLoading = false;
-          // Re-enable send only if input has text
           sendBtn.disabled = !input.value.trim();
-        });
+        }
+      })();
     }
 
     // ---- WhatsApp-style auto-resize helper ----
