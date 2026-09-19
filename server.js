@@ -11966,7 +11966,7 @@ function buildPortalDirectCriticalStateAnswer({ type, lang, trustedContext }) {
   return null;
 }
 
-async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapshot, trustedContext, pool_id, page_path, conversationId, scopeKey, historyToken, threadStoreKey = null, platformStream = null, portalStream = null }) {
+async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapshot, trustedContext, pool_id, page_path, conversationId, scopeKey, historyToken, threadStoreKey = null, platformStream = null, portalStream = null, adminStream = null }) {
   const message = cleanAssistantMessage(rawMessage);
   const detectedLang = detectAssistantLang(message);
 
@@ -12711,7 +12711,44 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
           })
         : null;
 
-      const progressiveGate = platformProgressiveGate || portalProgressiveGate;
+      const adminProgressiveGate = (
+        context === "admin_owner" &&
+        isAdminConversationCoreEnabled() &&
+        adminStream?.enabled === true &&
+        typeof adminStream?.emitDelta === "function" &&
+        lang !== "mg" &&
+        // Generic plan creation can be deterministically rewritten by the
+        // 1C.1a capability validator after model completion. Keep that turn on
+        // validated reveal so no provisional workflow is shown prematurely.
+        !isAdminGenericPlanCreationQuestion(message)
+      )
+        ? createAdminProgressiveSafetyGate({
+            emitDelta: adminStream.emitDelta,
+            validatePrefix: (candidate) => {
+              const baseSafe = validateRazafiAiAnswer({
+                answer: candidate,
+                context,
+                liveData,
+                canonicalAnswer,
+                diagnosticResult,
+                forbiddenPhones,
+                rawMessage: message,
+                naturalUnderstandingMode,
+                trustedContext,
+              });
+              if (!baseSafe) return false;
+              if (isAdminSmartSalesAnalysisMessage(message)) {
+                return validateAdminSmartSalesAiAnswer({
+                  answer: candidate,
+                  smartSales: trustedContext?.smart_sales || liveData?.smart_sales || null,
+                });
+              }
+              return true;
+            },
+          })
+        : null;
+
+      const progressiveGate = platformProgressiveGate || portalProgressiveGate || adminProgressiveGate;
 
       const aiRaw = await generateRazafiGroundedAiAnswer({
         context,
@@ -13389,6 +13426,241 @@ async function streamValidatedAdminAssistantResult(res, result) {
     chars: answer.length,
     reveal_ms: Date.now() - startedAt,
   });
+}
+
+// =============================================================================
+// RAZAFI ASSISTANT — ANU-CONVERSATION-1C.3: Low-Latency Streaming Admin
+// + Contextual Reflection UX
+// =============================================================================
+// Extends the validated 1C.2 SSE transport. Natural FR/EN Admin turns may
+// progressively release only prefixes that have passed the existing RAZAFI
+// safety checks while retaining a hidden guard tail. Deterministic answers,
+// Malagasy (final surface polish), capability-sensitive generic plan-creation
+// turns, blocked progressive streams and fallbacks stay on validated reveal.
+// The visible working status is contextual but never exposes chain-of-thought.
+// Rollback: ASSISTANT_ADMIN_LOW_LATENCY_STREAMING_V1_ENABLED=false -> 1C.2.
+const ASSISTANT_ADMIN_LOW_LATENCY_STREAMING_VERSION = "ANU-CONVERSATION-1C.3";
+const ASSISTANT_ADMIN_STREAM_GUARD_CHARS = 180;
+const ASSISTANT_ADMIN_STREAM_FIRST_COMMIT_CHARS = 220;
+
+function isAdminLowLatencyStreamingEnabled() {
+  return String(process.env.ASSISTANT_ADMIN_LOW_LATENCY_STREAMING_V1_ENABLED || "false")
+    .trim().toLowerCase() === "true" && isAdminAssistantStreamingEnabled();
+}
+
+function adminLowLatencyStreamingLog(level, event, details = {}) {
+  const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+  try {
+    fn(`[${ASSISTANT_ADMIN_LOW_LATENCY_STREAMING_VERSION}] ${event}`, details && typeof details === "object" ? details : {});
+  } catch (_) {
+    fn(`[${ASSISTANT_ADMIN_LOW_LATENCY_STREAMING_VERSION}] ${event}`);
+  }
+}
+
+function normalizeAdminReflectionText(value) {
+  try {
+    return String(value || "")
+      .trim()
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[’`]/g, "'")
+      .replace(/\s+/g, " ");
+  } catch (_) {
+    return String(value || "").trim().toLowerCase();
+  }
+}
+
+function buildAdminContextualReflectionStatus({ rawMessage, pagePath = null, panelHint = null } = {}) {
+  const lang = detectAssistantLang(String(rawMessage || ""));
+  const s = normalizeAdminReflectionText(rawMessage);
+  const page = normalizeAdminReflectionText(pagePath);
+  const panel = normalizeAdminReflectionText(panelHint);
+  let key = "prepare";
+
+  const explicitSales =
+    /\b(vente|ventes|vendu|vendre|revenu|revenus|gagne|gagner|chiffre d'affaires|transaction|transactions|best[- ]?selling|sales|revenue|earn|earned|earning|made|profit|sold|varotra|vola azo)\b/.test(s) ||
+    /\b(se vend le mieux|plus vendu|marche le mieux)\b/.test(s);
+  const explicitPlans = /\b(plan|plans|forfait|forfaits|simulateur|tarif|prix|speed|debit|data|illimite|package)\b/.test(s);
+  const explicitAccess = /\b(acces|permission|permissions|role|roles|utilisateur|utilisateurs|user|users|manager|viewer|owner|superadmin|pool|pools)\b/.test(s);
+
+  if (isAdminSmartSalesAnalysisMessage(rawMessage)) {
+    key = "data_analysis";
+  } else if (explicitSales) {
+    key = "sales_check";
+  } else if (explicitPlans) {
+    key = "plans_check";
+  } else if (explicitAccess) {
+    key = "access_check";
+  } else if (/revenue|revenus/.test(panel) || /revenue/.test(page)) {
+    key = "sales_check";
+  } else if (/plans|simulator|simulateur/.test(panel) || /plans|simulator|simulateur/.test(page)) {
+    key = "plans_check";
+  } else if (/users|utilisateurs|pool|pools/.test(panel) || /users|pool/.test(page)) {
+    key = "access_check";
+  }
+
+  const labels = {
+    fr: {
+      data_analysis: "Analyse des données…",
+      sales_check: "Vérification des ventes…",
+      plans_check: "Vérification des forfaits…",
+      access_check: "Vérification des accès…",
+      prepare: "Préparation de la réponse…",
+    },
+    en: {
+      data_analysis: "Analyzing data…",
+      sales_check: "Checking sales…",
+      plans_check: "Checking plans…",
+      access_check: "Checking access…",
+      prepare: "Preparing the response…",
+    },
+    mg: {
+      data_analysis: "Mandinika ny angona…",
+      sales_check: "Manamarina ny varotra…",
+      plans_check: "Manamarina ny forfait…",
+      access_check: "Manamarina ny zo fidirana…",
+      prepare: "Manomana ny valiny…",
+    },
+  };
+  const dictionary = labels[lang] || labels.fr;
+  return { phase: "working", reflection_key: key, label: dictionary[key] || dictionary.prepare, lang };
+}
+
+function findAdminStreamingCommitBoundary(text, limit, floor = 0) {
+  const source = String(text || "");
+  let i = Math.min(Math.max(0, Number(limit) || 0), source.length);
+  const min = Math.max(0, Number(floor) || 0);
+  while (i > min && !/[\s,.;:!?)]/.test(source[i - 1] || "")) i -= 1;
+  return i > min ? i : min;
+}
+
+function createAdminProgressiveSafetyGate({ validatePrefix, emitDelta }) {
+  let generated = "";
+  let committedChars = 0;
+  let blocked = false;
+
+  return {
+    async push(delta) {
+      if (blocked) return;
+      const piece = String(delta || "");
+      if (!piece) return;
+      generated += piece;
+
+      if (generated.length < ASSISTANT_ADMIN_STREAM_FIRST_COMMIT_CHARS) return;
+      if (!validatePrefix(generated)) {
+        blocked = true;
+        adminLowLatencyStreamingLog("warn", "progressive guard blocked model stream", {
+          generated_chars: generated.length,
+          committed_chars: committedChars,
+        });
+        return;
+      }
+
+      const guardedLimit = generated.length - ASSISTANT_ADMIN_STREAM_GUARD_CHARS;
+      if (guardedLimit <= committedChars) return;
+      const boundary = findAdminStreamingCommitBoundary(generated, guardedLimit, committedChars);
+      if (boundary <= committedChars) return;
+
+      const safeDelta = generated.slice(committedChars, boundary);
+      committedChars = boundary;
+      if (safeDelta) await emitDelta(safeDelta);
+    },
+    get blocked() { return blocked; },
+    get generated() { return generated; },
+    get committedChars() { return committedChars; },
+  };
+}
+
+function createAdminLowLatencyBridge(res) {
+  const startedAt = Date.now();
+  let streamedText = "";
+  let chunks = 0;
+  let firstDeltaAt = 0;
+  let answeringSent = false;
+
+  async function emitDelta(delta) {
+    const text = String(delta || "");
+    if (!text || res.writableEnded || res.destroyed) return;
+    if (!answeringSent) {
+      answeringSent = true;
+      writeAdminAssistantSse(res, "status", { phase: "answering" });
+    }
+    if (!firstDeltaAt) {
+      firstDeltaAt = Date.now();
+      adminLowLatencyStreamingLog("info", "first safe delta", {
+        first_delta_ms: firstDeltaAt - startedAt,
+      });
+    }
+    if (writeAdminAssistantSse(res, "delta", { text })) {
+      streamedText += text;
+      chunks += 1;
+    }
+  }
+
+  async function finalize(result) {
+    const answer = String(result?.answer || "");
+    writeAdminAssistantSse(res, "meta", {
+      conversation_id: result?.conversation_id || null,
+      memory_token: result?.memory_token || null,
+      lang: result?.lang || null,
+      ai_enhanced: result?.ai_enhanced === true,
+      version: ASSISTANT_ADMIN_LOW_LATENCY_STREAMING_VERSION,
+    });
+
+    let reconcile = "suffix";
+    if (!streamedText) {
+      // Deterministic answers, Malagasy, validator-blocked streams, capability
+      // repairs and AI fallbacks all arrive here already fully validated.
+      reconcile = "validated_fallback";
+      for (const delta of splitAdminAssistantStreamText(answer, 22)) {
+        if (res.writableEnded || res.destroyed) break;
+        await emitDelta(delta);
+        await adminAssistantStreamDelay(12);
+      }
+    } else if (answer.startsWith(streamedText)) {
+      const remaining = answer.slice(streamedText.length);
+      for (const delta of splitAdminAssistantStreamText(remaining, 22)) {
+        if (res.writableEnded || res.destroyed) break;
+        await emitDelta(delta);
+        await adminAssistantStreamDelay(10);
+      }
+    } else {
+      // Final capability repair / validator changed the definitive answer.
+      // Replace provisional safe text so UI, memory and final answer converge.
+      reconcile = "replace";
+      if (!res.writableEnded && !res.destroyed) {
+        writeAdminAssistantSse(res, "replace", { text: answer });
+        streamedText = answer;
+      }
+    }
+
+    if (!res.writableEnded && !res.destroyed) {
+      writeAdminAssistantSse(res, "done", {
+        ok: true,
+        conversation_id: result?.conversation_id || null,
+        memory_token: result?.memory_token || null,
+        buttons: Array.isArray(result?.buttons) ? result.buttons : [],
+      });
+      res.end();
+    }
+
+    adminLowLatencyStreamingLog("info", "stream complete", {
+      chunks,
+      chars: answer.length,
+      first_delta_ms: firstDeltaAt ? firstDeltaAt - startedAt : null,
+      total_ms: Date.now() - startedAt,
+      reconcile,
+    });
+  }
+
+  return {
+    enabled: true,
+    emitDelta,
+    finalize,
+    hasEmitted: () => streamedText.length > 0,
+    currentText: () => streamedText,
+  };
 }
 
 // =============================================================================
@@ -15676,6 +15948,7 @@ async function generateRazafiAdminConversationAnswer({
   liveData,
   conversationContext,
   trustedContext,
+  onTextDelta = null,
 }) {
   const provider = getAdminAssistantAiProvider();
   const model = getAdminAssistantAiModel();
@@ -15709,6 +15982,7 @@ async function generateRazafiAdminConversationAnswer({
   const startedAt = Date.now();
 
   try {
+    const useOpenAiStream = typeof onTextDelta === "function";
     const resp = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       signal: controller.signal,
@@ -15724,6 +15998,7 @@ async function generateRazafiAdminConversationAnswer({
         max_output_tokens: maxOutputTokens,
         store: false,
         truncation: "auto",
+        ...(useOpenAiStream ? { stream: true, stream_options: { include_obfuscation: false } } : {}),
         metadata: {
           razafi_context: "admin_owner",
           conversation_core: getAdminConversationRuntimeVersion(),
@@ -15731,20 +16006,38 @@ async function generateRazafiAdminConversationAnswer({
           natural_business_analytics: naturalAnalyticsAware ? ASSISTANT_ADMIN_NATURAL_ANALYTICS_VERSION : "disabled",
           madagascar_business_day_parity: isAdminBusinessDayParityV1Enabled() ? ASSISTANT_ADMIN_BUSINESS_DAY_PARITY_VERSION : "disabled",
           period_ranking_owner_share: isAdminPeriodRankingOwnerShareV1Enabled() ? ASSISTANT_ADMIN_PERIOD_RANKING_OWNER_SHARE_VERSION : "disabled",
+          low_latency_streaming: useOpenAiStream ? ASSISTANT_ADMIN_LOW_LATENCY_STREAMING_VERSION : "disabled",
         },
       }),
     });
 
-    let data = null;
-    try { data = await resp.json(); } catch (_) { data = null; }
     if (!resp.ok) {
+      let data = null;
+      try { data = await resp.json(); } catch (_) { data = null; }
       const apiMessage = cleanOptionalText(data?.error?.message, 180) || `openai_http_${resp.status}`;
       throw new Error(apiMessage);
     }
 
-    const rawText = extractOpenAiResponsesText(data);
+    let rawText = "";
+    let usage = null;
+    let firstOutputMs = null;
+    if (useOpenAiStream) {
+      const streamed = await readOpenAiResponsesTextStream(resp, {
+        onTextDelta,
+        maxOutputChars,
+        startedAt,
+      });
+      rawText = streamed.text;
+      usage = streamed.usage;
+      firstOutputMs = streamed.first_output_ms;
+    } else {
+      let data = null;
+      try { data = await resp.json(); } catch (_) { data = null; }
+      rawText = extractOpenAiResponsesText(data);
+      usage = data?.usage || null;
+    }
+
     if (!rawText) throw new Error("openai_empty_response");
-    const usage = data?.usage || null;
     const capabilityChecked = enforceAdminRoleCapabilityAnswer({
       rawMessage,
       answer: rawText,
@@ -15764,6 +16057,7 @@ async function generateRazafiAdminConversationAnswer({
       model,
       reasoning_effort: reasoningEffort,
       duration_ms: Date.now() - startedAt,
+      ...(useOpenAiStream ? { first_output_ms: firstOutputMs } : {}),
       history_messages: history.length,
       trusted_scope: trustedContext?.available === true && trustedContext?.scope_verified === true,
       is_superadmin: trustedContext?.actor?.is_superadmin === true,
@@ -16425,7 +16719,7 @@ async function generateRazafiGroundedAiAnswer({
   ) {
     try {
       return await generateRazafiAdminConversationAnswer({
-        pageHint, rawMessage, liveData, conversationContext, trustedContext,
+        pageHint, rawMessage, liveData, conversationContext, trustedContext, onTextDelta,
       });
     } catch (adminConversationError) {
       // Per-request fallback: rebuild legacy Admin grounding only after a new
@@ -18929,6 +19223,7 @@ app.get("/api/admin/me", requireAdmin, async (req, res) => {
 // ===============================
 app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req, res) => {
   let adminStreamActive = false;
+  let adminLowLatencyBridge = null;
   try {
     if (!ensureSupabase(res)) return;
 
@@ -18958,10 +19253,25 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
       });
       if (typeof res.flushHeaders === "function") res.flushHeaders();
       adminStreamActive = true;
-      adminStreamingLog("info", "stream started", {
-        page_path: String(req.body?.page_path || "").trim().slice(0, 120) || "/admin/",
-      });
-      writeAdminAssistantSse(res, "status", { phase: "thinking" });
+      const adminPagePathForStream = String(req.body?.page_path || "").trim().slice(0, 120) || "/admin/";
+      if (isAdminLowLatencyStreamingEnabled()) {
+        adminLowLatencyBridge = createAdminLowLatencyBridge(res);
+        adminLowLatencyStreamingLog("info", "stream started", { page_path: adminPagePathForStream });
+        const reflectionStatus = buildAdminContextualReflectionStatus({
+          rawMessage,
+          pagePath: adminPagePathForStream,
+          // Cosmetic hint only: never used as authority for permissions/data.
+          panelHint: req.body?.live_data?.panel || req.body?.ui_snapshot?.panel || null,
+        });
+        adminLowLatencyStreamingLog("info", "reflection status", {
+          reflection_key: reflectionStatus.reflection_key,
+          lang: reflectionStatus.lang,
+        });
+        writeAdminAssistantSse(res, "status", reflectionStatus);
+      } else {
+        adminStreamingLog("info", "stream started", { page_path: adminPagePathForStream });
+        writeAdminAssistantSse(res, "status", { phase: "thinking" });
+      }
     }
 
     const liveData = sanitizeAssistantLiveData(req.body?.live_data || {}, rawContext);
@@ -19023,10 +19333,15 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
       conversationId,
       memoryToken: rawMemoryToken,
       scopeKey: adminScopeKey,
+      adminStream: adminLowLatencyBridge,
     });
 
     if (adminStreamActive) {
-      // Safe Streaming UX: business/RBAC/analytics processing and final answer
+      if (adminLowLatencyBridge?.enabled === true) {
+        await adminLowLatencyBridge.finalize(result);
+        return;
+      }
+      // 1C.2 rollback path: business/RBAC/analytics processing and final answer
       // validation are complete before the first answer character is emitted.
       writeAdminAssistantSse(res, "status", { phase: "answering" });
       await streamValidatedAdminAssistantResult(res, result);
@@ -19036,7 +19351,8 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
     return res.json(result);
   } catch (e) {
     if (adminStreamActive) {
-      adminStreamingLog("warn", "stream failed", {
+      const streamLogger = adminLowLatencyBridge?.enabled === true ? adminLowLatencyStreamingLog : adminStreamingLog;
+      streamLogger("warn", "stream failed", {
         code: String(e?.message || "assistant_error").slice(0, 160),
       });
       writeAdminAssistantSse(res, "error", {

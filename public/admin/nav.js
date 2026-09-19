@@ -1417,6 +1417,29 @@
             return assistantBubble;
           }
 
+          // ANU-CONVERSATION-1C.3: contextual working indicator. These labels
+          // describe the task being checked, never the model's private reasoning.
+          function applyAssistantWorkingStatus(payload) {
+            if (!payload || streamedText.trim()) return;
+            var phase = String(payload.phase || "").toLowerCase();
+            if (phase !== "working" && phase !== "thinking") return;
+            var label = String(payload.label || "").trim();
+            if (!label) label = "…";
+            if (thinkingBubble && thinkingBubble.parentNode === body) {
+              thinkingBubble.className = "rz-aa-msg rz-aa-msg-thinking";
+              thinkingBubble.textContent = label;
+              scrollToBottom();
+            }
+          }
+
+          function replaceAssistantText(text) {
+            var value = String(text || "");
+            streamedText = value;
+            var bubble = ensureAssistantStreamBubble();
+            bubble.textContent = value;
+            scrollToBottom();
+          }
+
           function appendAssistantDelta(delta) {
             var piece = String(delta || "");
             if (!piece) return;
@@ -1459,8 +1482,12 @@
             if (eventName === "meta" || eventName === "done") {
               persistAssistantTokens(payload);
             }
-            if (eventName === "delta") {
+            if (eventName === "status") {
+              applyAssistantWorkingStatus(payload);
+            } else if (eventName === "delta") {
               appendAssistantDelta(payload && payload.text);
+            } else if (eventName === "replace") {
+              replaceAssistantText(payload && payload.text);
             } else if (eventName === "done") {
               return {
                 done: true,
