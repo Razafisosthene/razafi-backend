@@ -3521,6 +3521,29 @@ function assistantAnalyticsNormalize(raw) {
   return String(raw || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
+// ANU-CONVERSATION-1C.1b1 — exact parity with admin/revenue.js P1-07.
+// RAZAFI business days are always interpreted in Madagascar (UTC+03:00),
+// independently of the admin browser/device timezone. The Revenue UI sends
+// ISO UTC instants for the full local business day; analytics must do the same.
+const ASSISTANT_RAZAFI_BUSINESS_TZ_OFFSET = "+03:00"; // Indian/Antananarivo — fixed, no DST
+
+function assistantBusinessDateToRevenueIso(isoDate, edge = "start") {
+  const value = String(isoDate || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const suffix = edge === "end" ? "T23:59:59.999" : "T00:00:00.000";
+  const d = new Date(`${value}${suffix}${ASSISTANT_RAZAFI_BUSINESS_TZ_OFFSET}`);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
+
+function assistantBusinessDateRangeToRevenueRpc(fromDate, toDate) {
+  const fromIso = fromDate ? assistantBusinessDateToRevenueIso(fromDate, "start") : null;
+  const toIso = toDate ? assistantBusinessDateToRevenueIso(toDate, "end") : null;
+  if ((fromDate && !fromIso) || (toDate && !toIso)) {
+    throw new Error("assistant_business_date_invalid");
+  }
+  return { p_from: fromIso, p_to: toIso };
+}
+
 function assistantBusinessDateStartOfWeek(isoDate) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(isoDate || ""));
   if (!m) return null;
@@ -3657,7 +3680,10 @@ async function loadAdminAnalyticsRevenueWindow({ poolIds, from, to, displayByPoo
   const ids = (Array.isArray(poolIds) ? poolIds : []).map(String).filter(Boolean);
   const empty = { totals: assistantAnalyticsMetric(null), by_plan: [], by_pool: [] };
   if (!ids.length) return empty;
-  const args = { p_from: from || null, p_to: to || null, p_search: null, p_pool_ids: ids };
+  const businessBounds = isAdminBusinessDayParityV1Enabled()
+    ? assistantBusinessDateRangeToRevenueRpc(from, to)
+    : { p_from: from || null, p_to: to || null };
+  const args = { ...businessBounds, p_search: null, p_pool_ids: ids };
   const [totalsResult, byPlanResult, byPoolResult] = await Promise.all([
     supabase.rpc("fn_revenue_paid_totals_scoped", args),
     supabase.rpc("fn_revenue_paid_by_plan_scoped", args),
@@ -3929,7 +3955,12 @@ async function buildAdminSmartSalesSnapshot({ poolIds, poolsInternal, planRows, 
   }
 
   try {
-    const rpcArgs = (from, to) => ({ p_from: from, p_to: to, p_search: null, p_pool_ids: ids });
+    const rpcArgs = (from, to) => {
+      const businessBounds = isAdminBusinessDayParityV1Enabled()
+        ? assistantBusinessDateRangeToRevenueRpc(from, to)
+        : { p_from: from, p_to: to };
+      return { ...businessBounds, p_search: null, p_pool_ids: ids };
+    };
     const [
       currentTotalsResult, currentByPlanResult, currentByPoolResult,
       previousTotalsResult, previousByPlanResult, previousByPoolResult,
@@ -13054,19 +13085,21 @@ function platformConversationLog(level, event, details = {}) {
 }
 
 // =============================================================================
-// RAZAFI ASSISTANT — ANU-CONVERSATION-1C.1 / 1C.1a / 1C.1b
-// Admin Conversation Core + Role/Capability Awareness + Natural Business Analytics
+// RAZAFI ASSISTANT — ANU-CONVERSATION-1C.1 / 1C.1a / 1C.1b / 1C.1b1
+// Admin Conversation Core + Role/Capability Awareness + Natural Business Analytics + Madagascar Business-Day Parity
 // =============================================================================
 // Backend-first Admin pilot. The existing Admin UI, RBAC and business write
 // routes are unchanged. Natural Admin conversation uses OpenAI Responses with
 // authenticated server-owned actor/scope/plans/revenue context. The model is
 // advisory/read-only: it can explain and analyze but never executes mutations.
+// 1C.1b1 rollback only: ASSISTANT_ADMIN_BUSINESS_DAY_PARITY_V1_ENABLED=false.
 // 1C.1b rollback only: ASSISTANT_ADMIN_NATURAL_ANALYTICS_V1_ENABLED=false.
 // 1C.1a rollback only: ASSISTANT_ADMIN_ROLE_CAPABILITY_V1_ENABLED=false.
 // Full Admin Conversation Core rollback: ASSISTANT_ADMIN_CONVERSATION_V1_ENABLED=false.
 const ASSISTANT_ADMIN_CONVERSATION_VERSION = "ANU-CONVERSATION-1C.1";
 const ASSISTANT_ADMIN_ROLE_CAPABILITY_VERSION = "ANU-CONVERSATION-1C.1a";
 const ASSISTANT_ADMIN_NATURAL_ANALYTICS_VERSION = "ANU-CONVERSATION-1C.1b";
+const ASSISTANT_ADMIN_BUSINESS_DAY_PARITY_VERSION = "ANU-CONVERSATION-1C.1b1";
 
 function isAdminConversationCoreEnabled() {
   const enabled = String(process.env.ASSISTANT_ADMIN_CONVERSATION_V1_ENABLED || "false")
@@ -13089,7 +13122,16 @@ function isAdminNaturalAnalyticsV1Enabled() {
   return enabled && isAdminRoleCapabilityV1Enabled();
 }
 
+function isAdminBusinessDayParityV1Enabled() {
+  const enabled = String(process.env.ASSISTANT_ADMIN_BUSINESS_DAY_PARITY_V1_ENABLED || "false")
+    .trim().toLowerCase() === "true";
+  // 1C.1b1 is a narrow parity fix for Admin analytics date windows. It only
+  // applies on top of the validated 1C.1b Natural Business Analytics path.
+  return enabled && isAdminNaturalAnalyticsV1Enabled();
+}
+
 function getAdminConversationRuntimeVersion() {
+  if (isAdminBusinessDayParityV1Enabled()) return ASSISTANT_ADMIN_BUSINESS_DAY_PARITY_VERSION;
   if (isAdminNaturalAnalyticsV1Enabled()) return ASSISTANT_ADMIN_NATURAL_ANALYTICS_VERSION;
   return isAdminRoleCapabilityV1Enabled()
     ? ASSISTANT_ADMIN_ROLE_CAPABILITY_VERSION
@@ -15500,6 +15542,7 @@ async function generateRazafiAdminConversationAnswer({
           conversation_core: getAdminConversationRuntimeVersion(),
           role_capability_policy: roleCapabilityAware ? ASSISTANT_ADMIN_ROLE_CAPABILITY_VERSION : "disabled",
           natural_business_analytics: naturalAnalyticsAware ? ASSISTANT_ADMIN_NATURAL_ANALYTICS_VERSION : "disabled",
+          madagascar_business_day_parity: isAdminBusinessDayParityV1Enabled() ? ASSISTANT_ADMIN_BUSINESS_DAY_PARITY_VERSION : "disabled",
         },
       }),
     });
@@ -15546,6 +15589,8 @@ async function generateRazafiAdminConversationAnswer({
         : [],
       capability_repaired: capabilityChecked.repaired === true,
       natural_analytics_aware: naturalAnalyticsAware,
+      business_day_parity: isAdminBusinessDayParityV1Enabled(),
+      business_timezone: isAdminBusinessDayParityV1Enabled() ? "Indian/Antananarivo" : null,
       business_analytics_available: trustedContext?.business_analytics?.available === true,
       smart_sales_v1b: trustedContext?.smart_sales?.decision_model === "natural_business_analytics_v1b",
       analytics_period: trustedContext?.business_analytics?.request?.period_key || (trustedContext?.smart_sales ? "last_30_days" : null),
