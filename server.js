@@ -3500,6 +3500,333 @@ function isAdminSmartSalesAnalysisMessage(raw) {
   );
 }
 
+function isAdminNaturalBusinessAnalyticsMessage(raw) {
+  if (!isAdminNaturalAnalyticsV1Enabled()) return false;
+  if (isAdminSmartSalesAnalysisMessage(raw)) return true;
+  const s = String(raw || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  if (!s) return false;
+  const businessTerms = [
+    "vente", "ventes", "vendu", "sales", "revenue", "revenus", "chiffre d'affaires", "chiffre daffaires",
+    "transaction", "transactions", "panier moyen", "average ticket", "meilleur forfait", "meilleur plan",
+    "forfait le plus", "plan le plus", "performance des forfaits", "performance des plans", "top forfait", "top plan"
+  ];
+  if (businessTerms.some((term) => s.includes(term))) return true;
+  // Natural follow-ups after an analytics turn: "Et hier ?", "Et ce mois ?",
+  // or an explicit temporal comparison should still receive a fresh server slice.
+  const temporal = /aujourd|hier|cette semaine|semaine derniere|ce mois|mois dernier|last week|this week|last month|this month|today|yesterday/.test(s);
+  return temporal && (/^et\b/.test(s) || /compar| vs |versus|par rapport/.test(` ${s} `));
+}
+
+function assistantAnalyticsNormalize(raw) {
+  return String(raw || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function assistantBusinessDateStartOfWeek(isoDate) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(isoDate || ""));
+  if (!m) return null;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  if (!Number.isFinite(d.getTime())) return null;
+  const day = d.getUTCDay();
+  const mondayOffset = day === 0 ? -6 : 1 - day;
+  d.setUTCDate(d.getUTCDate() + mondayOffset);
+  return d.toISOString().slice(0, 10);
+}
+
+function assistantBusinessDateStartOfMonth(isoDate) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(isoDate || ""));
+  return m ? `${m[1]}-${m[2]}-01` : null;
+}
+
+function assistantBusinessDateEndOfMonth(isoDate) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(isoDate || ""));
+  if (!m) return null;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]), 0));
+  return Number.isFinite(d.getTime()) ? d.toISOString().slice(0, 10) : null;
+}
+
+function assistantBusinessDatePreviousMonthSameDay(isoDate) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(isoDate || ""));
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month0 = Number(m[2]) - 1;
+  const day = Number(m[3]);
+  const prevFirst = new Date(Date.UTC(year, month0 - 1, 1));
+  const prevLast = new Date(Date.UTC(prevFirst.getUTCFullYear(), prevFirst.getUTCMonth() + 1, 0));
+  const clampedDay = Math.min(day, prevLast.getUTCDate());
+  return new Date(Date.UTC(prevFirst.getUTCFullYear(), prevFirst.getUTCMonth(), clampedDay)).toISOString().slice(0, 10);
+}
+
+function resolveAdminBusinessAnalyticsRequest(rawMessage, { quickBrief = false } = {}) {
+  const today = billingMadagascarToday();
+  const s = assistantAnalyticsNormalize(rawMessage);
+  const wantsComparison = quickBrief || /compar| vs |versus|par rapport|evolution|tendance|hausse|baisse|progress|meilleur qu|moins bon/.test(` ${s} `);
+  let key = quickBrief ? "last_30_days" : "last_30_days";
+  let from = assistantBusinessDateShift(today, -29);
+  let to = today;
+  let previousFrom = null;
+  let previousTo = null;
+
+  if (/aujourd|today|androany/.test(s)) {
+    key = "today"; from = today; to = today;
+    if (wantsComparison) { previousFrom = assistantBusinessDateShift(today, -1); previousTo = previousFrom; }
+  } else if (/hier|yesterday|omaly/.test(s)) {
+    key = "yesterday"; from = assistantBusinessDateShift(today, -1); to = from;
+    if (wantsComparison) { previousFrom = assistantBusinessDateShift(today, -2); previousTo = previousFrom; }
+  } else if (/cette semaine|this week|ce semaine|herinandro ity/.test(s)) {
+    key = "this_week";
+    from = assistantBusinessDateStartOfWeek(today); to = today;
+    if (wantsComparison) {
+      previousFrom = assistantBusinessDateShift(from, -7);
+      previousTo = assistantBusinessDateShift(to, -7);
+    }
+  } else if (/semaine derniere|last week|herinandro lasa/.test(s)) {
+    key = "last_week";
+    const thisMonday = assistantBusinessDateStartOfWeek(today);
+    to = assistantBusinessDateShift(thisMonday, -1);
+    from = assistantBusinessDateShift(to, -6);
+    if (wantsComparison) { previousTo = assistantBusinessDateShift(from, -1); previousFrom = assistantBusinessDateShift(previousTo, -6); }
+  } else if (/ce mois|ce mois-ci|this month|mois en cours|debut du mois|volana ity/.test(s)) {
+    key = "this_month";
+    from = assistantBusinessDateStartOfMonth(today); to = today;
+    if (wantsComparison) {
+      previousFrom = assistantBusinessDateStartOfMonth(assistantBusinessDateShift(from, -1));
+      previousTo = assistantBusinessDatePreviousMonthSameDay(today);
+    }
+  } else if (/mois dernier|last month|volana lasa/.test(s)) {
+    key = "last_month";
+    const thisMonthStart = assistantBusinessDateStartOfMonth(today);
+    to = assistantBusinessDateShift(thisMonthStart, -1);
+    from = assistantBusinessDateStartOfMonth(to);
+    if (wantsComparison) {
+      previousTo = assistantBusinessDateShift(from, -1);
+      previousFrom = assistantBusinessDateStartOfMonth(previousTo);
+    }
+  } else if (/7\s*(derniers?|last)\s*jours|last\s*7\s*days|7\s*jours/.test(s)) {
+    key = "last_7_days"; from = assistantBusinessDateShift(today, -6); to = today;
+    if (wantsComparison) { previousTo = assistantBusinessDateShift(from, -1); previousFrom = assistantBusinessDateShift(previousTo, -6); }
+  } else if (/30\s*(derniers?|last)\s*jours|last\s*30\s*days|30\s*jours/.test(s) || quickBrief) {
+    key = "last_30_days"; from = assistantBusinessDateShift(today, -29); to = today;
+    if (wantsComparison) { previousTo = assistantBusinessDateShift(from, -1); previousFrom = assistantBusinessDateShift(previousTo, -29); }
+  }
+
+  const metricFocus = /panier moyen|average ticket/.test(s) ? "average_ticket"
+    : /meilleur forfait|meilleur plan|forfait le plus|plan le plus|top forfait|top plan/.test(s) ? "plans"
+    : /chiffre d'affaires|chiffre daffaires|revenu|revenue/.test(s) ? "revenue"
+    : /vente|vendu|sales|transaction/.test(s) ? "sales"
+    : "general";
+
+  const unsupportedDimension = /heure|horaire|moment de la journee|time of day|hour of day|matin|soir|morning|evening/.test(s)
+    ? "hour_of_day"
+    : null;
+
+  return {
+    version: ASSISTANT_ADMIN_NATURAL_ANALYTICS_VERSION,
+    quick_brief: quickBrief === true,
+    period_key: key,
+    current_period: { from, to },
+    comparison_period: previousFrom && previousTo ? { from: previousFrom, to: previousTo } : null,
+    metric_focus: metricFocus,
+    unsupported_dimension: unsupportedDimension,
+    default_period_applied: !quickBrief && key === "last_30_days" && !/30\s*jours|last\s*30\s*days/.test(s),
+  };
+}
+
+function resolveAdminAnalyticsPoolIds(rawMessage, poolsInternal = []) {
+  const s = assistantAnalyticsNormalize(rawMessage);
+  const rows = Array.isArray(poolsInternal) ? poolsInternal : [];
+  const matched = [];
+  for (const pool of rows) {
+    const name = assistantAnalyticsNormalize(pool?.name);
+    if (name && name.length >= 3 && s.includes(name)) matched.push(String(pool.id || ""));
+  }
+  const unique = Array.from(new Set(matched.filter(Boolean)));
+  return unique.length ? unique : rows.map((p) => String(p?.id || "")).filter(Boolean);
+}
+
+function assistantAnalyticsMetric(row) {
+  const paid = Math.max(0, Number(row?.paid_transactions ?? row?.paid_count ?? 0) || 0);
+  const amount = Math.max(0, Number(row?.total_amount_ar || 0) || 0);
+  return {
+    paid_transactions: paid,
+    total_amount_ar: amount,
+    average_sale_ar: paid > 0 ? Math.round(amount / paid) : 0,
+  };
+}
+
+async function loadAdminAnalyticsRevenueWindow({ poolIds, from, to, displayByPool }) {
+  const ids = (Array.isArray(poolIds) ? poolIds : []).map(String).filter(Boolean);
+  const empty = { totals: assistantAnalyticsMetric(null), by_plan: [], by_pool: [] };
+  if (!ids.length) return empty;
+  const args = { p_from: from || null, p_to: to || null, p_search: null, p_pool_ids: ids };
+  const [totalsResult, byPlanResult, byPoolResult] = await Promise.all([
+    supabase.rpc("fn_revenue_paid_totals_scoped", args),
+    supabase.rpc("fn_revenue_paid_by_plan_scoped", args),
+    supabase.rpc("fn_revenue_paid_by_pool_scoped", args),
+  ]);
+  const firstError = [totalsResult, byPlanResult, byPoolResult].find((r) => r?.error)?.error;
+  if (firstError) throw firstError;
+
+  const byPlanRows = (Array.isArray(byPlanResult.data) ? byPlanResult.data : [])
+    .map((row) => ({
+      plan_name: cleanOptionalText(row?.plan_name, 120),
+      paid_transactions: Math.max(0, Number(row?.paid_transactions ?? row?.paid_count ?? 0) || 0),
+      total_amount_ar: Math.max(0, Number(row?.total_amount_ar || 0) || 0),
+    }))
+    .filter((row) => row.plan_name);
+  const byPlan = [...byPlanRows]
+    .sort((a, b) => (b.paid_transactions - a.paid_transactions) || (b.total_amount_ar - a.total_amount_ar));
+  const byPlanByRevenue = [...byPlanRows]
+    .sort((a, b) => (b.total_amount_ar - a.total_amount_ar) || (b.paid_transactions - a.paid_transactions));
+
+  const byPool = (Array.isArray(byPoolResult.data) ? byPoolResult.data : [])
+    .map((row) => ({
+      pool_name: displayByPool[String(row?.pool_id || "")] || cleanOptionalText(row?.pool_name, 160),
+      paid_transactions: Math.max(0, Number(row?.paid_transactions ?? row?.paid_count ?? 0) || 0),
+      total_amount_ar: Math.max(0, Number(row?.total_amount_ar || 0) || 0),
+    }))
+    .filter((row) => row.pool_name)
+    .sort((a, b) => (b.total_amount_ar - a.total_amount_ar) || (b.paid_transactions - a.paid_transactions));
+
+  return {
+    totals: assistantAnalyticsMetric(totalsResult.data?.[0]),
+    by_plan: byPlan.slice(0, 30),
+    by_plan_by_revenue: byPlanByRevenue.slice(0, 30),
+    by_pool: byPool.slice(0, 30),
+  };
+}
+
+async function buildAdminBusinessAnalyticsSnapshot({ rawMessage, poolIds, poolsInternal, displayByPool }) {
+  const request = resolveAdminBusinessAnalyticsRequest(rawMessage, { quickBrief: false });
+  const selectedIds = resolveAdminAnalyticsPoolIds(rawMessage, poolsInternal).filter((id) => poolIds.includes(id));
+  const ids = selectedIds.length ? selectedIds : poolIds;
+  const poolNames = ids.map((id) => displayByPool[String(id)]).filter(Boolean);
+  const base = {
+    version: ASSISTANT_ADMIN_NATURAL_ANALYTICS_VERSION,
+    available: false,
+    advisory_only: true,
+    request,
+    scope: { pool_count: ids.length, pool_names: poolNames },
+    current: null,
+    previous: null,
+    comparison: null,
+  };
+  if (!ids.length) return { ...base, available: true, current: { totals: assistantAnalyticsMetric(null), by_plan: [], by_pool: [], top_plan: null, top_pool: null } };
+  try {
+    const currentPromise = loadAdminAnalyticsRevenueWindow({ poolIds: ids, from: request.current_period.from, to: request.current_period.to, displayByPool });
+    const previousPromise = request.comparison_period
+      ? loadAdminAnalyticsRevenueWindow({ poolIds: ids, from: request.comparison_period.from, to: request.comparison_period.to, displayByPool })
+      : Promise.resolve(null);
+    const [currentWindow, previousWindow] = await Promise.all([currentPromise, previousPromise]);
+    const current = {
+      ...currentWindow,
+      top_plan: currentWindow.by_plan[0] || null,
+      top_revenue_plan: currentWindow.by_plan_by_revenue?.[0] || null,
+      top_pool: currentWindow.by_pool[0] || null,
+    };
+    const previous = previousWindow ? {
+      ...previousWindow,
+      top_plan: previousWindow.by_plan[0] || null,
+      top_revenue_plan: previousWindow.by_plan_by_revenue?.[0] || null,
+      top_pool: previousWindow.by_pool[0] || null,
+    } : null;
+    const comparison = previous ? {
+      sales_change_pct: assistantSmartSalesPctChange(current.totals.paid_transactions, previous.totals.paid_transactions),
+      revenue_change_pct: assistantSmartSalesPctChange(current.totals.total_amount_ar, previous.totals.total_amount_ar),
+      average_sale_change_pct: assistantSmartSalesPctChange(current.totals.average_sale_ar, previous.totals.average_sale_ar),
+      trend: assistantSmartSalesTrend(current.totals.total_amount_ar, previous.totals.total_amount_ar),
+    } : null;
+    return { ...base, available: true, current, previous, comparison };
+  } catch (error) {
+    console.warn("[ADMIN NATURAL ANALYTICS V1] unavailable:", String(error?.message || error).slice(0, 140));
+    return { ...base, reason: "analytics_revenue_unavailable" };
+  }
+}
+
+function formatAdminSuggestedPlanLabel(ref) {
+  const type = normalizePlanSimulatorType(ref?.type);
+  const minutes = Number(ref?.duration_minutes || 0);
+  const speed = Number(ref?.speed_mbps || 0);
+  const dataGb = Number(ref?.data_gb || 0);
+  const duration = minutes === 60 ? "1 h"
+    : minutes === 1440 ? "1 jour"
+    : minutes === 10080 ? "7 jours"
+    : minutes === 43200 ? "30 jours"
+    : (minutes > 0 && minutes % 1440 === 0) ? `${minutes / 1440} jours`
+    : (minutes > 0 && minutes % 60 === 0) ? `${minutes / 60} h`
+    : `${minutes} min`;
+  const data = type === "unlimited" ? "Illimité" : `${Number.isInteger(dataGb) ? dataGb : String(dataGb)} Go`;
+  const speedLabel = Number.isFinite(speed) && speed > 0 ? `${Number.isInteger(speed) ? speed : String(speed)} Mbps` : null;
+  return [data, duration, speedLabel].filter(Boolean).join(" · ");
+}
+
+function buildAdminConcreteCreateSuggestion({ poolPlans, pricingConfig, gap }) {
+  const refs = Array.isArray(pricingConfig?.references) ? pricingConfig.references : [];
+  const settings = pricingConfig?.settings || {};
+  const allowedSpeeds = Array.isArray(settings.allowed_speeds_mbps) ? settings.allowed_speeds_mbps.map(Number) : [];
+  const maxDurationMinutes = Number(settings.max_duration_days || 0) * 1440;
+  const maxDataGb = Number(settings.max_data_gb || 0);
+  const maxSpeed = Number(settings.max_speed_mbps || 0);
+  const activeStandard = (Array.isArray(poolPlans) ? poolPlans : []).filter((p) => String(p?.plan_source || "standard") !== "personalized" && p?.is_active === true);
+  const visibleStandard = activeStandard.filter((p) => p?.is_visible === true);
+  const visibleDataCount = visibleStandard.filter((p) => p?.data_mb !== null && p?.data_mb !== undefined).length;
+  const visibleUnlimitedCount = visibleStandard.filter((p) => p?.data_mb === null || p?.data_mb === undefined).length;
+  const maxVisibleData = Number(settings.max_visible_data_plans || 0);
+  const maxVisibleUnlimited = Number(settings.max_visible_unlimited_plans || 0);
+
+  const exactExists = (ref) => activeStandard.some((plan) => {
+    const type = plan?.data_mb === null || plan?.data_mb === undefined ? "unlimited" : "data";
+    if (type !== ref.type) return false;
+    const duration = normalizePlanDuplicateDurationMinutes(plan);
+    if (Number(duration) !== Number(ref.duration_minutes)) return false;
+    if (type === "data") {
+      const planGb = Number(normalizePlanDuplicateDataMb(plan?.data_mb) || 0) / 1024;
+      if (Math.abs(planGb - Number(ref.data_gb || 0)) > 0.02) return false;
+    }
+    const speed = parseSimulatorRateLimitMbps(plan?.mikrotik_rate_limit);
+    return Number.isFinite(speed) && Math.abs(speed - Number(ref.speed_mbps || 0)) < 0.01;
+  });
+
+  const candidates = refs
+    .filter((ref) => ref && ref.is_active !== false)
+    .filter((ref) => ["data", "unlimited"].includes(normalizePlanSimulatorType(ref.type)))
+    .filter((ref) => Number(ref.duration_minutes || 0) > 0 && Number(ref.duration_minutes || 0) <= maxDurationMinutes)
+    .filter((ref) => Number(ref.speed_mbps || 0) > 0 && Number(ref.speed_mbps || 0) <= maxSpeed)
+    .filter((ref) => !allowedSpeeds.length || allowedSpeeds.some((v) => Math.abs(v - Number(ref.speed_mbps || 0)) < 0.01))
+    .filter((ref) => normalizePlanSimulatorType(ref.type) !== "data" || (Number(ref.data_gb || 0) > 0 && Number(ref.data_gb || 0) <= maxDataGb))
+    .filter((ref) => {
+      const type = normalizePlanSimulatorType(ref.type);
+      if (type === "data" && Number.isFinite(maxVisibleData) && maxVisibleData > 0 && visibleDataCount >= maxVisibleData) return false;
+      if (type === "unlimited" && Number.isFinite(maxVisibleUnlimited) && maxVisibleUnlimited > 0 && visibleUnlimitedCount >= maxVisibleUnlimited) return false;
+      return true;
+    })
+    .filter((ref) => !exactExists({ ...ref, type: normalizePlanSimulatorType(ref.type) }));
+
+  let ranked = candidates;
+  if (gap === "no_affordable_entry_plan") {
+    ranked = candidates.filter((ref) => Number(ref.price_ar || 0) > 0 && Number(ref.price_ar || 0) < 1000);
+  } else if (gap === "no_daily_plan") {
+    ranked = candidates.filter((ref) => Number(ref.duration_minutes || 0) >= 720 && Number(ref.duration_minutes || 0) <= 2160);
+  }
+  ranked = ranked.sort((a, b) => {
+    const aData = normalizePlanSimulatorType(a.type) === "data" ? 0 : 1;
+    const bData = normalizePlanSimulatorType(b.type) === "data" ? 0 : 1;
+    return (aData - bData) || (Number(a.price_ar || 0) - Number(b.price_ar || 0)) || (Number(a.duration_minutes || 0) - Number(b.duration_minutes || 0));
+  });
+  const chosen = ranked[0] || null;
+  if (!chosen) return null;
+  const type = normalizePlanSimulatorType(chosen.type);
+  return {
+    label: formatAdminSuggestedPlanLabel({ ...chosen, type }),
+    type,
+    duration_minutes: Number(chosen.duration_minutes),
+    data_mb: type === "data" ? Math.round(Number(chosen.data_gb) * 1024) : null,
+    speed_mbps: Number(chosen.speed_mbps),
+    suggested_name: cleanOptionalText(chosen.label, 120) || suggestPlanSimulatorName(chosen),
+    pricing_workflow: "Simulateur de prix",
+    price_rule: "server_calculated",
+  };
+}
+
 function assistantBusinessDateShift(isoDate, deltaDays) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(isoDate || ""));
   if (!m) return null;
@@ -3530,22 +3857,39 @@ function assistantSmartSalesTrend(currentRaw, previousRaw) {
 
 function validateAdminSmartSalesAiAnswer({ answer, smartSales }) {
   if (!smartSales?.available) return true;
-  const s = String(answer || "").toLowerCase();
+  const s = assistantAnalyticsNormalize(answer);
   if (!s.trim()) return false;
-  // A Smart Sales result is a decision brief, not a new interview.
+  // A one-click Smart Sales brief is a decision brief, not a new interview.
   if (s.includes("?")) return false;
 
   const actionTypes = new Set();
+  const createLabels = [];
   for (const pool of (Array.isArray(smartSales.pools) ? smartSales.pools : [])) {
     for (const action of (Array.isArray(pool?.actions) ? pool.actions : [])) {
       if (action?.action) actionTypes.add(String(action.action));
+      if (action?.action === "create" && action?.suggested_plan?.label) createLabels.push(assistantAnalyticsNormalize(action.suggested_plan.label));
     }
   }
 
-  const hasAny = (needles) => needles.some((needle) => s.includes(needle));
+  const hasAny = (needles) => needles.some((needle) => s.includes(assistantAnalyticsNormalize(needle)));
   if (!actionTypes.has("hide") && hasAny(["masquez", "masquer", "cachez", "cacher", "hide this", "hide the"])) return false;
   if (!actionTypes.has("reshow") && hasAny(["réaffichez", "reaffichez", "réafficher", "reafficher", "remettez visible", "show again", "re-show"])) return false;
   if (!actionTypes.has("create") && hasAny(["créez un forfait", "creez un forfait", "créer un forfait", "creer un forfait", "create a plan", "create a new plan"])) return false;
+
+  // Portal plan order is automatic in 1C.1b. Never translate "top plan" into
+  // a fake Owner action such as putting/pinning/promoting a plan first.
+  if (smartSales.decision_model === "natural_business_analytics_v1b" && hasAny([
+    "mettez en avant", "mettez-le en avant", "mettez la en avant", "mettre en avant", "mettre ce forfait en avant", "placez en premier", "mettre en premier", "epinglez", "épingler",
+    "priorisez l'affichage", "faites remonter", "highlight this plan", "feature this plan", "pin this plan"
+  ])) return false;
+
+  // 1C.1b concrete create suggestions are server-derived from the active
+  // simulator configuration. If the answer recommends creation, it must reuse
+  // one of those exact technical labels instead of inventing its own specs.
+  if (smartSales.decision_model === "natural_business_analytics_v1b" && actionTypes.has("create") &&
+      hasAny(["créez", "creez", "créer", "creer", "create"])) {
+    if (!createLabels.some((label) => label && s.includes(label))) return false;
+  }
 
   // Never allow the naturalizer to invent a fifth action category.
   if (hasAny([
@@ -3559,7 +3903,7 @@ function validateAdminSmartSalesAiAnswer({ answer, smartSales }) {
   return true;
 }
 
-async function buildAdminSmartSalesSnapshot({ poolIds, poolsInternal, planRows, displayByPool }) {
+async function buildAdminSmartSalesSnapshot({ poolIds, poolsInternal, planRows, displayByPool, admin = null, pricingConfig = null, enhanced = false }) {
   const ids = (Array.isArray(poolIds) ? poolIds : []).map((v) => String(v || "")).filter(Boolean);
   const today = billingMadagascarToday();
   const currentFrom = assistantBusinessDateShift(today, -29);
@@ -3573,7 +3917,9 @@ async function buildAdminSmartSalesSnapshot({ poolIds, poolsInternal, planRows, 
     current_period: { from: currentFrom, to: today },
     previous_period: { from: previousFrom, to: previousTo },
     advisory_only: true,
-    allowed_owner_actions: ["keep_visible", "hide", "reshow", "create"],
+    decision_model: enhanced ? "natural_business_analytics_v1b" : "smart_sales_v1",
+    allowed_owner_actions: enhanced ? ["hide", "reshow", "create"] : ["keep_visible", "hide", "reshow", "create"],
+    portal_plan_order: enhanced ? "automatic" : null,
     overall: null,
     pools: [],
   };
@@ -3681,7 +4027,9 @@ async function buildAdminSmartSalesSnapshot({ poolIds, poolsInternal, planRows, 
       const currentRanked = visiblePaid
         .map((plan) => ({ plan, metric: salesFor(currentByPlan, plan) }))
         .filter((item) => item.metric.paid_transactions > 0)
-        .sort((a, b) => (b.metric.total_amount_ar - a.metric.total_amount_ar) || (b.metric.paid_transactions - a.metric.paid_transactions));
+        .sort((a, b) => enhanced
+          ? ((b.metric.paid_transactions - a.metric.paid_transactions) || (b.metric.total_amount_ar - a.metric.total_amount_ar))
+          : ((b.metric.total_amount_ar - a.metric.total_amount_ar) || (b.metric.paid_transactions - a.metric.paid_transactions)));
       const top = currentRanked[0] || null;
       const topPlan = top ? {
         name: cleanOptionalText(top.plan.name, 120),
@@ -3691,13 +4039,18 @@ async function buildAdminSmartSalesSnapshot({ poolIds, poolsInternal, planRows, 
 
       const actions = [];
       let priorityAction = null;
+      const actorPermissions = buildAdminPermissions(admin || {});
+      const accessRole = admin?.is_superadmin === true ? "superadmin" : getAdminPoolAccessRole(admin || {}, poolId);
+      const canWritePool = admin?.is_superadmin === true || accessRole === "owner" || accessRole === "manager";
+      const canChangeVisibility = !enhanced || (canWritePool && actorPermissions.plans_visibility_manage === true);
+      const canCreateViaSimulator = !enhanced || (canWritePool && actorPermissions.plan_simulator_create === true);
 
       if (dataStrength === "enough") {
         const changeActions = [];
 
         // Re-show only when the whole pool is materially down and a previously
         // proven hidden plan has gone to zero in the current period.
-        if (previous.paid_transactions >= 5 && revenueChangePct !== null && revenueChangePct <= -20) {
+        if (canChangeVisibility && previous.paid_transactions >= 5 && revenueChangePct !== null && revenueChangePct <= -20) {
           const candidate = hiddenPaid
             .map((plan) => ({
               plan,
@@ -3718,7 +4071,7 @@ async function buildAdminSmartSalesSnapshot({ poolIds, poolsInternal, planRows, 
 
         // Hide only a mature, active visible plan with zero paid sales in BOTH
         // 30-day windows, and never collapse a small catalogue below 2 choices.
-        if (visiblePaid.length > 2) {
+        if (canChangeVisibility && visiblePaid.length > 2) {
           const staleCandidate = visiblePaid
             .filter((plan) => !top || String(plan.id) !== String(top.plan.id))
             .map((plan) => {
@@ -3738,30 +4091,43 @@ async function buildAdminSmartSalesSnapshot({ poolIds, poolsInternal, planRows, 
           }
         }
 
-        // Create only to fill a clear catalogue gap; never invent a concrete
-        // price beyond the existing safe entry-plan threshold.
-        if (visiblePaid.length > 0) {
+        // Create only to fill a clear catalogue gap. In 1C.1b the technical
+        // suggestion must come from the active simulator configuration and the
+        // final price remains server-calculated inside Simulateur de prix.
+        if (canCreateViaSimulator && visiblePaid.length > 0) {
           const hasEntryPlan = visiblePaid.some((plan) => Number(plan.price_ar || 0) > 0 && Number(plan.price_ar || 0) < 1000);
           const hasDailyPlan = visiblePaid.some((plan) => {
             const minutes = Number(plan.duration_minutes ?? (Number(plan.duration_hours || 0) * 60));
             return Number.isFinite(minutes) && minutes >= 720 && minutes <= 2160;
           });
-          if (!hasEntryPlan) {
-            changeActions.push({
-              action: "create",
-              suggestion: "entry_plan_under_1000_ar",
-              reason: "no_affordable_entry_plan",
-            });
-          } else if (!hasDailyPlan) {
-            changeActions.push({
-              action: "create",
-              suggestion: "daily_plan",
-              reason: "no_daily_plan",
-            });
+          const totalActiveStandard = standardPaid.filter((plan) => plan?.is_active === true).length;
+          const maxTotalPlans = Number(pricingConfig?.settings?.max_total_plans || 0);
+          const canAddAnother = !enhanced || !Number.isFinite(maxTotalPlans) || maxTotalPlans <= 0 || totalActiveStandard < maxTotalPlans;
+
+          if (canAddAnother && !hasEntryPlan) {
+            const concrete = enhanced ? buildAdminConcreteCreateSuggestion({ poolPlans, pricingConfig, gap: "no_affordable_entry_plan" }) : null;
+            if (!enhanced || concrete) {
+              changeActions.push({
+                action: "create",
+                suggestion: enhanced ? "concrete_configured_plan" : "entry_plan_under_1000_ar",
+                reason: "no_affordable_entry_plan",
+                ...(concrete ? { suggested_plan: concrete } : {}),
+              });
+            }
+          } else if (canAddAnother && !hasDailyPlan) {
+            const concrete = enhanced ? buildAdminConcreteCreateSuggestion({ poolPlans, pricingConfig, gap: "no_daily_plan" }) : null;
+            if (!enhanced || concrete) {
+              changeActions.push({
+                action: "create",
+                suggestion: enhanced ? "concrete_configured_plan" : "daily_plan",
+                reason: "no_daily_plan",
+                ...(concrete ? { suggested_plan: concrete } : {}),
+              });
+            }
           }
         }
 
-        if (topPlan) {
+        if (!enhanced && topPlan) {
           actions.push({
             action: "keep_visible",
             plan_name: topPlan.name,
@@ -3805,7 +4171,76 @@ async function buildAdminSmartSalesSnapshot({ poolIds, poolsInternal, planRows, 
   }
 }
 
-async function buildAdminTrustedAssistantContext({ req, requestedScope, includeSmartSales = false }) {
+function formatAdminAr(value) {
+  const n = Math.max(0, Number(value || 0) || 0);
+  return `${Math.round(n).toLocaleString("fr-FR")} Ar`;
+}
+
+function buildAdminSmartSalesDeterministicAnswer(lang, smartSales) {
+  if (!smartSales?.available) return null;
+  const isEn = lang === "en";
+  const isMg = lang === "mg";
+  const overall = smartSales.overall || {};
+  const current = overall.current || {};
+  const previous = overall.previous || {};
+  const lines = [];
+  if (isEn) lines.push(`Over the last 30 days: ${Number(current.paid_transactions || 0)} paid sales for ${formatAdminAr(current.total_amount_ar)}, versus ${Number(previous.paid_transactions || 0)} sales for ${formatAdminAr(previous.total_amount_ar)} in the previous 30 days.`);
+  else if (isMg) lines.push(`Tao anatin'ny 30 andro farany: vente voaloa ${Number(current.paid_transactions || 0)}, total ${formatAdminAr(current.total_amount_ar)}; ny 30 andro teo aloha kosa vente ${Number(previous.paid_transactions || 0)}, total ${formatAdminAr(previous.total_amount_ar)}.`);
+  else lines.push(`Sur les 30 derniers jours : ${Number(current.paid_transactions || 0)} ventes payées pour ${formatAdminAr(current.total_amount_ar)}, contre ${Number(previous.paid_transactions || 0)} ventes pour ${formatAdminAr(previous.total_amount_ar)} sur les 30 jours précédents.`);
+
+  for (const pool of (Array.isArray(smartSales.pools) ? smartSales.pools : [])) {
+    const poolName = pool.pool_name || "Pool";
+    if (pool.top_plan?.name) {
+      lines.push(isEn ? `${poolName}: top plan is ${pool.top_plan.name} (${pool.top_plan.paid_transactions} sales).`
+        : isMg ? `${poolName}: ${pool.top_plan.name} no plan be vente indrindra (${pool.top_plan.paid_transactions} vente).`
+        : `${poolName} : le forfait le plus vendu est ${pool.top_plan.name} (${pool.top_plan.paid_transactions} ventes).`);
+    }
+    const actions = Array.isArray(pool.actions) ? pool.actions : [];
+    if (!actions.length || pool.data_strength !== "enough") {
+      lines.push(isEn ? `${poolName}: no plan change is recommended yet.` : isMg ? `${poolName}: tsy misy fanovana plan soso-kevitra amin'izao.` : `${poolName} : aucun changement de forfait n'est recommandé pour le moment.`);
+      continue;
+    }
+    for (const action of actions) {
+      if (action.action === "hide") lines.push(isEn ? `Action: hide ${action.plan_name}.` : isMg ? `Action: afeno ${action.plan_name}.` : `Action : masquez ${action.plan_name}.`);
+      if (action.action === "reshow") lines.push(isEn ? `Action: show ${action.plan_name} again.` : isMg ? `Action: asehoy indray ${action.plan_name}.` : `Action : réaffichez ${action.plan_name}.`);
+      if (action.action === "create" && action.suggested_plan?.label) {
+        const label = action.suggested_plan.label;
+        lines.push(isEn ? `Action: consider creating ${label} through Pricing Simulator; the server-calculated price is authoritative.`
+          : isMg ? `Action: azonao atao ny mamorona ${label} amin'ny Simulateur de prix; ny prix kajin'ny serveur no manan-kery.`
+          : `Action : envisagez de créer ${label} via Simulateur de prix ; le prix calculé par le serveur fait foi.`);
+      }
+    }
+  }
+  return lines.join("\n");
+}
+
+function buildAdminBusinessAnalyticsDeterministicAnswer(lang, analytics) {
+  if (!analytics?.available || !analytics?.current?.totals) return null;
+  const isEn = lang === "en";
+  const isMg = lang === "mg";
+  const req = analytics.request || {};
+  const cur = analytics.current.totals || {};
+  const scopeNames = Array.isArray(analytics.scope?.pool_names) ? analytics.scope.pool_names : [];
+  const scopeLabel = scopeNames.length === 1 ? scopeNames[0] : (scopeNames.length > 1 ? (isEn ? "all accessible pools" : isMg ? "pools rehetra azonao idirana" : "toutes les pools accessibles") : null);
+  const period = req.current_period || {};
+  const lines = [];
+  const prefix = req.default_period_applied ? (isEn ? "Using the last 30 days by default" : isMg ? "30 andro farany no période ampiasaina" : "Période utilisée par défaut : les 30 derniers jours") : (isEn ? "Period" : isMg ? "Période" : "Période");
+  lines.push(`${prefix} : ${period.from || "?"} → ${period.to || "?"}${scopeLabel ? ` · ${scopeLabel}` : ""}.`);
+  lines.push(isEn ? `${Number(cur.paid_transactions || 0)} paid sales · ${formatAdminAr(cur.total_amount_ar)} revenue · average ${formatAdminAr(cur.average_sale_ar)} per sale.`
+    : isMg ? `${Number(cur.paid_transactions || 0)} vente voaloa · ${formatAdminAr(cur.total_amount_ar)} revenus · salan'isa ${formatAdminAr(cur.average_sale_ar)} isaky ny vente.`
+    : `${Number(cur.paid_transactions || 0)} ventes payées · ${formatAdminAr(cur.total_amount_ar)} de revenus · panier moyen ${formatAdminAr(cur.average_sale_ar)}.`);
+  if (analytics.current.top_plan?.plan_name) lines.push(isEn ? `Top plan: ${analytics.current.top_plan.plan_name} (${analytics.current.top_plan.paid_transactions} sales).` : isMg ? `Plan be vente indrindra: ${analytics.current.top_plan.plan_name} (${analytics.current.top_plan.paid_transactions} vente).` : `Forfait le plus vendu : ${analytics.current.top_plan.plan_name} (${analytics.current.top_plan.paid_transactions} ventes).`);
+  if (analytics.previous?.totals && analytics.comparison) {
+    const prev = analytics.previous.totals;
+    lines.push(isEn ? `Comparison period: ${Number(prev.paid_transactions || 0)} sales and ${formatAdminAr(prev.total_amount_ar)}; revenue change ${analytics.comparison.revenue_change_pct === null ? "not comparable" : `${analytics.comparison.revenue_change_pct}%`}.`
+      : isMg ? `Période comparaison: ${Number(prev.paid_transactions || 0)} vente, ${formatAdminAr(prev.total_amount_ar)}; fiovan'ny revenus ${analytics.comparison.revenue_change_pct === null ? "tsy azo ampitahaina" : `${analytics.comparison.revenue_change_pct}%`}.`
+      : `Période de comparaison : ${Number(prev.paid_transactions || 0)} ventes et ${formatAdminAr(prev.total_amount_ar)} ; évolution des revenus ${analytics.comparison.revenue_change_pct === null ? "non comparable" : `${analytics.comparison.revenue_change_pct}%`}.`);
+  }
+  if (req.unsupported_dimension) lines.push(isEn ? "The current trusted analytics slice does not provide sales by hour of day." : isMg ? "Tsy mbola misy découpage vente isaky ny ora ao amin'ny données vérifiées amin'ity analyse ity." : "Les données vérifiées de cette analyse ne fournissent pas encore le détail des ventes par heure de la journée.");
+  return lines.join("\n");
+}
+
+async function buildAdminTrustedAssistantContext({ req, requestedScope, includeSmartSales = false, includeBusinessAnalytics = false, rawMessage = "" }) {
   const admin = req?.admin;
   if (!admin || !supabase) {
     return {
@@ -3854,9 +4289,19 @@ async function buildAdminTrustedAssistantContext({ req, requestedScope, includeS
           current_period: { from: assistantBusinessDateShift(billingMadagascarToday(), -29), to: billingMadagascarToday() },
           previous_period: { from: assistantBusinessDateShift(billingMadagascarToday(), -59), to: assistantBusinessDateShift(billingMadagascarToday(), -30) },
           advisory_only: true,
-          allowed_owner_actions: ["keep_visible", "hide", "reshow", "create"],
+          decision_model: isAdminNaturalAnalyticsV1Enabled() ? "natural_business_analytics_v1b" : "smart_sales_v1",
+          allowed_owner_actions: isAdminNaturalAnalyticsV1Enabled() ? ["hide", "reshow", "create"] : ["keep_visible", "hide", "reshow", "create"],
+          portal_plan_order: isAdminNaturalAnalyticsV1Enabled() ? "automatic" : null,
           overall: { current: { paid_transactions: 0, total_amount_ar: 0 }, previous: { paid_transactions: 0, total_amount_ar: 0 }, revenue_change_pct: 0, sales_change_pct: 0, trend: "no_sales" },
           pools: [],
+        } } : {}),
+        ...(includeBusinessAnalytics ? { business_analytics: {
+          version: ASSISTANT_ADMIN_NATURAL_ANALYTICS_VERSION,
+          available: true, advisory_only: true,
+          request: resolveAdminBusinessAnalyticsRequest(rawMessage, { quickBrief: false }),
+          scope: { pool_count: 0, pool_names: [] },
+          current: { totals: assistantAnalyticsMetric(null), by_plan: [], by_pool: [], top_plan: null, top_pool: null },
+          previous: null, comparison: null,
         } } : {}),
         pools: [],
         plans: [],
@@ -3943,8 +4388,23 @@ async function buildAdminTrustedAssistantContext({ req, requestedScope, includeS
     }
   }
 
+  let analyticsPricingConfig = null;
+  if (includeSmartSales && isAdminNaturalAnalyticsV1Enabled()) {
+    try {
+      analyticsPricingConfig = await getActivePersonalizedPricingConfigFailClosed();
+    } catch (error) {
+      console.warn("[ADMIN NATURAL ANALYTICS V1] simulator config unavailable:", String(error?.message || error).slice(0, 120));
+    }
+  }
+
   const smartSales = includeSmartSales
-    ? await buildAdminSmartSalesSnapshot({ poolIds, poolsInternal, planRows, displayByPool })
+    ? await buildAdminSmartSalesSnapshot({
+        poolIds, poolsInternal, planRows, displayByPool, admin,
+        pricingConfig: analyticsPricingConfig, enhanced: isAdminNaturalAnalyticsV1Enabled(),
+      })
+    : null;
+  const businessAnalytics = includeBusinessAnalytics
+    ? await buildAdminBusinessAnalyticsSnapshot({ rawMessage, poolIds, poolsInternal, displayByPool })
     : null;
 
   const safePools = poolsInternal.map((pool) => ({
@@ -3974,6 +4434,7 @@ async function buildAdminTrustedAssistantContext({ req, requestedScope, includeS
       selected_pool_name: requestedPoolId ? safePools[0]?.display_name || null : null,
     },
     ...(includeSmartSales ? { smart_sales: smartSales } : {}),
+    ...(includeBusinessAnalytics ? { business_analytics: businessAnalytics } : {}),
     pools: safePools,
     plans: safePlans,
     plans_summary: plansSummary,
@@ -12195,8 +12656,11 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
             answer: aiRaw,
             smartSales: trustedContext?.smart_sales || liveData?.smart_sales || null,
           });
+      const naturalAnalyticsAiSafe = context !== "admin_owner" || !isAdminNaturalBusinessAnalyticsMessage(message)
+        ? true
+        : !/(mettez(?:-le|-la)? en avant|mettre(?: ce forfait)? en avant|placez en premier|faites remonter)/i.test(String(aiRaw || ""));
 
-      if (aiSafe && smartSalesAiSafe) {
+      if (aiSafe && smartSalesAiSafe && naturalAnalyticsAiSafe) {
         finalAnswer = aiRaw;
         aiUsed = true;
         console.info("[AI ASSISTANT]", {
@@ -12223,6 +12687,17 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
         result: isTimeout ? "timeout" : "error",
         code: String(aiErr?.message || "unknown").slice(0, 80),
       });
+    }
+  }
+
+  // 1C.1b: analytics never fall back to invented business facts. If the
+  // naturalizer is blocked or unavailable, answer directly from the trusted
+  // server snapshot built for this turn.
+  if (context === "admin_owner" && isAdminNaturalAnalyticsV1Enabled() && !aiUsed) {
+    if (isAdminSmartSalesAnalysisMessage(message) && trustedContext?.smart_sales?.available === true) {
+      finalAnswer = buildAdminSmartSalesDeterministicAnswer(lang, trustedContext.smart_sales) || finalAnswer;
+    } else if (isAdminNaturalBusinessAnalyticsMessage(message) && trustedContext?.business_analytics?.available === true) {
+      finalAnswer = buildAdminBusinessAnalyticsDeterministicAnswer(lang, trustedContext.business_analytics) || finalAnswer;
     }
   }
 
@@ -12579,16 +13054,19 @@ function platformConversationLog(level, event, details = {}) {
 }
 
 // =============================================================================
-// RAZAFI ASSISTANT — ANU-CONVERSATION-1C.1 / 1C.1a: Admin Conversation Core + Role/Capability Awareness
+// RAZAFI ASSISTANT — ANU-CONVERSATION-1C.1 / 1C.1a / 1C.1b
+// Admin Conversation Core + Role/Capability Awareness + Natural Business Analytics
 // =============================================================================
 // Backend-first Admin pilot. The existing Admin UI, RBAC and business write
 // routes are unchanged. Natural Admin conversation uses OpenAI Responses with
 // authenticated server-owned actor/scope/plans/revenue context. The model is
 // advisory/read-only: it can explain and analyze but never executes mutations.
+// 1C.1b rollback only: ASSISTANT_ADMIN_NATURAL_ANALYTICS_V1_ENABLED=false.
 // 1C.1a rollback only: ASSISTANT_ADMIN_ROLE_CAPABILITY_V1_ENABLED=false.
 // Full Admin Conversation Core rollback: ASSISTANT_ADMIN_CONVERSATION_V1_ENABLED=false.
 const ASSISTANT_ADMIN_CONVERSATION_VERSION = "ANU-CONVERSATION-1C.1";
 const ASSISTANT_ADMIN_ROLE_CAPABILITY_VERSION = "ANU-CONVERSATION-1C.1a";
+const ASSISTANT_ADMIN_NATURAL_ANALYTICS_VERSION = "ANU-CONVERSATION-1C.1b";
 
 function isAdminConversationCoreEnabled() {
   const enabled = String(process.env.ASSISTANT_ADMIN_CONVERSATION_V1_ENABLED || "false")
@@ -12603,7 +13081,16 @@ function isAdminRoleCapabilityV1Enabled() {
   return enabled && isAdminConversationCoreEnabled();
 }
 
+function isAdminNaturalAnalyticsV1Enabled() {
+  const enabled = String(process.env.ASSISTANT_ADMIN_NATURAL_ANALYTICS_V1_ENABLED || "false")
+    .trim().toLowerCase() === "true";
+  // 1C.1b builds on the validated role/capability boundary. Fail closed unless
+  // both 1C.1 and 1C.1a are live.
+  return enabled && isAdminRoleCapabilityV1Enabled();
+}
+
 function getAdminConversationRuntimeVersion() {
+  if (isAdminNaturalAnalyticsV1Enabled()) return ASSISTANT_ADMIN_NATURAL_ANALYTICS_VERSION;
   return isAdminRoleCapabilityV1Enabled()
     ? ASSISTANT_ADMIN_ROLE_CAPABILITY_VERSION
     : ASSISTANT_ADMIN_CONVERSATION_VERSION;
@@ -14318,7 +14805,9 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
       "SMART SALES ANALYST TURN: Go straight to the decision brief. Do not ask a clarifying question when smart_sales is available.",
       "Use ONLY TRUSTED SERVER CONTEXT.smart_sales for the 30-day comparison and recommendations.",
       "Compare last 30 days with the previous 30 days. If scope is all pools, keep it concise and give one priority decision per pool.",
-      "You may recommend ONLY actions already present in smart_sales.pools[].actions: keep visible, hide, re-show, or create. Never invent price changes, promotions, speed/data/duration changes, deletion, or automatic actions.",
+      isAdminNaturalAnalyticsV1Enabled()
+        ? "You may recommend ONLY actions already present in smart_sales.pools[].actions: hide, re-show, or create. The top plan is information only; portal ordering is automatic, so never recommend putting a plan first or highlighting it. For create, reuse suggested_plan exactly and send pricing through Simulateur de prix."
+        : "You may recommend ONLY actions already present in smart_sales.pools[].actions: keep visible, hide, re-show, or create. Never invent price changes, promotions, speed/data/duration changes, deletion, or automatic actions.",
       "If data_strength is low or there are no trusted actions, explicitly say no change is recommended yet.",
       "This is advisory only: never claim that a plan was changed, hidden, re-shown or created.",
     ] : []),
@@ -14563,9 +15052,9 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
 }
 
 // ---------------------------------------------------------------------------
-// ANU-CONVERSATION-1C.1 — Admin ChatGPT-like conversation path
+// ANU-CONVERSATION-1C.1b — Admin Conversation Core + Natural Business Analytics
 // ---------------------------------------------------------------------------
-function buildAdminConversationInstructions({ roleCapabilityAware = false } = {}) {
+function buildAdminConversationInstructions({ roleCapabilityAware = false, naturalAnalyticsAware = false } = {}) {
   const rules = [
     "You are RAZAFI Assistant inside the authenticated RAZAFI Admin panel.",
     "Your job is to make the administrator's work simple: answer naturally, explain the correct workflow for that administrator, and analyze trusted business data when the current server context supports it.",
@@ -14594,6 +15083,18 @@ function buildAdminConversationInstructions({ roleCapabilityAware = false } = {}
       "OWNER/MANAGER PLAN CREATION: if the policy allows 'Simulateur de prix' but not direct 'Plans' creation, guide creation through Simulateur de prix only. Plans may still be used to consult existing plans and, when the policy says so, show/hide them; do not claim direct creation/editing there.",
       "VIEWER: when the selected pool role is viewer/read-only, do not provide a mutation workflow as available. Explain the read-only boundary and limit guidance to consultation.",
       "UI PRECISION: do not invent button names, modal labels, or a step-by-step UI sequence that is not explicitly present in the trusted reference. When exact controls are not supplied, describe the correct panel/workflow at a high level instead of guessing."
+    );
+  }
+
+  if (naturalAnalyticsAware) {
+    rules.push(
+      "NATURAL BUSINESS ANALYTICS: when ADMIN BUSINESS ANALYTICS is present, use its exact server-resolved date range, pool scope and paid-sales metrics. State the period you are answering for. If default_period_applied is true, make clear that the answer uses the last 30 days.",
+      "ONE-CLICK SALES BRIEF: when smart_sales.decision_model is natural_business_analytics_v1b, produce a simple decision brief: what happened, the current top plan as information, and only concrete actions present in smart_sales.pools[].actions. Do not ask a follow-up question.",
+      "REAL OWNER ACTIONS: for the one-click sales brief, the actionable recommendations are only Masquer, Afficher/Réafficher, and Créer when the trusted action exists and RBAC allows it. A top-selling plan is informational; do not convert it into an action to promote, pin, put first, or 'mettre en avant'. Portal plan ordering is automatic.",
+      "CREATE RECOMMENDATIONS: when smart_sales provides a create action with suggested_plan, reuse that exact server-derived duration/data-or-unlimited/speed combination. Do not substitute different technical values. Do not invent a price. Tell the Owner to use Simulateur de prix; the server-calculated/validated price is authoritative.",
+      "ANALYTICS COMPARISONS: distinguish paid transaction count, revenue in Ar, and average sale. 'Most sold' / 'best-selling' means the plan with the highest paid transaction count (top_plan); highest revenue is top_revenue_plan. Use comparison percentages only when ADMIN BUSINESS ANALYTICS.comparison supplies them. Do not manufacture a comparison when previous is null.",
+      "ANALYTICS LIMITS: if request.unsupported_dimension is set (for example hour_of_day), say that exact dimension is not available in the current trusted analytics slice. Do not infer it from totals.",
+      "CAUSES VS EVIDENCE: a decrease/increase is an observed result; a reason for it is only a hypothesis unless the trusted data directly establishes it. Keep suggestions practical and separate from factual observations."
     );
   }
 
@@ -14865,9 +15366,14 @@ function buildAdminConversationReference({ pageHint, trustedContext, liveData })
     const actor = trusted.actor && typeof trusted.actor === "object" ? trusted.actor : {};
     const permissions = actor.permissions && typeof actor.permissions === "object" ? actor.permissions : {};
     const pools = Array.isArray(trusted.pools) ? trusted.pools.slice(0, 50) : [];
-    const plans = Array.isArray(trusted.plans) ? trusted.plans.slice(0, 200) : [];
+    const allPlans = Array.isArray(trusted.plans) ? trusted.plans.slice(0, 200) : [];
     const revenue = trusted.revenue && typeof trusted.revenue === "object" ? trusted.revenue : {};
     const smartSales = trusted.smart_sales && typeof trusted.smart_sales === "object" ? trusted.smart_sales : null;
+    const businessAnalytics = trusted.business_analytics && typeof trusted.business_analytics === "object" ? trusted.business_analytics : null;
+    // Analytics snapshots already contain the relevant aggregates/actions. Keep
+    // only a compact catalogue sample on those turns so the analytics payload
+    // cannot be truncated behind dozens of unrelated plan rows.
+    const plans = (smartSales || businessAnalytics) ? allPlans.slice(0, 30) : allPlans;
 
     const safeTrusted = {
       context_version: trusted.version || null,
@@ -14891,6 +15397,8 @@ function buildAdminConversationReference({ pageHint, trustedContext, liveData })
         payment_methods: Array.isArray(pool?.payment_methods) ? pool.payment_methods.slice(0, 8) : [],
         personalized_plans_enabled: pool?.personalized_plans_enabled === true,
       })),
+      smart_sales: smartSales,
+      business_analytics: businessAnalytics,
       plans_summary: trusted.plans_summary || null,
       plans: plans.map((plan) => ({
         name: cleanOptionalText(plan?.name, 120),
@@ -14913,9 +15421,8 @@ function buildAdminConversationReference({ pageHint, trustedContext, liveData })
         by_plan: Array.isArray(revenue.by_plan) ? revenue.by_plan.slice(0, 100) : [],
         by_pool: Array.isArray(revenue.by_pool) ? revenue.by_pool.slice(0, 100) : [],
       } : { available: false },
-      smart_sales: smartSales,
     };
-    lines.push(`ADMIN TRUSTED SERVER CONTEXT (authoritative)\n${JSON.stringify(safeTrusted, null, 2).slice(0, 22000)}`);
+    lines.push(`ADMIN TRUSTED SERVER CONTEXT (authoritative)\n${JSON.stringify(safeTrusted, null, 2).slice(0, 28000)}`);
 
     if (isAdminRoleCapabilityV1Enabled()) {
       const capabilityPolicy = buildAdminRoleCapabilityPolicy(trusted);
@@ -14931,7 +15438,7 @@ function buildAdminConversationReference({ pageHint, trustedContext, liveData })
     panel: cleanOptionalText(live.panel, 40) || "unknown",
   };
   lines.push(`VISIBLE ADMIN UI HINTS (non-authoritative)\n${JSON.stringify(uiHints, null, 2)}`);
-  return lines.join("\n\n").slice(0, 24000);
+  return lines.join("\n\n").slice(0, 30000);
 }
 
 async function generateRazafiAdminConversationAnswer({
@@ -14955,6 +15462,7 @@ async function generateRazafiAdminConversationAnswer({
   if (!apiKey) throw new Error("ADMIN_ASSISTANT_AI_API_KEY not set");
 
   const roleCapabilityAware = isAdminRoleCapabilityV1Enabled();
+  const naturalAnalyticsAware = isAdminNaturalAnalyticsV1Enabled();
   const history = buildAdminConversationHistory(conversationContext);
   const reference = buildAdminConversationReference({ pageHint, trustedContext, liveData });
   const currentUserContent = [
@@ -14981,7 +15489,7 @@ async function generateRazafiAdminConversationAnswer({
       },
       body: JSON.stringify({
         model,
-        instructions: buildAdminConversationInstructions({ roleCapabilityAware }),
+        instructions: buildAdminConversationInstructions({ roleCapabilityAware, naturalAnalyticsAware }),
         input,
         reasoning: { effort: reasoningEffort },
         max_output_tokens: maxOutputTokens,
@@ -14991,6 +15499,7 @@ async function generateRazafiAdminConversationAnswer({
           razafi_context: "admin_owner",
           conversation_core: getAdminConversationRuntimeVersion(),
           role_capability_policy: roleCapabilityAware ? ASSISTANT_ADMIN_ROLE_CAPABILITY_VERSION : "disabled",
+          natural_business_analytics: naturalAnalyticsAware ? ASSISTANT_ADMIN_NATURAL_ANALYTICS_VERSION : "disabled",
         },
       }),
     });
@@ -15036,6 +15545,11 @@ async function generateRazafiAdminConversationAnswer({
         ? (buildAdminRoleCapabilityPolicy(trustedContext)?.plan_creation?.allowed_paths || [])
         : [],
       capability_repaired: capabilityChecked.repaired === true,
+      natural_analytics_aware: naturalAnalyticsAware,
+      business_analytics_available: trustedContext?.business_analytics?.available === true,
+      smart_sales_v1b: trustedContext?.smart_sales?.decision_model === "natural_business_analytics_v1b",
+      analytics_period: trustedContext?.business_analytics?.request?.period_key || (trustedContext?.smart_sales ? "last_30_days" : null),
+      analytics_scope_pool_count: Number(trustedContext?.business_analytics?.scope?.pool_count || trustedContext?.scope?.pool_count || 0),
       input_tokens: Number(usage?.input_tokens) || null,
       output_tokens: Number(usage?.output_tokens) || null,
       total_tokens: Number(usage?.total_tokens) || null,
@@ -18200,7 +18714,9 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
     const uiSnapshot = sanitizeAssistantUiSnapshot(req.body?.ui_snapshot || req.body?.live_data || {}, rawContext);
     const anuEnabled = isAssistantAnuEnabledForContext(rawContext);
     const smartSalesRequested = isAdminSmartSalesAnalysisMessage(rawMessage);
-    const requestedScope = (anuEnabled || smartSalesRequested)
+    const naturalAnalyticsRequested = isAdminNaturalBusinessAnalyticsMessage(rawMessage);
+    const businessAnalyticsRequested = naturalAnalyticsRequested && !smartSalesRequested;
+    const requestedScope = (anuEnabled || smartSalesRequested || businessAnalyticsRequested)
       ? normalizeAssistantRequestedScope(req.body?.requested_scope)
       : { pool_id: null };
 
@@ -18210,12 +18726,14 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
     const conversationId = normalizeAssistantConversationId(rawConvId) || null;
     const rawMemoryToken = String(req.body?.memory_token || "").trim() || null;
     let trustedContext = null;
-    if (anuEnabled || smartSalesRequested) {
+    if (anuEnabled || smartSalesRequested || businessAnalyticsRequested) {
       try {
         trustedContext = await buildAdminTrustedAssistantContext({
           req,
           requestedScope,
           includeSmartSales: smartSalesRequested,
+          includeBusinessAnalytics: businessAnalyticsRequested,
+          rawMessage,
         });
       } catch (contextError) {
         if (contextError?.httpStatus === 400 || contextError?.httpStatus === 403) throw contextError;
