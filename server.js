@@ -14228,6 +14228,88 @@ async function streamValidatedPlatformAssistantResult(res, result) {
 }
 
 // =============================================================================
+// RAZAFI ASSISTANT — ANU-CONVERSATION-1A.4: Platform Contextual Reflection UX
+// =============================================================================
+// Cosmetic working-status layer for the public Platform assistant. It describes
+// the category being checked while the existing 1A.3 low-latency / 1A.2 safe
+// streaming pipeline runs. It never exposes chain-of-thought and never becomes
+// an authority for offers, compatibility, public guides or commercial facts.
+// Those continue to come from trusted server context / ANU-WEB live knowledge.
+// Rollback: ASSISTANT_PLATFORM_CONTEXTUAL_REFLECTION_V1_ENABLED=false.
+const ASSISTANT_PLATFORM_REFLECTION_VERSION = "ANU-CONVERSATION-1A.4";
+
+function isPlatformContextualReflectionEnabled() {
+  return String(process.env.ASSISTANT_PLATFORM_CONTEXTUAL_REFLECTION_V1_ENABLED || "false")
+    .trim().toLowerCase() === "true";
+}
+
+function platformReflectionLog(level, event, details = {}) {
+  const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+  try {
+    fn(`[${ASSISTANT_PLATFORM_REFLECTION_VERSION}] ${event}`, details && typeof details === "object" ? details : {});
+  } catch (_) {
+    fn(`[${ASSISTANT_PLATFORM_REFLECTION_VERSION}] ${event}`);
+  }
+}
+
+function normalizePlatformReflectionText(value) {
+  try {
+    return String(value || "")
+      .trim()
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[’`]/g, "'")
+      .replace(/[–—-]/g, " ")
+      .replace(/\s+/g, " ");
+  } catch (_) {
+    return String(value || "").trim().toLowerCase();
+  }
+}
+
+function buildPlatformContextualReflectionStatus({ rawMessage, pagePath = null } = {}) {
+  const lang = detectAssistantLang(String(rawMessage || ""));
+  const s = normalizePlatformReflectionText(rawMessage);
+  const page = normalizePlatformReflectionText(pagePath);
+  let key = "prepare";
+
+  const offerWords = /\b(offre|offres|prix|tarif|tarifs|cout|combien|commission|abonnement|mensuel|mois|plan personnalise|sur mesure|base|pricing|price|cost|offer|offers|subscription|monthly|tolotra|vidiny|sarany|famandrihana)\b/.test(s);
+  const researchWords = /\b(guide|guides|starlink|fibre|satellite|materiel|equipement|routeur|router|mikrotik|point d'acces|access point|ap|wifi|paiement|payment|mvola|airtel|orange money|compatibilite|compatible|source internet|internet source|fitaovana|tambajotra|fandoavam bola|mifanaraka)\b/.test(s);
+  const razafiInfoWords = /\b(razafi|comment ca marche|comment fonctionne|fonctionnement|c'est quoi|quest ce que|what is|how does|how it works|demo|demonstration|essayer|tester|commencer|demarrer|start|onboarding|inona|ahoana|manomboka)\b/.test(s);
+
+  if (offerWords) {
+    key = "offers_check";
+  } else if (researchWords || /\/guide\//.test(page) || /\/guides\/?$/.test(page)) {
+    key = "info_search";
+  } else if (razafiInfoWords) {
+    key = "razafi_info";
+  }
+
+  const labels = {
+    fr: {
+      offers_check: "Vérification des offres…",
+      info_search: "Recherche des informations…",
+      razafi_info: "Consultation des informations RAZAFI…",
+      prepare: "Préparation de la réponse…",
+    },
+    en: {
+      offers_check: "Checking offers…",
+      info_search: "Searching the information…",
+      razafi_info: "Checking RAZAFI information…",
+      prepare: "Preparing the response…",
+    },
+    mg: {
+      offers_check: "Manamarina ny tolotra…",
+      info_search: "Mitady ny vaovao…",
+      razafi_info: "Mijery ny vaovao momba an'i RAZAFI…",
+      prepare: "Manomana ny valiny…",
+    },
+  };
+  const dictionary = labels[lang] || labels.fr;
+  return { phase: "working", reflection_key: key, label: dictionary[key] || dictionary.prepare, lang };
+}
+
+// =============================================================================
 // RAZAFI ASSISTANT — ANU-CONVERSATION-1A.3: Low-Latency Streaming
 // =============================================================================
 // OpenAI Responses is consumed as SSE. Before any model text reaches the
@@ -18204,7 +18286,19 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
           page_path: String(req.body?.page_path || "").trim().slice(0, 120) || "/",
         });
       }
-      writePlatformAssistantSse(res, "status", { phase: "thinking" });
+      if (isPlatformContextualReflectionEnabled()) {
+        const reflectionStatus = buildPlatformContextualReflectionStatus({
+          rawMessage,
+          pagePath: String(req.body?.page_path || "").trim().slice(0, 120) || "/",
+        });
+        platformReflectionLog("info", "reflection status", {
+          reflection_key: reflectionStatus.reflection_key,
+          lang: reflectionStatus.lang,
+        });
+        writePlatformAssistantSse(res, "status", reflectionStatus);
+      } else {
+        writePlatformAssistantSse(res, "status", { phase: "thinking" });
+      }
     }
 
     const portalStreamRequested = wantsPortalAssistantStream(req, rawContext);
