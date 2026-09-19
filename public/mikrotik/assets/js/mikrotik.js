@@ -6607,8 +6607,9 @@ function selectPlanCardOnly(card) {
         return;
       }
 
-      // Thinking indicator
-      var thinkingBubble = appendMsg("RAZAFI écrit…", "thinking");
+      // ANU-CONVERSATION-1B.4: the backend immediately replaces this neutral
+      // placeholder with a contextual working label when streaming is active.
+      var thinkingBubble = appendMsg("…", "thinking");
       isLoading = true;
       sendBtn.disabled = true;
 
@@ -6672,6 +6673,21 @@ function selectPlanCardOnly(card) {
           return assistantBubble;
         }
 
+        // ANU-CONVERSATION-1B.4: contextual working indicator. These labels
+        // describe what RAZAFI is checking, never the model's private reasoning.
+        function applyAssistantWorkingStatus(payload) {
+          if (!payload || streamedText.trim()) return;
+          var phase = String(payload.phase || "").toLowerCase();
+          if (phase !== "working" && phase !== "thinking") return;
+          var label = String(payload.label || "").trim();
+          if (!label) label = "…";
+          if (thinkingBubble && thinkingBubble.parentNode === body) {
+            thinkingBubble.className = "rz-msg rz-msg-thinking";
+            thinkingBubble.textContent = label;
+            scrollBodyToBottom();
+          }
+        }
+
         function appendAssistantDelta(delta) {
           var piece = String(delta || "");
           if (!piece) return;
@@ -6714,7 +6730,9 @@ function selectPlanCardOnly(card) {
           if (eventName === "meta" || eventName === "done") {
             persistAssistantTokens(payload);
           }
-          if (eventName === "delta") {
+          if (eventName === "status") {
+            applyAssistantWorkingStatus(payload);
+          } else if (eventName === "delta") {
             appendAssistantDelta(payload && payload.text);
           } else if (eventName === "replace") {
             streamedText = String((payload && payload.text) || "");

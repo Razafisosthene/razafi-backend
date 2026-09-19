@@ -13884,6 +13884,105 @@ function portalLowLatencyStreamingLog(level, event, details = {}) {
   }
 }
 
+// =============================================================================
+// RAZAFI ASSISTANT — ANU-CONVERSATION-1B.4: Portal Contextual Reflection UX
+// =============================================================================
+// Cosmetic working-status layer only. It describes the category being checked
+// while the existing 1B.3 low-latency / 1B.2 safe-streaming pipeline runs.
+// It never exposes chain-of-thought and never becomes an authority for payment,
+// voucher, connection or plan truth. Those remain server-trusted/deterministic.
+// Rollback: ASSISTANT_PORTAL_CONTEXTUAL_REFLECTION_V1_ENABLED=false.
+const ASSISTANT_PORTAL_REFLECTION_VERSION = "ANU-CONVERSATION-1B.4";
+
+function isPortalContextualReflectionEnabled() {
+  return String(process.env.ASSISTANT_PORTAL_CONTEXTUAL_REFLECTION_V1_ENABLED || "false")
+    .trim().toLowerCase() === "true";
+}
+
+function portalReflectionLog(level, event, details = {}) {
+  const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+  try {
+    fn(`[${ASSISTANT_PORTAL_REFLECTION_VERSION}] ${event}`, details && typeof details === "object" ? details : {});
+  } catch (_) {
+    fn(`[${ASSISTANT_PORTAL_REFLECTION_VERSION}] ${event}`);
+  }
+}
+
+function normalizePortalReflectionText(value) {
+  try {
+    return String(value || "")
+      .trim()
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[’`]/g, "'")
+      .replace(/[–—-]/g, " ")
+      .replace(/\s+/g, " ");
+  } catch (_) {
+    return String(value || "").trim().toLowerCase();
+  }
+}
+
+function buildPortalContextualReflectionStatus({ rawMessage, pagePath = null } = {}) {
+  const lang = detectAssistantLang(String(rawMessage || ""));
+  const s = normalizePortalReflectionText(rawMessage);
+  const page = normalizePortalReflectionText(pagePath);
+  let key = "prepare";
+
+  // Reuse the deterministic critical-intent detector where possible. The key
+  // only selects a label; verified state is still resolved later from trusted
+  // Portal context and the existing critical-state gates.
+  const criticalType = detectPortalDirectCriticalQuestionType(rawMessage);
+  if (criticalType === "payment" || criticalType === "refund") {
+    key = "payment_check";
+  } else if (criticalType === "code") {
+    key = "code_check";
+  } else if (criticalType === "connection") {
+    key = "connection_check";
+  } else {
+    const planWords = /\b(forfait|forfaits|plan|plans|prix|tarif|data|illimite|illimitee|vitesse|debit|speed|duration|duree|personnalise|personnalisee|package|packages)\b/.test(s);
+    const paymentWords = /\b(paiement|payement|paiment|payment|payer|pay|mvola|airtel|orange money|remboursement|refund)\b/.test(s);
+    const codeWords = /\b(code|voucher|ticket|activation|activer|activate)\b/.test(s);
+    const connectionWords = /\b(connexion|connection|connecte|connecter|connected|internet|wifi|reseau|network|online)\b/.test(s);
+    const accessWords = /\b(acces|access|utiliser mon code|use my code|se connecter|login)\b/.test(s);
+
+    if (paymentWords) key = "payment_check";
+    else if (codeWords) key = "code_check";
+    else if (connectionWords) key = "connection_check";
+    else if (accessWords) key = "access_check";
+    else if (planWords || /mikrotik|portail|portal/.test(page) && /forfait|plan/.test(s)) key = "plans_check";
+  }
+
+  const labels = {
+    fr: {
+      payment_check: "Vérification du paiement…",
+      code_check: "Vérification de votre code…",
+      connection_check: "Vérification de la connexion…",
+      access_check: "Vérification de votre accès…",
+      plans_check: "Vérification des forfaits…",
+      prepare: "Préparation de la réponse…",
+    },
+    en: {
+      payment_check: "Checking the payment…",
+      code_check: "Checking your code…",
+      connection_check: "Checking the connection…",
+      access_check: "Checking your access…",
+      plans_check: "Checking plans…",
+      prepare: "Preparing the response…",
+    },
+    mg: {
+      payment_check: "Manamarina ny paiement…",
+      code_check: "Manamarina ny kaody…",
+      connection_check: "Manamarina ny connexion…",
+      access_check: "Manamarina ny fidirana…",
+      plans_check: "Manamarina ny forfait…",
+      prepare: "Manomana ny valiny…",
+    },
+  };
+  const dictionary = labels[lang] || labels.fr;
+  return { phase: "working", reflection_key: key, label: dictionary[key] || dictionary.prepare, lang };
+}
+
 function findPortalStreamingCommitBoundary(text, limit, floor = 0) {
   const source = String(text || "");
   let i = Math.min(Math.max(0, Number(limit) || 0), source.length);
@@ -18129,7 +18228,19 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
           page_path: String(req.body?.page_path || "").trim().slice(0, 120) || "/mikrotik/",
         });
       }
-      writePortalAssistantSse(res, "status", { phase: "thinking" });
+      if (isPortalContextualReflectionEnabled()) {
+        const reflectionStatus = buildPortalContextualReflectionStatus({
+          rawMessage,
+          pagePath: String(req.body?.page_path || "").trim().slice(0, 120) || "/mikrotik/",
+        });
+        portalReflectionLog("info", "reflection status", {
+          reflection_key: reflectionStatus.reflection_key,
+          lang: reflectionStatus.lang,
+        });
+        writePortalAssistantSse(res, "status", reflectionStatus);
+      } else {
+        writePortalAssistantSse(res, "status", { phase: "thinking" });
+      }
     }
 
     // Legacy data remains unchanged while ANU flags are off. ANU-2 receives the same
