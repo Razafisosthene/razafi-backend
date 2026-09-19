@@ -3511,6 +3511,15 @@ function isAdminNaturalBusinessAnalyticsMessage(raw) {
     "forfait le plus", "plan le plus", "performance des forfaits", "performance des plans", "top forfait", "top plan"
   ];
   if (businessTerms.some((term) => s.includes(term))) return true;
+  if (isAdminPeriodRankingOwnerShareV1Enabled()) {
+    const b2Terms = [
+      "se vend le mieux", "vend le mieux", "marche le mieux", "plus vendu", "plus vendus",
+      "best-selling", "best selling", "sells best", "most sold",
+      "mivarotra indrindra", "be mpividy indrindra",
+      "ma part", "part proprietaire", "owner share", "earnings", "gagne", "gagner"
+    ];
+    if (b2Terms.some((term) => s.includes(term))) return true;
+  }
   // Natural follow-ups after an analytics turn: "Et hier ?", "Et ce mois ?",
   // or an explicit temporal comparison should still receive a fresh server slice.
   const temporal = /aujourd|hier|cette semaine|semaine derniere|ce mois|mois dernier|last week|this week|last month|this month|today|yesterday/.test(s);
@@ -3632,8 +3641,12 @@ function resolveAdminBusinessAnalyticsRequest(rawMessage, { quickBrief = false }
     if (wantsComparison) { previousTo = assistantBusinessDateShift(from, -1); previousFrom = assistantBusinessDateShift(previousTo, -29); }
   }
 
-  const metricFocus = /panier moyen|average ticket/.test(s) ? "average_ticket"
-    : /meilleur forfait|meilleur plan|forfait le plus|plan le plus|top forfait|top plan/.test(s) ? "plans"
+  const b2Enabled = isAdminPeriodRankingOwnerShareV1Enabled();
+  const metricFocus = b2Enabled && /part proprietaire|ma part|owner share|earnings|combien.{0,20}gagne|\bgagne\b|\bgagner\b/.test(s) ? "owner_share"
+    : /panier moyen|average ticket/.test(s) ? "average_ticket"
+    : (b2Enabled
+        ? /meilleur forfait|meilleur plan|forfait le plus|plan le plus|top forfait|top plan|se vend le mieux|vend le mieux|marche le mieux|plus vendu|best-selling|best selling|sells best|most sold|mivarotra indrindra|be mpividy indrindra/.test(s)
+        : /meilleur forfait|meilleur plan|forfait le plus|plan le plus|top forfait|top plan/.test(s)) ? "plans"
     : /chiffre d'affaires|chiffre daffaires|revenu|revenue/.test(s) ? "revenue"
     : /vente|vendu|sales|transaction/.test(s) ? "sales"
     : "general";
@@ -3643,7 +3656,9 @@ function resolveAdminBusinessAnalyticsRequest(rawMessage, { quickBrief = false }
     : null;
 
   return {
-    version: ASSISTANT_ADMIN_NATURAL_ANALYTICS_VERSION,
+    version: isAdminPeriodRankingOwnerShareV1Enabled()
+      ? ASSISTANT_ADMIN_PERIOD_RANKING_OWNER_SHARE_VERSION
+      : ASSISTANT_ADMIN_NATURAL_ANALYTICS_VERSION,
     quick_brief: quickBrief === true,
     period_key: key,
     current_period: { from, to },
@@ -3666,12 +3681,17 @@ function resolveAdminAnalyticsPoolIds(rawMessage, poolsInternal = []) {
   return unique.length ? unique : rows.map((p) => String(p?.id || "")).filter(Boolean);
 }
 
-function assistantAnalyticsMetric(row) {
+function assistantAnalyticsMetric(row, ownerShareRow = null) {
   const paid = Math.max(0, Number(row?.paid_transactions ?? row?.paid_count ?? 0) || 0);
   const amount = Math.max(0, Number(row?.total_amount_ar || 0) || 0);
+  const ownerRaw = ownerShareRow?.owner_total_ar;
+  const ownerTotal = ownerRaw === null || ownerRaw === undefined
+    ? null
+    : Math.max(0, Number(ownerRaw) || 0);
   return {
     paid_transactions: paid,
     total_amount_ar: amount,
+    owner_total_ar: ownerTotal,
     average_sale_ar: paid > 0 ? Math.round(amount / paid) : 0,
   };
 }
@@ -3684,13 +3704,20 @@ async function loadAdminAnalyticsRevenueWindow({ poolIds, from, to, displayByPoo
     ? assistantBusinessDateRangeToRevenueRpc(from, to)
     : { p_from: from || null, p_to: to || null };
   const args = { ...businessBounds, p_search: null, p_pool_ids: ids };
-  const [totalsResult, byPlanResult, byPoolResult] = await Promise.all([
+  const ownerSharePromise = isAdminPeriodRankingOwnerShareV1Enabled()
+    ? supabase.rpc("fn_revenue_owner_totals_filtered", args)
+    : Promise.resolve({ data: null, error: null });
+  const [totalsResult, byPlanResult, byPoolResult, ownerShareResult] = await Promise.all([
     supabase.rpc("fn_revenue_paid_totals_scoped", args),
     supabase.rpc("fn_revenue_paid_by_plan_scoped", args),
     supabase.rpc("fn_revenue_paid_by_pool_scoped", args),
+    ownerSharePromise,
   ]);
   const firstError = [totalsResult, byPlanResult, byPoolResult].find((r) => r?.error)?.error;
   if (firstError) throw firstError;
+  if (ownerShareResult?.error) {
+    console.warn("[ADMIN NATURAL ANALYTICS 1C.1b2] owner share unavailable:", String(ownerShareResult.error?.message || ownerShareResult.error).slice(0, 140));
+  }
 
   const byPlanRows = (Array.isArray(byPlanResult.data) ? byPlanResult.data : [])
     .map((row) => ({
@@ -3714,7 +3741,7 @@ async function loadAdminAnalyticsRevenueWindow({ poolIds, from, to, displayByPoo
     .sort((a, b) => (b.total_amount_ar - a.total_amount_ar) || (b.paid_transactions - a.paid_transactions));
 
   return {
-    totals: assistantAnalyticsMetric(totalsResult.data?.[0]),
+    totals: assistantAnalyticsMetric(totalsResult.data?.[0], ownerShareResult?.error ? null : ownerShareResult?.data?.[0]),
     by_plan: byPlan.slice(0, 30),
     by_plan_by_revenue: byPlanByRevenue.slice(0, 30),
     by_pool: byPool.slice(0, 30),
@@ -3727,7 +3754,9 @@ async function buildAdminBusinessAnalyticsSnapshot({ rawMessage, poolIds, poolsI
   const ids = selectedIds.length ? selectedIds : poolIds;
   const poolNames = ids.map((id) => displayByPool[String(id)]).filter(Boolean);
   const base = {
-    version: ASSISTANT_ADMIN_NATURAL_ANALYTICS_VERSION,
+    version: isAdminPeriodRankingOwnerShareV1Enabled()
+      ? ASSISTANT_ADMIN_PERIOD_RANKING_OWNER_SHARE_VERSION
+      : ASSISTANT_ADMIN_NATURAL_ANALYTICS_VERSION,
     available: false,
     advisory_only: true,
     request,
@@ -3743,15 +3772,23 @@ async function buildAdminBusinessAnalyticsSnapshot({ rawMessage, poolIds, poolsI
       ? loadAdminAnalyticsRevenueWindow({ poolIds: ids, from: request.comparison_period.from, to: request.comparison_period.to, displayByPool })
       : Promise.resolve(null);
     const [currentWindow, previousWindow] = await Promise.all([currentPromise, previousPromise]);
+    const currentTopCount = Number(currentWindow.by_plan?.[0]?.paid_transactions || 0);
     const current = {
       ...currentWindow,
       top_plan: currentWindow.by_plan[0] || null,
+      top_plans: currentTopCount > 0
+        ? currentWindow.by_plan.filter((row) => Number(row?.paid_transactions || 0) === currentTopCount).slice(0, 10)
+        : [],
       top_revenue_plan: currentWindow.by_plan_by_revenue?.[0] || null,
       top_pool: currentWindow.by_pool[0] || null,
     };
+    const previousTopCount = Number(previousWindow?.by_plan?.[0]?.paid_transactions || 0);
     const previous = previousWindow ? {
       ...previousWindow,
       top_plan: previousWindow.by_plan[0] || null,
+      top_plans: previousTopCount > 0
+        ? previousWindow.by_plan.filter((row) => Number(row?.paid_transactions || 0) === previousTopCount).slice(0, 10)
+        : [],
       top_revenue_plan: previousWindow.by_plan_by_revenue?.[0] || null,
       top_pool: previousWindow.by_pool[0] || null,
     } : null;
@@ -3759,6 +3796,9 @@ async function buildAdminBusinessAnalyticsSnapshot({ rawMessage, poolIds, poolsI
       sales_change_pct: assistantSmartSalesPctChange(current.totals.paid_transactions, previous.totals.paid_transactions),
       revenue_change_pct: assistantSmartSalesPctChange(current.totals.total_amount_ar, previous.totals.total_amount_ar),
       average_sale_change_pct: assistantSmartSalesPctChange(current.totals.average_sale_ar, previous.totals.average_sale_ar),
+      owner_share_change_pct: current.totals.owner_total_ar === null || previous.totals.owner_total_ar === null
+        ? null
+        : assistantSmartSalesPctChange(current.totals.owner_total_ar, previous.totals.owner_total_ar),
       trend: assistantSmartSalesTrend(current.totals.total_amount_ar, previous.totals.total_amount_ar),
     } : null;
     return { ...base, available: true, current, previous, comparison };
@@ -4260,12 +4300,33 @@ function buildAdminBusinessAnalyticsDeterministicAnswer(lang, analytics) {
   lines.push(isEn ? `${Number(cur.paid_transactions || 0)} paid sales · ${formatAdminAr(cur.total_amount_ar)} revenue · average ${formatAdminAr(cur.average_sale_ar)} per sale.`
     : isMg ? `${Number(cur.paid_transactions || 0)} vente voaloa · ${formatAdminAr(cur.total_amount_ar)} revenus · salan'isa ${formatAdminAr(cur.average_sale_ar)} isaky ny vente.`
     : `${Number(cur.paid_transactions || 0)} ventes payées · ${formatAdminAr(cur.total_amount_ar)} de revenus · panier moyen ${formatAdminAr(cur.average_sale_ar)}.`);
-  if (analytics.current.top_plan?.plan_name) lines.push(isEn ? `Top plan: ${analytics.current.top_plan.plan_name} (${analytics.current.top_plan.paid_transactions} sales).` : isMg ? `Plan be vente indrindra: ${analytics.current.top_plan.plan_name} (${analytics.current.top_plan.paid_transactions} vente).` : `Forfait le plus vendu : ${analytics.current.top_plan.plan_name} (${analytics.current.top_plan.paid_transactions} ventes).`);
+  if (cur.owner_total_ar !== null && cur.owner_total_ar !== undefined) {
+    lines.push(isEn ? `Verified owner share for this period: ${formatAdminAr(cur.owner_total_ar)}.`
+      : isMg ? `Part propriétaire voamarina amin'ity période ity: ${formatAdminAr(cur.owner_total_ar)}.`
+      : `Part propriétaire vérifiée pour cette période : ${formatAdminAr(cur.owner_total_ar)}.`);
+  }
+  const topPlans = Array.isArray(analytics.current.top_plans) ? analytics.current.top_plans : [];
+  if (topPlans.length > 1) {
+    const names = topPlans.map((row) => row?.plan_name).filter(Boolean).join(", ");
+    const topCount = Number(topPlans[0]?.paid_transactions || 0);
+    if (names) lines.push(isEn ? `Best-selling plans are tied: ${names} (${topCount} sales each).`
+      : isMg ? `Mitovy amin'ny laharana voalohany ny plan: ${names} (${topCount} vente avy).`
+      : `Forfaits les plus vendus ex æquo : ${names} (${topCount} ventes chacun).`);
+  } else if (analytics.current.top_plan?.plan_name) {
+    lines.push(isEn ? `Top plan: ${analytics.current.top_plan.plan_name} (${analytics.current.top_plan.paid_transactions} sales).`
+      : isMg ? `Plan be vente indrindra: ${analytics.current.top_plan.plan_name} (${analytics.current.top_plan.paid_transactions} vente).`
+      : `Forfait le plus vendu : ${analytics.current.top_plan.plan_name} (${analytics.current.top_plan.paid_transactions} ventes).`);
+  }
   if (analytics.previous?.totals && analytics.comparison) {
     const prev = analytics.previous.totals;
     lines.push(isEn ? `Comparison period: ${Number(prev.paid_transactions || 0)} sales and ${formatAdminAr(prev.total_amount_ar)}; revenue change ${analytics.comparison.revenue_change_pct === null ? "not comparable" : `${analytics.comparison.revenue_change_pct}%`}.`
       : isMg ? `Période comparaison: ${Number(prev.paid_transactions || 0)} vente, ${formatAdminAr(prev.total_amount_ar)}; fiovan'ny revenus ${analytics.comparison.revenue_change_pct === null ? "tsy azo ampitahaina" : `${analytics.comparison.revenue_change_pct}%`}.`
       : `Période de comparaison : ${Number(prev.paid_transactions || 0)} ventes et ${formatAdminAr(prev.total_amount_ar)} ; évolution des revenus ${analytics.comparison.revenue_change_pct === null ? "non comparable" : `${analytics.comparison.revenue_change_pct}%`}.`);
+    if (cur.owner_total_ar !== null && prev.owner_total_ar !== null && analytics.comparison.owner_share_change_pct !== null) {
+      lines.push(isEn ? `Owner share: ${formatAdminAr(cur.owner_total_ar)} vs ${formatAdminAr(prev.owner_total_ar)} (${analytics.comparison.owner_share_change_pct}%).`
+        : isMg ? `Part propriétaire: ${formatAdminAr(cur.owner_total_ar)} vs ${formatAdminAr(prev.owner_total_ar)} (${analytics.comparison.owner_share_change_pct}%).`
+        : `Part propriétaire : ${formatAdminAr(cur.owner_total_ar)} contre ${formatAdminAr(prev.owner_total_ar)} (${analytics.comparison.owner_share_change_pct} %).`);
+    }
   }
   if (req.unsupported_dimension) lines.push(isEn ? "The current trusted analytics slice does not provide sales by hour of day." : isMg ? "Tsy mbola misy découpage vente isaky ny ora ao amin'ny données vérifiées amin'ity analyse ity." : "Les données vérifiées de cette analyse ne fournissent pas encore le détail des ventes par heure de la journée.");
   return lines.join("\n");
@@ -12721,7 +12782,7 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
     }
   }
 
-  // 1C.1b: analytics never fall back to invented business facts. If the
+  // 1C.1b/1C.1b2: analytics never fall back to invented business facts. If the
   // naturalizer is blocked or unavailable, answer directly from the trusted
   // server snapshot built for this turn.
   if (context === "admin_owner" && isAdminNaturalAnalyticsV1Enabled() && !aiUsed) {
@@ -13085,13 +13146,14 @@ function platformConversationLog(level, event, details = {}) {
 }
 
 // =============================================================================
-// RAZAFI ASSISTANT — ANU-CONVERSATION-1C.1 / 1C.1a / 1C.1b / 1C.1b1
-// Admin Conversation Core + Role/Capability Awareness + Natural Business Analytics + Madagascar Business-Day Parity
+// RAZAFI ASSISTANT — ANU-CONVERSATION-1C.1 / 1C.1a / 1C.1b / 1C.1b1 / 1C.1b2
+// Admin Conversation Core + Role/Capability Awareness + Natural Business Analytics + Madagascar Business-Day Parity + Period-Aware Ranking / Owner Share
 // =============================================================================
 // Backend-first Admin pilot. The existing Admin UI, RBAC and business write
 // routes are unchanged. Natural Admin conversation uses OpenAI Responses with
 // authenticated server-owned actor/scope/plans/revenue context. The model is
 // advisory/read-only: it can explain and analyze but never executes mutations.
+// 1C.1b2 rollback only: ASSISTANT_ADMIN_PERIOD_RANKING_OWNER_SHARE_V1_ENABLED=false.
 // 1C.1b1 rollback only: ASSISTANT_ADMIN_BUSINESS_DAY_PARITY_V1_ENABLED=false.
 // 1C.1b rollback only: ASSISTANT_ADMIN_NATURAL_ANALYTICS_V1_ENABLED=false.
 // 1C.1a rollback only: ASSISTANT_ADMIN_ROLE_CAPABILITY_V1_ENABLED=false.
@@ -13100,6 +13162,7 @@ const ASSISTANT_ADMIN_CONVERSATION_VERSION = "ANU-CONVERSATION-1C.1";
 const ASSISTANT_ADMIN_ROLE_CAPABILITY_VERSION = "ANU-CONVERSATION-1C.1a";
 const ASSISTANT_ADMIN_NATURAL_ANALYTICS_VERSION = "ANU-CONVERSATION-1C.1b";
 const ASSISTANT_ADMIN_BUSINESS_DAY_PARITY_VERSION = "ANU-CONVERSATION-1C.1b1";
+const ASSISTANT_ADMIN_PERIOD_RANKING_OWNER_SHARE_VERSION = "ANU-CONVERSATION-1C.1b2";
 
 function isAdminConversationCoreEnabled() {
   const enabled = String(process.env.ASSISTANT_ADMIN_CONVERSATION_V1_ENABLED || "false")
@@ -13130,7 +13193,15 @@ function isAdminBusinessDayParityV1Enabled() {
   return enabled && isAdminNaturalAnalyticsV1Enabled();
 }
 
+function isAdminPeriodRankingOwnerShareV1Enabled() {
+  const enabled = String(process.env.ASSISTANT_ADMIN_PERIOD_RANKING_OWNER_SHARE_V1_ENABLED || "false")
+    .trim().toLowerCase() === "true";
+  // 1C.1b2 only applies after the validated business-day parity layer.
+  return enabled && isAdminBusinessDayParityV1Enabled();
+}
+
 function getAdminConversationRuntimeVersion() {
+  if (isAdminPeriodRankingOwnerShareV1Enabled()) return ASSISTANT_ADMIN_PERIOD_RANKING_OWNER_SHARE_VERSION;
   if (isAdminBusinessDayParityV1Enabled()) return ASSISTANT_ADMIN_BUSINESS_DAY_PARITY_VERSION;
   if (isAdminNaturalAnalyticsV1Enabled()) return ASSISTANT_ADMIN_NATURAL_ANALYTICS_VERSION;
   return isAdminRoleCapabilityV1Enabled()
@@ -15134,7 +15205,10 @@ function buildAdminConversationInstructions({ roleCapabilityAware = false, natur
       "ONE-CLICK SALES BRIEF: when smart_sales.decision_model is natural_business_analytics_v1b, produce a simple decision brief: what happened, the current top plan as information, and only concrete actions present in smart_sales.pools[].actions. Do not ask a follow-up question.",
       "REAL OWNER ACTIONS: for the one-click sales brief, the actionable recommendations are only Masquer, Afficher/Réafficher, and Créer when the trusted action exists and RBAC allows it. A top-selling plan is informational; do not convert it into an action to promote, pin, put first, or 'mettre en avant'. Portal plan ordering is automatic.",
       "CREATE RECOMMENDATIONS: when smart_sales provides a create action with suggested_plan, reuse that exact server-derived duration/data-or-unlimited/speed combination. Do not substitute different technical values. Do not invent a price. Tell the Owner to use Simulateur de prix; the server-calculated/validated price is authoritative.",
-      "ANALYTICS COMPARISONS: distinguish paid transaction count, revenue in Ar, and average sale. 'Most sold' / 'best-selling' means the plan with the highest paid transaction count (top_plan); highest revenue is top_revenue_plan. Use comparison percentages only when ADMIN BUSINESS ANALYTICS.comparison supplies them. Do not manufacture a comparison when previous is null.",
+      "ANALYTICS COMPARISONS: distinguish paid transaction count, revenue in Ar, owner share in Ar, and average sale. 'Most sold' / 'best-selling' / 'se vend le mieux' means the plan with the highest paid transaction count (top_plan); highest revenue is top_revenue_plan. Use comparison percentages only when ADMIN BUSINESS ANALYTICS.comparison supplies them. Do not manufacture a comparison when previous is null.",
+      "PERIOD-AWARE PLAN RANKING: when ADMIN BUSINESS ANALYTICS.request.metric_focus is plans, answer from current.top_plan/current.top_plans for most-sold/best-selling questions and current.top_revenue_plan only for highest-revenue questions. The current_period is authoritative. If current.top_plans contains more than one plan, state the tie instead of selecting a false single winner. Never fall back to the all-time revenue snapshot or old plan rankings when a period such as today/this week/this month is present.",
+      "OWNER SHARE: ADMIN BUSINESS ANALYTICS.current.totals.owner_total_ar, when non-null, comes from the same authoritative owner-share Revenue source and the same date/pool scope as the Revenue page. For an Owner asking how much they sold, earned, or received over a period, ALWAYS include paid sales, gross amount paid, and this verified owner share when non-null. Never calculate owner share from percentages yourself. If owner_total_ar is null, do not estimate it or derive it from pool configuration.",
+      "OWNER SHARE LANGUAGE: when the authenticated pool role is owner and the user says 'combien ai-je gagné', 'ma part', 'part propriétaire', or equivalent, treat verified owner_total_ar as the primary owner earnings figure and give gross paid amount as context when available. For manager/viewer, call it 'la part propriétaire' rather than 'votre part'. Never expose platform share to a non-superadmin.",
       "ANALYTICS LIMITS: if request.unsupported_dimension is set (for example hour_of_day), say that exact dimension is not available in the current trusted analytics slice. Do not infer it from totals.",
       "CAUSES VS EVIDENCE: a decrease/increase is an observed result; a reason for it is only a hypothesis unless the trusted data directly establishes it. Keep suggestions practical and separate from factual observations."
     );
@@ -15454,15 +15528,22 @@ function buildAdminConversationReference({ pageHint, trustedContext, liveData })
         active: plan?.active === true,
         visible: plan?.visible === true,
       })),
-      revenue: revenue.available === true ? {
-        available: true,
-        scope_note: "Current trusted revenue snapshot supplied by the server; no arbitrary date filter is implied unless smart_sales explicitly provides periods.",
-        paid_transactions: Number(revenue.paid_transactions || 0),
-        total_amount_ar: Number(revenue.total_amount_ar || 0),
-        owner_total_ar: revenue.owner_total_ar === null || revenue.owner_total_ar === undefined ? null : Number(revenue.owner_total_ar || 0),
-        by_plan: Array.isArray(revenue.by_plan) ? revenue.by_plan.slice(0, 100) : [],
-        by_pool: Array.isArray(revenue.by_pool) ? revenue.by_pool.slice(0, 100) : [],
-      } : { available: false },
+      revenue: (smartSales || businessAnalytics)
+        ? {
+            available: false,
+            suppressed_for_period_analytics: true,
+            scope_note: "Use smart_sales / business_analytics for this turn; the unfiltered all-time revenue snapshot is intentionally omitted to prevent period mixing.",
+          }
+        : revenue.available === true ? {
+            available: true,
+            scope_note: "Current trusted revenue snapshot supplied by the server; no arbitrary date filter is implied.",
+            paid_transactions: Number(revenue.paid_transactions || 0),
+            total_amount_ar: Number(revenue.total_amount_ar || 0),
+            owner_total_ar: revenue.owner_total_ar === null || revenue.owner_total_ar === undefined ? null : Number(revenue.owner_total_ar || 0),
+            by_plan: Array.isArray(revenue.by_plan) ? revenue.by_plan.slice(0, 100) : [],
+            by_pool: Array.isArray(revenue.by_pool) ? revenue.by_pool.slice(0, 100) : [],
+          }
+        : { available: false },
     };
     lines.push(`ADMIN TRUSTED SERVER CONTEXT (authoritative)\n${JSON.stringify(safeTrusted, null, 2).slice(0, 28000)}`);
 
@@ -15543,6 +15624,7 @@ async function generateRazafiAdminConversationAnswer({
           role_capability_policy: roleCapabilityAware ? ASSISTANT_ADMIN_ROLE_CAPABILITY_VERSION : "disabled",
           natural_business_analytics: naturalAnalyticsAware ? ASSISTANT_ADMIN_NATURAL_ANALYTICS_VERSION : "disabled",
           madagascar_business_day_parity: isAdminBusinessDayParityV1Enabled() ? ASSISTANT_ADMIN_BUSINESS_DAY_PARITY_VERSION : "disabled",
+          period_ranking_owner_share: isAdminPeriodRankingOwnerShareV1Enabled() ? ASSISTANT_ADMIN_PERIOD_RANKING_OWNER_SHARE_VERSION : "disabled",
         },
       }),
     });
@@ -15591,6 +15673,9 @@ async function generateRazafiAdminConversationAnswer({
       natural_analytics_aware: naturalAnalyticsAware,
       business_day_parity: isAdminBusinessDayParityV1Enabled(),
       business_timezone: isAdminBusinessDayParityV1Enabled() ? "Indian/Antananarivo" : null,
+      period_aware_plan_ranking: isAdminPeriodRankingOwnerShareV1Enabled(),
+      owner_share_analytics: isAdminPeriodRankingOwnerShareV1Enabled(),
+      owner_share_available: trustedContext?.business_analytics?.current?.totals?.owner_total_ar !== null && trustedContext?.business_analytics?.current?.totals?.owner_total_ar !== undefined,
       business_analytics_available: trustedContext?.business_analytics?.available === true,
       smart_sales_v1b: trustedContext?.smart_sales?.decision_model === "natural_business_analytics_v1b",
       analytics_period: trustedContext?.business_analytics?.request?.period_key || (trustedContext?.smart_sales ? "last_30_days" : null),
