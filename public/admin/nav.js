@@ -1372,53 +1372,194 @@
       }
 
       function _p2beSendAssistant() {
-        fetch("/api/admin/assistant/chat", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            context:   "admin_owner",
-            message:   msg,
-            live_data: liveData, // legacy path; unchanged while ANU flags are OFF
-            ui_snapshot: liveData, // ANU-2: browser state is never authoritative
-            requested_scope: _anu2RequestedScope,
-            page_path: (function () {
-              try { return String(window.location.pathname || "").slice(0, 200); } catch (_) { return null; }
-            })(),
-            conversation_id: readAssistantConversationId(RAZAFI_ADMIN_ASSISTANT_CID_KEY),
-            memory_token: readAssistantMemoryToken(RAZAFI_ADMIN_ASSISTANT_MEMORY_TOKEN_KEY) || undefined,
-          }),
-        })
-          .then(function (res) { return res.json().catch(function () { return {}; }); })
-          .then(function (data) {
-            removeMsg(thinkingBubble);
-            isLoading = false;
-            // Patch F.2: persist conversation_id for multi-turn memory
-            if (data && data.conversation_id) {
-              writeAssistantConversationId(RAZAFI_ADMIN_ASSISTANT_CID_KEY, data.conversation_id);
+        var canStreamAssistant = !!(
+          typeof window.ReadableStream !== "undefined" &&
+          typeof window.TextDecoder !== "undefined"
+        );
+
+        var assistantRequestPayload = {
+          context: "admin_owner",
+          message: msg,
+          stream: canStreamAssistant,
+          live_data: liveData, // legacy path; unchanged while ANU flags are OFF
+          ui_snapshot: liveData, // ANU-2: browser state is never authoritative
+          requested_scope: _anu2RequestedScope,
+          page_path: (function () {
+            try { return String(window.location.pathname || "").slice(0, 200); } catch (_) { return null; }
+          })(),
+          conversation_id: readAssistantConversationId(RAZAFI_ADMIN_ASSISTANT_CID_KEY),
+          memory_token: readAssistantMemoryToken(RAZAFI_ADMIN_ASSISTANT_MEMORY_TOKEN_KEY) || undefined,
+        };
+
+        (async function () {
+          var streamedText = "";
+          var assistantBubble = null;
+          var chipsRendered = false;
+
+          function persistAssistantTokens(payload) {
+            if (payload && payload.conversation_id) {
+              writeAssistantConversationId(RAZAFI_ADMIN_ASSISTANT_CID_KEY, payload.conversation_id);
             }
-            if (data && data.memory_token) {
-              writeAssistantMemoryToken(RAZAFI_ADMIN_ASSISTANT_MEMORY_TOKEN_KEY, data.memory_token);
+            if (payload && payload.memory_token) {
+              writeAssistantMemoryToken(RAZAFI_ADMIN_ASSISTANT_MEMORY_TOKEN_KEY, payload.memory_token);
             }
-            const answer = String(
-              (data && data.answer) ? data.answer :
-              (data && !data.ok && data.error) ? "Désolé, une erreur est survenue. Réessayez." :
-              "Désolé, je n'ai pas pu répondre. Réessayez."
-            );
-            const bubble = appendMsg(answer, "assistant");
-            if (data && Array.isArray(data.buttons) && data.buttons.length) {
-              appendChips(data.buttons, bubble);
+          }
+
+          function ensureAssistantStreamBubble() {
+            if (assistantBubble) return assistantBubble;
+            if (thinkingBubble && thinkingBubble.parentNode === body) {
+              thinkingBubble.className = "rz-aa-msg rz-aa-msg-assistant";
+              thinkingBubble.textContent = "";
+              assistantBubble = thinkingBubble;
+            } else {
+              assistantBubble = appendMsg("", "assistant");
             }
-          })
-          .catch(function () {
-            removeMsg(thinkingBubble);
-            isLoading = false;
-            appendMsg("Connexion instable. Vérifiez votre réseau et réessayez.", "assistant");
-          })
-          .finally(function () {
+            return assistantBubble;
+          }
+
+          function appendAssistantDelta(delta) {
+            var piece = String(delta || "");
+            if (!piece) return;
+            streamedText += piece;
+            var bubble = ensureAssistantStreamBubble();
+            bubble.textContent = streamedText;
+            scrollToBottom();
+          }
+
+          function finalizeAssistantStream(buttons) {
+            var bubble = ensureAssistantStreamBubble();
+            if (!streamedText.trim()) {
+              streamedText = "Désolé, je n'ai pas pu répondre. Réessayez.";
+              bubble.textContent = streamedText;
+            }
+            if (!chipsRendered && Array.isArray(buttons) && buttons.length) {
+              appendChips(buttons, bubble);
+              chipsRendered = true;
+            }
+            scrollToBottom();
+          }
+
+          function handleAssistantSseBlock(block) {
+            if (!String(block || "").trim()) return { done: false, buttons: [] };
+            var eventName = "message";
+            var dataLines = [];
+            String(block).split("\n").forEach(function (rawLine) {
+              var line = String(rawLine || "").replace(/\r$/, "");
+              if (line.indexOf("event:") === 0) {
+                eventName = line.slice(6).trim() || "message";
+              } else if (line.indexOf("data:") === 0) {
+                dataLines.push(line.slice(5).replace(/^\s/, ""));
+              }
+            });
+            if (!dataLines.length) return { done: false, buttons: [] };
+
+            var payload = {};
+            try { payload = JSON.parse(dataLines.join("\n")); } catch (_) { return { done: false, buttons: [] }; }
+
+            if (eventName === "meta" || eventName === "done") {
+              persistAssistantTokens(payload);
+            }
+            if (eventName === "delta") {
+              appendAssistantDelta(payload && payload.text);
+            } else if (eventName === "done") {
+              return {
+                done: true,
+                buttons: (payload && Array.isArray(payload.buttons)) ? payload.buttons : [],
+              };
+            } else if (eventName === "error") {
+              throw new Error(String((payload && payload.error) || "assistant_stream_error"));
+            }
+            return { done: false, buttons: [] };
+          }
+
+          try {
+            var response = await fetch("/api/admin/assistant/chat", {
+              method: "POST",
+              credentials: "include",
+              headers: {
+                "Content-Type": "application/json",
+                "Accept": canStreamAssistant ? "text/event-stream, application/json" : "application/json",
+              },
+              body: JSON.stringify(assistantRequestPayload),
+            });
+
+            var contentType = String(response.headers.get("content-type") || "").toLowerCase();
+
+            // Rollback/backward compatibility: with 1C.2 disabled (or an older
+            // backend still live), the endpoint keeps the exact JSON response.
+            if (contentType.indexOf("text/event-stream") === -1) {
+              var data = await response.json().catch(function () { return {}; });
+              if (!response.ok) throw new Error((data && data.error) || "assistant_error");
+
+              removeMsg(thinkingBubble);
+              persistAssistantTokens(data);
+
+              var answer = String(
+                (data && data.answer) ? data.answer :
+                (data && !data.ok && data.error) ? "Désolé, une erreur est survenue. Réessayez." :
+                "Désolé, je n'ai pas pu répondre. Réessayez."
+              );
+              assistantBubble = appendMsg(answer, "assistant");
+              streamedText = answer;
+
+              if (data && Array.isArray(data.buttons) && data.buttons.length) {
+                appendChips(data.buttons, assistantBubble);
+                chipsRendered = true;
+              }
+              return;
+            }
+
+            if (!response.ok || !response.body || typeof response.body.getReader !== "function") {
+              throw new Error("assistant_stream_unavailable");
+            }
+
+            var reader = response.body.getReader();
+            var decoder = new TextDecoder();
+            var buffer = "";
+            var streamDone = false;
+            var doneButtons = [];
+
+            while (!streamDone) {
+              var part = await reader.read();
+              if (part.done) break;
+              buffer += decoder.decode(part.value, { stream: true }).replace(/\r\n/g, "\n");
+
+              var boundary = buffer.indexOf("\n\n");
+              while (boundary !== -1) {
+                var block = buffer.slice(0, boundary);
+                buffer = buffer.slice(boundary + 2);
+                var parsed = handleAssistantSseBlock(block);
+                if (parsed.done) {
+                  streamDone = true;
+                  doneButtons = parsed.buttons || [];
+                }
+                boundary = buffer.indexOf("\n\n");
+              }
+            }
+
+            buffer += decoder.decode().replace(/\r\n/g, "\n");
+            if (buffer.trim() && !streamDone) {
+              var parsedTail = handleAssistantSseBlock(buffer);
+              if (parsedTail.done) {
+                streamDone = true;
+                doneButtons = parsedTail.buttons || [];
+              }
+            }
+
+            finalizeAssistantStream(doneButtons);
+          } catch (error) {
+            if (streamedText.trim()) {
+              // Keep already-revealed validated text on a late transport error.
+              finalizeAssistantStream([]);
+            } else {
+              removeMsg(thinkingBubble);
+              appendMsg("Connexion instable. Vérifiez votre réseau et réessayez.", "assistant");
+            }
+          } finally {
             isLoading = false;
             sendBtn.disabled = !input.value.trim();
-          });
+          }
+        })();
       }
 
       if (_p2beNeedsFilter) {

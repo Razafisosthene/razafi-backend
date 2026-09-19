@@ -13286,6 +13286,112 @@ function adminConversationLog(level, event, details = {}) {
 }
 
 // =============================================================================
+// RAZAFI ASSISTANT — ANU-CONVERSATION-1C.2: Safe Streaming UX Admin
+// =============================================================================
+// The complete Admin answer is still generated first, after trusted RBAC/scope,
+// analytics and all existing answer validation/repair steps. Only that already-
+// validated final answer is progressively revealed to the browser. No Admin
+// mutation/action is introduced by this transport layer.
+// Rollback: ASSISTANT_ADMIN_STREAMING_V1_ENABLED=false.
+const ASSISTANT_ADMIN_STREAMING_VERSION = "ANU-CONVERSATION-1C.2";
+
+function isAdminAssistantStreamingEnabled() {
+  const enabled = String(process.env.ASSISTANT_ADMIN_STREAMING_V1_ENABLED || "false")
+    .trim().toLowerCase() === "true";
+  return enabled && isAdminConversationCoreEnabled();
+}
+
+function wantsAdminAssistantStream(req, context) {
+  if (context !== "admin_owner") return false;
+  if (!isAdminAssistantStreamingEnabled()) return false;
+  const explicit = req?.body?.stream === true || String(req?.body?.stream || "").toLowerCase() === "true";
+  const accept = String(req?.headers?.accept || "").toLowerCase();
+  return explicit || accept.includes("text/event-stream");
+}
+
+function adminStreamingLog(level, event, details = {}) {
+  const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+  try {
+    fn(`[${ASSISTANT_ADMIN_STREAMING_VERSION}] ${event}`, details && typeof details === "object" ? details : {});
+  } catch (_) {
+    fn(`[${ASSISTANT_ADMIN_STREAMING_VERSION}] ${event}`);
+  }
+}
+
+function writeAdminAssistantSse(res, event, payload = {}) {
+  if (!res || res.writableEnded || res.destroyed) return false;
+  try {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function splitAdminAssistantStreamText(text, maxChars = 22) {
+  const source = String(text || "");
+  if (!source) return [];
+
+  // Preserve whitespace/newlines and avoid splitting surrogate pairs.
+  const tokens = source.match(/\s+|[^\s]+/gu) || Array.from(source);
+  const chunks = [];
+  let current = "";
+
+  for (const token of tokens) {
+    const candidate = current + token;
+    if (current && Array.from(candidate).length > maxChars) {
+      chunks.push(current);
+      current = token;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function adminAssistantStreamDelay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function streamValidatedAdminAssistantResult(res, result) {
+  const answer = String(result?.answer || "");
+  const chunks = splitAdminAssistantStreamText(answer, 22);
+  const startedAt = Date.now();
+
+  writeAdminAssistantSse(res, "meta", {
+    conversation_id: result?.conversation_id || null,
+    memory_token: result?.memory_token || null,
+    lang: result?.lang || null,
+    ai_enhanced: result?.ai_enhanced === true,
+    version: ASSISTANT_ADMIN_STREAMING_VERSION,
+  });
+
+  for (const delta of chunks) {
+    if (res.writableEnded || res.destroyed) break;
+    writeAdminAssistantSse(res, "delta", { text: delta });
+    // Same deliberately small reveal cadence already validated on Platform/Portal.
+    await adminAssistantStreamDelay(16);
+  }
+
+  if (!res.writableEnded && !res.destroyed) {
+    writeAdminAssistantSse(res, "done", {
+      ok: true,
+      conversation_id: result?.conversation_id || null,
+      memory_token: result?.memory_token || null,
+      buttons: Array.isArray(result?.buttons) ? result.buttons : [],
+    });
+    res.end();
+  }
+
+  adminStreamingLog("info", "stream complete", {
+    chunks: chunks.length,
+    chars: answer.length,
+    reveal_ms: Date.now() - startedAt,
+  });
+}
+
+// =============================================================================
 // RAZAFI ASSISTANT — ANU-CONVERSATION-1B.1: Portal Conversation Core
 // =============================================================================
 // Backend-first pilot. Portal UI/payment/voucher code remains unchanged. Natural
@@ -18822,6 +18928,7 @@ app.get("/api/admin/me", requireAdmin, async (req, res) => {
 // Never modifies owner data. Never exposes forbidden fields.
 // ===============================
 app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req, res) => {
+  let adminStreamActive = false;
   try {
     if (!ensureSupabase(res)) return;
 
@@ -18838,6 +18945,23 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
     const rawMessage = String(req.body?.message || "").trim();
     if (!rawMessage) {
       return res.status(400).json({ ok: false, error: "message_required" });
+    }
+
+    const adminStreamRequested = wantsAdminAssistantStream(req, rawContext);
+    if (adminStreamRequested) {
+      res.status(200);
+      res.set({
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+      if (typeof res.flushHeaders === "function") res.flushHeaders();
+      adminStreamActive = true;
+      adminStreamingLog("info", "stream started", {
+        page_path: String(req.body?.page_path || "").trim().slice(0, 120) || "/admin/",
+      });
+      writeAdminAssistantSse(res, "status", { phase: "thinking" });
     }
 
     const liveData = sanitizeAssistantLiveData(req.body?.live_data || {}, rawContext);
@@ -18901,8 +19025,28 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
       scopeKey: adminScopeKey,
     });
 
+    if (adminStreamActive) {
+      // Safe Streaming UX: business/RBAC/analytics processing and final answer
+      // validation are complete before the first answer character is emitted.
+      writeAdminAssistantSse(res, "status", { phase: "answering" });
+      await streamValidatedAdminAssistantResult(res, result);
+      return;
+    }
+
     return res.json(result);
   } catch (e) {
+    if (adminStreamActive) {
+      adminStreamingLog("warn", "stream failed", {
+        code: String(e?.message || "assistant_error").slice(0, 160),
+      });
+      writeAdminAssistantSse(res, "error", {
+        error: (e?.httpStatus === 400 || e?.httpStatus === 403)
+          ? String(e.message || "assistant_scope_error")
+          : "assistant_error",
+      });
+      if (!res.writableEnded && !res.destroyed) res.end();
+      return;
+    }
     if (e?.httpStatus === 400 || e?.httpStatus === 403) {
       return res.status(e.httpStatus).json({ ok: false, error: String(e.message || "assistant_scope_error") });
     }
