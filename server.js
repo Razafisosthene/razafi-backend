@@ -13977,6 +13977,53 @@ function portalReflectionLog(level, event, details = {}) {
   }
 }
 
+// =============================================================================
+// RAZAFI ASSISTANT — ANU-CONVERSATION-1B.5a: Portal Information Reflection Match
+// =============================================================================
+// Narrow UX classifier hardening only. It expands the phrases that map to
+// portal_info_check (FR/EN/MG) while leaving trusted Portal grounding,
+// critical-state gates and streaming behavior untouched.
+// Rollback: ASSISTANT_PORTAL_INFORMATION_REFLECTION_MATCH_V1_ENABLED=false.
+const ASSISTANT_PORTAL_INFO_REFLECTION_MATCH_VERSION = "ANU-CONVERSATION-1B.5a";
+
+function isPortalInformationReflectionMatchV1Enabled() {
+  return String(process.env.ASSISTANT_PORTAL_INFORMATION_REFLECTION_MATCH_V1_ENABLED || "false")
+    .trim().toLowerCase() === "true";
+}
+
+function portalInformationReflectionMatchLog(level, event, details = {}) {
+  const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+  try {
+    fn(`[${ASSISTANT_PORTAL_INFO_REFLECTION_MATCH_VERSION}] ${event}`, details && typeof details === "object" ? details : {});
+  } catch (_) {
+    fn(`[${ASSISTANT_PORTAL_INFO_REFLECTION_MATCH_VERSION}] ${event}`);
+  }
+}
+
+function isPortalInformationReflectionQuestion(normalizedText) {
+  const s = String(normalizedText || "");
+  if (!s) return false;
+
+  // Explicit announcement / Portal-information vocabulary.
+  if (/\b(?:annonce|annonces|announcement|notice|notification|promotion|maintenance)\b/.test(s)
+      && /\b(?:portail|portal|affiche|affiches|affichee|affichees|displayed|shown|visible|aseho)\b/.test(s)) {
+    return true;
+  }
+
+  // “Information(s)/info/message ... Portal” in either word order.
+  const infoWord = /\b(?:information|informations|info|infos|message|messages|vaovao|fampahafantarana)\b/;
+  const portalWord = /\b(?:portail|portal)\b/;
+  if (infoWord.test(s) && portalWord.test(s)) return true;
+
+  // Natural display wording: “what is displayed/shown on the Portal?”,
+  // “que dit ce qui est affiché sur le portail ?”, etc.
+  const displayWord = /\b(?:affiche|affiches|affichee|affichees|afficher|displayed|shown|showing|visible|aseho|miseho)\b/;
+  const askWord = /(?:que dit|qu est ce que|qu'est ce que|quel est|quelle est|what does|what is|what's|inona|ahoana)/;
+  if (portalWord.test(s) && displayWord.test(s) && askWord.test(s)) return true;
+
+  return false;
+}
+
 function normalizePortalReflectionText(value) {
   try {
     return String(value || "")
@@ -14015,14 +14062,25 @@ function buildPortalContextualReflectionStatus({ rawMessage, pagePath = null } =
     const connectionWords = /\b(connexion|connection|connecte|connecter|connected|internet|wifi|reseau|network|online)\b/.test(s);
     const accessWords = /\b(acces|access|utiliser mon code|use my code|se connecter|login)\b/.test(s);
     const rulesWords = /regle|regles|condition d'utilisation|conditions d'utilisation|conditions utilisation|terms of use|usage rules|fepetra|fitsipika/.test(s);
-    const portalInfoWords = /annonce|message affiche|information affichee|information du portail|info du portail|portal announcement|portal information|promotion affichee|maintenance affichee/.test(s);
+    const legacyPortalInfoWords = /annonce|message affiche|information affichee|information du portail|info du portail|portal announcement|portal information|promotion affichee|maintenance affichee/.test(s);
+    const portalInfoWords = isPortalInformationReflectionMatchV1Enabled()
+      ? isPortalInformationReflectionQuestion(s)
+      : legacyPortalInfoWords;
 
     if (paymentWords) key = "payment_check";
     else if (codeWords) key = "code_check";
     // Rules / Portal information must win over generic words such as “WiFi”
     // or “réseau” that may legitimately appear inside those questions.
     else if (rulesWords) key = "rules_check";
-    else if (portalInfoWords) key = "portal_info_check";
+    else if (portalInfoWords) {
+      key = "portal_info_check";
+      if (isPortalInformationReflectionMatchV1Enabled()) {
+        portalInformationReflectionMatchLog("info", "portal information reflection matched", {
+          lang,
+          expanded_match: !legacyPortalInfoWords,
+        });
+      }
+    }
     else if (connectionWords) key = "connection_check";
     else if (accessWords) key = "access_check";
     else if (planWords || /mikrotik|portail|portal/.test(page) && /forfait|plan/.test(s)) key = "plans_check";
