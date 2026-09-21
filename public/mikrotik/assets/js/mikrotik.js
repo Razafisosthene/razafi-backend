@@ -2902,14 +2902,17 @@ function submitToLoginUrl(code, ev) {
   let activeDurationFilter = "all"; // NEW: duration filter state
   let activePriceSortOrder = "desc"; // "desc" = ↓ (high→low), "asc" = ↑ (low→high)
 
-  // -------- Duration bucket helper --------
-  // Maps plan duration_minutes → UI bucket: "1H" | "1J" | "7J" | "30J"
+  // -------- Exact duration filter helper --------
+  // Exact matches only: a 3-day plan belongs to 3J, never to 7J.
+  // Unknown/custom durations remain visible under "Tous" but do not invent a filter button.
   function getDurationBucket(minutes) {
-    const m = Number(minutes) || 0;
-    if (m <= 60)       return "1H";
-    if (m <= 1440)     return "1J";  // > 1h and <= 1 day
-    if (m <= 7 * 1440) return "7J";  // > 1 day and <= 7 days
-    return "30J";                     // > 7 days
+    const m = Math.round(Number(minutes) || 0);
+    if (m === 60)          return "1H";
+    if (m === 1 * 1440)    return "1J";
+    if (m === 3 * 1440)    return "3J";
+    if (m === 7 * 1440)    return "7J";
+    if (m === 30 * 1440)   return "30J";
+    return "";
   }
 
   // -------- Sync dynamic filter visibility --------
@@ -2924,24 +2927,36 @@ function submitToLoginUrl(code, ev) {
     if (planFilters) {
       planFilters.querySelectorAll(".plan-filter-btn").forEach(function (btn) {
         const f = String(btn.getAttribute("data-plan-filter") || "");
-        if (f === "all")      { btn.style.display = ""; return; }
+        if (f === "all")       { btn.style.display = ""; return; }
         if (f === "unlimited") btn.style.display = hasUnlimited ? "" : "none";
-        if (f === "data")      btn.style.display = hasData      ? "" : "none";
+        if (f === "data")      btn.style.display = hasData ? "" : "none";
       });
     }
 
     // --- Bottom duration filter bar ---
+    // Duration buttons follow the currently selected type:
+    // e.g. "3J" disappears under Illimité when no 3-day unlimited plan exists.
     var durationBar = document.getElementById("durationFilterBar");
     if (!durationBar) return;
 
-    // Collect all duration buckets present
-    var buckets = new Set();
-    cards.forEach(function (c) {
-      var m = Number(c.getAttribute("data-plan-duration") || 0);
-      buckets.add(getDurationBucket(m));
+    var relevantCards = cards.filter(function (c) {
+      return activePlanFilter === "all" || getPlanFilterType(c) === activePlanFilter;
     });
 
-    // Only one bucket → hide bar (no value in filtering)
+    var buckets = new Set();
+    relevantCards.forEach(function (c) {
+      var m = Number(c.getAttribute("data-plan-duration") || 0);
+      var key = getDurationBucket(m);
+      if (key) buckets.add(key);
+    });
+
+    // If the active duration no longer exists after switching type,
+    // safely return to "Tous".
+    if (activeDurationFilter !== "all" && !buckets.has(activeDurationFilter)) {
+      activeDurationFilter = "all";
+    }
+
+    // Zero/one exact duration available → the duration bar adds no useful choice.
     if (buckets.size <= 1) {
       durationBar.classList.add("hidden");
       document.body.classList.remove("dur-bar-visible");
@@ -2950,7 +2965,7 @@ function submitToLoginUrl(code, ev) {
       return;
     }
 
-    // Show only buttons for buckets that exist
+    // Show ONLY exact durations actually present in the current plan set.
     durationBar.querySelectorAll(".dur-filter-btn").forEach(function (btn) {
       var f = String(btn.getAttribute("data-dur-filter") || "");
       if (f === "all") { btn.style.display = ""; return; }
@@ -2959,6 +2974,7 @@ function submitToLoginUrl(code, ev) {
 
     durationBar.classList.remove("hidden");
     document.body.classList.add("dur-bar-visible");
+    updateDurationFilterButtons();
   }
 
   function updateDurationFilterButtons() {
@@ -4912,6 +4928,9 @@ function saturationLabel(pct) {
     }
 
     updatePlanFilterButtons();
+    // Recompute duration buttons after every type/duration change so unavailable
+    // exact durations disappear immediately.
+    syncDynamicFilters();
     updateDurationFilterButtons();
     try { applyPriceSort(); } catch (_) {}
   }

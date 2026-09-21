@@ -715,6 +715,31 @@
       color:#111827;
       box-shadow:none;
     }
+
+    /* Exact duration filters: keep Tous · 1H · 1J · 3J · 7J · 30J
+       on one compact line on phone screens. Unavailable buttons are hidden by JS. */
+    @media (max-width:420px){
+      #durationFilterBar{
+        padding-left:8px;
+        padding-right:8px;
+      }
+      .duration-filter-inner{
+        gap:4px;
+        padding:6px 8px;
+        max-width:calc(100vw - 16px);
+        overflow-x:hidden;
+      }
+      .dur-filter-btn{
+        min-height:32px;
+        padding:0 10px;
+        font-size:12px;
+      }
+    }
+    @media (max-width:340px){
+      .duration-filter-inner{gap:3px;padding-left:6px;padding-right:6px;}
+      .dur-filter-btn{padding:0 8px;font-size:11.5px;}
+    }
+
     /* Bottom spacing so last plan card is never hidden behind the bar */
     body.dur-bar-visible .portal-footer{
       padding-bottom:calc(70px + env(safe-area-inset-bottom,0px));
@@ -1105,6 +1130,7 @@
       <button type="button" class="dur-filter-btn active" data-dur-filter="all" aria-pressed="true">Tous</button>
       <button type="button" class="dur-filter-btn" data-dur-filter="1H"  aria-pressed="false">1H</button>
       <button type="button" class="dur-filter-btn" data-dur-filter="1J"  aria-pressed="false">1J</button>
+      <button type="button" class="dur-filter-btn" data-dur-filter="3J"  aria-pressed="false">3J</button>
       <button type="button" class="dur-filter-btn" data-dur-filter="7J"  aria-pressed="false">7J</button>
       <button type="button" class="dur-filter-btn" data-dur-filter="30J" aria-pressed="false">30J</button>
     </div>
@@ -1166,7 +1192,7 @@
       }
     });
   </script>
-  <script src="assets/js/mikrotik.js?v=yas-036-1" defer></script>
+  <script src="assets/js/mikrotik.js?v=duration-exact-1" defer></script>
 
 </body>
 </html>
