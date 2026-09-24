@@ -380,7 +380,7 @@
         return;
       }
       if (err.status === 403) {
-        showMessage("Cette page est réservée au propriétaire du pool et au Superadmin.", true);
+        showMessage("Vous n’avez pas accès à la consommation des données pour cette session.", true);
       } else {
         showMessage("Impossible de charger la consommation des données. Réessayez.", true);
       }
@@ -400,7 +400,7 @@
       meEl.innerHTML = `Connecté :<strong>${esc(displayAdminName(me))}</strong>`;
 
       if (me?.permissions?.data_usage_view !== true) {
-        showMessage("Cette page est réservée au propriétaire du pool et au Superadmin.", true);
+        showMessage("Vous n’avez pas accès à la consommation des données pour cette session.", true);
         $("poolList").innerHTML = `<section class="rz-du-card rz-du-empty">Accès non autorisé.</section>`;
         return false;
       }

@@ -19543,8 +19543,10 @@ function buildAdminPermissions(admin) {
     revenue_view: true,
     plans_view: true,
     pools_view: true,
-    // Data Usage is intentionally Owner + Superadmin only. Manager/Viewer are excluded.
-    data_usage_view: isSuperadmin || hasOwnerRole,
+    // Data Usage is read-only for every authenticated pool role.
+    // Superadmin sees all pools; Owner/Manager/Viewer stay scoped to admin.pool_ids.
+    data_usage_view:
+      isSuperadmin || (Array.isArray(admin?.pool_ids) && admin.pool_ids.length > 0),
 
     pools_branding_manage: isSuperadmin || hasOperationalWriteRole,
     plans_visibility_manage: isSuperadmin || hasOperationalWriteRole,
@@ -26070,16 +26072,20 @@ async function dataUsageLoadMonthDetail(poolId, monthMeta, now = new Date()) {
   };
 }
 
-// Data Usage V1 — Owner + Superadmin read model.
-// Manager/Viewer are intentionally excluded even if they can read other pool pages.
+// Data Usage V1.1 — read model for Superadmin + every assigned pool role.
+// Owner / Manager / Viewer are strictly scoped to req.admin.pool_ids.
+// Collection/discovery endpoints below remain Superadmin-only.
 app.get("/api/admin/data-usage", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase not configured" });
 
     const isSuperadmin = !!req.admin?.is_superadmin;
-    const ownedPoolIds = getAdminOwnedPoolIds(req.admin);
-    if (!isSuperadmin && ownedPoolIds.length === 0) {
-      return res.status(403).json({ error: "owner_or_superadmin_only" });
+    const accessiblePoolIds = isSuperadmin
+      ? []
+      : (Array.isArray(req.admin?.pool_ids) ? req.admin.pool_ids.map(String) : []);
+
+    if (!isSuperadmin && accessiblePoolIds.length === 0) {
+      return res.status(403).json({ error: "no_pools_assigned" });
     }
 
     const now = new Date();
@@ -26090,7 +26096,7 @@ app.get("/api/admin/data-usage", requireAdmin, async (req, res) => {
     if (requestedPoolId && !UUID_V1_TO_V5_RE.test(requestedPoolId)) {
       return res.status(400).json({ error: "data_usage_pool_id_invalid" });
     }
-    if (!isSuperadmin && requestedPoolId && !ownedPoolIds.includes(requestedPoolId)) {
+    if (!isSuperadmin && requestedPoolId && !accessiblePoolIds.includes(requestedPoolId)) {
       return res.status(403).json({ error: "pool_forbidden" });
     }
 
@@ -26103,7 +26109,7 @@ app.get("/api/admin/data-usage", requireAdmin, async (req, res) => {
     if (requestedPoolId) {
       query = query.eq("id", requestedPoolId);
     } else if (!isSuperadmin) {
-      query = query.in("id", ownedPoolIds);
+      query = query.in("id", accessiblePoolIds);
     }
 
     const { data: pools, error: poolsErr } = await query;
@@ -26130,10 +26136,26 @@ app.get("/api/admin/data-usage", requireAdmin, async (req, res) => {
       ? new Date(Math.min(...firstTrackingValues)).toISOString()
       : null;
 
+    const viewerRoles = isSuperadmin
+      ? ["superadmin"]
+      : Array.from(new Set(
+          Object.values(req.admin?.pool_access || {})
+            .map((role) => String(role || "").trim().toLowerCase())
+            .filter((role) => ["owner", "manager", "viewer"].includes(role))
+        ));
+    const viewerType = isSuperadmin
+      ? "superadmin"
+      : viewerRoles.includes("owner")
+        ? "owner"
+        : viewerRoles.includes("manager")
+          ? "manager"
+          : "viewer";
+
     return res.json({
       ok: true,
       timezone: "Indian/Antananarivo",
-      viewer_type: isSuperadmin ? "superadmin" : "owner",
+      viewer_type: viewerType,
+      viewer_roles: viewerRoles,
       selected_month: monthMeta.key,
       selected_period_month: monthMeta.date,
       current_month: currentMonth,
