@@ -26887,6 +26887,114 @@ function dataUsageReadMetrics(detail, monthMeta, now = new Date()) {
   };
 }
 
+
+async function dataUsageLoadMonthAttribution(poolId, monthMeta) {
+  const startIso = new Date(
+    dataUsageMonthBoundaryUtcMs(monthMeta.year, monthMeta.month, false)
+  ).toISOString();
+  const endIso = new Date(
+    dataUsageMonthBoundaryUtcMs(monthMeta.year, monthMeta.month, true)
+  ).toISOString();
+
+  const PAGE_SIZE = 1000;
+  const MAX_ROWS = 10000;
+  const rows = [];
+
+  for (let offset = 0; offset < MAX_ROWS; offset += PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from("pool_wan_usage_snapshots")
+      .select(
+        "observed_at,delta_authenticated_bytes,delta_free_access_bytes," +
+        "delta_other_bytes,attribution_excess_bytes,attribution_status"
+      )
+      .eq("pool_id", poolId)
+      .gte("observed_at", startIso)
+      .lt("observed_at", endIso)
+      .not("attribution_status", "is", null)
+      .order("observed_at", { ascending: true })
+      .range(offset, offset + PAGE_SIZE - 1);
+
+    if (error) throw error;
+
+    const page = Array.isArray(data) ? data : [];
+    rows.push(...page);
+    if (page.length < PAGE_SIZE) break;
+
+    if (rows.length >= MAX_ROWS) {
+      throw new Error("data_usage_attribution_read_limit_reached");
+    }
+  }
+
+  let authenticated = 0n;
+  let freeAccess = 0n;
+  let other = 0n;
+  let excess = 0n;
+  let resolvedCount = 0;
+  let baselineCount = 0;
+  let partialCount = 0;
+  let overageCount = 0;
+  let firstTrackingAt = null;
+  let lastCompleteAt = null;
+  let latestStatus = null;
+
+  for (const row of rows) {
+    const status = String(row?.attribution_status || "").trim();
+    latestStatus = status || latestStatus;
+
+    if (!firstTrackingAt && ["baseline", "ok", "overage"].includes(status)) {
+      firstTrackingAt = row.observed_at || null;
+    }
+
+    if (status === "baseline") {
+      baselineCount += 1;
+      continue;
+    }
+    if (status === "partial") {
+      partialCount += 1;
+      continue;
+    }
+    if (!["ok", "overage"].includes(status)) continue;
+
+    resolvedCount += 1;
+    if (status === "overage") overageCount += 1;
+    lastCompleteAt = row.observed_at || lastCompleteAt;
+
+    authenticated += dataUsageBigInt(
+      dataUsageNormalizeIntegerString(row?.delta_authenticated_bytes)
+    );
+    freeAccess += dataUsageBigInt(
+      dataUsageNormalizeIntegerString(row?.delta_free_access_bytes)
+    );
+    other += dataUsageBigInt(
+      dataUsageNormalizeIntegerString(row?.delta_other_bytes)
+    );
+    excess += dataUsageBigInt(
+      dataUsageNormalizeIntegerString(row?.attribution_excess_bytes)
+    );
+  }
+
+  const componentTotal = authenticated + freeAccess + other;
+  const reconciledWan = componentTotal >= excess
+    ? componentTotal - excess
+    : 0n;
+
+  return {
+    ready: resolvedCount > 0,
+    authenticated_bytes: authenticated.toString(),
+    free_access_bytes: freeAccess.toString(),
+    other_bytes: other.toString(),
+    excess_bytes: excess.toString(),
+    reconciled_wan_bytes: reconciledWan.toString(),
+    first_tracking_at: firstTrackingAt,
+    last_complete_at: lastCompleteAt,
+    latest_status: latestStatus,
+    resolved_sample_count: resolvedCount,
+    baseline_sample_count: baselineCount,
+    partial_sample_count: partialCount,
+    overage_sample_count: overageCount,
+  };
+}
+
 async function dataUsageLoadMonthDetail(poolId, monthMeta, now = new Date()) {
   const { data, error } = await supabase.rpc("get_pool_wan_month_detail", {
     p_pool_id: poolId,
@@ -26902,6 +27010,7 @@ async function dataUsageLoadMonthDetail(poolId, monthMeta, now = new Date()) {
       })).filter((row) => row.date)
     : [];
   const metrics = dataUsageReadMetrics(detail, monthMeta, now);
+  const attribution = await dataUsageLoadMonthAttribution(poolId, monthMeta);
 
   return {
     period_month: monthMeta.date,
@@ -26918,6 +27027,7 @@ async function dataUsageLoadMonthDetail(poolId, monthMeta, now = new Date()) {
     sample_count: Number(detail.sample_count || 0) || 0,
     counter_reset_count: Number(detail.counter_reset_count || 0) || 0,
     coverage_complete_from_month_start: detail.coverage_complete_from_month_start === true,
+    attribution,
     daily,
   };
 }

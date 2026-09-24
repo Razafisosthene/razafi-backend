@@ -166,6 +166,147 @@
     return { label: "Suivi actif", cls: "" };
   }
 
+
+  function usageLevel(totalRaw) {
+    const total = safeBigInt(totalRaw);
+    if (total >= 500_000_000_000n) {
+      return { label: "Élevée", cls: "high", note: "500 GB ou plus suivis ce mois" };
+    }
+    if (total >= 250_000_000_000n) {
+      return { label: "Modérée", cls: "medium", note: "Entre 250 GB et 500 GB suivis ce mois" };
+    }
+    return { label: "Faible", cls: "low", note: "Moins de 250 GB suivis ce mois" };
+  }
+
+  function percentOf(partRaw, totalRaw) {
+    const part = safeBigInt(partRaw);
+    const total = safeBigInt(totalRaw);
+    if (total <= 0n) return 0;
+    const pct = Number(part * 10_000n / total) / 100;
+    return Math.max(0, Math.min(100, pct));
+  }
+
+  function attributionPeriodSentence(pool) {
+    const a = pool?.attribution || {};
+    const first = dateDayMonth(a.first_tracking_at);
+    const last = dateTimeShort(a.last_complete_at);
+    if (!a.ready) return "Répartition en cours d’initialisation";
+    if (first && last !== "—") return `réconciliée depuis le ${first} · dernier calcul ${last}`;
+    if (first) return `réconciliée depuis le ${first}`;
+    return "répartition disponible sur la période suivie";
+  }
+
+  function attributionHtml(pool) {
+    const a = pool?.attribution || {};
+    if (!a.ready) {
+      return `
+        <section class="rz-du-attribution">
+          <div class="rz-du-section-title">Répartition de la consommation</div>
+          <div class="rz-du-attribution-note">
+            Initialisation en cours. Les compteurs existants servent d’abord de baseline afin de ne pas attribuer artificiellement du trafic passé.
+          </div>
+        </section>
+      `;
+    }
+
+    const reconciled = safeBigInt(a.reconciled_wan_bytes);
+    const authenticated = safeBigInt(a.authenticated_bytes);
+    const freeAccess = safeBigInt(a.free_access_bytes);
+    const other = safeBigInt(a.other_bytes);
+    const excess = safeBigInt(a.excess_bytes);
+
+    const authPct = percentOf(authenticated, reconciled);
+    const freePct = percentOf(freeAccess, reconciled);
+    const otherPct = percentOf(other, reconciled);
+
+    const coverageText = `${formatBytes(reconciled)} de trafic WAN ${attributionPeriodSentence(pool)}`;
+
+    return `
+      <section class="rz-du-attribution">
+        <div class="rz-du-section-head">
+          <div>
+            <div class="rz-du-section-title">Répartition de la consommation</div>
+            <div class="rz-du-section-sub">${esc(coverageText)}</div>
+          </div>
+          ${a.latest_status === "partial" ? `<span class="rz-du-quality waiting">Mise à jour en cours</span>` : `<span class="rz-du-quality">Réconciliée</span>`}
+        </div>
+
+        <div class="rz-du-attribution-grid">
+          <div class="rz-du-attribution-item">
+            <div class="rz-du-attribution-label">Clients authentifiés RAZAFI</div>
+            <div class="rz-du-attribution-value">${esc(formatBytes(authenticated))}</div>
+            <div class="rz-du-attribution-pct">${esc(formatDecimal(authPct, 1))} %</div>
+          </div>
+          <div class="rz-du-attribution-item">
+            <div class="rz-du-attribution-label">Accès gratuit</div>
+            <div class="rz-du-attribution-value">${esc(formatBytes(freeAccess))}</div>
+            <div class="rz-du-attribution-pct">${esc(formatDecimal(freePct, 1))} %</div>
+          </div>
+          <div class="rz-du-attribution-item">
+            <div class="rz-du-attribution-label">Autres non attribué</div>
+            <div class="rz-du-attribution-value">${esc(formatBytes(other))}</div>
+            <div class="rz-du-attribution-pct">${esc(formatDecimal(otherPct, 1))} %</div>
+          </div>
+        </div>
+
+        <div class="rz-du-attribution-bar" aria-label="Répartition du trafic réconcilié">
+          <span class="auth" style="width:${authPct}%"></span>
+          <span class="free" style="width:${freePct}%"></span>
+          <span class="other" style="width:${otherPct}%"></span>
+        </div>
+
+        ${excess > 0n ? `
+          <div class="rz-du-attribution-warn">
+            Écart temporaire de synchronisation : ${esc(formatBytes(excess))}. RAZAFI conserve le WAN comme référence et ne crée jamais de valeur « Autres » négative.
+          </div>
+        ` : ""}
+      </section>
+    `;
+  }
+
+  function dailyChart(pool) {
+    const days = Array.isArray(pool?.daily) ? pool.daily : [];
+    if (days.length < 2) {
+      return `<div class="rz-du-chart-empty">La courbe apparaîtra après au moins deux journées mesurées.</div>`;
+    }
+
+    const values = days.map((row) => Number(safeBigInt(row?.total_bytes)));
+    const max = Math.max(1, ...values.filter(Number.isFinite));
+    const width = 720;
+    const height = 180;
+    const left = 12;
+    const right = 12;
+    const top = 14;
+    const bottom = 30;
+    const plotW = width - left - right;
+    const plotH = height - top - bottom;
+
+    const points = values.map((value, i) => {
+      const x = days.length === 1 ? left : left + (plotW * i / (days.length - 1));
+      const safe = Number.isFinite(value) && value >= 0 ? value : 0;
+      const y = top + plotH - (safe / max) * plotH;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(" ");
+
+    const firstLabel = days[0]?.date ? days[0].date.slice(8, 10) : "";
+    const lastLabel = days[days.length - 1]?.date ? days[days.length - 1].date.slice(8, 10) : "";
+
+    return `
+      <div class="rz-du-chart-wrap">
+        <svg class="rz-du-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Courbe quotidienne de consommation WAN">
+          <line x1="${left}" y1="${top + plotH}" x2="${width - right}" y2="${top + plotH}" class="axis"></line>
+          <polyline points="${points}" class="line"></polyline>
+          ${values.map((value, i) => {
+            const p = points.split(" ")[i].split(",");
+            return `<circle cx="${p[0]}" cy="${p[1]}" r="4" class="dot"><title>${esc(days[i]?.date || "")} · ${esc(formatBytes(safeBigInt(days[i]?.total_bytes)))}</title></circle>`;
+          }).join("")}
+          <text x="${left}" y="${height - 7}" class="label">${esc(firstLabel)}</text>
+          <text x="${width - right}" y="${height - 7}" text-anchor="end" class="label">${esc(lastLabel)}</text>
+        </svg>
+      </div>
+    `;
+  }
+
   function nextThresholdInfo(totalRaw) {
     const total = safeBigInt(totalRaw);
     const bandIndex = total / THRESHOLD_BYTES;
@@ -223,6 +364,7 @@
     const status = monitoringStatus(pool);
     const total = safeBigInt(pool?.total_bytes);
     const threshold = nextThresholdInfo(total);
+    const level = usageLevel(total);
     const hasSamples = Number(pool?.sample_count || 0) > 0;
 
     const averageValue = pool?.average_ready
@@ -255,6 +397,9 @@
         <div class="rz-du-hero">
           <div class="rz-du-value">${esc(formatBytes(total))}</div>
           <div class="rz-du-period">${esc(periodSentence(pool, response))}</div>
+          <div class="rz-du-level ${esc(level.cls)}" title="${esc(level.note)}">
+            Niveau de consommation : ${esc(level.label)}
+          </div>
           ${cNote ? `<div class="rz-du-coverage">${esc(cNote)}</div>` : ""}
         </div>
 
@@ -282,9 +427,14 @@
             </div>
           ` : ""}
 
+          ${attributionHtml(pool)}
+
           <details class="rz-du-history">
             <summary>Historique quotidien · ${esc(monthLabel(response.selected_month))}</summary>
-            <div class="rz-du-history-body">${dailyRows(pool)}</div>
+            <div class="rz-du-history-body">
+              ${dailyChart(pool)}
+              ${dailyRows(pool)}
+            </div>
           </details>
         ` : `
           <div class="rz-du-empty">Aucune donnée WAN disponible pour cette pool sur le mois sélectionné.</div>
