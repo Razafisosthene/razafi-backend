@@ -25546,6 +25546,11 @@ async function discoverWanForPool(poolId, { includeHotspotHosts = false } = {}) 
 
   const suggestedInterface = cleanOptionalText(result.suggested_interface, 128);
 
+  const hotspotProbeAvailable =
+    includeHotspotHosts === true &&
+    Array.isArray(result.hotspot_hosts) &&
+    Array.isArray(result.free_access_bindings);
+
   const hotspotHosts = includeHotspotHosts && Array.isArray(result.hotspot_hosts)
     ? result.hotspot_hosts.map((row) => {
         const rawMac = String(row?.mac_address || "").trim().toUpperCase();
@@ -25585,6 +25590,7 @@ async function discoverWanForPool(poolId, { includeHotspotHosts = false } = {}) 
     suggested_interface: suggestedInterface,
     candidates,
     ...(includeHotspotHosts ? {
+      hotspot_probe_available: hotspotProbeAvailable,
       hotspot_hosts: hotspotHosts,
       free_access_bindings: freeAccessBindings,
     } : {}),
@@ -26114,6 +26120,255 @@ async function runDataUsageAlertDelivery({ reason = "scheduled" } = {}) {
   }
 }
 
+
+function dataUsageAttributionSourceHash(poolId, sourceKind, rawKey) {
+  const pool = String(poolId || "").trim();
+  const kind = String(sourceKind || "").trim();
+  const raw = String(rawKey || "").trim();
+  if (!pool || !kind || !raw) throw new Error("data_usage_attribution_source_key_invalid");
+
+  // Stable pseudonymous key: no MAC, voucher or RADIUS session identifier is
+  // persisted in clear in the attribution state table.
+  return crypto
+    .createHash("sha256")
+    .update(`RAZAFI_DATA_USAGE_V1|${pool}|${kind}|${raw}`, "utf8")
+    .digest("hex");
+}
+
+async function loadRadiusDataUsageAttributionSources(pool) {
+  const nasId = String(pool?.radius_nas_id || "").trim();
+  if (!nasId) {
+    return { ok: false, error: "radius_nas_id_missing", sources: [] };
+  }
+
+  const PAGE_SIZE = 1000;
+  const MAX_ROWS = 10000;
+  const rows = [];
+
+  try {
+    for (let offset = 0; offset < MAX_ROWS; offset += PAGE_SIZE) {
+      const { data, error } = await supabase
+        .from("radius_acct_sessions")
+        .select("id,acct_session_id,total_bytes")
+        .eq("nas_id", nasId)
+        .order("id", { ascending: true })
+        .range(offset, offset + PAGE_SIZE - 1);
+
+      if (error) throw error;
+
+      const page = Array.isArray(data) ? data : [];
+      rows.push(...page);
+
+      if (page.length < PAGE_SIZE) break;
+
+      if (rows.length >= MAX_ROWS) {
+        return {
+          ok: false,
+          error: "radius_source_limit_reached",
+          sources: [],
+        };
+      }
+    }
+
+    const sources = [];
+    for (const row of rows) {
+      const sessionId = String(row?.acct_session_id || "").trim();
+      const counterRaw = String(row?.total_bytes ?? "").trim();
+
+      if (!sessionId || !/^\d+$/.test(counterRaw)) {
+        return {
+          ok: false,
+          error: "radius_source_invalid",
+          sources: [],
+        };
+      }
+
+      sources.push({
+        source_kind: "radius_session",
+        source_key_hash: dataUsageAttributionSourceHash(
+          pool.id,
+          "radius_session",
+          `${nasId}|${sessionId}`
+        ),
+        counter_bytes: counterRaw,
+      });
+    }
+
+    return {
+      ok: true,
+      sources,
+      source_count: sources.length,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: String(error?.message || "radius_source_read_failed").slice(0, 160),
+      sources: [],
+    };
+  }
+}
+
+function loadFreeAccessDataUsageAttributionSources(pool, discovery) {
+  const probeAvailable =
+    discovery?.hotspot_probe_available === true &&
+    Array.isArray(discovery?.hotspot_hosts) &&
+    Array.isArray(discovery?.free_access_bindings);
+
+  if (!probeAvailable) {
+    return {
+      ok: false,
+      error: "hotspot_probe_unavailable",
+      sources: [],
+    };
+  }
+
+  const activeFreeMacs = new Set(
+    discovery.free_access_bindings
+      .filter((row) =>
+        row?.disabled !== true &&
+        String(row?.binding_type || "").trim().toLowerCase() === "bypassed"
+      )
+      .map((row) => normalizeMacColon(row?.mac_address))
+      .filter(Boolean)
+  );
+
+  // One MAC can temporarily have more than one host row after an address
+  // transition. Keep the largest bypassed counter instead of double-counting
+  // old/stale host rows.
+  const bestCounterByMac = new Map();
+
+  for (const host of discovery.hotspot_hosts) {
+    const mac = normalizeMacColon(host?.mac_address);
+    if (!mac || !activeFreeMacs.has(mac) || host?.bypassed !== true) continue;
+
+    const inRaw = String(host?.bytes_in ?? "").trim();
+    const outRaw = String(host?.bytes_out ?? "").trim();
+    if (!/^\d+$/.test(inRaw) || !/^\d+$/.test(outRaw)) {
+      return {
+        ok: false,
+        error: "hotspot_source_counter_invalid",
+        sources: [],
+      };
+    }
+
+    let total;
+    try {
+      total = BigInt(inRaw) + BigInt(outRaw);
+    } catch (_) {
+      return {
+        ok: false,
+        error: "hotspot_source_counter_invalid",
+        sources: [],
+      };
+    }
+
+    const previous = bestCounterByMac.get(mac);
+    if (previous === undefined || total > previous) {
+      bestCounterByMac.set(mac, total);
+    }
+  }
+
+  const sources = [...bestCounterByMac.entries()].map(([mac, counter]) => ({
+    source_kind: "free_access_host",
+    source_key_hash: dataUsageAttributionSourceHash(
+      pool.id,
+      "free_access_host",
+      mac
+    ),
+    counter_bytes: counter.toString(),
+  }));
+
+  return {
+    ok: true,
+    sources,
+    source_count: sources.length,
+    configured_free_access_count: activeFreeMacs.size,
+  };
+}
+
+async function collectDataUsageAttributionSources(pool, discovery) {
+  const radius = await loadRadiusDataUsageAttributionSources(pool);
+  const freeAccess = loadFreeAccessDataUsageAttributionSources(pool, discovery);
+
+  const complete = radius.ok === true && freeAccess.ok === true;
+  return {
+    complete,
+    sources: complete
+      ? [...radius.sources, ...freeAccess.sources]
+      : [],
+    radius: {
+      ok: radius.ok === true,
+      source_count: Number(radius.source_count || 0),
+      error: radius.ok === true ? null : radius.error || "radius_unavailable",
+    },
+    free_access: {
+      ok: freeAccess.ok === true,
+      source_count: Number(freeAccess.source_count || 0),
+      configured_count: Number(freeAccess.configured_free_access_count || 0),
+      error: freeAccess.ok === true ? null : freeAccess.error || "free_access_unavailable",
+    },
+  };
+}
+
+async function applyDataUsageAttribution({
+  snapshotId,
+  pool,
+  observedAtIso,
+  discovery,
+}) {
+  const sourceState = await collectDataUsageAttributionSources(pool, discovery);
+
+  try {
+    const { data, error } = await supabase.rpc(
+      "apply_pool_data_usage_attribution",
+      {
+        p_snapshot_id: snapshotId,
+        p_pool_id: pool.id,
+        p_observed_at: observedAtIso,
+        p_sources: sourceState.sources,
+        p_sources_complete: sourceState.complete,
+      }
+    );
+    if (error) throw error;
+
+    return {
+      ok: true,
+      sources_complete: sourceState.complete,
+      radius: sourceState.radius,
+      free_access: sourceState.free_access,
+      result: data || null,
+    };
+  } catch (error) {
+    // WAN collection must survive an attribution failure.
+    try {
+      await supabase
+        .from("pool_wan_usage_snapshots")
+        .update({
+          delta_authenticated_bytes: null,
+          delta_free_access_bytes: null,
+          delta_other_bytes: null,
+          attribution_excess_bytes: null,
+          attribution_status: "partial",
+        })
+        .eq("id", snapshotId);
+    } catch (_) {}
+
+    console.error("[DATA USAGE ATTRIBUTION] failed", {
+      pool_id: pool.id,
+      snapshot_id: snapshotId,
+      error: String(error?.message || error).slice(0, 160),
+    });
+
+    return {
+      ok: false,
+      sources_complete: false,
+      radius: sourceState.radius,
+      free_access: sourceState.free_access,
+      error: "data_usage_attribution_failed",
+    };
+  }
+}
+
 async function collectWanUsageForPool(poolId, observedAt = new Date()) {
   const cleanPoolId = String(poolId || "").trim();
   if (!UUID_V1_TO_V5_RE.test(cleanPoolId)) throw new Error("data_usage_pool_id_invalid");
@@ -26124,7 +26379,10 @@ async function collectWanUsageForPool(poolId, observedAt = new Date()) {
 
   // Reuse the already-hardened agent call. The configured interface must still
   // be detected as the current default-route WAN before we trust its counters.
-  const discovery = await discoverWanForPool(cleanPoolId);
+  const discovery = await discoverWanForPool(
+    cleanPoolId,
+    { includeHotspotHosts: true }
+  );
   const wan = (discovery.candidates || []).find((row) => row?.name === configuredInterface);
   if (!wan) throw new Error("data_usage_wan_interface_not_detected");
   if (wan.disabled === true) throw new Error("data_usage_wan_interface_disabled");
@@ -26184,6 +26442,13 @@ async function collectWanUsageForPool(poolId, observedAt = new Date()) {
     .single();
   if (insertErr) throw insertErr;
 
+  const attribution = await applyDataUsageAttribution({
+    snapshotId: inserted.id,
+    pool,
+    observedAtIso: inserted.observed_at,
+    discovery,
+  });
+
   const periodMonth = dataUsageMonthStartInAntananarivo(observedAt);
   const { data: monthTotalRaw, error: monthErr } = await supabase.rpc(
     "get_pool_wan_month_total",
@@ -26220,6 +26485,20 @@ async function collectWanUsageForPool(poolId, observedAt = new Date()) {
     period_month: periodMonth,
     month_total_bytes: monthTotal,
     alerts_queued_go: alertsQueued,
+    attribution: {
+      ok: attribution.ok === true,
+      sources_complete: attribution.sources_complete === true,
+      status: attribution?.result?.status || (attribution.ok ? null : "partial"),
+      authenticated_bytes: attribution?.result?.authenticated_bytes ?? null,
+      free_access_bytes: attribution?.result?.free_access_bytes ?? null,
+      other_bytes: attribution?.result?.other_bytes ?? null,
+      excess_bytes: attribution?.result?.excess_bytes ?? null,
+      radius_source_count: Number(attribution?.radius?.source_count || 0),
+      free_access_source_count: Number(attribution?.free_access?.source_count || 0),
+      configured_free_access_count: Number(attribution?.free_access?.configured_count || 0),
+      radius_ok: attribution?.radius?.ok === true,
+      free_access_ok: attribution?.free_access?.ok === true,
+    },
   };
 }
 
