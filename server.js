@@ -25491,7 +25491,7 @@ async function getRouterForPool(poolId) {
   return { pool, router };
 }
 
-async function discoverWanForPool(poolId) {
+async function discoverWanForPool(poolId, { includeHotspotHosts = false } = {}) {
   const cleanPoolId = String(poolId || "").trim();
   if (!UUID_V1_TO_V5_RE.test(cleanPoolId)) {
     const err = new Error("data_usage_pool_id_invalid");
@@ -25519,6 +25519,7 @@ async function discoverWanForPool(poolId) {
       router_port: router.api_port || 8728,
       api_user: router.api_user,
       api_password: router.api_password,
+      include_hotspot_hosts: includeHotspotHosts === true,
     }),
   });
 
@@ -25545,6 +25546,35 @@ async function discoverWanForPool(poolId) {
 
   const suggestedInterface = cleanOptionalText(result.suggested_interface, 128);
 
+  const hotspotHosts = includeHotspotHosts && Array.isArray(result.hotspot_hosts)
+    ? result.hotspot_hosts.map((row) => {
+        const rawMac = String(row?.mac_address || "").trim().toUpperCase();
+        const mac = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(rawMac) ? rawMac : null;
+        return {
+          mac_address: mac,
+          address: cleanOptionalText(row?.address, 64),
+          to_address: cleanOptionalText(row?.to_address, 64),
+          server: cleanOptionalText(row?.server, 128),
+          authorized: row?.authorized === true,
+          bypassed: row?.bypassed === true,
+          bytes_in: /^\d+$/.test(String(row?.bytes_in ?? "")) ? String(row.bytes_in) : null,
+          bytes_out: /^\d+$/.test(String(row?.bytes_out ?? "")) ? String(row.bytes_out) : null,
+        };
+      }).filter((row) => row.mac_address).slice(0, 512)
+    : [];
+
+  const freeAccessBindings = includeHotspotHosts && Array.isArray(result.free_access_bindings)
+    ? result.free_access_bindings.map((row) => {
+        const rawMac = String(row?.mac_address || "").trim().toUpperCase();
+        const mac = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(rawMac) ? rawMac : null;
+        return {
+          mac_address: mac,
+          binding_type: cleanOptionalText(row?.binding_type, 32),
+          disabled: row?.disabled === true,
+        };
+      }).filter((row) => row.mac_address).slice(0, 512)
+    : [];
+
   return {
     ok: true,
     pool_id: pool.id,
@@ -25554,6 +25584,10 @@ async function discoverWanForPool(poolId) {
     configured_wan_interface: cleanOptionalText(router.wan_interface, 128),
     suggested_interface: suggestedInterface,
     candidates,
+    ...(includeHotspotHosts ? {
+      hotspot_hosts: hotspotHosts,
+      free_access_bindings: freeAccessBindings,
+    } : {}),
   };
 }
 
@@ -26721,7 +26755,7 @@ app.post("/api/admin/data-usage/discover-wan", requireAdmin, requireSuperadmin, 
       return res.status(400).json({ error: "pool_id_invalid" });
     }
 
-    const result = await discoverWanForPool(poolId);
+    const result = await discoverWanForPool(poolId, { includeHotspotHosts: true });
     return res.json(result);
   } catch (e) {
     const code = String(e?.message || "data_usage_discovery_failed");
