@@ -25442,7 +25442,7 @@ async function getRouterForPool(poolId) {
 
   const { data: router, error: rErr } = await supabase
     .from("mikrotik_routers")
-    .select("nas_id,display_name,api_host,api_port,api_user,api_password,api_enabled")
+    .select("nas_id,display_name,api_host,api_port,api_user,api_password,api_enabled,wan_interface")
     .eq("nas_id", pool.radius_nas_id)
     .maybeSingle();
 
@@ -25454,6 +25454,72 @@ async function getRouterForPool(poolId) {
   }
 
   return { pool, router };
+}
+
+async function discoverWanForPool(poolId) {
+  const cleanPoolId = String(poolId || "").trim();
+  if (!UUID_V1_TO_V5_RE.test(cleanPoolId)) {
+    const err = new Error("data_usage_pool_id_invalid");
+    err.status = 400;
+    throw err;
+  }
+
+  const { pool, router } = await getRouterForPool(cleanPoolId);
+  const agentUrl = String(process.env.DATA_USAGE_AGENT_URL || "").trim();
+  const agentSecret = String(process.env.DATA_USAGE_AGENT_SECRET || "").trim();
+
+  if (!agentUrl) throw new Error("DATA_USAGE_AGENT_URL_required");
+  if (!agentSecret) throw new Error("DATA_USAGE_AGENT_SECRET_required");
+
+  const resp = await fetch(agentUrl, {
+    method: "POST",
+    signal: AbortSignal.timeout(12000),
+    headers: {
+      "Content-Type": "application/json",
+      "x-secret": agentSecret,
+    },
+    body: JSON.stringify({
+      nas_id: pool.radius_nas_id,
+      router_ip: router.api_host,
+      router_port: router.api_port || 8728,
+      api_user: router.api_user,
+      api_password: router.api_password,
+    }),
+  });
+
+  const result = await resp.json().catch(() => ({}));
+
+  if (!resp.ok || !result.ok) {
+    // Never expose agent internals or router credentials through the Admin API.
+    throw new Error(`data_usage_agent_failed_${resp.status}`);
+  }
+
+  const candidates = Array.isArray(result.candidates)
+    ? result.candidates.map((row) => ({
+        name: cleanOptionalText(row?.name, 128),
+        interface_type: cleanOptionalText(row?.interface_type, 80),
+        running: row?.running === true,
+        disabled: row?.disabled === true,
+        rx_bytes: /^\d+$/.test(String(row?.rx_bytes ?? "")) ? String(row.rx_bytes) : null,
+        tx_bytes: /^\d+$/.test(String(row?.tx_bytes ?? "")) ? String(row.tx_bytes) : null,
+        reasons: Array.isArray(row?.reasons)
+          ? row.reasons.map((x) => cleanOptionalText(x, 80)).filter(Boolean).slice(0, 8)
+          : [],
+      }))
+    : [];
+
+  const suggestedInterface = cleanOptionalText(result.suggested_interface, 128);
+
+  return {
+    ok: true,
+    pool_id: pool.id,
+    pool_name: pool.name || null,
+    pool_display_name: buildPoolDisplayName(pool) || pool.name || null,
+    nas_id: pool.radius_nas_id,
+    configured_wan_interface: cleanOptionalText(router.wan_interface, 128),
+    suggested_interface: suggestedInterface,
+    candidates,
+  };
 }
 
 async function syncFreeAccessPool(poolId) {
@@ -25624,6 +25690,40 @@ async function loadVoucherSessionForAdminScope(req, res, sessionId, select = "id
 }
 
 // GET /api/admin/free-access-devices
+// Data Usage V1: read-only WAN discovery for Superadmin setup/validation.
+// No router credentials or agent secrets are ever returned to the browser.
+app.post("/api/admin/data-usage/discover-wan", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    const poolId = String(req.body?.pool_id || "").trim();
+    if (!UUID_V1_TO_V5_RE.test(poolId)) {
+      return res.status(400).json({ error: "pool_id_invalid" });
+    }
+
+    const result = await discoverWanForPool(poolId);
+    return res.json(result);
+  } catch (e) {
+    const code = String(e?.message || "data_usage_discovery_failed");
+
+    if (code === "pool_not_found") {
+      return res.status(404).json({ error: "pool_not_found" });
+    }
+    if ([
+      "pool_has_no_radius_nas_id",
+      "router_not_found_for_pool",
+      "router_api_disabled",
+      "router_api_credentials_missing",
+      "DATA_USAGE_AGENT_URL_required",
+      "DATA_USAGE_AGENT_SECRET_required",
+    ].includes(code)) {
+      console.error("[DATA USAGE DISCOVERY CONFIG]", code);
+      return res.status(503).json({ error: "data_usage_unavailable" });
+    }
+
+    console.error("[DATA USAGE DISCOVERY]", code.slice(0, 160));
+    return res.status(502).json({ error: "router_unavailable" });
+  }
+});
+
 app.get("/api/admin/free-access-devices", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
@@ -37769,6 +37869,8 @@ function assertProductionSecurityEnv() {
     "RADIUS_ALLOWED_IPS",
     "FREE_ACCESS_SYNC_AGENT_SECRET",
     "FREE_ACCESS_SYNC_AGENT_URL",
+    "DATA_USAGE_AGENT_SECRET",
+    "DATA_USAGE_AGENT_URL",
   ];
 
   for (const name of required) {
@@ -37813,6 +37915,7 @@ function assertProductionSecurityEnv() {
   try {
     const urlsToCheck = [
       ["FREE_ACCESS_SYNC_AGENT_URL", process.env.FREE_ACCESS_SYNC_AGENT_URL],
+      ["DATA_USAGE_AGENT_URL", process.env.DATA_USAGE_AGENT_URL],
       ["BLOCKED_DEVICE_SYNC_AGENT_URL", process.env.BLOCKED_DEVICE_SYNC_AGENT_URL || process.env.BLOCKED_DEVICES_SYNC_AGENT_URL],
       ["BLOCKED_DEVICE_UNBLOCK_AGENT_URL", process.env.BLOCKED_DEVICE_UNBLOCK_AGENT_URL || process.env.BLOCKED_DEVICES_UNBLOCK_AGENT_URL],
       ["BLOCKED_DEVICE_SYNC_AGENT_BASE_URL", process.env.BLOCKED_DEVICE_SYNC_AGENT_BASE_URL],
