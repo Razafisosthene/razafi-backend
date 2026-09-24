@@ -345,6 +345,9 @@
           <a class="rz-item" data-href="/admin/clients.html" href="/admin/clients.html">
             <span class="rz-item-label">Clients</span>
           </a>
+          <a class="rz-item" data-href="/admin/data-usage.html" href="/admin/data-usage.html" id="rzNavDataUsage" style="display:none;">
+            <span class="rz-item-label">Consommation des données</span>
+          </a>
           <a class="rz-item" data-href="/admin/aps.html" href="/admin/aps.html" id="rzNavAPs">
             <span class="rz-item-label">APs</span>
           </a>
@@ -734,6 +737,7 @@
       const canViewOwnerSubscription = permissions.billing_owner_subscription_view === true;
 
       const elAPs = $("#rzNavAPs");
+      const elDataUsage = $("#rzNavDataUsage");
       const elSimulator = $("#rzNavSimulator");
       const elAudit = $("#rzNavAudit");
       const elUsers = $("#rzNavUsers");
@@ -746,6 +750,7 @@
       const elMaintenance = $("#rzNavMaintenance");
 
       if (elAPs) elAPs.style.display = isSuper ? "" : "none";
+      if (elDataUsage) elDataUsage.style.display = permissions.data_usage_view === true ? "" : "none";
       if (elSimulator) elSimulator.style.display = (isSuper || permissions.plan_simulator_simulate === true) ? "" : "none";
       if (elAudit) elAudit.style.display = isSuper ? "" : "none";
       if (elUsers) elUsers.style.display = canManageUsers ? "" : "none";
