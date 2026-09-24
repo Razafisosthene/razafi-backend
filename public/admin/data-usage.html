@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAZAFI Admin — Consommation des données</title>
+  <link rel="stylesheet" href="/admin/admin.css?v=admin-wide-1" />
+
+  <style>
+    .rz-du-shell{display:flex;flex-direction:column;gap:14px;}
+    .rz-du-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+    .rz-du-title-block{min-width:0;}
+    .rz-du-me{white-space:normal;line-height:1.25;}
+    .rz-du-me strong{display:block;color:var(--rz-text,#111827);font-weight:900;margin-top:2px;word-break:break-word;}
+
+    .rz-du-card{
+      border-radius:24px;
+      background:rgba(255,255,255,.78);
+      border:1px solid rgba(255,255,255,.90);
+      box-shadow:0 12px 28px rgba(15,23,42,.08);
+    }
+
+    .rz-du-toolbar{
+      display:grid;
+      grid-template-columns:minmax(170px,.6fr) minmax(220px,.9fr) auto;
+      gap:10px;
+      align-items:end;
+      padding:14px;
+    }
+    .rz-du-field label{
+      display:block;
+      margin:0 0 6px;
+      color:var(--rz-muted,#6b7280);
+      font-size:11px;
+      font-weight:900;
+      text-transform:uppercase;
+      letter-spacing:.045em;
+    }
+    .rz-du-field input,.rz-du-field select{margin:0;}
+    .rz-du-refresh{width:auto!important;min-height:44px;}
+
+    .rz-du-msg{
+      display:none;
+      padding:11px 13px;
+      border-radius:16px;
+      font-size:13px;
+      font-weight:800;
+      background:rgba(13,110,253,.07);
+      border:1px solid rgba(13,110,253,.12);
+      color:#1d4ed8;
+    }
+    .rz-du-msg.is-visible{display:block;}
+    .rz-du-msg.is-error{
+      background:rgba(239,68,68,.08);
+      border-color:rgba(239,68,68,.16);
+      color:#b91c1c;
+    }
+
+    .rz-du-total{
+      display:none;
+      padding:18px;
+      align-items:center;
+      justify-content:space-between;
+      gap:16px;
+    }
+    .rz-du-total.is-visible{display:flex;}
+    .rz-du-total-label{font-size:13px;color:var(--rz-muted,#6b7280);font-weight:800;}
+    .rz-du-total-value{
+      margin-top:4px;
+      font-size:28px;
+      line-height:1;
+      letter-spacing:-.04em;
+      font-weight:950;
+      color:var(--rz-text,#111827);
+    }
+    .rz-du-total-note{
+      max-width:420px;
+      color:var(--rz-muted,#6b7280);
+      font-size:12px;
+      font-weight:700;
+      line-height:1.45;
+      text-align:right;
+    }
+
+    .rz-du-list{display:grid;gap:14px;}
+
+    .rz-du-pool{
+      padding:18px;
+      overflow:hidden;
+    }
+    .rz-du-pool-head{
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:12px;
+      margin-bottom:14px;
+    }
+    .rz-du-pool-name{
+      font-size:19px;
+      line-height:1.2;
+      letter-spacing:-.025em;
+      font-weight:950;
+      color:var(--rz-text,#111827);
+    }
+    .rz-du-pool-sub{
+      margin-top:4px;
+      color:var(--rz-muted,#6b7280);
+      font-size:12px;
+      font-weight:750;
+    }
+    .rz-du-status{
+      display:inline-flex;
+      align-items:center;
+      gap:7px;
+      flex:0 0 auto;
+      padding:7px 10px;
+      border-radius:999px;
+      background:rgba(22,163,74,.10);
+      border:1px solid rgba(22,163,74,.16);
+      color:#15803d;
+      font-size:11px;
+      font-weight:900;
+      white-space:nowrap;
+    }
+    .rz-du-status::before{
+      content:"";
+      width:7px;height:7px;border-radius:999px;background:currentColor;
+    }
+    .rz-du-status.waiting{
+      background:rgba(100,116,139,.09);
+      border-color:rgba(100,116,139,.15);
+      color:#64748b;
+    }
+
+    .rz-du-hero{
+      padding:17px 0 15px;
+      border-top:1px solid rgba(17,24,39,.06);
+      border-bottom:1px solid rgba(17,24,39,.06);
+    }
+    .rz-du-value{
+      font-size:clamp(34px,7vw,52px);
+      line-height:.98;
+      letter-spacing:-.055em;
+      font-weight:950;
+      color:var(--rz-text,#111827);
+    }
+    .rz-du-period{
+      margin-top:7px;
+      font-size:14px;
+      font-weight:850;
+      color:rgba(17,24,39,.70);
+    }
+    .rz-du-coverage{
+      margin-top:9px;
+      display:inline-flex;
+      padding:7px 10px;
+      border-radius:999px;
+      background:rgba(245,158,11,.09);
+      border:1px solid rgba(245,158,11,.15);
+      color:#92400e;
+      font-size:11px;
+      font-weight:850;
+    }
+
+    .rz-du-metrics{
+      display:grid;
+      grid-template-columns:repeat(3,minmax(0,1fr));
+      gap:10px;
+      margin-top:14px;
+    }
+    .rz-du-metric{
+      min-width:0;
+      padding:13px;
+      border-radius:18px;
+      background:rgba(248,250,252,.85);
+      border:1px solid rgba(17,24,39,.06);
+    }
+    .rz-du-metric-label{
+      color:var(--rz-muted,#6b7280);
+      font-size:11px;
+      font-weight:850;
+      text-transform:uppercase;
+      letter-spacing:.035em;
+    }
+    .rz-du-metric-value{
+      margin-top:6px;
+      color:var(--rz-text,#111827);
+      font-size:17px;
+      font-weight:950;
+      letter-spacing:-.025em;
+      overflow-wrap:anywhere;
+    }
+    .rz-du-metric-note{
+      margin-top:4px;
+      color:var(--rz-muted,#6b7280);
+      font-size:11px;
+      font-weight:700;
+      line-height:1.35;
+    }
+
+    .rz-du-threshold{margin-top:14px;}
+    .rz-du-threshold-row{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      color:rgba(17,24,39,.72);
+      font-size:12px;
+      font-weight:850;
+    }
+    .rz-du-progress{
+      height:8px;
+      margin-top:8px;
+      border-radius:999px;
+      overflow:hidden;
+      background:rgba(17,24,39,.07);
+    }
+    .rz-du-progress > span{
+      display:block;
+      height:100%;
+      min-width:0;
+      max-width:100%;
+      border-radius:inherit;
+      background:currentColor;
+      color:#0d6efd;
+    }
+
+    .rz-du-history{
+      margin-top:14px;
+      border-radius:18px;
+      background:rgba(248,250,252,.72);
+      border:1px solid rgba(17,24,39,.06);
+      overflow:hidden;
+    }
+    .rz-du-history summary{
+      cursor:pointer;
+      list-style:none;
+      padding:13px 14px;
+      font-size:13px;
+      font-weight:900;
+      color:var(--rz-text,#111827);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+    }
+    .rz-du-history summary::-webkit-details-marker{display:none;}
+    .rz-du-history summary::after{content:"⌄";color:var(--rz-muted,#6b7280);font-size:17px;}
+    .rz-du-history[open] summary::after{content:"⌃";}
+    .rz-du-history-body{
+      padding:0 14px 13px;
+      border-top:1px solid rgba(17,24,39,.05);
+    }
+    .rz-du-day{
+      display:grid;
+      grid-template-columns:minmax(88px,.5fr) minmax(120px,1fr) auto;
+      gap:10px;
+      align-items:center;
+      padding:10px 0;
+      border-bottom:1px solid rgba(17,24,39,.05);
+    }
+    .rz-du-day:last-child{border-bottom:0;}
+    .rz-du-day-date{font-size:12px;font-weight:850;color:rgba(17,24,39,.76);}
+    .rz-du-day-bar{
+      height:7px;
+      border-radius:999px;
+      overflow:hidden;
+      background:rgba(17,24,39,.06);
+    }
+    .rz-du-day-bar > span{
+      display:block;height:100%;border-radius:inherit;
+      background:#111827;
+      opacity:.72;
+    }
+    .rz-du-day-value{font-size:12px;font-weight:900;color:var(--rz-text,#111827);text-align:right;}
+
+    .rz-du-reset{
+      margin-top:12px;
+      padding:10px 12px;
+      border-radius:15px;
+      background:rgba(245,158,11,.09);
+      border:1px solid rgba(245,158,11,.15);
+      color:#92400e;
+      font-size:12px;
+      font-weight:800;
+      line-height:1.4;
+    }
+
+    .rz-du-empty{
+      padding:24px 18px;
+      text-align:center;
+      color:var(--rz-muted,#6b7280);
+      font-size:13px;
+      font-weight:800;
+    }
+
+    .rz-du-footnote{
+      padding:14px 16px;
+      color:var(--rz-muted,#6b7280);
+      font-size:11px;
+      font-weight:700;
+      line-height:1.5;
+    }
+    .rz-du-footnote strong{color:rgba(17,24,39,.78);}
+
+    @media(max-width:820px){
+      .rz-du-toolbar{grid-template-columns:1fr 1fr;}
+      .rz-du-refresh{grid-column:1/-1;width:100%!important;}
+      .rz-du-metrics{grid-template-columns:1fr;}
+    }
+    @media(max-width:640px){
+      .rz-du-card{border-radius:20px;}
+      .rz-du-toolbar{grid-template-columns:1fr;}
+      .rz-du-refresh{grid-column:auto;}
+      .rz-du-total.is-visible{display:block;}
+      .rz-du-total-note{margin-top:9px;text-align:left;}
+      .rz-du-pool{padding:15px;}
+      .rz-du-pool-head{align-items:center;}
+      .rz-du-value{font-size:38px;}
+      .rz-du-day{grid-template-columns:88px 1fr auto;}
+    }
+  </style>
+</head>
+
+<body class="rz-admin-shell data-usage-page">
+  <div class="login-container">
+    <div class="card rz-du-shell" style="max-width:1180px;width:96%;">
+      <div class="topbar rz-du-header">
+        <div class="title rz-du-title-block">
+          <h1 class="rz-hero-title">Consommation des données</h1>
+          <div id="me" class="subtitle rz-du-me">Vérification de la session…</div>
+        </div>
+      </div>
+
+      <section class="rz-du-card rz-du-toolbar" aria-label="Filtres">
+        <div class="rz-du-field">
+          <label for="monthPicker">Mois</label>
+          <input id="monthPicker" type="month" />
+        </div>
+        <div class="rz-du-field">
+          <label for="poolFilter">Pool</label>
+          <select id="poolFilter">
+            <option value="all">Tous les pools</option>
+          </select>
+        </div>
+        <button id="refreshBtn" class="filter-btn primary rz-du-refresh" type="button">Actualiser</button>
+      </section>
+
+      <div id="msg" class="rz-du-msg" role="status" aria-live="polite"></div>
+
+      <section id="globalSummary" class="rz-du-card rz-du-total" aria-label="Total des pools visibles">
+        <div>
+          <div class="rz-du-total-label">Total des pools visibles</div>
+          <div id="globalTotal" class="rz-du-total-value">—</div>
+        </div>
+        <div id="globalNote" class="rz-du-total-note"></div>
+      </section>
+
+      <main id="poolList" class="rz-du-list">
+        <section class="rz-du-card rz-du-empty">Chargement…</section>
+      </main>
+
+      <section class="rz-du-card rz-du-footnote">
+        <strong>Mesure RAZAFI :</strong> cette page utilise le trafic WAN réellement observé sur le MikroTik.
+        Pour un mois commencé avant l’activation du suivi, RAZAFI affiche uniquement la période réellement mesurée.
+      </section>
+    </div>
+  </div>
+
+  <script src="/admin/nav.js?v=admin-wide-1"></script>
+  <script src="/admin/data-usage.js?v=data-usage-v1"></script>
+</body>
+</html>
