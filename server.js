@@ -18228,6 +18228,23 @@ const DATA_USAGE_COLLECTOR_STARTUP_DELAY_MS = Math.max(
   Math.min(5 * 60_000, parseInt(process.env.DATA_USAGE_COLLECTOR_STARTUP_DELAY_MS || "15000", 10) || 15_000)
 );
 
+// Data Usage V1.2 — monthly +500 GB threshold alerts.
+// Detection/queue creation is part of the WAN collector. Email delivery is
+// deliberately opt-in until the Owner + Superadmin test email is validated.
+const DATA_USAGE_ALERT_EMAILS_ENABLED = ["1", "true", "yes", "on"].includes(
+  String(process.env.DATA_USAGE_ALERT_EMAILS_ENABLED || "false").trim().toLowerCase()
+);
+const DATA_USAGE_ALERT_STEP_GO = 500;
+const DATA_USAGE_ALERT_STEP_BYTES = 500_000_000_000n; // decimal 500 GB
+const DATA_USAGE_ALERT_RETRY_AFTER_MS = Math.max(
+  15 * 60_000,
+  Math.min(24 * 60 * 60_000, parseInt(process.env.DATA_USAGE_ALERT_RETRY_AFTER_MS || "3600000", 10) || 3_600_000)
+);
+const DATA_USAGE_ALERT_BATCH_SIZE = Math.max(
+  1,
+  Math.min(100, parseInt(process.env.DATA_USAGE_ALERT_BATCH_SIZE || "20", 10) || 20)
+);
+
 // PP-2 — dedicated secret used only to pseudonymize a client device for
 // personalized-plan quotes. The public feature fails closed until configured.
 const PERSONALIZED_PLAN_DEVICE_HASH_SECRET = String(
@@ -25564,6 +25581,505 @@ function dataUsageMonthStartInAntananarivo(date = new Date()) {
   return `${year}-${month}-01`;
 }
 
+
+function dataUsageAlertThresholdLabel(thresholdGo) {
+  const go = Math.max(0, Number(thresholdGo || 0));
+  if (go >= 1000 && go % 1000 === 0) {
+    return `${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 }).format(go / 1000)} TB`;
+  }
+  if (go >= 1000) {
+    return `${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 1 }).format(go / 1000)} TB`;
+  }
+  return `${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 }).format(go)} GB`;
+}
+
+function dataUsageAlertBytesLabel(rawBytes) {
+  let bytes = 0n;
+  try {
+    const raw = String(rawBytes ?? "0").trim();
+    bytes = /^\d+$/.test(raw) ? BigInt(raw) : 0n;
+  } catch (_) {
+    bytes = 0n;
+  }
+  const n = Number(bytes);
+  if (!Number.isFinite(n)) return `${bytes.toString()} octets`;
+  if (n >= 1_000_000_000_000) {
+    return `${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(n / 1_000_000_000_000)} TB`;
+  }
+  if (n >= 1_000_000_000) {
+    return `${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(n / 1_000_000_000)} GB`;
+  }
+  if (n >= 1_000_000) {
+    return `${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 1 }).format(n / 1_000_000)} MB`;
+  }
+  return `${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 }).format(n)} octets`;
+}
+
+function dataUsageAlertMonthLabel(periodMonth) {
+  const raw = String(periodMonth || "").trim();
+  const d = /^\d{4}-\d{2}-01$/.test(raw)
+    ? new Date(`${raw}T12:00:00+03:00`)
+    : new Date(raw);
+  if (!Number.isFinite(d.getTime())) return raw || "période mensuelle";
+  return new Intl.DateTimeFormat("fr-FR", {
+    timeZone: "Indian/Antananarivo",
+    month: "long",
+    year: "numeric",
+  }).format(d);
+}
+
+function dataUsageAlertDateTimeLabel(value) {
+  const d = new Date(value);
+  if (!Number.isFinite(d.getTime())) return "";
+  return new Intl.DateTimeFormat("fr-FR", {
+    timeZone: "Indian/Antananarivo",
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(d);
+}
+
+function dataUsageAlertPoolDisplayName(pool) {
+  return buildPoolDisplayName(pool) || pool?.name || "Pool RAZAFI";
+}
+
+async function ensureDataUsageThresholdAlerts({
+  pool,
+  periodMonth,
+  monthTotalBytes,
+  reachedAt,
+}) {
+  const total = dataUsageBigInt(monthTotalBytes, "data_usage_month_total_invalid");
+  const reachedBands = total / DATA_USAGE_ALERT_STEP_BYTES;
+  if (reachedBands <= 0n) return [];
+
+  const maxThresholdGo = reachedBands * BigInt(DATA_USAGE_ALERT_STEP_GO);
+
+  const { data: existingRows, error: existingErr } = await supabase
+    .from("pool_wan_usage_alerts")
+    .select("threshold_go")
+    .eq("pool_id", pool.id)
+    .eq("period_month", periodMonth);
+  if (existingErr) throw existingErr;
+
+  const existing = new Set(
+    (existingRows || [])
+      .map((row) => Number(row?.threshold_go))
+      .filter((value) => Number.isInteger(value) && value > 0)
+  );
+
+  const pending = [];
+  for (
+    let thresholdGo = BigInt(DATA_USAGE_ALERT_STEP_GO);
+    thresholdGo <= maxThresholdGo;
+    thresholdGo += BigInt(DATA_USAGE_ALERT_STEP_GO)
+  ) {
+    const asNumber = Number(thresholdGo);
+    if (!Number.isSafeInteger(asNumber) || asNumber > 2_147_483_647) {
+      throw new Error("data_usage_alert_threshold_overflow");
+    }
+    if (existing.has(asNumber)) continue;
+
+    pending.push({
+      pool_id: pool.id,
+      period_month: periodMonth,
+      threshold_go: asNumber,
+      reached_bytes: total.toString(),
+      reached_at: reachedAt,
+    });
+  }
+
+  if (!pending.length) return [];
+
+  const { data: queued, error: queueErr } = await supabase
+    .from("pool_wan_usage_alerts")
+    .upsert(pending, {
+      onConflict: "pool_id,period_month,threshold_go",
+      ignoreDuplicates: true,
+    })
+    .select("id,threshold_go,reached_bytes,reached_at");
+  if (queueErr) throw queueErr;
+
+  const thresholds = (queued || []).map((row) => Number(row.threshold_go)).filter(Number.isFinite);
+  if (thresholds.length) {
+    console.info("[DATA USAGE ALERT] thresholds queued", {
+      pool_id: pool.id,
+      period_month: periodMonth,
+      thresholds_go: thresholds,
+    });
+  }
+  return thresholds;
+}
+
+async function loadDataUsageAlertSuperadminEmail() {
+  const { data, error } = await supabase
+    .from("admin_users")
+    .select("id,email,is_active,role,created_at")
+    .eq("role", "superadmin")
+    .eq("is_active", true)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+
+  const canonical = normalizeEmail(data?.email);
+  if (canonical && isValidEmail(canonical)) return canonical;
+
+  const fallback = normalizeEmail(OPS_EMAIL);
+  return fallback && isValidEmail(fallback) ? fallback : "";
+}
+
+async function loadDataUsageAlertContexts(alertRows) {
+  const rows = Array.isArray(alertRows) ? alertRows : [];
+  const poolIds = [...new Set(rows.map((row) => String(row?.pool_id || "")).filter(Boolean))];
+
+  let pools = [];
+  if (poolIds.length) {
+    const { data, error } = await supabase
+      .from("internet_pools")
+      .select("id,name,brand_name,owner_admin_user_id")
+      .in("id", poolIds);
+    if (error) throw error;
+    pools = data || [];
+  }
+
+  const ownerIds = [...new Set(pools.map((pool) => String(pool?.owner_admin_user_id || "")).filter(Boolean))];
+  let owners = [];
+  if (ownerIds.length) {
+    const { data, error } = await supabase
+      .from("admin_users")
+      .select("id,email,is_active")
+      .in("id", ownerIds);
+    if (error) throw error;
+    owners = data || [];
+  }
+
+  const poolMap = new Map(pools.map((pool) => [String(pool.id), pool]));
+  const ownerMap = new Map(owners.map((owner) => [String(owner.id), owner]));
+  const superadminEmail = await loadDataUsageAlertSuperadminEmail();
+
+  return rows.map((row) => {
+    const pool = poolMap.get(String(row.pool_id)) || null;
+    const owner = pool ? ownerMap.get(String(pool.owner_admin_user_id || "")) || null : null;
+    const ownerEmailRaw = normalizeEmail(owner?.email);
+    const ownerEmail = ownerEmailRaw && isValidEmail(ownerEmailRaw) ? ownerEmailRaw : "";
+    return {
+      row,
+      pool,
+      owner,
+      owner_email: ownerEmail,
+      superadmin_email: superadminEmail,
+    };
+  });
+}
+
+function buildDataUsageThresholdEmail({
+  audience,
+  pool,
+  alert,
+  testOnly = false,
+}) {
+  const poolName = dataUsageAlertPoolDisplayName(pool);
+  const threshold = dataUsageAlertThresholdLabel(alert?.threshold_go || DATA_USAGE_ALERT_STEP_GO);
+  const measured = dataUsageAlertBytesLabel(alert?.reached_bytes || "0");
+  const month = dataUsageAlertMonthLabel(alert?.period_month);
+  const detectedAt = dataUsageAlertDateTimeLabel(alert?.reached_at || new Date().toISOString());
+  const isSuperadmin = audience === "superadmin";
+
+  if (testOnly) {
+    return {
+      subject: `[TEST] RAZAFI — Alerte consommation des données · ${poolName}`,
+      text: [
+        "Bonjour,",
+        "",
+        "Ceci est un test technique du système d’alerte Data Usage RAZAFI.",
+        "Aucun palier réel de consommation n’est déclaré atteint par cet email.",
+        "",
+        `Pool : ${poolName}`,
+        `Destinataire : ${isSuperadmin ? "Superadmin" : "Propriétaire canonique"}`,
+        "",
+        "Si vous recevez cet email, la chaîne d’envoi Data Usage fonctionne correctement.",
+        "",
+        "RAZAFI",
+      ].join("\n"),
+    };
+  }
+
+  return {
+    subject: `RAZAFI — ${threshold} de données atteints · ${poolName}`,
+    text: [
+      "Bonjour,",
+      "",
+      isSuperadmin
+        ? "Une pool RAZAFI a franchi un nouveau palier mensuel de consommation WAN."
+        : "Votre pool a franchi un nouveau palier mensuel de consommation WAN.",
+      "",
+      `Pool : ${poolName}`,
+      `Mois : ${month}`,
+      `Palier atteint : ${threshold}`,
+      `Consommation mesurée lors de la détection : ${measured}`,
+      detectedAt ? `Détection : ${detectedAt}` : "",
+      "",
+      "Ce palier est un seuil de suivi RAZAFI. Il ne constitue pas une limite Starlink et n’entraîne aucune coupure automatique.",
+      "",
+      "Consultez RAZAFI Admin > Consommation des données pour le détail.",
+      "",
+      "RAZAFI",
+    ].filter(Boolean).join("\n"),
+  };
+}
+
+async function claimDataUsageAlertRecipient(alert, audience) {
+  const owner = audience === "owner";
+  const sentCol = owner ? "owner_email_sent_at" : "superadmin_email_sent_at";
+  const claimCol = owner ? "owner_email_claimed_at" : "superadmin_email_claimed_at";
+  const attemptsCol = owner ? "owner_email_attempt_count" : "superadmin_email_attempt_count";
+
+  if (alert?.[sentCol]) return null;
+
+  const nowMs = Date.now();
+  const retryCutoffMs = nowMs - DATA_USAGE_ALERT_RETRY_AFTER_MS;
+  const existingClaim = alert?.[claimCol] ? new Date(alert[claimCol]) : null;
+
+  if (existingClaim && Number.isFinite(existingClaim.getTime())) {
+    if (existingClaim.getTime() > retryCutoffMs) return null;
+
+    // Release only the exact stale claim we observed. If another worker has
+    // already renewed it, this update affects zero rows and we stop.
+    const { data: released, error: releaseErr } = await supabase
+      .from("pool_wan_usage_alerts")
+      .update({ [claimCol]: null })
+      .eq("id", alert.id)
+      .is(sentCol, null)
+      .eq(claimCol, alert[claimCol])
+      .select("id")
+      .maybeSingle();
+    if (releaseErr) throw releaseErr;
+    if (!released) return null;
+  }
+
+  const claimAt = new Date().toISOString();
+  const nextAttempts = Math.max(0, Number(alert?.[attemptsCol] || 0)) + 1;
+
+  const { data: claimed, error: claimErr } = await supabase
+    .from("pool_wan_usage_alerts")
+    .update({
+      [claimCol]: claimAt,
+      [attemptsCol]: nextAttempts,
+    })
+    .eq("id", alert.id)
+    .is(sentCol, null)
+    .is(claimCol, null)
+    .select("*")
+    .maybeSingle();
+  if (claimErr) throw claimErr;
+  if (!claimed) return null;
+
+  return { row: claimed, claim_at: claimAt };
+}
+
+async function markDataUsageAlertRecipientSuccess(alertId, audience, claimAt, sentAt = new Date().toISOString()) {
+  const owner = audience === "owner";
+  const sentCol = owner ? "owner_email_sent_at" : "superadmin_email_sent_at";
+  const claimCol = owner ? "owner_email_claimed_at" : "superadmin_email_claimed_at";
+  const errorCol = owner ? "owner_email_last_error" : "superadmin_email_last_error";
+
+  const { error } = await supabase
+    .from("pool_wan_usage_alerts")
+    .update({
+      [sentCol]: sentAt,
+      [claimCol]: null,
+      [errorCol]: null,
+    })
+    .eq("id", alertId)
+    .eq(claimCol, claimAt);
+  if (error) throw error;
+}
+
+async function markDataUsageAlertRecipientFailure(alertId, audience, claimAt, errorCode) {
+  const owner = audience === "owner";
+  const claimCol = owner ? "owner_email_claimed_at" : "superadmin_email_claimed_at";
+  const errorCol = owner ? "owner_email_last_error" : "superadmin_email_last_error";
+  const safeError = String(errorCode || "email_send_failed").slice(0, 500);
+
+  // Keep claimed_at as the retry clock. The alert becomes eligible again after
+  // DATA_USAGE_ALERT_RETRY_AFTER_MS rather than retrying every 10 minutes.
+  const { error } = await supabase
+    .from("pool_wan_usage_alerts")
+    .update({ [errorCol]: safeError })
+    .eq("id", alertId)
+    .eq(claimCol, claimAt);
+  if (error) throw error;
+}
+
+let dataUsageAlertDeliveryRunning = false;
+
+async function runDataUsageAlertDelivery({ reason = "scheduled" } = {}) {
+  if (!DATA_USAGE_ALERT_EMAILS_ENABLED) {
+    return { ok: true, disabled: true, reason };
+  }
+  if (dataUsageAlertDeliveryRunning) {
+    return { ok: true, skipped: "already_running", reason };
+  }
+
+  dataUsageAlertDeliveryRunning = true;
+  const startedAt = new Date().toISOString();
+
+  try {
+    const { data: pending, error: pendingErr } = await supabase
+      .from("pool_wan_usage_alerts")
+      .select(
+        "id,pool_id,period_month,threshold_go,reached_bytes,reached_at," +
+        "owner_email_sent_at,superadmin_email_sent_at," +
+        "owner_email_claimed_at,owner_email_attempt_count,owner_email_last_error," +
+        "superadmin_email_claimed_at,superadmin_email_attempt_count,superadmin_email_last_error"
+      )
+      .or("owner_email_sent_at.is.null,superadmin_email_sent_at.is.null")
+      .order("reached_at", { ascending: true })
+      .limit(DATA_USAGE_ALERT_BATCH_SIZE);
+    if (pendingErr) throw pendingErr;
+
+    const contexts = await loadDataUsageAlertContexts(pending || []);
+    const results = [];
+
+    for (const context of contexts) {
+      const alert = context.row;
+      const pool = context.pool;
+
+      if (!pool) {
+        results.push({ id: alert.id, ok: false, error: "pool_not_found" });
+        continue;
+      }
+
+      let ownerSent = !!alert.owner_email_sent_at;
+      let superadminSent = !!alert.superadmin_email_sent_at;
+
+      if (!ownerSent) {
+        const claim = await claimDataUsageAlertRecipient(alert, "owner");
+        if (claim) {
+          if (!context.owner_email) {
+            await markDataUsageAlertRecipientFailure(alert.id, "owner", claim.claim_at, "owner_email_unavailable");
+          } else {
+            const message = buildDataUsageThresholdEmail({
+              audience: "owner",
+              pool,
+              alert: claim.row,
+            });
+            const sent = await sendEmailTo(context.owner_email, message.subject, message.text);
+            if (sent) {
+              const sentAt = new Date().toISOString();
+              await markDataUsageAlertRecipientSuccess(alert.id, "owner", claim.claim_at, sentAt);
+              ownerSent = true;
+
+              // Same mailbox: one physical email is enough. Mark Superadmin
+              // delivered as well instead of sending a duplicate message.
+              if (
+                !superadminSent &&
+                context.superadmin_email &&
+                normalizeEmail(context.superadmin_email) === normalizeEmail(context.owner_email)
+              ) {
+                const { error: dedupeErr } = await supabase
+                  .from("pool_wan_usage_alerts")
+                  .update({
+                    superadmin_email_sent_at: sentAt,
+                    superadmin_email_claimed_at: null,
+                    superadmin_email_last_error: null,
+                  })
+                  .eq("id", alert.id)
+                  .is("superadmin_email_sent_at", null);
+                if (dedupeErr) throw dedupeErr;
+                superadminSent = true;
+              }
+            } else {
+              await markDataUsageAlertRecipientFailure(alert.id, "owner", claim.claim_at, "owner_email_send_failed");
+            }
+          }
+        }
+      }
+
+      if (!superadminSent) {
+        // Re-read the row only when Owner processing may have marked the same
+        // mailbox as delivered.
+        const { data: fresh, error: freshErr } = await supabase
+          .from("pool_wan_usage_alerts")
+          .select("*")
+          .eq("id", alert.id)
+          .maybeSingle();
+        if (freshErr) throw freshErr;
+
+        if (fresh?.superadmin_email_sent_at) {
+          superadminSent = true;
+        } else {
+          const claim = await claimDataUsageAlertRecipient(fresh || alert, "superadmin");
+          if (claim) {
+            if (!context.superadmin_email) {
+              await markDataUsageAlertRecipientFailure(
+                alert.id,
+                "superadmin",
+                claim.claim_at,
+                "superadmin_email_unavailable"
+              );
+            } else {
+              const message = buildDataUsageThresholdEmail({
+                audience: "superadmin",
+                pool,
+                alert: claim.row,
+              });
+              const sent = await sendEmailTo(context.superadmin_email, message.subject, message.text);
+              if (sent) {
+                await markDataUsageAlertRecipientSuccess(
+                  alert.id,
+                  "superadmin",
+                  claim.claim_at,
+                  new Date().toISOString()
+                );
+                superadminSent = true;
+              } else {
+                await markDataUsageAlertRecipientFailure(
+                  alert.id,
+                  "superadmin",
+                  claim.claim_at,
+                  "superadmin_email_send_failed"
+                );
+              }
+            }
+          }
+        }
+      }
+
+      results.push({
+        id: alert.id,
+        pool_id: alert.pool_id,
+        threshold_go: alert.threshold_go,
+        owner_sent: ownerSent,
+        superadmin_sent: superadminSent,
+      });
+    }
+
+    const summary = {
+      ok: true,
+      reason,
+      started_at: startedAt,
+      finished_at: new Date().toISOString(),
+      processed: results.length,
+      results,
+    };
+
+    if (results.length) {
+      console.info("[DATA USAGE ALERT] delivery pass", {
+        reason,
+        processed: results.length,
+        fully_sent: results.filter((x) => x.owner_sent && x.superadmin_sent).length,
+      });
+    }
+    return summary;
+  } finally {
+    dataUsageAlertDeliveryRunning = false;
+  }
+}
+
 async function collectWanUsageForPool(poolId, observedAt = new Date()) {
   const cleanPoolId = String(poolId || "").trim();
   if (!UUID_V1_TO_V5_RE.test(cleanPoolId)) throw new Error("data_usage_pool_id_invalid");
@@ -25645,6 +26161,13 @@ async function collectWanUsageForPool(poolId, observedAt = new Date()) {
     ? String(monthTotalRaw).replace(/\.0+$/, "")
     : "0";
 
+  const alertsQueued = await ensureDataUsageThresholdAlerts({
+    pool,
+    periodMonth,
+    monthTotalBytes: monthTotal,
+    reachedAt: inserted.observed_at,
+  });
+
   return {
     ok: true,
     pool_id: pool.id,
@@ -25662,6 +26185,7 @@ async function collectWanUsageForPool(poolId, observedAt = new Date()) {
     delta_total_bytes: String(inserted.delta_total_bytes),
     period_month: periodMonth,
     month_total_bytes: monthTotal,
+    alerts_queued_go: alertsQueued,
   };
 }
 
@@ -25709,12 +26233,24 @@ async function runDataUsageCollector({ poolId = null, reason = "scheduled" } = {
       }
     }
 
+    let alertDelivery = null;
+    try {
+      alertDelivery = await runDataUsageAlertDelivery({ reason: `collector_${reason}` });
+    } catch (error) {
+      console.error(
+        "[DATA USAGE ALERT] delivery pass failed",
+        String(error?.message || error).slice(0, 160)
+      );
+      alertDelivery = { ok: false, error: "data_usage_alert_delivery_failed" };
+    }
+
     return {
       ok: rows.every((row) => row.ok === true),
       reason,
       started_at: startedAt.toISOString(),
       finished_at: new Date().toISOString(),
       rows,
+      alert_delivery: alertDelivery,
     };
   } finally {
     dataUsageCollectorRunning = false;
@@ -25731,6 +26267,7 @@ function startDataUsageCollector() {
   console.info("[DATA USAGE COLLECTOR] enabled", {
     interval_ms: DATA_USAGE_COLLECTOR_INTERVAL_MS,
     startup_delay_ms: DATA_USAGE_COLLECTOR_STARTUP_DELAY_MS,
+    alert_emails_enabled: DATA_USAGE_ALERT_EMAILS_ENABLED,
   });
 
   dataUsageCollectorStartupHandle = setTimeout(() => {
@@ -26228,6 +26765,105 @@ app.post("/api/admin/data-usage/collect-now", requireAdmin, requireSuperadmin, a
     return res.status(500).json({ error: "data_usage_collection_failed" });
   }
 });
+
+
+// Data Usage V1.2 — controlled mail-path validation.
+// Sends an explicitly marked TEST email to the current canonical pool Owner
+// and the active canonical Superadmin. It never creates/updates an alert row.
+app.post(
+  "/api/admin/data-usage/alerts/test-email",
+  requireAdmin,
+  requireSuperadmin,
+  async (req, res) => {
+    try {
+      if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+      const poolId = String(req.body?.pool_id || "").trim();
+      if (!UUID_V1_TO_V5_RE.test(poolId)) {
+        return res.status(400).json({ error: "pool_id_invalid" });
+      }
+
+      const { data: pool, error: poolErr } = await supabase
+        .from("internet_pools")
+        .select("id,name,brand_name,owner_admin_user_id")
+        .eq("id", poolId)
+        .maybeSingle();
+      if (poolErr) throw poolErr;
+      if (!pool) return res.status(404).json({ error: "pool_not_found" });
+
+      let ownerEmail = "";
+      if (pool.owner_admin_user_id) {
+        const { data: owner, error: ownerErr } = await supabase
+          .from("admin_users")
+          .select("id,email,is_active")
+          .eq("id", pool.owner_admin_user_id)
+          .maybeSingle();
+        if (ownerErr) throw ownerErr;
+        const candidate = normalizeEmail(owner?.email);
+        ownerEmail = candidate && isValidEmail(candidate) ? candidate : "";
+      }
+
+      const superadminEmail = await loadDataUsageAlertSuperadminEmail();
+      const fakeAlert = {
+        threshold_go: DATA_USAGE_ALERT_STEP_GO,
+        reached_bytes: "0",
+        period_month: dataUsageMonthStartInAntananarivo(new Date()),
+        reached_at: new Date().toISOString(),
+      };
+
+      let ownerSent = false;
+      let superadminSent = false;
+
+      if (ownerEmail) {
+        const message = buildDataUsageThresholdEmail({
+          audience: "owner",
+          pool,
+          alert: fakeAlert,
+          testOnly: true,
+        });
+        ownerSent = await sendEmailTo(ownerEmail, message.subject, message.text);
+      }
+
+      if (superadminEmail && normalizeEmail(superadminEmail) === normalizeEmail(ownerEmail) && ownerSent) {
+        superadminSent = true;
+      } else if (superadminEmail) {
+        const message = buildDataUsageThresholdEmail({
+          audience: "superadmin",
+          pool,
+          alert: fakeAlert,
+          testOnly: true,
+        });
+        superadminSent = await sendEmailTo(superadminEmail, message.subject, message.text);
+      }
+
+      console.info("[DATA USAGE ALERT] test email", {
+        pool_id: pool.id,
+        owner_recipient_ready: !!ownerEmail,
+        superadmin_recipient_ready: !!superadminEmail,
+        owner_sent: ownerSent,
+        superadmin_sent: superadminSent,
+      });
+
+      return res.json({
+        ok: ownerSent && superadminSent,
+        test_only: true,
+        pool_id: pool.id,
+        pool_display_name: dataUsageAlertPoolDisplayName(pool),
+        owner_recipient_ready: !!ownerEmail,
+        superadmin_recipient_ready: !!superadminEmail,
+        owner_sent: ownerSent,
+        superadmin_sent: superadminSent,
+        automatic_alert_emails_enabled: DATA_USAGE_ALERT_EMAILS_ENABLED,
+      });
+    } catch (error) {
+      console.error(
+        "[DATA USAGE ALERT] test email failed",
+        String(error?.message || error).slice(0, 160)
+      );
+      return res.status(500).json({ error: "data_usage_alert_test_email_failed" });
+    }
+  }
+);
 
 app.get("/api/admin/free-access-devices", requireAdmin, async (req, res) => {
   try {
