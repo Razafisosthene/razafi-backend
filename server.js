@@ -18214,6 +18214,19 @@ const airtelMoneyClient = createAirtelMoneyClient({
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+// Data Usage V1 — WAN collector. Scheduler stays opt-in until manual validation.
+const DATA_USAGE_COLLECTOR_ENABLED = ["1", "true", "yes", "on"].includes(
+  String(process.env.DATA_USAGE_COLLECTOR_ENABLED || "false").trim().toLowerCase()
+);
+const DATA_USAGE_COLLECTOR_INTERVAL_MS = Math.max(
+  60_000,
+  Math.min(60 * 60_000, parseInt(process.env.DATA_USAGE_COLLECTOR_INTERVAL_MS || "600000", 10) || 600_000)
+);
+const DATA_USAGE_COLLECTOR_STARTUP_DELAY_MS = Math.max(
+  5_000,
+  Math.min(5 * 60_000, parseInt(process.env.DATA_USAGE_COLLECTOR_STARTUP_DELAY_MS || "15000", 10) || 15_000)
+);
+
 // PP-2 — dedicated secret used only to pseudonymize a client device for
 // personalized-plan quotes. The public feature fails closed until configured.
 const PERSONALIZED_PLAN_DEVICE_HASH_SECRET = String(
@@ -25522,6 +25535,215 @@ async function discoverWanForPool(poolId) {
   };
 }
 
+function dataUsageBigInt(value, code = "data_usage_counter_invalid") {
+  const raw = String(value ?? "").trim();
+  if (!/^\d+$/.test(raw)) throw new Error(code);
+  try {
+    return BigInt(raw);
+  } catch (_) {
+    throw new Error(code);
+  }
+}
+
+function dataUsageMonthStartInAntananarivo(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Indian/Antananarivo",
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(date);
+  const year = parts.find((p) => p.type === "year")?.value;
+  const month = parts.find((p) => p.type === "month")?.value;
+  if (!/^\d{4}$/.test(String(year || "")) || !/^\d{2}$/.test(String(month || ""))) {
+    throw new Error("data_usage_period_failed");
+  }
+  return `${year}-${month}-01`;
+}
+
+async function collectWanUsageForPool(poolId, observedAt = new Date()) {
+  const cleanPoolId = String(poolId || "").trim();
+  if (!UUID_V1_TO_V5_RE.test(cleanPoolId)) throw new Error("data_usage_pool_id_invalid");
+
+  const { pool, router } = await getRouterForPool(cleanPoolId);
+  const configuredInterface = cleanOptionalText(router?.wan_interface, 128);
+  if (!configuredInterface) throw new Error("data_usage_wan_interface_missing");
+
+  // Reuse the already-hardened agent call. The configured interface must still
+  // be detected as the current default-route WAN before we trust its counters.
+  const discovery = await discoverWanForPool(cleanPoolId);
+  const wan = (discovery.candidates || []).find((row) => row?.name === configuredInterface);
+  if (!wan) throw new Error("data_usage_wan_interface_not_detected");
+  if (wan.disabled === true) throw new Error("data_usage_wan_interface_disabled");
+  if (wan.rx_bytes === null || wan.tx_bytes === null) throw new Error("data_usage_counters_missing");
+
+  const currentRx = dataUsageBigInt(wan.rx_bytes);
+  const currentTx = dataUsageBigInt(wan.tx_bytes);
+  const observedAtIso = observedAt.toISOString();
+
+  const { data: latest, error: latestErr } = await supabase
+    .from("pool_wan_usage_snapshots")
+    .select("id,observed_at,rx_bytes,tx_bytes")
+    .eq("pool_id", pool.id)
+    .order("observed_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (latestErr) throw latestErr;
+
+  let deltaRx = 0n;
+  let deltaTx = 0n;
+  let counterReset = false;
+  let sampleStatus = "baseline";
+
+  if (latest) {
+    const previousRx = dataUsageBigInt(latest.rx_bytes, "data_usage_previous_counter_invalid");
+    const previousTx = dataUsageBigInt(latest.tx_bytes, "data_usage_previous_counter_invalid");
+
+    const rxReset = currentRx < previousRx;
+    const txReset = currentTx < previousTx;
+    counterReset = rxReset || txReset;
+
+    // After a RouterOS counter reset, the current counter is the known traffic
+    // since reset. Traffic between the previous sample and the reset itself is
+    // unknowable, so we preserve the known minimum and mark the sample reset.
+    deltaRx = rxReset ? currentRx : currentRx - previousRx;
+    deltaTx = txReset ? currentTx : currentTx - previousTx;
+    sampleStatus = counterReset ? "counter_reset" : "ok";
+  }
+
+  const payload = {
+    pool_id: pool.id,
+    nas_id: pool.radius_nas_id,
+    wan_interface: configuredInterface,
+    observed_at: observedAtIso,
+    rx_bytes: currentRx.toString(),
+    tx_bytes: currentTx.toString(),
+    delta_rx_bytes: deltaRx.toString(),
+    delta_tx_bytes: deltaTx.toString(),
+    counter_reset: counterReset,
+    sample_status: sampleStatus,
+  };
+
+  const { data: inserted, error: insertErr } = await supabase
+    .from("pool_wan_usage_snapshots")
+    .insert(payload)
+    .select("id,pool_id,nas_id,wan_interface,observed_at,rx_bytes,tx_bytes,delta_rx_bytes,delta_tx_bytes,delta_total_bytes,counter_reset,sample_status")
+    .single();
+  if (insertErr) throw insertErr;
+
+  const periodMonth = dataUsageMonthStartInAntananarivo(observedAt);
+  const { data: monthTotalRaw, error: monthErr } = await supabase.rpc(
+    "get_pool_wan_month_total",
+    { p_pool_id: pool.id, p_period_month: periodMonth }
+  );
+  if (monthErr) throw monthErr;
+
+  const monthTotal = /^\d+(?:\.0+)?$/.test(String(monthTotalRaw ?? ""))
+    ? String(monthTotalRaw).replace(/\.0+$/, "")
+    : "0";
+
+  return {
+    ok: true,
+    pool_id: pool.id,
+    pool_name: pool.name || null,
+    pool_display_name: buildPoolDisplayName(pool) || pool.name || null,
+    nas_id: pool.radius_nas_id,
+    wan_interface: configuredInterface,
+    observed_at: inserted.observed_at,
+    sample_status: inserted.sample_status,
+    counter_reset: inserted.counter_reset === true,
+    rx_bytes: String(inserted.rx_bytes),
+    tx_bytes: String(inserted.tx_bytes),
+    delta_rx_bytes: String(inserted.delta_rx_bytes),
+    delta_tx_bytes: String(inserted.delta_tx_bytes),
+    delta_total_bytes: String(inserted.delta_total_bytes),
+    period_month: periodMonth,
+    month_total_bytes: monthTotal,
+  };
+}
+
+let dataUsageCollectorRunning = false;
+let dataUsageCollectorIntervalHandle = null;
+let dataUsageCollectorStartupHandle = null;
+
+async function runDataUsageCollector({ poolId = null, reason = "scheduled" } = {}) {
+  if (dataUsageCollectorRunning) {
+    return { ok: true, skipped: "already_running", reason };
+  }
+  dataUsageCollectorRunning = true;
+  const startedAt = new Date();
+
+  try {
+    let q = supabase
+      .from("internet_pools")
+      .select("id,name,brand_name,radius_nas_id")
+      .not("radius_nas_id", "is", null)
+      .order("name", { ascending: true });
+    if (poolId) q = q.eq("id", String(poolId).trim());
+
+    const { data: pools, error: poolsErr } = await q;
+    if (poolsErr) throw poolsErr;
+
+    const rows = [];
+    for (const p of pools || []) {
+      try {
+        const result = await collectWanUsageForPool(p.id, new Date());
+        rows.push(result);
+      } catch (error) {
+        const code = String(error?.message || "data_usage_collection_failed");
+        rows.push({
+          ok: false,
+          pool_id: p.id,
+          pool_name: p.name || null,
+          nas_id: p.radius_nas_id || null,
+          error: code.slice(0, 160),
+        });
+        console.error("[DATA USAGE COLLECTOR] pool failed", {
+          pool_id: p.id,
+          nas_id: p.radius_nas_id || null,
+          error: code.slice(0, 160),
+        });
+      }
+    }
+
+    return {
+      ok: rows.every((row) => row.ok === true),
+      reason,
+      started_at: startedAt.toISOString(),
+      finished_at: new Date().toISOString(),
+      rows,
+    };
+  } finally {
+    dataUsageCollectorRunning = false;
+  }
+}
+
+function startDataUsageCollector() {
+  if (!DATA_USAGE_COLLECTOR_ENABLED) {
+    console.info("[DATA USAGE COLLECTOR] disabled");
+    return;
+  }
+  if (dataUsageCollectorIntervalHandle || dataUsageCollectorStartupHandle) return;
+
+  console.info("[DATA USAGE COLLECTOR] enabled", {
+    interval_ms: DATA_USAGE_COLLECTOR_INTERVAL_MS,
+    startup_delay_ms: DATA_USAGE_COLLECTOR_STARTUP_DELAY_MS,
+  });
+
+  dataUsageCollectorStartupHandle = setTimeout(() => {
+    dataUsageCollectorStartupHandle = null;
+    void runDataUsageCollector({ reason: "startup" }).catch((error) => {
+      console.error("[DATA USAGE COLLECTOR] startup failed", String(error?.message || error).slice(0, 160));
+    });
+  }, DATA_USAGE_COLLECTOR_STARTUP_DELAY_MS);
+  dataUsageCollectorStartupHandle.unref?.();
+
+  dataUsageCollectorIntervalHandle = setInterval(() => {
+    void runDataUsageCollector({ reason: "interval" }).catch((error) => {
+      console.error("[DATA USAGE COLLECTOR] interval failed", String(error?.message || error).slice(0, 160));
+    });
+  }, DATA_USAGE_COLLECTOR_INTERVAL_MS);
+  dataUsageCollectorIntervalHandle.unref?.();
+}
+
 async function syncFreeAccessPool(poolId) {
   const { pool, router } = await getRouterForPool(poolId);
   const comment = freeAccessComment(pool.id);
@@ -25721,6 +25943,26 @@ app.post("/api/admin/data-usage/discover-wan", requireAdmin, requireSuperadmin, 
 
     console.error("[DATA USAGE DISCOVERY]", code.slice(0, 160));
     return res.status(502).json({ error: "router_unavailable" });
+  }
+});
+
+// Data Usage V1: manual collector trigger for controlled validation/support.
+// Superadmin only. The scheduled collector remains independently opt-in.
+app.post("/api/admin/data-usage/collect-now", requireAdmin, requireSuperadmin, async (req, res) => {
+  try {
+    const rawPoolId = String(req.body?.pool_id || "").trim();
+    if (rawPoolId && !UUID_V1_TO_V5_RE.test(rawPoolId)) {
+      return res.status(400).json({ error: "pool_id_invalid" });
+    }
+
+    const result = await runDataUsageCollector({
+      poolId: rawPoolId || null,
+      reason: "manual_superadmin",
+    });
+    return res.json(result);
+  } catch (error) {
+    console.error("[DATA USAGE COLLECT NOW]", String(error?.message || error).slice(0, 160));
+    return res.status(500).json({ error: "data_usage_collection_failed" });
   }
 });
 
@@ -42602,6 +42844,7 @@ startAnnualFinalReportNotifications();
   startBillingS13843MonthlyClose();
   startAirtelRecoveryJob();
   startBillingPayoutAutomationS12_2();
+  startDataUsageCollector();
   // P2-A3.2: legacy Bonus cleanup is intentionally not started after the
   // atomic Bonus V2 cutover. The function remains dormant for rollback only.
 });
