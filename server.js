@@ -1603,6 +1603,7 @@ async function requireAdmin(req, res, next) {
         fullPath === "/api/admin/plan-simulator/options" ||
         fullPath === "/api/admin/portal-preview/validate" ||
         fullPath === "/api/admin/pool-live-stats" ||
+        fullPath === "/api/admin/data-usage" ||
         // S14.8.2B.1 — Annual-report catalog is read-only. Its handler/RPC
         // performs the historical Owner / Superadmin authorization.
         fullPath === "/api/admin/financial-reports/catalog" ||
@@ -19542,6 +19543,8 @@ function buildAdminPermissions(admin) {
     revenue_view: true,
     plans_view: true,
     pools_view: true,
+    // Data Usage is intentionally Owner + Superadmin only. Manager/Viewer are excluded.
+    data_usage_view: isSuperadmin || hasOwnerRole,
 
     pools_branding_manage: isSuperadmin || hasOperationalWriteRole,
     plans_visibility_manage: isSuperadmin || hasOperationalWriteRole,
@@ -25914,6 +25917,244 @@ async function loadVoucherSessionForAdminScope(req, res, sessionId, select = "id
 // GET /api/admin/free-access-devices
 // Data Usage V1: read-only WAN discovery for Superadmin setup/validation.
 // No router credentials or agent secrets are ever returned to the browser.
+
+function dataUsageCurrentMonthKey(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Indian/Antananarivo",
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(date);
+  const year = parts.find((p) => p.type === "year")?.value;
+  const month = parts.find((p) => p.type === "month")?.value;
+  if (!/^\d{4}$/.test(String(year || "")) || !/^\d{2}$/.test(String(month || ""))) {
+    throw new Error("data_usage_period_failed");
+  }
+  return `${year}-${month}`;
+}
+
+function dataUsageReadMonthParam(raw, date = new Date()) {
+  const value = String(raw || "").trim();
+  const monthKey = value || dataUsageCurrentMonthKey(date);
+  const match = monthKey.match(/^(\d{4})-(\d{2})$/);
+  if (!match) {
+    const err = new Error("data_usage_month_invalid");
+    err.status = 400;
+    throw err;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isInteger(year) || year < 2020 || year > 2100 || month < 1 || month > 12) {
+    const err = new Error("data_usage_month_invalid");
+    err.status = 400;
+    throw err;
+  }
+  return {
+    key: `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}`,
+    date: `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-01`,
+    year,
+    month,
+    days_in_month: new Date(Date.UTC(year, month, 0)).getUTCDate(),
+  };
+}
+
+function dataUsageNormalizeIntegerString(value, fallback = "0") {
+  const raw = String(value ?? "").trim();
+  if (/^\d+$/.test(raw)) return raw;
+  if (/^\d+\.0+$/.test(raw)) return raw.replace(/\.0+$/, "");
+  return fallback;
+}
+
+function dataUsageIsoMs(value) {
+  const ms = Date.parse(String(value || ""));
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function dataUsageMonthBoundaryUtcMs(year, month, nextMonth = false) {
+  // Indian/Antananarivo is UTC+03:00 all year (no DST).
+  const y = nextMonth && month === 12 ? year + 1 : year;
+  const m = nextMonth ? (month === 12 ? 1 : month + 1) : month;
+  return Date.parse(`${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}-01T00:00:00+03:00`);
+}
+
+function dataUsageReadMetrics(detail, monthMeta, now = new Date()) {
+  const totalBytes = dataUsageBigInt(dataUsageNormalizeIntegerString(detail?.total_bytes));
+  const monthStartMs = dataUsageMonthBoundaryUtcMs(monthMeta.year, monthMeta.month, false);
+  const monthEndMs = dataUsageMonthBoundaryUtcMs(monthMeta.year, monthMeta.month, true);
+  const currentKey = dataUsageCurrentMonthKey(now);
+  const isCurrentMonth = monthMeta.key === currentKey;
+  const firstObservedMs = dataUsageIsoMs(detail?.period_first_observed_at);
+  const lastObservedMs = dataUsageIsoMs(detail?.last_observed_at);
+  const coverageComplete = detail?.coverage_complete_from_month_start === true;
+
+  let trackedStartMs = firstObservedMs;
+  if (coverageComplete) trackedStartMs = monthStartMs;
+  const trackedEndMs = isCurrentMonth
+    ? Math.min(now.getTime(), monthEndMs)
+    : (lastObservedMs ?? monthEndMs);
+
+  let trackedHours = 0;
+  if (trackedStartMs !== null && Number.isFinite(trackedEndMs) && trackedEndMs > trackedStartMs) {
+    trackedHours = (trackedEndMs - trackedStartMs) / 3_600_000;
+  }
+
+  // Avoid misleading averages/projections from a few minutes of telemetry.
+  // After >= 24 h of observed traffic, average is based on elapsed tracked time.
+  let averageDailyBytes = null;
+  let projectionBytes = null;
+  let projectionKind = null;
+
+  if (!isCurrentMonth && coverageComplete && monthMeta.days_in_month > 0) {
+    // Closed month with complete coverage: use the exact calendar-day average.
+    const avg = Number(totalBytes) / monthMeta.days_in_month;
+    if (Number.isFinite(avg) && avg >= 0) averageDailyBytes = Math.round(avg).toString();
+  } else if (trackedHours >= 24) {
+    const trackedDays = trackedHours / 24;
+    const avg = Number(totalBytes) / trackedDays;
+    if (Number.isFinite(avg) && avg >= 0) {
+      averageDailyBytes = Math.round(avg).toString();
+
+      if (isCurrentMonth) {
+        const remainingDays = Math.max(0, (monthEndMs - trackedEndMs) / 86_400_000);
+        const projected = Number(totalBytes) + avg * remainingDays;
+        if (Number.isFinite(projected) && projected >= 0) {
+          projectionBytes = Math.round(projected).toString();
+          projectionKind = coverageComplete ? "month_end_full_coverage" : "tracking_window_to_month_end";
+        }
+      }
+    }
+  }
+
+  return {
+    total_bytes: totalBytes.toString(),
+    average_daily_bytes: averageDailyBytes,
+    projection_bytes: projectionBytes,
+    projection_kind: projectionKind,
+    tracked_hours: Math.round(trackedHours * 10) / 10,
+    average_ready: averageDailyBytes !== null,
+    projection_ready: projectionBytes !== null,
+  };
+}
+
+async function dataUsageLoadMonthDetail(poolId, monthMeta, now = new Date()) {
+  const { data, error } = await supabase.rpc("get_pool_wan_month_detail", {
+    p_pool_id: poolId,
+    p_period_month: monthMeta.date,
+  });
+  if (error) throw error;
+
+  const detail = data && typeof data === "object" ? data : {};
+  const daily = Array.isArray(detail.daily)
+    ? detail.daily.map((row) => ({
+        date: /^\d{4}-\d{2}-\d{2}$/.test(String(row?.date || "")) ? String(row.date) : null,
+        total_bytes: dataUsageNormalizeIntegerString(row?.total_bytes),
+      })).filter((row) => row.date)
+    : [];
+  const metrics = dataUsageReadMetrics(detail, monthMeta, now);
+
+  return {
+    period_month: monthMeta.date,
+    total_bytes: metrics.total_bytes,
+    average_daily_bytes: metrics.average_daily_bytes,
+    projection_bytes: metrics.projection_bytes,
+    projection_kind: metrics.projection_kind,
+    average_ready: metrics.average_ready,
+    projection_ready: metrics.projection_ready,
+    tracked_hours: metrics.tracked_hours,
+    first_tracking_at: detail.first_tracking_at || null,
+    period_first_observed_at: detail.period_first_observed_at || null,
+    last_observed_at: detail.last_observed_at || null,
+    sample_count: Number(detail.sample_count || 0) || 0,
+    counter_reset_count: Number(detail.counter_reset_count || 0) || 0,
+    coverage_complete_from_month_start: detail.coverage_complete_from_month_start === true,
+    daily,
+  };
+}
+
+// Data Usage V1 — Owner + Superadmin read model.
+// Manager/Viewer are intentionally excluded even if they can read other pool pages.
+app.get("/api/admin/data-usage", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase not configured" });
+
+    const isSuperadmin = !!req.admin?.is_superadmin;
+    const ownedPoolIds = getAdminOwnedPoolIds(req.admin);
+    if (!isSuperadmin && ownedPoolIds.length === 0) {
+      return res.status(403).json({ error: "owner_or_superadmin_only" });
+    }
+
+    const now = new Date();
+    const monthMeta = dataUsageReadMonthParam(req.query?.month, now);
+    const currentMonth = dataUsageCurrentMonthKey(now);
+    const requestedPoolId = String(req.query?.pool_id || "").trim();
+
+    if (requestedPoolId && !UUID_V1_TO_V5_RE.test(requestedPoolId)) {
+      return res.status(400).json({ error: "data_usage_pool_id_invalid" });
+    }
+    if (!isSuperadmin && requestedPoolId && !ownedPoolIds.includes(requestedPoolId)) {
+      return res.status(403).json({ error: "pool_forbidden" });
+    }
+
+    let query = supabase
+      .from("internet_pools")
+      .select("id,name,brand_name,radius_nas_id")
+      .not("radius_nas_id", "is", null)
+      .order("name", { ascending: true });
+
+    if (requestedPoolId) {
+      query = query.eq("id", requestedPoolId);
+    } else if (!isSuperadmin) {
+      query = query.in("id", ownedPoolIds);
+    }
+
+    const { data: pools, error: poolsErr } = await query;
+    if (poolsErr) throw poolsErr;
+
+    const items = await Promise.all((pools || []).map(async (pool) => {
+      const detail = await dataUsageLoadMonthDetail(pool.id, monthMeta, now);
+      return {
+        pool_id: pool.id,
+        pool_name: pool.name || null,
+        pool_display_name: buildPoolDisplayName(pool) || pool.name || null,
+        nas_id: pool.radius_nas_id || null,
+        ...detail,
+      };
+    }));
+
+    let totalAllPools = 0n;
+    for (const item of items) totalAllPools += dataUsageBigInt(item.total_bytes);
+
+    const firstTrackingValues = items
+      .map((item) => dataUsageIsoMs(item.first_tracking_at))
+      .filter((v) => v !== null);
+    const globalFirstTrackingAt = firstTrackingValues.length
+      ? new Date(Math.min(...firstTrackingValues)).toISOString()
+      : null;
+
+    return res.json({
+      ok: true,
+      timezone: "Indian/Antananarivo",
+      viewer_type: isSuperadmin ? "superadmin" : "owner",
+      selected_month: monthMeta.key,
+      selected_period_month: monthMeta.date,
+      current_month: currentMonth,
+      is_current_month: monthMeta.key === currentMonth,
+      days_in_month: monthMeta.days_in_month,
+      requested_pool_id: requestedPoolId || null,
+      total_all_pools_bytes: totalAllPools.toString(),
+      global_first_tracking_at: globalFirstTrackingAt,
+      pools: items,
+    });
+  } catch (error) {
+    const status = Number(error?.status || 0);
+    const code = String(error?.message || "data_usage_read_failed");
+    if (status === 400 || code === "data_usage_month_invalid") {
+      return res.status(400).json({ error: "data_usage_month_invalid" });
+    }
+    console.error("[DATA USAGE READ]", code.slice(0, 180));
+    return res.status(500).json({ error: "data_usage_read_failed" });
+  }
+});
+
 app.post("/api/admin/data-usage/discover-wan", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
     const poolId = String(req.body?.pool_id || "").trim();
