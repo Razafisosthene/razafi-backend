@@ -484,6 +484,13 @@
     .rz-du-yield-btn:focus-visible{outline:3px solid rgba(13,110,253,.18);outline-offset:2px;}
 
     body.rz-yield-modal-open{overflow:hidden;}
+    /* Yield modal owns the viewport: hide the persistent Admin shortcut bar
+       while the sheet is open so it never overlaps the modal actions. */
+    body.rz-yield-modal-open #rzBottomNav{
+      opacity:0 !important;
+      visibility:hidden !important;
+      pointer-events:none !important;
+    }
     .rz-yield-modal{
       position:fixed;
       inset:0;
