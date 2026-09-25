@@ -25622,6 +25622,616 @@ function dataUsageMonthStartInAntananarivo(date = new Date()) {
 }
 
 
+// ============================================================
+// YIELD MANAGEMENT V1 — SHADOW ENGINE
+// ============================================================
+// Deterministic capacity protection driven by WAN Data Usage.
+// IMPORTANT:
+// - This stage DOES NOT alter PP prices or Standard Plan visibility.
+// - Disabled policies are still evaluated in shadow mode for validation.
+// - Future commercial enforcement must require BOTH policy.enabled=true
+//   and state.decision_ready=true.
+// - Escalation is immediate; downgrade requires a stable lower raw class.
+// ============================================================
+
+const YIELD_CLASS_ORDER = Object.freeze({
+  normal: 0,
+  vigilance: 1,
+  protection: 2,
+  critical: 3,
+});
+
+const YIELD_PROJECTION_VIGILANCE_RATIO = 0.70;
+const YIELD_PROJECTION_PROTECTION_RATIO = 0.85;
+const YIELD_PROJECTION_CRITICAL_RATIO = 1.00;
+const YIELD_COVERAGE_START_GRACE_MS = 30 * 60_000;
+const YIELD_MIN_TRACKED_MS = 24 * 60 * 60_000;
+const YIELD_LAST_SAMPLE_STALE_MS = Math.max(
+  30 * 60_000,
+  DATA_USAGE_COLLECTOR_INTERVAL_MS * 3
+);
+const YIELD_USAGE_PAGE_SIZE = 1000;
+const YIELD_USAGE_MAX_ROWS = 10000;
+
+function yieldClassRank(value) {
+  const key = String(value || "").trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(YIELD_CLASS_ORDER, key)
+    ? YIELD_CLASS_ORDER[key]
+    : 0;
+}
+
+function yieldSafeIntegerBigInt(value, fallback = 0n) {
+  const raw = String(value ?? "").trim();
+  if (!/^\d+$/.test(raw)) return fallback;
+  try {
+    return BigInt(raw);
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function yieldRoundRatio(value) {
+  return Number.isFinite(Number(value))
+    ? Math.round(Number(value) * 1_000_000) / 1_000_000
+    : null;
+}
+
+function yieldDaysInMonth(year, month) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function yieldShiftMonth(year, month, delta) {
+  const d = new Date(Date.UTC(year, month - 1 + delta, 1));
+  return {
+    year: d.getUTCFullYear(),
+    month: d.getUTCMonth() + 1,
+  };
+}
+
+function yieldAntananarivoDateParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Indian/Antananarivo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+
+  const year = Number(parts.find((p) => p.type === "year")?.value);
+  const month = Number(parts.find((p) => p.type === "month")?.value);
+  const day = Number(parts.find((p) => p.type === "day")?.value);
+
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
+    throw new Error("yield_local_date_failed");
+  }
+
+  return { year, month, day };
+}
+
+function yieldAntananarivoMidnightUtcMs(year, month, day) {
+  // Indian/Antananarivo is UTC+03:00 all year (no DST).
+  return Date.UTC(year, month - 1, day, 0, 0, 0, 0) - (3 * 60 * 60_000);
+}
+
+function yieldCycleBounds(policy, now = new Date()) {
+  const timezone = String(policy?.cycle_timezone || "").trim();
+  if (timezone !== "Indian/Antananarivo") {
+    // V1 fails closed for unknown policy timezones instead of silently
+    // evaluating against the wrong provider/operational cycle.
+    throw new Error("yield_cycle_timezone_unsupported");
+  }
+
+  const configuredStartDay = Number(policy?.cycle_start_day);
+  if (!Number.isInteger(configuredStartDay) || configuredStartDay < 1 || configuredStartDay > 31) {
+    throw new Error("yield_cycle_start_day_invalid");
+  }
+
+  const local = yieldAntananarivoDateParts(now);
+  const thisMonthStartDay = Math.min(
+    configuredStartDay,
+    yieldDaysInMonth(local.year, local.month)
+  );
+
+  let startYm = { year: local.year, month: local.month };
+  if (local.day < thisMonthStartDay) {
+    startYm = yieldShiftMonth(local.year, local.month, -1);
+  }
+
+  const startDay = Math.min(
+    configuredStartDay,
+    yieldDaysInMonth(startYm.year, startYm.month)
+  );
+  const nextYm = yieldShiftMonth(startYm.year, startYm.month, 1);
+  const endDay = Math.min(
+    configuredStartDay,
+    yieldDaysInMonth(nextYm.year, nextYm.month)
+  );
+
+  const startMs = yieldAntananarivoMidnightUtcMs(
+    startYm.year,
+    startYm.month,
+    startDay
+  );
+  const endMs = yieldAntananarivoMidnightUtcMs(
+    nextYm.year,
+    nextYm.month,
+    endDay
+  );
+
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    throw new Error("yield_cycle_bounds_invalid");
+  }
+
+  return {
+    start_at: new Date(startMs).toISOString(),
+    end_at: new Date(endMs).toISOString(),
+    start_ms: startMs,
+    end_ms: endMs,
+  };
+}
+
+async function loadYieldPolicy(poolId) {
+  const { data, error } = await supabase
+    .from("pool_yield_policies")
+    .select(
+      "pool_id,enabled,cycle_budget_bytes,reserve_pct," +
+      "max_unlimited_speed_mbps,max_unlimited_duration_minutes," +
+      "cycle_start_day,cycle_timezone,policy_revision," +
+      "downgrade_stability_minutes"
+    )
+    .eq("pool_id", poolId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
+async function loadYieldState(poolId) {
+  const { data, error } = await supabase
+    .from("pool_yield_state")
+    .select(
+      "pool_id,raw_class,effective_class,raw_since,effective_since," +
+      "decision_ready,coverage_status,last_evaluated_at"
+    )
+    .eq("pool_id", poolId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
+async function loadYieldCycleUsage(poolId, cycleStartAt, cycleEndAt) {
+  const rows = [];
+
+  for (let offset = 0; offset < YIELD_USAGE_MAX_ROWS; offset += YIELD_USAGE_PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from("pool_wan_usage_snapshots")
+      .select("observed_at,delta_total_bytes,counter_reset,sample_status")
+      .eq("pool_id", poolId)
+      .gte("observed_at", cycleStartAt)
+      .lt("observed_at", cycleEndAt)
+      .order("observed_at", { ascending: true })
+      .range(offset, offset + YIELD_USAGE_PAGE_SIZE - 1);
+
+    if (error) throw error;
+
+    const page = Array.isArray(data) ? data : [];
+    rows.push(...page);
+
+    if (page.length < YIELD_USAGE_PAGE_SIZE) break;
+    if (rows.length >= YIELD_USAGE_MAX_ROWS) {
+      throw new Error("yield_usage_read_limit_reached");
+    }
+  }
+
+  let consumed = 0n;
+  let resetCount = 0;
+  let firstObservedAt = null;
+  let lastObservedAt = null;
+
+  for (const row of rows) {
+    if (!firstObservedAt && row?.observed_at) firstObservedAt = row.observed_at;
+    if (row?.observed_at) lastObservedAt = row.observed_at;
+
+    consumed += yieldSafeIntegerBigInt(row?.delta_total_bytes, 0n);
+    if (row?.counter_reset === true) resetCount += 1;
+  }
+
+  return {
+    consumed_bytes: consumed,
+    sample_count: rows.length,
+    counter_reset_count: resetCount,
+    first_observed_at: firstObservedAt,
+    last_observed_at: lastObservedAt,
+  };
+}
+
+function calculateYieldRawClass({
+  consumedBytes,
+  projectedBytes,
+  budgetBytes,
+  reserveTriggerBytes,
+  projectionReady,
+}) {
+  // Actual consumption reaching the protected reserve is an immediate
+  // diagnostic Critical signal, even if projection is not yet available.
+  if (consumedBytes >= reserveTriggerBytes) {
+    return {
+      raw_class: "critical",
+      reason_code: "protected_reserve_reached",
+    };
+  }
+
+  if (!projectionReady || projectedBytes === null) {
+    return {
+      raw_class: "normal",
+      reason_code: "projection_not_ready",
+    };
+  }
+
+  const projected = Number(projectedBytes);
+  const budget = Number(budgetBytes);
+  const ratio = budget > 0 ? projected / budget : Number.NaN;
+
+  if (!Number.isFinite(ratio) || ratio < 0) {
+    return {
+      raw_class: "normal",
+      reason_code: "projection_invalid",
+    };
+  }
+
+  if (ratio < YIELD_PROJECTION_VIGILANCE_RATIO) {
+    return { raw_class: "normal", reason_code: "projection_below_70" };
+  }
+  if (ratio < YIELD_PROJECTION_PROTECTION_RATIO) {
+    return { raw_class: "vigilance", reason_code: "projection_70_to_85" };
+  }
+  if (ratio <= YIELD_PROJECTION_CRITICAL_RATIO) {
+    return { raw_class: "protection", reason_code: "projection_85_to_100" };
+  }
+  return { raw_class: "critical", reason_code: "projection_above_100" };
+}
+
+async function persistPoolYieldEvaluation({
+  poolId,
+  rawClass,
+  effectiveClass,
+  rawSince,
+  effectiveSince,
+  evaluatedAt,
+  cycle,
+  consumedBytes,
+  projectedBytes,
+  budgetBytes,
+  reserveTriggerBytes,
+  actualRatio,
+  projectionRatio,
+  projectionReady,
+  reasonCode,
+  policyRevision,
+  policySnapshot,
+  evaluationSnapshot,
+  decisionReady,
+  coverageStatus,
+  transition,
+}) {
+  const { data, error } = await supabase.rpc("apply_pool_yield_evaluation", {
+    p_pool_id: poolId,
+
+    p_raw_class: rawClass,
+    p_effective_class: effectiveClass,
+    p_raw_since: rawSince,
+    p_effective_since: effectiveSince,
+    p_last_evaluated_at: evaluatedAt,
+
+    p_cycle_start_at: cycle.start_at,
+    p_cycle_end_at: cycle.end_at,
+
+    p_consumed_bytes: consumedBytes.toString(),
+    p_projected_bytes: projectedBytes === null ? null : projectedBytes.toString(),
+    p_budget_bytes: budgetBytes.toString(),
+    p_reserve_trigger_bytes: reserveTriggerBytes.toString(),
+
+    p_actual_ratio: actualRatio,
+    p_projection_ratio: projectionRatio,
+    p_projection_ready: projectionReady,
+
+    p_reason_code: reasonCode,
+    p_policy_revision: policyRevision,
+
+    p_policy_snapshot: policySnapshot,
+    p_evaluation_snapshot: evaluationSnapshot,
+
+    p_decision_ready: decisionReady,
+    p_coverage_status: coverageStatus,
+
+    p_transition_from_class: transition?.from_class || null,
+    p_transition_to_class: transition?.to_class || null,
+    p_transition_reason_code: transition?.reason_code || null,
+  });
+
+  if (error) throw error;
+  return data || null;
+}
+
+async function evaluatePoolYieldState(poolId, evaluatedAt = new Date()) {
+  if (!supabase) throw new Error("yield_supabase_not_configured");
+
+  const cleanPoolId = String(poolId || "").trim();
+  if (!UUID_V1_TO_V5_RE.test(cleanPoolId)) {
+    throw new Error("yield_pool_id_invalid");
+  }
+
+  const policy = await loadYieldPolicy(cleanPoolId);
+  if (!policy) {
+    return {
+      ok: true,
+      skipped: "yield_policy_missing",
+      pool_id: cleanPoolId,
+    };
+  }
+
+  const cycle = yieldCycleBounds(policy, evaluatedAt);
+  const usage = await loadYieldCycleUsage(
+    cleanPoolId,
+    cycle.start_at,
+    cycle.end_at
+  );
+
+  const budgetBytes = yieldSafeIntegerBigInt(
+    policy.cycle_budget_bytes,
+    0n
+  );
+  if (budgetBytes <= 0n) throw new Error("yield_budget_invalid");
+
+  const reservePct = Number(policy.reserve_pct);
+  if (!Number.isFinite(reservePct) || reservePct < 0 || reservePct >= 100) {
+    throw new Error("yield_reserve_invalid");
+  }
+
+  // Basis points keep the reserve trigger deterministic with integer bytes.
+  const reserveBps = BigInt(Math.round(reservePct * 100));
+  const reserveTriggerBytes =
+    (budgetBytes * (10_000n - reserveBps)) / 10_000n;
+
+  const nowMs = evaluatedAt.getTime();
+  const firstMs = usage.first_observed_at
+    ? Date.parse(usage.first_observed_at)
+    : null;
+  const lastMs = usage.last_observed_at
+    ? Date.parse(usage.last_observed_at)
+    : null;
+
+  const hasData =
+    usage.sample_count > 0 &&
+    firstMs !== null &&
+    Number.isFinite(firstMs) &&
+    lastMs !== null &&
+    Number.isFinite(lastMs);
+
+  const startGapMs = hasData
+    ? Math.max(0, firstMs - cycle.start_ms)
+    : null;
+  const lastSampleAgeMs = hasData
+    ? Math.max(0, nowMs - lastMs)
+    : null;
+
+  const coverageStatus = !hasData
+    ? "no_data"
+    : (
+        startGapMs <= YIELD_COVERAGE_START_GRACE_MS &&
+        lastSampleAgeMs <= YIELD_LAST_SAMPLE_STALE_MS
+      )
+      ? "complete_cycle"
+      : "partial_cycle";
+
+  // A complete cycle uses the true cycle boundary as the averaging origin.
+  // Partial coverage can still produce a diagnostic projection, but can never
+  // become decision_ready and therefore can never drive commercial controls.
+  const averagingStartMs = coverageStatus === "complete_cycle"
+    ? cycle.start_ms
+    : firstMs;
+
+  const trackedMs =
+    hasData && Number.isFinite(averagingStartMs) && lastMs > averagingStartMs
+      ? lastMs - averagingStartMs
+      : 0;
+
+  const projectionReady = trackedMs >= YIELD_MIN_TRACKED_MS;
+
+  let projectedBytes = null;
+  if (projectionReady) {
+    const consumedNumber = Number(usage.consumed_bytes);
+    const remainingMs = Math.max(0, cycle.end_ms - lastMs);
+    const averageBytesPerMs = consumedNumber / trackedMs;
+    const projectedNumber =
+      consumedNumber + (averageBytesPerMs * remainingMs);
+
+    if (Number.isFinite(projectedNumber) && projectedNumber >= 0) {
+      projectedBytes = BigInt(Math.round(projectedNumber));
+    }
+  }
+
+  const actualRatio = yieldRoundRatio(
+    Number(usage.consumed_bytes) / Number(budgetBytes)
+  );
+  const projectionRatio = projectedBytes === null
+    ? null
+    : yieldRoundRatio(Number(projectedBytes) / Number(budgetBytes));
+
+  const decisionReady =
+    coverageStatus === "complete_cycle" &&
+    projectionReady === true;
+
+  const rawDecision = calculateYieldRawClass({
+    consumedBytes: usage.consumed_bytes,
+    projectedBytes,
+    budgetBytes,
+    reserveTriggerBytes,
+    projectionReady,
+  });
+
+  const previous = await loadYieldState(cleanPoolId);
+  const previousRaw = String(previous?.raw_class || "normal").toLowerCase();
+  const previousEffective = String(previous?.effective_class || "normal").toLowerCase();
+  const previousRawSinceMs = Date.parse(String(previous?.raw_since || ""));
+  const previousEffectiveSince = previous?.effective_since || evaluatedAt.toISOString();
+
+  const rawChanged = rawDecision.raw_class !== previousRaw;
+  const rawSinceIso = rawChanged || !Number.isFinite(previousRawSinceMs)
+    ? evaluatedAt.toISOString()
+    : previous.raw_since;
+
+  let effectiveClass = previousEffective;
+  let effectiveSinceIso = previousEffectiveSince;
+  let effectiveReasonCode = rawDecision.reason_code;
+  let transition = null;
+
+  if (!decisionReady) {
+    // Incomplete telemetry can neither relax nor tighten commercial state.
+    // raw_class remains available as diagnostics only.
+    effectiveReasonCode =
+      coverageStatus === "no_data"
+        ? "data_unavailable"
+        : "coverage_incomplete";
+  } else {
+    const rawRank = yieldClassRank(rawDecision.raw_class);
+    const effectiveRank = yieldClassRank(previousEffective);
+
+    if (rawRank > effectiveRank) {
+      effectiveClass = rawDecision.raw_class;
+      effectiveSinceIso = evaluatedAt.toISOString();
+      transition = {
+        from_class: previousEffective,
+        to_class: effectiveClass,
+        reason_code: rawDecision.reason_code,
+      };
+    } else if (rawRank < effectiveRank) {
+      const stableMinutes = Math.max(
+        60,
+        Math.min(
+          1440,
+          Number(policy.downgrade_stability_minutes || 360)
+        )
+      );
+      const rawSinceMs = Date.parse(String(rawSinceIso || ""));
+      const stableForMs = Number.isFinite(rawSinceMs)
+        ? Math.max(0, nowMs - rawSinceMs)
+        : 0;
+
+      if (stableForMs >= stableMinutes * 60_000) {
+        effectiveClass = rawDecision.raw_class;
+        effectiveSinceIso = evaluatedAt.toISOString();
+        transition = {
+          from_class: previousEffective,
+          to_class: effectiveClass,
+          reason_code: "downgrade_stable",
+        };
+        effectiveReasonCode = "downgrade_stable";
+      } else {
+        effectiveReasonCode = "downgrade_stability_wait";
+      }
+    }
+  }
+
+  const policyRevision = Math.max(1, Number(policy.policy_revision || 1));
+  const policySnapshot = {
+    enabled: policy.enabled === true,
+    cycle_budget_bytes: budgetBytes.toString(),
+    reserve_pct: reservePct,
+    max_unlimited_speed_mbps: Number(policy.max_unlimited_speed_mbps),
+    max_unlimited_duration_minutes: Number(policy.max_unlimited_duration_minutes),
+    cycle_start_day: Number(policy.cycle_start_day),
+    cycle_timezone: String(policy.cycle_timezone || ""),
+    downgrade_stability_minutes: Number(policy.downgrade_stability_minutes || 360),
+    policy_revision: policyRevision,
+  };
+
+  const evaluationSnapshot = {
+    engine: "yield_management_v1_shadow",
+    evaluated_at: evaluatedAt.toISOString(),
+    policy_enabled: policy.enabled === true,
+    decision_ready: decisionReady,
+    coverage_status: coverageStatus,
+    cycle_start_at: cycle.start_at,
+    cycle_end_at: cycle.end_at,
+    sample_count: usage.sample_count,
+    counter_reset_count: usage.counter_reset_count,
+    first_observed_at: usage.first_observed_at,
+    last_observed_at: usage.last_observed_at,
+    start_gap_minutes: startGapMs === null
+      ? null
+      : Math.round((startGapMs / 60_000) * 10) / 10,
+    last_sample_age_minutes: lastSampleAgeMs === null
+      ? null
+      : Math.round((lastSampleAgeMs / 60_000) * 10) / 10,
+    tracked_hours: Math.round((trackedMs / 3_600_000) * 10) / 10,
+    consumed_bytes: usage.consumed_bytes.toString(),
+    projected_bytes: projectedBytes === null ? null : projectedBytes.toString(),
+    budget_bytes: budgetBytes.toString(),
+    reserve_trigger_bytes: reserveTriggerBytes.toString(),
+    actual_ratio: actualRatio,
+    projection_ratio: projectionRatio,
+    raw_class: rawDecision.raw_class,
+    raw_reason_code: rawDecision.reason_code,
+    effective_class_before: previousEffective,
+    effective_class_after: effectiveClass,
+    effective_reason_code: effectiveReasonCode,
+  };
+
+  await persistPoolYieldEvaluation({
+    poolId: cleanPoolId,
+    rawClass: rawDecision.raw_class,
+    effectiveClass,
+    rawSince: rawSinceIso,
+    effectiveSince: effectiveSinceIso,
+    evaluatedAt: evaluatedAt.toISOString(),
+    cycle,
+    consumedBytes: usage.consumed_bytes,
+    projectedBytes,
+    budgetBytes,
+    reserveTriggerBytes,
+    actualRatio,
+    projectionRatio,
+    projectionReady,
+    reasonCode: effectiveReasonCode,
+    policyRevision,
+    policySnapshot,
+    evaluationSnapshot,
+    decisionReady,
+    coverageStatus,
+    transition,
+  });
+
+  return {
+    ok: true,
+    shadow_mode: true,
+    policy_enabled: policy.enabled === true,
+    decision_ready: decisionReady,
+    coverage_status: coverageStatus,
+    raw_class: rawDecision.raw_class,
+    effective_class: effectiveClass,
+    reason_code: effectiveReasonCode,
+    consumed_bytes: usage.consumed_bytes.toString(),
+    projected_bytes: projectedBytes === null ? null : projectedBytes.toString(),
+    budget_bytes: budgetBytes.toString(),
+    actual_ratio: actualRatio,
+    projection_ratio: projectionRatio,
+    sample_count: usage.sample_count,
+    counter_reset_count: usage.counter_reset_count,
+    cycle_start_at: cycle.start_at,
+    cycle_end_at: cycle.end_at,
+  };
+}
+
+
 function dataUsageAlertThresholdLabel(thresholdGo) {
   const go = Math.max(0, Number(thresholdGo || 0));
   if (go >= 1000 && go % 1000 === 0) {
@@ -26528,7 +27138,31 @@ async function runDataUsageCollector({ poolId = null, reason = "scheduled" } = {
     for (const p of pools || []) {
       try {
         const result = await collectWanUsageForPool(p.id, new Date());
-        rows.push(result);
+
+        // Yield V1 shadow evaluation is deliberately isolated from WAN
+        // collection. A Yield failure must never break Data Usage telemetry.
+        let yieldEvaluation = null;
+        try {
+          yieldEvaluation = await evaluatePoolYieldState(
+            p.id,
+            new Date(result.observed_at || Date.now())
+          );
+        } catch (yieldError) {
+          console.error("[YIELD V1 SHADOW] evaluation failed", {
+            pool_id: p.id,
+            error: String(yieldError?.message || yieldError).slice(0, 160),
+          });
+          yieldEvaluation = {
+            ok: false,
+            shadow_mode: true,
+            error: "yield_evaluation_failed",
+          };
+        }
+
+        rows.push({
+          ...result,
+          yield: yieldEvaluation,
+        });
       } catch (error) {
         const code = String(error?.message || "data_usage_collection_failed");
         rows.push({
