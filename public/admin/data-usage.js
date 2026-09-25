@@ -10,6 +10,7 @@
     allPools: [],
     selectedPool: "all",
     selectedMonth: null,
+    yieldPolicyBundle: null,
   };
 
   async function fetchJSON(url, opts = {}) {
@@ -112,6 +113,380 @@
   function displayAdminName(me) {
     const raw = String(me?.email || me?.username || "admin").trim();
     return raw.includes("@") ? raw.split("@")[0] : raw;
+  }
+
+  function yieldRoleForPool(poolId) {
+    if (state.me?.is_superadmin === true) return "superadmin";
+    const role = String(state.me?.pool_access?.[String(poolId)] || "").trim().toLowerCase();
+    return ["owner", "manager", "viewer"].includes(role) ? role : null;
+  }
+
+  function canManageYieldPool(poolId) {
+    const role = yieldRoleForPool(poolId);
+    return role === "superadmin" || role === "owner";
+  }
+
+  function yieldRoleLabel(role) {
+    if (role === "superadmin") return "Superadmin";
+    if (role === "owner") return "Propriétaire";
+    if (role === "manager") return "Manager";
+    if (role === "viewer") return "Viewer";
+    return "Lecture";
+  }
+
+  function yieldClassLabel(value) {
+    const key = String(value || "").toLowerCase();
+    if (key === "vigilance") return "Vigilance";
+    if (key === "protection") return "Protection";
+    if (key === "critical") return "Critique";
+    return "Normal";
+  }
+
+  function yieldCoverageLabel(value) {
+    const key = String(value || "").toLowerCase();
+    if (key === "complete_cycle") return "Cycle complet";
+    if (key === "partial_cycle") return "Cycle partiel";
+    return "Pas encore de données";
+  }
+
+  function yieldDurationLabel(minutes) {
+    const m = Number(minutes);
+    if (m === 60) return "1 heure";
+    if (m === 1440) return "1 jour";
+    if (m === 4320) return "3 jours";
+    if (m === 10080) return "7 jours";
+    if (m === 43200) return "30 jours";
+    if (Number.isFinite(m) && m > 0 && m % 1440 === 0) return `${m / 1440} jours`;
+    if (Number.isFinite(m) && m > 0 && m % 60 === 0) return `${m / 60} heures`;
+    return `${m || 0} min`;
+  }
+
+  function yieldStabilityLabel(minutes) {
+    const m = Number(minutes);
+    if (m === 60) return "1 heure";
+    if (m % 60 === 0) return `${m / 60} heures`;
+    return `${m} min`;
+  }
+
+  function ensureYieldPolicyModal() {
+    let overlay = $("yieldPolicyModal");
+    if (overlay) return overlay;
+
+    document.body.insertAdjacentHTML("beforeend", `
+      <div id="yieldPolicyModal" class="rz-yield-modal" aria-hidden="true">
+        <div class="rz-yield-backdrop" data-yield-close="1"></div>
+        <section class="rz-yield-sheet" role="dialog" aria-modal="true" aria-labelledby="yieldPolicyTitle">
+          <div class="rz-yield-sheet-head">
+            <div>
+              <div class="rz-yield-eyebrow">Protection consommation</div>
+              <h2 id="yieldPolicyTitle">Protection des forfaits illimités</h2>
+            </div>
+            <button class="rz-yield-close" type="button" aria-label="Fermer" data-yield-close="1">×</button>
+          </div>
+          <div id="yieldPolicyContent" class="rz-yield-content">
+            <div class="rz-yield-loading">Chargement…</div>
+          </div>
+        </section>
+      </div>
+    `);
+
+    overlay = $("yieldPolicyModal");
+    overlay.addEventListener("click", (event) => {
+      if (event.target.closest("[data-yield-close]")) closeYieldPolicyModal();
+      const saveBtn = event.target.closest("[data-yield-save]");
+      if (saveBtn) void saveYieldPolicy();
+    });
+
+    return overlay;
+  }
+
+  function closeYieldPolicyModal() {
+    const overlay = $("yieldPolicyModal");
+    if (!overlay) return;
+    overlay.classList.remove("is-open");
+    overlay.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("rz-yield-modal-open");
+    state.yieldPolicyBundle = null;
+  }
+
+  function yieldModalMessage(text, error = false) {
+    const el = $("yieldPolicyMsg");
+    if (!el) return;
+    const msg = String(text || "").trim();
+    el.textContent = msg;
+    el.classList.toggle("is-visible", !!msg);
+    el.classList.toggle("is-error", !!msg && error);
+  }
+
+  function renderYieldPolicyModal(bundle) {
+    state.yieldPolicyBundle = bundle;
+    const content = $("yieldPolicyContent");
+    if (!content) return;
+
+    const pool = bundle?.pool || {};
+    const policy = bundle?.policy || {};
+    const live = bundle?.state || {};
+    const mode = bundle?.mode || {};
+    const options = bundle?.options || {};
+    const features = bundle?.features || {};
+    const ppEnabled = features.personalized_plans_enabled === true || pool.personalized_plans_enabled === true;
+    const ppConfigAvailable = features.pp_pricing_config_available === true;
+    const canManage = bundle?.can_manage === true;
+    const activationLocked = mode?.activation_locked !== false;
+    const role = String(bundle?.access_role || "");
+    const effectiveClass = yieldClassLabel(live?.effective_class);
+    const rawClass = yieldClassLabel(live?.raw_class);
+    const coverage = yieldCoverageLabel(live?.coverage_status);
+    const decisionLabel = live?.decision_ready === true
+      ? "Décision automatique prête"
+      : "Observation uniquement";
+
+    const speeds = Array.isArray(options.allowed_speeds_mbps)
+      ? options.allowed_speeds_mbps.map(Number).filter(Number.isFinite)
+      : [];
+    if (Number.isFinite(Number(policy.max_unlimited_speed_mbps)) &&
+        !speeds.includes(Number(policy.max_unlimited_speed_mbps))) {
+      speeds.push(Number(policy.max_unlimited_speed_mbps));
+      speeds.sort((a, b) => a - b);
+    }
+
+    const durations = Array.isArray(options.duration_options_minutes)
+      ? options.duration_options_minutes.map(Number).filter(Number.isFinite)
+      : [];
+    if (Number.isFinite(Number(policy.max_unlimited_duration_minutes)) &&
+        !durations.includes(Number(policy.max_unlimited_duration_minutes))) {
+      durations.push(Number(policy.max_unlimited_duration_minutes));
+      durations.sort((a, b) => a - b);
+    }
+
+    const stabilityOptions = Array.isArray(options.stability_options_minutes)
+      ? options.stability_options_minutes.map(Number).filter(Number.isFinite)
+      : [60, 180, 360, 720, 1440];
+
+    const disabled = canManage ? "" : "disabled";
+    const activationDisabled = (!canManage || activationLocked) ? "disabled" : "";
+
+    content.innerHTML = `
+      <div class="rz-yield-pool-name">${esc(pool.display_name || pool.name || "Pool")}</div>
+      <div class="rz-yield-pool-meta">${esc(yieldRoleLabel(role))} · Politique actuelle · Révision ${esc(policy.policy_revision || 1)}</div>
+
+      <div class="rz-yield-mode">
+        <div>
+          <strong>${mode.shadow_mode === true ? "Mode observation" : "Mode actif"}</strong>
+          <span>${mode.shadow_mode === true
+            ? "RAZAFI calcule la protection, mais ne modifie encore ni la disponibilité des Plans Standards ni les conditions PP Illimité."
+            : "Les règles de protection peuvent agir sur les offres illimitées selon les droits de la pool."}</span>
+        </div>
+        <span class="rz-yield-mode-pill">${mode.shadow_mode === true ? "SHADOW" : "ACTIF"}</span>
+      </div>
+
+      <div class="rz-yield-state-grid">
+        <div class="rz-yield-state-card"><span>Classe effective</span><strong>${esc(effectiveClass)}</strong></div>
+        <div class="rz-yield-state-card"><span>Signal brut</span><strong>${esc(rawClass)}</strong></div>
+        <div class="rz-yield-state-card"><span>Couverture</span><strong>${esc(coverage)}</strong></div>
+        <div class="rz-yield-state-card"><span>Automatisation</span><strong>${esc(decisionLabel)}</strong></div>
+      </div>
+
+      <div id="yieldPolicyMsg" class="rz-yield-msg" role="status" aria-live="polite"></div>
+
+      <div class="rz-yield-form">
+        <div class="rz-yield-switch-row">
+          <div>
+            <label for="yieldEnabled">Protection automatique</label>
+            <p>${activationLocked
+              ? "Activation verrouillée jusqu’à la validation de la phase Enforcement."
+              : "Active les règles automatiques approuvées pour cette pool."}</p>
+          </div>
+          <label class="rz-yield-switch">
+            <input id="yieldEnabled" type="checkbox" ${policy.enabled === true ? "checked" : ""} ${activationDisabled}>
+            <span></span>
+          </label>
+        </div>
+
+        <div class="rz-yield-section">
+          <div class="rz-yield-section-head">
+            <div>
+              <strong>Protection de la pool</strong>
+              <span>Commune aux Plans Standards Illimités, avec ou sans Plan Personnalisé.</span>
+            </div>
+          </div>
+
+          <div class="rz-yield-fields">
+            <label class="rz-yield-field">
+              <span>Budget du cycle</span>
+              <div class="rz-yield-input-unit">
+                <input id="yieldBudgetGb" type="number" inputmode="numeric" min="1" max="1000000" step="1" value="${esc(policy.cycle_budget_gb ?? "")}" ${disabled}>
+                <b>GB</b>
+              </div>
+              <small>Ex. 1 000 GB = 1 TB.</small>
+            </label>
+
+            <label class="rz-yield-field">
+              <span>Réserve protégée</span>
+              <div class="rz-yield-input-unit">
+                <input id="yieldReservePct" type="number" inputmode="decimal" min="0" max="50" step="0.5" value="${esc(policy.reserve_pct ?? 15)}" ${disabled}>
+                <b>%</b>
+              </div>
+              <small>Part du budget conservée en sécurité.</small>
+            </label>
+
+            <label class="rz-yield-field">
+              <span>Début du cycle</span>
+              <select id="yieldCycleDay" ${disabled}>
+                ${Array.from({ length: 31 }, (_, i) => i + 1).map((day) => `<option value="${day}" ${Number(policy.cycle_start_day) === day ? "selected" : ""}>Jour ${day}</option>`).join("")}
+              </select>
+              <small>RAZAFI adapte automatiquement les mois plus courts.</small>
+            </label>
+
+            <label class="rz-yield-field">
+              <span>Retour à une classe inférieure</span>
+              <select id="yieldStability" ${disabled}>
+                ${stabilityOptions.map((minutes) => `<option value="${esc(minutes)}" ${Number(policy.downgrade_stability_minutes) === minutes ? "selected" : ""}>${esc(yieldStabilityLabel(minutes))}</option>`).join("")}
+              </select>
+              <small>Évite les variations trop fréquentes de protection.</small>
+            </label>
+          </div>
+        </div>
+
+        ${ppEnabled ? `
+          <div class="rz-yield-section">
+            <div class="rz-yield-section-head">
+              <div>
+                <strong>Plan Personnalisé — Illimité</strong>
+                <span>Ces limites s’ajoutent à la protection commune de la pool.</span>
+              </div>
+              <span class="rz-yield-feature-badge">PP actif</span>
+            </div>
+
+            ${ppConfigAvailable ? `
+              <div class="rz-yield-fields">
+                <label class="rz-yield-field">
+                  <span>Débit max PP Illimité</span>
+                  <select id="yieldMaxSpeed" ${disabled}>
+                    ${speeds.map((speed) => `<option value="${esc(speed)}" ${Number(policy.max_unlimited_speed_mbps) === speed ? "selected" : ""}>${esc(formatDecimal(speed, 1))} Mbps</option>`).join("")}
+                  </select>
+                  <small>Plafond Owner, avant règles de protection.</small>
+                </label>
+
+                <label class="rz-yield-field">
+                  <span>Durée max PP Illimité</span>
+                  <select id="yieldMaxDuration" ${disabled}>
+                    ${durations.map((minutes) => `<option value="${esc(minutes)}" ${Number(policy.max_unlimited_duration_minutes) === minutes ? "selected" : ""}>${esc(yieldDurationLabel(minutes))}</option>`).join("")}
+                  </select>
+                  <small>Limite normale définie pour cette pool.</small>
+                </label>
+              </div>
+            ` : `
+              <div class="rz-yield-feature-note is-warning">
+                PP est actif pour cette pool, mais la configuration tarifaire commune n’est pas disponible. Les paramètres PP restent verrouillés ; la protection commune de la pool peut toujours être enregistrée.
+              </div>
+            `}
+          </div>
+        ` : `
+          <div class="rz-yield-feature-note">
+            <strong>Plan Personnalisé non actif.</strong>
+            <span>La protection reste valable pour les Plans Standards Illimités. Aucun paramètre PP n’est requis pour cette pool.</span>
+          </div>
+        `}
+
+        ${!canManage ? `<div class="rz-yield-readonly">Lecture seule : seul le propriétaire de la pool ou le Superadmin peut modifier cette politique.</div>` : ""}
+
+        <div class="rz-yield-actions">
+          <button class="filter-btn" type="button" data-yield-close="1">Fermer</button>
+          ${canManage ? `<button class="filter-btn primary" type="button" data-yield-save="1">Enregistrer</button>` : ""}
+        </div>
+      </div>
+    `;
+  }
+
+  async function openYieldPolicy(poolId) {
+    const id = String(poolId || "").trim();
+    if (!id) return;
+
+    const overlay = ensureYieldPolicyModal();
+    overlay.classList.add("is-open");
+    overlay.setAttribute("aria-hidden", "false");
+    document.body.classList.add("rz-yield-modal-open");
+    $("yieldPolicyContent").innerHTML = `<div class="rz-yield-loading">Chargement de la politique…</div>`;
+
+    try {
+      const bundle = await fetchJSON(`/api/admin/yield-policy?pool_id=${encodeURIComponent(id)}`);
+      renderYieldPolicyModal(bundle);
+    } catch (err) {
+      if (err.status === 401) {
+        window.location.href = "/admin/login.html";
+        return;
+      }
+      $("yieldPolicyContent").innerHTML = `
+        <div class="rz-yield-error">Impossible de charger la politique de protection pour cette pool.</div>
+        <div class="rz-yield-actions"><button class="filter-btn" type="button" data-yield-close="1">Fermer</button></div>
+      `;
+    }
+  }
+
+  async function saveYieldPolicy() {
+    const bundle = state.yieldPolicyBundle;
+    const poolId = String(bundle?.pool?.id || "").trim();
+    if (!poolId || bundle?.can_manage !== true) return;
+
+    const saveBtn = document.querySelector("[data-yield-save]");
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Enregistrement…";
+    }
+    yieldModalMessage("");
+
+    try {
+      const payload = {
+        policy_revision: Number(bundle.policy?.policy_revision),
+        cycle_budget_gb: Number($("yieldBudgetGb")?.value),
+        reserve_pct: Number($("yieldReservePct")?.value),
+        cycle_start_day: Number($("yieldCycleDay")?.value),
+        downgrade_stability_minutes: Number($("yieldStability")?.value),
+      };
+
+      const ppEnabled = bundle?.features?.personalized_plans_enabled === true || bundle?.pool?.personalized_plans_enabled === true;
+      const ppConfigAvailable = bundle?.features?.pp_pricing_config_available === true;
+      if (ppEnabled && ppConfigAvailable && $("yieldMaxSpeed") && $("yieldMaxDuration")) {
+        payload.max_unlimited_speed_mbps = Number($("yieldMaxSpeed").value);
+        payload.max_unlimited_duration_minutes = Number($("yieldMaxDuration").value);
+      }
+
+      if (bundle?.mode?.activation_locked === false) {
+        payload.enabled = $("yieldEnabled")?.checked === true;
+      }
+
+      const updated = await fetchJSON(`/api/admin/yield-policy/${encodeURIComponent(poolId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      renderYieldPolicyModal(updated);
+      yieldModalMessage(updated?.changed === false
+        ? "Aucune modification à enregistrer."
+        : "Politique enregistrée. Le moteur Shadow a été recalculé.");
+    } catch (err) {
+      if (err.status === 401) {
+        window.location.href = "/admin/login.html";
+        return;
+      }
+      if (err.status === 409 && err.code === "yield_policy_revision_conflict") {
+        yieldModalMessage("La politique a changé depuis son ouverture. Fermez puis rouvrez cette fenêtre avant de modifier.", true);
+      } else if (err.status === 403) {
+        yieldModalMessage("Vous n’êtes pas autorisé à modifier cette politique.", true);
+      } else if (err.status === 409 && err.code === "yield_pp_settings_not_applicable") {
+        yieldModalMessage("Le Plan Personnalisé n’est pas actif pour cette pool. Les paramètres PP ne peuvent pas être modifiés.", true);
+      } else {
+        yieldModalMessage("Impossible d’enregistrer la politique. Vérifiez les valeurs et réessayez.", true);
+      }
+    } finally {
+      const currentSaveBtn = document.querySelector("[data-yield-save]");
+      if (currentSaveBtn) {
+        currentSaveBtn.disabled = false;
+        currentSaveBtn.textContent = "Enregistrer";
+      }
+    }
   }
 
   function showMessage(text, error = false) {
@@ -391,7 +766,16 @@
             <div class="rz-du-pool-name">${esc(poolName(pool))}</div>
             <div class="rz-du-pool-sub">Source principale : WAN MikroTik · Dernier relevé ${esc(dateTimeShort(pool.last_observed_at))}</div>
           </div>
-          <span class="rz-du-status ${esc(status.cls)}">${esc(status.label)}</span>
+          <div class="rz-du-pool-actions">
+            <span class="rz-du-status ${esc(status.cls)}">${esc(status.label)}</span>
+            <button
+              class="rz-du-yield-btn"
+              type="button"
+              data-yield-policy="${esc(pool.pool_id || "")}"
+            >
+              ${canManageYieldPool(pool.pool_id) ? "Configurer la protection" : "Voir la protection"}
+            </button>
+          </div>
         </div>
 
         <div class="rz-du-hero">
@@ -566,6 +950,15 @@
     $("monthPicker").value = state.selectedMonth;
 
     $("refreshBtn").addEventListener("click", loadData);
+    $("poolList").addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-yield-policy]");
+      if (!btn) return;
+      void openYieldPolicy(btn.getAttribute("data-yield-policy"));
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeYieldPolicyModal();
+    });
+
     $("monthPicker").addEventListener("change", () => {
       const value = String($("monthPicker").value || "").trim();
       if (!/^\d{4}-\d{2}$/.test(value)) return;

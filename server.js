@@ -1532,6 +1532,14 @@ async function requireAdmin(req, res, next) {
       );
       if (allowOwnerBillingWrite) return next();
 
+      // Yield policy is capacity/business strategy: OWNER-only for scoped
+      // identities. Managers/viewers may read it but never modify it.
+      const allowOwnerYieldPolicyWrite = hasOwnerRole && (
+        method === "PATCH" &&
+        /^\/api\/admin\/yield-policy\/[0-9a-f-]{36}$/i.test(fullPath)
+      );
+      if (allowOwnerYieldPolicyWrite) return next();
+
       // Operational setup writes for OWNER / MANAGER. Route handlers still
       // enforce the exact pool role (owner/manager) for the target pool.
       if (hasOperationalWriteRole) {
@@ -1604,6 +1612,7 @@ async function requireAdmin(req, res, next) {
         fullPath === "/api/admin/portal-preview/validate" ||
         fullPath === "/api/admin/pool-live-stats" ||
         fullPath === "/api/admin/data-usage" ||
+        fullPath === "/api/admin/yield-policy" ||
         // S14.8.2B.1 — Annual-report catalog is read-only. Its handler/RPC
         // performs the historical Owner / Superadmin authorization.
         fullPath === "/api/admin/financial-reports/catalog" ||
@@ -25653,6 +25662,24 @@ const YIELD_LAST_SAMPLE_STALE_MS = Math.max(
 const YIELD_USAGE_PAGE_SIZE = 1000;
 const YIELD_USAGE_MAX_ROWS = 10000;
 
+// Yield V1 remains deliberately shadow-only in this patch.
+// Per-pool activation stays locked until the enforcement layer has been
+// deployed and validated. An environment flag alone can never activate it.
+const YIELD_ENFORCEMENT_IMPLEMENTED = false;
+const YIELD_ENFORCEMENT_REQUESTED = ["1", "true", "yes", "on"].includes(
+  String(process.env.YIELD_ENFORCEMENT_ENABLED || "false").trim().toLowerCase()
+);
+const YIELD_ENFORCEMENT_AVAILABLE =
+  YIELD_ENFORCEMENT_IMPLEMENTED && YIELD_ENFORCEMENT_REQUESTED;
+
+const YIELD_POLICY_STABILITY_OPTIONS_MINUTES = Object.freeze([
+  60,
+  180,
+  360,
+  720,
+  1440,
+]);
+
 function yieldClassRank(value) {
   const key = String(value || "").trim().toLowerCase();
   return Object.prototype.hasOwnProperty.call(YIELD_CLASS_ORDER, key)
@@ -25778,16 +25805,48 @@ function yieldCycleBounds(policy, now = new Date()) {
 }
 
 async function loadYieldPolicy(poolId) {
-  const { data, error } = await supabase
+  const select =
+    "pool_id,enabled,cycle_budget_bytes,reserve_pct," +
+    "max_unlimited_speed_mbps,max_unlimited_duration_minutes," +
+    "cycle_start_day,cycle_timezone,policy_revision," +
+    "downgrade_stability_minutes,created_at,updated_at,updated_by_admin_user_id";
+
+  let { data, error } = await supabase
     .from("pool_yield_policies")
-    .select(
-      "pool_id,enabled,cycle_budget_bytes,reserve_pct," +
-      "max_unlimited_speed_mbps,max_unlimited_duration_minutes," +
-      "cycle_start_day,cycle_timezone,policy_revision," +
-      "downgrade_stability_minutes"
-    )
+    .select(select)
     .eq("pool_id", poolId)
     .maybeSingle();
+
+  if (error) throw error;
+  if (data) return data;
+
+  // Migrations seeded existing pools. New MikroTik pools created later receive
+  // the same dormant defaults lazily on their first Yield evaluation/read.
+  const { data: pool, error: poolErr } = await supabase
+    .from("internet_pools")
+    .select("id,system")
+    .eq("id", poolId)
+    .maybeSingle();
+
+  if (poolErr) throw poolErr;
+  if (!pool || String(pool.system || "").toLowerCase() !== "mikrotik") {
+    return null;
+  }
+
+  const { error: seedErr } = await supabase
+    .from("pool_yield_policies")
+    .upsert(
+      { pool_id: poolId },
+      { onConflict: "pool_id", ignoreDuplicates: true }
+    );
+
+  if (seedErr) throw seedErr;
+
+  ({ data, error } = await supabase
+    .from("pool_yield_policies")
+    .select(select)
+    .eq("pool_id", poolId)
+    .maybeSingle());
 
   if (error) throw error;
   return data || null;
@@ -27768,6 +27827,506 @@ app.get("/api/admin/data-usage", requireAdmin, async (req, res) => {
     }
     console.error("[DATA USAGE READ]", code.slice(0, 180));
     return res.status(500).json({ error: "data_usage_read_failed" });
+  }
+});
+
+
+// ============================================================
+// YIELD MANAGEMENT V1 — OWNER POLICY API (SHADOW-ONLY)
+// ============================================================
+// Read: Superadmin + Owner + Manager + Viewer, scoped per pool.
+// Write: Superadmin + canonical Owner only.
+// The activation switch remains server-locked until enforcement is implemented.
+// ============================================================
+
+function yieldPolicyAccessRole(req, poolId) {
+  if (req?.admin?.is_superadmin) return "superadmin";
+  return getAdminPoolAccessRole(req?.admin, poolId);
+}
+
+function yieldPolicyCanManage(req, poolId) {
+  if (req?.admin?.is_superadmin) return true;
+  return getAdminPoolAccessRole(req?.admin, poolId) === "owner";
+}
+
+function yieldPolicyBudgetGb(value) {
+  const bytes = yieldSafeIntegerBigInt(value, 0n);
+  if (bytes <= 0n) return null;
+  const gb = Number(bytes) / 1_000_000_000;
+  return Number.isFinite(gb) && gb > 0 ? Math.round(gb * 1000) / 1000 : null;
+}
+
+function yieldPolicyDurationOptions(config) {
+  const maxDurationMinutes = Math.max(
+    60,
+    Math.round(Number(config?.settings?.max_duration_days || 30) * 1440)
+  );
+  const base = [60, 1440, 4320, 10080, 43200]
+    .filter((minutes) => minutes <= maxDurationMinutes);
+
+  if (!base.includes(maxDurationMinutes)) base.push(maxDurationMinutes);
+  return Array.from(new Set(base)).sort((a, b) => a - b);
+}
+
+function yieldPolicyAllowedSpeeds(config) {
+  return Array.from(new Set(
+    (Array.isArray(config?.settings?.allowed_speeds_mbps)
+      ? config.settings.allowed_speeds_mbps
+      : []
+    )
+      .map(Number)
+      .filter((value) => Number.isFinite(value) && value > 0)
+  )).sort((a, b) => a - b);
+}
+
+function yieldPolicySerialize(policy) {
+  if (!policy) return null;
+  return {
+    pool_id: policy.pool_id,
+    enabled: policy.enabled === true,
+    cycle_budget_bytes: String(policy.cycle_budget_bytes ?? "0"),
+    cycle_budget_gb: yieldPolicyBudgetGb(policy.cycle_budget_bytes),
+    reserve_pct: Number(policy.reserve_pct),
+    max_unlimited_speed_mbps: Number(policy.max_unlimited_speed_mbps),
+    max_unlimited_duration_minutes: Number(policy.max_unlimited_duration_minutes),
+    cycle_start_day: Number(policy.cycle_start_day),
+    cycle_timezone: String(policy.cycle_timezone || ""),
+    downgrade_stability_minutes: Number(policy.downgrade_stability_minutes || 360),
+    policy_revision: Number(policy.policy_revision || 1),
+    created_at: policy.created_at || null,
+    updated_at: policy.updated_at || null,
+  };
+}
+
+function yieldStateSerialize(state) {
+  if (!state) return null;
+  return {
+    raw_class: String(state.raw_class || "normal"),
+    effective_class: String(state.effective_class || "normal"),
+    raw_since: state.raw_since || null,
+    effective_since: state.effective_since || null,
+    last_evaluated_at: state.last_evaluated_at || null,
+    cycle_start_at: state.cycle_start_at || null,
+    cycle_end_at: state.cycle_end_at || null,
+    consumed_bytes: state.consumed_bytes === null || state.consumed_bytes === undefined
+      ? null
+      : String(state.consumed_bytes),
+    projected_bytes: state.projected_bytes === null || state.projected_bytes === undefined
+      ? null
+      : String(state.projected_bytes),
+    budget_bytes: state.budget_bytes === null || state.budget_bytes === undefined
+      ? null
+      : String(state.budget_bytes),
+    reserve_trigger_bytes: state.reserve_trigger_bytes === null || state.reserve_trigger_bytes === undefined
+      ? null
+      : String(state.reserve_trigger_bytes),
+    actual_ratio: state.actual_ratio === null || state.actual_ratio === undefined
+      ? null
+      : Number(state.actual_ratio),
+    projection_ratio: state.projection_ratio === null || state.projection_ratio === undefined
+      ? null
+      : Number(state.projection_ratio),
+    projection_ready: state.projection_ready === true,
+    reason_code: state.reason_code || null,
+    policy_revision: state.policy_revision === null || state.policy_revision === undefined
+      ? null
+      : Number(state.policy_revision),
+    decision_ready: state.decision_ready === true,
+    coverage_status: String(state.coverage_status || "no_data"),
+    updated_at: state.updated_at || null,
+  };
+}
+
+async function loadYieldPolicyAdminBundle(req, poolId) {
+  const cleanPoolId = String(poolId || "").trim().toLowerCase();
+  if (!UUID_V1_TO_V5_RE.test(cleanPoolId)) {
+    const err = new Error("yield_pool_id_invalid");
+    err.status = 400;
+    throw err;
+  }
+
+  if (!req?.admin?.is_superadmin && !adminCanAccessPool(req, cleanPoolId)) {
+    const err = new Error("forbidden_pool");
+    err.status = 403;
+    throw err;
+  }
+
+  const { data: pool, error: poolErr } = await supabase
+    .from("internet_pools")
+    .select("id,name,brand_name,system,radius_nas_id,personalized_plans_enabled")
+    .eq("id", cleanPoolId)
+    .maybeSingle();
+
+  if (poolErr) throw poolErr;
+  if (!pool) {
+    const err = new Error("pool_not_found");
+    err.status = 404;
+    throw err;
+  }
+  if (String(pool.system || "").toLowerCase() !== "mikrotik") {
+    const err = new Error("pool_not_mikrotik");
+    err.status = 409;
+    throw err;
+  }
+
+  const [policy, stateResult] = await Promise.all([
+    loadYieldPolicy(cleanPoolId),
+    supabase
+      .from("pool_yield_state")
+      .select(
+        "pool_id,raw_class,effective_class,raw_since,effective_since,last_evaluated_at," +
+        "cycle_start_at,cycle_end_at,consumed_bytes,projected_bytes,budget_bytes," +
+        "reserve_trigger_bytes,actual_ratio,projection_ratio,projection_ready," +
+        "reason_code,policy_revision,decision_ready,coverage_status,updated_at"
+      )
+      .eq("pool_id", cleanPoolId)
+      .maybeSingle(),
+  ]);
+
+  if (stateResult.error) throw stateResult.error;
+  if (!policy) {
+    const err = new Error("yield_policy_unavailable");
+    err.status = 503;
+    throw err;
+  }
+
+  const personalizedPlansEnabled = pool.personalized_plans_enabled === true;
+  let ppConfigAvailable = false;
+  let allowedSpeeds = [];
+  let durationOptions = [];
+  let maxDurationMinutes = null;
+
+  // PP-specific controls are optional for the protection engine. A pool without
+  // PP (or a temporary pricing-config problem) must still be able to configure
+  // its pool-wide Data / Standard Unlimited protection policy.
+  if (personalizedPlansEnabled) {
+    try {
+      const config = await getActivePersonalizedPricingConfigFailClosed();
+      allowedSpeeds = yieldPolicyAllowedSpeeds(config);
+      durationOptions = yieldPolicyDurationOptions(config);
+      maxDurationMinutes = durationOptions.length ? Math.max(...durationOptions) : null;
+      ppConfigAvailable = allowedSpeeds.length > 0 && durationOptions.length > 0;
+    } catch (error) {
+      console.error("[YIELD POLICY] PP options unavailable", {
+        pool_id: cleanPoolId,
+        error: String(error?.message || error).slice(0, 160),
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    pool: {
+      id: pool.id,
+      name: pool.name || null,
+      brand_name: pool.brand_name || null,
+      display_name: buildPoolDisplayName(pool) || pool.name || null,
+      radius_nas_id: pool.radius_nas_id || null,
+      personalized_plans_enabled: personalizedPlansEnabled,
+    },
+    access_role: yieldPolicyAccessRole(req, cleanPoolId),
+    can_manage: yieldPolicyCanManage(req, cleanPoolId),
+    mode: {
+      shadow_mode: true,
+      enforcement_implemented: YIELD_ENFORCEMENT_IMPLEMENTED,
+      enforcement_available: YIELD_ENFORCEMENT_AVAILABLE,
+      activation_locked: !YIELD_ENFORCEMENT_AVAILABLE,
+    },
+    features: {
+      personalized_plans_enabled: personalizedPlansEnabled,
+      pp_yield_settings_applicable: personalizedPlansEnabled,
+      pp_pricing_config_available: personalizedPlansEnabled && ppConfigAvailable,
+    },
+    options: {
+      allowed_speeds_mbps: allowedSpeeds,
+      duration_options_minutes: durationOptions,
+      max_duration_minutes: maxDurationMinutes,
+      stability_options_minutes: [...YIELD_POLICY_STABILITY_OPTIONS_MINUTES],
+    },
+    policy: yieldPolicySerialize(policy),
+    state: yieldStateSerialize(stateResult.data || null),
+  };
+}
+
+app.get("/api/admin/yield-policy", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const poolId = String(req.query?.pool_id || "").trim();
+    if (!poolId) return res.status(400).json({ error: "pool_id_required" });
+
+    const bundle = await loadYieldPolicyAdminBundle(req, poolId);
+    return res.json(bundle);
+  } catch (error) {
+    const status = Number(error?.status || 0);
+    const code = String(error?.message || "yield_policy_read_failed");
+
+    if ([400, 403, 404, 409].includes(status)) {
+      return res.status(status).json({ error: code });
+    }
+
+    console.error("[YIELD POLICY READ]", code.slice(0, 180));
+    return res.status(500).json({ error: "yield_policy_read_failed" });
+  }
+});
+
+app.patch("/api/admin/yield-policy/:poolId", requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: "supabase_not_configured" });
+
+    const poolId = String(req.params?.poolId || "").trim().toLowerCase();
+    if (!UUID_V1_TO_V5_RE.test(poolId)) {
+      return res.status(400).json({ error: "yield_pool_id_invalid" });
+    }
+    if (!req.admin?.is_superadmin && !adminCanAccessPool(req, poolId)) {
+      return res.status(403).json({ error: "forbidden_pool" });
+    }
+    if (!yieldPolicyCanManage(req, poolId)) {
+      return res.status(403).json({ error: "yield_policy_owner_only" });
+    }
+
+    const { data: featurePool, error: featurePoolErr } = await supabase
+      .from("internet_pools")
+      .select("id,system,personalized_plans_enabled")
+      .eq("id", poolId)
+      .maybeSingle();
+    if (featurePoolErr) throw featurePoolErr;
+    if (!featurePool?.id) return res.status(404).json({ error: "pool_not_found" });
+    if (String(featurePool.system || "").toLowerCase() !== "mikrotik") {
+      return res.status(409).json({ error: "pool_not_mikrotik" });
+    }
+
+    const personalizedPlansEnabled = featurePool.personalized_plans_enabled === true;
+    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body)
+      ? req.body
+      : {};
+
+    const ppSpecificKeys = new Set([
+      "max_unlimited_speed_mbps",
+      "max_unlimited_duration_minutes",
+    ]);
+    const allowedKeys = new Set([
+      "policy_revision",
+      "enabled",
+      "cycle_budget_gb",
+      "reserve_pct",
+      ...ppSpecificKeys,
+      "cycle_start_day",
+      "downgrade_stability_minutes",
+    ]);
+    const unexpectedKey = Object.keys(body).find((key) => !allowedKeys.has(key));
+    if (unexpectedKey) {
+      return res.status(400).json({
+        error: "yield_policy_field_invalid",
+        field: unexpectedKey,
+      });
+    }
+
+    const requestedPpKeys = Object.keys(body).filter((key) => ppSpecificKeys.has(key));
+    if (!personalizedPlansEnabled && requestedPpKeys.length) {
+      return res.status(409).json({
+        error: "yield_pp_settings_not_applicable",
+        fields: requestedPpKeys,
+        personalized_plans_enabled: false,
+      });
+    }
+
+    const current = await loadYieldPolicy(poolId);
+    if (!current) return res.status(404).json({ error: "yield_policy_not_found" });
+
+    const expectedRevision = Number(body.policy_revision);
+    const currentRevision = Number(current.policy_revision || 1);
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+      return res.status(400).json({ error: "yield_policy_revision_required" });
+    }
+    if (expectedRevision !== currentRevision) {
+      return res.status(409).json({
+        error: "yield_policy_revision_conflict",
+        current_revision: currentRevision,
+      });
+    }
+
+    let allowedSpeeds = [];
+    let maxDurationMinutes = null;
+    let minDurationMinutes = null;
+    let durationStepMinutes = null;
+
+    // Generic protection settings must not depend on PP. Only load the common
+    // simulator configuration when this request actually edits PP-specific
+    // Unlimited limits for a pool where PP is enabled.
+    if (requestedPpKeys.length) {
+      const config = await getActivePersonalizedPricingConfigFailClosed();
+      allowedSpeeds = yieldPolicyAllowedSpeeds(config);
+      maxDurationMinutes = Math.round(
+        Number(config?.settings?.max_duration_days || 30) * 1440
+      );
+      minDurationMinutes = Math.max(
+        1,
+        Number(config?.personalized?.min_duration_minutes || 60)
+      );
+      durationStepMinutes = Math.max(
+        1,
+        Number(config?.personalized?.duration_step_minutes || 60)
+      );
+    }
+
+    const updates = {};
+
+    if (Object.prototype.hasOwnProperty.call(body, "enabled")) {
+      if (typeof body.enabled !== "boolean") {
+        return res.status(400).json({ error: "yield_policy_enabled_invalid" });
+      }
+      if (body.enabled === true && !YIELD_ENFORCEMENT_AVAILABLE) {
+        return res.status(409).json({ error: "yield_enforcement_not_available" });
+      }
+      if (body.enabled !== (current.enabled === true)) {
+        updates.enabled = body.enabled;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "cycle_budget_gb")) {
+      const gb = Number(body.cycle_budget_gb);
+      if (!Number.isInteger(gb) || gb < 1 || gb > 1_000_000) {
+        return res.status(400).json({ error: "yield_cycle_budget_gb_invalid" });
+      }
+      const bytes = BigInt(gb) * 1_000_000_000n;
+      if (bytes.toString() !== String(current.cycle_budget_bytes)) {
+        updates.cycle_budget_bytes = bytes.toString();
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "reserve_pct")) {
+      const reservePct = Number(body.reserve_pct);
+      if (!Number.isFinite(reservePct) || reservePct < 0 || reservePct > 50) {
+        return res.status(400).json({ error: "yield_reserve_pct_invalid" });
+      }
+      const normalized = Math.round(reservePct * 100) / 100;
+      if (Math.abs(normalized - Number(current.reserve_pct)) > 0.0001) {
+        updates.reserve_pct = normalized;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "max_unlimited_speed_mbps")) {
+      const speed = Number(body.max_unlimited_speed_mbps);
+      const allowed = allowedSpeeds.some((value) => Math.abs(value - speed) < 0.001);
+      if (!allowed) {
+        return res.status(400).json({
+          error: "yield_max_unlimited_speed_invalid",
+          allowed_speeds_mbps: allowedSpeeds,
+        });
+      }
+      if (Math.abs(speed - Number(current.max_unlimited_speed_mbps)) > 0.001) {
+        updates.max_unlimited_speed_mbps = speed;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "max_unlimited_duration_minutes")) {
+      const minutes = Number(body.max_unlimited_duration_minutes);
+      const stepOffset = minutes - minDurationMinutes;
+      if (
+        !Number.isInteger(minutes) ||
+        minutes < minDurationMinutes ||
+        minutes > maxDurationMinutes ||
+        stepOffset < 0 ||
+        stepOffset % durationStepMinutes !== 0
+      ) {
+        return res.status(400).json({
+          error: "yield_max_unlimited_duration_invalid",
+          min_duration_minutes: minDurationMinutes,
+          max_duration_minutes: maxDurationMinutes,
+          duration_step_minutes: durationStepMinutes,
+        });
+      }
+      if (minutes !== Number(current.max_unlimited_duration_minutes)) {
+        updates.max_unlimited_duration_minutes = minutes;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "cycle_start_day")) {
+      const day = Number(body.cycle_start_day);
+      if (!Number.isInteger(day) || day < 1 || day > 31) {
+        return res.status(400).json({ error: "yield_cycle_start_day_invalid" });
+      }
+      if (day !== Number(current.cycle_start_day)) {
+        updates.cycle_start_day = day;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "downgrade_stability_minutes")) {
+      const minutes = Number(body.downgrade_stability_minutes);
+      if (!YIELD_POLICY_STABILITY_OPTIONS_MINUTES.includes(minutes)) {
+        return res.status(400).json({
+          error: "yield_downgrade_stability_invalid",
+          allowed_minutes: [...YIELD_POLICY_STABILITY_OPTIONS_MINUTES],
+        });
+      }
+      if (minutes !== Number(current.downgrade_stability_minutes || 360)) {
+        updates.downgrade_stability_minutes = minutes;
+      }
+    }
+
+    if (!Object.keys(updates).length) {
+      const unchanged = await loadYieldPolicyAdminBundle(req, poolId);
+      return res.json({ ...unchanged, changed: false });
+    }
+
+    updates.policy_revision = currentRevision + 1;
+    updates.updated_at = new Date().toISOString();
+    updates.updated_by_admin_user_id = req.admin?.actor_id || req.admin?.id || null;
+
+    const { data: saved, error: updateErr } = await supabase
+      .from("pool_yield_policies")
+      .update(updates)
+      .eq("pool_id", poolId)
+      .eq("policy_revision", currentRevision)
+      .select(
+        "pool_id,enabled,cycle_budget_bytes,reserve_pct," +
+        "max_unlimited_speed_mbps,max_unlimited_duration_minutes," +
+        "cycle_start_day,cycle_timezone,policy_revision," +
+        "downgrade_stability_minutes,created_at,updated_at,updated_by_admin_user_id"
+      )
+      .maybeSingle();
+
+    if (updateErr) throw updateErr;
+    if (!saved) {
+      const latest = await loadYieldPolicy(poolId);
+      return res.status(409).json({
+        error: "yield_policy_revision_conflict",
+        current_revision: Number(latest?.policy_revision || currentRevision),
+      });
+    }
+
+    let evaluation = null;
+    try {
+      evaluation = await evaluatePoolYieldState(poolId, new Date());
+    } catch (evaluationError) {
+      console.error("[YIELD POLICY] post-save shadow evaluation failed", {
+        pool_id: poolId,
+        error: String(evaluationError?.message || evaluationError).slice(0, 160),
+      });
+      evaluation = {
+        ok: false,
+        shadow_mode: true,
+        error: "yield_evaluation_failed",
+      };
+    }
+
+    const bundle = await loadYieldPolicyAdminBundle(req, poolId);
+    return res.json({
+      ...bundle,
+      changed: true,
+      evaluation,
+    });
+  } catch (error) {
+    const status = Number(error?.status || 0);
+    const code = String(error?.message || "yield_policy_update_failed");
+
+    if ([400, 403, 404, 409].includes(status)) {
+      return res.status(status).json({ error: code });
+    }
+
+    console.error("[YIELD POLICY UPDATE]", code.slice(0, 180));
+    return res.status(500).json({ error: "yield_policy_update_failed" });
   }
 });
 
