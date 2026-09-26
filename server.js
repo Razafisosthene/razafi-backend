@@ -3505,7 +3505,24 @@ async function buildPortalTrustedAssistantContext({ contextToken, identity: veri
     }
 
     const normalizedMethods = normalizePaymentMethods(pool.payment_methods);
-    const plans = (planRows || []).map(assistantSafePlan).filter(Boolean);
+
+    let trustedPlanRows = Array.isArray(planRows) ? planRows : [];
+    if (YIELD_ENFORCEMENT_AVAILABLE) {
+      try {
+        const yieldControls = await loadYieldCommercialControls(poolId);
+        trustedPlanRows = applyYieldStandardPlanOverlay(
+          trustedPlanRows,
+          yieldControls
+        ).plans;
+      } catch (yieldErr) {
+        console.warn(
+          "[ANU-2 PORTAL CONTEXT] Yield plan overlay unavailable:",
+          String(yieldErr?.message || yieldErr).slice(0, 100)
+        );
+      }
+    }
+
+    const plans = trustedPlanRows.map(assistantSafePlan).filter(Boolean);
     const criticalState = assistantCriticalStateFromRows({ sessionRow, transactionRow });
     const rulesInformationGroundingEnabled = isPortalRulesInformationGroundingEnabled();
     const groundedAnnouncement = rulesInformationGroundingEnabled ? serializePortalAnnouncement(pool) : null;
@@ -25632,14 +25649,16 @@ function dataUsageMonthStartInAntananarivo(date = new Date()) {
 
 
 // ============================================================
-// YIELD MANAGEMENT V1 — SHADOW ENGINE
+// YIELD MANAGEMENT V1 — SHADOW + ENFORCEMENT ENGINE
 // ============================================================
 // Deterministic capacity protection driven by WAN Data Usage.
 // IMPORTANT:
-// - This stage DOES NOT alter PP prices or Standard Plan visibility.
 // - Disabled policies are still evaluated in shadow mode for validation.
-// - Future commercial enforcement must require BOTH policy.enabled=true
-//   and state.decision_ready=true.
+// - Commercial enforcement is globally gated by YIELD_ENFORCEMENT_ENABLED.
+// - A pool must also have policy.enabled=true and a trusted Yield decision
+//   for the current policy revision.
+// - If telemetry later becomes incomplete, the last trusted class is retained
+//   only for the same policy revision.
 // - Escalation is immediate; downgrade requires a stable lower raw class.
 // ============================================================
 
@@ -25662,10 +25681,10 @@ const YIELD_LAST_SAMPLE_STALE_MS = Math.max(
 const YIELD_USAGE_PAGE_SIZE = 1000;
 const YIELD_USAGE_MAX_ROWS = 10000;
 
-// Yield V1 remains deliberately shadow-only in this patch.
-// Per-pool activation stays locked until the enforcement layer has been
-// deployed and validated. An environment flag alone can never activate it.
-const YIELD_ENFORCEMENT_IMPLEMENTED = false;
+// Enforcement code is present, but remains dormant unless the explicit
+// Render environment gate is enabled. Existing deployments therefore stay
+// shadow-only until YIELD_ENFORCEMENT_ENABLED=true is deliberately configured.
+const YIELD_ENFORCEMENT_IMPLEMENTED = true;
 const YIELD_ENFORCEMENT_REQUESTED = ["1", "true", "yes", "on"].includes(
   String(process.env.YIELD_ENFORCEMENT_ENABLED || "false").trim().toLowerCase()
 );
@@ -25857,7 +25876,7 @@ async function loadYieldState(poolId) {
     .from("pool_yield_state")
     .select(
       "pool_id,raw_class,effective_class,raw_since,effective_since," +
-      "decision_ready,coverage_status,last_evaluated_at"
+      "decision_ready,coverage_status,last_evaluated_at,policy_revision,evaluation_snapshot"
     )
     .eq("pool_id", poolId)
     .maybeSingle();
@@ -26137,11 +26156,50 @@ async function evaluatePoolYieldState(poolId, evaluatedAt = new Date()) {
     projectionReady,
   });
 
+  const policyRevision = Math.max(1, Number(policy.policy_revision || 1));
   const previous = await loadYieldState(cleanPoolId);
-  const previousRaw = String(previous?.raw_class || "normal").toLowerCase();
-  const previousEffective = String(previous?.effective_class || "normal").toLowerCase();
-  const previousRawSinceMs = Date.parse(String(previous?.raw_since || ""));
-  const previousEffectiveSince = previous?.effective_since || evaluatedAt.toISOString();
+  const previousStateRevision = Number(previous?.policy_revision);
+  const previousRevisionMatches =
+    Number.isInteger(previousStateRevision) &&
+    previousStateRevision === policyRevision;
+
+  // A policy edit invalidates the prior effective state. The current cycle can
+  // immediately establish a new trusted decision when coverage is complete;
+  // otherwise the pool remains commercially neutral until that happens.
+  const previousRaw = previousRevisionMatches
+    ? String(previous?.raw_class || "normal").toLowerCase()
+    : "normal";
+  const previousEffective = previousRevisionMatches
+    ? String(previous?.effective_class || "normal").toLowerCase()
+    : "normal";
+  const previousRawSinceMs = previousRevisionMatches
+    ? Date.parse(String(previous?.raw_since || ""))
+    : Number.NaN;
+  const previousEffectiveSince = previousRevisionMatches
+    ? (previous?.effective_since || evaluatedAt.toISOString())
+    : evaluatedAt.toISOString();
+
+  const previousEvaluationSnapshot =
+    previousRevisionMatches &&
+    previous?.evaluation_snapshot &&
+    typeof previous.evaluation_snapshot === "object" &&
+    !Array.isArray(previous.evaluation_snapshot)
+      ? previous.evaluation_snapshot
+      : {};
+
+  const previousTrustedClass = String(
+    previousEvaluationSnapshot.last_trusted_class || ""
+  ).trim().toLowerCase();
+  const previousTrustedRevision = Number(
+    previousEvaluationSnapshot.last_trusted_policy_revision
+  );
+  const previousTrustedAt = String(
+    previousEvaluationSnapshot.last_trusted_at || ""
+  ).trim() || null;
+  const previousTrustedValid =
+    Object.prototype.hasOwnProperty.call(YIELD_CLASS_ORDER, previousTrustedClass) &&
+    Number.isInteger(previousTrustedRevision) &&
+    previousTrustedRevision === policyRevision;
 
   const rawChanged = rawDecision.raw_class !== previousRaw;
   const rawSinceIso = rawChanged || !Number.isFinite(previousRawSinceMs)
@@ -26200,7 +26258,16 @@ async function evaluatePoolYieldState(poolId, evaluatedAt = new Date()) {
     }
   }
 
-  const policyRevision = Math.max(1, Number(policy.policy_revision || 1));
+  let lastTrustedClass = previousTrustedValid ? previousTrustedClass : null;
+  let lastTrustedPolicyRevision = previousTrustedValid ? previousTrustedRevision : null;
+  let lastTrustedAt = previousTrustedValid ? previousTrustedAt : null;
+
+  if (decisionReady) {
+    lastTrustedClass = effectiveClass;
+    lastTrustedPolicyRevision = policyRevision;
+    lastTrustedAt = evaluatedAt.toISOString();
+  }
+
   const policySnapshot = {
     enabled: policy.enabled === true,
     cycle_budget_bytes: budgetBytes.toString(),
@@ -26214,9 +26281,10 @@ async function evaluatePoolYieldState(poolId, evaluatedAt = new Date()) {
   };
 
   const evaluationSnapshot = {
-    engine: "yield_management_v1_shadow",
+    engine: "yield_management_v1",
     evaluated_at: evaluatedAt.toISOString(),
     policy_enabled: policy.enabled === true,
+    enforcement_available: YIELD_ENFORCEMENT_AVAILABLE,
     decision_ready: decisionReady,
     coverage_status: coverageStatus,
     cycle_start_at: cycle.start_at,
@@ -26243,6 +26311,9 @@ async function evaluatePoolYieldState(poolId, evaluatedAt = new Date()) {
     effective_class_before: previousEffective,
     effective_class_after: effectiveClass,
     effective_reason_code: effectiveReasonCode,
+    last_trusted_class: lastTrustedClass,
+    last_trusted_policy_revision: lastTrustedPolicyRevision,
+    last_trusted_at: lastTrustedAt,
   };
 
   await persistPoolYieldEvaluation({
@@ -26271,7 +26342,7 @@ async function evaluatePoolYieldState(poolId, evaluatedAt = new Date()) {
 
   return {
     ok: true,
-    shadow_mode: true,
+    shadow_mode: !YIELD_ENFORCEMENT_AVAILABLE,
     policy_enabled: policy.enabled === true,
     decision_ready: decisionReady,
     coverage_status: coverageStatus,
@@ -26288,6 +26359,279 @@ async function evaluatePoolYieldState(poolId, evaluatedAt = new Date()) {
     cycle_start_at: cycle.start_at,
     cycle_end_at: cycle.end_at,
   };
+}
+
+
+// ---------------------------------------------------------------------------
+// YIELD MANAGEMENT V1 — COMMERCIAL DECISION RESOLVER
+// ---------------------------------------------------------------------------
+// One server-side resolver is shared by:
+//   - Standard Unlimited public-plan visibility,
+//   - Personalized Unlimited options / quote validation,
+//   - trusted Portal Assistant plan grounding.
+//
+// Commercial controls require the global environment gate, an enabled pool
+// policy, and either a fresh trusted decision or a retained trusted decision
+// for the SAME policy revision.
+function normalizeYieldClass(value) {
+  const key = String(value || "").trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(YIELD_CLASS_ORDER, key)
+    ? key
+    : null;
+}
+
+function serializeYieldCommercialControls(controls) {
+  if (!controls || typeof controls !== "object") return null;
+  return {
+    active: controls.active === true,
+    reason: controls.reason || null,
+    effective_class: controls.effective_class || null,
+    retained_from_last_trusted: controls.retained_from_last_trusted === true,
+    policy_revision: Number.isInteger(Number(controls.policy_revision))
+      ? Number(controls.policy_revision)
+      : null,
+    pp_unlimited: {
+      available: controls.pp_unlimited_available !== false,
+      uplift_pct: Number(controls.pp_unlimited_uplift_pct || 0),
+      max_speed_mbps: controls.pp_unlimited_max_speed_mbps === null ||
+        controls.pp_unlimited_max_speed_mbps === undefined
+        ? null
+        : Number(controls.pp_unlimited_max_speed_mbps),
+      max_duration_minutes: controls.pp_unlimited_max_duration_minutes === null ||
+        controls.pp_unlimited_max_duration_minutes === undefined
+        ? null
+        : Number(controls.pp_unlimited_max_duration_minutes),
+    },
+    ps_unlimited: {
+      hidden_from_duration_minutes:
+        controls.ps_unlimited_hidden_from_duration_minutes === null ||
+        controls.ps_unlimited_hidden_from_duration_minutes === undefined
+          ? null
+          : Number(controls.ps_unlimited_hidden_from_duration_minutes),
+    },
+  };
+}
+
+function yieldCommercialInactive(reason, policyRevision = null) {
+  return {
+    active: false,
+    reason: String(reason || "inactive"),
+    effective_class: null,
+    retained_from_last_trusted: false,
+    policy_revision: Number.isInteger(Number(policyRevision))
+      ? Number(policyRevision)
+      : null,
+    pp_unlimited_available: true,
+    pp_unlimited_uplift_pct: 0,
+    pp_unlimited_max_speed_mbps: null,
+    pp_unlimited_max_duration_minutes: null,
+    ps_unlimited_hidden_from_duration_minutes: null,
+  };
+}
+
+async function loadYieldCommercialControls(poolId) {
+  if (!YIELD_ENFORCEMENT_AVAILABLE) {
+    return yieldCommercialInactive("enforcement_global_disabled");
+  }
+
+  const cleanPoolId = String(poolId || "").trim().toLowerCase();
+  if (!UUID_V1_TO_V5_RE.test(cleanPoolId)) {
+    throw new Error("yield_pool_id_invalid");
+  }
+
+  const [policy, stateResult] = await Promise.all([
+    loadYieldPolicy(cleanPoolId),
+    supabase
+      .from("pool_yield_state")
+      .select(
+        "pool_id,effective_class,decision_ready,coverage_status,last_evaluated_at," +
+        "policy_revision,evaluation_snapshot"
+      )
+      .eq("pool_id", cleanPoolId)
+      .maybeSingle(),
+  ]);
+
+  if (stateResult.error) throw stateResult.error;
+  if (!policy) return yieldCommercialInactive("policy_missing");
+  const policyRevision = Math.max(1, Number(policy.policy_revision || 1));
+
+  if (policy.enabled !== true) {
+    return yieldCommercialInactive("policy_disabled", policyRevision);
+  }
+
+  const state = stateResult.data || null;
+  const stateRevision = Number(state?.policy_revision);
+  let effectiveClass = null;
+  let retainedFromLastTrusted = false;
+
+  if (
+    state?.decision_ready === true &&
+    Number.isInteger(stateRevision) &&
+    stateRevision === policyRevision
+  ) {
+    effectiveClass = normalizeYieldClass(state?.effective_class);
+  }
+
+  if (!effectiveClass) {
+    const snapshot =
+      state?.evaluation_snapshot &&
+      typeof state.evaluation_snapshot === "object" &&
+      !Array.isArray(state.evaluation_snapshot)
+        ? state.evaluation_snapshot
+        : {};
+    const trustedClass = normalizeYieldClass(snapshot.last_trusted_class);
+    const trustedRevision = Number(snapshot.last_trusted_policy_revision);
+
+    if (
+      trustedClass &&
+      Number.isInteger(trustedRevision) &&
+      trustedRevision === policyRevision
+    ) {
+      effectiveClass = trustedClass;
+      retainedFromLastTrusted = true;
+    }
+  }
+
+  if (!effectiveClass) {
+    return yieldCommercialInactive("awaiting_trusted_decision", policyRevision);
+  }
+
+  const ownerMaxSpeed = Number(policy.max_unlimited_speed_mbps);
+  const ownerMaxDuration = Number(policy.max_unlimited_duration_minutes);
+  if (
+    !Number.isFinite(ownerMaxSpeed) ||
+    ownerMaxSpeed <= 0 ||
+    !Number.isInteger(ownerMaxDuration) ||
+    ownerMaxDuration < 1
+  ) {
+    throw new Error("yield_policy_invalid");
+  }
+
+  let ppUpliftPct = 0;
+  let ppUnlimitedAvailable = true;
+  let ppMaxDuration = ownerMaxDuration;
+  let psHiddenFromMinutes = null;
+
+  if (effectiveClass === "vigilance") {
+    ppUpliftPct = 15;
+    ppMaxDuration = Math.min(ownerMaxDuration, 7 * 1440);
+  } else if (effectiveClass === "protection") {
+    ppUpliftPct = 35;
+    ppMaxDuration = Math.min(ownerMaxDuration, 3 * 1440);
+    psHiddenFromMinutes = 7 * 1440;
+  } else if (effectiveClass === "critical") {
+    ppUnlimitedAvailable = false;
+    ppMaxDuration = Math.min(ownerMaxDuration, 3 * 1440);
+    psHiddenFromMinutes = 1 * 1440;
+  }
+
+  return {
+    active: true,
+    reason: retainedFromLastTrusted
+      ? "last_trusted_decision_retained"
+      : "trusted_decision_current",
+    effective_class: effectiveClass,
+    retained_from_last_trusted: retainedFromLastTrusted,
+    policy_revision: policyRevision,
+    pp_unlimited_available: ppUnlimitedAvailable,
+    pp_unlimited_uplift_pct: ppUpliftPct,
+    pp_unlimited_max_speed_mbps: ownerMaxSpeed,
+    pp_unlimited_max_duration_minutes: ppMaxDuration,
+    ps_unlimited_hidden_from_duration_minutes: psHiddenFromMinutes,
+  };
+}
+
+function yieldPlanDurationMinutes(plan) {
+  const direct = Number(plan?.duration_minutes);
+  if (Number.isFinite(direct) && direct >= 0) return direct;
+
+  const hours = Number(plan?.duration_hours);
+  return Number.isFinite(hours) && hours >= 0 ? hours * 60 : null;
+}
+
+function applyYieldStandardPlanOverlay(plans, controls) {
+  const source = Array.isArray(plans) ? plans : [];
+  const threshold = Number(controls?.ps_unlimited_hidden_from_duration_minutes);
+
+  if (
+    controls?.active !== true ||
+    !Number.isFinite(threshold) ||
+    threshold <= 0
+  ) {
+    return {
+      plans: source.slice(),
+      hidden_count: 0,
+    };
+  }
+
+  let hiddenCount = 0;
+  const filtered = source.filter((plan) => {
+    const sourceKind = String(plan?.plan_source || "standard").trim().toLowerCase();
+    if (sourceKind !== "standard") return true;
+    if (!(plan?.data_mb === null || plan?.data_mb === undefined)) return true;
+
+    const durationMinutes = yieldPlanDurationMinutes(plan);
+    if (!Number.isFinite(durationMinutes)) return true;
+
+    if (durationMinutes >= threshold) {
+      hiddenCount += 1;
+      return false;
+    }
+    return true;
+  });
+
+  return {
+    plans: filtered,
+    hidden_count: hiddenCount,
+  };
+}
+
+function assertYieldPersonalizedUnlimitedChoice(choice, controls) {
+  if (
+    !choice ||
+    choice.type !== "unlimited" ||
+    controls?.active !== true
+  ) {
+    return;
+  }
+
+  if (controls.pp_unlimited_available === false) {
+    throw makePersonalizedPlanError(
+      "yield_unlimited_unavailable_critical",
+      409,
+      { yield_class: controls.effective_class }
+    );
+  }
+
+  const maxSpeed = Number(controls.pp_unlimited_max_speed_mbps);
+  if (
+    Number.isFinite(maxSpeed) &&
+    Number(choice.speed_mbps) > maxSpeed + 0.0001
+  ) {
+    throw makePersonalizedPlanError(
+      "yield_unlimited_speed_above_pool_maximum",
+      400,
+      {
+        yield_class: controls.effective_class,
+        max_speed_mbps: maxSpeed,
+      }
+    );
+  }
+
+  const maxDuration = Number(controls.pp_unlimited_max_duration_minutes);
+  if (
+    Number.isFinite(maxDuration) &&
+    Number(choice.duration_minutes) > maxDuration
+  ) {
+    throw makePersonalizedPlanError(
+      "yield_unlimited_duration_above_effective_maximum",
+      400,
+      {
+        yield_class: controls.effective_class,
+        max_duration_minutes: maxDuration,
+      }
+    );
+  }
 }
 
 
@@ -28027,7 +28371,7 @@ async function loadYieldPolicyAdminBundle(req, poolId) {
     access_role: yieldPolicyAccessRole(req, cleanPoolId),
     can_manage: yieldPolicyCanManage(req, cleanPoolId),
     mode: {
-      shadow_mode: true,
+      shadow_mode: !YIELD_ENFORCEMENT_AVAILABLE,
       enforcement_implemented: YIELD_ENFORCEMENT_IMPLEMENTED,
       enforcement_available: YIELD_ENFORCEMENT_AVAILABLE,
       activation_locked: !YIELD_ENFORCEMENT_AVAILABLE,
@@ -32211,6 +32555,30 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
       visiblePlans = Array.isArray(plans) ? plans.slice() : [];
     }
 
+    // 5) Yield protection overlay for Standard Unlimited plans.
+    // This NEVER mutates plans.is_visible in DB. It only filters the current
+    // public response when enforcement is globally enabled, this pool policy
+    // is enabled, and a trusted decision exists for the current revision.
+    let yieldCommercialControls = null;
+    if (YIELD_ENFORCEMENT_AVAILABLE) {
+      try {
+        yieldCommercialControls = await loadYieldCommercialControls(pool_id);
+        visiblePlans = applyYieldStandardPlanOverlay(
+          visiblePlans,
+          yieldCommercialControls
+        ).plans;
+      } catch (yieldErr) {
+        console.error(
+          "MIKROTIK PLANS YIELD OVERLAY ERROR",
+          String(yieldErr?.message || yieldErr).slice(0, 180)
+        );
+        // Fail-open on an unexpected resolver/database error so plan listing
+        // itself remains available. Trusted-state retention handles normal
+        // telemetry outages without reaching this path.
+        yieldCommercialControls = null;
+      }
+    }
+
     // ── G.2: mint an opaque assistant_history_token when both client_mac and pool_id are known ──
     // client_mac is read from req.query (same as /api/portal/status already does).
     // The token is opaque — it maps to { client_mac, pool_id } only inside RAZAFI_HISTORY_TOKEN_MAP.
@@ -32264,6 +32632,9 @@ app.get("/api/mikrotik/plans", normalizeApMac, async (req, res) => {
       payment_methods:        effectivePaymentMethods,   // original toggles stay unchanged; suspension is an overlay
       active_payment_methods: activePaymentMethods,       // e.g. ["mvola"]
       billing_access: billingAccess.enforced ? { status: billingAccess.status, purchases_blocked: billingAccess.blocked } : null,
+      ...(YIELD_ENFORCEMENT_AVAILABLE
+        ? { yield_protection: serializeYieldCommercialControls(yieldCommercialControls) }
+        : {}),
       assistant_history_token: assistantHistoryToken || null, // G.2: null when no client_mac
       assistant_context_token: assistantContextToken || null, // ANU-2: opaque trusted-scope token; dormant until flags ON
     });
@@ -35375,6 +35746,11 @@ function mapPersonalizedRpcError(error, fallbackCode = "personalized_backend_err
     ["personalized_speed_not_allowed", 400],
     ["personalized_base_price_invalid", 400],
     ["personalized_price_above_maximum", 400],
+    ["yield_policy_invalid", 503],
+    ["yield_state_unavailable", 503],
+    ["yield_unlimited_unavailable_critical", 409],
+    ["yield_unlimited_speed_above_pool_maximum", 400],
+    ["yield_unlimited_duration_above_effective_maximum", 400],
     ["personalized_quote_pricing_version_mismatch", 409],
     ["personalized_technical_hash_collision_or_plan_mismatch", 500],
     ["personalized_quote_already_consumed", 409],
@@ -36071,6 +36447,8 @@ app.get("/api/portal/personalized-plan/options", lightLimiter, async (req, res) 
     assertPersonalizedDeviceHashSecret();
     const config = await getActivePersonalizedPricingConfigFailClosed();
     const p = config.personalized;
+    const yieldControls = await loadYieldCommercialControls(pool.id);
+
     return res.json({
       ok: true,
       enabled: true,
@@ -36089,6 +36467,9 @@ app.get("/api/portal/personalized-plan/options", lightLimiter, async (req, res) 
       },
       quote_ttl_minutes: p.quote_ttl_minutes,
       pricing_version: config.version_no,
+      ...(YIELD_ENFORCEMENT_AVAILABLE
+        ? { yield: serializeYieldCommercialControls(yieldControls) }
+        : {}),
     });
   } catch (e) {
     if (sendPersonalizedPlanError(res, e)) return;
@@ -36108,6 +36489,8 @@ app.post("/api/portal/personalized-plan/quote", personalizedQuoteIpLimiter, pers
     const forbiddenQuoteFields = [
       "plan", "plan_id", "planId", "amount", "amount_ar", "price", "price_ar",
       "base_price_ar", "markup_pct", "markup_amount_ar", "final_price_ar",
+      "yield_applied", "yield_class", "yield_pct", "yield_amount_ar",
+      "yield_policy_revision", "yield_policy_snapshot",
     ];
     const suppliedForbiddenQuoteField = forbiddenQuoteFields.find(
       (key) => Object.prototype.hasOwnProperty.call(body, key)
@@ -36131,6 +36514,9 @@ app.post("/api/portal/personalized-plan/quote", personalizedQuoteIpLimiter, pers
       speedMbps: body.speed_mbps ?? body.speedMbps,
       config,
     });
+
+    const yieldControls = await loadYieldCommercialControls(pool.id);
+    assertYieldPersonalizedUnlimitedChoice(choice, yieldControls);
 
     const pricing = calculateSuggestedPlanPrice({
       type: choice.type,
@@ -36160,6 +36546,9 @@ app.post("/api/portal/personalized-plan/quote", personalizedQuoteIpLimiter, pers
       nearest_reference_key: pricing?.nearest_reference?.key || null,
       warnings: choice.warnings || [],
       pricing_version_no: config.version_no,
+      ...(YIELD_ENFORCEMENT_AVAILABLE
+        ? { yield_backend: serializeYieldCommercialControls(yieldControls) }
+        : {}),
     };
 
     let clearToken = null;
@@ -36204,6 +36593,20 @@ app.post("/api/portal/personalized-plan/quote", personalizedQuoteIpLimiter, pers
         expires_at: quote.expires_at,
         plan_name: buildPersonalizedPlanName(quote),
         pricing_version: config.version_no,
+        ...(YIELD_ENFORCEMENT_AVAILABLE
+          ? {
+              yield: {
+                applied: quote.yield_applied === true,
+                class: quote.yield_class || null,
+                pct: Number(quote.yield_pct || 0),
+                amount_ar: Number(quote.yield_amount_ar || 0),
+                policy_revision: quote.yield_policy_revision === null ||
+                  quote.yield_policy_revision === undefined
+                  ? null
+                  : Number(quote.yield_policy_revision),
+              },
+            }
+          : {}),
       },
     });
   } catch (e) {
