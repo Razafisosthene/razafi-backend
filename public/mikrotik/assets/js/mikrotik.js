@@ -3873,6 +3873,11 @@ function saturationLabel(pct) {
     resetPersonalizedPaymentUi();
     if (hidePanel) el.quotePanel?.classList.add("hidden");
     if (el.quoteCountdown) el.quoteCountdown.textContent = "—";
+    const yieldNote = document.getElementById("personalizedYieldNote");
+    if (yieldNote) {
+      yieldNote.textContent = "";
+      yieldNote.classList.add("hidden");
+    }
     syncPersonalizedReturnButton();
     if (message) setPersonalizedError(message);
   }
@@ -3898,25 +3903,201 @@ function saturationLabel(pct) {
     return `${text} Go`;
   }
 
+  // ------------------------------------------------------------
+  // Yield Enforcement V1 — PP Unlimited UI projection
+  // ------------------------------------------------------------
+  // The browser never calculates a Yield price. It only reflects the
+  // server-provided commercial limits. The final quote price remains
+  // authoritative and server/DB-calculated.
+  function personalizedYieldControls() {
+    const y = personalizedOptions?.yield;
+    if (!y || typeof y !== "object" || y.active !== true) return null;
+    return y;
+  }
+
+  function personalizedUnlimitedYieldControls() {
+    const y = personalizedYieldControls();
+    const pp = y?.pp_unlimited;
+    return pp && typeof pp === "object" ? { yield: y, pp } : null;
+  }
+
+  function personalizedUnlimitedAvailable() {
+    const controls = personalizedUnlimitedYieldControls();
+    return !controls || controls.pp.available !== false;
+  }
+
+  function personalizedEffectiveDurationRules(type = personalizedType()) {
+    const base = personalizedOptions?.duration || {};
+    const minMinutes = Number(base.min_minutes || 0);
+    let maxMinutes = Number(base.max_minutes || 0);
+    const stepMinutes = Math.max(1, Number(base.step_minutes || 1));
+
+    if (String(type) === "unlimited") {
+      const controls = personalizedUnlimitedYieldControls();
+      const yieldMax = Number(controls?.pp?.max_duration_minutes);
+      if (controls && Number.isFinite(yieldMax) && yieldMax > 0) {
+        maxMinutes = Number.isFinite(maxMinutes) && maxMinutes > 0
+          ? Math.min(maxMinutes, yieldMax)
+          : yieldMax;
+      }
+    }
+
+    return {
+      min_minutes: minMinutes,
+      max_minutes: maxMinutes,
+      step_minutes: stepMinutes,
+    };
+  }
+
+  function personalizedAllowedSpeedsForType(type = personalizedType()) {
+    const source = Array.isArray(personalizedOptions?.allowed_speeds_mbps)
+      ? personalizedOptions.allowed_speeds_mbps
+          .map(Number)
+          .filter((value) => Number.isFinite(value) && value > 0)
+      : [];
+
+    if (String(type) !== "unlimited") return source;
+
+    const controls = personalizedUnlimitedYieldControls();
+    const maxSpeed = Number(controls?.pp?.max_speed_mbps);
+    if (!controls || !Number.isFinite(maxSpeed) || maxSpeed <= 0) return source;
+
+    return source.filter((value) => value <= maxSpeed + 0.0001);
+  }
+
+  function syncPersonalizedSpeedOptions() {
+    const el = personalizedEls();
+    if (!el.speed) return;
+
+    const previous = parsePersonalizedNumber(el.speed.value);
+    const allowed = personalizedAllowedSpeedsForType();
+
+    el.speed.innerHTML = allowed.map((speed) =>
+      `<option value="${escapeHtml(String(speed))}">${escapeHtml(String(speed))} Mbps</option>`
+    ).join("");
+
+    if (
+      Number.isFinite(previous) &&
+      allowed.some((speed) => Math.abs(Number(speed) - previous) < 0.001)
+    ) {
+      el.speed.value = String(previous);
+    } else if (allowed.length) {
+      el.speed.value = String(allowed[0]);
+    }
+  }
+
+  function syncPersonalizedYieldTypeAvailability() {
+    const el = personalizedEls();
+    if (!el.typeTabs) return;
+
+    const unlimitedBtn = el.typeTabs.querySelector(
+      '.personalized-type-btn[data-personalized-type="unlimited"]'
+    );
+    const dataBtn = el.typeTabs.querySelector(
+      '.personalized-type-btn[data-personalized-type="data"]'
+    );
+
+    const unlimitedAvailable = personalizedUnlimitedAvailable();
+
+    if (unlimitedBtn) {
+      unlimitedBtn.disabled = !unlimitedAvailable;
+      unlimitedBtn.setAttribute("aria-disabled", unlimitedAvailable ? "false" : "true");
+      unlimitedBtn.title = unlimitedAvailable
+        ? ""
+        : "Forfait Illimité temporairement indisponible pour protéger la capacité du WiFi.";
+      unlimitedBtn.classList.toggle("personalized-type-unavailable", !unlimitedAvailable);
+    }
+
+    if (
+      !unlimitedAvailable &&
+      unlimitedBtn?.classList.contains("active") &&
+      dataBtn
+    ) {
+      unlimitedBtn.classList.remove("active");
+      unlimitedBtn.setAttribute("aria-checked", "false");
+      dataBtn.classList.add("active");
+      dataBtn.setAttribute("aria-checked", "true");
+    }
+  }
+
+  function ensurePersonalizedYieldNote() {
+    const el = personalizedEls();
+    if (!el.quotePanel) return null;
+
+    let note = document.getElementById("personalizedYieldNote");
+    if (!note) {
+      note = document.createElement("div");
+      note.id = "personalizedYieldNote";
+      note.className = "muted small";
+      note.style.marginTop = "8px";
+      note.style.lineHeight = "1.35";
+      if (el.quoteSpecs?.parentElement) {
+        el.quoteSpecs.insertAdjacentElement("afterend", note);
+      } else {
+        el.quotePanel.appendChild(note);
+      }
+    }
+    return note;
+  }
+
+  function renderPersonalizedYieldNote(quote) {
+    const note = ensurePersonalizedYieldNote();
+    if (!note) return;
+
+    const y = quote?.yield;
+    const isUnlimited = String(quote?.type || "") === "unlimited";
+    if (!isUnlimited || !y || y.applied !== true) {
+      note.textContent = "";
+      note.classList.add("hidden");
+      return;
+    }
+
+    const pct = Number(y.pct || 0);
+    const cls = String(y.class || "").trim().toLowerCase();
+    const labels = {
+      normal: "Normal",
+      vigilance: "Vigilance",
+      protection: "Protection",
+    };
+    const classLabel = labels[cls] || "Protection réseau";
+
+    note.textContent = pct > 0
+      ? `Protection réseau · ${classLabel} · ajustement +${pct}% inclus dans ce prix.`
+      : `Protection réseau · ${classLabel} · aucun ajustement de prix.`;
+    note.classList.remove("hidden");
+  }
+
   function syncPersonalizedInputRules() {
     if (!personalizedOptions) return;
     const el = personalizedEls();
-    const isData = personalizedType() === "data";
+    syncPersonalizedYieldTypeAvailability();
+
+    const type = personalizedType();
+    const isData = type === "data";
     el.dataField?.classList.toggle("hidden", !isData);
     el.config?.classList.toggle("personalized-data-mode", isData);
 
-    const duration = personalizedOptions.duration || {};
+    const duration = personalizedEffectiveDurationRules(type);
     const factor = String(el.durationUnit?.value || "hours") === "days" ? 1440 : 60;
-    const minValue = Math.max(Number(duration.min_minutes || 60) / factor, factor === 1440 ? (1 / 24) : 1);
-    const maxValue = Math.max(minValue, Number(duration.max_minutes || 43200) / factor);
+    const minMinutes = Number(duration.min_minutes || 60);
+    const maxMinutes = Number(duration.max_minutes || 43200);
+    const minValue = Math.max(minMinutes / factor, factor === 1440 ? (1 / 24) : 1);
+    const maxValue = Math.max(minValue, maxMinutes / factor);
     if (el.durationValue) {
       el.durationValue.min = String(Math.round(minValue * 100000) / 100000);
       el.durationValue.max = String(Math.round(maxValue * 100000) / 100000);
       el.durationValue.step = "any";
+
+      const current = parsePersonalizedNumber(el.durationValue.value);
+      if (Number.isFinite(current) && current > maxValue) {
+        el.durationValue.value = String(Math.round(maxValue * 100000) / 100000);
+      }
     }
     if (el.durationHint) {
-      el.durationHint.textContent = `De ${formatDuration(Number(duration.min_minutes || 60))} à ${formatDuration(Number(duration.max_minutes || 43200))}`;
+      el.durationHint.textContent = `De ${formatDuration(minMinutes)} à ${formatDuration(maxMinutes)}`;
     }
+
+    syncPersonalizedSpeedOptions();
 
     const data = personalizedOptions.data || {};
     const minGb = Number(data.min_mb || 512) / 1024;
@@ -3936,11 +4117,19 @@ function saturationLabel(pct) {
     if (!personalizedOptions) throw new Error("personalized_options_unavailable");
     const el = personalizedEls();
     const type = personalizedType();
+    if (type === "unlimited" && !personalizedUnlimitedAvailable()) {
+      throw createPersonalizedValidationError(
+        "yield_unlimited_unavailable_critical",
+        "",
+        "Le forfait personnalisé Illimité est temporairement indisponible pour protéger la capacité du WiFi. Le forfait Data reste disponible."
+      );
+    }
+
     const durationRaw = parsePersonalizedNumber(el.durationValue?.value);
     const durationFactor = String(el.durationUnit?.value || "hours") === "days" ? 1440 : 60;
     const exactDuration = durationRaw * durationFactor;
     const durationMinutes = Math.round(exactDuration);
-    const duration = personalizedOptions.duration || {};
+    const duration = personalizedEffectiveDurationRules(type);
     const minDuration = Number(duration.min_minutes || 0);
     const maxDuration = Number(duration.max_minutes || 0);
     const durationStep = Math.max(1, Number(duration.step_minutes || 1));
@@ -4025,8 +4214,8 @@ function saturationLabel(pct) {
     }
 
     const speedMbps = parsePersonalizedNumber(el.speed?.value);
-    if (!Array.isArray(personalizedOptions.allowed_speeds_mbps) ||
-        !personalizedOptions.allowed_speeds_mbps.some((value) => Math.abs(Number(value) - speedMbps) < 0.001)) {
+    const allowedSpeeds = personalizedAllowedSpeedsForType(type);
+    if (!allowedSpeeds.some((value) => Math.abs(Number(value) - speedMbps) < 0.001)) {
       throw createPersonalizedValidationError(
         "personalized_speed_not_allowed",
         "speed",
@@ -4059,6 +4248,9 @@ function saturationLabel(pct) {
       personalized_payment_start_failed: "Le paiement n’a pas pu être préparé. Calculez un nouveau prix.",
       personalized_quote_payload_invalid: "Le devis n’a pas pu être calculé.",
       personalized_payment_payload_invalid: "La demande de paiement n’est pas valide.",
+      yield_unlimited_unavailable_critical: "Le forfait personnalisé Illimité est temporairement indisponible pour protéger la capacité du WiFi. Le forfait Data reste disponible.",
+      yield_unlimited_speed_above_pool_maximum: "Cette vitesse n’est pas disponible actuellement pour un forfait Illimité. Choisissez une vitesse proposée.",
+      yield_unlimited_duration_above_effective_maximum: "Cette durée n’est pas disponible actuellement pour un forfait Illimité. Choisissez une durée conforme à la limite affichée.",
     };
     return messages[c] || "Une erreur est survenue. Veuillez réessayer.";
   }
@@ -4100,6 +4292,7 @@ function saturationLabel(pct) {
     if (el.quoteSpecs) {
       el.quoteSpecs.textContent = `⏳ ${formatDuration(Number(q.duration_minutes))} · 📦 ${dataText} · 🚀 ${speedText}`;
     }
+    renderPersonalizedYieldNote(q);
     el.quotePanel?.classList.remove("hidden");
     renderPersonalizedPaymentMethods();
     syncPersonalizedReturnButton();
@@ -4480,7 +4673,7 @@ function saturationLabel(pct) {
 
     el.typeTabs?.querySelectorAll(".personalized-type-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
-        if (personalizedPaymentStarted) return;
+        if (personalizedPaymentStarted || btn.disabled || btn.getAttribute("aria-disabled") === "true") return;
         el.typeTabs.querySelectorAll(".personalized-type-btn").forEach((other) => {
           const active = other === btn;
           other.classList.toggle("active", active);
@@ -4571,11 +4764,7 @@ function saturationLabel(pct) {
       if (!response.ok || !data?.ok || data.enabled !== true) throw new Error(data?.error || "personalized_options_unavailable");
       personalizedOptions = data;
 
-      if (el.speed) {
-        el.speed.innerHTML = (data.allowed_speeds_mbps || []).map((speed) =>
-          `<option value="${escapeHtml(String(speed))}">${escapeHtml(String(speed))} Mbps</option>`
-        ).join("");
-      }
+      syncPersonalizedYieldTypeAvailability();
       syncPersonalizedInputRules();
       bindPersonalizedPlanFeature();
       renderPersonalizedPaymentMethods();
