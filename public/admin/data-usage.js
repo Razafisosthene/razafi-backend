@@ -465,7 +465,7 @@
       renderYieldPolicyModal(updated);
       yieldModalMessage(updated?.changed === false
         ? "Aucune modification à enregistrer."
-        : "Politique enregistrée. Le moteur Shadow a été recalculé.");
+        : "Politique enregistrée. L’état Yield a été recalculé.");
     } catch (err) {
       if (err.status === 401) {
         window.location.href = "/admin/login.html";
