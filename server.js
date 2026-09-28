@@ -25534,7 +25534,7 @@ async function discoverWanForPool(poolId, { includeHotspotHosts = false } = {}) 
 
   const resp = await fetch(agentUrl, {
     method: "POST",
-    signal: AbortSignal.timeout(12000),
+    signal: AbortSignal.timeout(18000),
     headers: {
       "Content-Type": "application/json",
       "x-secret": agentSecret,
