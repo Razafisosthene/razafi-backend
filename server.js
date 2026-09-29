@@ -20881,7 +20881,19 @@ function billingS1383Message(item) {
     commission_payout_confirmed: ["Votre reversement RAZAFI est confirmé", `Le reversement ${p.payout_number || ""} de ${p.owner_net_amount_ar || 0} Ar est enregistré. Le relevé mensuel et le reçu propriétaire sont disponibles dans votre espace.`],
   };
   const selected = messages[item?.event_type] || ["Mise à jour de votre abonnement RAZAFI", "Une mise à jour est disponible dans votre espace propriétaire."];
-  return { subject: `[${pool}] ${selected[0]}`, text: selected[1] + common };
+  const subject = `[${pool}] ${selected[0]}`;
+  const text = selected[1] + common;
+  return {
+    subject,
+    text,
+    html: renderRazafiEmailHtml({
+      title: selected[0],
+      text: `${selected[1]}\n\nPool : ${pool}`,
+      ctaLabel: "Consulter mon abonnement",
+      ctaUrl: portalUrl,
+      eyebrow: "MON ABONNEMENT",
+    }),
+  };
 }
 async function billingPdfBuffer(doc) {
   const chunks=[];
@@ -20955,7 +20967,7 @@ async function sendBillingS1383Notification(item) {
   const attachments = await billingS13844Attachments(item);
   const messageToken = crypto.createHash("sha256").update(String(item.event_key)).digest("hex").slice(0, 32);
   const result = await mailer.sendMail({
-    from: MAIL_FROM, to, subject: rendered.subject, text: rendered.text,
+    from: MAIL_FROM, to, subject: rendered.subject, text: rendered.text, html: rendered.html,
     messageId: `<billing-${messageToken}@razafistore.com>`,
     headers: { "X-RAZAFI-Notification-Key": String(item.event_key) }, attachments,
   });
@@ -23612,21 +23624,38 @@ function adminAccessNotificationMessage(item) {
   const pool = String(p.pool_name || "votre pool");
   const role = adminAccessRoleLabel(item?.access_role);
   const adminUrl = "https://portal.razafistore.com/admin/";
+  let title;
+  let body;
+  let ctaLabel = "Accéder à RAZAFI Admin";
+  let ctaUrl = adminUrl;
+
   if (item?.event_type === "role_changed") {
-    return {
-      subject: `[${pool}] Votre accès RAZAFI a été modifié`,
-      text: `Votre rôle pour ${pool} est maintenant ${role}.\n\nAccéder à RAZAFI Admin : ${adminUrl}\n\nRAZAFI`,
-    };
+    title = "Votre accès RAZAFI a été modifié";
+    body = `Votre rôle pour ${pool} est maintenant ${role}.`;
+  } else if (item?.event_type === "access_removed") {
+    title = "Votre accès RAZAFI a été retiré";
+    body = `Votre accès à ${pool} a été retiré.`;
+    ctaLabel = null;
+    ctaUrl = null;
+  } else {
+    title = "Votre accès RAZAFI est prêt";
+    body = `Votre accès à ${pool} est maintenant actif avec le rôle ${role}.`;
   }
-  if (item?.event_type === "access_removed") {
-    return {
-      subject: `[${pool}] Votre accès RAZAFI a été retiré`,
-      text: `Votre accès à ${pool} a été retiré.\n\nRAZAFI`,
-    };
-  }
+
+  const text = ctaUrl
+    ? `${body}\n\nAccéder à RAZAFI Admin : ${adminUrl}\n\nRAZAFI`
+    : `${body}\n\nRAZAFI`;
+
   return {
-    subject: `[${pool}] Votre accès RAZAFI est prêt`,
-    text: `Votre accès à ${pool} est maintenant actif avec le rôle ${role}.\n\nAccéder à RAZAFI Admin : ${adminUrl}\n\nRAZAFI`,
+    subject: `[${pool}] ${title}`,
+    text,
+    html: renderRazafiEmailHtml({
+      title,
+      text: `${body}\n\nPool : ${pool}`,
+      ctaLabel,
+      ctaUrl,
+      eyebrow: "ACCÈS RAZAFI",
+    }),
   };
 }
 
@@ -23670,6 +23699,7 @@ async function sendAdminAccessNotification(item) {
     to,
     subject: rendered.subject,
     text: rendered.text,
+    html: rendered.html,
     messageId: `<access-${messageToken}@razafistore.com>`,
     headers: { "X-RAZAFI-Notification-Key": String(item.event_key) },
   });
@@ -37917,6 +37947,69 @@ function createMailer() {
 }
 const mailer = createMailer();
 
+// ---------------------------------------------------------------------------
+// RAZAFI transactional email shell — premium, mobile-first, email-client safe.
+// Presentation only: business logic, recipients, queues, retries and dedupe
+// remain owned by their existing flows. Plain-text fallback is always kept.
+// ---------------------------------------------------------------------------
+function escapeEmailHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function razafiEmailBodyHtml(text) {
+  const lines = String(text ?? "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim());
+
+  while (lines.length && !lines[lines.length - 1]) lines.pop();
+  if (lines.length && lines[lines.length - 1].toUpperCase() === "RAZAFI") lines.pop();
+
+  return lines.map((line) => {
+    if (!line) return '<div style="height:12px;line-height:12px">&nbsp;</div>';
+    const urlMatch = line.match(/^(.*?)(https:\/\/[^\s]+)$/i);
+    if (urlMatch) {
+      return `<p style="margin:0 0 10px;font-size:15px;line-height:1.55;color:#3f4754">${escapeEmailHtml(urlMatch[1])}<a href="${escapeEmailHtml(urlMatch[2])}" style="color:#111827;text-decoration:underline;text-underline-offset:3px">${escapeEmailHtml(urlMatch[2])}</a></p>`;
+    }
+    return `<p style="margin:0 0 10px;font-size:15px;line-height:1.55;color:#3f4754">${escapeEmailHtml(line)}</p>`;
+  }).join("");
+}
+
+function renderRazafiEmailHtml({ title, text, ctaLabel = null, ctaUrl = null, eyebrow = "NOTIFICATION RAZAFI" } = {}) {
+  const safeTitle = escapeEmailHtml(title || "Notification RAZAFI");
+  const safeEyebrow = escapeEmailHtml(eyebrow || "NOTIFICATION RAZAFI");
+  const body = razafiEmailBodyHtml(text);
+  const cta = ctaLabel && ctaUrl
+    ? `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin-top:22px"><tr><td style="border-radius:14px;background:#111827"><a href="${escapeEmailHtml(ctaUrl)}" style="display:inline-block;padding:13px 20px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:15px;font-weight:700;line-height:20px;color:#ffffff;text-decoration:none">${escapeEmailHtml(ctaLabel)}</a></td></tr></table>`
+    : "";
+
+  return `<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f4f5f7;-webkit-text-size-adjust:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background:#f4f5f7">
+    <tr><td align="center" style="padding:32px 14px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:600px">
+        <tr><td style="padding:0 4px 14px;font-size:18px;font-weight:800;letter-spacing:-0.3px;color:#111827">RAZAFI</td></tr>
+        <tr><td style="background:#ffffff;border:1px solid #e7e9ee;border-radius:24px;padding:30px 28px;box-shadow:0 10px 30px rgba(17,24,39,.05)">
+          <div style="margin:0 0 10px;font-size:11px;font-weight:800;letter-spacing:1.15px;color:#8a93a3">${safeEyebrow}</div>
+          <h1 style="margin:0 0 20px;font-size:25px;line-height:1.2;letter-spacing:-0.55px;color:#111827;font-weight:800">${safeTitle}</h1>
+          ${body}
+          ${cta}
+        </td></tr>
+        <tr><td style="padding:18px 6px 0;font-size:12px;line-height:1.5;color:#9aa1ad">Portail sécurisé — Powered by RAZAFI</td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+
 async function sendEmailNotification(subject, message) {
   try {
     if (!mailer) return;
@@ -37925,6 +38018,11 @@ async function sendEmailNotification(subject, message) {
       to: OPS_EMAIL,
       subject,
       text: typeof message === "string" ? message : JSON.stringify(message, null, 2),
+      html: renderRazafiEmailHtml({
+        title: subject,
+        text: typeof message === "string" ? message : JSON.stringify(message, null, 2),
+        eyebrow: "ALERTE RAZAFI",
+      }),
     });
   } catch (e) {
     console.error("❌ Email error:", e.message);
@@ -37940,6 +38038,10 @@ async function sendEmailTo(recipient, subject, message) {
       to,
       subject,
       text: typeof message === "string" ? message : JSON.stringify(message, null, 2),
+      html: renderRazafiEmailHtml({
+        title: subject,
+        text: typeof message === "string" ? message : JSON.stringify(message, null, 2),
+      }),
     });
     return true;
   } catch (e) {
