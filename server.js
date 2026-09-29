@@ -20381,6 +20381,29 @@ app.post("/api/admin/billing/assignments", requireAdmin, requireSuperadmin, requ
     }).select().single();
     if (error) return res.status(error.message?.includes("overlap") ? 409 : 500).json({ error: error.message?.includes("overlap") ? "assignment_overlap" : error.message });
     await insertAudit({ event_type: "billing_pool_assignment_created", status: "success", entity_type: "pool_billing_assignment", entity_id: data.id, actor_type: "admin_user", actor_id: req.admin.id, pool_id, message: "Attribution de facturation créée", metadata: { after: data } });
+
+    // Email notification is deliberately non-blocking: a notification failure
+    // must never roll back or report failure for a successful Billing assignment.
+    // PostgreSQL validates that the assignment is already effective, resolves the
+    // canonical Owner and deduplicates by assignment id.
+    try {
+      const { error: notificationError } = await supabase.rpc(
+        "fn_billing_v1_enqueue_offer_activated",
+        { p_assignment_id: data.id }
+      );
+      if (notificationError) {
+        const code = String(notificationError.message || notificationError);
+        if (!code.includes("billing_assignment_not_effective")) {
+          console.error("[EMAIL][OFFER ACTIVATED] enqueue", code);
+        }
+      } else if (BILLING_V1_OWNER_NOTIFICATIONS) {
+        setTimeout(() => void reconcileBillingS1383Notifications().catch((wakeError) =>
+          console.error("[EMAIL][OFFER ACTIVATED] delivery wake", wakeError?.message || wakeError)), 0);
+      }
+    } catch (notificationError) {
+      console.error("[EMAIL][OFFER ACTIVATED] enqueue exception", notificationError?.message || notificationError);
+    }
+
     return res.status(201).json({ ok: true, item: data });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
@@ -20845,6 +20868,7 @@ function billingS1383Message(item) {
     change_scheduled: ["Votre changement d’offre RAZAFI est programmé", `Votre changement vers « ${p.offer_title || "la nouvelle offre"} » (${p.billing_mode_label || p.billing_mode || "mode sélectionné"}) est programmé pour le ${p.effective_on || "prochain renouvellement"}. Votre offre actuelle reste active jusque-là.`],
     change_cancelled: ["Votre changement d’offre RAZAFI est annulé", `Le changement d’offre programmé pour le ${p.effective_on || "prochain renouvellement"} a été annulé. Votre offre actuelle reste inchangée.`],
     change_applied: ["Votre nouvelle offre RAZAFI est active", `Votre offre « ${p.offer_title || "RAZAFI"} » (${p.billing_mode_label || p.billing_mode || "mode sélectionné"}) est maintenant appliquée à ce pool.`],
+    offer_activated: ["Votre offre RAZAFI est active", `L’offre RAZAFI (${p.billing_mode_label || p.billing_mode || "mode sélectionné"}) est maintenant active pour ce pool.`],
     invoice_issued: ["Votre facture d’abonnement RAZAFI est disponible", `La facture ${p.invoice_number || ""} d’un montant de ${p.amount_ar || 0} Ar est disponible. Échéance : ${p.due_on || "voir la facture"}.`],
     invoice_due_soon: ["Rappel : facture RAZAFI bientôt échue", `La facture ${p.invoice_number || ""} de ${p.amount_ar || 0} Ar arrive à échéance le ${p.due_on || "prochainement"}.`],
     invoice_overdue: ["Action requise : facture RAZAFI échue", `La facture ${p.invoice_number || ""} de ${p.amount_ar || 0} Ar est échue depuis le ${p.due_on || "jour indiqué"}. Vous pouvez la régler depuis votre espace sécurisé.`],
@@ -23565,6 +23589,169 @@ async function removePoolMembershipFromRequest(req, targetUserId, poolId) {
   return data;
 }
 
+// ---------------------------------------------------------------------------
+// Durable Admin access email notifications.
+// PostgreSQL owns deduplication, leases and retries. Node validates the current
+// access state again immediately before delivery so stale grants/role changes
+// are never emailed. No Reply-To header is configured.
+// ---------------------------------------------------------------------------
+let adminAccessNotificationRunning = false;
+let adminAccessNotificationTimer = null;
+const ADMIN_ACCESS_NOTIFICATION_INTERVAL_MS = 60000;
+const ADMIN_ACCESS_NOTIFICATION_BATCH_SIZE = 10;
+
+function adminAccessRoleLabel(role) {
+  if (role === "manager") return "Manager";
+  if (role === "viewer") return "Viewer";
+  if (role === "owner") return "Owner";
+  return "Accès";
+}
+
+function adminAccessNotificationMessage(item) {
+  const p = item?.payload || {};
+  const pool = String(p.pool_name || "votre pool");
+  const role = adminAccessRoleLabel(item?.access_role);
+  const adminUrl = "https://portal.razafistore.com/admin/";
+  if (item?.event_type === "role_changed") {
+    return {
+      subject: `[${pool}] Votre accès RAZAFI a été modifié`,
+      text: `Votre rôle pour ${pool} est maintenant ${role}.\n\nAccéder à RAZAFI Admin : ${adminUrl}\n\nRAZAFI`,
+    };
+  }
+  if (item?.event_type === "access_removed") {
+    return {
+      subject: `[${pool}] Votre accès RAZAFI a été retiré`,
+      text: `Votre accès à ${pool} a été retiré.\n\nRAZAFI`,
+    };
+  }
+  return {
+    subject: `[${pool}] Votre accès RAZAFI est prêt`,
+    text: `Votre accès à ${pool} est maintenant actif avec le rôle ${role}.\n\nAccéder à RAZAFI Admin : ${adminUrl}\n\nRAZAFI`,
+  };
+}
+
+async function validateAdminAccessNotificationState(item) {
+  const userId = String(item?.admin_user_id || "").trim();
+  const poolId = String(item?.pool_id || "").trim();
+  const role = String(item?.access_role || "").trim().toLowerCase();
+  if (!userId || !poolId) throw new Error("access_notification_context_missing");
+
+  if (role === "owner") {
+    const { data: pool, error } = await supabase.from("internet_pools")
+      .select("owner_admin_user_id").eq("id", poolId).maybeSingle();
+    if (error) throw error;
+    const isOwner = String(pool?.owner_admin_user_id || "") === userId;
+    if (item?.event_type === "access_removed" ? isOwner : !isOwner) {
+      throw new Error("access_notification_state_changed");
+    }
+    return;
+  }
+
+  const { data: membership, error } = await supabase.from("admin_user_pools")
+    .select("access_role").eq("admin_user_id", userId).eq("pool_id", poolId).maybeSingle();
+  if (error) throw error;
+  const currentRole = String(membership?.access_role || "").trim().toLowerCase();
+  if (item?.event_type === "access_removed") {
+    if (currentRole) throw new Error("access_notification_state_changed");
+    return;
+  }
+  if (currentRole !== role) throw new Error("access_notification_state_changed");
+}
+
+async function sendAdminAccessNotification(item) {
+  if (!mailer) throw new Error("smtp_not_configured");
+  await validateAdminAccessNotificationState(item);
+  const to = String(item?.recipient_email || "").trim().toLowerCase();
+  if (!to) throw new Error("notification_recipient_unavailable");
+  const rendered = adminAccessNotificationMessage(item);
+  const messageToken = crypto.createHash("sha256").update(String(item.event_key)).digest("hex").slice(0, 32);
+  const result = await mailer.sendMail({
+    from: MAIL_FROM,
+    to,
+    subject: rendered.subject,
+    text: rendered.text,
+    messageId: `<access-${messageToken}@razafistore.com>`,
+    headers: { "X-RAZAFI-Notification-Key": String(item.event_key) },
+  });
+  return String(result?.messageId || `<access-${messageToken}@razafistore.com>`);
+}
+
+async function reconcileAdminAccessNotifications() {
+  if (!supabase || !mailer) return { ok: true, skipped: "unavailable" };
+  if (adminAccessNotificationRunning) return { ok: true, skipped: "already_running" };
+  adminAccessNotificationRunning = true;
+  try {
+    const { data: claimed, error: claimError } = await supabase.rpc(
+      "fn_admin_access_claim_notifications",
+      { p_limit: ADMIN_ACCESS_NOTIFICATION_BATCH_SIZE }
+    );
+    if (claimError) throw claimError;
+    let sent = 0, failed = 0;
+    for (const item of claimed || []) {
+      try {
+        const providerMessageId = await sendAdminAccessNotification(item);
+        const { error } = await supabase.rpc("fn_admin_access_complete_notification", {
+          p_id: item.id,
+          p_lease_token: item.lease_token,
+          p_sent: true,
+          p_provider_message_id: providerMessageId,
+          p_error: null,
+        });
+        if (error) throw error;
+        sent += 1;
+      } catch (error) {
+        failed += 1;
+        const { error: completeError } = await supabase.rpc("fn_admin_access_complete_notification", {
+          p_id: item.id,
+          p_lease_token: item.lease_token,
+          p_sent: false,
+          p_provider_message_id: null,
+          p_error: String(error?.message || error).slice(0, 1000),
+        });
+        if (completeError) console.error("[EMAIL][ACCESS] retry update", completeError.message);
+      }
+    }
+    if ((claimed || []).length) console.info("[EMAIL][ACCESS] notifications processed", { claimed: claimed.length, sent, failed });
+    return { ok: true, claimed: (claimed || []).length, sent, failed };
+  } finally {
+    adminAccessNotificationRunning = false;
+  }
+}
+
+function startAdminAccessNotifications() {
+  if (adminAccessNotificationTimer) return;
+  console.info("[EMAIL][ACCESS] durable notifications enabled", {
+    intervalMs: ADMIN_ACCESS_NOTIFICATION_INTERVAL_MS,
+    batchSize: ADMIN_ACCESS_NOTIFICATION_BATCH_SIZE,
+  });
+  setTimeout(() => void reconcileAdminAccessNotifications().catch((error) =>
+    console.error("[EMAIL][ACCESS] startup", error?.message || error)), 7000);
+  adminAccessNotificationTimer = setInterval(() => void reconcileAdminAccessNotifications().catch((error) =>
+    console.error("[EMAIL][ACCESS] scheduled", error?.message || error)), ADMIN_ACCESS_NOTIFICATION_INTERVAL_MS);
+  try { adminAccessNotificationTimer.unref?.(); } catch (_) {}
+}
+
+async function enqueueAdminAccessNotification({ eventKey, eventType, adminUserId, poolId, role, previousRole = null, payload = {} }) {
+  try {
+    const { error } = await supabase.rpc("fn_admin_access_enqueue_notification", {
+      p_event_key: eventKey,
+      p_event_type: eventType,
+      p_admin_user_id: adminUserId,
+      p_pool_id: poolId,
+      p_access_role: role,
+      p_previous_access_role: previousRole,
+      p_payload: payload,
+    });
+    if (error) throw error;
+    setTimeout(() => void reconcileAdminAccessNotifications().catch((wakeError) =>
+      console.error("[EMAIL][ACCESS] delivery wake", wakeError?.message || wakeError)), 0);
+  } catch (error) {
+    // Access/business operation already succeeded. Email enqueue must not turn
+    // that success into an API failure.
+    console.error("[EMAIL][ACCESS] enqueue", error?.message || error);
+  }
+}
+
 // GET /api/admin/users
 // Superadmin: platform-wide identities.
 // Owner: identities visible only through pools they canonically own.
@@ -23756,8 +23943,26 @@ app.post("/api/admin/users", requireAdmin, async (req, res) => {
     }
 
     for (const access of desiredAccess) {
+      const { data: previousMembership, error: previousMembershipError } = await supabase
+        .from("admin_user_pools")
+        .select("access_role")
+        .eq("admin_user_id", target.id)
+        .eq("pool_id", access.pool_id)
+        .maybeSingle();
+      if (previousMembershipError) throw previousMembershipError;
+
       await setPoolMembershipFromRequest(req, target.id, access.pool_id, access.access_role);
       applied.push(access.pool_id);
+
+      const previousRole = String(previousMembership?.access_role || "").trim().toLowerCase() || null;
+      if (previousRole !== access.access_role) {
+        const eventType = previousRole ? "role_changed" : "access_granted";
+        const eventKey = `${eventType}:${target.id}:${access.pool_id}:${previousRole || "none"}->${access.access_role}`;
+        void enqueueAdminAccessNotification({
+          eventKey, eventType, adminUserId: target.id, poolId: access.pool_id,
+          role: access.access_role, previousRole, payload: { source: "admin_users_create" },
+        });
+      }
     }
 
     if (createdNow) {
@@ -23864,7 +24069,24 @@ app.put("/api/admin/users/:id/pool-access/:poolId", requireAdmin, async (req, re
     if (targetId === rbacEffectiveId(req) && !req.admin?.is_superadmin) {
       return res.status(400).json({ error: "cannot_manage_self_access" });
     }
+    const { data: previousMembership, error: previousMembershipError } = await supabase
+      .from("admin_user_pools")
+      .select("access_role")
+      .eq("admin_user_id", targetId)
+      .eq("pool_id", poolId)
+      .maybeSingle();
+    if (previousMembershipError) return res.status(500).json({ error: previousMembershipError.message });
+
     const data = await setPoolMembershipFromRequest(req, targetId, poolId, role);
+    const previousRole = String(previousMembership?.access_role || "").trim().toLowerCase() || null;
+    if (previousRole !== role) {
+      const eventType = previousRole ? "role_changed" : "access_granted";
+      const eventKey = `${eventType}:${targetId}:${poolId}:${previousRole || "none"}->${role}`;
+      void enqueueAdminAccessNotification({
+        eventKey, eventType, adminUserId: targetId, poolId, role, previousRole,
+        payload: { source: "pool_access_put" },
+      });
+    }
     return res.json({ ok: true, result: data });
   } catch (e) {
     return res.status(e?.status || 500).json({ error: String(e?.message || e) });
@@ -23880,7 +24102,23 @@ app.delete("/api/admin/users/:id/pool-access/:poolId", requireAdmin, async (req,
     if (targetId === rbacEffectiveId(req) && !req.admin?.is_superadmin) {
       return res.status(400).json({ error: "cannot_manage_self_access" });
     }
+    const { data: previousMembership, error: previousMembershipError } = await supabase
+      .from("admin_user_pools")
+      .select("access_role")
+      .eq("admin_user_id", targetId)
+      .eq("pool_id", poolId)
+      .maybeSingle();
+    if (previousMembershipError) return res.status(500).json({ error: previousMembershipError.message });
+
     const data = await removePoolMembershipFromRequest(req, targetId, poolId);
+    const previousRole = String(previousMembership?.access_role || "").trim().toLowerCase() || null;
+    if (previousRole && data?.removed) {
+      const eventKey = `access_removed:${targetId}:${poolId}:${previousRole}`;
+      void enqueueAdminAccessNotification({
+        eventKey, eventType: "access_removed", adminUserId: targetId, poolId,
+        role: previousRole, previousRole, payload: { source: "pool_access_delete" },
+      });
+    }
     return res.json({ ok: true, result: data });
   } catch (e) {
     return res.status(e?.status || 500).json({ error: String(e?.message || e) });
@@ -45757,6 +45995,7 @@ app.listen(PORT, "0.0.0.0", () => {
   startBillingS13932MonthlySubscription();
   startBillingS13941Enforcement();
   startBillingS1383Notifications();
+  startAdminAccessNotifications();
 startAnnualFinalReportNotifications();
   startBillingS13841MonthlySource();
   startBillingS13843MonthlyClose();
