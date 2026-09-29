@@ -34711,6 +34711,27 @@ app.patch("/api/admin/pools/:id", requireAdmin, async (req, res) => {
 
       if (oldOwnerId) clearCachedAdminSessionsByUserId(oldOwnerId);
       if (newOwnerId) clearCachedAdminSessionsByUserId(newOwnerId);
+
+      // Canonical ownership is now committed. Reuse the durable Admin-access
+      // notification queue so Owner onboarding has the same dedupe, lease,
+      // retry and current-state validation as Manager/Viewer notifications.
+      // Email delivery is deliberately non-blocking: ownership remains valid
+      // even if notification enqueue/delivery temporarily fails.
+      if (newOwnerId) {
+        const eventKey = `access_granted:${newOwnerId}:${id}:${oldOwnerId || "none"}->owner`;
+        void enqueueAdminAccessNotification({
+          eventKey,
+          eventType: "access_granted",
+          adminUserId: newOwnerId,
+          poolId: id,
+          role: "owner",
+          previousRole: null,
+          payload: {
+            source: "pool_owner_changed",
+            previous_owner_admin_user_id: oldOwnerId || null,
+          },
+        });
+      }
     }
 
     return res.json({ ok: true, pool: withPoolDisplayName(data) });
