@@ -253,36 +253,59 @@ export function renderAnnualFinalOwnerEmail(job) {
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>${escapeHtml(subject)}</title>
 </head>
-<body style="margin:0;padding:0;background:#f5f7fb;font-family:Arial,Helvetica,sans-serif;color:#111827;">
-  <div style="max-width:620px;margin:0 auto;padding:32px 18px;">
-    <div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:22px;padding:30px;box-shadow:0 10px 30px rgba(15,23,42,.06);">
-      <div style="font-size:13px;font-weight:800;letter-spacing:.08em;color:#2563eb;margin-bottom:12px;">RAZAFI</div>
-      <h1 style="font-size:25px;line-height:1.2;margin:0 0 18px;color:#111827;">
-        Votre rapport annuel FINAL ${escapeHtml(year)}
-      </h1>
-      <p style="font-size:16px;line-height:1.6;margin:0;color:#374151;">
-        Votre rapport annuel FINAL est maintenant disponible dans votre espace RAZAFI.
-      </p>
-
-      ${listHtml}
-
-      <div style="margin:26px 0;">
-        <a href="${escapeHtml(REPORTS_URL)}"
-           style="display:inline-block;background:#1677ff;color:#ffffff;text-decoration:none;font-weight:700;padding:14px 20px;border-radius:12px;">
-          Voir mes rapports annuels
-        </a>
-      </div>
-
-      <p style="font-size:13px;line-height:1.6;margin:0;color:#6b7280;">
-        Ce rapport FINAL est issu d’un snapshot annuel immuable.
-        Toute correction ultérieure apparaîtra sous forme d’une nouvelle révision.
-      </p>
-    </div>
-
-    <div style="font-size:12px;color:#9ca3af;text-align:center;padding:18px 6px 0;">
-      RAZAFI · Notification automatique
-    </div>
+<body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,sans-serif;color:#0f172a;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">
+    Votre rapport annuel FINAL ${escapeHtml(year)} est disponible dans votre espace RAZAFI.
   </div>
+
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background:#f4f5f7;">
+    <tr>
+      <td align="center" style="padding:30px 16px 34px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:600px;">
+          <tr>
+            <td style="padding:0 4px 16px;font-size:18px;line-height:22px;font-weight:800;letter-spacing:-.02em;color:#0f172a;">
+              RAZAFI
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#ffffff;border:1px solid #e2e5e9;border-radius:24px;padding:30px 28px;">
+              <div style="font-size:12px;line-height:16px;font-weight:800;letter-spacing:.10em;color:#8b95a7;text-transform:uppercase;margin:0 0 14px;">
+                RAPPORT ANNUEL
+              </div>
+
+              <h1 style="font-size:26px;line-height:1.22;letter-spacing:-.025em;margin:0 0 18px;color:#0f172a;font-weight:800;">
+                Votre rapport annuel FINAL ${escapeHtml(year)} est disponible
+              </h1>
+
+              <p style="font-size:16px;line-height:1.65;margin:0;color:#334155;">
+                Votre rapport annuel FINAL est maintenant disponible dans votre espace RAZAFI.
+              </p>
+
+              ${listHtml}
+
+              <div style="margin:26px 0 24px;">
+                <a href="${escapeHtml(REPORTS_URL)}"
+                   style="display:inline-block;background:#0f172a;color:#ffffff;text-decoration:none;font-size:15px;line-height:20px;font-weight:750;padding:14px 20px;border-radius:13px;">
+                  Voir mes rapports annuels
+                </a>
+              </div>
+
+              <div style="border-top:1px solid #edf0f3;padding-top:18px;">
+                <p style="font-size:13px;line-height:1.6;margin:0;color:#7c8799;">
+                  Ce rapport FINAL est issu d’un snapshot annuel immuable. Toute correction ultérieure apparaîtra sous forme d’une nouvelle révision.
+                </p>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:18px 6px 0;font-size:12px;line-height:18px;color:#9aa3b2;">
+              Portail sécurisé — Powered by RAZAFI
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
 </body>
 </html>`;
 
