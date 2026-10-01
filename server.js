@@ -22083,7 +22083,7 @@ app.get("/api/owner/billing", requireAdmin, requireBillingOwnerSubscription, asy
     const currentPeriodStart = `${nowDate.slice(0, 7)}-01`;
     const [assignmentsResult, invoicesResult, offersResult, paymentsResult, activationsResult, periodsResult] = await Promise.all([
       supabase.from("pool_billing_assignments").select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to,created_at").in("pool_id", poolIds).order("effective_from", { ascending: false }),
-      supabase.from("subscription_invoices").select("id,invoice_number,pool_id,offer_title_snapshot,period_start,period_end,amount_due_ar,amount_paid_ar,status,issued_at,due_at,pdf_snapshot,created_at").eq("owner_admin_user_id", ownerId).eq("purpose", "monthly_subscription").order("period_start", { ascending: false }),
+      supabase.from("subscription_invoices").select("id,invoice_number,pool_id,billing_period_id,billing_change_id,offer_title_snapshot,period_start,period_end,purpose,amount_due_ar,amount_paid_ar,status,issued_at,due_at,pdf_snapshot,created_at").eq("owner_admin_user_id", ownerId).in("purpose", ["monthly_subscription", "change_subscription"]).order("period_start", { ascending: false }),
       supabase.from("billing_offers").select("id,title"),
       supabase.from("subscription_payment_transactions")
         .select("id,invoice_id,request_ref,provider,amount_ar,currency,status,created_at,initiated_at,completed_at,failed_at,updated_at")
@@ -22131,17 +22131,20 @@ app.get("/api/owner/billing", requireAdmin, requireBillingOwnerSubscription, asy
     const latestPaymentByInvoice = new Map();
     for (const payment of payments) if (!latestPaymentByInvoice.has(payment.invoice_id)) latestPaymentByInvoice.set(payment.invoice_id, payment);
     const guidedInvoices = invoices.map((invoice) => ({ ...invoice, latest_payment: latestPaymentByInvoice.get(invoice.id) || null }));
-    const payableInvoiceIds = guidedInvoices.filter((invoice) =>
-      invoice.status === "issued" && Number(invoice.amount_paid_ar) === 0 &&
-      Number(invoice.amount_due_ar) > 0 && !["initiated", "pending"].includes(invoice.latest_payment?.status)
-    ).map((invoice) => invoice.id);
+    const payableInvoiceIds = guidedInvoices.filter((invoice) => {
+      const purpose = String(invoice.purpose || "").trim();
+      const purposePayable = purpose === "change_subscription" ||
+        (purpose === "monthly_subscription" && String(invoice.period_start || "") <= nowDate);
+      return purposePayable && invoice.status === "issued" && Number(invoice.amount_paid_ar) === 0 &&
+        Number(invoice.amount_due_ar) > 0 && !["initiated", "pending"].includes(invoice.latest_payment?.status);
+    }).map((invoice) => invoice.id);
     const finalPaymentEnabled = BILLING_V1_ENABLED && BILLING_V1_SUBSCRIPTION_PAYMENTS &&
       BILLING_V1_OWNER_PAYMENT_SELF_SERVICE;
     const payment_ui = {
       enabled: finalPaymentEnabled,
       provider: finalPaymentEnabled ? "mvola" : null,
       payable_invoice_ids: finalPaymentEnabled ? payableInvoiceIds : [],
-      engine: "subscription-payment-final-v1",
+      engine: "billing-payment-bai3-v1",
       guided: false,
     };
     return res.json({ pools: pools || [], assignments: currentAssignments, upcoming_assignments: upcomingAssignments, pool_states: poolStates,
@@ -23494,6 +23497,7 @@ function billingProviderRef(x) {
 async function pollBillingSubscriptionMvola({requestRef,serverCorrelationId}) {
   const started=Date.now();
   let attempt=0;
+  let lastError=null;
   while(Date.now()-started<MVOLA_VERIFICATION_TIMEOUT_MS) {
     attempt++;
     try {
@@ -23503,9 +23507,9 @@ async function pollBillingSubscriptionMvola({requestRef,serverCorrelationId}) {
         {headers:mvolaHeaders(token,crypto.randomUUID()),timeout:10000}
       );
       const payload=response.data||{};
-      const status=String(payload.status||payload.transactionStatus||"").toLowerCase();
+      const status=String(payload.status||payload.transactionStatus||"").trim().toLowerCase();
       if(status==="completed"||status==="success") {
-        const {data,error}=await supabase.rpc("fn_billing_v1_s13_9_3_2_complete_subscription_payment",{
+        const {data,error}=await supabase.rpc("fn_billing_v1_bai3_complete_payment",{
           p_request_ref:requestRef,p_server_correlation_id:serverCorrelationId,
           p_provider_reference:billingProviderRef(payload),
           p_provider_payload:sanitizeMvolaLogPayload(payload),
@@ -23514,34 +23518,45 @@ async function pollBillingSubscriptionMvola({requestRef,serverCorrelationId}) {
         await insertAudit({
           event_type:"subscription_payment_completed",status:"success",
           entity_type:"subscription_payment_transaction",actor_type:"payment_provider",
-          request_ref:requestRef,message:"Subscription MVola completed; invoice only",
-          metadata:{billing_v1:true,s11_1:true,voucher_generation:false,result:data},
+          request_ref:requestRef,message:"Billing MVola completed; invoice only",
+          metadata:{billing_v1:true,milestone:"BAI-3.3",voucher_generation:false,result:data},
         });
         return {completed:true};
       }
       if(["failed","rejected","declined"].includes(status)) {
-        await supabase.from("subscription_payment_transactions").update({
-          status:"failed",failed_at:new Date().toISOString(),updated_at:new Date().toISOString(),
-          metadata:{billing_v1:true,s11_1:true,business_effect:"invoice_only",
-            voucher_generation:false,provider_status:status,
-            provider_payload:sanitizeMvolaLogPayload(payload)},
-        }).eq("request_ref",requestRef).in("status",["initiated","pending"]);
+        const {data,error}=await supabase.rpc("fn_billing_v1_bai3_fail_payment",{
+          p_request_ref:requestRef,
+          p_provider_status:status,
+          p_provider_payload:sanitizeMvolaLogPayload(payload),
+        });
+        if(error) throw error;
         await insertAudit({
           event_type:"subscription_payment_failed",status:"failed",
           entity_type:"subscription_payment_transaction",actor_type:"payment_provider",
-          request_ref:requestRef,message:"Subscription MVola failed",
-          metadata:{billing_v1:true,s11_1:true,voucher_generation:false,provider_status:status},
+          request_ref:requestRef,message:"Billing MVola failed",
+          metadata:{billing_v1:true,milestone:"BAI-3.3",voucher_generation:false,
+            provider_status:status,result:data},
         });
         return {failed:true};
       }
+      lastError=null;
     } catch(e) {
-      console.warn("[BILLING S11.1] status remains pending",{requestRef,attempt,error:e?.message||e});
+      lastError=String(e?.message||e).slice(0,500);
+      console.warn("[BILLING BAI-3.3] status remains pending",{requestRef,attempt,error:lastError});
     }
     await waitMs(Math.min(6000,700+attempt*500));
   }
-  await supabase.from("subscription_payment_transactions")
-    .update({status:"pending",updated_at:new Date().toISOString()})
-    .eq("request_ref",requestRef).in("status",["initiated","pending"]);
+  const {error:recordError}=await supabase.rpc("fn_billing_v1_bai3_record_reconciliation",{
+    p_request_ref:requestRef,
+    p_provider_status:"pending",
+    p_provider_payload:{},
+    p_error:lastError,
+  });
+  if(recordError) {
+    console.error("[BILLING BAI-3.3] durable handoff failed",{
+      requestRef,error:recordError.message||recordError,
+    });
+  }
   return {pending:true};
 }
 
@@ -23559,14 +23574,14 @@ app.post("/api/owner/billing/invoices/:id/pay",
     const {data:invoice,error:invoiceError}=await supabase.from("subscription_invoices")
       .select("id,invoice_number,pool_id,owner_admin_user_id,purpose,period_start,amount_due_ar,amount_paid_ar,status")
       .eq("id",req.params.id).eq("owner_admin_user_id",ownerId)
-      .eq("purpose","monthly_subscription").maybeSingle();
+      .in("purpose",["monthly_subscription","change_subscription"]).maybeSingle();
     if(invoiceError) return res.status(500).json({error:invoiceError.message});
     if(!invoice) return res.status(404).json({error:"subscription_invoice_not_found"});
     const amount=Number(invoice.amount_due_ar);
     if(invoice.status!=="issued"||Number(invoice.amount_paid_ar)!==0||
        !Number.isInteger(amount)||amount<=0)
       return res.status(409).json({error:"subscription_invoice_not_payable"});
-    if(String(invoice.period_start||"")>billingMadagascarToday())
+    if(invoice.purpose==="monthly_subscription" && String(invoice.period_start||"")>billingMadagascarToday())
       return res.status(409).json({error:"subscription_invoice_before_period"});
 
     const {data:open,error:openError}=await supabase.from("subscription_payment_transactions")
@@ -23578,9 +23593,7 @@ app.post("/api/owner/billing/invoices/:id/pay",
       transaction:{request_ref:open.request_ref,status:open.status},
     });
 
-    // S11.12.3 — MVola validates this operator-facing reference strictly.
-    // Keep it short (32 ASCII characters); the complete invoice/transaction
-    // UUIDs remain stored separately in Supabase and in the diagnostic logs.
+    // BAI-3.3 — one canonical payment reference format for monthly and change invoices.
     const invoiceToken=String(invoice.id||"").replace(/[^a-fA-F0-9]/g,"").slice(0,12);
     const entropyToken=crypto.randomBytes(6).toString("hex");
     const requestRef=`RZFSUB-${invoiceToken}-${entropyToken}`.toUpperCase();
@@ -23588,17 +23601,17 @@ app.post("/api/owner/billing/invoices/:id/pay",
       return res.status(500).json({error:"subscription_payment_reference_invalid"});
     }
     const correlationId=crypto.randomUUID();
-    const meta={billing_v1:true,milestone:"S13.9.3.2",purpose:"monthly_subscription",
-      business_effect:"invoice_only",voucher_generation:false,pilot_required:false,
-      invoice_number:invoice.invoice_number,provider_call:false};
+    const meta={billing_v1:true,milestone:"BAI-3.3",purpose:invoice.purpose,
+      canonical_engine:true,business_effect:"invoice_only",voucher_generation:false,
+      pilot_required:false,invoice_number:invoice.invoice_number,provider_call:false};
     const {data:prepared,error:prepareError}=await supabase.rpc(
-      "fn_billing_v1_s13_9_3_2_prepare_subscription_payment",{
+      "fn_billing_v1_bai3_prepare_payment",{
         p_invoice_id:invoice.id,p_owner_admin_user_id:ownerId,p_payer_phone:phone,
         p_request_ref:requestRef,p_server_correlation_id:correlationId,
       });
     if(prepareError) {
       const message=String(prepareError.message||"");
-      const conflict=/already_pending|not_payable|before_period/.test(message);
+      const conflict=/already_pending|not_payable|before_period|change_not_payable|change_invoice_mismatch|billing_change_required/.test(message);
       return res.status(conflict?409:500).json({
         error:conflict?"subscription_payment_not_prepared":"subscription_payment_prepare_failed",
         reason:message.replace(/^.*billing_v1:/,"").slice(0,160),
@@ -23611,8 +23624,11 @@ app.post("/api/owner/billing/invoices/:id/pay",
     const tx={id:prepared?.transaction_id};
     if(!tx.id) return res.status(500).json({error:"subscription_payment_prepare_invalid_result"});
 
+    const descriptionText=invoice.purpose==="change_subscription"
+      ? `Changement abonnement RAZAFI ${amount} Ar`
+      : `Abonnement RAZAFI ${amount} Ar`;
     const payload={amount:String(amount),currency:"Ar",
-      descriptionText:"Abonnement RAZAFI "+amount+" Ar",
+      descriptionText,
       requestingOrganisationTransactionReference:requestRef,requestDate:new Date().toISOString(),
       debitParty:[{key:"msisdn",value:phone}],
       creditParty:[{key:"msisdn",value:PARTNER_MSISDN}],
@@ -23623,23 +23639,29 @@ app.post("/api/owner/billing/invoices/:id/pay",
     } catch(e) {
       const mapped=mapMvolaInitiateError(e);
       const diagnostic=safeMvolaInitiateDiagnostic(e);
-      console.error("[BILLING S11.12.3][MVOLA INITIATE FAILED]",{
+      console.error("[BILLING BAI-3.3][MVOLA INITIATE FAILED]",{
         requestRef,requestRefLength:requestRef.length,correlationId,transactionId:tx.id,invoiceId:invoice.id,
-        poolId:invoice.pool_id,mapped:{type:mapped.type,transient:!!mapped.transient,
-          httpStatus:mapped.httpStatus},diagnostic,
+        invoicePurpose:invoice.purpose,poolId:invoice.pool_id,
+        mapped:{type:mapped.type,transient:!!mapped.transient,httpStatus:mapped.httpStatus},diagnostic,
       });
-      await supabase.from("subscription_payment_transactions").update({
-        status:"failed",failed_at:new Date().toISOString(),updated_at:new Date().toISOString(),
-        metadata:{...meta,provider_call:true,initiate_failed:true,error_type:mapped.type,
+      const {error:failError}=await supabase.rpc("fn_billing_v1_bai3_fail_payment",{
+        p_request_ref:requestRef,
+        p_provider_status:mapped.type||"initiation_failed",
+        p_provider_payload:{initiate_failed:true,error_type:mapped.type,
           mvola_initiate_diagnostic:diagnostic},
-      }).eq("id",tx.id);
+      });
+      if(failError) {
+        console.error("[BILLING BAI-3.3] initiation failure persistence failed",{
+          requestRef,error:failError.message||failError,
+        });
+      }
       await insertAudit({
         event_type:"subscription_payment_failed",status:"failed",
         entity_type:"subscription_payment_transaction",entity_id:tx.id,
         actor_type:"admin_user",actor_id:ownerId,pool_id:invoice.pool_id,
-        request_ref:requestRef,message:"Subscription MVola initiation failed",
-        metadata:{billing_v1:true,s11_4:true,s11_12_2:true,voucher_generation:false,
-          error_type:mapped.type,mvola_initiate_diagnostic:diagnostic},
+        request_ref:requestRef,message:"Billing MVola initiation failed",
+        metadata:{billing_v1:true,milestone:"BAI-3.3",purpose:invoice.purpose,
+          voucher_generation:false,error_type:mapped.type,mvola_initiate_diagnostic:diagnostic},
       });
       return res.status(mapped.httpStatus).json({
         error:"subscription_payment_initiation_failed",message:mapped.userMessage});
@@ -23658,15 +23680,17 @@ app.post("/api/owner/billing/invoices/:id/pay",
       event_type:"subscription_payment_initiated",status:"info",
       entity_type:"subscription_payment_transaction",entity_id:tx.id,
       actor_type:"admin_user",actor_id:ownerId,pool_id:invoice.pool_id,
-      request_ref:requestRef,message:"Subscription MVola initiated",
-      metadata:{billing_v1:true,s11_4:true,amount_ar:amount,voucher_generation:false},
+      request_ref:requestRef,message:"Billing MVola initiated",
+      metadata:{billing_v1:true,milestone:"BAI-3.3",purpose:invoice.purpose,
+        amount_ar:amount,voucher_generation:false},
     });
     res.status(202).json({ok:true,provider:"mvola",request_ref:requestRef,status:"pending",
+      invoice_purpose:invoice.purpose,
       initiation_uncertain:!serverCorrelationId,
       verification_timeout_ms:MVOLA_VERIFICATION_TIMEOUT_MS});
     if(serverCorrelationId) void pollBillingSubscriptionMvola({requestRef,serverCorrelationId});
   } catch(e) {
-    console.error("[BILLING S11.1] initiation error",e?.message||e);
+    console.error("[BILLING BAI-3.3] initiation error",e?.message||e);
     return res.status(500).json({error:"subscription_payment_internal_error"});
   }
 });
