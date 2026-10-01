@@ -20773,6 +20773,192 @@ function startBillingS1365Reconciliation() {
   try { billingS1365ReconciliationTimer.unref?.(); } catch (_) {}
 }
 
+// BAI-3.2 — universal canonical billing reconciliation.
+// Legacy first-payment evidence remains handled by S13.6.5.
+let billingBai32ReconciliationRunning = false;
+let billingBai32ReconciliationTimer = null;
+
+async function reconcileBillingBai32Once() {
+  if (!BILLING_V1_OWNER_PAYMENT_RECONCILIATION) {
+    return { ok: true, skipped: "disabled", claimed: 0 };
+  }
+
+  if (billingBai32ReconciliationRunning) {
+    return { ok: true, skipped: "already_running", claimed: 0 };
+  }
+
+  billingBai32ReconciliationRunning = true;
+
+  try {
+    const { data: claimed, error: claimError } = await supabase.rpc(
+      "fn_billing_v1_bai3_claim_reconciliation",
+      {
+        p_limit: BILLING_S1365_RECONCILIATION_BATCH_SIZE,
+        p_lease_seconds: 90,
+      }
+    );
+
+    if (claimError) throw claimError;
+
+    const rows = Array.isArray(claimed) ? claimed : [];
+
+    let completed = 0;
+    let failed = 0;
+    let pending = 0;
+    let errors = 0;
+
+    for (const row of rows) {
+      const requestRef = String(row.request_ref || "").trim();
+      const serverCorrelationId = String(row.server_correlation_id || "").trim();
+
+      if (!requestRef || !serverCorrelationId) continue;
+
+      try {
+        const token = await getAccessToken();
+
+        const response = await axios.get(
+          `${MVOLA_BASE}/mvola/mm/transactions/type/merchantpay/1.0.0/status/${serverCorrelationId}`,
+          {
+            headers: mvolaHeaders(token, crypto.randomUUID()),
+            timeout: 10000,
+          }
+        );
+
+        const payload = response.data || {};
+        const status = String(
+          payload.status || payload.transactionStatus || ""
+        ).trim().toLowerCase();
+
+        console.info("[BILLING BAI-3.2][RECONCILE]", {
+          requestRef,
+          serverCorrelationId,
+          invoiceId: row.invoice_id,
+          invoicePurpose: row.invoice_purpose,
+          providerStatus: status || null,
+          reconciliationCount: row.reconciliation_count,
+        });
+
+        if (["completed", "success"].includes(status)) {
+          const { error } = await supabase.rpc(
+            "fn_billing_v1_bai3_complete_payment",
+            {
+              p_request_ref: requestRef,
+              p_server_correlation_id: serverCorrelationId,
+              p_provider_reference: billingProviderRef(payload),
+              p_provider_payload: sanitizeMvolaLogPayload(payload),
+            }
+          );
+
+          if (error) throw error;
+          completed += 1;
+          continue;
+        }
+
+        if (["failed", "rejected", "declined"].includes(status)) {
+          const { error } = await supabase.rpc(
+            "fn_billing_v1_bai3_fail_payment",
+            {
+              p_request_ref: requestRef,
+              p_provider_status: status || "failed",
+              p_provider_payload: sanitizeMvolaLogPayload(payload),
+            }
+          );
+
+          if (error) throw error;
+          failed += 1;
+          continue;
+        }
+
+        const { error } = await supabase.rpc(
+          "fn_billing_v1_bai3_record_reconciliation",
+          {
+            p_request_ref: requestRef,
+            p_provider_status: status || "pending",
+            p_provider_payload: sanitizeMvolaLogPayload(payload),
+            p_error: null,
+          }
+        );
+
+        if (error) throw error;
+        pending += 1;
+      } catch (error) {
+        errors += 1;
+
+        console.warn("[BILLING BAI-3.2] reconciliation deferred", {
+          requestRef,
+          error: error?.message || String(error),
+        });
+
+        const { error: recordError } = await supabase.rpc(
+          "fn_billing_v1_bai3_record_reconciliation",
+          {
+            p_request_ref: requestRef,
+            p_provider_status: "unknown",
+            p_provider_payload: {},
+            p_error: String(error?.message || error).slice(0, 500),
+          }
+        );
+
+        if (recordError) {
+          console.error("[BILLING BAI-3.2] retry state update failed", {
+            requestRef,
+            error: recordError.message || recordError,
+          });
+        }
+      }
+    }
+
+    return {
+      ok: true,
+      claimed: rows.length,
+      completed,
+      failed,
+      pending,
+      errors,
+    };
+  } finally {
+    billingBai32ReconciliationRunning = false;
+  }
+}
+
+function startBillingBai32Reconciliation() {
+  if (
+    !BILLING_V1_OWNER_PAYMENT_RECONCILIATION ||
+    billingBai32ReconciliationTimer
+  ) {
+    return;
+  }
+
+  console.info("[BILLING BAI-3.2] universal reconciliation enabled", {
+    intervalMs: BILLING_S1365_RECONCILIATION_INTERVAL_MS,
+    batchSize: BILLING_S1365_RECONCILIATION_BATCH_SIZE,
+  });
+
+  const first = setTimeout(
+    () => void reconcileBillingBai32Once().catch((error) =>
+      console.error(
+        "[BILLING BAI-3.2] startup reconciliation",
+        error?.message || error
+      )
+    ),
+    5000
+  );
+
+  try { first.unref?.(); } catch (_) {}
+
+  billingBai32ReconciliationTimer = setInterval(
+    () => void reconcileBillingBai32Once().catch((error) =>
+      console.error(
+        "[BILLING BAI-3.2] scheduled reconciliation",
+        error?.message || error
+      )
+    ),
+    BILLING_S1365_RECONCILIATION_INTERVAL_MS
+  );
+
+  try { billingBai32ReconciliationTimer.unref?.(); } catch (_) {}
+}
+
 // S13.7 durable activation recovery. The SQL function revalidates payment,
 // invoice, assignment, owner and pool scope under an advisory lock.
 let billingS137ActivationRunning = false;
@@ -46113,6 +46299,7 @@ app.listen(PORT, "0.0.0.0", () => {
   });
   startMvolaRecoveryJob();
   startBillingS1365Reconciliation();
+  startBillingBai32Reconciliation();
   startBillingS137Activation();
   startBillingS1382Apply();
   startBillingS13932MonthlySubscription();
