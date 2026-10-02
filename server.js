@@ -23224,7 +23224,7 @@ async function loadOwnerSubscriptionInvoice(invoiceId,ownerId){
   const {data:invoice,error}=await supabase.from("subscription_invoices")
     .select("id,invoice_number,pool_id,owner_admin_user_id,offer_title_snapshot,period_start,period_end,purpose,amount_due_ar,amount_paid_ar,status,issued_at,due_at,created_at")
     .eq("id",invoiceId).eq("owner_admin_user_id",ownerId)
-    .eq("purpose","monthly_subscription").maybeSingle();
+    .in("purpose",["monthly_subscription","change_subscription"]).maybeSingle();
   if(error)throw error;if(!invoice)return null;
   const [{data:pool,error:poolError},{data:owner,error:ownerError}]=await Promise.all([
     supabase.from("internet_pools").select("id,name,brand_name,radius_nas_id").eq("id",invoice.pool_id).maybeSingle(),
@@ -23259,7 +23259,7 @@ app.get("/api/owner/billing/invoices/:id/receipt",requireAdmin,requireBillingPdf
       .eq("invoice_id",data.invoice.id).eq("owner_admin_user_id",String(req.admin?.id||""))
       .eq("status","completed").order("completed_at",{ascending:true}).limit(1).maybeSingle();
     if(error)throw error;if(!transaction)return res.status(409).json({error:"subscription_receipt_payment_not_found"});
-    const receipt_number=`RAZAFI-REC-${String(data.invoice.invoice_number).replace(/^RAZAFI-SUB-/,"")}`;
+    const receipt_number=`RAZAFI-REC-${String(data.invoice.invoice_number).replace(/^RAZAFI-(?:SUB|CHG)-/,"")}`;
     const doc=createSubscriptionReceiptPdf({...data,transaction,receipt_number});
     return sendBillingPdf(res,doc,billingPdfFilename("recu",receipt_number));
   }catch(error){console.error("[BILLING S11.5] receipt PDF",error?.message||error);if(!res.headersSent)return res.status(500).json({error:"subscription_receipt_pdf_failed"});}
