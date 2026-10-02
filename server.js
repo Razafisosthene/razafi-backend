@@ -20438,7 +20438,7 @@ function normalizeBillingChange(body = {}) {
   if (!["commission", "subscription"].includes(target_billing_mode)) return { error: "target_billing_mode_invalid" };
   if (!effective_on) return { error: "effective_on_invalid" };
   if (!/^\d{4}-\d{2}-01$/.test(effective_on)) return { error: "effective_on_must_be_first_day" };
-  if (effective_on <= new Date().toISOString().slice(0, 10)) return { error: "effective_on_must_be_future" };
+  if (effective_on <= billingMadagascarToday()) return { error: "effective_on_must_be_future" };
   return { value: { pool_id, target_offer_id, target_billing_mode, effective_on } };
 }
 
@@ -20452,50 +20452,118 @@ app.get("/api/admin/billing/changes", requireAdmin, requireSuperadmin, requireBi
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
+function bai51SuperadminChangeErrorStatus(message) {
+  const code = String(message || "bai5_superadmin_change_failed").split("\n")[0];
+  if (/superadmin_required/.test(code)) return 403;
+  if (/actor_not_found|pool_not_found/.test(code)) return 404;
+  if (/required|invalid|must_be/.test(code)) return 400;
+  if (/exists|same_as_current|not_available|conflict|current_assignment_required/.test(code)) return 409;
+  return 500;
+}
+
 app.post("/api/admin/billing/changes", requireAdmin, requireSuperadmin, requireBillingChanges, async (req, res) => {
   try {
-    const normalized = normalizeBillingChange(req.body);
+    const body = req.body || {};
+    const normalized = normalizeBillingChange(body);
     if (normalized.error) return res.status(400).json({ error: normalized.error });
     const { pool_id, target_offer_id, target_billing_mode, effective_on } = normalized.value;
-    const { data: pool, error: poolError } = await supabase.from("internet_pools").select("id,name,brand_name").eq("id", pool_id).maybeSingle();
-    if (poolError || !pool) return res.status(404).json({ error: poolError?.message || "pool_not_found" });
-    const { data: current, error: currentError } = await supabase.from("pool_billing_assignments")
-      .select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to")
-      .eq("pool_id", pool_id).lte("effective_from", new Date().toISOString().slice(0, 10))
-      .or(`effective_to.is.null,effective_to.gte.${new Date().toISOString().slice(0, 10)}`)
-      .order("effective_from", { ascending: false }).limit(1).maybeSingle();
-    if (currentError) return res.status(500).json({ error: currentError.message });
-    if (!current) return res.status(409).json({ error: "current_assignment_required" });
-    if (current.offer_id === target_offer_id && current.billing_mode === target_billing_mode) return res.status(409).json({ error: "target_same_as_current" });
-    const modeCheck = await loadBillingOfferMode(target_offer_id, target_billing_mode);
-    if (modeCheck.error) return res.status(400).json({ error: modeCheck.error });
-    const status = target_billing_mode === "subscription" ? "pending_payment" : "scheduled";
-    const { data, error } = await supabase.from("pool_billing_changes").insert({
-      pool_id,
-      current_assignment_id: current.id,
-      target_offer_id,
-      target_billing_mode,
-      effective_on,
-      status,
-      requested_by: req.admin.id,
-    }).select().single();
-    if (error) {
-      const duplicate = error.code === "23505" || String(error.message || "").includes("one_open");
-      return res.status(duplicate ? 409 : 500).json({ error: duplicate ? "open_change_exists" : error.message });
+
+    // BAI-5.1 compatibility: the current Superadmin UI predates target_plan_choice.
+    // Resolve it from the exact offer version effective on the requested boundary,
+    // using the same personalized_plan feature semantics as the Owner catalog.
+    let targetPlanChoice = String(body.target_plan_choice || body.plan_choice || "").trim().toLowerCase();
+    if (targetPlanChoice && !["base", "personalized"].includes(targetPlanChoice)) {
+      return res.status(400).json({ error: "plan_choice_invalid" });
     }
+    if (!targetPlanChoice) {
+      const { data: targetVersion, error: targetVersionError } = await supabase
+        .from("billing_offer_versions")
+        .select("id")
+        .eq("offer_id", target_offer_id)
+        .in("status", ["active", "scheduled"])
+        .lte("effective_from", effective_on)
+        .or(`effective_to.is.null,effective_to.gte.${effective_on}`)
+        .order("version_no", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (targetVersionError) return res.status(500).json({ error: targetVersionError.message });
+      if (!targetVersion) return res.status(409).json({ error: "active_offer_version_not_available" });
+      const { data: personalizedFeature, error: personalizedFeatureError } = await supabase
+        .from("billing_offer_version_features")
+        .select("offer_version_id")
+        .eq("offer_version_id", targetVersion.id)
+        .eq("feature_key", "personalized_plan")
+        .eq("enabled", true)
+        .maybeSingle();
+      if (personalizedFeatureError) return res.status(500).json({ error: personalizedFeatureError.message });
+      targetPlanChoice = personalizedFeature ? "personalized" : "base";
+    }
+
+    // A caller may provide an idempotency key. Existing Superadmin UI does not yet,
+    // so generate a valid request key for backward compatibility. The DB one-open
+    // invariant still protects duplicate commercial changes; the UI can later send
+    // a stable key to gain exact retry/reuse semantics across a lost HTTP response.
+    const suppliedKey = String(body.idempotency_key || body.superadmin_idempotency_key || "").trim();
+    const idempotencyKey = suppliedKey || `bai51_${crypto.randomUUID().replace(/-/g, "")}`;
+    if (!/^[A-Za-z0-9_-]{16,80}$/.test(idempotencyKey)) {
+      return res.status(400).json({ error: "idempotency_key_invalid" });
+    }
+
+    const { data: result, error: rpcError } = await supabase.rpc(
+      "fn_billing_v1_bai5_schedule_superadmin_change",
+      {
+        p_actor: req.admin.id,
+        p_pool: pool_id,
+        p_target_offer: target_offer_id,
+        p_target_mode: target_billing_mode,
+        p_plan_choice: targetPlanChoice,
+        p_effective_on: effective_on,
+        p_idempotency_key: idempotencyKey,
+      }
+    );
+    if (rpcError) {
+      const code = String(rpcError.message || "bai5_superadmin_change_failed").split("\n")[0];
+      return res.status(bai51SuperadminChangeErrorStatus(code)).json({ error: code });
+    }
+
+    const changeId = String(result?.change_id || "").trim();
+    if (!changeId) return res.status(500).json({ error: "bai5_change_id_missing" });
+
+    const { data: item, error: itemError } = await supabase
+      .from("pool_billing_changes")
+      .select("id,pool_id,current_assignment_id,target_offer_id,target_offer_version_id,target_plan_choice,target_billing_mode,effective_on,status,invoice_id,requested_by,requested_at,owner_idempotency_key,superadmin_idempotency_key,commercial_snapshot,cancelled_by,cancelled_at,cancel_reason,applied_at,applied_assignment_id,created_at,updated_at")
+      .eq("id", changeId)
+      .maybeSingle();
+    if (itemError) return res.status(500).json({ error: itemError.message });
+    if (!item) return res.status(500).json({ error: "bai5_change_not_found_after_schedule" });
+
     await insertAudit({
       event_type: "billing_pool_change_scheduled",
       status: "success",
       entity_type: "pool_billing_change",
-      entity_id: data.id,
+      entity_id: item.id,
       actor_type: "admin_user",
       actor_id: req.admin.id,
-      pool_id,
+      pool_id: item.pool_id,
       message: "Changement de facturation programmé",
-      metadata: { current_assignment: current, after: data },
+      metadata: {
+        engine: "billing-bai5-superadmin-v1",
+        reused: result?.reused === true,
+        idempotency_key: idempotencyKey,
+        target_plan_choice: targetPlanChoice,
+        after: item,
+      },
     });
-    return res.status(201).json({ ok: true, item: data });
-  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+
+    return res.status(result?.reused ? 200 : 201).json({
+      ok: true,
+      reused: result?.reused === true,
+      engine: "billing-bai5-superadmin-v1",
+      item,
+    });
+  } catch (e) {
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
 });
 
 app.patch("/api/admin/billing/changes/:id/cancel", requireAdmin, requireSuperadmin, requireBillingChanges, async (req, res) => {
