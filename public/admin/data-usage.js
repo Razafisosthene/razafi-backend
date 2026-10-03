@@ -924,7 +924,9 @@
     }
 
     const count = Math.min(days.length, Math.max(1, Number(visibleCount || 7)));
-    const visible = days.slice(-count);
+    // Mobile-first reading order: most recent day first. Older days are appended below
+    // when the user requests "Afficher 7 jours précédents".
+    const visible = days.slice(-count).reverse();
     return visible.map((row) => {
       const v = safeBigInt(row?.total_bytes);
       const pct = Number(v * 10_000n / max) / 100;

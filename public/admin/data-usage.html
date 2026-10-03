@@ -961,8 +961,10 @@
     .rz-du-history-primary{margin-top:0;}
     .rz-du-accordion-stack{display:grid;gap:8px;}
     .rz-du-accordion{border-radius:20px;background:rgba(255,255,255,.78);border:1px solid rgba(15,23,42,.055);box-shadow:0 8px 22px rgba(15,23,42,.045);overflow:hidden;}
-    .rz-du-accordion summary{cursor:pointer;list-style:none;padding:14px 15px;display:flex;align-items:center;justify-content:space-between;gap:12px;color:#111827;font-size:13px;font-weight:950;}
+    .rz-du-accordion summary{cursor:pointer;list-style:none;padding:14px 15px;display:flex;align-items:center;justify-content:space-between;gap:12px;color:#111827;font-size:13px;font-weight:950;outline:none;-webkit-tap-highlight-color:transparent;}
     .rz-du-accordion summary::-webkit-details-marker{display:none;}
+    .rz-du-accordion summary:focus{outline:none;}
+    .rz-du-accordion summary:focus-visible{outline:none;background:rgba(37,99,235,.045);box-shadow:inset 0 0 0 2px rgba(37,99,235,.10);}
     .rz-du-accordion summary::after{content:"›";color:#94a3b8;font-size:20px;line-height:1;transform:rotate(0deg);transition:.16s ease;}
     .rz-du-accordion[open] summary::after{transform:rotate(90deg);}
     .rz-du-accordion-body{padding:0 15px 15px;border-top:1px solid rgba(15,23,42,.045);}
@@ -1000,6 +1002,8 @@
       .rz-du-info-grid{grid-template-columns:1fr;}
       .rz-du-protection-row{align-items:flex-start;flex-direction:column;}
       .rz-du-pool-card-projection{width:100%;margin-left:0;}
+      /* Keep the final content fully scrollable above the persistent Admin bar / Aide bubble. */
+      .rz-du-shell-v2{margin-bottom:calc(140px + env(safe-area-inset-bottom, 0px));}
     }
     @media(max-width:430px){
       .rz-du-shell-v2{gap:11px;}
