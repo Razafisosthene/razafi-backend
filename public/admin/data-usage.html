@@ -855,48 +855,191 @@
       .rz-yield-actions{display:grid;grid-template-columns:1fr 1fr;}
       .rz-yield-actions .filter-btn{width:100%!important;min-width:0;}
     }
+
+
+    /* =========================================================
+       DATA USAGE V2 — RAZAFI × Starlink hierarchy × iPhone 2026
+       Presentation only: existing Data Usage / Yield APIs unchanged.
+       ========================================================= */
+    .rz-du-shell-v2{display:flex;flex-direction:column;gap:14px;}
+    .rz-du-header-v2{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+    .rz-du-header-actions{display:flex;align-items:center;gap:8px;}
+    .rz-du-refresh-v2{
+      width:auto!important;min-height:40px;padding:9px 14px!important;border-radius:999px!important;
+      background:rgba(255,255,255,.82)!important;color:var(--rz-text,#111827)!important;
+      border:1px solid rgba(17,24,39,.08)!important;box-shadow:0 6px 18px rgba(15,23,42,.05)!important;
+    }
+
+    .rz-du-month-nav{
+      display:grid;grid-template-columns:minmax(0,1fr) minmax(150px,1.2fr) minmax(0,1fr);
+      align-items:center;gap:8px;padding:8px;border-radius:24px;
+      background:rgba(255,255,255,.78);border:1px solid rgba(255,255,255,.92);
+      box-shadow:0 10px 26px rgba(15,23,42,.06);backdrop-filter:blur(18px);
+    }
+    .rz-du-month-side{
+      appearance:none;border:0;background:transparent;min-width:0;padding:10px 12px;border-radius:17px;
+      color:#475569;font:inherit;font-size:12px;font-weight:850;cursor:pointer;
+      display:flex;align-items:center;gap:7px;transition:.16s ease;
+    }
+    .rz-du-month-side:hover:not(:disabled){background:rgba(15,23,42,.045);color:#111827;}
+    .rz-du-month-side.next{justify-content:flex-end;text-align:right;}
+    .rz-du-month-side:disabled{opacity:.32;cursor:default;}
+    .rz-du-month-arrow{font-size:18px;line-height:1;font-weight:700;}
+    .rz-du-month-current{text-align:center;padding:8px 10px;min-width:0;}
+    .rz-du-month-current span{display:block;color:#94a3b8;font-size:9px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;}
+    .rz-du-month-current strong{display:block;margin-top:2px;color:#111827;font-size:14px;font-weight:950;letter-spacing:-.02em;text-transform:capitalize;}
+
+    .rz-du-content{display:block;touch-action:pan-y;}
+    .rz-du-overview{display:grid;gap:12px;}
+    .rz-du-overview-head{
+      display:flex;align-items:end;justify-content:space-between;gap:14px;padding:4px 2px 2px;
+    }
+    .rz-du-overview-title{font-size:18px;font-weight:950;letter-spacing:-.025em;color:#111827;}
+    .rz-du-overview-sub{margin-top:3px;color:#64748b;font-size:11px;font-weight:750;}
+    .rz-du-overview-total{text-align:right;}
+    .rz-du-overview-total span{display:block;color:#64748b;font-size:10px;font-weight:850;}
+    .rz-du-overview-total strong{display:block;margin-top:2px;color:#111827;font-size:24px;font-weight:950;letter-spacing:-.04em;}
+
+    .rz-du-pool-picker{display:grid;gap:10px;}
+    .rz-du-pool-card{
+      appearance:none;width:100%;text-align:left;border:1px solid rgba(17,24,39,.055);
+      background:rgba(255,255,255,.80);border-radius:24px;padding:16px 17px;cursor:pointer;
+      box-shadow:0 10px 26px rgba(15,23,42,.06);transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease;
+    }
+    .rz-du-pool-card:hover{transform:translateY(-1px);box-shadow:0 15px 34px rgba(15,23,42,.085);border-color:rgba(37,99,235,.14);}
+    .rz-du-pool-card:focus-visible{outline:3px solid rgba(37,99,235,.16);outline-offset:2px;}
+    .rz-du-pool-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+    .rz-du-pool-card-name{min-width:0;color:#111827;font-size:16px;font-weight:950;letter-spacing:-.025em;}
+    .rz-du-pool-card-arrow{flex:0 0 auto;color:#94a3b8;font-size:21px;line-height:1;}
+    .rz-du-pool-card-usage{margin-top:11px;color:#111827;font-size:31px;line-height:1;font-weight:950;letter-spacing:-.05em;}
+    .rz-du-pool-card-period{margin-top:5px;color:#64748b;font-size:11px;font-weight:750;}
+    .rz-du-pool-card-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px;}
+    .rz-du-chip{display:inline-flex;align-items:center;gap:6px;padding:6px 9px;border-radius:999px;background:rgba(15,23,42,.045);color:#475569;font-size:10px;font-weight:850;}
+    .rz-du-chip::before{content:"";width:6px;height:6px;border-radius:999px;background:#94a3b8;}
+    .rz-du-chip.active{background:rgba(22,163,74,.08);color:#15803d;}
+    .rz-du-chip.active::before{background:#16a34a;}
+    .rz-du-chip.medium{background:rgba(245,158,11,.09);color:#92400e;}
+    .rz-du-chip.medium::before{background:#f59e0b;}
+    .rz-du-chip.high{background:rgba(239,68,68,.08);color:#b91c1c;}
+    .rz-du-chip.high::before{background:#ef4444;}
+    .rz-du-pool-card-projection{margin-left:auto;color:#64748b;font-size:10px;font-weight:800;}
+
+    .rz-du-detail{display:grid;gap:12px;}
+    .rz-du-detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+    .rz-du-back{
+      appearance:none;border:0;background:transparent;padding:5px 3px;color:#2563eb;font:inherit;font-size:12px;font-weight:900;cursor:pointer;
+    }
+    .rz-du-detail-title{margin-top:5px;color:#111827;font-size:22px;font-weight:950;letter-spacing:-.035em;}
+    .rz-du-detail-meta{margin-top:5px;color:#64748b;font-size:11px;font-weight:750;}
+    .rz-du-detail-statuses{display:flex;justify-content:flex-end;gap:7px;flex-wrap:wrap;}
+
+    .rz-du-summary-card{padding:20px 18px 17px;overflow:hidden;}
+    .rz-du-summary-top{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+    .rz-du-summary-value{font-size:clamp(42px,8vw,64px);line-height:.95;letter-spacing:-.06em;font-weight:950;color:#111827;}
+    .rz-du-summary-period{margin-top:7px;color:#475569;font-size:13px;font-weight:800;}
+    .rz-du-summary-note{margin-top:8px;display:inline-flex;padding:6px 9px;border-radius:999px;background:rgba(245,158,11,.09);color:#92400e;font-size:10px;font-weight:850;}
+
+    .rz-du-bars-wrap{margin-top:18px;padding:8px 2px 0;}
+    .rz-du-bars{height:190px;display:flex;align-items:flex-end;gap:clamp(2px,.7vw,6px);border-bottom:1px solid rgba(15,23,42,.10);padding:8px 2px 0;}
+    .rz-du-bar-slot{height:100%;flex:1;min-width:2px;display:flex;align-items:flex-end;justify-content:center;}
+    .rz-du-bar{width:min(14px,86%);min-width:3px;border-radius:7px 7px 2px 2px;background:linear-gradient(180deg,#3b82f6 0%,#2563eb 100%);opacity:.82;box-shadow:0 3px 8px rgba(37,99,235,.12);}
+    .rz-du-bar.today{opacity:1;background:linear-gradient(180deg,#111827 0%,#334155 100%);}
+    .rz-du-bars-axis{display:flex;justify-content:space-between;margin-top:7px;color:#94a3b8;font-size:10px;font-weight:800;}
+    .rz-du-bars-empty{padding:38px 10px;text-align:center;color:#64748b;font-size:12px;font-weight:750;}
+
+    .rz-du-quick-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:16px;}
+    .rz-du-quick-metric{min-width:0;padding:12px;border-radius:18px;background:rgba(248,250,252,.82);border:1px solid rgba(15,23,42,.05);}
+    .rz-du-quick-metric span{display:block;color:#64748b;font-size:9px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;}
+    .rz-du-quick-metric strong{display:block;margin-top:5px;color:#111827;font-size:16px;font-weight:950;letter-spacing:-.025em;overflow-wrap:anywhere;}
+
+    .rz-du-accordion-stack{display:grid;gap:8px;}
+    .rz-du-accordion{border-radius:20px;background:rgba(255,255,255,.78);border:1px solid rgba(15,23,42,.055);box-shadow:0 8px 22px rgba(15,23,42,.045);overflow:hidden;}
+    .rz-du-accordion summary{cursor:pointer;list-style:none;padding:14px 15px;display:flex;align-items:center;justify-content:space-between;gap:12px;color:#111827;font-size:13px;font-weight:950;}
+    .rz-du-accordion summary::-webkit-details-marker{display:none;}
+    .rz-du-accordion summary::after{content:"›";color:#94a3b8;font-size:20px;line-height:1;transform:rotate(0deg);transition:.16s ease;}
+    .rz-du-accordion[open] summary::after{transform:rotate(90deg);}
+    .rz-du-accordion-body{padding:0 15px 15px;border-top:1px solid rgba(15,23,42,.045);}
+    .rz-du-accordion .rz-du-attribution{margin-top:12px;padding:0;border:0;background:transparent;}
+
+    .rz-du-info-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px;}
+    .rz-du-info-item{padding:11px 12px;border-radius:15px;background:rgba(248,250,252,.82);border:1px solid rgba(15,23,42,.05);}
+    .rz-du-info-item span{display:block;color:#64748b;font-size:9px;font-weight:850;text-transform:uppercase;letter-spacing:.03em;}
+    .rz-du-info-item strong{display:block;margin-top:5px;color:#111827;font-size:12px;font-weight:900;overflow-wrap:anywhere;}
+    .rz-du-protection-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;padding:12px;border-radius:16px;background:rgba(37,99,235,.055);border:1px solid rgba(37,99,235,.10);}
+    .rz-du-protection-row p{margin:0;color:#475569;font-size:11px;font-weight:750;line-height:1.42;}
+    .rz-du-protection-row .rz-du-yield-btn{flex:0 0 auto;}
+
+    .rz-du-history-v2{margin-top:12px;}
+    .rz-du-history-tools{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px;}
+    .rz-du-history-caption{color:#64748b;font-size:10px;font-weight:750;}
+    .rz-du-history-more{appearance:none;border:0;background:rgba(37,99,235,.07);color:#1d4ed8;border-radius:999px;padding:8px 11px;font:inherit;font-size:10px;font-weight:900;cursor:pointer;}
+    .rz-du-history-more:hover{background:rgba(37,99,235,.11);}
+
+    .rz-du-footnote-v2{padding:13px 15px;color:#64748b;font-size:10px;font-weight:700;line-height:1.5;}
+    .rz-du-footnote-v2 strong{color:#475569;}
+
+    @media(max-width:720px){
+      .rz-du-month-nav{grid-template-columns:minmax(0,.9fr) minmax(130px,1.25fr) minmax(0,.9fr);}
+      .rz-du-month-side{padding:9px 7px;font-size:10px;}
+      .rz-du-month-current strong{font-size:13px;}
+      .rz-du-overview-head{align-items:flex-start;}
+      .rz-du-overview-total strong{font-size:21px;}
+      .rz-du-detail-head{display:block;}
+      .rz-du-detail-statuses{justify-content:flex-start;margin-top:10px;}
+      .rz-du-bars{height:165px;gap:2px;}
+      .rz-du-quick-metrics{grid-template-columns:1fr 1fr 1fr;gap:6px;}
+      .rz-du-quick-metric{padding:10px 8px;}
+      .rz-du-quick-metric strong{font-size:14px;}
+      .rz-du-info-grid{grid-template-columns:1fr;}
+      .rz-du-protection-row{align-items:flex-start;flex-direction:column;}
+      .rz-du-pool-card-projection{width:100%;margin-left:0;}
+    }
+    @media(max-width:430px){
+      .rz-du-shell-v2{gap:11px;}
+      .rz-du-header-v2{align-items:center;}
+      .rz-du-refresh-v2{font-size:0;width:40px!important;padding:0!important;display:grid;place-items:center;}
+      .rz-du-refresh-v2::before{content:"↻";font-size:19px;}
+      .rz-du-month-nav{gap:3px;padding:6px;border-radius:20px;}
+      .rz-du-month-side{font-size:9px;gap:3px;}
+      .rz-du-month-arrow{font-size:16px;}
+      .rz-du-month-current{padding:7px 2px;}
+      .rz-du-month-current strong{font-size:12px;}
+      .rz-du-overview-title{font-size:17px;}
+      .rz-du-overview-total strong{font-size:20px;}
+      .rz-du-summary-card{padding:18px 14px 15px;}
+      .rz-du-summary-value{font-size:46px;}
+      .rz-du-bars{height:150px;}
+      .rz-du-quick-metric span{font-size:8px;}
+      .rz-du-quick-metric strong{font-size:13px;}
+      .rz-du-day{grid-template-columns:74px 1fr auto;gap:7px;}
+      .rz-du-day-date,.rz-du-day-value{font-size:11px;}
+    }
+
   </style>
 </head>
 
 <body class="rz-admin-shell data-usage-page">
   <div class="login-container">
-    <div class="card rz-du-shell" style="max-width:1180px;width:96%;">
-      <div class="topbar rz-du-header">
+    <div class="card rz-du-shell-v2" style="max-width:1180px;width:96%;">
+      <div class="topbar rz-du-header-v2">
         <div class="title rz-du-title-block">
           <h1 class="rz-hero-title">Consommation des données</h1>
           <div id="me" class="subtitle rz-du-me">Vérification de la session…</div>
         </div>
+        <div class="rz-du-header-actions">
+          <button id="refreshBtn" class="filter-btn rz-du-refresh-v2" type="button">Actualiser</button>
+        </div>
       </div>
-
-      <section class="rz-du-card rz-du-toolbar" aria-label="Filtres">
-        <div class="rz-du-field">
-          <label for="monthPicker">Mois</label>
-          <input id="monthPicker" type="month" />
-        </div>
-        <div class="rz-du-field">
-          <label for="poolFilter">Pool</label>
-          <select id="poolFilter">
-            <option value="all">Tous les pools</option>
-          </select>
-        </div>
-        <button id="refreshBtn" class="filter-btn primary rz-du-refresh" type="button">Actualiser</button>
-      </section>
 
       <div id="msg" class="rz-du-msg" role="status" aria-live="polite"></div>
 
-      <section id="globalSummary" class="rz-du-card rz-du-total" aria-label="Total des pools visibles">
-        <div>
-          <div class="rz-du-total-label">Total des pools visibles</div>
-          <div id="globalTotal" class="rz-du-total-value">—</div>
-        </div>
-        <div id="globalNote" class="rz-du-total-note"></div>
-      </section>
+      <section id="monthNav" class="rz-du-month-nav" aria-label="Navigation mensuelle"></section>
 
-      <main id="poolList" class="rz-du-list">
+      <main id="dataUsageContent" class="rz-du-content">
         <section class="rz-du-card rz-du-empty">Chargement…</section>
       </main>
 
-      <section class="rz-du-card rz-du-footnote">
+      <section class="rz-du-card rz-du-footnote-v2">
         <strong>Mesure RAZAFI :</strong> cette page utilise le trafic WAN réellement observé sur le MikroTik.
         Pour un mois commencé avant l’activation du suivi, RAZAFI affiche uniquement la période réellement mesurée.
       </section>
@@ -904,6 +1047,6 @@
   </div>
 
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="/admin/data-usage.js?v=data-usage-yield-policy-v1-1"></script>
+  <script src="/admin/data-usage.js?v=data-usage-v2"></script>
 </body>
 </html>
