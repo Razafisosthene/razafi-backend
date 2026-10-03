@@ -858,7 +858,7 @@
 
 
     /* =========================================================
-       DATA USAGE V2 — RAZAFI × Starlink hierarchy × iPhone 2026
+       DATA USAGE V2.1 — RAZAFI × Starlink hierarchy × iPhone 2026
        Presentation only: existing Data Usage / Yield APIs unchanged.
        ========================================================= */
     .rz-du-shell-v2{display:flex;flex-direction:column;gap:14px;}
@@ -876,6 +876,7 @@
       background:rgba(255,255,255,.78);border:1px solid rgba(255,255,255,.92);
       box-shadow:0 10px 26px rgba(15,23,42,.06);backdrop-filter:blur(18px);
     }
+    .rz-du-month-nav.is-hidden{display:none;}
     .rz-du-month-side{
       appearance:none;border:0;background:transparent;min-width:0;padding:10px 12px;border-radius:17px;
       color:#475569;font:inherit;font-size:12px;font-weight:850;cursor:pointer;
@@ -918,6 +919,10 @@
     .rz-du-chip::before{content:"";width:6px;height:6px;border-radius:999px;background:#94a3b8;}
     .rz-du-chip.active{background:rgba(22,163,74,.08);color:#15803d;}
     .rz-du-chip.active::before{background:#16a34a;}
+    .rz-du-chip.history-complete{background:rgba(37,99,235,.07);color:#1d4ed8;}
+    .rz-du-chip.history-complete::before{background:#3b82f6;}
+    .rz-du-chip.history-partial{background:rgba(245,158,11,.09);color:#92400e;}
+    .rz-du-chip.history-partial::before{background:#f59e0b;}
     .rz-du-chip.medium{background:rgba(245,158,11,.09);color:#92400e;}
     .rz-du-chip.medium::before{background:#f59e0b;}
     .rz-du-chip.high{background:rgba(239,68,68,.08);color:#b91c1c;}
@@ -942,6 +947,7 @@
     .rz-du-bars-wrap{margin-top:18px;padding:8px 2px 0;}
     .rz-du-bars{height:190px;display:flex;align-items:flex-end;gap:clamp(2px,.7vw,6px);border-bottom:1px solid rgba(15,23,42,.10);padding:8px 2px 0;}
     .rz-du-bar-slot{height:100%;flex:1;min-width:2px;display:flex;align-items:flex-end;justify-content:center;}
+    .rz-du-bar-slot.empty{opacity:.28;}
     .rz-du-bar{width:min(14px,86%);min-width:3px;border-radius:7px 7px 2px 2px;background:linear-gradient(180deg,#3b82f6 0%,#2563eb 100%);opacity:.82;box-shadow:0 3px 8px rgba(37,99,235,.12);}
     .rz-du-bar.today{opacity:1;background:linear-gradient(180deg,#111827 0%,#334155 100%);}
     .rz-du-bars-axis{display:flex;justify-content:space-between;margin-top:7px;color:#94a3b8;font-size:10px;font-weight:800;}
@@ -952,6 +958,7 @@
     .rz-du-quick-metric span{display:block;color:#64748b;font-size:9px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;}
     .rz-du-quick-metric strong{display:block;margin-top:5px;color:#111827;font-size:16px;font-weight:950;letter-spacing:-.025em;overflow-wrap:anywhere;}
 
+    .rz-du-history-primary{margin-top:0;}
     .rz-du-accordion-stack{display:grid;gap:8px;}
     .rz-du-accordion{border-radius:20px;background:rgba(255,255,255,.78);border:1px solid rgba(15,23,42,.055);box-shadow:0 8px 22px rgba(15,23,42,.045);overflow:hidden;}
     .rz-du-accordion summary{cursor:pointer;list-style:none;padding:14px 15px;display:flex;align-items:center;justify-content:space-between;gap:12px;color:#111827;font-size:13px;font-weight:950;}
@@ -1047,6 +1054,6 @@
   </div>
 
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="/admin/data-usage.js?v=data-usage-v2"></script>
+  <script src="/admin/data-usage.js?v=data-usage-v2-1"></script>
 </body>
 </html>
