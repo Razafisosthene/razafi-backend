@@ -976,7 +976,25 @@
     .rz-du-info-item strong{display:block;margin-top:5px;color:#111827;font-size:12px;font-weight:900;overflow-wrap:anywhere;}
     .rz-du-protection-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;padding:12px;border-radius:16px;background:rgba(37,99,235,.055);border:1px solid rgba(37,99,235,.10);}
     .rz-du-protection-row p{margin:0;color:#475569;font-size:11px;font-weight:750;line-height:1.42;}
-    .rz-du-protection-row .rz-du-yield-btn{flex:0 0 auto;}
+    .rz-du-protection-row .rz-du-yield-btn{flex:0 0 auto;width:auto!important;}
+
+    /* V2.1.2 — protection card: keep the explanatory copy readable and the action compact on desktop. */
+    @media(min-width:721px){
+      .rz-du-protection-row{
+        display:grid;
+        grid-template-columns:minmax(0,1fr) auto;
+        align-items:center;
+        gap:18px;
+      }
+      .rz-du-protection-row p{max-width:720px;}
+      .rz-du-protection-row .rz-du-yield-btn{
+        width:auto!important;
+        min-width:190px;
+        max-width:none!important;
+        white-space:nowrap;
+        justify-self:end;
+      }
+    }
 
     .rz-du-history-v2{margin-top:12px;}
     .rz-du-history-tools{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px;}
@@ -1001,6 +1019,7 @@
       .rz-du-quick-metric strong{font-size:14px;}
       .rz-du-info-grid{grid-template-columns:1fr;}
       .rz-du-protection-row{align-items:flex-start;flex-direction:column;}
+      .rz-du-protection-row .rz-du-yield-btn{width:auto!important;max-width:100%!important;align-self:flex-start;}
       .rz-du-pool-card-projection{width:100%;margin-left:0;}
       /* Keep the final content fully scrollable above the persistent Admin bar / Aide bubble. */
       .rz-du-shell-v2{margin-bottom:calc(140px + env(safe-area-inset-bottom, 0px));}
@@ -1058,6 +1077,6 @@
   </div>
 
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="/admin/data-usage.js?v=data-usage-v2-1"></script>
+  <script src="/admin/data-usage.js?v=data-usage-v2-1-2"></script>
 </body>
 </html>
