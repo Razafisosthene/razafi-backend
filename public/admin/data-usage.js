@@ -991,6 +991,8 @@
           </div>
         </div>
 
+        <section id="monthNav" class="rz-du-month-nav" aria-label="Navigation mensuelle"></section>
+
         <article class="rz-du-card rz-du-summary-card">
           <div class="rz-du-summary-top">
             <div>
@@ -1054,7 +1056,6 @@
   function render() {
     const content = $("dataUsageContent");
     const response = state.response || {};
-    renderMonthNav();
 
     if (!state.allPools.length) {
       content.innerHTML = `<section class="rz-du-card rz-du-empty">Aucune pool disponible pour cette sélection.</section>`;
@@ -1077,6 +1078,7 @@
       return;
     }
     content.innerHTML = renderPoolDetail(pool, response);
+    renderMonthNav();
   }
 
   function syncMonthBounds(response) {
@@ -1185,14 +1187,16 @@
 
     $("refreshBtn")?.addEventListener("click", loadData);
 
-    $("monthNav")?.addEventListener("click", (event) => {
-      const btn = event.target.closest("[data-month-step]");
-      if (!btn || btn.disabled) return;
-      const delta = Number(btn.getAttribute("data-month-step"));
-      if (delta === -1 || delta === 1) void navigateMonth(delta);
-    });
 
     $("dataUsageContent")?.addEventListener("click", (event) => {
+      const monthBtn = event.target.closest("[data-month-step]");
+      if (monthBtn) {
+        if (monthBtn.disabled) return;
+        const delta = Number(monthBtn.getAttribute("data-month-step"));
+        if (delta === -1 || delta === 1) void navigateMonth(delta);
+        return;
+      }
+
       const poolBtn = event.target.closest("[data-pool-open]");
       if (poolBtn) {
         state.selectedPool = String(poolBtn.getAttribute("data-pool-open") || "all");
