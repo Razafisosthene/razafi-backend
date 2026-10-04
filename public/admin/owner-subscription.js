@@ -103,19 +103,112 @@
     return `<ol class="sub-steps"><li class="done">Demande MVola envoyée</li><li class="${ok||bad?"done":wait?"current":""}">Consultez votre téléphone et saisissez votre PIN si demandé</li><li class="${ok?"done":bad?"current":""}">${ok?"Paiement confirmé":bad?"Paiement non confirmé":"Confirmation MVola en cours"}</li></ol>`;
   }
 
+  const INVOICE_MONTHS_FR=["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
+
+  function invoicePeriodLabel(i){
+    const ref=String(i?.invoice_number||"").trim();
+    const match=ref.match(/(?:^|\D)(20\d{2})(0[1-9]|1[0-2])(?:\D|$)/);
+    if(match){
+      const month=INVOICE_MONTHS_FR[Number(match[2])-1];
+      if(month)return `${month} ${match[1]}`;
+    }
+    const due=String(i?.due_at||"").slice(0,10);
+    const dm=due.match(/^(20\d{2})-(0[1-9]|1[0-2])-\d{2}$/);
+    if(dm){
+      const month=INVOICE_MONTHS_FR[Number(dm[2])-1];
+      if(month)return `${month} ${dm[1]}`;
+    }
+    return "Facture";
+  }
+
+  function invoiceDueLabel(value){
+    const raw=String(value||"").slice(0,10);
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(raw))return "—";
+    const d=new Date(`${raw}T12:00:00Z`);
+    if(!Number.isFinite(d.getTime()))return raw;
+    return new Intl.DateTimeFormat("fr-FR",{day:"2-digit",month:"short",year:"numeric",timeZone:"UTC"}).format(d);
+  }
+
+  function invoiceStatusClass(status){
+    if(status==="paid")return "sub-ok";
+    if(["failed","cancelled","refunded"].includes(status))return "sub-bad";
+    return "sub-wait";
+  }
+
+  function invoicePdfActions(i){
+    if(!billing?.pdf_available)return "";
+    return `<div class="sub-actions sub-invoice-actions"><a class="sub-link" href="/api/owner/billing/invoices/${encodeURIComponent(i.id)}/pdf">Facture PDF</a>${i.status==="paid"?`<a class="sub-link" href="/api/owner/billing/invoices/${encodeURIComponent(i.id)}/receipt">Reçu PDF</a>`:""}</div>`;
+  }
+
+  function invoiceTechnicalDetails(i,summaryLabel="Détails de la facture"){
+    return `<details class="sub-invoice-details"><summary>${esc(summaryLabel)}</summary><div class="sub-invoice-technical"><div><strong>Référence</strong></div><div class="sub-invoice-ref">${esc(i.invoice_number||"—")}</div><div>Échéance : ${esc(invoiceDueLabel(i.due_at))}</div></div></details>`;
+  }
+
   function paymentBlock(i){
     const p=i.latest_payment;
     if(i.status==="paid"||p?.status==="completed")return `<div class="sub-status ok"><strong>Paiement confirmé</strong><br>La facture est réglée.${p?.request_ref?`<div class="sub-muted">Référence ${esc(p.request_ref)}</div>`:""}</div>`;
     if(p&&["initiated","pending"].includes(p.status))return `<div class="sub-status wait" data-payment-state="${esc(p.request_ref)}"><strong>Confirmation MVola en cours</strong><br>Ne relancez pas le paiement.${steps(p.status)}<div class="sub-muted">Référence ${esc(p.request_ref)}</div></div>`;
     const failure=p?.status==="failed"?'<div class="sub-status bad">La dernière tentative n’a pas été confirmée par MVola. Réessayez seulement si aucun débit n’apparaît.</div>':"";
     if(!(billing?.payment_ui?.enabled&&billing.payment_ui.payable_invoice_ids?.includes(i.id)))return `${failure}<div class="sub-status">Paiement MVola temporairement indisponible.</div>`;
-    return `${failure}<div class="sub-form" data-pay-form="${esc(i.id)}"><label>Numéro payeur MVola<input inputmode="tel" autocomplete="tel" maxlength="16" placeholder="034xxxxxxx, 037xxxxxxx ou 038xxxxxxx"></label><button class="sub-btn sub-pay" type="button">Payer ${money(i.amount_due_ar)}</button><div class="sub-status" role="status" aria-live="polite">La demande sera envoyée au téléphone du payeur.</div></div>`;
+    return `${failure}<div class="sub-form" data-pay-form="${esc(i.id)}"><label>Numéro payeur MVola<input inputmode="tel" autocomplete="tel" maxlength="16" placeholder="034 / 037 / 038…"></label><button class="sub-btn sub-pay" type="button">Payer ${money(i.amount_due_ar)}</button><div class="sub-status" role="status" aria-live="polite">La demande sera envoyée au téléphone du payeur.</div></div>`;
   }
 
   function renderInvoicesSection(pool){
     const invoices=(billing?.invoices||[]).filter(i=>i.pool_id===pool.id);
     if(!invoices.length)return '<div class="sub-empty">Aucune facture pour le moment.</div>';
-    return `<div class="sub-grid">${invoices.map(i=>`<article class="sub-card"><h3>${esc(i.invoice_number)}</h3><div>${esc(offerDisplayTitle(i))} · <strong>${money(i.amount_due_ar)}</strong></div><div class="sub-pills"><span class="sub-pill ${i.status==="paid"?"sub-ok":"sub-wait"}">${esc(label(i.status))}</span><span class="sub-pill">Échéance ${esc(String(i.due_at||"").slice(0,10)||"—")}</span></div>${paymentBlock(i)}${billing?.pdf_available?`<div class="sub-actions" style="margin-top:10px"><a class="sub-link" href="/api/owner/billing/invoices/${encodeURIComponent(i.id)}/pdf">Facture PDF</a>${i.status==="paid"?`<a class="sub-link" href="/api/owner/billing/invoices/${encodeURIComponent(i.id)}/receipt">Reçu PDF</a>`:""}</div>`:""}</article>`).join("")}</div>`;
+
+    // Preserve the backend ordering already used by the billing panel:
+    // the first invoice remains the current/latest invoice; older invoices
+    // move into a compact expandable history without changing payment logic.
+    const current=invoices[0];
+    const history=invoices.slice(1);
+    const currentHtml=`
+      <article class="sub-card sub-invoice-current">
+        <div class="sub-invoice-eyebrow">Facture actuelle</div>
+        <div class="sub-invoice-head">
+          <div style="min-width:0">
+            <h3 class="sub-invoice-title">${esc(invoicePeriodLabel(current))}</h3>
+            <div class="sub-invoice-offer">${esc(offerDisplayTitle(current))}</div>
+          </div>
+          <div class="sub-invoice-amount">${esc(money(current.amount_due_ar))}</div>
+        </div>
+        <div class="sub-invoice-meta">
+          <span class="sub-pill ${esc(invoiceStatusClass(current.status))}">${esc(label(current.status))}</span>
+          <span class="sub-pill">Échéance ${esc(invoiceDueLabel(current.due_at))}</span>
+        </div>
+        ${paymentBlock(current)}
+        ${invoicePdfActions(current)}
+        ${invoiceTechnicalDetails(current)}
+      </article>`;
+
+    if(!history.length)return currentHtml;
+
+    const historyHtml=`
+      <div class="sub-invoice-history">
+        <div class="sub-invoice-history-heading">Historique des factures</div>
+        ${history.map(i=>`
+          <details class="sub-invoice-history-item">
+            <summary>
+              <span class="sub-invoice-history-main">
+                <span class="sub-invoice-history-period">${esc(invoicePeriodLabel(i))}</span>
+                <span class="sub-invoice-history-offer">${esc(offerDisplayTitle(i))} · ${esc(label(i.status))}</span>
+              </span>
+              <span class="sub-invoice-history-amount">${esc(money(i.amount_due_ar))}</span>
+              <span class="sub-invoice-history-chevron" aria-hidden="true">›</span>
+            </summary>
+            <div class="sub-invoice-history-body">
+              <div class="sub-invoice-technical">
+                <div class="sub-invoice-meta"><span class="sub-pill ${esc(invoiceStatusClass(i.status))} sub-invoice-status-pill">${esc(label(i.status))}</span><span class="sub-pill">Échéance ${esc(invoiceDueLabel(i.due_at))}</span></div>
+                <div><strong>Référence</strong></div>
+                <div class="sub-invoice-ref">${esc(i.invoice_number||"—")}</div>
+              </div>
+              ${paymentBlock(i)}
+              ${invoicePdfActions(i)}
+            </div>
+          </details>`).join("")}
+      </div>`;
+
+    return `${currentHtml}${historyHtml}`;
   }
 
   function commissionAmounts(x){
