@@ -20370,6 +20370,26 @@ app.post("/api/admin/billing/assignments", requireAdmin, requireSuperadmin, requ
     if (normalized.error) return res.status(400).json({ error: normalized.error });
     const { data: pool, error: poolError } = await supabase.from("internet_pools").select("id,name,brand_name").eq("id", pool_id).maybeSingle();
     if (poolError || !pool) return res.status(404).json({ error: poolError?.message || "pool_not_found" });
+
+    // BAI-5.2 Step 6B: this endpoint is initial assignment only.
+    // Once a pool has any assignment history, all commercial changes must use
+    // the canonical billing-change engine (BAI-5.1), or the explicit audited
+    // Superadmin override path for exceptional corrections.
+    const { data: existingAssignment, error: existingAssignmentError } = await supabase
+      .from("pool_billing_assignments")
+      .select("id,pool_id,effective_from,effective_to,created_at")
+      .eq("pool_id", pool_id)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (existingAssignmentError) return res.status(500).json({ error: existingAssignmentError.message });
+    if (existingAssignment) {
+      return res.status(409).json({
+        error: "assignment_already_exists_use_change",
+        existing_assignment_id: existingAssignment.id,
+      });
+    }
+
     const modeCheck = await loadBillingOfferMode(offer_id, normalized.value.billing_mode);
     if (modeCheck.error) return res.status(400).json({ error: modeCheck.error });
     if (normalized.value.post_trial_offer_id) {
@@ -20410,22 +20430,24 @@ app.post("/api/admin/billing/assignments", requireAdmin, requireSuperadmin, requ
 
 app.patch("/api/admin/billing/assignments/:id", requireAdmin, requireSuperadmin, requireBillingAssignments, async (req, res) => {
   try {
-    const { data: before, error: beforeError } = await supabase.from("pool_billing_assignments").select("*").eq("id", req.params.id).maybeSingle();
+    const { data: before, error: beforeError } = await supabase
+      .from("pool_billing_assignments")
+      .select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to,trial_ends_at,post_trial_offer_id,post_trial_mode,source,created_at")
+      .eq("id", req.params.id)
+      .maybeSingle();
     if (beforeError) return res.status(500).json({ error: beforeError.message });
     if (!before) return res.status(404).json({ error: "not_found" });
-    const normalized = normalizeBillingAssignment({ ...before, ...req.body });
-    if (normalized.error) return res.status(400).json({ error: normalized.error });
-    const offer_id = String(req.body?.offer_id || before.offer_id);
-    const modeCheck = await loadBillingOfferMode(offer_id, normalized.value.billing_mode);
-    if (modeCheck.error) return res.status(400).json({ error: modeCheck.error });
-    if (normalized.value.post_trial_offer_id) {
-      const postCheck = await loadBillingOfferMode(normalized.value.post_trial_offer_id, normalized.value.post_trial_mode);
-      if (postCheck.error) return res.status(400).json({ error: `post_trial_${postCheck.error}` });
-    }
-    const { data, error } = await supabase.from("pool_billing_assignments").update({ offer_id, ...normalized.value }).eq("id", req.params.id).select().single();
-    if (error) return res.status(error.message?.includes("overlap") ? 409 : 500).json({ error: error.message?.includes("overlap") ? "assignment_overlap" : error.message });
-    await insertAudit({ event_type: "billing_pool_assignment_updated", status: "success", entity_type: "pool_billing_assignment", entity_id: data.id, actor_type: "admin_user", actor_id: req.admin.id, pool_id: data.pool_id, message: "Attribution de facturation modifiée", metadata: { before, after: data } });
-    return res.json({ ok: true, item: data });
+
+    // BAI-5.2 Step 6B: direct mutation of an existing commercial assignment is
+    // intentionally disabled. Normal offer/mode/date changes must be scheduled
+    // through /api/admin/billing/changes (BAI-5.1). Exceptional corrections must
+    // use the explicit audited Superadmin override path (BAI-5.2).
+    return res.status(409).json({
+      error: "assignment_direct_edit_disabled",
+      assignment_id: before.id,
+      pool_id: before.pool_id,
+      use: "billing_change_or_superadmin_override",
+    });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
