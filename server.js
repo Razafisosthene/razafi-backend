@@ -20566,22 +20566,54 @@ app.post("/api/admin/billing/changes", requireAdmin, requireSuperadmin, requireB
   }
 });
 
+function bai52SuperadminCancelErrorStatus(message) {
+  const code = String(message || "bai5_superadmin_cancel_failed").split("\n")[0];
+  if (/superadmin_required/.test(code)) return 403;
+  if (/actor_not_found|change_not_found/.test(code)) return 404;
+  if (/required|too_long/.test(code)) return 400;
+  if (/not_cancellable|already_applied|paid_change_not_cancellable|change_has_financial_activity|change_invoice_already_cancelled|change_invoice_status_not_cancellable/.test(code)) return 409;
+  return 500;
+}
+
 app.patch("/api/admin/billing/changes/:id/cancel", requireAdmin, requireSuperadmin, requireBillingChanges, async (req, res) => {
   try {
     const cancel_reason = String(req.body?.cancel_reason || "").trim().slice(0, 500);
     if (cancel_reason.length < 3) return res.status(400).json({ error: "cancel_reason_required" });
-    const { data: before, error: readError } = await supabase.from("pool_billing_changes").select("*").eq("id", req.params.id).maybeSingle();
+
+    // BAI-5.2: preserve the existing HTTP/audit contract, but delegate the
+    // financial decision + mutation atomically to the canonical DB RPC.
+    const { data: before, error: readError } = await supabase
+      .from("pool_billing_changes")
+      .select("*")
+      .eq("id", req.params.id)
+      .maybeSingle();
     if (readError) return res.status(500).json({ error: readError.message });
     if (!before) return res.status(404).json({ error: "not_found" });
-    if (!["pending_payment", "scheduled"].includes(before.status)) return res.status(409).json({ error: "change_not_cancellable" });
-    const { data, error } = await supabase.from("pool_billing_changes").update({
-      status: "cancelled",
-      cancelled_by: req.admin.id,
-      cancelled_at: new Date().toISOString(),
-      cancel_reason,
-    }).eq("id", req.params.id).in("status", ["pending_payment", "scheduled"]).select().maybeSingle();
-    if (error) return res.status(500).json({ error: error.message });
-    if (!data) return res.status(409).json({ error: "change_not_cancellable" });
+    if (!["pending_payment", "scheduled"].includes(before.status)) {
+      return res.status(409).json({ error: "change_not_cancellable" });
+    }
+
+    const { data: result, error: rpcError } = await supabase.rpc(
+      "fn_billing_v1_bai5_cancel_superadmin_change",
+      {
+        p_actor: req.admin.id,
+        p_change: req.params.id,
+        p_reason: cancel_reason,
+      }
+    );
+    if (rpcError) {
+      const code = String(rpcError.message || "bai5_superadmin_cancel_failed").split("\n")[0];
+      return res.status(bai52SuperadminCancelErrorStatus(code)).json({ error: code });
+    }
+
+    const { data, error: afterError } = await supabase
+      .from("pool_billing_changes")
+      .select("*")
+      .eq("id", req.params.id)
+      .maybeSingle();
+    if (afterError) return res.status(500).json({ error: afterError.message });
+    if (!data) return res.status(500).json({ error: "bai5_cancel_change_missing_after_rpc" });
+
     await insertAudit({
       event_type: "billing_pool_change_cancelled",
       status: "success",
@@ -20591,10 +20623,23 @@ app.patch("/api/admin/billing/changes/:id/cancel", requireAdmin, requireSuperadm
       actor_id: req.admin.id,
       pool_id: data.pool_id,
       message: "Changement de facturation annulé",
-      metadata: { before, after: data },
+      metadata: {
+        engine: "billing-bai5-cancel-superadmin-v1",
+        before,
+        after: data,
+        result,
+      },
     });
-    return res.json({ ok: true, item: data });
-  } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+
+    return res.json({
+      ok: true,
+      engine: "billing-bai5-cancel-superadmin-v1",
+      item: data,
+      cancellation: result,
+    });
+  } catch (e) {
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
 });
 
 function requireBillingOwnerAutonomousChange(_req, res, next) {
