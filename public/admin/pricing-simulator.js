@@ -181,13 +181,19 @@ function parseAllowedSpeeds(value) {
 }
 
 function refreshSpeedOptions(settings = {}) {
-  const list = document.getElementById("speedOptions");
-  const input = document.getElementById("speedMbps");
+  const select = document.getElementById("speedMbps");
   const speeds = parseAllowedSpeeds(settings.allowed_speeds_mbps);
-  if (list) list.innerHTML = speeds.map((speed) => `<option value="${esc(speed)}"></option>`).join("");
-  if (input && speeds.length && !speeds.some((speed) => Math.abs(Number(input.value) - speed) < 0.001)) {
-    input.value = String(speeds[0]);
-  }
+  if (!select) return;
+
+  const previous = Number(select.value);
+  select.innerHTML = speeds.length
+    ? speeds.map((speed) => `<option value="${esc(speed)}">${esc(speed)} Mbps</option>`).join("")
+    : `<option value="">Aucun débit disponible</option>`;
+
+  const keepPrevious = speeds.some((speed) => Math.abs(previous - speed) < 0.001);
+  if (keepPrevious) select.value = String(previous);
+  else if (speeds.length) select.value = String(speeds[0]);
+  else select.value = "";
 }
 
 function createReferenceDraft() {

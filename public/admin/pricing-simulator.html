@@ -150,7 +150,7 @@
       #dataField,.rz-speed-field,.rz-simulate-btn{grid-column:1/-1;}
       .rz-duration-value-field{grid-column:1/2;}
       .rz-duration-unit-field{grid-column:2/3;}
-      .rz-speed-field input{height:40px;}
+      .rz-speed-field select{height:40px;}
       .rz-simulate-btn{min-height:46px;border-radius:17px!important;}
       .rz-field-error{font-size:11px;line-height:1.2;}
       .rz-mobile-collapsible .rz-collapse-summary{cursor:pointer;}
@@ -232,13 +232,9 @@
 
             <div class="rz-field rz-speed-field">
               <label for="speedMbps">Vitesse (Mbps)</label>
-              <input id="speedMbps" inputmode="decimal" list="speedOptions" value="7" placeholder="Ex : 10" required />
-              <datalist id="speedOptions">
-                <option value="5"></option>
-                <option value="7"></option>
-                <option value="10"></option>
-                <option value="12"></option>
-              </datalist>
+              <select id="speedMbps" required aria-describedby="speedMbpsError">
+                <option value="">Chargement des débits…</option>
+              </select>
               <div id="speedMbpsError" class="rz-field-error"></div>
             </div>
 
