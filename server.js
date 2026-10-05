@@ -20598,11 +20598,16 @@ function normalizeBillingChange(body = {}) {
 
 app.get("/api/admin/billing/changes", requireAdmin, requireSuperadmin, requireBillingChanges, async (_req, res) => {
   try {
+    // BAI-5 Final Step 8: expose the canonical commercial identity of every
+    // change so the Superadmin UI and diagnostics never have to infer it.
     const { data, error } = await supabase.from("pool_billing_changes")
-      .select("id,pool_id,current_assignment_id,target_offer_id,target_billing_mode,effective_on,status,requested_by,requested_at,cancelled_by,cancelled_at,cancel_reason,applied_at,created_at,updated_at")
+      .select("id,pool_id,current_assignment_id,target_offer_id,target_offer_version_id,target_plan_choice,target_billing_mode,effective_on,status,invoice_id,requested_by,requested_at,owner_idempotency_key,superadmin_idempotency_key,commercial_snapshot,cancelled_by,cancelled_at,cancel_reason,applied_at,applied_assignment_id,created_at,updated_at")
       .order("created_at", { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
-    return res.json({ items: data || [] });
+    return res.json({
+      engine: "billing-bai5-canonical-projection-v1",
+      items: data || [],
+    });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
@@ -20610,8 +20615,10 @@ function bai51SuperadminChangeErrorStatus(message) {
   const code = String(message || "bai5_superadmin_change_failed").split("\n")[0];
   if (/superadmin_required/.test(code)) return 403;
   if (/actor_not_found|pool_not_found/.test(code)) return 404;
-  if (/required|invalid|must_be/.test(code)) return 400;
+  // Invariant / state conflicts must be classified before the generic
+  // "required" validation bucket (current_assignment_required contains it).
   if (/exists|same_as_current|not_available|conflict|current_assignment_required/.test(code)) return 409;
+  if (/required|invalid|must_be/.test(code)) return 400;
   return 500;
 }
 
