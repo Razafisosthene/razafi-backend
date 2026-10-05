@@ -858,8 +858,9 @@
 
 
     /* =========================================================
-       DATA USAGE V2.1 — RAZAFI × Starlink hierarchy × iPhone 2026
-       Presentation only: existing Data Usage / Yield APIs unchanged.
+       DATA USAGE V2.2 — cycle-aware RAZAFI × Starlink × iPhone 2026
+       Visual hierarchy preserved; period navigation now follows the
+       configured pool cycle from Yield.
        ========================================================= */
     .rz-du-shell-v2{display:flex;flex-direction:column;gap:14px;}
     .rz-du-header-v2{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;}
@@ -1069,12 +1070,12 @@
 
       <section class="rz-du-card rz-du-footnote-v2">
         <strong>Mesure RAZAFI :</strong> cette page utilise le trafic WAN réellement observé sur le MikroTik.
-        Pour un mois commencé avant l’activation du suivi, RAZAFI affiche uniquement la période réellement mesurée.
+        Pour un cycle commencé avant l’activation du suivi, RAZAFI affiche uniquement la période réellement mesurée.
       </section>
     </div>
   </div>
 
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="/admin/data-usage.js?v=data-usage-v2-1-3"></script>
+  <script src="/admin/data-usage.js?v=data-usage-v2-2-cycle"></script>
 </body>
 </html>

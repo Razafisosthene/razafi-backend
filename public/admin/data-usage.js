@@ -7,11 +7,10 @@
   const state = {
     me: null,
     response: null,
-    allPools: [],
+    allPools: [],                 // current-cycle overview rows
+    detailPool: null,             // selected pool + selected cycle
     selectedPool: "all",
-    selectedMonth: null,
-    currentMonth: null,
-    minMonth: null,
+    selectedCycleStart: null,
     historyVisible: Object.create(null),
     yieldPolicyBundle: null,
   };
@@ -34,34 +33,6 @@
     return String(value ?? "").replace(/[&<>"']/g, (c) => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
     }[c]));
-  }
-
-  function currentBusinessMonth() {
-    const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: BUSINESS_TZ,
-      year: "numeric",
-      month: "2-digit",
-    }).formatToParts(new Date());
-    const y = parts.find((p) => p.type === "year")?.value || "";
-    const m = parts.find((p) => p.type === "month")?.value || "";
-    return /^\d{4}$/.test(y) && /^\d{2}$/.test(m) ? `${y}-${m}` : "";
-  }
-
-  function monthDate(monthKey) {
-    const m = String(monthKey || "").match(/^(\d{4})-(\d{2})$/);
-    return m ? new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, 1, 12, 0, 0)) : null;
-  }
-
-  function monthLabel(monthKey) {
-    const d = monthDate(monthKey);
-    if (!d) return String(monthKey || "");
-    return new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric", timeZone: "UTC" }).format(d);
-  }
-
-  function monthName(monthKey) {
-    const d = monthDate(monthKey);
-    if (!d) return "";
-    return new Intl.DateTimeFormat("fr-FR", { month: "long", timeZone: "UTC" }).format(d);
   }
 
   function dateDayMonth(value) {
@@ -469,6 +440,14 @@
       yieldModalMessage(updated?.changed === false
         ? "Aucune modification à enregistrer."
         : "Politique enregistrée. L’état Yield a été recalculé.");
+
+      // Cycle V2: if the configured start day changed, immediately reload the
+      // Data Usage view on the newly calculated current cycle. No manual refresh
+      // and no code change are required for future cycle-day updates.
+      if (updated?.data_usage_cycle_rebase && state.selectedPool !== "all") {
+        state.selectedCycleStart = null;
+        await loadPoolCycle(state.selectedPool, null);
+      }
     } catch (err) {
       if (err.status === 401) {
         window.location.href = "/admin/login.html";
@@ -512,34 +491,133 @@
     return String(pool?.pool_display_name || pool?.pool_name || "Pool").trim() || "Pool";
   }
 
-  function periodSentence(pool, response) {
-    const selectedMonth = response?.selected_month || state.selectedMonth || "";
-    const current = response?.is_current_month === true;
-    const complete = pool?.coverage_complete_from_month_start === true;
-    const month = monthName(selectedMonth);
+  function dateKeyDate(value) {
+    const m = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return null;
+    const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0));
+    return Number.isFinite(d.getTime()) ? d : null;
+  }
+
+  function dateKeyAddDays(value, delta) {
+    const d = dateKeyDate(value);
+    if (!d || !Number.isInteger(delta)) return "";
+    d.setUTCDate(d.getUTCDate() + delta);
+    return d.toISOString().slice(0, 10);
+  }
+
+  function daysInUtcMonth(year, month) {
+    return new Date(Date.UTC(year, month, 0, 12, 0, 0)).getUTCDate();
+  }
+
+  function cycleBoundsFromStart(startDate, cycleStartDay) {
+    const d = dateKeyDate(startDate);
+    const day = Number(cycleStartDay);
+    if (!d || !Number.isInteger(day) || day < 1 || day > 31) return null;
+    const y = d.getUTCFullYear();
+    const m = d.getUTCMonth() + 1;
+    const next = new Date(Date.UTC(y, m, 1, 12, 0, 0));
+    const ny = next.getUTCFullYear();
+    const nm = next.getUTCMonth() + 1;
+    const endDay = Math.min(day, daysInUtcMonth(ny, nm));
+    const endExclusive = `${String(ny).padStart(4, "0")}-${String(nm).padStart(2, "0")}-${String(endDay).padStart(2, "0")}`;
+    return {
+      start: String(startDate),
+      endExclusive,
+      endInclusive: dateKeyAddDays(endExclusive, -1),
+    };
+  }
+
+  function dateDayMonthFromKey(value, includeYear = false) {
+    const d = dateKeyDate(value);
+    if (!d) return "";
+    return new Intl.DateTimeFormat("fr-FR", {
+      day: "numeric",
+      month: "long",
+      ...(includeYear ? { year: "numeric" } : {}),
+      timeZone: "UTC",
+    }).format(d);
+  }
+
+  function monthShortFromKey(value) {
+    const d = dateKeyDate(value);
+    if (!d) return "";
+    return new Intl.DateTimeFormat("fr-FR", { month: "short", timeZone: "UTC" }).format(d);
+  }
+
+  function monthLongYearFromKey(value) {
+    const d = dateKeyDate(value);
+    if (!d) return "";
+    return new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric", timeZone: "UTC" }).format(d);
+  }
+
+  function cycleCompactLabelFromBounds(start, endInclusive) {
+    const sd = dateKeyDate(start);
+    const ed = dateKeyDate(endInclusive);
+    if (!sd || !ed) return "Cycle";
+
+    const sameMonth = sd.getUTCFullYear() === ed.getUTCFullYear() && sd.getUTCMonth() === ed.getUTCMonth();
+    if (sameMonth) return monthLongYearFromKey(start);
+
+    const sameYear = sd.getUTCFullYear() === ed.getUTCFullYear();
+    const left = monthShortFromKey(start);
+    const right = monthShortFromKey(endInclusive);
+    if (sameYear) return `${left} – ${right}`;
+    return `${left} ${sd.getUTCFullYear()} – ${right} ${ed.getUTCFullYear()}`;
+  }
+
+  function cycleCompactLabel(pool) {
+    return cycleCompactLabelFromBounds(pool?.cycle_start_date, pool?.cycle_end_inclusive_date);
+  }
+
+  function cycleCompactLabelFromStart(startDate, cycleStartDay) {
+    const bounds = cycleBoundsFromStart(startDate, cycleStartDay);
+    return bounds ? cycleCompactLabelFromBounds(bounds.start, bounds.endInclusive) : "—";
+  }
+
+  function cycleExactLabel(pool) {
+    const start = String(pool?.cycle_start_date || "");
+    const end = String(pool?.cycle_end_inclusive_date || "");
+    if (!start || !end) return "ce cycle";
+    const sd = dateKeyDate(start);
+    const ed = dateKeyDate(end);
+    if (!sd || !ed) return "ce cycle";
+    const sameYear = sd.getUTCFullYear() === ed.getUTCFullYear();
+    const left = dateDayMonthFromKey(start, !sameYear);
+    const right = dateDayMonthFromKey(end, true);
+    return `${left} – ${right}`;
+  }
+
+  function periodSentence(pool) {
+    const current = pool?.is_current_cycle === true;
+    const complete = pool?.coverage_complete_from_period_start === true;
+    const cycleStart = String(pool?.cycle_start_date || "");
+    const cycleEnd = String(pool?.cycle_end_inclusive_date || "");
     const first = dateDayMonth(pool?.period_first_observed_at || pool?.first_tracking_at);
+    const startLabel = dateDayMonthFromKey(cycleStart);
+    const endLabel = dateDayMonthFromKey(cycleEnd, true);
 
-    if (current && complete) return `utilisés depuis le 1er ${month}`;
+    if (current && complete && startLabel) return `utilisés depuis le ${startLabel}`;
     if (current && first) return `suivis depuis le ${first}`;
-    if (!current && complete) return `utilisés en ${monthLabel(selectedMonth)}`;
-    if (first) return `suivis à partir du ${first}`;
-    return `aucune donnée pour ${monthLabel(selectedMonth)}`;
+    if (!current && complete && startLabel && endLabel) return `utilisés du ${startLabel} au ${endLabel}`;
+    if (!current && first && endLabel) return `suivis du ${first} au ${endLabel}`;
+    return `aucune donnée pour ${cycleCompactLabel(pool)}`;
   }
 
-  function coverageNote(pool, response) {
+  function coverageNote(pool) {
     if (!pool || Number(pool.sample_count || 0) === 0) return "";
-    if (pool.coverage_complete_from_month_start === true) return "";
-    if (response?.is_current_month === true) return "Suivi commencé en cours de mois";
-    return "Historique partiel pour ce mois";
+    if (pool.coverage_complete_from_period_start === true) return "";
+    return pool.is_current_cycle === true
+      ? "Suivi commencé en cours de cycle"
+      : "Historique partiel pour ce cycle";
   }
 
-  function monitoringStatus(pool, response = state.response) {
+  function monitoringStatus(pool) {
     const samples = Number(pool?.sample_count || 0);
     if (!samples || !pool?.last_observed_at) return { label: "En attente", cls: "waiting" };
 
-    if (response?.is_current_month !== true) {
-      if (pool?.coverage_complete_from_month_start === true) {
-        return { label: "Historique du mois", cls: "history-complete" };
+    if (pool?.is_current_cycle !== true) {
+      if (pool?.coverage_complete_from_period_start === true) {
+        return { label: "Historique du cycle", cls: "history-complete" };
       }
       return { label: "Historique partiel", cls: "history-partial" };
     }
@@ -554,12 +632,12 @@
   function usageLevel(totalRaw) {
     const total = safeBigInt(totalRaw);
     if (total >= 500_000_000_000n) {
-      return { label: "Élevée", cls: "high", note: "500 GB ou plus suivis ce mois" };
+      return { label: "Élevée", cls: "high", note: "500 GB ou plus suivis sur ce cycle" };
     }
     if (total >= 250_000_000_000n) {
-      return { label: "Modérée", cls: "medium", note: "Entre 250 GB et 500 GB suivis ce mois" };
+      return { label: "Modérée", cls: "medium", note: "Entre 250 GB et 500 GB suivis sur ce cycle" };
     }
-    return { label: "Faible", cls: "low", note: "Moins de 250 GB suivis ce mois" };
+    return { label: "Faible", cls: "low", note: "Moins de 250 GB suivis sur ce cycle" };
   }
 
   function percentOf(partRaw, totalRaw) {
@@ -577,7 +655,7 @@
     if (!a.ready) return "Répartition en cours d’initialisation";
     if (first && last !== "—") return `réconciliée depuis le ${first} · dernier calcul ${last}`;
     if (first) return `réconciliée depuis le ${first}`;
-    return "répartition disponible sur la période suivie";
+    return "répartition disponible sur le cycle suivi";
   }
 
   function attributionContentHtml(pool) {
@@ -649,97 +727,62 @@
     return { next, pct: Math.max(0, Math.min(100, pct)) };
   }
 
-  function shiftMonth(monthKey, delta) {
-    const d = monthDate(monthKey);
-    if (!d || !Number.isInteger(delta)) return monthKey;
-    d.setUTCMonth(d.getUTCMonth() + delta);
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-    return `${y}-${m}`;
-  }
+  function renderCycleNav(pool) {
+    const nav = $("cycleNav");
+    if (!nav || !pool) return;
 
-  function monthCompactLabel(monthKey) {
-    const d = monthDate(monthKey);
-    if (!d) return "—";
-    return new Intl.DateTimeFormat("fr-FR", { month: "long", timeZone: "UTC" }).format(d);
-  }
-
-  function monthKeyFromDate(value) {
-    const d = new Date(value);
-    if (!Number.isFinite(d.getTime())) return null;
-    const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: BUSINESS_TZ,
-      year: "numeric",
-      month: "2-digit",
-    }).formatToParts(d);
-    const y = parts.find((p) => p.type === "year")?.value || "";
-    const m = parts.find((p) => p.type === "month")?.value || "";
-    return /^\d{4}$/.test(y) && /^\d{2}$/.test(m) ? `${y}-${m}` : null;
-  }
-
-  function canNavigateMonth(delta) {
-    const target = shiftMonth(state.selectedMonth, delta);
-    if (!/^\d{4}-\d{2}$/.test(target)) return false;
-    if (state.currentMonth && target > state.currentMonth) return false;
-    if (state.minMonth && target < state.minMonth) return false;
-    return target !== state.selectedMonth;
-  }
-
-  function renderMonthNav() {
-    const nav = $("monthNav");
-    if (!nav) return;
-
-    const detailActive = state.allPools.length === 1 || (
-      state.selectedPool !== "all" &&
-      state.allPools.some((p) => String(p.pool_id) === String(state.selectedPool))
-    );
-
-    nav.classList.toggle("is-hidden", !detailActive);
-    if (!detailActive) {
-      nav.innerHTML = "";
-      return;
-    }
-
-    const prev = shiftMonth(state.selectedMonth, -1);
-    const next = shiftMonth(state.selectedMonth, 1);
-    const prevDisabled = !canNavigateMonth(-1);
-    const nextDisabled = !canNavigateMonth(1);
+    const prevStart = String(pool.previous_cycle_start_date || "");
+    const nextStart = String(pool.next_cycle_start_date || "");
+    const startDay = Number(pool.cycle_start_day || 1);
+    const prevDisabled = pool.has_previous_cycle !== true || !prevStart;
+    const nextDisabled = pool.has_next_cycle !== true || !nextStart;
 
     nav.innerHTML = `
-      <button class="rz-du-month-side prev" type="button" data-month-step="-1" ${prevDisabled ? "disabled" : ""} aria-label="Mois précédent">
-        <span class="rz-du-month-arrow">‹</span><span>${esc(monthCompactLabel(prev))}</span>
+      <button class="rz-du-month-side prev" type="button" data-cycle-start="${esc(prevStart)}" ${prevDisabled ? "disabled" : ""} aria-label="Cycle précédent">
+        <span class="rz-du-month-arrow">‹</span><span>${esc(cycleCompactLabelFromStart(prevStart, startDay))}</span>
       </button>
       <div class="rz-du-month-current">
-        <span>Consommation du mois</span>
-        <strong>${esc(monthLabel(state.selectedMonth))}</strong>
+        <span>Consommation du cycle</span>
+        <strong>${esc(cycleCompactLabel(pool))}</strong>
       </div>
-      <button class="rz-du-month-side next" type="button" data-month-step="1" ${nextDisabled ? "disabled" : ""} aria-label="Mois suivant">
-        <span>${esc(monthCompactLabel(next))}</span><span class="rz-du-month-arrow">›</span>
+      <button class="rz-du-month-side next" type="button" data-cycle-start="${esc(nextStart)}" ${nextDisabled ? "disabled" : ""} aria-label="Cycle suivant">
+        <span>${esc(cycleCompactLabelFromStart(nextStart, startDay))}</span><span class="rz-du-month-arrow">›</span>
       </button>
     `;
   }
 
-  function daysInMonth(monthKey) {
-    const m = String(monthKey || "").match(/^(\d{4})-(\d{2})$/);
-    if (!m) return 31;
-    return new Date(Date.UTC(Number(m[1]), Number(m[2]), 0, 12, 0, 0)).getUTCDate();
+  function cycleDateKeys(pool) {
+    const start = String(pool?.cycle_start_date || "");
+    const endExclusive = String(pool?.cycle_end_exclusive_date || "");
+    const startDate = dateKeyDate(start);
+    const endDate = dateKeyDate(endExclusive);
+    if (!startDate || !endDate || endDate <= startDate) return [];
+
+    const out = [];
+    const cursor = new Date(startDate.getTime());
+    while (cursor < endDate && out.length < 35) {
+      out.push(cursor.toISOString().slice(0, 10));
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    return out;
   }
 
   function dailyBars(pool) {
     const days = Array.isArray(pool?.daily) ? pool.daily : [];
     if (!days.length) {
-      return `<div class="rz-du-bars-empty">Aucune consommation quotidienne enregistrée pour ce mois.</div>`;
+      return `<div class="rz-du-bars-empty">Aucune consommation quotidienne enregistrée pour ce cycle.</div>`;
     }
 
-    const totalSlots = daysInMonth(state.selectedMonth);
-    const byDay = new Map();
+    const slots = cycleDateKeys(pool);
+    if (!slots.length) return `<div class="rz-du-bars-empty">Période du cycle indisponible.</div>`;
+
+    const byDate = new Map();
     let max = 1n;
     for (const row of days) {
       const key = String(row?.date || "");
-      const day = Number(key.slice(8, 10));
-      if (!Number.isInteger(day) || day < 1 || day > totalSlots) continue;
+      if (!slots.includes(key)) continue;
       const value = safeBigInt(row?.total_bytes);
-      byDay.set(day, { row, value });
+      byDate.set(key, { row, value });
       if (value > max) max = value;
     }
 
@@ -747,15 +790,15 @@
       timeZone: BUSINESS_TZ, year: "numeric", month: "2-digit", day: "2-digit"
     }).format(new Date());
 
+    const startAxis = new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "short", timeZone: "UTC" }).format(dateKeyDate(slots[0]));
+    const endAxis = new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "short", timeZone: "UTC" }).format(dateKeyDate(slots[slots.length - 1]));
+
     return `
       <div class="rz-du-bars-wrap">
-        <div class="rz-du-bars" role="img" aria-label="Consommation quotidienne WAN pour ${esc(monthLabel(state.selectedMonth))}">
-          ${Array.from({ length: totalSlots }, (_, index) => index + 1).map((day) => {
-            const item = byDay.get(day);
-            const dateKey = `${state.selectedMonth}-${String(day).padStart(2, "0")}`;
-            if (!item) {
-              return `<div class="rz-du-bar-slot empty" title="${esc(dateKey)} · aucune donnée"></div>`;
-            }
+        <div class="rz-du-bars" role="img" aria-label="Consommation quotidienne WAN du cycle ${esc(cycleExactLabel(pool))}">
+          ${slots.map((dateKey) => {
+            const item = byDate.get(dateKey);
+            if (!item) return `<div class="rz-du-bar-slot empty" title="${esc(dateKey)} · aucune donnée"></div>`;
             const v = item.value;
             const pct = Number(v * 10000n / max) / 100;
             const h = v > 0n ? Math.max(3, Math.min(100, pct)) : 1.2;
@@ -768,8 +811,8 @@
           }).join("")}
         </div>
         <div class="rz-du-bars-axis">
-          <span>01</span>
-          <span>${esc(String(totalSlots).padStart(2, "0"))}</span>
+          <span>${esc(startAxis)}</span>
+          <span>${esc(endAxis)}</span>
         </div>
       </div>
     `;
@@ -784,8 +827,8 @@
     `;
   }
 
-  function poolOverviewCard(pool, response) {
-    const status = monitoringStatus(pool, response);
+  function poolOverviewCard(pool) {
+    const status = monitoringStatus(pool);
     const level = usageLevel(pool?.total_bytes);
     const projection = pool?.projection_ready ? formatBytes(pool.projection_bytes) : "Après 24 h";
     return `
@@ -795,65 +838,65 @@
           <div class="rz-du-pool-card-arrow">›</div>
         </div>
         <div class="rz-du-pool-card-usage">${esc(formatBytes(pool?.total_bytes))}</div>
-        <div class="rz-du-pool-card-period">${esc(periodSentence(pool, response))}</div>
+        <div class="rz-du-pool-card-period">${esc(periodSentence(pool))}</div>
         <div class="rz-du-pool-card-meta">
           <span class="rz-du-chip ${status.cls === "active" ? "active" : ""}">${esc(status.label)}</span>
           <span class="rz-du-chip ${esc(level.cls)}">Consommation ${esc(level.label.toLowerCase())}</span>
-          <span class="rz-du-pool-card-projection">Projection : ${esc(projection)}</span>
+          <span class="rz-du-pool-card-projection">Projection fin de cycle : ${esc(projection)}</span>
         </div>
       </button>
     `;
   }
 
-  function renderOverview(response) {
-    const total = formatBytes(response?.total_all_pools_bytes);
+  function renderOverview() {
+    const total = state.allPools.reduce((acc, pool) => acc + safeBigInt(pool?.total_bytes), 0n);
     return `
       <section class="rz-du-overview">
         <div class="rz-du-overview-head">
           <div>
             <div class="rz-du-overview-title">Pools disponibles</div>
-            <div class="rz-du-overview-sub">Choisissez une pool pour afficher son récapitulatif et ses détails.</div>
+            <div class="rz-du-overview-sub">Choisissez une pool pour afficher son cycle de consommation et ses détails.</div>
           </div>
           <div class="rz-du-overview-total">
-            <span>Total des pools · ce mois-ci</span>
-            <strong>${esc(total)}</strong>
+            <span>Total des pools · cycles en cours</span>
+            <strong>${esc(formatBytes(total))}</strong>
           </div>
         </div>
         <div class="rz-du-pool-picker">
-          ${state.allPools.map((pool) => poolOverviewCard(pool, response)).join("")}
+          ${state.allPools.map(poolOverviewCard).join("")}
         </div>
       </section>
     `;
   }
 
-  function qualityContentHtml(pool, response) {
-    const cNote = coverageNote(pool, response);
+  function qualityContentHtml(pool) {
+    const cNote = coverageNote(pool);
     const resets = Number(pool?.counter_reset_count || 0);
     return `
       <div class="rz-du-info-grid">
         <div class="rz-du-info-item"><span>Source</span><strong>WAN MikroTik</strong></div>
         <div class="rz-du-info-item"><span>Dernier relevé</span><strong>${esc(dateTimeShort(pool?.last_observed_at))}</strong></div>
-        <div class="rz-du-info-item"><span>Couverture</span><strong>${esc(cNote || "Mois suivi depuis le début")}</strong></div>
+        <div class="rz-du-info-item"><span>Couverture</span><strong>${esc(cNote || "Cycle suivi depuis le début")}</strong></div>
         <div class="rz-du-info-item"><span>Échantillons</span><strong>${esc(String(Number(pool?.sample_count || 0)))}</strong></div>
       </div>
       ${resets > 0 ? `
         <div class="rz-du-reset">
-          ${esc(String(resets))} redémarrage ou remise à zéro de compteur détecté(e) sur cette période. RAZAFI a poursuivi le suivi avec les deltas valides.
+          ${esc(String(resets))} redémarrage ou remise à zéro de compteur détecté(e) sur ce cycle. RAZAFI a poursuivi le suivi avec les deltas valides.
         </div>
       ` : ""}
     `;
   }
 
-  function projectionContentHtml(pool, response) {
+  function projectionContentHtml(pool) {
     const total = safeBigInt(pool?.total_bytes);
     const threshold = nextThresholdInfo(total);
     const thresholdValue = formatBytes(threshold.next);
 
-    if (response?.is_current_month !== true) {
+    if (pool?.is_current_cycle !== true) {
       const reached = (total / THRESHOLD_BYTES) * THRESHOLD_BYTES;
       const reachedLabel = reached > 0n ? formatBytes(reached) : "Aucun palier de 500 GB";
-      const coverageLabel = pool?.coverage_complete_from_month_start === true
-        ? "Depuis le 1er du mois"
+      const coverageLabel = pool?.coverage_complete_from_period_start === true
+        ? "Depuis le début du cycle"
         : "Historique partiel";
       return `
         <div class="rz-du-threshold">
@@ -865,7 +908,7 @@
         </div>
         <div class="rz-du-info-grid">
           <div class="rz-du-info-item"><span>Palier maximal franchi</span><strong>${esc(reachedLabel)}</strong></div>
-          <div class="rz-du-info-item"><span>Couverture du mois</span><strong>${esc(coverageLabel)}</strong></div>
+          <div class="rz-du-info-item"><span>Couverture du cycle</span><strong>${esc(coverageLabel)}</strong></div>
         </div>
       `;
     }
@@ -874,7 +917,7 @@
       ? "Moyenne calculée sur la période réellement suivie."
       : "La moyenne apparaît après 24 h de données fiables.";
     const projectionNote = pool?.projection_ready
-      ? "Projection calculée à partir du rythme observé sur la période suivie."
+      ? "Projection calculée jusqu’à la fin du cycle à partir du rythme observé."
       : "La projection reste masquée jusqu’à disposer d’au moins 24 h de données fiables.";
 
     return `
@@ -904,7 +947,7 @@
   }
 
   function historyKey(poolId) {
-    return `${state.selectedMonth || ""}:${String(poolId || "")}`;
+    return `${state.selectedCycleStart || "current"}:${String(poolId || "")}`;
   }
 
   function historyVisibleCount(poolId) {
@@ -915,7 +958,7 @@
 
   function historyRowsHtml(pool, visibleCount = 7) {
     const days = Array.isArray(pool?.daily) ? pool.daily : [];
-    if (!days.length) return `<div class="rz-du-empty">Aucune consommation quotidienne enregistrée pour ce mois.</div>`;
+    if (!days.length) return `<div class="rz-du-empty">Aucune consommation quotidienne enregistrée pour ce cycle.</div>`;
 
     let max = 1n;
     for (const row of days) {
@@ -924,14 +967,12 @@
     }
 
     const count = Math.min(days.length, Math.max(1, Number(visibleCount || 7)));
-    // Mobile-first reading order: most recent day first. Older days are appended below
-    // when the user requests "Afficher 7 jours précédents".
     const visible = days.slice(-count).reverse();
     return visible.map((row) => {
       const v = safeBigInt(row?.total_bytes);
       const pct = Number(v * 10_000n / max) / 100;
-      const d = new Date(`${row.date}T12:00:00Z`);
-      const label = Number.isFinite(d.getTime())
+      const d = dateKeyDate(row.date);
+      const label = d
         ? new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "short", timeZone: "UTC" }).format(d)
         : row.date;
       return `
@@ -956,26 +997,26 @@
             <button class="rz-du-history-more" type="button" data-history-more="${esc(pool.pool_id || "")}">Afficher 7 jours précédents</button>
           </div>
         ` : totalDays ? `
-          <div class="rz-du-history-tools"><span class="rz-du-history-caption">Tout le mois est affiché.</span></div>
+          <div class="rz-du-history-tools"><span class="rz-du-history-caption">Tout le cycle est affiché.</span></div>
         ` : ""}
       </div>
     `;
   }
 
-  function renderPoolDetail(pool, response) {
-    const status = monitoringStatus(pool, response);
+  function renderPoolDetail(pool) {
+    const status = monitoringStatus(pool);
     const level = usageLevel(pool?.total_bytes);
     const total = safeBigInt(pool?.total_bytes);
     const threshold = nextThresholdInfo(total);
     const hasSamples = Number(pool?.sample_count || 0) > 0;
     const averageValue = pool?.average_ready ? formatBytes(pool.average_daily_bytes) : "Après 24 h";
-    const isCurrentMonth = response?.is_current_month === true;
+    const isCurrentCycle = pool?.is_current_cycle === true;
     const projectionValue = pool?.projection_ready ? formatBytes(pool.projection_bytes) : "Après 24 h";
     const thresholdValue = formatBytes(threshold.next);
-    const cNote = coverageNote(pool, response);
+    const cNote = coverageNote(pool);
     const showBack = state.allPools.length > 1;
     const trackedDays = Array.isArray(pool?.daily) ? pool.daily.length : 0;
-    const historyCoverage = pool?.coverage_complete_from_month_start === true ? "Depuis le 1er" : "Partielle";
+    const historyCoverage = pool?.coverage_complete_from_period_start === true ? "Depuis le début" : "Partielle";
 
     return `
       <section class="rz-du-detail" data-detail-view="1">
@@ -991,26 +1032,26 @@
           </div>
         </div>
 
-        <section id="monthNav" class="rz-du-month-nav" aria-label="Navigation mensuelle"></section>
+        <section id="cycleNav" class="rz-du-month-nav" aria-label="Navigation par cycle"></section>
 
         <article class="rz-du-card rz-du-summary-card">
           <div class="rz-du-summary-top">
             <div>
               <div class="rz-du-summary-value">${esc(formatBytes(total))}</div>
-              <div class="rz-du-summary-period">${esc(periodSentence(pool, response))}</div>
+              <div class="rz-du-summary-period">${esc(periodSentence(pool))}</div>
               ${cNote ? `<div class="rz-du-summary-note">${esc(cNote)}</div>` : ""}
             </div>
           </div>
 
-          ${hasSamples ? dailyBars(pool) : `<div class="rz-du-bars-empty">Aucune donnée WAN disponible pour cette pool sur le mois sélectionné.</div>`}
+          ${hasSamples ? dailyBars(pool) : `<div class="rz-du-bars-empty">Aucune donnée WAN disponible pour cette pool sur le cycle sélectionné.</div>`}
 
           ${hasSamples ? `
             <div class="rz-du-quick-metrics">
               ${metricHtml("Moyenne / jour", averageValue)}
-              ${isCurrentMonth
-                ? metricHtml("Projection fin de mois", projectionValue)
+              ${isCurrentCycle
+                ? metricHtml("Projection fin de cycle", projectionValue)
                 : metricHtml("Journées mesurées", `${trackedDays} jour${trackedDays > 1 ? "s" : ""}`)}
-              ${isCurrentMonth
+              ${isCurrentCycle
                 ? metricHtml("Prochain palier", thresholdValue)
                 : metricHtml("Couverture", historyCoverage)}
             </div>
@@ -1019,7 +1060,7 @@
 
         ${hasSamples ? `
           <details class="rz-du-accordion rz-du-history-primary" open>
-            <summary>Historique quotidien · ${esc(monthLabel(response.selected_month))}</summary>
+            <summary>Historique quotidien · ${esc(cycleCompactLabel(pool))}</summary>
             <div class="rz-du-accordion-body">${historyBlockHtml(pool)}</div>
           </details>
 
@@ -1030,8 +1071,8 @@
             </details>
 
             <details class="rz-du-accordion">
-              <summary>${isCurrentMonth ? "Projection et paliers" : "Paliers du mois"}</summary>
-              <div class="rz-du-accordion-body">${projectionContentHtml(pool, response)}</div>
+              <summary>${isCurrentCycle ? "Projection et paliers" : "Paliers du cycle"}</summary>
+              <div class="rz-du-accordion-body">${projectionContentHtml(pool)}</div>
             </details>
 
             <details class="rz-du-accordion">
@@ -1041,7 +1082,7 @@
 
             <details class="rz-du-accordion">
               <summary>Qualité du suivi</summary>
-              <div class="rz-du-accordion-body">${qualityContentHtml(pool, response)}</div>
+              <div class="rz-du-accordion-body">${qualityContentHtml(pool)}</div>
             </details>
           </div>
         ` : ""}
@@ -1049,101 +1090,67 @@
     `;
   }
 
-  function selectedPoolObject() {
-    return state.allPools.find((p) => String(p.pool_id) === String(state.selectedPool)) || null;
-  }
-
   function render() {
     const content = $("dataUsageContent");
-    const response = state.response || {};
+    if (!content) return;
 
     if (!state.allPools.length) {
       content.innerHTML = `<section class="rz-du-card rz-du-empty">Aucune pool disponible pour cette sélection.</section>`;
       return;
     }
 
-    if (state.allPools.length === 1) {
-      state.selectedPool = String(state.allPools[0].pool_id || "");
-    }
-
-    if (state.selectedPool === "all" && state.allPools.length > 1) {
-      content.innerHTML = renderOverview(response);
+    if (state.selectedPool === "all") {
+      content.innerHTML = renderOverview();
       return;
     }
 
-    const pool = selectedPoolObject();
-    if (!pool) {
-      state.selectedPool = state.allPools.length === 1 ? String(state.allPools[0].pool_id || "") : "all";
-      render();
+    const pool = state.detailPool;
+    if (!pool || String(pool.pool_id) !== String(state.selectedPool)) {
+      content.innerHTML = `<section class="rz-du-card rz-du-empty">Chargement du cycle…</section>`;
       return;
     }
-    content.innerHTML = renderPoolDetail(pool, response);
-    renderMonthNav();
+
+    content.innerHTML = renderPoolDetail(pool);
+    renderCycleNav(pool);
   }
 
-  function syncMonthBounds(response) {
-    state.currentMonth = response?.current_month || currentBusinessMonth();
-    state.minMonth = response?.global_first_tracking_at
-      ? monthKeyFromDate(response.global_first_tracking_at)
-      : null;
+  function mergeCurrentDetailIntoOverview(pool) {
+    if (!pool?.pool_id || pool.is_current_cycle !== true) return;
+    const idx = state.allPools.findIndex((p) => String(p.pool_id) === String(pool.pool_id));
+    if (idx >= 0) state.allPools[idx] = { ...state.allPools[idx], ...pool };
   }
 
-  async function navigateMonth(delta) {
-    const detailActive = state.allPools.length === 1 || state.selectedPool !== "all";
-    if (!detailActive || !canNavigateMonth(delta)) return;
-    state.selectedMonth = shiftMonth(state.selectedMonth, delta);
-    await loadData();
-  }
-
-  async function returnToPoolOverview() {
-    state.selectedPool = "all";
-    const current = state.currentMonth || currentBusinessMonth();
-    if (current && state.selectedMonth !== current) {
-      state.selectedMonth = current;
-      await loadData();
-    } else {
-      render();
-    }
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
-
-  function updateHistoryBlock(poolId) {
-    const pool = state.allPools.find((p) => String(p.pool_id) === String(poolId));
-    const block = document.querySelector(`[data-history-block="${CSS.escape(String(poolId))}"]`);
-    if (!pool || !block) return;
-    const totalDays = Array.isArray(pool.daily) ? pool.daily.length : 0;
-    const visible = Math.min(totalDays, historyVisibleCount(poolId));
-    const rows = block.querySelector("[data-history-rows]");
-    if (rows) rows.innerHTML = historyRowsHtml(pool, visible);
-    const tools = block.querySelector(".rz-du-history-tools");
-    if (tools) {
-      tools.innerHTML = totalDays > visible
-        ? `<span class="rz-du-history-caption">${esc(String(visible))} jour(s) affiché(s) sur ${esc(String(totalDays))}</span><button class="rz-du-history-more" type="button" data-history-more="${esc(poolId)}">Afficher 7 jours précédents</button>`
-        : `<span class="rz-du-history-caption">Tout le mois est affiché.</span>`;
-    }
-  }
-
-  async function loadData() {
-    const month = state.selectedMonth || currentBusinessMonth();
-    if (!month) return;
-
+  async function loadOverviewData({ autoOpenSingle = true } = {}) {
     setBusy(true);
     showMessage("");
-
     try {
-      const data = await fetchJSON(`/api/admin/data-usage?month=${encodeURIComponent(month)}`);
+      const data = await fetchJSON("/api/admin/data-usage");
       state.response = data;
       state.allPools = Array.isArray(data?.pools) ? data.pools : [];
-      state.selectedMonth = data?.selected_month || month;
-      syncMonthBounds(data);
 
-      const selectedExists = state.allPools.some((p) => String(p.pool_id) === String(state.selectedPool));
-      if (state.allPools.length === 1) {
-        state.selectedPool = String(state.allPools[0].pool_id || "");
-      } else if (state.selectedPool !== "all" && !selectedExists) {
+      if (!state.allPools.length) {
         state.selectedPool = "all";
+        state.detailPool = null;
+        render();
+        return;
       }
 
+      if (autoOpenSingle && state.allPools.length === 1) {
+        const poolId = String(state.allPools[0].pool_id || "");
+        state.selectedPool = poolId;
+        state.selectedCycleStart = null;
+        await loadPoolCycle(poolId, null, { manageBusy: false });
+        return;
+      }
+
+      if (state.selectedPool !== "all") {
+        const exists = state.allPools.some((p) => String(p.pool_id) === String(state.selectedPool));
+        if (!exists) {
+          state.selectedPool = "all";
+          state.detailPool = null;
+          state.selectedCycleStart = null;
+        }
+      }
       render();
     } catch (err) {
       if (err.status === 401) {
@@ -1159,6 +1166,74 @@
       if (content) content.innerHTML = `<section class="rz-du-card rz-du-empty">Données indisponibles.</section>`;
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function loadPoolCycle(poolId, cycleStart = null, { manageBusy = true } = {}) {
+    const id = String(poolId || "").trim();
+    if (!id) return;
+    if (manageBusy) setBusy(true);
+    showMessage("");
+
+    try {
+      const qs = new URLSearchParams({ pool_id: id });
+      if (cycleStart) qs.set("cycle_start", String(cycleStart));
+      const data = await fetchJSON(`/api/admin/data-usage?${qs.toString()}`);
+      const pool = Array.isArray(data?.pools) ? data.pools[0] : null;
+      if (!pool) throw new Error("data_usage_pool_missing");
+
+      state.response = data;
+      state.selectedPool = id;
+      state.detailPool = pool;
+      state.selectedCycleStart = pool.cycle_start_date || null;
+      mergeCurrentDetailIntoOverview(pool);
+      render();
+    } catch (err) {
+      if (err.status === 401) {
+        window.location.href = "/admin/login.html";
+        return;
+      }
+      if (err.status === 403) {
+        showMessage("Vous n’avez pas accès à cette pool.", true);
+      } else if (err.status === 400) {
+        showMessage("Ce cycle n’est pas disponible pour la configuration actuelle de cette pool.", true);
+      } else {
+        showMessage("Impossible de charger ce cycle de consommation. Réessayez.", true);
+      }
+    } finally {
+      if (manageBusy) setBusy(false);
+    }
+  }
+
+  async function returnToPoolOverview() {
+    state.selectedPool = "all";
+    state.selectedCycleStart = null;
+    state.detailPool = null;
+    await loadOverviewData({ autoOpenSingle: false });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function updateHistoryBlock(poolId) {
+    const pool = state.detailPool;
+    const block = document.querySelector(`[data-history-block="${CSS.escape(String(poolId))}"]`);
+    if (!pool || String(pool.pool_id) !== String(poolId) || !block) return;
+    const totalDays = Array.isArray(pool.daily) ? pool.daily.length : 0;
+    const visible = Math.min(totalDays, historyVisibleCount(poolId));
+    const rows = block.querySelector("[data-history-rows]");
+    if (rows) rows.innerHTML = historyRowsHtml(pool, visible);
+    const tools = block.querySelector(".rz-du-history-tools");
+    if (tools) {
+      tools.innerHTML = totalDays > visible
+        ? `<span class="rz-du-history-caption">${esc(String(visible))} jour(s) affiché(s) sur ${esc(String(totalDays))}</span><button class="rz-du-history-more" type="button" data-history-more="${esc(poolId)}">Afficher 7 jours précédents</button>`
+        : `<span class="rz-du-history-caption">Tout le cycle est affiché.</span>`;
+    }
+  }
+
+  async function refreshCurrentView() {
+    if (state.selectedPool !== "all") {
+      await loadPoolCycle(state.selectedPool, state.selectedCycleStart);
+    } else {
+      await loadOverviewData({ autoOpenSingle: true });
     }
   }
 
@@ -1183,25 +1258,24 @@
   }
 
   document.addEventListener("DOMContentLoaded", async () => {
-    state.selectedMonth = currentBusinessMonth();
-
-    $("refreshBtn")?.addEventListener("click", loadData);
-
+    $("refreshBtn")?.addEventListener("click", refreshCurrentView);
 
     $("dataUsageContent")?.addEventListener("click", (event) => {
-      const monthBtn = event.target.closest("[data-month-step]");
-      if (monthBtn) {
-        if (monthBtn.disabled) return;
-        const delta = Number(monthBtn.getAttribute("data-month-step"));
-        if (delta === -1 || delta === 1) void navigateMonth(delta);
+      const cycleBtn = event.target.closest("[data-cycle-start]");
+      if (cycleBtn) {
+        if (cycleBtn.disabled) return;
+        const target = String(cycleBtn.getAttribute("data-cycle-start") || "");
+        if (target && state.selectedPool !== "all") void loadPoolCycle(state.selectedPool, target);
         return;
       }
 
       const poolBtn = event.target.closest("[data-pool-open]");
       if (poolBtn) {
-        state.selectedPool = String(poolBtn.getAttribute("data-pool-open") || "all");
-        render();
-        window.scrollTo({ top: 0, behavior: "smooth" });
+        const poolId = String(poolBtn.getAttribute("data-pool-open") || "");
+        if (!poolId) return;
+        state.selectedPool = poolId;
+        state.selectedCycleStart = null;
+        void loadPoolCycle(poolId, null).then(() => window.scrollTo({ top: 0, behavior: "smooth" }));
         return;
       }
 
@@ -1230,8 +1304,7 @@
     let touchStartY = null;
     const content = $("dataUsageContent");
     content?.addEventListener("touchstart", (event) => {
-      const detailActive = state.allPools.length === 1 || state.selectedPool !== "all";
-      if (!detailActive) {
+      if (state.selectedPool === "all" || !state.detailPool) {
         touchStartX = null;
         touchStartY = null;
         return;
@@ -1241,9 +1314,9 @@
       touchStartX = t.clientX;
       touchStartY = t.clientY;
     }, { passive: true });
+
     content?.addEventListener("touchend", (event) => {
-      const detailActive = state.allPools.length === 1 || state.selectedPool !== "all";
-      if (!detailActive || touchStartX === null || touchStartY === null) return;
+      if (state.selectedPool === "all" || !state.detailPool || touchStartX === null || touchStartY === null) return;
       const t = event.changedTouches?.[0];
       if (!t) return;
       const dx = t.clientX - touchStartX;
@@ -1251,7 +1324,11 @@
       touchStartX = null;
       touchStartY = null;
       if (Math.abs(dx) < 55 || Math.abs(dx) <= Math.abs(dy) * 1.2) return;
-      void navigateMonth(dx < 0 ? 1 : -1);
+
+      const target = dx < 0
+        ? (state.detailPool.has_next_cycle ? state.detailPool.next_cycle_start_date : "")
+        : (state.detailPool.has_previous_cycle ? state.detailPool.previous_cycle_start_date : "");
+      if (target) void loadPoolCycle(state.selectedPool, target);
     }, { passive: true });
 
     document.addEventListener("keydown", (event) => {
@@ -1260,6 +1337,6 @@
 
     const allowed = await guardSession();
     if (!allowed) return;
-    await loadData();
+    await loadOverviewData({ autoOpenSingle: true });
   });
 })();

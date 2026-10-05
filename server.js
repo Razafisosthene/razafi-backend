@@ -18254,9 +18254,9 @@ const DATA_USAGE_COLLECTOR_STARTUP_DELAY_MS = Math.max(
   Math.min(5 * 60_000, parseInt(process.env.DATA_USAGE_COLLECTOR_STARTUP_DELAY_MS || "15000", 10) || 15_000)
 );
 
-// Data Usage V1.2 — monthly +500 GB threshold alerts.
-// Detection/queue creation is part of the WAN collector. Email delivery is
-// deliberately opt-in until the Owner + Superadmin test email is validated.
+// Data Usage Cycle V2 — +500 GB threshold alerts per configured pool cycle.
+// Detection/queue creation is part of the WAN collector. Email delivery remains
+// opt-in through DATA_USAGE_ALERT_EMAILS_ENABLED.
 const DATA_USAGE_ALERT_EMAILS_ENABLED = ["1", "true", "yes", "on"].includes(
   String(process.env.DATA_USAGE_ALERT_EMAILS_ENABLED || "false").trim().toLowerCase()
 );
@@ -27294,6 +27294,44 @@ function dataUsageAlertMonthLabel(periodMonth) {
   }).format(d);
 }
 
+function dataUsageAlertDateLabelFromDateKey(value) {
+  const raw = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return "";
+  const d = new Date(`${raw}T12:00:00+03:00`);
+  if (!Number.isFinite(d.getTime())) return "";
+  return new Intl.DateTimeFormat("fr-FR", {
+    timeZone: "Indian/Antananarivo",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(d);
+}
+
+function dataUsageDateKeyShiftDays(value, deltaDays) {
+  const raw = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw) || !Number.isInteger(deltaDays)) return "";
+  const d = new Date(`${raw}T12:00:00Z`);
+  if (!Number.isFinite(d.getTime())) return "";
+  d.setUTCDate(d.getUTCDate() + deltaDays);
+  return d.toISOString().slice(0, 10);
+}
+
+function dataUsageAlertPeriodLabel(alert) {
+  const kind = String(alert?.period_kind || "month").trim().toLowerCase();
+  const start = String(alert?.period_month || "").trim();
+  const endExclusive = String(alert?.period_end_exclusive || "").trim();
+
+  if (kind === "cycle" && /^\d{4}-\d{2}-\d{2}$/.test(start)) {
+    const inclusiveEnd = dataUsageDateKeyShiftDays(endExclusive, -1);
+    const startLabel = dataUsageAlertDateLabelFromDateKey(start);
+    const endLabel = dataUsageAlertDateLabelFromDateKey(inclusiveEnd);
+    if (startLabel && endLabel) return `${startLabel} – ${endLabel}`;
+    if (startLabel) return `à partir du ${startLabel}`;
+  }
+
+  return dataUsageAlertMonthLabel(start);
+}
+
 function dataUsageAlertDateTimeLabel(value) {
   const d = new Date(value);
   if (!Number.isFinite(d.getTime())) return "";
@@ -27313,21 +27351,32 @@ function dataUsageAlertPoolDisplayName(pool) {
 
 async function ensureDataUsageThresholdAlerts({
   pool,
-  periodMonth,
-  monthTotalBytes,
+  periodStartDate,
+  periodEndExclusiveDate,
+  cycleTotalBytes,
   reachedAt,
+  policyRevision = null,
+  cycleStartDay = null,
+  suppressNew = false,
+  suppressionReason = null,
 }) {
-  const total = dataUsageBigInt(monthTotalBytes, "data_usage_month_total_invalid");
+  const total = dataUsageBigInt(cycleTotalBytes, "data_usage_cycle_total_invalid");
   const reachedBands = total / DATA_USAGE_ALERT_STEP_BYTES;
   if (reachedBands <= 0n) return [];
+
+  const periodStart = String(periodStartDate || "").trim();
+  const periodEnd = String(periodEndExclusiveDate || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(periodStart) || !/^\d{4}-\d{2}-\d{2}$/.test(periodEnd)) {
+    throw new Error("data_usage_cycle_period_invalid");
+  }
 
   const maxThresholdGo = reachedBands * BigInt(DATA_USAGE_ALERT_STEP_GO);
 
   const { data: existingRows, error: existingErr } = await supabase
     .from("pool_wan_usage_alerts")
-    .select("threshold_go")
+    .select("threshold_go,period_kind,suppressed_at")
     .eq("pool_id", pool.id)
-    .eq("period_month", periodMonth);
+    .eq("period_month", periodStart);
   if (existingErr) throw existingErr;
 
   const existing = new Set(
@@ -27335,6 +27384,11 @@ async function ensureDataUsageThresholdAlerts({
       .map((row) => Number(row?.threshold_go))
       .filter((value) => Number.isInteger(value) && value > 0)
   );
+
+  const suppressAt = suppressNew ? new Date().toISOString() : null;
+  const safeSuppressionReason = suppressNew
+    ? String(suppressionReason || "cycle_rebase_baseline").slice(0, 120)
+    : null;
 
   const pending = [];
   for (
@@ -27350,10 +27404,16 @@ async function ensureDataUsageThresholdAlerts({
 
     pending.push({
       pool_id: pool.id,
-      period_month: periodMonth,
+      period_month: periodStart,
+      period_end_exclusive: periodEnd,
+      period_kind: "cycle",
+      policy_revision: Number.isInteger(Number(policyRevision)) ? Number(policyRevision) : null,
+      cycle_start_day: Number.isInteger(Number(cycleStartDay)) ? Number(cycleStartDay) : null,
       threshold_go: asNumber,
       reached_bytes: total.toString(),
       reached_at: reachedAt,
+      suppressed_at: suppressAt,
+      suppression_reason: safeSuppressionReason,
     });
   }
 
@@ -27365,15 +27425,17 @@ async function ensureDataUsageThresholdAlerts({
       onConflict: "pool_id,period_month,threshold_go",
       ignoreDuplicates: true,
     })
-    .select("id,threshold_go,reached_bytes,reached_at");
+    .select("id,threshold_go,reached_bytes,reached_at,suppressed_at");
   if (queueErr) throw queueErr;
 
   const thresholds = (queued || []).map((row) => Number(row.threshold_go)).filter(Number.isFinite);
   if (thresholds.length) {
-    console.info("[DATA USAGE ALERT] thresholds queued", {
+    console.info(suppressNew ? "[DATA USAGE ALERT] thresholds suppressed" : "[DATA USAGE ALERT] thresholds queued", {
       pool_id: pool.id,
-      period_month: periodMonth,
+      period_start: periodStart,
+      period_end_exclusive: periodEnd,
       thresholds_go: thresholds,
+      suppressed: suppressNew,
     });
   }
   return thresholds;
@@ -27450,9 +27512,10 @@ function buildDataUsageThresholdEmail({
   const poolName = dataUsageAlertPoolDisplayName(pool);
   const threshold = dataUsageAlertThresholdLabel(alert?.threshold_go || DATA_USAGE_ALERT_STEP_GO);
   const measured = dataUsageAlertBytesLabel(alert?.reached_bytes || "0");
-  const month = dataUsageAlertMonthLabel(alert?.period_month);
+  const period = dataUsageAlertPeriodLabel(alert);
   const detectedAt = dataUsageAlertDateTimeLabel(alert?.reached_at || new Date().toISOString());
   const isSuperadmin = audience === "superadmin";
+  const isCycle = String(alert?.period_kind || "month").toLowerCase() === "cycle";
 
   if (testOnly) {
     return {
@@ -27479,11 +27542,11 @@ function buildDataUsageThresholdEmail({
       "Bonjour,",
       "",
       isSuperadmin
-        ? "Une pool RAZAFI a franchi un nouveau palier mensuel de consommation WAN."
-        : "Votre pool a franchi un nouveau palier mensuel de consommation WAN.",
+        ? `Une pool RAZAFI a franchi un nouveau palier de consommation WAN sur ${isCycle ? "son cycle en cours" : "la période mensuelle"}.`
+        : `Votre pool a franchi un nouveau palier de consommation WAN sur ${isCycle ? "son cycle en cours" : "la période mensuelle"}.`,
       "",
       `Pool : ${poolName}`,
-      `Mois : ${month}`,
+      `${isCycle ? "Cycle" : "Mois"} : ${period}`,
       `Palier atteint : ${threshold}`,
       `Consommation mesurée lors de la détection : ${measured}`,
       detectedAt ? `Détection : ${detectedAt}` : "",
@@ -27538,6 +27601,7 @@ async function claimDataUsageAlertRecipient(alert, audience) {
     .eq("id", alert.id)
     .is(sentCol, null)
     .is(claimCol, null)
+    .is("suppressed_at", null)
     .select("*")
     .maybeSingle();
   if (claimErr) throw claimErr;
@@ -27597,11 +27661,13 @@ async function runDataUsageAlertDelivery({ reason = "scheduled" } = {}) {
     const { data: pending, error: pendingErr } = await supabase
       .from("pool_wan_usage_alerts")
       .select(
-        "id,pool_id,period_month,threshold_go,reached_bytes,reached_at," +
+        "id,pool_id,period_month,period_end_exclusive,period_kind,policy_revision,cycle_start_day," +
+        "threshold_go,reached_bytes,reached_at,suppressed_at,suppression_reason," +
         "owner_email_sent_at,superadmin_email_sent_at," +
         "owner_email_claimed_at,owner_email_attempt_count,owner_email_last_error," +
         "superadmin_email_claimed_at,superadmin_email_attempt_count,superadmin_email_last_error"
       )
+      .is("suppressed_at", null)
       .or("owner_email_sent_at.is.null,superadmin_email_sent_at.is.null")
       .order("reached_at", { ascending: true })
       .limit(DATA_USAGE_ALERT_BATCH_SIZE);
@@ -28075,22 +28141,40 @@ async function collectWanUsageForPool(poolId, observedAt = new Date()) {
     discovery,
   });
 
-  const periodMonth = dataUsageMonthStartInAntananarivo(observedAt);
-  const { data: monthTotalRaw, error: monthErr } = await supabase.rpc(
-    "get_pool_wan_month_total",
-    { p_pool_id: pool.id, p_period_month: periodMonth }
-  );
-  if (monthErr) throw monthErr;
+  // Cycle V2: the same Yield cycle is the single source of truth for
+  // Data Usage totals, graph periods and +500 GB alerts.
+  const yieldPolicy = await loadYieldPolicy(pool.id);
+  const effectivePolicy = yieldPolicy || {
+    cycle_start_day: 1,
+    cycle_timezone: "Indian/Antananarivo",
+    policy_revision: null,
+  };
+  const cycle = yieldCycleBounds(effectivePolicy, observedAt);
+  const periodStartDate = dataUsageAntananarivoDateKey(cycle.start_at);
+  const periodEndExclusiveDate = dataUsageAntananarivoDateKey(cycle.end_at);
 
-  const monthTotal = /^\d+(?:\.0+)?$/.test(String(monthTotalRaw ?? ""))
-    ? String(monthTotalRaw).replace(/\.0+$/, "")
+  const { data: cycleTotalRaw, error: cycleErr } = await supabase.rpc(
+    "get_pool_wan_period_total",
+    {
+      p_pool_id: pool.id,
+      p_period_start: cycle.start_at,
+      p_period_end: cycle.end_at,
+    }
+  );
+  if (cycleErr) throw cycleErr;
+
+  const cycleTotal = /^\d+(?:\.0+)?$/.test(String(cycleTotalRaw ?? ""))
+    ? String(cycleTotalRaw).replace(/\.0+$/, "")
     : "0";
 
   const alertsQueued = await ensureDataUsageThresholdAlerts({
     pool,
-    periodMonth,
-    monthTotalBytes: monthTotal,
+    periodStartDate,
+    periodEndExclusiveDate,
+    cycleTotalBytes: cycleTotal,
     reachedAt: inserted.observed_at,
+    policyRevision: effectivePolicy.policy_revision,
+    cycleStartDay: effectivePolicy.cycle_start_day,
   });
 
   return {
@@ -28108,8 +28192,14 @@ async function collectWanUsageForPool(poolId, observedAt = new Date()) {
     delta_rx_bytes: String(inserted.delta_rx_bytes),
     delta_tx_bytes: String(inserted.delta_tx_bytes),
     delta_total_bytes: String(inserted.delta_total_bytes),
-    period_month: periodMonth,
-    month_total_bytes: monthTotal,
+    period_month: periodStartDate,
+    month_total_bytes: cycleTotal, // legacy response alias during Cycle V2 rollout
+    period_kind: "cycle",
+    cycle_start_at: cycle.start_at,
+    cycle_end_at: cycle.end_at,
+    cycle_start_date: periodStartDate,
+    cycle_end_exclusive_date: periodEndExclusiveDate,
+    cycle_total_bytes: cycleTotal,
     alerts_queued_go: alertsQueued,
     attribution: {
       ok: attribution.ok === true,
@@ -28682,6 +28772,348 @@ async function dataUsageLoadMonthDetail(poolId, monthMeta, now = new Date()) {
   };
 }
 
+
+// =============================================================================
+// DATA USAGE CYCLE V2 — configured Yield cycle as the single period truth.
+// Legacy month helpers/RPCs above are intentionally retained for compatibility.
+// =============================================================================
+
+function dataUsageAntananarivoDateKey(value) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(d.getTime())) throw new Error("data_usage_cycle_date_invalid");
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Indian/Antananarivo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(d);
+  const year = parts.find((p) => p.type === "year")?.value || "";
+  const month = parts.find((p) => p.type === "month")?.value || "";
+  const day = parts.find((p) => p.type === "day")?.value || "";
+  if (!/^\d{4}$/.test(year) || !/^\d{2}$/.test(month) || !/^\d{2}$/.test(day)) {
+    throw new Error("data_usage_cycle_date_invalid");
+  }
+  return `${year}-${month}-${day}`;
+}
+
+function dataUsageCycleDateParts(dateKey) {
+  const match = String(dateKey || "").trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isInteger(year) || year < 2020 || year > 2100 || month < 1 || month > 12) return null;
+  const maxDay = yieldDaysInMonth(year, month);
+  if (!Number.isInteger(day) || day < 1 || day > maxDay) return null;
+  return { year, month, day };
+}
+
+function dataUsageCycleDateKey(year, month, day) {
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function dataUsageCycleMetaFromStartDate(policy, startDateKey) {
+  const configuredStartDay = Number(policy?.cycle_start_day);
+  const timezone = String(policy?.cycle_timezone || "").trim();
+  if (timezone !== "Indian/Antananarivo") throw new Error("yield_cycle_timezone_unsupported");
+  if (!Number.isInteger(configuredStartDay) || configuredStartDay < 1 || configuredStartDay > 31) {
+    throw new Error("yield_cycle_start_day_invalid");
+  }
+
+  const parsed = dataUsageCycleDateParts(startDateKey);
+  if (!parsed) {
+    const err = new Error("data_usage_cycle_start_invalid");
+    err.status = 400;
+    throw err;
+  }
+
+  const expectedStartDay = Math.min(configuredStartDay, yieldDaysInMonth(parsed.year, parsed.month));
+  if (parsed.day !== expectedStartDay) {
+    const err = new Error("data_usage_cycle_start_invalid");
+    err.status = 400;
+    throw err;
+  }
+
+  const nextYm = yieldShiftMonth(parsed.year, parsed.month, 1);
+  const endDay = Math.min(configuredStartDay, yieldDaysInMonth(nextYm.year, nextYm.month));
+  const startMs = yieldAntananarivoMidnightUtcMs(parsed.year, parsed.month, parsed.day);
+  const endMs = yieldAntananarivoMidnightUtcMs(nextYm.year, nextYm.month, endDay);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    throw new Error("data_usage_cycle_bounds_invalid");
+  }
+
+  const previousYm = yieldShiftMonth(parsed.year, parsed.month, -1);
+  const previousDay = Math.min(configuredStartDay, yieldDaysInMonth(previousYm.year, previousYm.month));
+
+  return {
+    start_at: new Date(startMs).toISOString(),
+    end_at: new Date(endMs).toISOString(),
+    start_ms: startMs,
+    end_ms: endMs,
+    start_date: dataUsageCycleDateKey(parsed.year, parsed.month, parsed.day),
+    end_exclusive_date: dataUsageCycleDateKey(nextYm.year, nextYm.month, endDay),
+    end_inclusive_date: dataUsageDateKeyShiftDays(dataUsageCycleDateKey(nextYm.year, nextYm.month, endDay), -1),
+    previous_start_date: dataUsageCycleDateKey(previousYm.year, previousYm.month, previousDay),
+    next_start_date: dataUsageCycleDateKey(nextYm.year, nextYm.month, endDay),
+    duration_days: Math.max(1, Math.round((endMs - startMs) / 86_400_000)),
+  };
+}
+
+function dataUsageCurrentCycleMeta(policy, now = new Date()) {
+  const bounds = yieldCycleBounds(policy, now);
+  const startDate = dataUsageAntananarivoDateKey(bounds.start_at);
+  return dataUsageCycleMetaFromStartDate(policy, startDate);
+}
+
+function dataUsageResolveCycleMeta(policy, requestedStart, now = new Date()) {
+  const current = dataUsageCurrentCycleMeta(policy, now);
+  if (!requestedStart) return { ...current, is_current_cycle: true, current_start_date: current.start_date };
+  const selected = dataUsageCycleMetaFromStartDate(policy, requestedStart);
+  if (selected.start_ms > current.start_ms) {
+    const err = new Error("data_usage_cycle_future");
+    err.status = 400;
+    throw err;
+  }
+  return {
+    ...selected,
+    is_current_cycle: selected.start_date === current.start_date,
+    current_start_date: current.start_date,
+  };
+}
+
+function dataUsageReadCycleMetrics(detail, cycleMeta, now = new Date()) {
+  const totalBytes = dataUsageBigInt(dataUsageNormalizeIntegerString(detail?.total_bytes));
+  const firstObservedMs = dataUsageIsoMs(detail?.period_first_observed_at);
+  const lastObservedMs = dataUsageIsoMs(detail?.last_observed_at);
+  const coverageComplete = detail?.coverage_complete_from_period_start === true;
+  const isCurrentCycle = cycleMeta?.is_current_cycle === true;
+
+  let trackedStartMs = firstObservedMs;
+  if (coverageComplete) trackedStartMs = cycleMeta.start_ms;
+  const trackedEndMs = isCurrentCycle
+    ? Math.min(now.getTime(), cycleMeta.end_ms)
+    : (lastObservedMs ?? cycleMeta.end_ms);
+
+  let trackedHours = 0;
+  if (trackedStartMs !== null && Number.isFinite(trackedEndMs) && trackedEndMs > trackedStartMs) {
+    trackedHours = (trackedEndMs - trackedStartMs) / 3_600_000;
+  }
+
+  let averageDailyBytes = null;
+  let projectionBytes = null;
+  let projectionKind = null;
+
+  if (!isCurrentCycle && coverageComplete && cycleMeta.duration_days > 0) {
+    const avg = Number(totalBytes) / cycleMeta.duration_days;
+    if (Number.isFinite(avg) && avg >= 0) averageDailyBytes = Math.round(avg).toString();
+  } else if (trackedHours >= 24) {
+    const trackedDays = trackedHours / 24;
+    const avg = Number(totalBytes) / trackedDays;
+    if (Number.isFinite(avg) && avg >= 0) {
+      averageDailyBytes = Math.round(avg).toString();
+      if (isCurrentCycle) {
+        const remainingDays = Math.max(0, (cycleMeta.end_ms - trackedEndMs) / 86_400_000);
+        const projected = Number(totalBytes) + avg * remainingDays;
+        if (Number.isFinite(projected) && projected >= 0) {
+          projectionBytes = Math.round(projected).toString();
+          projectionKind = coverageComplete ? "cycle_end_full_coverage" : "tracking_window_to_cycle_end";
+        }
+      }
+    }
+  }
+
+  return {
+    total_bytes: totalBytes.toString(),
+    average_daily_bytes: averageDailyBytes,
+    projection_bytes: projectionBytes,
+    projection_kind: projectionKind,
+    tracked_hours: Math.round(trackedHours * 10) / 10,
+    average_ready: averageDailyBytes !== null,
+    projection_ready: projectionBytes !== null,
+  };
+}
+
+async function dataUsageLoadPeriodAttribution(poolId, cycleMeta) {
+  const PAGE_SIZE = 1000;
+  const MAX_ROWS = 10000;
+  const rows = [];
+
+  for (let offset = 0; offset < MAX_ROWS; offset += PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from("pool_wan_usage_snapshots")
+      .select(
+        "observed_at,delta_authenticated_bytes,delta_free_access_bytes," +
+        "delta_other_bytes,attribution_excess_bytes,attribution_status"
+      )
+      .eq("pool_id", poolId)
+      .gte("observed_at", cycleMeta.start_at)
+      .lt("observed_at", cycleMeta.end_at)
+      .not("attribution_status", "is", null)
+      .order("observed_at", { ascending: true })
+      .range(offset, offset + PAGE_SIZE - 1);
+
+    if (error) throw error;
+    const page = Array.isArray(data) ? data : [];
+    rows.push(...page);
+    if (page.length < PAGE_SIZE) break;
+    if (rows.length >= MAX_ROWS) throw new Error("data_usage_attribution_read_limit_reached");
+  }
+
+  let authenticated = 0n;
+  let freeAccess = 0n;
+  let other = 0n;
+  let excess = 0n;
+  let resolvedCount = 0;
+  let baselineCount = 0;
+  let partialCount = 0;
+  let overageCount = 0;
+  let firstTrackingAt = null;
+  let lastCompleteAt = null;
+  let latestStatus = null;
+
+  for (const row of rows) {
+    const status = String(row?.attribution_status || "").trim();
+    latestStatus = status || latestStatus;
+    if (!firstTrackingAt && ["baseline", "ok", "overage"].includes(status)) firstTrackingAt = row.observed_at || null;
+    if (status === "baseline") { baselineCount += 1; continue; }
+    if (status === "partial") { partialCount += 1; continue; }
+    if (!["ok", "overage"].includes(status)) continue;
+
+    resolvedCount += 1;
+    if (status === "overage") overageCount += 1;
+    lastCompleteAt = row.observed_at || lastCompleteAt;
+    authenticated += dataUsageBigInt(dataUsageNormalizeIntegerString(row?.delta_authenticated_bytes));
+    freeAccess += dataUsageBigInt(dataUsageNormalizeIntegerString(row?.delta_free_access_bytes));
+    other += dataUsageBigInt(dataUsageNormalizeIntegerString(row?.delta_other_bytes));
+    excess += dataUsageBigInt(dataUsageNormalizeIntegerString(row?.attribution_excess_bytes));
+  }
+
+  const componentTotal = authenticated + freeAccess + other;
+  const reconciledWan = componentTotal >= excess ? componentTotal - excess : 0n;
+  return {
+    ready: resolvedCount > 0,
+    authenticated_bytes: authenticated.toString(),
+    free_access_bytes: freeAccess.toString(),
+    other_bytes: other.toString(),
+    excess_bytes: excess.toString(),
+    reconciled_wan_bytes: reconciledWan.toString(),
+    first_tracking_at: firstTrackingAt,
+    last_complete_at: lastCompleteAt,
+    latest_status: latestStatus,
+    resolved_sample_count: resolvedCount,
+    baseline_sample_count: baselineCount,
+    partial_sample_count: partialCount,
+    overage_sample_count: overageCount,
+  };
+}
+
+async function dataUsageLoadCycleDetail(poolId, policy, requestedStart, now = new Date()) {
+  const cycleMeta = dataUsageResolveCycleMeta(policy, requestedStart, now);
+  const { data, error } = await supabase.rpc("get_pool_wan_period_detail", {
+    p_pool_id: poolId,
+    p_period_start: cycleMeta.start_at,
+    p_period_end: cycleMeta.end_at,
+  });
+  if (error) throw error;
+
+  const detail = data && typeof data === "object" ? data : {};
+  const daily = Array.isArray(detail.daily)
+    ? detail.daily.map((row) => ({
+        date: /^\d{4}-\d{2}-\d{2}$/.test(String(row?.date || "")) ? String(row.date) : null,
+        total_bytes: dataUsageNormalizeIntegerString(row?.total_bytes),
+      })).filter((row) => row.date)
+    : [];
+
+  const metrics = dataUsageReadCycleMetrics(detail, cycleMeta, now);
+  const attribution = await dataUsageLoadPeriodAttribution(poolId, cycleMeta);
+  const firstTrackingAt = detail.first_tracking_at || null;
+  const firstTrackingMs = dataUsageIsoMs(firstTrackingAt);
+  const hasPreviousCycle = firstTrackingMs !== null && firstTrackingMs < cycleMeta.start_ms;
+
+  return {
+    period_kind: "cycle",
+    cycle_start_day: Number(policy?.cycle_start_day || 1),
+    policy_revision: policy?.policy_revision === null || policy?.policy_revision === undefined
+      ? null
+      : Number(policy.policy_revision),
+    cycle_start_at: cycleMeta.start_at,
+    cycle_end_at: cycleMeta.end_at,
+    cycle_start_date: cycleMeta.start_date,
+    cycle_end_exclusive_date: cycleMeta.end_exclusive_date,
+    cycle_end_inclusive_date: cycleMeta.end_inclusive_date,
+    cycle_duration_days: cycleMeta.duration_days,
+    is_current_cycle: cycleMeta.is_current_cycle === true,
+    current_cycle_start_date: cycleMeta.current_start_date,
+    previous_cycle_start_date: cycleMeta.previous_start_date,
+    next_cycle_start_date: cycleMeta.next_start_date,
+    has_previous_cycle: hasPreviousCycle,
+    has_next_cycle: cycleMeta.is_current_cycle !== true,
+
+    total_bytes: metrics.total_bytes,
+    average_daily_bytes: metrics.average_daily_bytes,
+    projection_bytes: metrics.projection_bytes,
+    projection_kind: metrics.projection_kind,
+    average_ready: metrics.average_ready,
+    projection_ready: metrics.projection_ready,
+    tracked_hours: metrics.tracked_hours,
+
+    first_tracking_at: firstTrackingAt,
+    period_first_observed_at: detail.period_first_observed_at || null,
+    last_observed_at: detail.last_observed_at || null,
+    sample_count: Number(detail.sample_count || 0) || 0,
+    counter_reset_count: Number(detail.counter_reset_count || 0) || 0,
+    coverage_complete_from_period_start: detail.coverage_complete_from_period_start === true,
+    attribution,
+    daily,
+  };
+}
+
+async function dataUsageSuppressRebaseBaseline({ poolId, pool, policy, now = new Date() }) {
+  const cycle = dataUsageCurrentCycleMeta(policy, now);
+  const suppressedAt = now.toISOString();
+
+  // A cycle-day change rebases the accounting period. Stop every undelivered
+  // threshold for this pool (legacy month or cycle) before seeding the new
+  // cycle baseline, so no stale/recomputed email can leak through.
+  const { error: staleErr } = await supabase
+    .from("pool_wan_usage_alerts")
+    .update({
+      suppressed_at: suppressedAt,
+      suppression_reason: "cycle_rebased",
+    })
+    .eq("pool_id", poolId)
+    .is("suppressed_at", null)
+    .or("owner_email_sent_at.is.null,superadmin_email_sent_at.is.null");
+  if (staleErr) throw staleErr;
+
+  const { data: totalRaw, error: totalErr } = await supabase.rpc("get_pool_wan_period_total", {
+    p_pool_id: poolId,
+    p_period_start: cycle.start_at,
+    p_period_end: cycle.end_at,
+  });
+  if (totalErr) throw totalErr;
+
+  const total = dataUsageNormalizeIntegerString(totalRaw);
+  const suppressed = await ensureDataUsageThresholdAlerts({
+    pool,
+    periodStartDate: cycle.start_date,
+    periodEndExclusiveDate: cycle.end_exclusive_date,
+    cycleTotalBytes: total,
+    reachedAt: suppressedAt,
+    policyRevision: policy?.policy_revision,
+    cycleStartDay: policy?.cycle_start_day,
+    suppressNew: true,
+    suppressionReason: "cycle_rebase_baseline",
+  });
+
+  return {
+    cycle_start_date: cycle.start_date,
+    cycle_end_exclusive_date: cycle.end_exclusive_date,
+    baseline_bytes: total,
+    suppressed_thresholds_go: suppressed,
+  };
+}
+
 // Data Usage V1.1 — read model for Superadmin + every assigned pool role.
 // Owner / Manager / Viewer are strictly scoped to req.admin.pool_ids.
 // Collection/discovery endpoints below remain Superadmin-only.
@@ -28699,15 +29131,20 @@ app.get("/api/admin/data-usage", requireAdmin, async (req, res) => {
     }
 
     const now = new Date();
-    const monthMeta = dataUsageReadMonthParam(req.query?.month, now);
-    const currentMonth = dataUsageCurrentMonthKey(now);
     const requestedPoolId = String(req.query?.pool_id || "").trim();
+    const requestedCycleStart = String(req.query?.cycle_start || "").trim();
 
     if (requestedPoolId && !UUID_V1_TO_V5_RE.test(requestedPoolId)) {
       return res.status(400).json({ error: "data_usage_pool_id_invalid" });
     }
     if (!isSuperadmin && requestedPoolId && !accessiblePoolIds.includes(requestedPoolId)) {
       return res.status(403).json({ error: "pool_forbidden" });
+    }
+    if (requestedCycleStart && !requestedPoolId) {
+      return res.status(400).json({ error: "data_usage_cycle_requires_pool" });
+    }
+    if (requestedCycleStart && !/^\d{4}-\d{2}-\d{2}$/.test(requestedCycleStart)) {
+      return res.status(400).json({ error: "data_usage_cycle_start_invalid" });
     }
 
     let query = supabase
@@ -28726,7 +29163,18 @@ app.get("/api/admin/data-usage", requireAdmin, async (req, res) => {
     if (poolsErr) throw poolsErr;
 
     const items = await Promise.all((pools || []).map(async (pool) => {
-      const detail = await dataUsageLoadMonthDetail(pool.id, monthMeta, now);
+      const loadedPolicy = await loadYieldPolicy(pool.id);
+      const policy = loadedPolicy || {
+        cycle_start_day: 1,
+        cycle_timezone: "Indian/Antananarivo",
+        policy_revision: null,
+      };
+      const detail = await dataUsageLoadCycleDetail(
+        pool.id,
+        policy,
+        requestedPoolId ? requestedCycleStart : "",
+        now
+      );
       return {
         pool_id: pool.id,
         pool_name: pool.name || null,
@@ -28761,26 +29209,37 @@ app.get("/api/admin/data-usage", requireAdmin, async (req, res) => {
           ? "manager"
           : "viewer";
 
+    const selected = requestedPoolId && items.length === 1 ? items[0] : null;
+
     return res.json({
       ok: true,
       timezone: "Indian/Antananarivo",
+      period_mode: "cycle",
       viewer_type: viewerType,
       viewer_roles: viewerRoles,
-      selected_month: monthMeta.key,
-      selected_period_month: monthMeta.date,
-      current_month: currentMonth,
-      is_current_month: monthMeta.key === currentMonth,
-      days_in_month: monthMeta.days_in_month,
       requested_pool_id: requestedPoolId || null,
+      requested_cycle_start: requestedCycleStart || null,
+      selected_cycle_start: selected?.cycle_start_date || null,
+      current_cycle_start: selected?.current_cycle_start_date || null,
+      is_current_cycle: selected ? selected.is_current_cycle === true : true,
       total_all_pools_bytes: totalAllPools.toString(),
+      total_scope: requestedPoolId ? "selected_cycle" : "current_cycles",
       global_first_tracking_at: globalFirstTrackingAt,
       pools: items,
     });
   } catch (error) {
     const status = Number(error?.status || 0);
     const code = String(error?.message || "data_usage_read_failed");
-    if (status === 400 || code === "data_usage_month_invalid") {
-      return res.status(400).json({ error: "data_usage_month_invalid" });
+    if (
+      status === 400 ||
+      [
+        "data_usage_cycle_start_invalid",
+        "data_usage_cycle_future",
+        "data_usage_cycle_requires_pool",
+        "data_usage_pool_id_invalid",
+      ].includes(code)
+    ) {
+      return res.status(400).json({ error: code });
     }
     console.error("[DATA USAGE READ]", code.slice(0, 180));
     return res.status(500).json({ error: "data_usage_read_failed" });
@@ -29268,11 +29727,40 @@ app.patch("/api/admin/yield-policy/:poolId", requireAdmin, async (req, res) => {
       };
     }
 
+    let dataUsageCycleRebase = null;
+    if (Object.prototype.hasOwnProperty.call(updates, "cycle_start_day")) {
+      try {
+        const { data: poolForAlert, error: poolForAlertErr } = await supabase
+          .from("internet_pools")
+          .select("id,name,brand_name")
+          .eq("id", poolId)
+          .maybeSingle();
+        if (poolForAlertErr) throw poolForAlertErr;
+        if (poolForAlert) {
+          dataUsageCycleRebase = await dataUsageSuppressRebaseBaseline({
+            poolId,
+            pool: poolForAlert,
+            policy: saved,
+            now: new Date(),
+          });
+        }
+      } catch (rebaseError) {
+        // A Data Usage alert-baseline failure must never roll back a valid Yield
+        // policy update. The next collector remains safe/idempotent.
+        console.error("[DATA USAGE CYCLE] rebase baseline failed", {
+          pool_id: poolId,
+          error: String(rebaseError?.message || rebaseError).slice(0, 160),
+        });
+        dataUsageCycleRebase = { ok: false, error: "data_usage_cycle_rebase_failed" };
+      }
+    }
+
     const bundle = await loadYieldPolicyAdminBundle(req, poolId);
     return res.json({
       ...bundle,
       changed: true,
       evaluation,
+      data_usage_cycle_rebase: dataUsageCycleRebase,
     });
   } catch (error) {
     const status = Number(error?.status || 0);
