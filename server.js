@@ -20848,7 +20848,10 @@ app.get("/api/owner/billing/autonomous-catalog", requireAdmin, requireBillingOwn
     const poolIds = (pools || []).map((x) => x.id);
     const offerIds = (offers || []).map((x) => x.id);
     const empty = { assignments: { data: [], error: null }, changes: { data: [], error: null }, versions: { data: [], error: null }, features: { data: [], error: null } };
-    const [assignmentsResult, changesResult, versionsResult, legacyRequestsResult] = await Promise.all([
+    // BAI-6 Step 4: the retired S13.2 configuration-request projection is no
+    // longer part of the canonical Owner catalog. Current assignment + open
+    // canonical change are the only commercial state sources exposed here.
+    const [assignmentsResult, changesResult, versionsResult] = await Promise.all([
       poolIds.length ? supabase.from("pool_billing_assignments")
         .select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to")
         .in("pool_id", poolIds).lte("effective_from", today)
@@ -20860,13 +20863,11 @@ app.get("/api/owner/billing/autonomous-catalog", requireAdmin, requireBillingOwn
         .select("id,offer_id,version_no,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,free_access_limit,effective_from,effective_to")
         .in("offer_id", offerIds).in("status", ["active", "scheduled"]).lte("effective_from", nextEffectiveOn)
         .or(`effective_to.is.null,effective_to.gte.${nextEffectiveOn}`).order("version_no", { ascending: false }) : empty.versions,
-      supabase.from("v_billing_v1_s13_2_requests").select("*")
-        .eq("applicant_user_id", ownerId).order("created_at", { ascending: false }).limit(50),
     ]);
     const versionIds = (versionsResult.data || []).map((x) => x.id);
     const featuresResult = versionIds.length ? await supabase.from("billing_offer_version_features")
       .select("offer_version_id,feature_key,enabled").in("offer_version_id", versionIds).eq("enabled", true) : empty.features;
-    const combinedError = assignmentsResult.error || changesResult.error || versionsResult.error || legacyRequestsResult.error || featuresResult.error;
+    const combinedError = assignmentsResult.error || changesResult.error || versionsResult.error || featuresResult.error;
     if (combinedError) return res.status(500).json({ error: combinedError.message });
     const features = featuresResult.data || [];
     const versions = (versionsResult.data || []).map((version) => ({
@@ -20876,7 +20877,6 @@ app.get("/api/owner/billing/autonomous-catalog", requireAdmin, requireBillingOwn
     return res.json({
       pools: pools || [], offers: offers || [], versions,
       current_assignments: assignmentsResult.data || [], open_changes: changesResult.data || [],
-      legacy_requests: legacyRequestsResult.data || [],
       rules: { today, effective_on: nextEffectiveOn, owner_selectable_visibility: "public", one_open_change_per_pool: true, cancellable_before_effective_on: true },
       capabilities: { schedule: true, cancel: true, apply: false, invoice: false, payment: false, wifi: false },
     });
@@ -21645,64 +21645,15 @@ function startBillingS13843MonthlyClose(){
 
 // S13.6.4 owner self-service: same atomic S13.6 evidence and exact 32-character
 // MVola reference, but the invoice owner initiates the request from one panel.
-app.post("/api/owner/billing/invoices/:id/pay-guided", requireAdmin, speedLimiter, paymentLimiter, async (req, res) => {
-  try {
-    if (!BILLING_V1_OWNER_PAYMENT_SELF_SERVICE)
-      return res.status(404).json({ error: "billing_owner_payment_self_service_disabled" });
-    const ownerId = String(req.admin?.id || "").trim();
-    const phone = normalizePhone(req.body?.payer_phone);
-    if (!isValidMGPhone(phone)) return res.status(400).json({ error: "payer_phone_invalid", message: paymentPhoneValidationMessage("mvola") });
-    const { data: invoice, error: invoiceError } = await supabase.from("subscription_invoices")
-      .select("id,invoice_number,pool_id,owner_admin_user_id,purpose,amount_due_ar,amount_paid_ar,status")
-      .eq("id", req.params.id).eq("owner_admin_user_id", ownerId).eq("purpose", "monthly_subscription").maybeSingle();
-    if (invoiceError) return res.status(500).json({ error: invoiceError.message });
-    if (!invoice) return res.status(404).json({ error: "subscription_invoice_not_found" });
-    if (invoice.status !== "issued" || Number(invoice.amount_paid_ar) !== 0 || Number(invoice.amount_due_ar) <= 0)
-      return res.status(409).json({ error: "first_invoice_not_payable" });
-    const { data: issuance, error: issuanceError } = await supabase.from("billing_owner_first_invoice_issuances")
-      .select("request_id").eq("invoice_id", invoice.id).maybeSingle();
-    if (issuanceError) return res.status(500).json({ error: issuanceError.message });
-    if (!issuance?.request_id) return res.status(409).json({ error: "first_invoice_issuance_required" });
-    const invoiceToken = String(invoice.id).replace(/-/g, "").slice(0, 12);
-    const entropyToken = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-    const requestRef = `RZFSUB-${invoiceToken}-${entropyToken}`.toUpperCase();
-    if (!/^RZFSUB-[A-F0-9]{12}-[A-F0-9]{12}$/.test(requestRef) || requestRef.length !== 32)
-      return res.status(500).json({ error: "subscription_payment_reference_invalid" });
-    const correlationId = crypto.randomUUID();
-    const { data: prepared, error: prepareError } = await supabase.rpc("fn_billing_v1_s13_6_prepare_first_payment", {
-      p_actor: ownerId, p_configuration_request: issuance.request_id, p_payer_phone: phone,
-      p_request_ref: requestRef, p_server_correlation_id: correlationId,
-    });
-    if (prepareError) return res.status(s132ErrorStatus(prepareError.message)).json({ error: String(prepareError.message).split("\n")[0] });
-    if (prepared?.idempotent || prepared?.status === "completed") return res.json(prepared);
-    const amount = Number(prepared.amount_ar);
-    const payload = { amount: String(amount), currency: "Ar", descriptionText: `Abonnement RAZAFI ${amount} Ar`,
-      requestingOrganisationTransactionReference: requestRef, requestDate: new Date().toISOString(),
-      debitParty: [{ key: "msisdn", value: phone }], creditParty: [{ key: "msisdn", value: PARTNER_MSISDN }],
-      metadata: [{ key: "partnerName", value: PARTNER_NAME }] };
-    let initiated;
-    try {
-      initiated = await initiateMvolaPaymentWithRetry({ payload, requestRef, phone, amount, correlationId });
-    } catch (error) {
-      await supabase.rpc("fn_billing_v1_s13_6_fail_first_payment", { p_request_ref: requestRef,
-        p_provider_payload: { initiation_error: true, message: mapMvolaInitiateError(error).type } });
-      const mapped = mapMvolaInitiateError(error);
-      return res.status(mapped.httpStatus).json({ error: "subscription_payment_initiation_failed", message: mapped.userMessage });
-    }
-    const providerData = initiated.data || {};
-    const serverCorrelationId = providerData.serverCorrelationId || providerData.serverCorrelationID || providerData.serverCorrelationid || correlationId;
-    console.info("[BILLING S13.6.4][OWNER][INITIATE][ACCEPTED]", { requestRef, requestRefLength: requestRef.length,
-      serverCorrelationId, invoiceId: invoice.id, ownerId, amountAr: amount,
-      providerPayload: sanitizeMvolaLogPayload(providerData) });
-    await supabase.rpc("fn_billing_v1_s13_6_mark_pending", { p_request_ref: requestRef,
-      p_server_correlation_id: serverCorrelationId, p_provider_payload: sanitizeMvolaLogPayload(providerData) });
-    res.status(202).json({ ok: true, provider: "mvola", request_ref: requestRef, status: "pending",
-      verification_timeout_ms: MVOLA_VERIFICATION_TIMEOUT_MS });
-    void pollS136Mvola({ requestRef, serverCorrelationId });
-  } catch (error) {
-    console.error("[BILLING S13.6.4] owner guided payment", error?.message || error);
-    return res.status(500).json({ error: "billing_s13_6_4_internal_error" });
-  }
+app.post("/api/owner/billing/invoices/:id/pay-guided", requireAdmin, speedLimiter, paymentLimiter, async (_req, res) => {
+  // BAI-6 Step 4: retired S13.6 guided rollback bridge.
+  // Keep the HTTP shape temporarily so stale clients fail explicitly, but do
+  // not create any legacy first-payment evidence or call a provider.
+  return res.status(410).json({
+    error: "billing_legacy_payment_route_retired",
+    use: "/api/owner/billing/invoices/:id/pay",
+    engine: "billing-payment-bai3-v1",
+  });
 });
 
 // S13.8.4.2 — owner-scoped commission panel. PostgreSQL verifies ownership,
@@ -23726,26 +23677,22 @@ async function billingOwnerPaymentUi(invoices) {
   const disabled={enabled:false,provider:null,payable_invoice_ids:[]};
   if(!billingLiveMasterEnabled()) return disabled;
   const businessToday=billingMadagascarToday();
-  const candidates=(invoices||[]).filter(i=>
-    i.status==="issued" && Number(i.amount_paid_ar)===0 &&
-    Number.isInteger(Number(i.amount_due_ar)) && Number(i.amount_due_ar)>0 &&
+
+  // BAI-6 Step 4: Pilot activation rows no longer gate canonical Billing.
+  // Payability is determined only by the canonical invoice state and business
+  // date. Provider availability is still controlled by the Billing live master.
+  const payableInvoiceIds=(invoices||[]).filter(i=>
+    i.status==="issued" &&
+    Number(i.amount_paid_ar)===0 &&
+    Number.isInteger(Number(i.amount_due_ar)) &&
+    Number(i.amount_due_ar)>0 &&
     String(i.period_start||"")<=businessToday
-  );
-  if(!candidates.length) return {enabled:true,provider:"mvola",payable_invoice_ids:[]};
-  const poolIds=[...new Set(candidates.map(i=>i.pool_id).filter(Boolean))];
-  const enabledPilots=new Map();
-  await Promise.all(poolIds.map(async poolId=>{
-    const pilot=await billingEnabledMvolaPilot(poolId);
-    if(pilot) enabledPilots.set(poolId,pilot);
-  }));
+  ).map(i=>i.id);
+
   return {
     enabled:true,
     provider:"mvola",
-    payable_invoice_ids:candidates.filter(i=>{
-      const pilot=enabledPilots.get(i.pool_id);
-      return pilot && String(i.period_start||"")>=String(pilot.first_live_at||"") &&
-        String(i.period_start||"")<=businessToday;
-    }).map(i=>i.id),
+    payable_invoice_ids:payableInvoiceIds,
   };
 }
 async function billingEnabledMvolaPilot(poolId) {
@@ -47084,7 +47031,8 @@ app.listen(PORT, "0.0.0.0", () => {
     base_host: airtelMoneyClient.publicConfig().base_host,
   });
   startMvolaRecoveryJob();
-  startBillingS1365Reconciliation();
+  // BAI-6 Step 4: S13.6.5 remains defined for rollback inspection only.
+  // Inventory confirmed no legacy first-payment transaction requires recovery.
   startBillingBai32Reconciliation();
   startBillingS137Activation();
   startBillingS1382Apply();
