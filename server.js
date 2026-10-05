@@ -21233,46 +21233,8 @@ function startBillingBai32Reconciliation() {
   try { billingBai32ReconciliationTimer.unref?.(); } catch (_) {}
 }
 
-// S13.7 durable activation recovery. The SQL function revalidates payment,
-// invoice, assignment, owner and pool scope under an advisory lock.
-let billingS137ActivationRunning = false;
-let billingS137ActivationTimer = null;
-async function reconcileBillingS137Activations() {
-  if (!BILLING_V1_OWNER_AUTO_ACTIVATION) return { ok: true, skipped: "disabled" };
-  if (billingS137ActivationRunning) return { ok: true, skipped: "already_running" };
-  billingS137ActivationRunning = true;
-  try {
-    const { data: pending, error } = await supabase.from("v_billing_v1_s13_7_pending_activations")
-      .select("invoice_id,pool_id").limit(10);
-    if (error) throw error;
-    let activated = 0;
-    for (const item of pending || []) {
-      const { data, error: activationError } = await supabase.rpc("fn_billing_v1_s13_7_activate_paid_invoice", {
-        p_invoice_id: item.invoice_id,
-      });
-      if (activationError) {
-        console.error("[BILLING S13.7] activation deferred", {
-          invoiceId: item.invoice_id, poolId: item.pool_id, error: activationError.message,
-        });
-        continue;
-      }
-      activated += data?.idempotent ? 0 : 1;
-      console.info("[BILLING S13.7] pool subscription active", {
-        invoiceId: item.invoice_id, poolId: item.pool_id, idempotent: !!data?.idempotent,
-      });
-    }
-    return { ok: true, checked: (pending || []).length, activated };
-  } finally { billingS137ActivationRunning = false; }
-}
-function startBillingS137Activation() {
-  if (!BILLING_V1_OWNER_AUTO_ACTIVATION || billingS137ActivationTimer) return;
-  console.info("[BILLING S13.7] automatic pool activation enabled", { intervalMs: 30000, batchSize: 10 });
-  setTimeout(() => void reconcileBillingS137Activations().catch((error) =>
-    console.error("[BILLING S13.7] startup activation", error?.message || error)), 3000);
-  billingS137ActivationTimer = setInterval(() => void reconcileBillingS137Activations().catch((error) =>
-    console.error("[BILLING S13.7] scheduled activation", error?.message || error)), 30000);
-  try { billingS137ActivationTimer.unref?.(); } catch (_) {}
-}
+// BAI-6 Step 13A: S13.7 legacy activation worker retired.
+// Canonical subscription state is owned by pool_billing_periods / invoices / BAI-3.
 
 // S13.8.2 durable renewal application. PostgreSQL owns the per-pool lock,
 // date/payment checks, atomic replacement and immutable application proof.
@@ -22306,24 +22268,21 @@ app.get("/api/owner/billing", requireAdmin, requireBillingOwnerSubscription, asy
     });
     const nowDate = billingMadagascarToday();
     const currentPeriodStart = `${nowDate.slice(0, 7)}-01`;
-    const [assignmentsResult, invoicesResult, offersResult, paymentsResult, activationsResult, periodsResult] = await Promise.all([
+    const [assignmentsResult, invoicesResult, offersResult, paymentsResult, periodsResult] = await Promise.all([
       supabase.from("pool_billing_assignments").select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to,created_at").in("pool_id", poolIds).order("effective_from", { ascending: false }),
       supabase.from("subscription_invoices").select("id,invoice_number,pool_id,billing_period_id,billing_change_id,offer_title_snapshot,period_start,period_end,purpose,amount_due_ar,amount_paid_ar,status,issued_at,due_at,pdf_snapshot,created_at").eq("owner_admin_user_id", ownerId).in("purpose", ["monthly_subscription", "change_subscription"]).order("period_start", { ascending: false }),
       supabase.from("billing_offers").select("id,title"),
       supabase.from("subscription_payment_transactions")
         .select("id,invoice_id,request_ref,provider,amount_ar,currency,status,created_at,initiated_at,completed_at,failed_at,updated_at")
         .eq("owner_admin_user_id", ownerId).order("created_at", { ascending: false }),
-      supabase.from("billing_pool_subscription_activations")
-        .select("id,pool_id,invoice_id,payment_transaction_id,assignment_id,billing_period_id,status,activated_at,metadata")
-        .in("pool_id", poolIds).order("activated_at", { ascending: false }),
       supabase.from("pool_billing_periods")
         .select("id,pool_id,assignment_id,period_start,period_end,billing_status,billing_mode,access_status,subscription_price_ar,grace_days")
         .in("pool_id", poolIds).eq("period_start", currentPeriodStart),
     ]);
-    const combinedError = assignmentsResult.error || invoicesResult.error || offersResult.error || paymentsResult.error || activationsResult.error || periodsResult.error;
+    const combinedError = assignmentsResult.error || invoicesResult.error || offersResult.error || paymentsResult.error || periodsResult.error;
     if (combinedError) return res.status(500).json({ error: combinedError.message });
     const assignments = assignmentsResult.data || [], invoices = invoicesResult.data || [];
-    const payments = paymentsResult.data || [], activations = activationsResult.data || [];
+    const payments = paymentsResult.data || [], activations = [];
     const offerTitleById = new Map((offersResult.data || []).map((x) => [x.id, x.title]));
     const withOfferTitle = (assignment) => ({ ...assignment, offer_title: offerTitleById.get(assignment.offer_id) || null });
     const currentAssignments = poolIds.map((pool_id) => assignments.find((a) => a.pool_id === pool_id && a.effective_from <= nowDate && (!a.effective_to || a.effective_to >= nowDate)) || null).filter(Boolean).map(withOfferTitle);
@@ -47034,7 +46993,7 @@ app.listen(PORT, "0.0.0.0", () => {
   // BAI-6 Step 4: S13.6.5 remains defined for rollback inspection only.
   // Inventory confirmed no legacy first-payment transaction requires recovery.
   startBillingBai32Reconciliation();
-  startBillingS137Activation();
+  // BAI-6 Step 13A: S13.7 legacy activation worker permanently retired.
   startBillingS1382Apply();
   startBillingS13932MonthlySubscription();
   startBillingS13941Enforcement();
