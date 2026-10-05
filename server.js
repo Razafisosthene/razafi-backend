@@ -18145,17 +18145,13 @@ const BILLING_S13843_CLOSE_INTERVAL_MS = Math.max(60000,
 // S13.8.4.4: enables commission-document emails and PDF attachments only.
 // It does not close a month, confirm a payout or execute a transfer.
 const BILLING_V1_COMMISSION_DOCUMENT_NOTIFICATIONS = billingEnvFlag("BILLING_V1_COMMISSION_DOCUMENT_NOTIFICATIONS", false);
-// S13.6.4: owner-facing guided collection. Kept independent from the temporary
-// superadmin first-payment switch so the operational review page can remain
-// passive while owners pay their own invoices.
+// Canonical owner subscription payment self-service gate.
 const BILLING_V1_OWNER_PAYMENT_SELF_SERVICE = billingEnvFlag("BILLING_V1_OWNER_PAYMENT_SELF_SERVICE", false);
-// S13.6.5: durable recovery of already-created MVola subscription payments.
-// This switch can only query MVola status and reconcile existing evidence. It
-// never initiates a payment and is intentionally independent from self-service.
+// Canonical BAI-3.2 reconciliation gate. Environment variable name is retained
+// for production compatibility; no S13.6/S13.6.5 RPC is called.
 const BILLING_V1_OWNER_PAYMENT_RECONCILIATION = billingEnvFlag("BILLING_V1_OWNER_PAYMENT_RECONCILIATION", false);
-// S13.7: activate only the billing purchase-access overlay of the exact pool
-// whose first subscription invoice was fully paid. Never changes pool payment
-// methods, router/WiFi state or another pool owned by the same account.
+// Legacy S13.7 activation gate retained only as an environment compatibility
+// constant until configuration cleanup; no S13.7 worker or RPC remains active.
 const BILLING_V1_OWNER_AUTO_ACTIVATION = billingEnvFlag("BILLING_V1_OWNER_AUTO_ACTIVATION", false);
 const BILLING_S1365_RECONCILIATION_INTERVAL_MS = Math.max(15000,
   Number(process.env.BILLING_S1365_RECONCILIATION_INTERVAL_MS || 30000));
@@ -20912,143 +20908,11 @@ app.patch("/api/owner/billing/changes/:id/cancel", requireAdmin, requireBillingO
 // S13.9.1.3.2 — retired S13.2→S13.5 manual configuration/review HTTP routes.
 // Historical SQL evidence remains read-only for audit and the guided rollback bridge.
 
-async function completeBillingFirstPayment({ requestRef, serverCorrelationId, providerPayload }) {
-  const rpc = BILLING_V1_OWNER_AUTO_ACTIVATION
-    ? "fn_billing_v1_s13_7_complete_and_activate"
-    : "fn_billing_v1_s13_6_complete_first_payment";
-  return supabase.rpc(rpc, {
-    p_request_ref: requestRef,
-    p_server_correlation_id: serverCorrelationId,
-    p_provider_reference: billingProviderRef(providerPayload),
-    p_provider_payload: sanitizeMvolaLogPayload(providerPayload),
-  });
-}
-
-async function pollS136Mvola({ requestRef, serverCorrelationId }) {
-  const started = Date.now();
-  let attempt = 0;
-  while (Date.now() - started < MVOLA_VERIFICATION_TIMEOUT_MS) {
-    attempt += 1;
-    try {
-      const token = await getAccessToken();
-      const response = await axios.get(`${MVOLA_BASE}/mvola/mm/transactions/type/merchantpay/1.0.0/status/${serverCorrelationId}`, {
-        headers: mvolaHeaders(token, crypto.randomUUID()), timeout: 10000,
-      });
-      const payload = response.data || {};
-      const status = String(payload.status || payload.transactionStatus || "").toLowerCase();
-      console.info("[BILLING S13.6][STATUS][RAW]", {
-        requestRef, serverCorrelationId, attempt, httpStatus: response.status,
-        providerStatus: status || null, payload: sanitizeMvolaLogPayload(payload),
-      });
-      if (["completed", "success"].includes(status)) {
-        const { error } = await completeBillingFirstPayment({ requestRef, serverCorrelationId, providerPayload: payload });
-        if (error) throw error;
-        return;
-      }
-      if (["failed", "rejected", "declined"].includes(status)) {
-        await supabase.rpc("fn_billing_v1_s13_6_fail_first_payment", {
-          p_request_ref: requestRef, p_provider_payload: sanitizeMvolaLogPayload(payload),
-        });
-        return;
-      }
-    } catch (error) {
-      console.warn("[BILLING S13.6] MVola verification pending", { requestRef, attempt, error: error?.message || error });
-    }
-    await waitMs(Math.min(6000, 700 + attempt * 500));
-  }
-}
-
-// S13.6.5 — persistent subscription-payment reconciliation. Claims are leased
-// atomically in PostgreSQL, so Render restarts or multiple instances cannot
-// lose work or turn a status check into a second payment request.
-let billingS1365ReconciliationRunning = false;
-let billingS1365ReconciliationTimer = null;
-
-async function reconcileBillingS1365Once() {
-  if (!BILLING_V1_OWNER_PAYMENT_RECONCILIATION)
-    return { ok: true, skipped: "disabled", claimed: 0 };
-  if (billingS1365ReconciliationRunning)
-    return { ok: true, skipped: "already_running", claimed: 0 };
-  billingS1365ReconciliationRunning = true;
-  try {
-    const { data: claimed, error: claimError } = await supabase.rpc(
-      "fn_billing_v1_s13_6_5_claim_reconciliation",
-      { p_limit: BILLING_S1365_RECONCILIATION_BATCH_SIZE, p_lease_seconds: 90 }
-    );
-    if (claimError) throw claimError;
-    const rows = Array.isArray(claimed) ? claimed : [];
-    let completed = 0, failed = 0, pending = 0, errors = 0;
-    for (const row of rows) {
-      const requestRef = String(row.request_ref || "");
-      const serverCorrelationId = String(row.server_correlation_id || "");
-      if (!requestRef || !serverCorrelationId) continue;
-      try {
-        const token = await getAccessToken();
-        const response = await axios.get(
-          `${MVOLA_BASE}/mvola/mm/transactions/type/merchantpay/1.0.0/status/${serverCorrelationId}`,
-          { headers: mvolaHeaders(token, crypto.randomUUID()), timeout: 10000 }
-        );
-        const payload = response.data || {};
-        const status = String(payload.status || payload.transactionStatus || "").trim().toLowerCase();
-        console.info("[BILLING S13.6.5][RECONCILE]", {
-          requestRef, serverCorrelationId, providerStatus: status || null,
-          reconciliationCount: row.reconciliation_count,
-        });
-        if (["completed", "success"].includes(status)) {
-          const { error } = await completeBillingFirstPayment({ requestRef, serverCorrelationId, providerPayload: payload });
-          if (error) throw error;
-          completed += 1;
-          continue;
-        }
-        if (["failed", "rejected", "declined"].includes(status)) {
-          const { error } = await supabase.rpc("fn_billing_v1_s13_6_fail_first_payment", {
-            p_request_ref: requestRef,
-            p_provider_payload: sanitizeMvolaLogPayload(payload),
-          });
-          if (error) throw error;
-          failed += 1;
-          continue;
-        }
-        const { error } = await supabase.rpc("fn_billing_v1_s13_6_5_record_reconciliation", {
-          p_request_ref: requestRef, p_provider_status: status || "pending",
-          p_provider_payload: sanitizeMvolaLogPayload(payload), p_error: null,
-        });
-        if (error) throw error;
-        pending += 1;
-      } catch (error) {
-        errors += 1;
-        console.warn("[BILLING S13.6.5] reconciliation deferred", {
-          requestRef, error: error?.message || String(error),
-        });
-        await supabase.rpc("fn_billing_v1_s13_6_5_record_reconciliation", {
-          p_request_ref: requestRef, p_provider_status: "unknown", p_provider_payload: {},
-          p_error: String(error?.message || error).slice(0, 500),
-        });
-      }
-    }
-    return { ok: true, claimed: rows.length, completed, failed, pending, errors };
-  } finally {
-    billingS1365ReconciliationRunning = false;
-  }
-}
-
-function startBillingS1365Reconciliation() {
-  if (!BILLING_V1_OWNER_PAYMENT_RECONCILIATION || billingS1365ReconciliationTimer) return;
-  console.info("[BILLING S13.6.5] durable MVola reconciliation enabled", {
-    intervalMs: BILLING_S1365_RECONCILIATION_INTERVAL_MS,
-    batchSize: BILLING_S1365_RECONCILIATION_BATCH_SIZE,
-  });
-  setTimeout(() => void reconcileBillingS1365Once().catch((error) =>
-    console.error("[BILLING S13.6.5] startup reconciliation", error?.message || error)), 3000);
-  billingS1365ReconciliationTimer = setInterval(() =>
-    void reconcileBillingS1365Once().catch((error) =>
-      console.error("[BILLING S13.6.5] scheduled reconciliation", error?.message || error)),
-    BILLING_S1365_RECONCILIATION_INTERVAL_MS);
-  try { billingS1365ReconciliationTimer.unref?.(); } catch (_) {}
-}
+// BAI-6 Step 13B: legacy S13.6/S13.6.5 first-payment helpers retired.
+// BAI-3.2 is the sole subscription-payment reconciliation path.
 
 // BAI-3.2 — universal canonical billing reconciliation.
-// Legacy first-payment evidence remains handled by S13.6.5.
+// Sole subscription-payment reconciliation path after BAI-6 legacy retirement.
 let billingBai32ReconciliationRunning = false;
 let billingBai32ReconciliationTimer = null;
 
@@ -21605,8 +21469,7 @@ function startBillingS13843MonthlyClose(){
 // S13.9.1.3.2 — retired superadmin first-payment HTTP route.
 // The owner guided rollback bridge below remains available behind its independent gate.
 
-// S13.6.4 owner self-service: same atomic S13.6 evidence and exact 32-character
-// MVola reference, but the invoice owner initiates the request from one panel.
+// Retired guided-payment compatibility endpoint. Canonical payments use /pay.
 app.post("/api/owner/billing/invoices/:id/pay-guided", requireAdmin, speedLimiter, paymentLimiter, async (_req, res) => {
   // BAI-6 Step 4: retired S13.6 guided rollback bridge.
   // Keep the HTTP shape temporarily so stale clients fail explicitly, but do
@@ -46990,8 +46853,7 @@ app.listen(PORT, "0.0.0.0", () => {
     base_host: airtelMoneyClient.publicConfig().base_host,
   });
   startMvolaRecoveryJob();
-  // BAI-6 Step 4: S13.6.5 remains defined for rollback inspection only.
-  // Inventory confirmed no legacy first-payment transaction requires recovery.
+  // BAI-6 Step 13B: legacy S13.6/S13.6.5 reconciliation code removed.
   startBillingBai32Reconciliation();
   // BAI-6 Step 13A: S13.7 legacy activation worker permanently retired.
   startBillingS1382Apply();
