@@ -20451,6 +20451,138 @@ app.patch("/api/admin/billing/assignments/:id", requireAdmin, requireSuperadmin,
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
 });
 
+// BAI-5 FINAL Step 7B — explicit, audited Superadmin assignment override.
+// This route NEVER performs a direct assignment update. The canonical RPC owns
+// validation, locking, mutation and durable evidence in billing_superadmin_overrides.
+const BAI5_SUPERADMIN_OVERRIDE_TYPES = new Set([
+  "correct_metadata",
+  "correct_effective_end",
+  "correct_trial_configuration",
+  "repair_assignment_identity",
+]);
+
+function bai5SuperadminOverrideErrorStatus(message) {
+  const code = String(message || "bai5_superadmin_override_failed").split("\n")[0];
+  if (/superadmin_required|forbidden|actor_mismatch/.test(code)) return 403;
+  if (/actor_not_found|assignment_not_found|pool_not_found/.test(code)) return 404;
+  if (/required|invalid|too_short|too_long|payload|override_type|reason/.test(code)) return 400;
+  if (/conflict|not_allowed|not_permitted|financial|active_change|overlap|immutable/.test(code)) return 409;
+  return 500;
+}
+
+app.post("/api/admin/billing/assignments/:id/override", requireAdmin, requireSuperadmin, requireBillingAssignments, async (req, res) => {
+  try {
+    const assignmentId = String(req.params.id || "").trim().toLowerCase();
+    if (!UUID_V1_TO_V5_RE.test(assignmentId)) {
+      return res.status(400).json({ error: "assignment_id_invalid" });
+    }
+
+    const overrideType = String(req.body?.override_type || "").trim().toLowerCase();
+    if (!BAI5_SUPERADMIN_OVERRIDE_TYPES.has(overrideType)) {
+      return res.status(400).json({ error: "override_type_invalid" });
+    }
+
+    const reason = String(req.body?.reason || "").normalize("NFC").trim();
+    if (reason.length < 10) return res.status(400).json({ error: "override_reason_too_short" });
+    if (reason.length > 1000) return res.status(400).json({ error: "override_reason_too_long" });
+
+    const payload = req.body?.payload;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return res.status(400).json({ error: "override_payload_object_required" });
+    }
+
+    // Keep the browser request bounded before it reaches the SECURITY DEFINER RPC.
+    let payloadBytes = 0;
+    try {
+      payloadBytes = Buffer.byteLength(JSON.stringify(payload), "utf8");
+    } catch (_) {
+      return res.status(400).json({ error: "override_payload_invalid" });
+    }
+    if (payloadBytes > 16 * 1024) {
+      return res.status(400).json({ error: "override_payload_too_large" });
+    }
+
+    const { data: before, error: beforeError } = await supabase
+      .from("pool_billing_assignments")
+      .select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to,trial_ends_at,post_trial_offer_id,post_trial_mode,source,created_at")
+      .eq("id", assignmentId)
+      .maybeSingle();
+    if (beforeError) return res.status(500).json({ error: beforeError.message });
+    if (!before) return res.status(404).json({ error: "assignment_not_found" });
+
+    const rpcStartedAt = new Date().toISOString();
+    const { data: result, error: rpcError } = await supabase.rpc(
+      "fn_billing_v1_bai5_superadmin_assignment_override",
+      {
+        p_actor: req.admin.id,
+        p_assignment: assignmentId,
+        p_override_type: overrideType,
+        p_reason: reason,
+        p_payload: payload,
+      }
+    );
+
+    if (rpcError) {
+      const code = String(rpcError.message || "bai5_superadmin_override_failed").split("\n")[0];
+      return res.status(bai5SuperadminOverrideErrorStatus(code)).json({ error: code });
+    }
+
+    const { data: after, error: afterError } = await supabase
+      .from("pool_billing_assignments")
+      .select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to,trial_ends_at,post_trial_offer_id,post_trial_mode,source,created_at")
+      .eq("id", assignmentId)
+      .maybeSingle();
+    if (afterError) return res.status(500).json({ error: afterError.message });
+    if (!after) return res.status(500).json({ error: "assignment_missing_after_override" });
+
+    // Retrieve the durable evidence written by the RPC. Match on actor,
+    // assignment, type, reason and request time to avoid selecting older evidence.
+    const { data: evidence, error: evidenceError } = await supabase
+      .from("billing_superadmin_overrides")
+      .select("id,actor_id,pool_id,assignment_id,override_type,reason,before_snapshot,requested_payload,after_snapshot,created_at")
+      .eq("actor_id", req.admin.id)
+      .eq("assignment_id", assignmentId)
+      .eq("override_type", overrideType)
+      .eq("reason", reason)
+      .gte("created_at", rpcStartedAt)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (evidenceError) return res.status(500).json({ error: evidenceError.message });
+    if (!evidence) return res.status(500).json({ error: "override_evidence_missing_after_rpc" });
+
+    await insertAudit({
+      event_type: "billing_pool_assignment_overridden",
+      status: "success",
+      entity_type: "pool_billing_assignment",
+      entity_id: assignmentId,
+      actor_type: "admin_user",
+      actor_id: req.admin.id,
+      pool_id: after.pool_id,
+      message: "Correction exceptionnelle Superadmin appliquée",
+      metadata: {
+        engine: "billing-bai5-superadmin-override-v1",
+        override_id: evidence.id,
+        override_type: overrideType,
+        reason,
+        before,
+        after,
+        rpc_result: result,
+      },
+    });
+
+    return res.status(200).json({
+      ok: true,
+      engine: "billing-bai5-superadmin-override-v1",
+      item: after,
+      evidence,
+      result,
+    });
+  } catch (e) {
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
 function normalizeBillingChange(body = {}) {
   const pool_id = String(body.pool_id || "").trim();
   const target_offer_id = String(body.target_offer_id || "").trim();
