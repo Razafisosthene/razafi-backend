@@ -17,7 +17,10 @@
 
   function error(message){const e=$("#error");e.textContent=message||"";e.style.display=message?"block":"none"}
   function label(v){return labels[v]||v||"—"}
-  function validPhone(v){return /^0(34|37|38)\d{7}$/.test(String(v||"").replace(/[\s-]/g,""))}
+  function validPhone(v){
+    const s=String(v||"").trim().replace(/[\s()-]/g,"");
+    return /^(?:0(?:34|36|37|38)\d{7}|\+?261(?:34|36|37|38)\d{7})$/.test(s);
+  }
   function poolName(p){return [p?.brand_name,p?.name].filter(Boolean).join(" — ")||p?.name||"Pool"}
   function poolFor(id){return (billing?.pools||[]).find(p=>p.id===id)||(commission?.pools||[]).find(p=>p.id===id)||null}
   function currentAssignment(poolId){return (billing?.assignments||[]).find(x=>x.pool_id===poolId)||null}
@@ -150,7 +153,7 @@
     if(p&&["initiated","pending"].includes(p.status))return `<div class="sub-status wait" data-payment-state="${esc(p.request_ref)}"><strong>Confirmation MVola en cours</strong><br>Ne relancez pas le paiement.${steps(p.status)}<div class="sub-muted">Référence ${esc(p.request_ref)}</div></div>`;
     const failure=p?.status==="failed"?'<div class="sub-status bad">La dernière tentative n’a pas été confirmée par MVola. Réessayez seulement si aucun débit n’apparaît.</div>':"";
     if(!(billing?.payment_ui?.enabled&&billing.payment_ui.payable_invoice_ids?.includes(i.id)))return `${failure}<div class="sub-status">Paiement MVola temporairement indisponible.</div>`;
-    return `${failure}<div class="sub-form" data-pay-form="${esc(i.id)}"><label>Numéro payeur MVola<input inputmode="tel" autocomplete="tel" maxlength="16" placeholder="034 / 037 / 038…"></label><button class="sub-btn sub-pay" type="button">Payer ${money(i.amount_due_ar)}</button><div class="sub-status" role="status" aria-live="polite">La demande sera envoyée au téléphone du payeur.</div></div>`;
+    return `${failure}<div class="sub-form" data-pay-form="${esc(i.id)}"><label>Numéro payeur MVola<input inputmode="tel" autocomplete="tel" maxlength="16" placeholder="034 / 036 / 037 / 038…"></label><button class="sub-btn sub-pay" type="button">Payer ${money(i.amount_due_ar)}</button><div class="sub-status" role="status" aria-live="polite">La demande sera envoyée au téléphone du payeur.</div></div>`;
   }
 
   function renderInvoicesSection(pool){

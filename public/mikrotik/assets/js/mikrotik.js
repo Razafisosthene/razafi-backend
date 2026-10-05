@@ -3060,7 +3060,7 @@ function submitToLoginUrl(code, ev) {
       operational: true,
       backendProvider: "mvola",
       phoneLabel: "Numéro MVola payeur",
-      phonePlaceholder: "0341234567 ou +26134xxxxxxx",
+      phonePlaceholder: "034 / 036 / 037 / 038…",
       phoneExample: "0341234567",
       validPrefixes: "034, 036, 037 ou 038",
     },

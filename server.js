@@ -18674,7 +18674,7 @@ app.use("/api/voucher/activate", voucherRecoveryLimiter);
 function isValidMGPhone(phone) {
   const s = String(phone).trim();
   const regex =
-    /^(0(34|37|38)\d{7})$|^(\+261(34|37|38)\d{7})$|^(261(34|37|38)\d{7})$/;
+    /^(0(34|36|37|38)\d{7})$|^(\+261(34|36|37|38)\d{7})$|^(261(34|36|37|38)\d{7})$/;
   return regex.test(s);
 }
 
@@ -18699,7 +18699,7 @@ function paymentPhoneValidationMessage(provider) {
   if (provider === "airtel") {
     return "Numéro Airtel Money invalide. Format attendu: 033xxxxxxx, 035xxxxxxx ou format +261.";
   }
-  return "Numéro MVola invalide. Format attendu: 034xxxxxxx, 037xxxxxxx, 038xxxxxxx ou format +261.";
+  return "Numéro MVola invalide. Format attendu: 034xxxxxxx, 036xxxxxxx, 037xxxxxxx, 038xxxxxxx ou format +261.";
 }
 
 // Explicit UTC cutoff helper for RADIUS live-session comparisons.
