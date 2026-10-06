@@ -18135,6 +18135,15 @@ const BILLING_S13941_ENFORCEMENT_INTERVAL_MS = Math.max(15000,
 const BILLING_V1_INTEGRITY_WATCHDOG = billingEnvFlag("BILLING_V1_INTEGRITY_WATCHDOG", false);
 const BILLING_BAI7_WATCHDOG_INTERVAL_MS = Math.max(60000,
   Number(process.env.BILLING_BAI7_WATCHDOG_INTERVAL_MS || 300000));
+// BAI-7 Step 7B: durable Superadmin alert delivery for real critical/high
+// integrity incidents only. Known exceptions never enter the alert outbox.
+const BILLING_V1_INTEGRITY_ALERTS = billingEnvFlag("BILLING_V1_INTEGRITY_ALERTS", false);
+const BILLING_BAI7_ALERT_INTERVAL_MS = Math.max(30000,
+  Number(process.env.BILLING_BAI7_ALERT_INTERVAL_MS || 60000));
+const BILLING_BAI7_ALERT_BATCH_SIZE = Math.min(25, Math.max(1,
+  Number(process.env.BILLING_BAI7_ALERT_BATCH_SIZE || 10)));
+const BILLING_BAI7_ALERT_LEASE_SECONDS = Math.min(600, Math.max(30,
+  Number(process.env.BILLING_BAI7_ALERT_LEASE_SECONDS || 120)));
 // S13.8.4.1: freezes the closed-month, paid WiFi commission truth once per
 // pool. It prepares no payout, sends no email and performs no money transfer.
 const BILLING_V1_COMMISSION_MONTHLY_SOURCE = billingEnvFlag("BILLING_V1_COMMISSION_MONTHLY_SOURCE", false);
@@ -21213,6 +21222,260 @@ function startBillingBai7IntegrityWatchdog() {
   try { billingBai7WatchdogTimer.unref?.(); } catch (_) {}
 }
 
+// BAI-7 Step 7B — durable Superadmin integrity alerts.
+// Only alert-outbox rows created by PostgreSQL are eligible here. The outbox
+// excludes known exceptions and only contains real critical/high incidents.
+let billingBai7AlertRunning = false;
+let billingBai7AlertTimer = null;
+
+async function loadBillingIntegritySuperadminEmail() {
+  const { data, error } = await supabase
+    .from("admin_users")
+    .select("id,email,is_active,role,created_at")
+    .eq("role", "superadmin")
+    .eq("is_active", true)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+
+  const canonical = normalizeEmail(data?.email);
+  if (canonical && isValidEmail(canonical)) return canonical;
+
+  const fallback = normalizeEmail(OPS_EMAIL);
+  return fallback && isValidEmail(fallback) ? fallback : "";
+}
+
+function billingIntegrityPoolDisplayName(pool) {
+  return [pool?.brand_name, pool?.name].filter(Boolean).join(" — ")
+    || pool?.name
+    || "Pool RAZAFI";
+}
+
+function billingIntegritySeverityLabel(value) {
+  const severity = String(value || "").trim().toLowerCase();
+  if (severity === "critical") return "CRITIQUE";
+  if (severity === "high") return "ÉLEVÉ";
+  if (severity === "warning") return "AVERTISSEMENT";
+  return "INFO";
+}
+
+function buildBillingIntegritySuperadminEmail(alert, pool) {
+  const resolved = String(alert?.event_type || "") === "incident_resolved";
+  const severity = billingIntegritySeverityLabel(alert?.severity);
+  const poolName = alert?.pool_id ? billingIntegrityPoolDisplayName(pool) : "Plateforme RAZAFI";
+  const subject = resolved
+    ? `RAZAFI — Incident facturation résolu · ${String(alert?.rule_code || "BAI-7")}`
+    : `RAZAFI — Incident facturation ${severity} · ${String(alert?.rule_code || "BAI-7")}`;
+
+  const text = [
+    "Bonjour,",
+    "",
+    resolved
+      ? "Le Watchdog BAI-7 ne détecte plus cet incident de facturation."
+      : "Le Watchdog BAI-7 a détecté une incohérence de facturation nécessitant une vérification Superadmin.",
+    "",
+    `Statut : ${resolved ? "Résolu" : "Ouvert"}`,
+    `Sévérité : ${severity}`,
+    `Règle : ${String(alert?.rule_code || "—")}`,
+    `Pool : ${poolName}`,
+    `Sujet : ${String(alert?.subject_key || "—")}`,
+    `Résumé : ${String(alert?.summary || "—")}`,
+    alert?.recommendation ? `Action recommandée : ${String(alert.recommendation)}` : "",
+    `Détections : ${Number(alert?.detection_count || 0)}`,
+    alert?.first_detected_at ? `Première détection : ${String(alert.first_detected_at)}` : "",
+    alert?.last_detected_at ? `Dernière détection : ${String(alert.last_detected_at)}` : "",
+    resolved && alert?.resolved_at ? `Résolution : ${String(alert.resolved_at)}` : "",
+    "",
+    "Aucune correction automatique n’a été effectuée. BAI-7 reste strictement en mode observe_only.",
+    "",
+    "Consultez RAZAFI Admin > Intégrité de la facturation pour les preuves et l’historique.",
+    "",
+    "RAZAFI",
+  ].filter(Boolean).join("\n");
+
+  return { subject, text };
+}
+
+async function sendBillingIntegritySuperadminEmail(recipient, alert, pool) {
+  const to = String(recipient || "").trim();
+  if (!mailer) return { sent: false, error: "mailer_unavailable", messageId: null };
+  if (!to) return { sent: false, error: "superadmin_email_unavailable", messageId: null };
+
+  const message = buildBillingIntegritySuperadminEmail(alert, pool);
+
+  try {
+    const info = await mailer.sendMail({
+      from: MAIL_FROM,
+      to,
+      subject: message.subject,
+      text: message.text,
+      html: renderRazafiEmailHtml({
+        title: message.subject,
+        text: message.text,
+        eyebrow: "INTÉGRITÉ FACTURATION",
+      }),
+    });
+
+    return {
+      sent: true,
+      error: null,
+      messageId: String(info?.messageId || "").trim() || null,
+    };
+  } catch (error) {
+    return {
+      sent: false,
+      error: String(error?.message || error || "integrity_alert_send_failed").slice(0, 1000),
+      messageId: null,
+    };
+  }
+}
+
+async function reconcileBillingBai7IntegrityAlerts() {
+  if (!BILLING_V1_INTEGRITY_ALERTS) {
+    return { ok: true, skipped: "disabled" };
+  }
+
+  if (billingBai7AlertRunning) {
+    return { ok: true, skipped: "already_running" };
+  }
+
+  billingBai7AlertRunning = true;
+
+  try {
+    const { data: claimed, error: claimError } = await supabase.rpc(
+      "fn_billing_v1_bai7_claim_integrity_alerts",
+      {
+        p_limit: BILLING_BAI7_ALERT_BATCH_SIZE,
+        p_lease_seconds: BILLING_BAI7_ALERT_LEASE_SECONDS,
+      }
+    );
+
+    if (claimError) throw claimError;
+
+    const rows = Array.isArray(claimed) ? claimed : [];
+    if (!rows.length) {
+      return { ok: true, claimed: 0, sent: 0, failed: 0 };
+    }
+
+    const recipient = await loadBillingIntegritySuperadminEmail();
+
+    const poolIds = [...new Set(
+      rows.map((row) => String(row?.pool_id || "").trim()).filter(Boolean)
+    )];
+
+    let pools = [];
+    if (poolIds.length) {
+      const { data, error } = await supabase
+        .from("internet_pools")
+        .select("id,name,brand_name")
+        .in("id", poolIds);
+      if (error) throw error;
+      pools = data || [];
+    }
+
+    const poolMap = new Map(pools.map((pool) => [String(pool.id), pool]));
+
+    let sent = 0;
+    let failed = 0;
+    let dead = 0;
+
+    for (const alert of rows) {
+      const pool = poolMap.get(String(alert?.pool_id || "")) || null;
+
+      const delivery = await sendBillingIntegritySuperadminEmail(
+        recipient,
+        alert,
+        pool
+      );
+
+      const { data: completion, error: completionError } = await supabase.rpc(
+        "fn_billing_v1_bai7_complete_integrity_alert",
+        {
+          p_alert_id: alert.alert_id,
+          p_lease_token: alert.lease_token,
+          p_sent: delivery.sent,
+          p_provider_message_id: delivery.messageId,
+          p_error: delivery.error,
+        }
+      );
+
+      if (completionError) {
+        console.error("[BILLING BAI-7][ALERT] completion failed", {
+          alertId: alert.alert_id,
+          error: completionError.message || completionError,
+        });
+        failed += 1;
+        continue;
+      }
+
+      if (delivery.sent) {
+        sent += 1;
+      } else if (String(completion?.status || "") === "dead") {
+        dead += 1;
+      } else {
+        failed += 1;
+      }
+    }
+
+    const summary = {
+      ok: true,
+      claimed: rows.length,
+      sent,
+      failed,
+      dead,
+    };
+
+    console.info("[BILLING BAI-7][ALERT] delivery pass", summary);
+    return summary;
+  } finally {
+    billingBai7AlertRunning = false;
+  }
+}
+
+function startBillingBai7IntegrityAlerts() {
+  if (
+    !BILLING_V1_INTEGRITY_ALERTS ||
+    billingBai7AlertTimer
+  ) {
+    return;
+  }
+
+  console.info("[BILLING BAI-7][ALERT] Superadmin alert worker enabled", {
+    intervalMs: BILLING_BAI7_ALERT_INTERVAL_MS,
+    batchSize: BILLING_BAI7_ALERT_BATCH_SIZE,
+    leaseSeconds: BILLING_BAI7_ALERT_LEASE_SECONDS,
+    recipient: "canonical_superadmin",
+    knownExceptionsEmailed: false,
+    actionPolicy: "observe_only",
+  });
+
+  const first = setTimeout(
+    () => void reconcileBillingBai7IntegrityAlerts().catch((error) =>
+      console.error(
+        "[BILLING BAI-7][ALERT] startup delivery failed",
+        error?.message || error
+      )
+    ),
+    8000
+  );
+
+  try { first.unref?.(); } catch (_) {}
+
+  billingBai7AlertTimer = setInterval(
+    () => void reconcileBillingBai7IntegrityAlerts().catch((error) =>
+      console.error(
+        "[BILLING BAI-7][ALERT] scheduled delivery failed",
+        error?.message || error
+      )
+    ),
+    BILLING_BAI7_ALERT_INTERVAL_MS
+  );
+
+  try { billingBai7AlertTimer.unref?.(); } catch (_) {}
+}
+
 // BAI-6 Step 13A: S13.7 legacy activation worker retired.
 // Canonical subscription state is owned by pool_billing_periods / invoices / BAI-3.
 
@@ -22108,6 +22371,134 @@ async function billingS131012LoadLegacyResponse() {
     recipient_source: "pool.owner_admin_user_id",
   };
 }
+
+// BAI-7 Step 7B — concise Superadmin Billing integrity visibility.
+// Read-only. There is deliberately no repair/retry/mutation endpoint here.
+app.get("/api/admin/billing/integrity", requireAdmin, requireSuperadmin, async (_req, res) => {
+  try {
+    const [{ data: incidents, error: incidentError }, { data: alerts, error: alertError }] = await Promise.all([
+      supabase
+        .from("billing_integrity_incidents")
+        .select(
+          "id,rule_code,rule_version,severity,classification,status,subject_key,fingerprint," +
+          "pool_id,entity_type,entity_id,summary,recommendation,exception_code," +
+          "first_detected_at,last_detected_at,detection_count,resolved_at,resolution_reason," +
+          "action_policy,first_evidence,latest_evidence,created_at,updated_at"
+        )
+        .order("last_detected_at", { ascending: false })
+        .limit(250),
+
+      supabase
+        .from("billing_integrity_alert_outbox")
+        .select(
+          "id,incident_id,event_key,event_type,severity,status,attempts,next_attempt_at," +
+          "provider_message_id,last_error,created_at,sent_at,updated_at"
+        )
+        .order("created_at", { ascending: false })
+        .limit(100),
+    ]);
+
+    if (incidentError || alertError) throw incidentError || alertError;
+
+    const incidentRows = incidents || [];
+    const alertRows = alerts || [];
+
+    const poolIds = [...new Set(
+      incidentRows.map((row) => String(row?.pool_id || "").trim()).filter(Boolean)
+    )];
+
+    let pools = [];
+    if (poolIds.length) {
+      const { data, error } = await supabase
+        .from("internet_pools")
+        .select("id,name,brand_name")
+        .in("id", poolIds);
+      if (error) throw error;
+      pools = data || [];
+    }
+
+    const poolMap = new Map(pools.map((pool) => [String(pool.id), pool]));
+    const alertByIncident = new Map();
+
+    for (const alert of alertRows) {
+      const key = String(alert?.incident_id || "");
+      if (!key) continue;
+      if (!alertByIncident.has(key)) alertByIncident.set(key, []);
+      alertByIncident.get(key).push(alert);
+    }
+
+    const decorate = (row) => {
+      const pool = poolMap.get(String(row?.pool_id || "")) || null;
+      return {
+        ...row,
+        pool: pool
+          ? {
+              id: pool.id,
+              name: pool.name || null,
+              brand_name: pool.brand_name || null,
+              display_name: billingIntegrityPoolDisplayName(pool),
+            }
+          : null,
+        alerts: alertByIncident.get(String(row.id)) || [],
+      };
+    };
+
+    const open = incidentRows.filter((row) => row.status === "open");
+    const openReal = open.filter((row) => row.classification === "incident");
+    const knownExceptions = open.filter((row) => row.classification === "known_exception");
+    const recentResolved = incidentRows
+      .filter((row) => row.status === "resolved")
+      .slice(0, 50);
+
+    const severityCount = (severity) =>
+      openReal.filter((row) => row.severity === severity).length;
+
+    const critical = severityCount("critical");
+    const high = severityCount("high");
+    const warning = severityCount("warning");
+    const info = severityCount("info");
+
+    const health = critical > 0
+      ? "critical"
+      : (high > 0 || warning > 0 ? "attention" : "healthy");
+
+    const pendingAlerts = alertRows.filter((row) =>
+      ["pending", "processing", "failed"].includes(String(row.status || ""))
+    );
+    const deadAlerts = alertRows.filter((row) => row.status === "dead");
+
+    return res.json({
+      ok: true,
+      engine: "billing-bai7-superadmin-integrity-v1",
+      action_policy: "observe_only",
+      repair_actions_enabled: false,
+      email_policy: {
+        severities: ["critical", "high"],
+        known_exceptions_emailed: false,
+        recipient: "canonical_superadmin",
+      },
+      summary: {
+        health,
+        open_real_incidents: openReal.length,
+        open_known_exceptions: knownExceptions.length,
+        open_critical: critical,
+        open_high: high,
+        open_warning: warning,
+        open_info: info,
+        recent_resolved: recentResolved.length,
+        alerts_pending_or_retrying: pendingAlerts.length,
+        alerts_dead: deadAlerts.length,
+      },
+      open_incidents: openReal.map(decorate),
+      known_exceptions: knownExceptions.map(decorate),
+      recent_resolved: recentResolved.map(decorate),
+      recent_alerts: alertRows,
+    });
+  } catch (error) {
+    console.error("[BILLING BAI-7][INTEGRITY] Superadmin visibility failed", error?.message || error);
+    return res.status(500).json({ error: "billing_integrity_visibility_failed" });
+  }
+});
 
 app.get("/api/admin/billing/exceptions", requireAdmin, requireSuperadmin, async (req, res) => {
   try {
@@ -46972,6 +47363,7 @@ app.listen(PORT, "0.0.0.0", () => {
   // BAI-6 Step 13B: legacy S13.6/S13.6.5 reconciliation code removed.
   startBillingBai32Reconciliation();
   startBillingBai7IntegrityWatchdog();
+  startBillingBai7IntegrityAlerts();
   // BAI-6 Step 13A: S13.7 legacy activation worker permanently retired.
   startBillingS1382Apply();
   startBillingS13932MonthlySubscription();
