@@ -18129,6 +18129,12 @@ const BILLING_S13932_MONTHLY_INTERVAL_MS = Math.max(60000,
 // single operational kill switch because suspension blocks new WiFi purchases.
 const BILLING_S13941_ENFORCEMENT_INTERVAL_MS = Math.max(15000,
   Number(process.env.BILLING_S13941_ENFORCEMENT_INTERVAL_MS || 60000));
+// BAI-7: observation-only Billing Integrity Watchdog.
+// Independent kill switch: the worker may persist integrity incidents but
+// NEVER repairs or mutates invoices, payments, changes, assignments or periods.
+const BILLING_V1_INTEGRITY_WATCHDOG = billingEnvFlag("BILLING_V1_INTEGRITY_WATCHDOG", false);
+const BILLING_BAI7_WATCHDOG_INTERVAL_MS = Math.max(60000,
+  Number(process.env.BILLING_BAI7_WATCHDOG_INTERVAL_MS || 300000));
 // S13.8.4.1: freezes the closed-month, paid WiFi commission truth once per
 // pool. It prepares no payout, sends no email and performs no money transfer.
 const BILLING_V1_COMMISSION_MONTHLY_SOURCE = billingEnvFlag("BILLING_V1_COMMISSION_MONTHLY_SOURCE", false);
@@ -21095,6 +21101,116 @@ function startBillingBai32Reconciliation() {
   );
 
   try { billingBai32ReconciliationTimer.unref?.(); } catch (_) {}
+}
+
+// BAI-7 — Billing Integrity Watchdog.
+// Observation-only operational worker. PostgreSQL owns scanning, fingerprinting,
+// deduplication, known-exception classification and durable incident persistence.
+// Node only schedules the persistence RPC and logs compact operational summaries.
+let billingBai7WatchdogRunning = false;
+let billingBai7WatchdogTimer = null;
+
+function billingBai7WatchdogSummary(result) {
+  const x = result && typeof result === "object" ? result : {};
+  return {
+    detected: Number(x.detected || 0),
+    detectedIncidents: Number(x.detected_incidents || 0),
+    detectedKnownExceptions: Number(x.detected_known_exceptions || 0),
+    created: Number(x.created || 0),
+    refreshed: Number(x.refreshed || 0),
+    resolved: Number(x.resolved || 0),
+    openAfter: Number(x.open_after || 0),
+    openIncidentsAfter: Number(x.open_incidents_after || 0),
+    openKnownExceptionsAfter: Number(x.open_known_exceptions_after || 0),
+    actionPolicy: String(x.action_policy || ""),
+  };
+}
+
+async function reconcileBillingBai7IntegrityWatchdog() {
+  if (!BILLING_V1_INTEGRITY_WATCHDOG) {
+    return { ok: true, skipped: "disabled" };
+  }
+
+  if (billingBai7WatchdogRunning) {
+    return { ok: true, skipped: "already_running" };
+  }
+
+  billingBai7WatchdogRunning = true;
+
+  try {
+    const { data, error } = await supabase.rpc(
+      "fn_billing_v1_bai7_persist_integrity_scan"
+    );
+
+    if (error) throw error;
+
+    const result = data && typeof data === "object" ? data : {};
+    const summary = billingBai7WatchdogSummary(result);
+
+    // Contract check: BAI-7 V1 must remain observation-only.
+    if (summary.actionPolicy !== "observe_only") {
+      throw new Error("bai7_watchdog_action_policy_invalid");
+    }
+
+    // Low-noise logging:
+    // - real open incidents always surface loudly;
+    // - state transitions are logged;
+    // - unchanged known exceptions are intentionally silent.
+    if (summary.openIncidentsAfter > 0) {
+      console.error("[BILLING BAI-7][WATCHDOG] integrity incident(s) open", summary);
+    } else if (summary.created > 0 || summary.resolved > 0) {
+      console.info("[BILLING BAI-7][WATCHDOG] integrity state changed", summary);
+    }
+
+    return { ok: true, ...result };
+  } finally {
+    billingBai7WatchdogRunning = false;
+  }
+}
+
+function startBillingBai7IntegrityWatchdog() {
+  if (
+    !BILLING_V1_INTEGRITY_WATCHDOG ||
+    billingBai7WatchdogTimer
+  ) {
+    return;
+  }
+
+  console.info("[BILLING BAI-7] integrity watchdog enabled", {
+    intervalMs: BILLING_BAI7_WATCHDOG_INTERVAL_MS,
+    actionPolicy: "observe_only",
+  });
+
+  const first = setTimeout(
+    () => void reconcileBillingBai7IntegrityWatchdog()
+      .then((result) => {
+        console.info(
+          "[BILLING BAI-7] startup integrity scan",
+          billingBai7WatchdogSummary(result)
+        );
+      })
+      .catch((error) =>
+        console.error(
+          "[BILLING BAI-7] startup integrity scan failed",
+          error?.message || error
+        )
+      ),
+    5000
+  );
+
+  try { first.unref?.(); } catch (_) {}
+
+  billingBai7WatchdogTimer = setInterval(
+    () => void reconcileBillingBai7IntegrityWatchdog().catch((error) =>
+      console.error(
+        "[BILLING BAI-7] scheduled integrity scan failed",
+        error?.message || error
+      )
+    ),
+    BILLING_BAI7_WATCHDOG_INTERVAL_MS
+  );
+
+  try { billingBai7WatchdogTimer.unref?.(); } catch (_) {}
 }
 
 // BAI-6 Step 13A: S13.7 legacy activation worker retired.
@@ -46855,6 +46971,7 @@ app.listen(PORT, "0.0.0.0", () => {
   startMvolaRecoveryJob();
   // BAI-6 Step 13B: legacy S13.6/S13.6.5 reconciliation code removed.
   startBillingBai32Reconciliation();
+  startBillingBai7IntegrityWatchdog();
   // BAI-6 Step 13A: S13.7 legacy activation worker permanently retired.
   startBillingS1382Apply();
   startBillingS13932MonthlySubscription();
