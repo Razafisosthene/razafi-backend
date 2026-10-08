@@ -18124,6 +18124,12 @@ const BILLING_S1383_NOTIFICATION_BATCH_SIZE = Math.min(25, Math.max(1,
 // idempotent across startup, interval, restart and multiple Render workers.
 const BILLING_S13932_MONTHLY_INTERVAL_MS = Math.max(60000,
   Number(process.env.BILLING_S13932_MONTHLY_INTERVAL_MS || 300000));
+// S14.5: canonical Commission period materialization. Like the Subscription
+// monthly cycle, this is a core Billing responsibility and follows
+// BILLING_V1_ENABLED. PostgreSQL owns the immutable economic snapshot and
+// idempotency; Node only schedules the canonical RPC.
+const BILLING_S145_COMMISSION_PERIOD_INTERVAL_MS = Math.max(60000,
+  Number(process.env.BILLING_S145_COMMISSION_PERIOD_INTERVAL_MS || 300000));
 // S13.9.4.1: canonical global Subscription enforcement. This is deliberately
 // independent from the retired Pilot tables. BILLING_V1_ENFORCE remains the
 // single operational kill switch because suspension blocks new WiFi purchases.
@@ -21724,6 +21730,17 @@ async function reconcileBillingS1382Changes() {
           changeId: item.change_id, error: item.error,
         });
       }
+
+      // A due change may have just created a Commission assignment at the
+      // month boundary. Prompt S14.5 immediately; its DB lock + immutable
+      // snapshot checks make this safe to repeat.
+      if (Number(data?.applied || 0) > 0) {
+        setTimeout(() => void runBillingS145CommissionPeriods("change_apply")
+          .catch((error) => console.error(
+            "[BILLING S14.5] post-change materialization",
+            error?.message || error
+          )), 0);
+      }
     }
     return data || { ok: true, checked: 0 };
   } finally { billingS1382ApplyRunning = false; }
@@ -21961,6 +21978,96 @@ function startBillingS13932MonthlySubscription() {
     .catch((error) => console.error("[BILLING S13.9.3.2] scheduled", error?.message || error)),
   BILLING_S13932_MONTHLY_INTERVAL_MS);
   try { billingS13932MonthlyTimer.unref?.(); } catch (_) {}
+}
+
+// S14.5 — canonical Commission monthly period materializer.
+// PostgreSQL selects every effective commercial/trial Commission assignment for
+// the Madagascar business month and freezes its immutable economic snapshot in
+// pool_billing_periods. No invoice, payment, voucher or WiFi action is performed.
+let billingS145CommissionPeriodRunning = false;
+let billingS145CommissionPeriodTimer = null;
+
+async function runBillingS145CommissionPeriods(reason = "interval") {
+  if (!BILLING_V1_ENABLED) {
+    return { ok: true, skipped: "billing_master_disabled" };
+  }
+  if (!supabase) {
+    return { ok: false, skipped: "supabase_unavailable" };
+  }
+  if (billingS145CommissionPeriodRunning) {
+    return { ok: true, skipped: "already_running" };
+  }
+
+  billingS145CommissionPeriodRunning = true;
+  try {
+    const { data, error } = await supabase.rpc(
+      "fn_billing_v1_s14_5_materialize_commission_periods",
+      {
+        p_period_month: null,
+        p_now: new Date().toISOString(),
+        p_execute: true,
+      }
+    );
+
+    if (error) throw error;
+
+    const result = Array.isArray(data) ? (data[0] || null) : data;
+    if (!result || result.ok !== true) {
+      const details = JSON.stringify(result?.errors || []).slice(0, 1600);
+      throw new Error(`commission_period_materialization_invalid_result:${details}`);
+    }
+
+    if (
+      Number(result.created_period_count || 0) > 0 ||
+      Number(result.candidate_count || 0) > 0
+    ) {
+      console.info("[BILLING S14.5] canonical Commission periods", {
+        reason,
+        period_start: result.period_start || null,
+        candidate_count: Number(result.candidate_count || 0),
+        created_period_count: Number(result.created_period_count || 0),
+        existing_period_count: Number(result.existing_period_count || 0),
+        idempotent: result.idempotent === true,
+        invoice_created: result.invoice_created === true,
+        wifi_changed: result.wifi_changed === true,
+      });
+    }
+
+    return result;
+  } finally {
+    billingS145CommissionPeriodRunning = false;
+  }
+}
+
+function startBillingS145CommissionPeriods() {
+  if (!BILLING_V1_ENABLED || billingS145CommissionPeriodTimer) return;
+
+  console.info("[BILLING S14.5] canonical Commission period materializer enabled", {
+    timezone: "Indian/Antananarivo",
+    intervalMs: BILLING_S145_COMMISSION_PERIOD_INTERVAL_MS,
+    invoicesCreated: false,
+    paymentsStarted: false,
+    wifiChanged: false,
+  });
+
+  // S13.8.2 starts at ~3s. Give due assignment changes a short head start,
+  // then materialize the current-month Commission truth. If ordering ever
+  // reverses, the recurring pass safely catches it.
+  const startupTimer = setTimeout(
+    () => void runBillingS145CommissionPeriods("startup").catch((error) =>
+      console.error("[BILLING S14.5] startup", error?.message || error)
+    ),
+    8000
+  );
+  try { startupTimer.unref?.(); } catch (_) {}
+
+  billingS145CommissionPeriodTimer = setInterval(
+    () => void runBillingS145CommissionPeriods("interval").catch((error) =>
+      console.error("[BILLING S14.5] scheduled", error?.message || error)
+    ),
+    BILLING_S145_COMMISSION_PERIOD_INTERVAL_MS
+  );
+  try { billingS145CommissionPeriodTimer.unref?.(); } catch (_) {}
 }
 
 // S13.9.4.1 — canonical global Subscription access enforcement.
@@ -47589,6 +47696,7 @@ app.listen(PORT, "0.0.0.0", () => {
   // BAI-6 Step 13A: S13.7 legacy activation worker permanently retired.
   startBillingS1382Apply();
   startBillingS13932MonthlySubscription();
+  startBillingS145CommissionPeriods();
   startBillingS13941Enforcement();
   startBillingS1383Notifications();
   startAdminAccessNotifications();
