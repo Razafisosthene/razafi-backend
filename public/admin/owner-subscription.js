@@ -263,6 +263,14 @@
     const offers=configuration.offers||[],effective=configuration.rules?.effective_on||"—",today=configuration.rules?.today||"9999-12-31";
     const current=(configuration.current_assignments||[]).find(x=>x.pool_id===pool.id)||null;
     const open=(configuration.open_changes||[]).find(x=>x.pool_id===pool.id)||null;
+    const privateLocked=current?.owner_change_locked===true||current?.offer_visibility==="private";
+    if(privateLocked){
+      const s=open?.commercial_snapshot||{};
+      const upcoming=open
+        ? `<div class="sub-status wait" style="margin-top:10px"><strong>Changement prévu par RAZAFI</strong><br>Nouvelle offre : ${esc(offerDisplayTitle(s.offer_title||"Offre RAZAFI"))}<br>Mode : ${esc(label(open.target_billing_mode))}<br>Prise d’effet : <strong>${esc(open.effective_on||"—")}</strong></div>`
+        : "";
+      return `<div data-config-pool="${esc(pool.id)}"><div class="sub-status"><strong>Offre gérée par RAZAFI</strong><br>Le changement de cette offre est géré par l’administration RAZAFI.</div>${upcoming}</div>`;
+    }
     if(open){
       const s=open.commercial_snapshot||{},canCancel=["scheduled","pending_payment"].includes(open.status)&&String(open.effective_on)>today;
       return `<div data-config-pool="${esc(pool.id)}"><div class="sub-status wait"><strong>Changement programmé</strong><br>Nouvelle offre : ${esc(offerDisplayTitle(s.offer_title||"Offre RAZAFI"))}<br>Mode : ${esc(label(open.target_billing_mode))}<br>Prise d’effet : <strong>${esc(open.effective_on)}</strong></div>${canCancel?`<button class="sub-btn sub-cancel" style="margin-top:10px" data-cancel-change="${esc(open.id)}" type="button">Annuler le changement</button>`:""}</div>`;
@@ -407,7 +415,14 @@
       button.disabled=true;
       await api("/api/owner/billing/changes",{method:"POST",body:JSON.stringify({pool_id:pool.id,offer_id:offer.id,plan_choice:plan,billing_mode:mode,idempotency_key:changeKey(pool.id)})});
       await load();
-    }catch(e){error(e.message);if(button)button.disabled=false}
+    }catch(e){
+      if(e.code==="owner_private_offer_change_forbidden"){
+        error("Cette offre est gérée par RAZAFI. Le changement d’offre est actuellement réservé à l’administration RAZAFI.");
+      }else{
+        error(e.message);
+      }
+      if(button)button.disabled=false;
+    }
   }
 
   async function cancelChange(button){
