@@ -272,8 +272,14 @@
       return `<div data-config-pool="${esc(pool.id)}"><div class="sub-status"><strong>Offre gérée par RAZAFI</strong><br>Le changement de cette offre est géré par l’administration RAZAFI.</div>${upcoming}</div>`;
     }
     if(open){
-      const s=open.commercial_snapshot||{},canCancel=["scheduled","pending_payment"].includes(open.status)&&String(open.effective_on)>today;
-      return `<div data-config-pool="${esc(pool.id)}"><div class="sub-status wait"><strong>Changement programmé</strong><br>Nouvelle offre : ${esc(offerDisplayTitle(s.offer_title||"Offre RAZAFI"))}<br>Mode : ${esc(label(open.target_billing_mode))}<br>Prise d’effet : <strong>${esc(open.effective_on)}</strong></div>${canCancel?`<button class="sub-btn sub-cancel" style="margin-top:10px" data-cancel-change="${esc(open.id)}" type="button">Annuler le changement</button>`:""}</div>`;
+      const s=open.commercial_snapshot||{};
+      const ownerRequested=open.owner_cancellable===true&&open.change_origin==="owner";
+      const canCancel=ownerRequested&&["scheduled","pending_payment"].includes(open.status)&&String(open.effective_on)>today;
+      const title=ownerRequested?"Changement programmé":"Changement prévu par RAZAFI";
+      const note=ownerRequested
+        ? ""
+        : '<div class="sub-muted" style="margin-top:8px">Ce changement a été programmé par l’administration RAZAFI et ne peut pas être annulé depuis cet espace.</div>';
+      return `<div data-config-pool="${esc(pool.id)}"><div class="sub-status wait"><strong>${title}</strong><br>Nouvelle offre : ${esc(offerDisplayTitle(s.offer_title||"Offre RAZAFI"))}<br>Mode : ${esc(label(open.target_billing_mode))}<br>Prise d’effet : <strong>${esc(open.effective_on)}</strong>${note}</div>${canCancel?`<button class="sub-btn sub-cancel" style="margin-top:10px" data-cancel-change="${esc(open.id)}" type="button">Annuler le changement</button>`:""}</div>`;
     }
     const cards=offers.map(o=>{
       const v=activeVersion(o.id);if(!v)return"";
@@ -428,7 +434,17 @@
   async function cancelChange(button){
     if(!confirm("Annuler ce changement programmé ? Votre offre actuelle restera active."))return;
     button.disabled=true;
-    try{await api(`/api/owner/billing/changes/${encodeURIComponent(button.dataset.cancelChange)}/cancel`,{method:"PATCH",body:"{}"});await load()}catch(e){error(e.message);button.disabled=false}
+    try{
+      await api(`/api/owner/billing/changes/${encodeURIComponent(button.dataset.cancelChange)}/cancel`,{method:"PATCH",body:"{}"});
+      await load();
+    }catch(e){
+      if(e.code==="change_not_owner"){
+        error("Ce changement a été programmé par RAZAFI et ne peut pas être annulé depuis cet espace.");
+      }else{
+        error(e.message);
+      }
+      button.disabled=false;
+    }
   }
 
   async function optional(url){
