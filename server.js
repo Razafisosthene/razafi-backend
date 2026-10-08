@@ -20839,8 +20839,10 @@ function s1381ErrorStatus(message) {
   return 500;
 }
 
-// S13.8.1 owner catalog and scheduling engine. This projection exposes only
-// active PUBLIC offers. Private/partner offers never leave the server.
+// S13.8.1 owner catalog and scheduling engine. The selectable catalog exposes
+// only active PUBLIC offers. For an Owner's own current assignment, minimal
+// visibility/status metadata may be returned so the UI can explain a private
+// offer lock; private offers are never exposed as selectable catalog entries.
 app.get("/api/owner/billing/autonomous-catalog", requireAdmin, requireBillingOwnerAutonomousChange, async (req, res) => {
   try {
     const ownerId = String(req.admin?.id || "").trim();
@@ -20880,6 +20882,32 @@ app.get("/api/owner/billing/autonomous-catalog", requireAdmin, requireBillingOwn
       .select("offer_version_id,feature_key,enabled").in("offer_version_id", versionIds).eq("enabled", true) : empty.features;
     const combinedError = assignmentsResult.error || changesResult.error || versionsResult.error || featuresResult.error;
     if (combinedError) return res.status(500).json({ error: combinedError.message });
+
+    // Migration 2 — expose ONLY the visibility/status of the Owner's CURRENT
+    // assigned offer. The selectable catalog above remains public-only.
+    // This lets the UI explain the private-offer lock without exposing any
+    // private-offer catalog or private offers belonging to other pools.
+    const currentAssignmentRows = assignmentsResult.data || [];
+    const currentOfferIds = [...new Set(currentAssignmentRows.map((x) => x.offer_id).filter(Boolean))];
+    const currentOfferMetaById = new Map();
+    if (currentOfferIds.length) {
+      const { data: currentOfferRows, error: currentOfferError } = await supabase
+        .from("billing_offers")
+        .select("id,visibility,status")
+        .in("id", currentOfferIds);
+      if (currentOfferError) return res.status(500).json({ error: currentOfferError.message });
+      for (const row of currentOfferRows || []) currentOfferMetaById.set(row.id, row);
+    }
+    const currentAssignments = currentAssignmentRows.map((assignment) => {
+      const meta = currentOfferMetaById.get(assignment.offer_id) || null;
+      return {
+        ...assignment,
+        offer_visibility: meta?.visibility || null,
+        offer_status: meta?.status || null,
+        owner_change_locked: meta?.visibility === "private",
+      };
+    });
+
     const features = featuresResult.data || [];
     const versions = (versionsResult.data || []).map((version) => ({
       ...version,
@@ -20887,8 +20915,15 @@ app.get("/api/owner/billing/autonomous-catalog", requireAdmin, requireBillingOwn
     }));
     return res.json({
       pools: pools || [], offers: offers || [], versions,
-      current_assignments: assignmentsResult.data || [], open_changes: changesResult.data || [],
-      rules: { today, effective_on: nextEffectiveOn, owner_selectable_visibility: "public", one_open_change_per_pool: true, cancellable_before_effective_on: true },
+      current_assignments: currentAssignments, open_changes: changesResult.data || [],
+      rules: {
+        today,
+        effective_on: nextEffectiveOn,
+        owner_selectable_visibility: "public",
+        private_current_offer_locked: true,
+        one_open_change_per_pool: true,
+        cancellable_before_effective_on: true,
+      },
       capabilities: { schedule: true, cancel: true, apply: false, invoice: false, payment: false, wifi: false },
     });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
