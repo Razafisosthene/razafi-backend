@@ -3378,7 +3378,7 @@ function portalRulesInformationGroundingLog(event, details = {}) {
   }
 }
 
-async function buildPortalTrustedAssistantContext({ contextToken, identity: verifiedIdentity = null }) {
+async function buildPortalTrustedAssistantContext({ contextToken, identity: verifiedIdentity = null, includeYieldHelp = false }) {
   const identity = verifiedIdentity || resolvePortalAssistantContextToken(contextToken);
   if (!identity || !supabase) {
     return {
@@ -3479,9 +3479,12 @@ async function buildPortalTrustedAssistantContext({ contextToken, identity: veri
     let personalizedPlan = null;
     try {
       const deviceHash = personalizedDeviceHash({ poolId, clientMac });
+      const quoteFields = includeYieldHelp
+        ? "plan_type,duration_minutes,data_mb,speed_mbps,final_price_ar,status,expires_at,created_at,yield_applied,yield_class,yield_pct,yield_amount_ar"
+        : "plan_type,duration_minutes,data_mb,speed_mbps,final_price_ar,status,expires_at,created_at";
       const { data: quoteRows, error: quoteErr } = await supabase
         .from("personalized_plan_quotes")
-        .select("plan_type,duration_minutes,data_mb,speed_mbps,final_price_ar,status,expires_at,created_at")
+        .select(quoteFields)
         .eq("pool_id", poolId)
         .eq("device_hash", deviceHash)
         .order("created_at", { ascending: false })
@@ -3495,6 +3498,12 @@ async function buildPortalTrustedAssistantContext({ contextToken, identity: veri
           data_mb: q.data_mb === null ? null : (Number.isFinite(Number(q.data_mb)) ? Math.trunc(Number(q.data_mb)) : null),
           speed_mbps: Number.isFinite(Number(q.speed_mbps)) ? Number(q.speed_mbps) : null,
           final_price_ar: Number.isFinite(Number(q.final_price_ar)) ? Math.trunc(Number(q.final_price_ar)) : null,
+          ...(includeYieldHelp ? { yield: {
+            applied: q.yield_applied === true,
+            class: q.yield_class || null,
+            pct: Number(q.yield_pct || 0),
+            amount_ar: Number(q.yield_amount_ar || 0),
+          } } : {}),
           expires_in_seconds: q.expires_at
             ? Math.max(0, Math.ceil((new Date(q.expires_at).getTime() - Date.now()) / 1000))
             : null,
@@ -3505,6 +3514,17 @@ async function buildPortalTrustedAssistantContext({ contextToken, identity: veri
     }
 
     const normalizedMethods = normalizePaymentMethods(pool.payment_methods);
+    let verifiedYieldForAssistant = null;
+    if (includeYieldHelp && YIELD_ENFORCEMENT_AVAILABLE) {
+      try {
+        // The Assistant must not seed a missing Yield policy on a read-only chat.
+        const { data: existingPolicy, error: yieldPolicyError } = await supabase
+          .from("pool_yield_policies").select("pool_id").eq("pool_id", poolId).maybeSingle();
+        if (!yieldPolicyError && existingPolicy) {
+          verifiedYieldForAssistant = serializeYieldCommercialControls(await loadYieldCommercialControls(poolId));
+        }
+      } catch (_) { verifiedYieldForAssistant = null; }
+    }
 
     let trustedPlanRows = Array.isArray(planRows) ? planRows : [];
     if (YIELD_ENFORCEMENT_AVAILABLE) {
@@ -3559,6 +3579,7 @@ async function buildPortalTrustedAssistantContext({ contextToken, identity: veri
       critical_state: criticalState,
       network: networkState,
       personalized_plan: personalizedPlan,
+      ...(includeYieldHelp ? { yield_protection: verifiedYieldForAssistant } : {}),
       ...(rulesInformationGroundingEnabled ? {
         usage_rules: buildPortalGroundedUsageRules(),
         portal_announcement: groundedAnnouncement,
@@ -5464,7 +5485,7 @@ async function buildPlatformTrustedAssistantContext({ message = "", pagePath = "
       });
 
   const [catalogResult, websiteResult] = await Promise.allSettled([
-    loadCurrentPublicOfferCatalog(),
+    loadCurrentPublicOfferCatalog({ includeDetails: isAssistantDataUsageYieldEnabled("platform_prospect") }),
     websitePromise,
   ]);
 
@@ -5550,6 +5571,7 @@ function buildAnuAssistantData({ context, trustedContext, uiSnapshot }) {
             speed_mbps: trustedPp.speed_mbps ?? null,
             final_price_ar: trustedPp.final_price_ar ?? null,
             status: trustedPp.status || null,
+            ...(trustedPp.yield ? { yield: trustedPp.yield } : {}),
           } : null,
           quote_seconds_left: trustedPp?.expires_in_seconds ?? 0,
           payment_methods: Array.isArray(pool.payment_methods) ? pool.payment_methods : [],
@@ -5566,6 +5588,7 @@ function buildAnuAssistantData({ context, trustedContext, uiSnapshot }) {
       current_filter: cleanOptionalText(ui.current_filter, 40) || "Tous",
       selected_plan: selectedPlan,
       personalized_plan_context: personalizedPlanContext,
+      ...(trusted.yield_protection ? { yield_protection: trusted.yield_protection } : {}),
       status,
       portal_status_label: portalStatus,
       payment_form_state: critical.payment_state === "pending" ? "in_progress" : "idle",
@@ -5601,6 +5624,7 @@ function buildAnuAssistantData({ context, trustedContext, uiSnapshot }) {
     const bestRevenue = byPlan.slice().sort((a, b) => Number(b.total_amount_ar || 0) - Number(a.total_amount_ar || 0))[0];
     return {
       panel: cleanOptionalText(ui.panel, 40) || "unknown",
+      data_usage_protection: trusted.data_usage_protection || null,
       smart_sales: trusted.smart_sales && typeof trusted.smart_sales === "object" ? trusted.smart_sales : null,
       plans: Array.isArray(trusted.plans) ? trusted.plans : [],
       plans_summary: trusted.plans_summary || null,
@@ -12062,6 +12086,196 @@ function buildPortalDirectCriticalStateAnswer({ type, lang, trustedContext }) {
   return null;
 }
 
+// ASSISTANT DATA USAGE × YIELD V1 — additive; disabled by default.
+// Requires the pre-existing ANU verified-context gate for the relevant assistant.
+const ASSISTANT_DATA_USAGE_YIELD_V1_FLAG = "ASSISTANT_DATA_USAGE_YIELD_V1_ENABLED";
+function isAssistantDataUsageYieldEnabled(context) {
+  return isAssistantEnvFlagEnabled(ASSISTANT_DATA_USAGE_YIELD_V1_FLAG) &&
+    isAssistantAnuEnabledForContext(context);
+}
+function isAssistantDataUsageYieldQuestion(message) {
+  const m = String(message || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  return /(?:consommation|consomation|consumption|usage|trafic|traffic|data usage|wan|gigaoctets?|\bgb\b|\bgo\b|forfaits? illimit|illimit|unlimited|yield|protection|reserve protegee|budget du cycle|prix.*(?:change|augmente|variation)|price.*(?:change|increase)|plus cher|more expensive|tarif.*(?:hausse|augmente|change)|pourquoi.*(?:cher|disparu)|(?:duree|jours?).*(?:limite|change|disparu)|projection|paliers?|seuil|restriction|limite de duree|tsy voafetra|fandaniana data)/i.test(m);
+}
+function isAssistantDataUsageAnalysisRequest(message) {
+  const m = String(message || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  return /(?:analy[sz]|analyse|bilan|rapport|diagnostic|review|assess)/.test(m) &&
+    /(?:consommation|consomation|data|wan|trafic|traffic|usage)/.test(m);
+}
+function assistantDataBytesHuman(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return "indisponible";
+  const unit = n >= 1e12 ? "TB" : n >= 1e9 ? "GB" : n >= 1e6 ? "MB" : "B";
+  const factor = unit === "TB" ? 1e12 : unit === "GB" ? 1e9 : unit === "MB" ? 1e6 : 1;
+  return `${(n / factor).toLocaleString("fr-FR", { maximumFractionDigits: 2 })} ${unit}`;
+}
+// Snapshot only: uses the existing WAN cycle detail, attribution and Yield read model.
+// No browser totals are accepted and no policy/forfait is changed by the assistant.
+async function buildAssistantDataUsageYieldAdminSnapshot({ req, requestedScope, requestedCycleStart = null }) {
+  if (!buildAdminPermissions(req.admin)?.data_usage_view) return { available: false, reason: "not_authorized" };
+  const requestedPoolId = String(requestedScope?.pool_id || "").trim();
+  if (requestedPoolId && !adminCanAccessPool(req, requestedPoolId)) {
+    const err = new Error("forbidden_pool"); err.httpStatus = 403; throw err;
+  }
+  if (requestedCycleStart && (!requestedPoolId || !/^\d{4}-\d{2}-\d{2}$/.test(requestedCycleStart))) {
+    const err = new Error("data_usage_cycle_start_invalid"); err.httpStatus = 400; throw err;
+  }
+  let query = supabase.from("internet_pools")
+    .select("id,name,brand_name,radius_nas_id,personalized_plans_enabled")
+    .eq("system", "mikrotik").not("radius_nas_id", "is", null).order("name", { ascending: true });
+  if (requestedPoolId) query = query.eq("id", requestedPoolId);
+  else if (!req.admin.is_superadmin) {
+    const allowed = getAdminAllowedPoolIds(req);
+    if (!allowed.length) return { available: true, scope: "no_pool", pools: [] };
+    query = query.in("id", allowed);
+  }
+  const { data: rows, error } = await query;
+  if (error) throw error;
+  const scopedRows = Array.isArray(rows) ? rows.filter(p => adminCanAccessPool(req, p.id)) : [];
+  const limit = 20; // bounded read model; never issue hundreds of RADIUS/RPC reads
+  const now = new Date();
+  const pools = await Promise.all(scopedRows.slice(0, limit).map(async (pool) => {
+    const label = buildPoolDisplayName(pool) || pool.name || "Pool";
+    const role = req.admin.is_superadmin ? "superadmin" : getAdminPoolAccessRole(req.admin, pool.id);
+    try {
+      // READ ONLY: loadYieldPolicy() can lazily INSERT a missing default row, so
+      // use a direct SELECT here instead of invoking that helper.
+      const [{ data: actualPolicy, error: policyError }, { data: yieldState, error: stateError }] = await Promise.all([
+        supabase.from("pool_yield_policies").select("enabled,cycle_budget_bytes,reserve_pct,max_unlimited_speed_mbps,max_unlimited_duration_minutes,cycle_start_day,cycle_timezone,policy_revision").eq("pool_id", pool.id).maybeSingle(),
+        supabase.from("pool_yield_state").select("effective_class,raw_class,decision_ready,coverage_status,last_evaluated_at,policy_revision").eq("pool_id", pool.id).maybeSingle(),
+      ]);
+      if (policyError) throw policyError;
+      if (stateError) throw stateError;
+      const policy = actualPolicy || { cycle_start_day: 1, cycle_timezone: "Indian/Antananarivo", policy_revision: null };
+      const detail = await dataUsageLoadCycleDetail(pool.id, policy, requestedPoolId ? requestedCycleStart : null, now);
+      let commercial = null;
+      if (actualPolicy && YIELD_ENFORCEMENT_AVAILABLE) {
+        try { commercial = serializeYieldCommercialControls(await loadYieldCommercialControls(pool.id)); }
+        catch (_) { commercial = null; }
+      }
+      const a = detail.attribution || {};
+      return {
+        pool_name: label, access_role: role, available: true,
+        personalized_plans_enabled: pool.personalized_plans_enabled === true,
+        cycle_start_date: detail.cycle_start_date, cycle_end_inclusive_date: detail.cycle_end_inclusive_date,
+        is_current_cycle: detail.is_current_cycle === true,
+        total_wan_bytes: detail.total_bytes,
+        average_daily_bytes: detail.average_ready ? detail.average_daily_bytes : null,
+        projection_bytes: detail.is_current_cycle && detail.projection_ready ? detail.projection_bytes : null,
+        sample_count: detail.sample_count, last_observed_at: detail.last_observed_at,
+        coverage_complete: detail.coverage_complete_from_period_start === true,
+        counter_reset_count: detail.counter_reset_count,
+        attribution: {
+          ready: a.ready === true,
+          authenticated_bytes: a.ready ? a.authenticated_bytes : null,
+          free_access_bytes: a.ready ? a.free_access_bytes : null,
+          other_bytes: a.ready ? a.other_bytes : null,
+          excess_bytes: a.ready ? a.excess_bytes : null,
+          reconciled_wan_bytes: a.ready ? a.reconciled_wan_bytes : null,
+          partial_sample_count: a.partial_sample_count ?? 0,
+          latest_status: a.latest_status || null,
+        },
+        protection: {
+          configured: !!actualPolicy, enabled: actualPolicy?.enabled === true,
+          budget_bytes: actualPolicy?.cycle_budget_bytes ?? null,
+          reserve_pct: actualPolicy?.reserve_pct ?? null,
+          cycle_start_day: policy.cycle_start_day,
+          max_unlimited_speed_mbps: actualPolicy?.max_unlimited_speed_mbps ?? null,
+          max_unlimited_duration_minutes: actualPolicy?.max_unlimited_duration_minutes ?? null,
+          effective_class: yieldState?.effective_class || null,
+          raw_class: yieldState?.raw_class || null,
+          decision_ready: yieldState?.decision_ready === true,
+          coverage_status: yieldState?.coverage_status || null,
+          state_last_evaluated_at: yieldState?.last_evaluated_at || null,
+          commercial_active: commercial?.active === true,
+          pp_unlimited: commercial?.pp_unlimited || null,
+          ps_unlimited: commercial?.ps_unlimited || null,
+        },
+      };
+    } catch (error) {
+      if (error?.status === 400 || error?.httpStatus === 400) throw error;
+      return { pool_name: label, access_role: role, available: false, reason: "usage_or_policy_temporarily_unavailable" };
+    }
+  }));
+  return {
+    available: true, source: "server_verified_wan_and_yield", read_only: true,
+    scope: requestedPoolId ? "single_pool" : "all_accessible_pools",
+    pool_count: scopedRows.length, truncated: scopedRows.length > limit,
+    requested_cycle_start: requestedPoolId ? requestedCycleStart || null : null,
+    pools,
+  };
+}
+function buildAssistantDataUsageAdminBrief(snapshot, lang = "fr") {
+  // Deterministic, source-backed report for the one-click Admin question.
+  const language = ["fr", "en", "mg"].includes(lang) ? lang : "fr";
+  const t = (fr, en, mg) => language === "en" ? en : language === "mg" ? mg : fr;
+  if (!snapshot?.available) return t(
+    "Impossible de vérifier la consommation des données pour le moment. Réessayez depuis Consommation des données.",
+    "Data usage cannot be verified right now. Please retry from Data Usage.",
+    "Tsy afaka manamarina ny consommation data izao. Andramo indray ao amin’ny Consommation des données."
+  );
+  if (!snapshot.pools?.length) return t(
+    "Aucune pool accessible à analyser pour le moment.", "No accessible pools are available for analysis.",
+    "Tsy misy pool azonao jerena amin’izao."
+  );
+  const sections = snapshot.pools.map((pool) => {
+    if (!pool.available) return `${pool.pool_name} — ${t("Relevés indisponibles actuellement, sans estimation inventée.", "Usage records temporarily unavailable; no estimate is made.", "Tsy azo jerena izao ny relevé. Tsy hanao estimation tsy misy porofo aho.")}`;
+    const p = pool.protection || {};
+    const a = pool.attribution || {};
+    const budget = p.budget_bytes === null ? null : Number(p.budget_bytes);
+    const total = Number(pool.total_wan_bytes);
+    const projection = pool.projection_bytes === null ? null : Number(pool.projection_bytes);
+    const reserve = p.reserve_pct === null ? null : Number(p.reserve_pct);
+    const usable = Number.isFinite(budget) && budget > 0 && Number.isFinite(reserve)
+      ? budget * (1 - Math.max(0, Math.min(100, reserve)) / 100) : null;
+    const progress = usable && Number.isFinite(total) ? Math.round(total / usable * 1000) / 10 : null;
+    const nextThreshold = Number.isFinite(total) && total >= 0
+      ? (Math.floor(total / 500e9) + 1) * 500e9 : null;
+    const remaining = usable !== null && Number.isFinite(total) ? Math.max(0, usable - total) : null;
+    const risk = !pool.is_current_cycle ? t("cycle historique, sans prévision actuelle", "past cycle; no current forecast", "cycle taloha; tsy projection ankehitriny")
+      : projection === null ? t("projection non disponible ou données encore insuffisantes", "forecast unavailable or data not yet reliable", "tsy mbola ampy ny data hanaovana projection azo antoka")
+      : usable === null ? t("budget de protection non configuré", "protection budget is not configured", "tsy voafaritra ny budget fiarovana")
+      : projection > usable ? t("projection supérieure au budget hors réserve : vigilance recommandée", "forecast exceeds available budget after reserve: caution advised", "mihoatra ny budget aorian’ny réserve ny projection: mila fitandremana")
+      : t("projection sous le budget hors réserve ; surveillez son évolution", "forecast stays below available budget after reserve; keep monitoring", "ambanin’ny budget aorian’ny réserve ny projection, fa araho hatrany");
+    const protectionMode = !p.enabled ? t("désactivée", "off", "tsy mandeha")
+      : !p.decision_ready ? t("configurée, décision automatique non prête (observation)", "configured, automatic decision not yet ready (observation)", "voaconfigure fa mbola observation ny décision")
+      : !p.commercial_active ? t("configurée, restrictions commerciales non actives ou en observation", "configured, but commercial restrictions are inactive or under observation", "voaconfigure fa tsy mbola active ny restrictions commercial")
+      : `${t("active, classe effective", "active, effective class", "active, classe effective")} ${p.effective_class || "?"}`;
+    const canEdit = ["owner", "superadmin"].includes(String(pool.access_role || ""));
+    const pp = p.pp_unlimited || null;
+    const ps = p.ps_unlimited || null;
+    const psDescription = `${t("Plans Standards Illimités", "Standard unlimited plans", "Plans Standards Illimités")} : ${ps?.hidden_from_duration_minutes ? `${t("masqués dès", "hidden from", "voafina manomboka")} ${Number(ps.hidden_from_duration_minutes) / 1440} j` : t("aucune restriction de durée", "no additional duration restriction", "tsy misy restriction durée")}`;
+    const ppDescription = !pool.personalized_plans_enabled
+      ? t("PP Illimité non activé dans cette pool", "Custom Unlimited is not enabled in this pool", "PP Illimité tsy active amin’ity pool ity")
+      : `${t("PP Illimité", "Custom Unlimited", "PP Illimité")} : ${pp?.available === false ? t("achat suspendu", "purchases suspended", "tsy azo vidina") : `${t("ajustement", "uplift", "fanampiny")} +${Number(pp?.uplift_pct || 0)} %`}, ${t("durée max", "max duration", "durée max")} ${pp?.max_duration_minutes ? Math.round(Number(pp.max_duration_minutes) / 1440 * 10) / 10 + " j" : "—"}, ${t("débit max", "max speed", "débit max")} ${pp?.max_speed_mbps ?? "—"} Mbps`;
+    const commercial = p.commercial_active && pp
+      ? `${psDescription} ; ${ppDescription}`
+      : t("Aucune restriction commerciale effective vérifiée.", "No active commercial restriction could be verified.", "Tsy misy restriction commercial active voamarina.");
+    return [
+      `${pool.pool_name} — ${pool.cycle_start_date} ${t("au", "to", "hatramin’ny")} ${pool.cycle_end_inclusive_date} ${pool.is_current_cycle ? t("(cycle en cours)", "(current cycle)", "(cycle ankehitriny)") : t("(historique)", "(historical)", "(cycle taloha)")}`,
+      `1. ${t("Consommation WAN", "WAN consumption", "Consommation WAN")} : ${assistantDataBytesHuman(total)} ; ${t("moyenne/jour", "daily average", "salan’isa isan’andro")} : ${pool.average_daily_bytes === null ? "—" : assistantDataBytesHuman(pool.average_daily_bytes)} ; ${t("projection fin de cycle", "end-of-cycle forecast", "projection faran’ny cycle")} : ${projection === null ? "—" : assistantDataBytesHuman(projection)}.`,
+      `2. ${t("Fiabilité", "Data quality", "Kalitaon’ny relevé")} : ${pool.sample_count} ${t("relevés", "samples", "relevé")} ; ${pool.coverage_complete ? t("couverture complète", "full coverage", "couverture feno") : t("historique partiel", "partial coverage", "couverture partiel")} ; ${t("dernier relevé", "latest reading", "relevé farany")} : ${pool.last_observed_at || "—"} ; ${t("remises à zéro", "counter resets", "reset compteur")} : ${pool.counter_reset_count}.`,
+      `3. ${t("Répartition", "Breakdown", "Fizarana")} : ${a.ready ? `${t("clients authentifiés", "authenticated clients", "clients authentifiés")} ${assistantDataBytesHuman(a.authenticated_bytes)}, ${t("accès gratuit", "free access", "accès gratuit")} ${assistantDataBytesHuman(a.free_access_bytes)}, ${t("autres/non attribué", "other/unattributed", "autres/non attribué")} ${assistantDataBytesHuman(a.other_bytes)}, ${t("écart de synchronisation", "synchronization discrepancy", "écart synchronisation")} ${assistantDataBytesHuman(a.excess_bytes)}` : t("en cours d’initialisation", "initializing", "mbola manomboka")}. ${t("Le trafic non attribué ne prouve pas un vol WiFi.", "Unattributed traffic does not prove WiFi theft.", "Tsy porofon’ny halatra WiFi ny trafic non attribué.")}`,
+      `4. ${t("Protection actuelle", "Current protection", "Protection ankehitriny")} : ${protectionMode} ; ${t("budget", "budget", "budget")} ${p.budget_bytes === null ? "—" : assistantDataBytesHuman(p.budget_bytes)} ; ${t("réserve", "reserve", "réserve")} ${p.reserve_pct ?? "—"} % ; ${t("part utilisée hors réserve", "used share of available budget", "ampahany efa lany amin’ny budget azo ampiasaina")} ${progress === null ? "—" : `${progress} %`} ; ${t("reste estimé hors réserve", "remaining available budget", "budget sisa azo ampiasaina")} ${remaining === null ? "—" : assistantDataBytesHuman(remaining)}.`,
+      `5. ${t("Conditions illimitées", "Unlimited-plan controls", "Fepetra Illimité")} : ${commercial}. ${!pool.personalized_plans_enabled ? t("PP non activé pour cette pool.", "Custom plans are disabled for this pool.", "Tsy active ny PP amin’ity pool ity.") : ""}`,
+      `6. ${t("Risque et conseil", "Risk and recommendation", "Loza sy torohevitra")} : ${risk}. ${t("Prochain palier d’alerte WAN", "Next WAN alert threshold", "Palier alert WAN manaraka")} : ${nextThreshold === null ? "—" : assistantDataBytesHuman(nextThreshold)}. ${canEdit ? t("Vous pouvez examiner les réglages dans « Protection des forfaits illimités ». Rien n’a été modifié.", "You may review settings under Unlimited Plan Protection. No settings were changed.", "Azonao jerena ny configuration ao amin’ny Protection des forfaits illimités. Tsy nisy novaina.") : t("Lecture seule : contactez le propriétaire pour toute modification.", "Read-only access: contact the Owner for any changes.", "Lecture seule: mila mangataka amin’ny Owner raha misy ovaina.")}`,
+    ].filter(Boolean).join("\n");
+  });
+  const prefix = t(
+    "Analyse de la consommation des données — chiffres vérifiés par pool et cycle. Une projection n’est pas une consommation déjà réalisée.",
+    "Data usage analysis — verified figures per pool and cycle. A forecast is not actual consumption.",
+    "Analyse consommation data — chiffres voamarina isaky ny pool sy cycle. Tsy midika hoe efa lany ny data ny projection."
+  );
+  const truncated = snapshot.truncated ? t(
+    "\n\nAnalyse limitée aux 20 premières pools accessibles. Sélectionnez une pool pour le détail.",
+    "\n\nAnalysis is limited to the first 20 accessible pools. Select a pool for details.",
+    "\n\nPool 20 voalohany ihany no nodinihina. Misafidiana pool raha mila antsipiriany."
+  ) : "";
+  return `${prefix}
+
+${sections.join("\n\n")}${truncated}`;
+}
+
 async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapshot, trustedContext, pool_id, page_path, conversationId, scopeKey, historyToken, threadStoreKey = null, platformStream = null, portalStream = null, adminStream = null }) {
   const message = cleanAssistantMessage(rawMessage);
   const detectedLang = detectAssistantLang(message);
@@ -12173,6 +12387,19 @@ async function handleAssistantChatCore({ context, rawMessage, liveData, uiSnapsh
         };
       }
     }
+  }
+
+  // Dedicated Admin question: clear, deterministic cycle analysis, never model-invented.
+  if (context === "admin_owner" && isAssistantDataUsageYieldEnabled(context) &&
+      isAssistantDataUsageAnalysisRequest(message)) {
+    const answer = buildAssistantDataUsageAdminBrief(trustedContext?.data_usage_protection, lang);
+    updateAssistantThread({ thread, userMessage: message, assistantAnswer: answer,
+      lang, intentKey: "admin_data_usage_yield_analysis", topic: "data_usage", slots: {} });
+    await logAssistantInteraction({ context, intent_key: "admin_data_usage_yield_analysis",
+      lang, escalated: false, pool_id: null, page_path: page_path || null });
+    return { ok: true, context, intent_key: "admin_data_usage_yield_analysis", lang,
+      answer, buttons: [], requires_live_data: true, live_data_keys: [], dynamic: true,
+      ai_enhanced: false, conversation_id: safeConvId, memory_active: true };
   }
 
   // ANU-2 fail-closed gate: direct critical-state questions require a verified
@@ -15575,6 +15802,25 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
     }
   } catch (_) {}
 
+  // Assistant Data Usage × Yield V1: never take totals or pricing policies from
+  // UI snapshots. This independent prompt section is source-verified.
+  let dataUsageYieldSection = "";
+  if (isAssistantDataUsageYieldEnabled(context) && isAssistantDataUsageYieldQuestion(rawMessage)) {
+    try {
+      if (context === "admin_owner") {
+        const usage = trustedContext?.data_usage_protection;
+        dataUsageYieldSection = `\n\n## VERIFIED WAN DATA & YIELD POLICY (read-only)\n${JSON.stringify(usage || { available: false }, null, 2).slice(0, 7500)}\nDifferentiate current versus historical cycles; do not infer theft from unassigned traffic, do not invent totals or a WAN forecast, do not recommend settings changes to viewer/manager.`;
+      } else if (context === "portal_user") {
+        const verified = trustedContext?.scope_verified === true;
+        dataUsageYieldSection = `\n\n## VERIFIED PORTAL COMMERCIAL PROTECTION (no private WAN budget)\n${JSON.stringify(verified ? { yield_protection: trustedContext.yield_protection || null, last_device_quote: trustedContext.personalized_plan || null } : { scope_verified: false }, null, 2).slice(0, 2300)}\nExplain current price changes only when verified; quote adjustments apply only to PP Unlimited, not every plan. Never disclose owner budgets, reserve or overall WAN consumption. Last-device quote can expire and may be historical.`;
+      } else if (context === "platform_prospect") {
+        const catalog = Array.isArray(trustedContext?.public_catalog?.items) ? trustedContext.public_catalog.items : [];
+        const details = catalog.map(({ name, description, details }) => ({ name, description, details: Array.isArray(details) ? details.slice(0, 14) : [] }));
+        dataUsageYieldSection = `\n\n## PUBLIC DATA USAGE & INTELLIGENT PROTECTION KNOWLEDGE\n${JSON.stringify(details, null, 2).slice(0, 3400)}\nWAN data usage monitoring covers current cycles, attributable categories, projection, 500 GB notification steps. Yield protections are per-pool opt-in and conditional on trusted decision. Standard unlimited plan durations can be hidden. Personalized Unlimited may have +15% (Vigilance), +35% (Protection), duration caps 7d/3d and become unavailable in Critical; never claim all plans increase price or that rate is automatically reduced per class. Owner speed cap continues to apply. Never reveal any private pool figures.`;
+      }
+    } catch (_) {}
+  }
+
   // ── SECTION: PAYMENT CONTEXT (portal_user payment complaints only) ────────
   const paymentSection = isPaymentComplaint
     ? `\n\n## PAYMENT CONTEXT\n${buildPaymentContextBlock(liveData)}`
@@ -15875,6 +16121,7 @@ ${JSON.stringify(source, null, 2).slice(0, 2200)}`;
     returningUserSection,    // G.2.1: immediately after user message — never truncated, AI sees it first
     conversationSection,
     g1PolicySection,
+    dataUsageYieldSection, // V1: protected, dedicated data-usage and Yield grounding
     trustedContextSection,
     siteKnowledgeSection,   // ANU-WEB-1.1: verified public website excerpts get priority in the input budget
     personalizedPlanSection, // Assistant PP: independent, trusted, never truncated by plan lists
@@ -18612,6 +18859,7 @@ app.post("/api/assistant/chat", assistantLimiter, async (req, res) => {
         ? await buildPortalTrustedAssistantContext({
             contextToken: rawContextToken,
             identity: portalIdentity,
+            includeYieldHelp: isAssistantDataUsageYieldEnabled(rawContext) && isAssistantDataUsageYieldQuestion(rawMessage),
           })
         : null;
     const effectiveLiveData = rawContext === "platform_prospect" && trustedContext
@@ -19728,17 +19976,20 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
     const smartSalesRequested = isAdminSmartSalesAnalysisMessage(rawMessage);
     const naturalAnalyticsRequested = isAdminNaturalBusinessAnalyticsMessage(rawMessage);
     const businessAnalyticsRequested = naturalAnalyticsRequested && !smartSalesRequested;
-    const requestedScope = (anuEnabled || smartSalesRequested || businessAnalyticsRequested)
+    const dataUsageHelpRequested = isAssistantDataUsageYieldEnabled(rawContext) && isAssistantDataUsageYieldQuestion(rawMessage);
+    const requestedScope = (anuEnabled || smartSalesRequested || businessAnalyticsRequested || dataUsageHelpRequested)
       ? normalizeAssistantRequestedScope(req.body?.requested_scope)
       : { pool_id: null };
 
     const page_path = String(req.body?.page_path || "").trim().slice(0, 200) || null;
+    const requestedCycleStart = dataUsageHelpRequested && page_path === "/admin/data-usage.html"
+      ? String(req.body?.requested_cycle_start || "").trim() || null : null;
 
     const rawConvId = String(req.body?.conversation_id || "").trim();
     const conversationId = normalizeAssistantConversationId(rawConvId) || null;
     const rawMemoryToken = String(req.body?.memory_token || "").trim() || null;
     let trustedContext = null;
-    if (anuEnabled || smartSalesRequested || businessAnalyticsRequested) {
+    if (anuEnabled || smartSalesRequested || businessAnalyticsRequested || dataUsageHelpRequested) {
       try {
         trustedContext = await buildAdminTrustedAssistantContext({
           req,
@@ -19747,6 +19998,11 @@ app.post("/api/admin/assistant/chat", assistantLimiter, requireAdmin, async (req
           includeBusinessAnalytics: businessAnalyticsRequested,
           rawMessage,
         });
+        if (dataUsageHelpRequested && trustedContext?.scope_verified === true) {
+          trustedContext.data_usage_protection = await buildAssistantDataUsageYieldAdminSnapshot({
+            req, requestedScope, requestedCycleStart,
+          });
+        }
       } catch (contextError) {
         if (contextError?.httpStatus === 400 || contextError?.httpStatus === 403) throw contextError;
         console.warn("[ANU-2 ADMIN CONTEXT] unavailable:", String(contextError?.message || contextError).slice(0, 100));
