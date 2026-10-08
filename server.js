@@ -20317,15 +20317,30 @@ function billingDate(value, required = false) {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(`${s}T00:00:00Z`)) ? s : undefined;
 }
 
-async function loadBillingOfferMode(offerId, mode) {
+async function loadBillingOfferMode(offerId, mode, effectiveOn) {
+  const effectiveDate = billingDate(effectiveOn, true);
+  if (!effectiveDate) return { error: "effective_date_required" };
+
   const { data: offer, error: offerError } = await supabase.from("billing_offers")
-    .select("id,code,title,status").eq("id", offerId).maybeSingle();
+    .select("id,code,title,status,visibility").eq("id", offerId).maybeSingle();
   if (offerError || !offer) return { error: offerError?.message || "offer_not_found" };
-  if (offer.status === "archived") return { error: "offer_archived" };
+
+  // Initial assignment hardening: draft/archived/inactive offers are never
+  // assignable. Public/private visibility does NOT affect Superadmin rights.
+  if (offer.status !== "active") return { error: "active_offer_not_available" };
+
   const { data: version, error: versionError } = await supabase.from("billing_offer_versions")
-    .select("id,version_no,status,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days")
-    .eq("offer_id", offerId).order("version_no", { ascending: false }).limit(1).maybeSingle();
-  if (versionError || !version) return { error: versionError?.message || "offer_version_missing" };
+    .select("id,version_no,status,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,owner_revenue_enabled,grace_days,effective_from,effective_to")
+    .eq("offer_id", offerId)
+    .in("status", ["active", "scheduled"])
+    .lte("effective_from", effectiveDate)
+    .or(`effective_to.is.null,effective_to.gte.${effectiveDate}`)
+    .order("version_no", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (versionError) return { error: versionError.message };
+  if (!version) return { error: "active_offer_version_not_available" };
   if (mode === "commission" && !version.commission_enabled) return { error: "commission_not_available" };
   if (mode === "subscription" && !version.subscription_enabled) return { error: "subscription_not_available" };
   return { offer, version };
@@ -20361,7 +20376,7 @@ app.get("/api/admin/billing/assignments", requireAdmin, requireSuperadmin, requi
     let versions = [];
     let versionFeatures = [];
     if (offerIds.length) {
-      const { data, error } = await supabase.from("billing_offer_versions").select("id,offer_id,version_no,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,free_access_limit,status").in("offer_id", offerIds).order("version_no", { ascending: false });
+      const { data, error } = await supabase.from("billing_offer_versions").select("id,offer_id,version_no,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,owner_revenue_enabled,grace_days,free_access_limit,effective_from,effective_to,status").in("offer_id", offerIds).order("version_no", { ascending: false });
       if (error) return res.status(500).json({ error: error.message });
       versions = data || [];
       const versionIds = versions.map((v) => v.id);
@@ -20374,8 +20389,24 @@ app.get("/api/admin/billing/assignments", requireAdmin, requireSuperadmin, requi
     return res.json({
       pools: pools || [],
       offers: (offers || []).map((offer) => {
-        const version = versions.find((v) => v.offer_id === offer.id) || null;
-        return { ...offer, version: version ? { ...version, features: versionFeatures.filter((x) => x.offer_version_id === version.id).map((x) => x.feature_key) } : null };
+        // Do not project a draft/retired version as assignable. Prefer the
+        // current active version, then a scheduled version for preview.
+        const offerVersions = versions.filter((v) => v.offer_id === offer.id);
+        const version =
+          offerVersions.find((v) => v.status === "active")
+          || offerVersions.find((v) => v.status === "scheduled")
+          || null;
+        return {
+          ...offer,
+          version: version
+            ? {
+                ...version,
+                features: versionFeatures
+                  .filter((x) => x.offer_version_id === version.id)
+                  .map((x) => x.feature_key),
+              }
+            : null,
+        };
       }),
       assignments: assignments || [],
     });
@@ -20411,10 +20442,10 @@ app.post("/api/admin/billing/assignments", requireAdmin, requireSuperadmin, requ
       });
     }
 
-    const modeCheck = await loadBillingOfferMode(offer_id, normalized.value.billing_mode);
+    const modeCheck = await loadBillingOfferMode(offer_id, normalized.value.billing_mode, normalized.value.effective_from);
     if (modeCheck.error) return res.status(400).json({ error: modeCheck.error });
     if (normalized.value.post_trial_offer_id) {
-      const postCheck = await loadBillingOfferMode(normalized.value.post_trial_offer_id, normalized.value.post_trial_mode);
+      const postCheck = await loadBillingOfferMode(normalized.value.post_trial_offer_id, normalized.value.post_trial_mode, normalized.value.trial_ends_at || normalized.value.effective_from);
       if (postCheck.error) return res.status(400).json({ error: `post_trial_${postCheck.error}` });
     }
     const { data, error } = await supabase.from("pool_billing_assignments").insert({
