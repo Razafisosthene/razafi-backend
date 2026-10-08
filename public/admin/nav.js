@@ -836,6 +836,7 @@
     try {
       const p = window.location.pathname || "";
       if (p === "/admin/" || p === "/admin/index.html" || p === "/admin") return "dashboard";
+      if (p.includes("/data-usage"))       return "data_usage";
       if (p.includes("/clients"))           return "clients";
       if (p.includes("/plans"))             return "plans";
       if (p.includes("/pricing-simulator")) return "simulator";
@@ -1169,6 +1170,7 @@
 
     const starterItems = [
       { label: "📊 Analyse mes ventes et dis-moi quoi faire", prompt: "Analyse mes ventes et dis-moi quoi faire" },
+      { label: "📶 Analyser ma consommation de données", prompt: "Analyser ma consommation de données" },
       { label: "➕ Comment créer un nouveau forfait ?", prompt: "Comment créer un nouveau forfait ?" },
       { label: "💳 Comment fonctionne mon abonnement RAZAFI ?", prompt: "Comment fonctionne mon abonnement RAZAFI ?" },
       { label: "👥 Comment ajouter un utilisateur ?", prompt: "Comment ajouter un utilisateur ?" },
@@ -1350,6 +1352,13 @@
       // ANU-2 sends the UUID only in requested_scope. The authenticated backend validates
       // it against req.admin before using it; it never enters the AI prompt.
       const _anu2RequestedScope = _p2bePoolId ? { pool_id: _p2bePoolId } : null;
+      // Data Usage can display historical cycles. Keep cycle separate from any
+      // business summary: the backend validates it against the Yield cycle policy.
+      const _rzDuRequestedCycleStart = _p2bePanel === "data_usage" && _p2bePoolId &&
+        /^\d{4}-\d{2}-\d{2}$/.test(String(liveData.selected_cycle_start || ""))
+        ? String(liveData.selected_cycle_start) : null;
+      delete liveData.selected_cycle_start;
+      delete liveData.is_current_cycle;
 
       // Always delete pool ID from browser business summaries before sending.
       // The server sanitizer also blocks it, but we are explicit here.
@@ -1389,6 +1398,7 @@
           live_data: liveData, // legacy path; unchanged while ANU flags are OFF
           ui_snapshot: liveData, // ANU-2: browser state is never authoritative
           requested_scope: _anu2RequestedScope,
+          requested_cycle_start: _rzDuRequestedCycleStart,
           page_path: (function () {
             try { return String(window.location.pathname || "").slice(0, 200); } catch (_) { return null; }
           })(),

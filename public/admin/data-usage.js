@@ -1257,6 +1257,22 @@
     }
   }
 
+  // Assistant Admin — additive page bridge (UI hint only, never an authority).
+  // Scope and cycle are independently verified by the authenticated backend.
+  window.razafiAdminPageData = function () {
+    const selected = state.selectedPool !== "all" && state.detailPool &&
+      String(state.detailPool.pool_id) === String(state.selectedPool)
+      ? state.detailPool : null;
+    return {
+      panel: "data_usage",
+      analysis_scope: selected ? "single_pool" : "all_pools",
+      selected_pool_id: selected ? String(selected.pool_id) : null,
+      selected_pool_name: selected ? poolName(selected) : null,
+      selected_cycle_start: selected ? String(selected.cycle_start_date || "") || null : null,
+      is_current_cycle: selected ? selected.is_current_cycle === true : null,
+    };
+  };
+
   document.addEventListener("DOMContentLoaded", async () => {
     $("refreshBtn")?.addEventListener("click", refreshCurrentView);
 
