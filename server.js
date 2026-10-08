@@ -20207,6 +20207,20 @@ app.patch("/api/admin/billing/offers/:id", requireAdmin, requireSuperadmin, requ
       patch.status = status;
     }
     if (req.body?.sort_order !== undefined) patch.sort_order = Number(req.body.sort_order) || 0;
+
+    if (patch.status === "active") {
+      const { data: liveVersion, error: liveVersionError } = await supabase
+        .from("billing_offer_versions")
+        .select("id,status,effective_from")
+        .eq("offer_id", req.params.id)
+        .in("status", ["active", "scheduled"])
+        .order("version_no", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (liveVersionError) return res.status(500).json({ error: liveVersionError.message });
+      if (!liveVersion) return res.status(409).json({ error: "offer_active_version_required" });
+    }
+
     if (!Object.keys(patch).length) return res.json({ ok: true });
     const { data, error } = await supabase.from("billing_offers").update(patch).eq("id", req.params.id).select().maybeSingle();
     if (error) return res.status(500).json({ error: error.message });
@@ -20272,6 +20286,95 @@ app.patch("/api/admin/billing/offer-versions/:id", requireAdmin, requireSuperadm
     });
     return res.json({ ok: true, item: data });
   } catch (e) { return res.status(500).json({ error: String(e?.message || e) }); }
+});
+
+app.post("/api/admin/billing/offer-versions/:id/lifecycle", requireAdmin, requireSuperadmin, requireBillingAdminOffers, async (req, res) => {
+  try {
+    const { data: current, error: readError } = await supabase
+      .from("billing_offer_versions")
+      .select("id,offer_id,version_no,status,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,owner_revenue_enabled,grace_days,free_access_limit,effective_from,effective_to")
+      .eq("id", req.params.id)
+      .maybeSingle();
+
+    if (readError) return res.status(500).json({ error: readError.message });
+    if (!current) return res.status(404).json({ error: "not_found" });
+    if (current.status !== "draft") return res.status(409).json({ error: "version_immutable" });
+
+    const effectiveFrom = billingDate(req.body?.effective_from, true);
+    if (!effectiveFrom) return res.status(400).json({ error: "effective_from_required" });
+    if (!/^\d{4}-\d{2}-01$/.test(effectiveFrom)) {
+      return res.status(400).json({ error: "effective_from_must_be_first_day" });
+    }
+
+    const today = billingMadagascarToday();
+    if (effectiveFrom < today) {
+      return res.status(400).json({ error: "effective_from_must_not_be_past" });
+    }
+
+    if (!current.commission_enabled && !current.subscription_enabled) {
+      return res.status(409).json({ error: "version_commercial_mode_required" });
+    }
+
+    const { data: offer, error: offerError } = await supabase
+      .from("billing_offers")
+      .select("id,status")
+      .eq("id", current.offer_id)
+      .maybeSingle();
+    if (offerError) return res.status(500).json({ error: offerError.message });
+    if (!offer) return res.status(404).json({ error: "offer_not_found" });
+    if (offer.status === "archived") return res.status(409).json({ error: "offer_archived" });
+
+    const nextStatus = effectiveFrom === today ? "active" : "scheduled";
+
+    const { data, error } = await supabase
+      .from("billing_offer_versions")
+      .update({
+        status: nextStatus,
+        effective_from: effectiveFrom,
+        effective_to: null,
+      })
+      .eq("id", current.id)
+      .select()
+      .single();
+
+    if (error) {
+      const message = String(error.message || error);
+      if (message.includes("billing_offer_version_date_overlap")) {
+        return res.status(409).json({ error: "billing_offer_version_date_overlap" });
+      }
+      return res.status(500).json({ error: message });
+    }
+
+    await insertAudit({
+      event_type: "billing_offer_version_lifecycle_changed",
+      status: "success",
+      entity_type: "billing_offer_version",
+      entity_id: data.id,
+      actor_type: "admin_user",
+      actor_id: req.admin.id,
+      message: nextStatus === "active"
+        ? `Version tarifaire ${data.version_no} activée`
+        : `Version tarifaire ${data.version_no} planifiée`,
+      metadata: {
+        offer_id: data.offer_id,
+        before: current,
+        after: data,
+        effective_from: effectiveFrom,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      item: data,
+      lifecycle: {
+        previous_status: current.status,
+        status: nextStatus,
+        effective_from: effectiveFrom,
+      },
+    });
+  } catch (e) {
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
 });
 
 app.put("/api/admin/billing/offer-versions/:id/features", requireAdmin, requireSuperadmin, requireBillingAdminOffers, async (req, res) => {
