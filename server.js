@@ -16739,7 +16739,7 @@ function buildPortalConversationHistory(conversationContext) {
     }));
 }
 
-function buildPortalConversationReference({ pageHint, trustedContext, liveData }) {
+function buildPortalConversationReference({ pageHint, rawMessage, trustedContext, liveData }) {
   const trusted = trustedContext && typeof trustedContext === "object" ? trustedContext : {};
   const live = liveData && typeof liveData === "object" ? liveData : {};
   const lines = [];
@@ -16823,6 +16823,29 @@ function buildPortalConversationReference({ pageHint, trustedContext, liveData }
   };
   lines.push(`VISIBLE UI / SAFE DERIVED HINTS (non-authoritative except selected_plan has already been server-verified when present)\n${JSON.stringify(visibleHints, null, 2).slice(0, 5000)}`);
 
+  // ASSISTANT YIELD CORE 1.1: the Portal natural-conversation engine has its
+  // own reference builder. Feed it the exact server-verified commercial state,
+  // never browser-supplied prices, private WAN budgets, or owner policy secrets.
+  if (isAssistantDataUsageYieldEnabled("portal_user") && isAssistantDataUsageYieldQuestion(rawMessage)) {
+    if (trusted.available === true && trusted.scope_verified === true) {
+      const controls = trusted.yield_protection && typeof trusted.yield_protection === "object"
+        ? trusted.yield_protection : null;
+      const lastQuote = trusted.personalized_plan && typeof trusted.personalized_plan === "object"
+        ? trusted.personalized_plan : null;
+      lines.unshift([
+        "VERIFIED PORTAL YIELD COMMERCIAL STATE (server-owned; pool-specific)",
+        JSON.stringify({ yield_protection: controls, last_device_quote: lastQuote }, null, 2).slice(0, 2300),
+        "A protection setting is not the same as a commercial decision; check yield_protection.active and effective_class.",
+        "Vigilance: PP Unlimited +15% and max 7 days. Protection: PP Unlimited +35% and max 3 days; PS Unlimited 7 days or longer hidden. Critical: PP Unlimited unavailable and PS Unlimited 1 day or longer hidden.",
+        "Speed choices still obey the Owner's configured maximum; there is no additional per-class speed throttle. No adjustments to a previously purchased active pass.",
+        "Quote yield fields describe the last device quote only, not necessarily the current offered price; it can have expired. Never invent an old price or assert a surcharge if controls are inactive.",
+        "No private pool WAN usage, budget, reserves, router details or other customers' data may be shared."
+      ].join("\n"));
+    } else {
+      lines.unshift("VERIFIED PORTAL YIELD COMMERCIAL STATE: pool identity not verified; current protection conditions cannot be confirmed.");
+    }
+  }
+
   return lines.join("\n\n").slice(0, 19000);
 }
 
@@ -16848,7 +16871,7 @@ async function generateRazafiPortalConversationAnswer({
   if (!apiKey) throw new Error("PORTAL_ASSISTANT_AI_API_KEY not set");
 
   const history = buildPortalConversationHistory(conversationContext);
-  const reference = buildPortalConversationReference({ pageHint, trustedContext, liveData });
+  const reference = buildPortalConversationReference({ pageHint, rawMessage, trustedContext, liveData });
   const currentUserContent = [
     String(rawMessage || "").trim().slice(0, 4000),
     "",
@@ -16998,6 +17021,24 @@ function buildPlatformConversationReference({ rawMessage, pageHint, trustedConte
 
   const lines = [];
   if (pageHint) lines.push(`current_page_hint: ${String(pageHint).slice(0, 120)}`);
+  const includeYieldKnowledge = isAssistantDataUsageYieldEnabled("platform_prospect") &&
+    isAssistantDataUsageYieldQuestion(rawMessage);
+
+  // ASSISTANT YIELD CORE 1.1: ANU Platform Conversation Core uses this reference,
+  // not the legacy grounded-assistant prompt. Put its public verified feature
+  // rules here, without exposing any pool-specific financial/usage settings.
+  if (includeYieldKnowledge) lines.push([
+    "RAZAFI PUBLIC DATA USAGE & INTELLIGENT YIELD PROTECTION (product rules, not live pool state)",
+    "Data Usage: pool WAN consumption, authenticated clients, free access, other/unattributed (not proof of intrusion), historical cycle, average, projection and 500 GB alert milestones.",
+    "Availability: protection is configurable per WiFi pool and affects only NEW sales when enabled and a trusted commercial class is in effect. No automatic change of already purchased active passes.",
+    "RAZAFI Base includes monitoring and protection of Standard Unlimited (PS) where enabled. RAZAFI Sur Mesure includes Base plus client-composed Personalized Plans (PP) and extra PP Unlimited commercial protection. Always use the live public commercial catalog for exact offer names, prices and current benefits.",
+    "Normal: PP Unlimited no uplift, Owner-defined speed/duration ceilings; PS Unlimited unchanged.",
+    "Vigilance: PP Unlimited +15% and duration max 7 days; PS Unlimited unchanged.",
+    "Protection: PP Unlimited +35% and duration max 3 days; PS Unlimited plans with duration >= 7 days are hidden from new purchases.",
+    "Critical: PP Unlimited not available for new purchases; PS Unlimited plans with duration >= 1 day are hidden from new purchases.",
+    "PP Unlimited maximum speed is capped by Owner policy; Yield does NOT additionally reduce Mbps according to class. PP Data pricing is not automatically uplifted by these class rules.",
+    "Never imply all unlimited plans or existing sessions are repriced/throttled, or that every pool currently uses Yield. A public visitor cannot view private pool usage or current protection class."
+  ].join("\n"));
 
   const catalog = trustedContext?.public_catalog;
   if (catalog && typeof catalog === "object") {
@@ -17010,6 +17051,9 @@ function buildPlatformConversationReference({ rawMessage, pageHint, trustedConte
             code: cleanOptionalText(offer?.code, 80),
             name: cleanOptionalText(offer?.name, 160),
             description: cleanOptionalText(offer?.description, 600),
+            ...(includeYieldKnowledge ? { details: Array.isArray(offer?.details)
+              ? offer.details.map(item => cleanOptionalText(item, 240)).filter(Boolean).slice(0, 16)
+              : [] } : {}),
             commission_pct: offer?.commission_pct !== null && offer?.commission_pct !== undefined && Number.isFinite(Number(offer.commission_pct))
               ? Number(offer.commission_pct)
               : null,
