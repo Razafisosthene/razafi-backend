@@ -20098,6 +20098,9 @@ function billingDetails(value) {
 function billingVersionPayload(body = {}) {
   const commissionEnabled = body.commission_enabled === true;
   const subscriptionEnabled = body.subscription_enabled === true;
+  // Backward-compatible default: older clients that omit the new field keep
+  // the historical Owner-revenue behavior.
+  const ownerRevenueEnabled = body.owner_revenue_enabled !== false;
   const commissionPct = commissionEnabled ? Number(body.commission_pct) : null;
   const price = subscriptionEnabled ? Number(body.subscription_price_ar) : null;
   const grace = body.grace_days === null || body.grace_days === undefined || body.grace_days === ""
@@ -20114,6 +20117,7 @@ function billingVersionPayload(body = {}) {
     subscription_enabled: subscriptionEnabled,
     commission_pct: commissionPct,
     subscription_price_ar: price,
+    owner_revenue_enabled: ownerRevenueEnabled,
     grace_days: grace,
     free_access_limit: freeAccessLimit,
   };
@@ -20131,7 +20135,7 @@ app.get("/api/admin/billing/offers", requireAdmin, requireSuperadmin, requireBil
     let versions = [];
     if (ids.length) {
       const { data, error } = await supabase.from("billing_offer_versions")
-        .select("id,offer_id,version_no,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,free_access_limit,effective_from,effective_to,status,created_at")
+        .select("id,offer_id,version_no,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,owner_revenue_enabled,grace_days,free_access_limit,effective_from,effective_to,status,created_at")
         .in("offer_id", ids).order("version_no", { ascending: false });
       if (error) return res.status(500).json({ error: error.message });
       versions = data || [];
@@ -20220,6 +20224,9 @@ app.patch("/api/admin/billing/offers/:id", requireAdmin, requireSuperadmin, requ
 
 app.post("/api/admin/billing/offers/:id/versions", requireAdmin, requireSuperadmin, requireBillingAdminOffers, async (req, res) => {
   try {
+    if (req.body?.subscription_enabled === true && req.body?.owner_revenue_enabled === false) {
+      return res.status(400).json({ error: "owner_revenue_subscription_incompatible" });
+    }
     const payload = billingVersionPayload(req.body);
     if (!payload) return res.status(400).json({ error: "version_invalid" });
     const { data: latest, error: latestError } = await supabase.from("billing_offer_versions")
@@ -20244,11 +20251,14 @@ app.post("/api/admin/billing/offers/:id/versions", requireAdmin, requireSuperadm
 app.patch("/api/admin/billing/offer-versions/:id", requireAdmin, requireSuperadmin, requireBillingAdminOffers, async (req, res) => {
   try {
     const { data: current, error: readError } = await supabase.from("billing_offer_versions")
-      .select("id,offer_id,version_no,status,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,free_access_limit,effective_from,effective_to")
+      .select("id,offer_id,version_no,status,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,owner_revenue_enabled,grace_days,free_access_limit,effective_from,effective_to")
       .eq("id", req.params.id).maybeSingle();
     if (readError) return res.status(500).json({ error: readError.message });
     if (!current) return res.status(404).json({ error: "not_found" });
     if (current.status !== "draft") return res.status(409).json({ error: "version_immutable" });
+    if (req.body?.subscription_enabled === true && req.body?.owner_revenue_enabled === false) {
+      return res.status(400).json({ error: "owner_revenue_subscription_incompatible" });
+    }
     const payload = billingVersionPayload(req.body);
     if (!payload) return res.status(400).json({ error: "version_invalid" });
     const { data, error } = await supabase.from("billing_offer_versions").update(payload).eq("id", req.params.id).select().single();

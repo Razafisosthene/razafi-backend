@@ -30,6 +30,7 @@ function render() {
       <div class="bo-pills">
         ${v?.commission_enabled ? `<span class="bo-pill ok">Commission ${Number(v.commission_pct)} %</span>` : ""}
         ${v?.subscription_enabled ? `<span class="bo-pill ok">${money(v.subscription_price_ar)}/mois</span>` : ""}
+        ${v ? `<span class="bo-pill ${v.owner_revenue_enabled === false ? "" : "ok"}">Revenus propriétaire : ${v.owner_revenue_enabled === false ? "désactivés" : "activés"}</span>` : ""}
         ${v ? `<span class="bo-pill">Accès gratuits : ${v.free_access_limit === null || v.free_access_limit === undefined ? "selon le pool" : `${Number(v.free_access_limit)} max`}</span>` : ""}
         ${(v?.features || []).map((f) => `<span class="bo-pill">${esc(featureLabel(f))}</span>`).join("")}
       </div></article>`;
@@ -45,16 +46,37 @@ function featureInputs(selected = []) {
   const set = new Set(selected);
   $("featuresBox").innerHTML = `<label>Fonctionnalités incluses</label>${state.features.filter((f) => f.is_assignable && f.is_active).map((f) => `<label class="bo-check"><input type="checkbox" data-feature="${esc(f.key)}" ${set.has(f.key) ? "checked" : ""}> ${esc(f.label)}</label>`).join("") || '<div class="bo-meta">Aucune fonctionnalité configurable.</div>'}`;
 }
+function versionEditable() {
+  return !state.version || state.version.status === "draft";
+}
+function syncVersionControls() {
+  const editable = versionEditable();
+  $("commissionEnabled").disabled = !editable;
+  $("commissionPct").disabled = !editable || !$("commissionEnabled").checked;
+  $("subscriptionEnabled").disabled = !editable;
+  $("subscriptionPrice").disabled = !editable || !$("subscriptionEnabled").checked;
+  $("graceDays").disabled = !editable;
+  $("freeAccessLimit").disabled = !editable;
+
+  // Current engine supports owner_revenue_enabled=false only for Commission
+  // semantics. If Subscription is enabled, Owner revenue must stay enabled.
+  if (editable && $("subscriptionEnabled").checked) {
+    $("ownerRevenueEnabled").checked = true;
+  }
+  $("ownerRevenueEnabled").disabled = !editable || $("subscriptionEnabled").checked;
+
+  $("featuresBox").querySelectorAll("input").forEach((input) => input.disabled = !editable);
+}
 function setVersion(v) {
   state.version = v;
   $("commissionEnabled").checked = !!v?.commission_enabled; $("commissionPct").value = v?.commission_pct ?? "";
   $("subscriptionEnabled").checked = !!v?.subscription_enabled; $("subscriptionPrice").value = v?.subscription_price_ar ?? "";
+  $("ownerRevenueEnabled").checked = v ? v.owner_revenue_enabled !== false : true;
   $("graceDays").value = v?.grace_days ?? "";
   $("freeAccessLimit").value = v?.free_access_limit ?? "";
   featureInputs(v?.features || []);
-  const editable = !v || v.status === "draft";
-  ["commissionEnabled","commissionPct","subscriptionEnabled","subscriptionPrice","graceDays","freeAccessLimit"].forEach((id) => $(id).disabled = !editable);
-  $("featuresBox").querySelectorAll("input").forEach((input) => input.disabled = !editable);
+  const editable = versionEditable();
+  syncVersionControls();
   $("versionNote").textContent = v ? `Version ${v.version_no} — ${statusLabel(v.status)}${editable ? "" : " (immuable)"}` : "La première sauvegarde créera la version 1.";
   $("newVersionBtn").style.display = state.editing && v && !editable ? "" : "none";
 }
@@ -79,6 +101,7 @@ function versionBody() {
     commission_pct: $("commissionPct").value,
     subscription_enabled: $("subscriptionEnabled").checked,
     subscription_price_ar: $("subscriptionPrice").value,
+    owner_revenue_enabled: $("ownerRevenueEnabled").checked,
     grace_days: $("graceDays").value,
     free_access_limit: $("freeAccessLimit").value,
   };
@@ -96,7 +119,13 @@ async function save() {
     else if (version.status === "draft") await api(`/api/admin/billing/offer-versions/${encodeURIComponent(version.id)}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify(versionBody()) });
     if (version.status === "draft") await api(`/api/admin/billing/offer-versions/${encodeURIComponent(version.id)}/features`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ features:selectedFeatures() }) });
     closeModal(); await load();
-  } catch (e) { err($("modalError"), e.message); } finally { $("saveBtn").disabled = false; }
+  } catch (e) {
+    const messages = {
+      owner_revenue_subscription_incompatible: "Les revenus propriétaire doivent rester activés lorsqu’un abonnement mensuel est disponible sur cette version.",
+      version_immutable: "Cette version est immuable. Créez une nouvelle version pour modifier ses paramètres."
+    };
+    err($("modalError"), messages[e.message] || e.message);
+  } finally { $("saveBtn").disabled = false; }
 }
 function newVersion() {
   if (!state.editing) return;
@@ -109,6 +138,7 @@ function newVersion() {
     commission_pct: state.version.commission_pct,
     subscription_enabled: !!state.version.subscription_enabled,
     subscription_price_ar: state.version.subscription_price_ar,
+    owner_revenue_enabled: state.version.owner_revenue_enabled !== false,
     grace_days: state.version.grace_days,
     free_access_limit: state.version.free_access_limit,
     features: [...(state.version.features || [])],
@@ -121,13 +151,13 @@ function newVersion() {
     $("commissionPct").value = source.commission_pct ?? "";
     $("subscriptionEnabled").checked = source.subscription_enabled;
     $("subscriptionPrice").value = source.subscription_price_ar ?? "";
+    $("ownerRevenueEnabled").checked = source.owner_revenue_enabled;
     $("graceDays").value = source.grace_days ?? "";
     $("freeAccessLimit").value = source.free_access_limit ?? "";
     featureInputs(source.features);
 
-    // This is a fresh draft: all commercial fields/features are editable.
-    ["commissionEnabled","commissionPct","subscriptionEnabled","subscriptionPrice","graceDays","freeAccessLimit"].forEach((id) => $(id).disabled = false);
-    $("featuresBox").querySelectorAll("input").forEach((input) => input.disabled = false);
+    // This is a fresh draft: restore dependency-aware editability.
+    syncVersionControls();
   }
 
   $("versionNote").textContent = "Nouvelle version brouillon — valeurs reprises de la version précédente. Modifiez uniquement ce qui change, puis enregistrez.";
@@ -139,7 +169,7 @@ async function boot() {
   $("closeBtn").onclick = closeModal; $("saveBtn").onclick = save; $("newVersionBtn").onclick = newVersion;
   $("modal").onclick = (event) => { if (event.target === $("modal")) closeModal(); };
   window.addEventListener("keydown", (event) => { if (event.key === "Escape" && $("modal").classList.contains("open")) closeModal(); });
-  $("commissionEnabled").onchange = () => $("commissionPct").disabled = !$("commissionEnabled").checked;
-  $("subscriptionEnabled").onchange = () => $("subscriptionPrice").disabled = !$("subscriptionEnabled").checked;
+  $("commissionEnabled").onchange = syncVersionControls;
+  $("subscriptionEnabled").onchange = syncVersionControls;
 }
 boot();
