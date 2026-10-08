@@ -21014,7 +21014,7 @@ app.get("/api/owner/billing/autonomous-catalog", requireAdmin, requireBillingOwn
         .in("pool_id", poolIds).lte("effective_from", today)
         .or(`effective_to.is.null,effective_to.gte.${today}`).order("effective_from", { ascending: false }) : empty.assignments,
       poolIds.length ? supabase.from("pool_billing_changes")
-        .select("id,pool_id,current_assignment_id,target_offer_id,target_offer_version_id,target_plan_choice,target_billing_mode,effective_on,status,requested_at,cancelled_at,applied_at,commercial_snapshot")
+        .select("id,pool_id,current_assignment_id,target_offer_id,target_offer_version_id,target_plan_choice,target_billing_mode,effective_on,status,requested_by,requested_at,cancelled_at,applied_at,commercial_snapshot")
         .in("pool_id", poolIds).in("status", ["scheduled", "pending_payment"]).order("requested_at", { ascending: false }) : empty.changes,
       offerIds.length ? supabase.from("billing_offer_versions")
         .select("id,offer_id,version_no,commission_enabled,subscription_enabled,commission_pct,subscription_price_ar,grace_days,free_access_limit,effective_from,effective_to")
@@ -21057,9 +21057,22 @@ app.get("/api/owner/billing/autonomous-catalog", requireAdmin, requireBillingOwn
       ...version,
       features: features.filter((x) => x.offer_version_id === version.id).map((x) => x.feature_key),
     }));
+
+    // Never expose requester IDs to the Owner frontend. The UI only needs the
+    // authorization result: an Owner may cancel only a change they requested.
+    const ownerOpenChanges = (changesResult.data || []).map((change) => {
+      const ownerCancellable = String(change.requested_by || "") === ownerId;
+      const { requested_by, ...safeChange } = change;
+      return {
+        ...safeChange,
+        owner_cancellable: ownerCancellable,
+        change_origin: ownerCancellable ? "owner" : "razafi",
+      };
+    });
+
     return res.json({
       pools: pools || [], offers: offers || [], versions,
-      current_assignments: currentAssignments, open_changes: changesResult.data || [],
+      current_assignments: currentAssignments, open_changes: ownerOpenChanges,
       rules: {
         today,
         effective_on: nextEffectiveOn,
@@ -21091,6 +21104,36 @@ app.post("/api/owner/billing/changes", requireAdmin, requireBillingOwnerAutonomo
 
 app.patch("/api/owner/billing/changes/:id/cancel", requireAdmin, requireBillingOwnerAutonomousChange, async (req, res) => {
   try {
+    const actorId = String(req.admin?.id || "").trim();
+    if (!actorId) return res.status(401).json({ error: "actor_required" });
+
+    // Defense in depth before the SECURITY DEFINER RPC:
+    // only the current pool Owner may cancel, and only when that exact Owner
+    // originally requested the change. Superadmin-programmed changes are never
+    // Owner-cancellable.
+    const { data: change, error: changeError } = await supabase
+      .from("pool_billing_changes")
+      .select("id,pool_id,requested_by,status,effective_on")
+      .eq("id", req.params.id)
+      .maybeSingle();
+    if (changeError) return res.status(500).json({ error: changeError.message });
+    if (!change) return res.status(404).json({ error: "change_not_found" });
+
+    const { data: pool, error: poolError } = await supabase
+      .from("internet_pools")
+      .select("id,owner_admin_user_id")
+      .eq("id", change.pool_id)
+      .maybeSingle();
+    if (poolError) return res.status(500).json({ error: poolError.message });
+    if (!pool) return res.status(404).json({ error: "pool_not_found" });
+
+    if (
+      String(pool.owner_admin_user_id || "") !== actorId ||
+      String(change.requested_by || "") !== actorId
+    ) {
+      return res.status(403).json({ error: "change_not_owner" });
+    }
+
     const { data, error } = await supabase.rpc("fn_billing_v1_s13_8_1_cancel_owner_change", {
       p_actor: req.admin.id, p_change: req.params.id,
     });
