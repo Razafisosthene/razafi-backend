@@ -10,6 +10,11 @@ async function api(url, options = {}) {
 }
 function esc(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function money(value) { return value === null || value === undefined ? "—" : `${Number(value).toLocaleString("fr-FR")} Ar`; }
+function nextMonthFirst() {
+  const d = new Date();
+  const n = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
+  return n.toISOString().slice(0, 10);
+}
 function statusLabel(value) { return ({ draft:"Brouillon", scheduled:"Planifiée", active:"Active", retired:"Retirée", archived:"Archivée" })[value] || value || "—"; }
 function featureLabel(key) { return state.features.find((f) => f.key === key)?.label || key; }
 function err(target, message) { target.style.display = message ? "block" : "none"; target.textContent = message || ""; }
@@ -76,8 +81,14 @@ function setVersion(v) {
   $("freeAccessLimit").value = v?.free_access_limit ?? "";
   featureInputs(v?.features || []);
   const editable = versionEditable();
+  $("versionEffectiveFrom").value = v?.effective_from || nextMonthFirst();
+  $("versionEffectiveFrom").disabled = !editable;
+  $("versionLifecycleBox").style.display = state.editing && v ? "" : "none";
+  $("lifecycleBtn").style.display = state.editing && v?.status === "draft" ? "" : "none";
   syncVersionControls();
-  $("versionNote").textContent = v ? `Version ${v.version_no} — ${statusLabel(v.status)}${editable ? "" : " (immuable)"}` : "La première sauvegarde créera la version 1.";
+  $("versionNote").textContent = v
+    ? `Version ${v.version_no} — ${statusLabel(v.status)}${v.effective_from ? ` · effet ${v.effective_from}` : ""}${editable ? "" : " (immuable)"}`
+    : "La première sauvegarde créera la version 1.";
   $("newVersionBtn").style.display = state.editing && v && !editable ? "" : "none";
 }
 function showModal() { $("modal").classList.add("open"); document.body.classList.add("bo-modal-open"); }
@@ -122,7 +133,8 @@ async function save() {
   } catch (e) {
     const messages = {
       owner_revenue_subscription_incompatible: "Les revenus propriétaire doivent rester activés lorsqu’un abonnement mensuel est disponible sur cette version.",
-      version_immutable: "Cette version est immuable. Créez une nouvelle version pour modifier ses paramètres."
+      version_immutable: "Cette version est immuable. Créez une nouvelle version pour modifier ses paramètres.",
+      offer_active_version_required: "Planifiez ou activez d’abord une version tarifaire avant de passer l’offre à Active."
     };
     err($("modalError"), messages[e.message] || e.message);
   } finally { $("saveBtn").disabled = false; }
@@ -163,10 +175,71 @@ function newVersion() {
   $("versionNote").textContent = "Nouvelle version brouillon — valeurs reprises de la version précédente. Modifiez uniquement ce qui change, puis enregistrez.";
 }
 
+
+async function applyVersionLifecycle() {
+  err($("modalError"), "");
+  const v = state.version;
+  if (!state.editing || !v || v.status !== "draft") return;
+
+  const effectiveFrom = $("versionEffectiveFrom").value;
+  if (!effectiveFrom) {
+    err($("modalError"), "Choisissez la date d’effet de la version.");
+    return;
+  }
+  if (!/^\d{4}-\d{2}-01$/.test(effectiveFrom)) {
+    err($("modalError"), "La date d’effet doit être le premier jour d’un mois.");
+    return;
+  }
+
+  $("lifecycleBtn").disabled = true;
+  $("saveBtn").disabled = true;
+  try {
+    // Save the draft exactly as displayed before making it immutable.
+    await api(`/api/admin/billing/offer-versions/${encodeURIComponent(v.id)}`, {
+      method: "PATCH",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(versionBody()),
+    });
+    await api(`/api/admin/billing/offer-versions/${encodeURIComponent(v.id)}/features`, {
+      method: "PUT",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ features:selectedFeatures() }),
+    });
+
+    const result = await api(`/api/admin/billing/offer-versions/${encodeURIComponent(v.id)}/lifecycle`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ effective_from: effectiveFrom }),
+    });
+
+    const offerId = state.editing.id;
+    await load();
+    openEdit(offerId);
+
+    const life = result.lifecycle || {};
+    $("versionNote").textContent =
+      `Version ${result.item?.version_no ?? v.version_no} — ${statusLabel(life.status || result.item?.status)} · effet ${effectiveFrom} (immuable)`;
+  } catch (e) {
+    const messages = {
+      effective_from_required: "Choisissez la date d’effet de la version.",
+      effective_from_must_be_first_day: "La date d’effet doit être le premier jour d’un mois.",
+      effective_from_must_not_be_past: "La date d’effet ne peut pas être dans le passé.",
+      version_commercial_mode_required: "Activez au moins un mode commercial : Commission ou Abonnement.",
+      billing_offer_version_date_overlap: "Cette période chevauche déjà une autre version de cette offre.",
+      offer_archived: "Une offre archivée ne peut pas recevoir une version active.",
+      version_immutable: "Cette version n’est plus modifiable."
+    };
+    err($("modalError"), messages[e.message] || e.message);
+  } finally {
+    $("lifecycleBtn").disabled = false;
+    $("saveBtn").disabled = false;
+  }
+}
+
 async function boot() {
   try { await requireSuperadmin(); await load(); } catch (e) { err($("error"), e.message === "billing_admin_disabled" ? "Le panneau Offres est désactivé par le feature flag S2." : e.message); }
   $("refreshBtn").onclick = () => load().catch((e) => err($("error"), e.message)); $("newBtn").onclick = openNew;
-  $("closeBtn").onclick = closeModal; $("saveBtn").onclick = save; $("newVersionBtn").onclick = newVersion;
+  $("closeBtn").onclick = closeModal; $("saveBtn").onclick = save; $("newVersionBtn").onclick = newVersion; $("lifecycleBtn").onclick = applyVersionLifecycle;
   $("modal").onclick = (event) => { if (event.target === $("modal")) closeModal(); };
   window.addEventListener("keydown", (event) => { if (event.key === "Escape" && $("modal").classList.contains("open")) closeModal(); });
   $("commissionEnabled").onchange = syncVersionControls;

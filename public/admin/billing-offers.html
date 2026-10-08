@@ -57,11 +57,20 @@
           <div class="bo-meta" style="margin-top:5px;">Vide = utiliser la limite configurée sur le pool.</div>
         </div>
         <div id="featuresBox" class="full"></div>
+        <div id="versionLifecycleBox" class="full">
+          <label>Date d’effet de la version</label>
+          <input id="versionEffectiveFrom" type="date">
+          <div class="bo-meta" style="margin-top:5px;">Premier jour d’un mois uniquement. Une date future crée une version Planifiée.</div>
+        </div>
       </div>
-      <div class="bo-footer"><button id="newVersionBtn" class="filter-btn">Créer une nouvelle version</button><button id="saveBtn" class="filter-btn primary">Enregistrer</button></div>
+      <div class="bo-footer">
+        <button id="newVersionBtn" class="filter-btn">Créer une nouvelle version</button>
+        <button id="lifecycleBtn" class="filter-btn">Planifier / activer la version</button>
+        <button id="saveBtn" class="filter-btn primary">Enregistrer</button>
+      </div>
     </div>
   </div>
   <script src="/admin/nav.js?v=billing-s2"></script>
-  <script src="/admin/billing-offers.js?v=billing-owner-revenue-v1"></script>
+  <script src="/admin/billing-offers.js?v=billing-version-lifecycle-v1"></script>
 </body>
 </html>
