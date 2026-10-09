@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAZAFI Admin — Test de débit</title>
+  <link rel="stylesheet" href="/admin/admin.css?v=admin-wide-1" />
+  <style>
+    /* RAZAFI Speed Test V1 — independent from Data Usage / Yield. */
+    .rz-st-shell{display:flex;flex-direction:column;gap:14px;margin-bottom:calc(100px + env(safe-area-inset-bottom,0px));}
+    .rz-st-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+    .rz-st-me{white-space:normal;line-height:1.25;}
+    .rz-st-me strong{display:block;color:var(--rz-text,#111827);font-weight:900;margin-top:2px;overflow-wrap:anywhere;}
+    .rz-st-refresh{width:auto!important;min-height:40px;padding:9px 14px!important;border-radius:999px!important;background:rgba(255,255,255,.82)!important;color:#111827!important;border:1px solid rgba(17,24,39,.08)!important;box-shadow:0 6px 18px rgba(15,23,42,.05)!important;}
+    .rz-st-card{border-radius:24px;background:rgba(255,255,255,.80);border:1px solid rgba(255,255,255,.92);box-shadow:0 10px 26px rgba(15,23,42,.06);}
+    .rz-st-note{padding:13px 15px;color:#475569;font-size:12px;font-weight:700;line-height:1.55;}
+    .rz-st-note strong{color:#111827;}
+    .rz-st-message{display:none;padding:12px 14px;border-radius:16px;font-size:12px;font-weight:800;line-height:1.45;background:rgba(37,99,235,.07);border:1px solid rgba(37,99,235,.12);color:#1d4ed8;}
+    .rz-st-message.is-visible{display:block;}
+    .rz-st-message.is-error{background:rgba(185,28,28,.07);border-color:rgba(185,28,28,.14);color:#b91c1c;}
+    .rz-st-content{display:grid;gap:12px;}
+    .rz-st-empty{padding:28px 18px;color:#64748b;text-align:center;font-size:13px;font-weight:750;line-height:1.5;}
+    .rz-st-title-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:5px 2px 2px;}
+    .rz-st-title-row h2{margin:0;color:#111827;font-size:18px;font-weight:950;letter-spacing:-.025em;}
+    .rz-st-title-row p{margin:4px 0 0;color:#64748b;font-size:11px;font-weight:750;line-height:1.45;}
+    .rz-st-pools{display:grid;gap:10px;}
+    .rz-st-pool{appearance:none;width:100%;display:flex;align-items:center;justify-content:space-between;gap:15px;padding:16px 17px;text-align:left;cursor:pointer;font:inherit;transition:transform .16s ease,box-shadow .16s ease;}
+    .rz-st-pool:hover{transform:translateY(-1px);box-shadow:0 15px 34px rgba(15,23,42,.085);}
+    .rz-st-pool:focus-visible,.rz-st-action:focus-visible,.rz-st-back:focus-visible{outline:3px solid rgba(37,99,235,.20);outline-offset:2px;}
+    .rz-st-pool-name{color:#111827;font-size:16px;font-weight:950;letter-spacing:-.025em;}
+    .rz-st-pool-meta{margin-top:5px;color:#64748b;font-size:11px;font-weight:750;}
+    .rz-st-pool-right{text-align:right;flex:0 0 auto;}
+    .rz-st-pool-mbps{color:#111827;font-size:22px;font-weight:950;letter-spacing:-.04em;white-space:nowrap;}
+    .rz-st-muted{color:#64748b;font-size:11px;font-weight:750;}
+    .rz-st-back{appearance:none;border:0;background:transparent;color:#2563eb;font:inherit;font-size:12px;font-weight:900;cursor:pointer;padding:5px 3px;}
+    .rz-st-detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;padding:2px 0;}
+    .rz-st-detail-name{margin-top:5px;color:#111827;font-size:23px;font-weight:950;letter-spacing:-.035em;}
+    .rz-st-detail-sub{margin-top:6px;color:#64748b;font-size:11px;font-weight:750;line-height:1.5;}
+    .rz-st-status{display:inline-flex;align-items:center;gap:7px;max-width:100%;padding:7px 11px;border-radius:999px;background:rgba(100,116,139,.09);color:#475569;border:1px solid rgba(100,116,139,.12);font-size:11px;font-weight:900;white-space:nowrap;}
+    .rz-st-status::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;flex:0 0 auto;}
+    .rz-st-status.active{background:rgba(22,163,74,.08);color:#15803d;border-color:rgba(22,163,74,.12);}
+    .rz-st-status.running{background:rgba(37,99,235,.07);color:#1d4ed8;border-color:rgba(37,99,235,.12);}
+    .rz-st-result{padding:20px 18px;}
+    .rz-st-result-title{color:#64748b;font-size:11px;font-weight:850;text-transform:uppercase;letter-spacing:.04em;}
+    .rz-st-result-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-top:13px;}
+    .rz-st-metric{min-width:0;padding:14px;border-radius:18px;background:rgba(248,250,252,.90);border:1px solid rgba(15,23,42,.05);}
+    .rz-st-metric-label{color:#64748b;font-size:10px;font-weight:850;letter-spacing:.025em;}
+    .rz-st-metric-value{margin-top:7px;color:#111827;font-size:clamp(17px,3vw,26px);font-weight:950;letter-spacing:-.035em;overflow-wrap:anywhere;}
+    .rz-st-metric-unit{font-size:12px;color:#64748b;font-weight:850;letter-spacing:0;}
+    .rz-st-result-meta{display:flex;gap:8px 16px;flex-wrap:wrap;color:#64748b;font-size:11px;font-weight:750;line-height:1.5;margin-top:13px;}
+    .rz-st-test-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:17px 18px;}
+    .rz-st-test-row h3,.rz-st-history h3{margin:0;color:#111827;font-size:14px;font-weight:950;}
+    .rz-st-test-row p{margin:6px 0 0;color:#64748b;font-size:11px;font-weight:700;line-height:1.5;max-width:650px;}
+    .rz-st-action{appearance:none;width:auto!important;min-height:42px;border:0;border-radius:999px;background:#111827;color:#fff;padding:10px 17px;font:inherit;font-size:12px;font-weight:900;cursor:pointer;white-space:nowrap;}
+    .rz-st-action:hover:not(:disabled){background:#334155;}
+    .rz-st-action:disabled{background:#e2e8f0;color:#64748b;cursor:not-allowed;}
+    .rz-st-history{padding:17px 18px;}
+    .rz-st-history-info{margin-top:6px;color:#64748b;font-size:11px;font-weight:750;}
+    .rz-st-history-list{display:grid;margin-top:12px;}
+    .rz-st-history-item{display:grid;grid-template-columns:minmax(100px,1.1fr) repeat(3,minmax(70px,.7fr));gap:9px;padding:12px 0;border-top:1px solid rgba(15,23,42,.055);align-items:center;}
+    .rz-st-history-time{font-size:11px;font-weight:850;color:#475569;}
+    .rz-st-history-value{color:#111827;font-size:12px;font-weight:900;}
+    .rz-st-history-value small{display:block;margin-bottom:4px;color:#94a3b8;font-size:9px;font-weight:850;}
+    @media(max-width:720px){.rz-st-result-grid{grid-template-columns:1fr 1fr 1fr;gap:6px;}.rz-st-metric{padding:11px 8px;}.rz-st-metric-value{font-size:18px;}.rz-st-history-item{grid-template-columns:minmax(90px,1fr) repeat(3,minmax(50px,.7fr));gap:5px;}}
+    @media(max-width:500px){.rz-st-card{border-radius:20px;}.rz-st-test-row{flex-direction:column;align-items:stretch;}.rz-st-action{width:100%!important;}.rz-st-detail-head{flex-wrap:wrap;}.rz-st-pool-mbps{font-size:17px;}.rz-st-history-value{font-size:11px;}.rz-st-history-time{font-size:10px;}.rz-st-result{padding:17px 13px;}.rz-st-history{padding:15px 13px;}}
+  </style>
+</head>
+<body class="rz-admin-shell pool-speed-test-page">
+  <div class="login-container">
+    <div class="card rz-st-shell" style="max-width:1180px;width:96%;">
+      <div class="topbar rz-st-head">
+        <div class="title">
+          <h1 class="rz-hero-title">Test de débit</h1>
+          <div id="me" class="subtitle rz-st-me">Vérification de la session…</div>
+        </div>
+        <button id="stRefresh" class="filter-btn rz-st-refresh" type="button">Actualiser</button>
+      </div>
+      <div id="stMessage" class="rz-st-message" role="status" aria-live="polite"></div>
+      <main id="stContent" class="rz-st-content" aria-label="Mesures de vitesse par pool">
+        <section class="rz-st-card rz-st-empty">Chargement…</section>
+      </main>
+      <section class="rz-st-card rz-st-note">
+        <strong>À savoir :</strong> les tests mesurent une performance ponctuelle de l'accès Internet de la pool, pas un débit garanti pour chaque client.
+        Ils peuvent occuper temporairement la connexion. Les mesures absentes restent indiquées « Non mesuré » ; une observation passive du WAN ne remplace pas un Speed Test.
+      </section>
+    </div>
+  </div>
+  <script src="/admin/nav.js?v=admin-wide-1"></script>
+  <script src="/admin/pool-speed-test.js?v=pool-speed-test-v1-staging"></script>
+</body>
+</html>

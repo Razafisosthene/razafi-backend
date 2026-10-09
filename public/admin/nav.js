@@ -348,6 +348,10 @@
           <a class="rz-item" data-href="/admin/data-usage.html" href="/admin/data-usage.html" id="rzNavDataUsage" style="display:none;">
             <span class="rz-item-label">Consommation des données</span>
           </a>
+          <!-- Speed Test multi-pool: hidden until backend grants the dedicated permission. -->
+          <a class="rz-item" data-href="/admin/pool-speed-test.html" href="/admin/pool-speed-test.html" id="rzNavPoolSpeedTest" style="display:none;">
+            <span class="rz-item-label">Test de débit</span>
+          </a>
           <a class="rz-item" data-href="/admin/aps.html" href="/admin/aps.html" id="rzNavAPs">
             <span class="rz-item-label">APs</span>
           </a>
@@ -738,6 +742,7 @@
 
       const elAPs = $("#rzNavAPs");
       const elDataUsage = $("#rzNavDataUsage");
+      const elPoolSpeedTest = $("#rzNavPoolSpeedTest");
       const elSimulator = $("#rzNavSimulator");
       const elAudit = $("#rzNavAudit");
       const elUsers = $("#rzNavUsers");
@@ -751,6 +756,9 @@
 
       if (elAPs) elAPs.style.display = isSuper ? "" : "none";
       if (elDataUsage) elDataUsage.style.display = permissions.data_usage_view === true ? "" : "none";
+      // Feature rollout is controlled by /api/admin/me. Superadmin is also gated
+      // until the Speed Test page + API are ready; viewers need no write role.
+      if (elPoolSpeedTest) elPoolSpeedTest.style.display = permissions.pool_speed_test_view === true ? "" : "none";
       if (elSimulator) elSimulator.style.display = (isSuper || permissions.plan_simulator_simulate === true) ? "" : "none";
       if (elAudit) elAudit.style.display = isSuper ? "" : "none";
       if (elUsers) elUsers.style.display = canManageUsers ? "" : "none";
@@ -837,6 +845,7 @@
       const p = window.location.pathname || "";
       if (p === "/admin/" || p === "/admin/index.html" || p === "/admin") return "dashboard";
       if (p.includes("/data-usage"))       return "data_usage";
+      if (p.includes("/pool-speed-test")) return "pool_speed_test";
       if (p.includes("/clients"))           return "clients";
       if (p.includes("/plans"))             return "plans";
       if (p.includes("/pricing-simulator")) return "simulator";
