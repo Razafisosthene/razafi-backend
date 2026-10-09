@@ -22,6 +22,8 @@ import { createSubscriptionInvoicePdf, createSubscriptionReceiptPdf } from "./bi
 import { createCommissionStatementPdf, createCommissionPayoutReceiptPdf } from "./billing-commission-pdf.js";
 import { createFinancialAnnualReportPdf } from "./financial-report-pdf.js";
 import { startAnnualFinalReportNotifications } from "./annual-final-report-notifications.js";
+// RAZAFI Pool Speed Test V1 (STAGING) — isolated, feature-flagged multi-pool endpoints.
+import { registerPoolSpeedTestRoutes } from "./pool-speed-test-routes.js";
 
 dotenv.config();
 
@@ -1511,6 +1513,9 @@ async function requireAdmin(req, res, next) {
         // sent in the body. The handler performs pool scoping and does not mutate.
         (method === "POST" && fullPath === "/api/admin/clients/live-snapshot") ||
         (method === "POST" && fullPath === "/api/admin/assistant/chat") ||
+        // Safe scoped capability: may generate capped WAN test traffic but may
+        // NEVER mutate configuration. Route verifies exact pool + DB lock.
+        (method === "POST" && fullPath === "/api/admin/pool-speed-test/start") ||
         (method === "POST" && fullPath === "/api/admin/dashboard-since-last-visit/mark-seen");
       if (allowScopedSafePost) return next();
 
@@ -1612,6 +1617,8 @@ async function requireAdmin(req, res, next) {
         fullPath === "/api/admin/portal-preview/validate" ||
         fullPath === "/api/admin/pool-live-stats" ||
         fullPath === "/api/admin/data-usage" ||
+        fullPath === "/api/admin/pool-speed-test" ||
+        fullPath === "/api/admin/pool-speed-test/history" ||
         fullPath === "/api/admin/yield-policy" ||
         // S14.8.2B.1 — Annual-report catalog is read-only. Its handler/RPC
         // performs the historical Owner / Superadmin authorization.
@@ -19899,6 +19906,10 @@ function buildAdminPermissions(admin) {
     // Superadmin sees all pools; Owner/Manager/Viewer stay scoped to admin.pool_ids.
     data_usage_view:
       isSuperadmin || (Array.isArray(admin?.pool_ids) && admin.pool_ids.length > 0),
+    // Hidden until the new page + endpoints are safely staged together.
+    pool_speed_test_view:
+      ["1", "true", "yes", "on"].includes(String(process.env.POOL_SPEED_TEST_UI_ENABLED || "false").trim().toLowerCase()) &&
+      (isSuperadmin || (Array.isArray(admin?.pool_ids) && admin.pool_ids.length > 0)),
 
     pools_branding_manage: isSuperadmin || hasOperationalWriteRole,
     plans_visibility_manage: isSuperadmin || hasOperationalWriteRole,
@@ -47970,6 +47981,12 @@ app.post("/api/admin/dashboard-since-last-visit/mark-seen", requireAdmin, async 
     console.error("DASHBOARD MARK SEEN ERROR", e);
     return res.status(500).json({ error: String(e?.message || e) });
   }
+});
+
+// Pool-wide WAN speed test is a wholly separate module; its routes are
+// registered even when disabled, but it cannot trigger traffic by default.
+registerPoolSpeedTestRoutes({
+  app, requireAdmin, supabase, canAdminAccessPool, buildPoolDisplayName,
 });
 
 // ---------------------------------------------------------------------------
