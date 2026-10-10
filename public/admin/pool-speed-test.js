@@ -1,4 +1,4 @@
-// RAZAFI Admin — Pool Speed Test V1 (STAGING)
+// RAZAFI Admin — Pool Speed Test V2 (animation, no simulated metrics)
 // Independent multi-pool UI. No tests without explicit backend authorization.
 (() => {
   "use strict";
@@ -10,6 +10,7 @@
     me: null, pools: [], selectedPoolId: null, detail: null, history: [],
     featureEnabled: false, busy: false, starting: false, historyAvailable: true,
     pollTimer: null, pollDeadline: 0, viewToken: 0,
+    visual: null, visualTicker: null, visualDismiss: null,
   };
 
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -80,13 +81,132 @@
   function canStart(detail) {
     return state.featureEnabled === true && detail?.feature_enabled === true &&
       detail?.state?.can_start === true && !isRunning(detail) &&
-      !pendingCooldown(detail) && !state.starting && !state.busy;
+      !pendingCooldown(detail) && !state.starting && !state.busy && !trackingVisual();
   }
 
   function stopPolling() {
     if (state.pollTimer !== null) clearTimeout(state.pollTimer);
     state.pollTimer = null;
     state.pollDeadline = 0;
+  }
+
+  // Keep this live surface OUTSIDE #stContent: polling redraws the detail, but
+  // must not restart the animation or announce false metric progress.
+  function elapsedText(ms) {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+  }
+
+  function paintVisual(phase) {
+    const root = $("stLiveTest");
+    if (!root || !state.visual) return;
+    const titles = {
+      submitting: ["Envoi de la demande", "Authentification et réservation du test…", "PRÉPARATION"],
+      tracking: ["Mesure de débit en cours", "Le routeur effectue la mesure. Résultat transmis dès qu’il est disponible.", "MESURE ACTIVE"],
+      complete: ["Mesure enregistrée", "Le nouveau résultat est disponible dans l’historique de la pool.", "TERMINÉ"],
+      uncertain: ["Résultat non confirmé", "Le test ne fournit pas encore de nouveau résultat. Consultez l’historique ou actualisez.", "À VÉRIFIER"],
+      rejected: ["Démarrage non confirmé", "La demande n’a pas été acceptée. Aucun résultat n’est attendu.", "NON DÉMARRÉ"],
+    };
+    const [title, description, flag] = titles[phase] || titles.tracking;
+    root.hidden = false;
+    root.classList.toggle("is-done", phase === "complete");
+    root.classList.toggle("is-issue", phase === "uncertain" || phase === "rejected");
+    $("stLiveTitle").textContent = title;
+    $("stLiveDescription").textContent = description;
+    $("stLiveFlag").textContent = flag;
+    const timer = $("stLiveElapsed");
+    if (timer) {
+      timer.textContent = phase === "complete" ? "Mesure reçue" :
+        phase === "rejected" || phase === "uncertain" ? "Suivi terminé" :
+        `Temps écoulé · ${elapsedText(Date.now() - state.visual.startedAt)}`;
+    }
+  }
+
+  function clearVisual() {
+    if (state.visualTicker !== null) clearInterval(state.visualTicker);
+    if (state.visualDismiss !== null) clearTimeout(state.visualDismiss);
+    state.visualTicker = null;
+    state.visualDismiss = null;
+    state.visual = null;
+    const root = $("stLiveTest");
+    if (root) { root.hidden = true; root.classList.remove("is-done", "is-issue"); }
+  }
+
+  function beginVisual(phase, poolId, runId = null) {
+    clearVisual();
+    state.visual = {
+      poolId: String(poolId), runId, phase, startedAt: Date.now(),
+      observedActive: false, idlePolls: 0,
+      baselineId: String(state.detail?.measurement?.id || ""),
+    };
+    paintVisual(phase);
+    if (phase === "submitting") {
+      const root = $("stLiveTest");
+      if (root) root.scrollIntoView({
+        behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "center",
+      });
+    }
+    state.visualTicker = setInterval(() => {
+      if (state.visual && ["submitting", "tracking"].includes(state.visual.phase)) {
+        const timer = $("stLiveElapsed");
+        if (timer) timer.textContent = `Temps écoulé · ${elapsedText(Date.now() - state.visual.startedAt)}`;
+      }
+    }, 1000);
+  }
+
+  function setVisualPhase(phase) {
+    if (!state.visual) return;
+    state.visual.phase = phase;
+    paintVisual(phase);
+  }
+
+  function finishVisual(phase, message, isError = false) {
+    if (!state.visual || !["submitting", "tracking"].includes(state.visual.phase)) return;
+    setVisualPhase(phase);
+    stopPolling();
+    if (state.visualTicker !== null) { clearInterval(state.visualTicker); state.visualTicker = null; }
+    if (message) statusMessage(message, isError);
+    state.visualDismiss = setTimeout(clearVisual, phase === "complete" ? 6500 : 12000);
+  }
+
+  function trackingVisual() {
+    return Boolean(state.visual && ["submitting", "tracking"].includes(state.visual.phase) &&
+      state.visual.poolId === String(state.selectedPoolId));
+  }
+
+  function synchronizeVisual(detail, poolId) {
+    const active = isRunning(detail);
+    if (!state.visual && active) {
+      beginVisual("tracking", poolId);
+      state.pollDeadline = Date.now() + MAX_POLL_MS;
+    }
+    if (!trackingVisual() || state.visual.poolId !== String(poolId)) return;
+    const v = state.visual;
+    // Only a matching completed run is a proven success. Old measurements do
+    // not count, and the API doesn't supply an upload/ping progress percentage.
+    const currentId = String(detail?.measurement?.id || "");
+    if ((v.runId && currentId === v.runId) ||
+        (!v.runId && v.observedActive && currentId && currentId !== v.baselineId)) {
+      finishVisual("complete", "Nouvelle mesure enregistrée. Historique actualisé.");
+      return;
+    }
+    if (active) {
+      v.observedActive = true;
+      v.idlePolls = 0;
+      if (v.phase !== "submitting") setVisualPhase("tracking");
+      return;
+    }
+    // The worker can transition queued → running asynchronously. Allow time
+    // for this before interpreting an idle response as an unconfirmed finish.
+    if (v.phase === "tracking") {
+      v.idlePolls += 1;
+      const age = Date.now() - v.startedAt;
+      if ((v.observedActive && v.idlePolls >= 3) ||
+          (!v.observedActive && v.idlePolls >= 4 && age >= 15000)) {
+        finishVisual("uncertain", "Aucune nouvelle mesure confirmée. Vérifiez l’historique puis réessayez plus tard.", true);
+      }
+    }
   }
 
   function renderOverview() {
@@ -117,7 +237,7 @@
     const detail = state.detail;
     const pool = detail?.pool || state.pools.find((p) => String(p.pool_id || p.id) === String(state.selectedPoolId)) || {};
     const last = detail?.measurement || detail?.latest || null;
-    const running = isRunning(detail);
+    const running = isRunning(detail) || trackingVisual();
     const cooldown = pendingCooldown(detail);
     const startReady = canStart(detail);
     const showBack = state.pools.length > 1;
@@ -173,6 +293,7 @@
 
   async function loadOverview() {
     stopPolling();
+    clearVisual();
     const token = ++state.viewToken;
     state.busy = true;
     $("stRefresh").disabled = true;
@@ -244,12 +365,18 @@
       // The data has finished loading: do not inadvertently disable an allowed
       // start button by rendering while the local refresh lock is still true.
       state.busy = false;
+      synchronizeVisual(detail, id);
       renderDetail();
-      if (isRunning(detail) && !state.pollTimer && Date.now() < state.pollDeadline) schedulePoll(id, token);
+      if ((isRunning(detail) || trackingVisual()) && !state.pollTimer && Date.now() < state.pollDeadline) {
+        schedulePoll(id, token);
+      }
     } catch (err) {
       if (token !== state.viewToken || state.selectedPoolId !== id) return;
       if (err.status === 401) { window.location.href = "/admin/login.html"; return; }
-      if (options.silent) statusMessage("Actualisation momentanément indisponible.", true);
+      if (options.silent) {
+        statusMessage("Actualisation momentanément indisponible. Nouvelle tentative automatique.", true);
+        if (trackingVisual() && !state.pollTimer && Date.now() < state.pollDeadline) schedulePoll(id, token);
+      }
       else {
         statusMessage(err.status === 403 ? "Vous n’avez pas accès à cette pool." : "Mesures indisponibles pour cette pool.", true);
         $("stContent").innerHTML = '<section class="rz-st-card rz-st-empty">Impossible de charger les mesures de cette pool.</section>';
@@ -260,7 +387,12 @@
   }
 
   function schedulePoll(id, token) {
-    if (state.pollTimer !== null || Date.now() >= state.pollDeadline) return;
+    if (state.pollTimer !== null) return;
+    if (state.pollDeadline && Date.now() >= state.pollDeadline) {
+      if (trackingVisual()) finishVisual("uncertain", "Délai de suivi dépassé. Actualisez pour consulter l’état du test.", true);
+      return;
+    }
+    if (!state.pollDeadline) return;
     state.pollTimer = setTimeout(() => {
       state.pollTimer = null;
       if (token !== state.viewToken || state.selectedPoolId !== id || document.hidden) return;
@@ -274,8 +406,9 @@
     if (!id || !canStart(detail)) return;
     if (!window.confirm("Lancer un test de débit sur cette pool ? Le test peut temporairement utiliser la bande passante des clients.")) return;
     state.starting = true;
+    beginVisual("submitting", id);
     renderDetail();
-    statusMessage("Envoi de la demande…");
+    statusMessage("");
     try {
       const response = await fetchJSON("/api/admin/pool-speed-test/start", {
         method: "POST",
@@ -284,14 +417,18 @@
       });
       if (state.selectedPoolId !== id) return;
       if (response?.accepted !== true) throw new Error("test_not_accepted");
-      statusMessage("Demande acceptée. Le résultat sera actualisé automatiquement.");
+      if (state.visual && state.visual.poolId === id) {
+        state.visual.runId = String(response.test_id || "") || null;
+        setVisualPhase("tracking");
+      }
+      statusMessage("");
       state.pollDeadline = Date.now() + MAX_POLL_MS;
       await loadDetail(id, { preserveToken: true, silent: true });
-      if (state.pollTimer === null && state.selectedPoolId === id) schedulePoll(id, state.viewToken);
+      if (trackingVisual() && state.pollTimer === null && state.selectedPoolId === id) schedulePoll(id, state.viewToken);
     } catch (err) {
       if (err.status === 401) { window.location.href = "/admin/login.html"; return; }
       if (state.selectedPoolId === id) {
-        statusMessage(err.status === 409 ? "Un test est déjà en cours ou le délai entre deux tests n’est pas écoulé." :
+        finishVisual("rejected", err.status === 409 ? "Un test est déjà en cours ou le délai entre deux tests n’est pas écoulé." :
           err.status === 403 ? "Vous n’êtes pas autorisé à lancer ce test." :
           "Le test n’a pas pu être démarré. Aucun nouveau test n’a été confirmé.", true);
       }
@@ -324,24 +461,29 @@
   document.addEventListener("DOMContentLoaded", () => {
     $("stRefresh")?.addEventListener("click", () => {
       if (state.busy || state.starting) return;
-      if (state.selectedPoolId) void loadDetail(state.selectedPoolId);
+      if (state.selectedPoolId) void loadDetail(state.selectedPoolId,
+        trackingVisual() ? { preserveToken: true, silent: true } : {});
       else void loadOverview();
     });
     $("stContent")?.addEventListener("click", (event) => {
       const pool = event.target.closest("[data-st-pool]");
       if (pool) { void loadDetail(pool.getAttribute("data-st-pool")); return; }
       if (event.target.closest("[data-st-back]")) {
-        stopPolling(); ++state.viewToken; state.selectedPoolId = null;
+        stopPolling(); clearVisual(); ++state.viewToken; state.selectedPoolId = null;
         state.detail = null; state.history = []; renderOverview(); return;
       }
       if (event.target.closest("[data-st-start]")) void startTest();
     });
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden && state.pollDeadline > Date.now() && state.selectedPoolId && isRunning(state.detail)) {
-        if (state.pollTimer === null) schedulePoll(state.selectedPoolId, state.viewToken);
+      if (!document.hidden && state.selectedPoolId && trackingVisual()) {
+        if (state.pollDeadline <= Date.now()) {
+          finishVisual("uncertain", "Le délai de suivi est dépassé. Actualisez pour vérifier les résultats.", true);
+        } else if (state.pollTimer === null) {
+          void loadDetail(state.selectedPoolId, { preserveToken: true, silent: true });
+        }
       }
     });
-    window.addEventListener("pagehide", stopPolling);
+    window.addEventListener("pagehide", () => { stopPolling(); clearVisual(); });
     void initialize();
   });
 })();
