@@ -1,4 +1,4 @@
-// RAZAFI Admin — Pool Speed Test V2 (animation, no simulated metrics)
+// RAZAFI Admin — Pool Speed Test V3 (single Download stage, measured values only)
 // Independent multi-pool UI. No tests without explicit backend authorization.
 (() => {
   "use strict";
@@ -10,7 +10,7 @@
     me: null, pools: [], selectedPoolId: null, detail: null, history: [],
     featureEnabled: false, busy: false, starting: false, historyAvailable: true,
     pollTimer: null, pollDeadline: 0, viewToken: 0,
-    visual: null, visualTicker: null, visualDismiss: null,
+    visual: null, visualTicker: null, historyVisible: 10,
   };
 
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -90,8 +90,8 @@
     state.pollDeadline = 0;
   }
 
-  // Keep this live surface OUTSIDE #stContent: polling redraws the detail, but
-  // must not restart the animation or announce false metric progress.
+  // Live animation occupies the Download result tile. While a test runs,
+  // renderDetail only updates controls, preserving its DOM and animation.
   function elapsedText(ms) {
     const total = Math.max(0, Math.floor(ms / 1000));
     return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
@@ -109,6 +109,10 @@
     };
     const [title, description, flag] = titles[phase] || titles.tracking;
     root.hidden = false;
+    const reading = $("stSpeedReading");
+    if (reading) reading.hidden = true;
+    $("stDownloadMetric")?.classList.add("is-running");
+    $("stResultCard")?.classList.add("is-tracking");
     root.classList.toggle("is-done", phase === "complete");
     root.classList.toggle("is-issue", phase === "uncertain" || phase === "rejected");
     $("stLiveTitle").textContent = title;
@@ -124,12 +128,14 @@
 
   function clearVisual() {
     if (state.visualTicker !== null) clearInterval(state.visualTicker);
-    if (state.visualDismiss !== null) clearTimeout(state.visualDismiss);
     state.visualTicker = null;
-    state.visualDismiss = null;
     state.visual = null;
     const root = $("stLiveTest");
     if (root) { root.hidden = true; root.classList.remove("is-done", "is-issue"); }
+    const reading = $("stSpeedReading");
+    if (reading) reading.hidden = false;
+    $("stDownloadMetric")?.classList.remove("is-running");
+    $("stResultCard")?.classList.remove("is-tracking");
   }
 
   function beginVisual(phase, poolId, runId = null) {
@@ -163,11 +169,10 @@
 
   function finishVisual(phase, message, isError = false) {
     if (!state.visual || !["submitting", "tracking"].includes(state.visual.phase)) return;
-    setVisualPhase(phase);
     stopPolling();
-    if (state.visualTicker !== null) { clearInterval(state.visualTicker); state.visualTicker = null; }
+    clearVisual();  // Show the actual Download value immediately, never a stale success animation.
     if (message) statusMessage(message, isError);
-    state.visualDismiss = setTimeout(clearVisual, phase === "complete" ? 6500 : 12000);
+    if (phase !== "complete" && state.detail && state.selectedPoolId) renderDetail();
   }
 
   function trackingVisual() {
@@ -186,8 +191,11 @@
     // Only a matching completed run is a proven success. Old measurements do
     // not count, and the API doesn't supply an upload/ping progress percentage.
     const currentId = String(detail?.measurement?.id || "");
-    if ((v.runId && currentId === v.runId) ||
-        (!v.runId && v.observedActive && currentId && currentId !== v.baselineId)) {
+    const measured = numberOrNull(detail?.measurement?.download_mbps) !== null;
+    const completed = String(detail?.measurement?.status || "completed").toLowerCase() === "completed";
+    if (measured && completed && !active &&
+        ((v.runId && currentId === v.runId) ||
+        (!v.runId && v.observedActive && currentId && currentId !== v.baselineId))) {
       finishVisual("complete", "Nouvelle mesure enregistrée. Historique actualisé.");
       return;
     }
@@ -231,6 +239,37 @@
       </section>`;
   }
 
+  // Decision support only: recent valid Download tests, never an inferred guaranteed speed.
+  function recentDownloadHistory() {
+    const cutoff = Date.now() - 30 * 86400000;
+    return state.history.filter((item) => {
+      const status = String(item?.status || "completed").toLowerCase();
+      const timestamp = Date.parse(item?.completed_at || item?.created_at || "");
+      return status === "completed" && numberOrNull(item?.download_mbps) !== null &&
+        Number.isFinite(timestamp) && timestamp >= cutoff;
+    }).sort((a, b) => Date.parse(b.completed_at || b.created_at) - Date.parse(a.completed_at || a.created_at));
+  }
+
+  function analysisHTML(valid) {
+    if (!state.historyAvailable) return '<div class="rz-st-advice">Analyse momentanément indisponible : historique non accessible.</div>';
+    const latest = valid.slice(0, 10);
+    if (latest.length < 3) return `<div class="rz-st-advice">${latest.length} mesure(s) récente(s). Au moins 3 mesures sont nécessaires pour observer une tendance. Lancez les tests à différents moments, sans surcharger la connexion.</div>`;
+    const values = latest.map((item) => numberOrNull(item.download_mbps)).sort((a, b) => a - b);
+    const n = values.length;
+    const median = n % 2 ? values[(n - 1) / 2] : (values[n / 2 - 1] + values[n / 2]) / 2;
+    const minimum = values[0], maximum = values[n - 1];
+    const relativeRange = median > 0 ? (maximum - minimum) / median : Infinity;
+    const variation = relativeRange < 0.25 ? "variations limitées" : relativeRange < 0.5 ? "variations notables" : "variations importantes";
+    const advice = relativeRange < 0.25
+      ? "Les tests sont relativement proches. Vérifiez néanmoins les périodes chargées avant de choisir les vitesses des forfaits."
+      : "Les débits mesurés fluctuent. Pour dimensionner les forfaits, examinez aussi les résultats les plus bas et le nombre de clients simultanés.";
+    return `<div class="rz-st-analysis-grid">
+      <div class="rz-st-analysis-stat"><div class="rz-st-analysis-label">Débit médian</div><div class="rz-st-analysis-number">${esc(speedText(median))}</div></div>
+      <div class="rz-st-analysis-stat"><div class="rz-st-analysis-label">Plus faible</div><div class="rz-st-analysis-number">${esc(speedText(minimum))}</div></div>
+      <div class="rz-st-analysis-stat"><div class="rz-st-analysis-label">Mesures analysées</div><div class="rz-st-analysis-number">${n} / 10</div></div>
+    </div><div class="rz-st-advice"><strong>Conseil RAZAFI :</strong> ${advice} Observation : ${variation}, sur ${n} tests des 30 derniers jours. Ces mesures ponctuelles ne garantissent aucun débit par client.</div>`;
+  }
+
   function renderDetail() {
     const content = $("stContent");
     if (!content) return;
@@ -251,20 +290,47 @@
       : !detail?.feature_enabled ? "Les mesures actives ne sont pas encore activées sur cette pool."
       : detail?.state?.can_start !== true ? "Lancement momentanément indisponible. La consultation des résultats reste possible."
       : "Le test utilise temporairement la connexion Internet de cette pool. À lancer de préférence hors des périodes chargées.";
-    const history = state.history;
+    const history = recentDownloadHistory();
+    // Polls every 5s must not recreate the orbit animation: update only controls.
+    const existing = content.querySelector("[data-st-detail-for]");
+    if (trackingVisual() && existing?.getAttribute("data-st-detail-for") === String(state.selectedPoolId) && $("stLiveTest")) {
+      const status = $("stStatus");
+      if (status) { status.className = `rz-st-status ${stateClass}`; status.textContent = stateLabel; }
+      const why = $("stReason");
+      if (why) why.textContent = reason;
+      const button = $("stStartButton");
+      if (button) { button.disabled = true; button.textContent = state.starting ? "Démarrage…" : "Test en cours…"; }
+      paintVisual(state.visual.phase);
+      return;
+    }
     content.innerHTML = `
-      <section class="rz-st-detail-head">
+      <section class="rz-st-detail-head" data-st-detail-for="${esc(state.selectedPoolId)}">
         <div>${showBack ? '<button class="rz-st-back" type="button" data-st-back="1">‹ Toutes les pools</button>' : ""}
           <div class="rz-st-detail-name">${esc(displayPoolName(pool))}</div>
           <div class="rz-st-detail-sub">${esc(pool.radius_nas_id || pool.nas_id || "")} ${pool.wan_interface ? `· WAN : ${esc(pool.wan_interface)}` : ""}</div>
-        </div><span class="rz-st-status ${stateClass}">${esc(stateLabel)}</span>
+        </div><span id="stStatus" class="rz-st-status ${stateClass}">${esc(stateLabel)}</span>
       </section>
-      <section class="rz-st-card rz-st-result">
+      <section id="stResultCard" class="rz-st-card rz-st-result">
         <div class="rz-st-result-title">Dernière mesure</div>
         <div class="rz-st-result-grid">
-          <div class="rz-st-metric"><div class="rz-st-metric-label">Téléchargement</div><div class="rz-st-metric-value">${metricValue(last?.download_mbps, "Mbps")}</div></div>
-          <div class="rz-st-metric"><div class="rz-st-metric-label">Envoi</div><div class="rz-st-metric-value">${metricValue(last?.upload_mbps, "Mbps")}</div></div>
-          <div class="rz-st-metric"><div class="rz-st-metric-label">Latence</div><div class="rz-st-metric-value">${metricValue(last?.latency_ms, "ms")}</div></div>
+          <div id="stDownloadMetric" class="rz-st-metric">
+            <div id="stSpeedReading">
+              <div class="rz-st-metric-label">Téléchargement</div>
+              <div class="rz-st-metric-value">${metricValue(last?.download_mbps, "Mbps")}</div>
+            </div>
+            <aside id="stLiveTest" class="rz-st-live" role="status" aria-live="polite" aria-atomic="false" aria-label="Suivi de la mesure de débit" hidden>
+              <div class="rz-st-live-orb" aria-hidden="true"><div class="rz-st-live-core"></div></div>
+              <div class="rz-st-live-copy">
+                <div id="stLiveFlag" class="rz-st-live-flag">MESURE ACTIVE</div>
+                <h2 id="stLiveTitle" class="rz-st-live-title">Mesure en cours</h2>
+                <p id="stLiveDescription" class="rz-st-live-description">Le résultat sera affiché automatiquement.</p>
+                <div class="rz-st-live-bottom">
+                  <div class="rz-st-live-waves" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+                  <span id="stLiveElapsed" class="rz-st-live-elapsed" aria-hidden="true">Temps écoulé · 00:00</span>
+                </div>
+              </div>
+            </aside>
+          </div>
         </div>
         <div class="rz-st-result-meta">
           <span>${esc(last ? qualityLabel : "Aucun test enregistré")}</span>
@@ -274,21 +340,26 @@
         </div>
       </section>
       <section class="rz-st-card rz-st-test-row">
-        <div><h3>Lancer une mesure de la pool</h3><p>${esc(reason)}</p></div>
-        <button class="rz-st-action" type="button" data-st-start="1" ${startReady ? "" : "disabled"}>${state.starting ? "Démarrage…" : running ? "Test en cours…" : "Lancer le test"}</button>
+        <div><h3>Lancer une mesure de la pool</h3><p id="stReason">${esc(reason)}</p></div>
+        <button id="stStartButton" class="rz-st-action" type="button" data-st-start="1" ${startReady ? "" : "disabled"}>${state.starting ? "Démarrage…" : running ? "Test en cours…" : "Lancer le test"}</button>
+      </section>
+      <section class="rz-st-card rz-st-analysis">
+        <h3>Analyse intelligente</h3>
+        <div class="rz-st-history-info">Basée sur les 10 dernières mesures valides, sur 30 jours maximum.</div>
+        ${analysisHTML(history)}
       </section>
       <section class="rz-st-card rz-st-history">
-        <h3>Historique des mesures</h3><div class="rz-st-history-info">Mesures enregistrées pour cette pool uniquement, les plus récentes d’abord.</div>
+        <h3>Historique des mesures</h3><div class="rz-st-history-info">Téléchargement uniquement · ${history.length} mesure(s) valide(s) récente(s) disponibles.</div>
         <div class="rz-st-history-list">${!state.historyAvailable
           ? '<div class="rz-st-empty">Historique temporairement indisponible.</div>'
-          : history.length ? history.map((item) => `<div class="rz-st-history-item">
+          : history.length ? history.slice(0, state.historyVisible).map((item) => `<div class="rz-st-history-item">
               <div class="rz-st-history-time">${esc(dateText(item.completed_at || item.created_at))}</div>
-              <div class="rz-st-history-value"><small>Téléchargement</small>${esc(speedText(item.download_mbps))}</div>
-              <div class="rz-st-history-value"><small>Envoi</small>${esc(speedText(item.upload_mbps))}</div>
-              <div class="rz-st-history-value"><small>Latence</small>${numberOrNull(item.latency_ms) === null ? "Non mesuré" : `${esc(String(item.latency_ms))} ms`}</div>
-            </div>`).join("") : '<div class="rz-st-empty">Aucune mesure enregistrée pour le moment.</div>'}
+              <div class="rz-st-history-value">${esc(speedText(item.download_mbps))}</div>
+            </div>`).join("") : '<div class="rz-st-empty">Aucune mesure valide récente pour le moment.</div>'}
         </div>
+        ${state.historyAvailable && history.length > state.historyVisible ? `<button class="rz-st-more" type="button" data-st-more="1">Afficher ${Math.min(10, history.length - state.historyVisible)} mesure(s) supplémentaires</button>` : ""}
       </section>`;
+    if (trackingVisual()) paintVisual(state.visual.phase);
   }
 
   async function loadOverview() {
@@ -341,6 +412,7 @@
     const token = state.viewToken;
     const id = String(poolId || "");
     if (!state.pools.some((p) => String(p.pool_id || p.id) === id)) return;
+    if (String(state.selectedPoolId) !== id) state.historyVisible = 10;
     state.selectedPoolId = id;
     if (!options.silent) {
       state.busy = true;
@@ -471,6 +543,11 @@
       if (event.target.closest("[data-st-back]")) {
         stopPolling(); clearVisual(); ++state.viewToken; state.selectedPoolId = null;
         state.detail = null; state.history = []; renderOverview(); return;
+      }
+      if (event.target.closest("[data-st-more]")) {
+        state.historyVisible += 10;
+        renderDetail();
+        return;
       }
       if (event.target.closest("[data-st-start]")) void startTest();
     });

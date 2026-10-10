@@ -6,7 +6,7 @@
   <title>RAZAFI Admin — Test de débit</title>
   <link rel="stylesheet" href="/admin/admin.css?v=admin-wide-1" />
   <style>
-    /* RAZAFI Speed Test V2 — independent from Data Usage / Yield. */
+    /* RAZAFI Speed Test V3 — independent from Data Usage / Yield. */
     .rz-st-shell{display:flex;flex-direction:column;gap:14px;margin-bottom:calc(100px + env(safe-area-inset-bottom,0px));}
     .rz-st-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;}
     .rz-st-me{white-space:normal;line-height:1.25;}
@@ -42,14 +42,17 @@
     .rz-st-status.running{background:rgba(37,99,235,.07);color:#1d4ed8;border-color:rgba(37,99,235,.12);}
     .rz-st-result{padding:20px 18px;}
     .rz-st-result-title{color:#64748b;font-size:11px;font-weight:850;text-transform:uppercase;letter-spacing:.04em;}
-    .rz-st-result-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-top:13px;}
-    .rz-st-metric{min-width:0;padding:14px;border-radius:18px;background:rgba(248,250,252,.90);border:1px solid rgba(15,23,42,.05);}
+    .rz-st-result-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:9px;margin-top:13px;}
+    .rz-st-metric{min-width:0;min-height:155px;padding:20px 24px;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;border-radius:22px;background:rgba(248,250,252,.90);border:1px solid rgba(15,23,42,.05);transition:background .25s ease;}
+    .rz-st-metric.is-running{background:linear-gradient(115deg,rgba(244,249,255,.98),rgba(236,244,255,.96) 53%,rgba(250,253,255,.98));}
     .rz-st-metric-label{color:#64748b;font-size:10px;font-weight:850;letter-spacing:.025em;}
-    .rz-st-metric-value{margin-top:7px;color:#111827;font-size:clamp(17px,3vw,26px);font-weight:950;letter-spacing:-.035em;overflow-wrap:anywhere;}
-    .rz-st-metric-unit{font-size:12px;color:#64748b;font-weight:850;letter-spacing:0;}
+    .rz-st-metric-value{margin-top:8px;color:#111827;font-size:clamp(40px,6vw,66px);line-height:1.05;font-weight:950;letter-spacing:-.055em;overflow-wrap:anywhere;font-variant-numeric:tabular-nums;}
+    #stSpeedReading[hidden]{display:none!important;}
+    .rz-st-result.is-tracking .rz-st-result-meta{display:none;}
+    .rz-st-metric-unit{font-size:clamp(13px,1.7vw,18px);color:#64748b;font-weight:850;letter-spacing:0;}
     .rz-st-result-meta{display:flex;gap:8px 16px;flex-wrap:wrap;color:#64748b;font-size:11px;font-weight:750;line-height:1.5;margin-top:13px;}
     .rz-st-test-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:17px 18px;}
-    .rz-st-test-row h3,.rz-st-history h3{margin:0;color:#111827;font-size:14px;font-weight:950;}
+    .rz-st-test-row h3,.rz-st-history h3,.rz-st-analysis h3{margin:0;color:#111827;font-size:14px;font-weight:950;}
     .rz-st-test-row p{margin:6px 0 0;color:#64748b;font-size:11px;font-weight:700;line-height:1.5;max-width:650px;}
     .rz-st-action{appearance:none;width:auto!important;min-height:42px;border:0;border-radius:999px;background:#111827;color:#fff;padding:10px 17px;font:inherit;font-size:12px;font-weight:900;cursor:pointer;white-space:nowrap;}
     .rz-st-action:hover:not(:disabled){background:#334155;}
@@ -57,15 +60,24 @@
     .rz-st-history{padding:17px 18px;}
     .rz-st-history-info{margin-top:6px;color:#64748b;font-size:11px;font-weight:750;}
     .rz-st-history-list{display:grid;margin-top:12px;}
-    .rz-st-history-item{display:grid;grid-template-columns:minmax(100px,1.1fr) repeat(3,minmax(70px,.7fr));gap:9px;padding:12px 0;border-top:1px solid rgba(15,23,42,.055);align-items:center;}
+    .rz-st-history-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-top:1px solid rgba(15,23,42,.055);}
     .rz-st-history-time{font-size:11px;font-weight:850;color:#475569;}
-    .rz-st-history-value{color:#111827;font-size:12px;font-weight:900;}
+    .rz-st-history-value{color:#111827;font-size:15px;font-weight:900;white-space:nowrap;font-variant-numeric:tabular-nums;}
     .rz-st-history-value small{display:block;margin-bottom:4px;color:#94a3b8;font-size:9px;font-weight:850;}
-    @media(max-width:720px){.rz-st-result-grid{grid-template-columns:1fr 1fr 1fr;gap:6px;}.rz-st-metric{padding:11px 8px;}.rz-st-metric-value{font-size:18px;}.rz-st-history-item{grid-template-columns:minmax(90px,1fr) repeat(3,minmax(50px,.7fr));gap:5px;}}
-    @media(max-width:500px){.rz-st-card{border-radius:20px;}.rz-st-test-row{flex-direction:column;align-items:stretch;}.rz-st-action{width:100%!important;}.rz-st-detail-head{flex-wrap:wrap;}.rz-st-pool-mbps{font-size:17px;}.rz-st-history-value{font-size:11px;}.rz-st-history-time{font-size:10px;}.rz-st-result{padding:17px 13px;}.rz-st-history{padding:15px 13px;}}
+    .rz-st-more{appearance:none;border:1px solid rgba(37,99,235,.12);background:rgba(37,99,235,.045);color:#2563eb;border-radius:999px;padding:10px 16px;margin-top:10px;font:inherit;font-size:12px;font-weight:900;cursor:pointer;width:100%;}
+    .rz-st-more:hover{background:rgba(37,99,235,.10);}
+    .rz-st-analysis{padding:17px 18px;}
+    .rz-st-analysis-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-top:14px;}
+    .rz-st-analysis-stat{min-width:0;padding:14px 12px;border:1px solid rgba(15,23,42,.05);border-radius:16px;background:rgba(248,250,252,.9);}
+    .rz-st-analysis-label{font-size:10px;font-weight:850;color:#64748b;}
+    .rz-st-analysis-number{font-size:clamp(17px,3vw,23px);margin-top:8px;font-weight:950;color:#111827;letter-spacing:-.025em;}
+    .rz-st-advice{font-size:12px;line-height:1.6;font-weight:750;color:#475569;margin-top:13px;}
+    .rz-st-advice strong{color:#14213f;}
+    @media(max-width:720px){.rz-st-metric{padding:18px 12px;}.rz-st-history-item{gap:10px;}}
+    @media(max-width:500px){.rz-st-card{border-radius:20px;}.rz-st-test-row{flex-direction:column;align-items:stretch;}.rz-st-action{width:100%!important;}.rz-st-detail-head{flex-wrap:wrap;}.rz-st-pool-mbps{font-size:17px;}.rz-st-history-value{font-size:13px;}.rz-st-history-time{font-size:10px;}.rz-st-result{padding:17px 13px;}.rz-st-history,.rz-st-analysis{padding:15px 13px;}.rz-st-analysis-stat{padding:12px 8px;}}
     /* V2 — Liquid-glass inspired, truthful indeterminate live measurement. */
     #stLiveTest[hidden]{display:none!important;}
-    .rz-st-live{position:sticky;top:10px;z-index:20;display:grid;grid-template-columns:108px minmax(0,1fr);align-items:center;gap:18px;padding:17px 22px;overflow:hidden;border-radius:26px;border:1px solid rgba(255,255,255,.90);background:linear-gradient(115deg,rgba(244,249,255,.98),rgba(236,244,255,.96) 53%,rgba(250,253,255,.98));box-shadow:0 16px 45px rgba(26,75,157,.12),inset 0 1px 0 rgba(255,255,255,.95);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);}
+    .rz-st-live{position:relative;width:100%;display:grid;grid-template-columns:108px minmax(0,1fr);align-items:center;gap:18px;padding:4px 14px;overflow:hidden;isolation:isolate;text-align:left;}
     .rz-st-live::before{content:"";position:absolute;width:265px;height:265px;right:-85px;top:-165px;border-radius:50%;background:radial-gradient(circle,rgba(87,150,255,.20),transparent 67%);pointer-events:none;}
     .rz-st-live-orb{position:relative;width:96px;height:96px;display:grid;place-items:center;isolation:isolate;}
     .rz-st-live-orb::before,.rz-st-live-orb::after{content:"";position:absolute;inset:1px;border-radius:50%;}
@@ -81,12 +93,12 @@
     .rz-st-live-waves{display:flex;align-items:center;gap:3px;height:14px;}
     .rz-st-live-waves i{display:block;width:3px;height:5px;background:#63a7f5;border-radius:4px;animation:rz-st-wave 1s ease-in-out infinite;}
     .rz-st-live-waves i:nth-child(2){animation-delay:.12s}.rz-st-live-waves i:nth-child(3){animation-delay:.24s}.rz-st-live-waves i:nth-child(4){animation-delay:.36s}.rz-st-live-waves i:nth-child(5){animation-delay:.48s}
-    .rz-st-live.is-done{background:linear-gradient(110deg,rgba(239,253,249,.98),rgba(246,255,252,.98));box-shadow:0 14px 38px rgba(15,118,110,.10);}
+    .rz-st-live.is-done{background:transparent;}
     .rz-st-live.is-done .rz-st-live-flag,.rz-st-live.is-done .rz-st-live-elapsed{color:#15836b;}
     .rz-st-live.is-done .rz-st-live-orb::before{animation:none;background:conic-gradient(#10b981,#6ee7b7,#10b981);}
     .rz-st-live.is-done .rz-st-live-core{animation:none;background:radial-gradient(circle at 30% 25%,#fff,#a7f3d0 34%,#12b886 78%);}
     .rz-st-live.is-done .rz-st-live-waves i{animation:none;height:4px;background:#10b981;}
-    .rz-st-live.is-issue{background:linear-gradient(110deg,rgba(255,250,243,.99),rgba(255,252,247,.99));}
+    .rz-st-live.is-issue{background:transparent;}
     .rz-st-live.is-issue .rz-st-live-flag,.rz-st-live.is-issue .rz-st-live-elapsed{color:#b45309;}
     .rz-st-live.is-issue .rz-st-live-orb::before{animation:none;background:conic-gradient(#e9a23b,#fbd795,#e9a23b);}
     .rz-st-live.is-issue .rz-st-live-core,.rz-st-live.is-issue .rz-st-live-waves i{animation:none;background:#e9a23b;}
@@ -94,7 +106,7 @@
     @keyframes rz-st-breathe{50%{transform:scale(1.12);box-shadow:0 0 0 13px rgba(99,169,255,.08),0 5px 25px rgba(31,99,209,.3)}}
     @keyframes rz-st-wave{0%,100%{height:5px;opacity:.6}50%{height:14px;opacity:1}}
     @keyframes rz-st-flicker{50%{opacity:.35}}
-    @media(max-width:500px){.rz-st-live{grid-template-columns:70px minmax(0,1fr);gap:12px;padding:15px 13px;border-radius:21px;top:6px}.rz-st-live-orb{width:67px;height:67px}.rz-st-live-orb::after{inset:8px}.rz-st-live-core{width:23px;height:23px}.rz-st-live-title{font-size:17px}.rz-st-live-description{font-size:11px}.rz-st-live-bottom{margin-top:8px}}
+    @media(max-width:500px){.rz-st-live{grid-template-columns:70px minmax(0,1fr);gap:12px;padding:6px 0}.rz-st-live-orb{width:67px;height:67px}.rz-st-live-orb::after{inset:8px}.rz-st-live-core{width:23px;height:23px}.rz-st-live-title{font-size:17px}.rz-st-live-description{font-size:11px}.rz-st-live-bottom{margin-top:8px}}
     @media(prefers-reduced-motion:reduce){.rz-st-live-orb::before,.rz-st-live-core,.rz-st-live-flag::before,.rz-st-live-waves i{animation:none!important}.rz-st-live{scroll-behavior:auto}}
   </style>
 </head>
@@ -109,28 +121,16 @@
         <button id="stRefresh" class="filter-btn rz-st-refresh" type="button">Actualiser</button>
       </div>
       <div id="stMessage" class="rz-st-message" role="status" aria-live="polite"></div>
-      <aside id="stLiveTest" class="rz-st-live" role="status" aria-live="polite" aria-atomic="false" aria-label="Suivi de la mesure de débit" hidden>
-        <div class="rz-st-live-orb" aria-hidden="true"><div class="rz-st-live-core"></div></div>
-        <div class="rz-st-live-copy">
-          <div id="stLiveFlag" class="rz-st-live-flag">MESURE ACTIVE</div>
-          <h2 id="stLiveTitle" class="rz-st-live-title">Mesure en cours</h2>
-          <p id="stLiveDescription" class="rz-st-live-description">Le résultat sera affiché automatiquement.</p>
-          <div class="rz-st-live-bottom">
-            <div class="rz-st-live-waves" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
-            <span id="stLiveElapsed" class="rz-st-live-elapsed" aria-hidden="true">Temps écoulé · 00:00</span>
-          </div>
-        </div>
-      </aside>
       <main id="stContent" class="rz-st-content" aria-label="Mesures de vitesse par pool">
         <section class="rz-st-card rz-st-empty">Chargement…</section>
       </main>
       <section class="rz-st-card rz-st-note">
         <strong>À savoir :</strong> les tests mesurent une performance ponctuelle de l'accès Internet de la pool, pas un débit garanti pour chaque client.
-        Ils peuvent occuper temporairement la connexion. Les mesures absentes restent indiquées « Non mesuré » ; une observation passive du WAN ne remplace pas un Speed Test.
+        Ils peuvent occuper temporairement la connexion. Seul le débit de téléchargement est mesuré ici. L’analyse de plusieurs tests reste indicative et ne permet pas de garantir une vitesse par client.
       </section>
     </div>
   </div>
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="/admin/pool-speed-test.js?v=pool-speed-test-v2-animation-20261010"></script>
+  <script src="/admin/pool-speed-test.js?v=pool-speed-test-v3-unified-20261010"></script>
 </body>
 </html>
