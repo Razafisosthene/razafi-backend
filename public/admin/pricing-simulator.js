@@ -395,6 +395,26 @@ document.addEventListener("DOMContentLoaded", async () => {
   function showError(msg) { if (errorEl) errorEl.textContent = msg || ""; }
   function showConfigStatus(msg) { if (configSaveStatus) configSaveStatus.textContent = msg || ""; }
 
+  // Protection UX : un résultat ne vaut que pour les paramètres exacts de sa simulation.
+  // Les prix, règles d'autorisation et traitements serveur restent inchangés.
+  let simulationRevision = 0;
+  let simulationPending = false;
+  let lastSimulationKey = null;
+
+  function currentSimulationKey() {
+    return JSON.stringify(currentSimulationPayload());
+  }
+
+  function invalidateSimulation(message = "Paramètres modifiés. Cliquez sur Simuler pour actualiser le résultat.") {
+    simulationRevision += 1; // Invalide également toute réponse asynchrone en attente.
+    lastSimulationData = null;
+    lastSimulationKey = null;
+    clearCreateErrors();
+    clearFieldErrors();
+    showError("");
+    if (resultBox) resultBox.innerHTML = `<div class="rz-result-empty">${esc(message)}</div>`;
+  }
+
   function scrollResultIntoMobileView() {
     try {
       if (!window.matchMedia || !window.matchMedia("(max-width: 860px)").matches) return;
@@ -749,6 +769,20 @@ document.addEventListener("DOMContentLoaded", async () => {
     const createHiddenBtn = document.getElementById("createHiddenPlanBtn");
     const createPublishBtn = document.getElementById("createPublishPlanBtn");
     const goPlansBtn = document.getElementById("goPlansBtn");
+    const finalPoolSelect = document.getElementById("finalPoolId");
+
+    // Le WiFi de création doit correspondre au WiFi réellement simulé.
+    // Un changement explicite renvoie au choix de WiFi principal, puis exige
+    // une nouvelle simulation et recharge l'avis Speed Test du bon pool.
+    finalPoolSelect?.addEventListener("change", () => {
+      const targetId = String(finalPoolSelect.value || "");
+      if (simPoolId && targetId && targetId !== String(simPoolId.value || "")) {
+        simPoolId.value = targetId;
+        simPoolId.dispatchEvent(new Event("change", { bubbles: true }));
+      } else {
+        invalidateSimulation("WiFi de création modifié. Relancez la simulation avant de créer un forfait.");
+      }
+    });
 
     if (createHiddenBtn) {
       createHiddenBtn.addEventListener("click", async () => {
@@ -801,9 +835,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function renderResult(data) {
     clearFieldErrors();
-    lastSimulationData = data || null;
     const status = String(data?.status || "ok").toLowerCase();
     const ok = data?.ok !== false && status !== "blocked" && status !== "error";
+    lastSimulationData = ok ? data : null;
     const tone = status === "blocked" || status === "error" ? "blocked" : (status === "warning" ? "warning" : "ok");
     const label = status === "blocked" ? "Forfait bloqué" : (status === "error" ? "Configuration indisponible" : (status === "warning" ? "Attention" : "Simulation OK"));
 
@@ -946,7 +980,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   async function loadConfig() {
-    simulatorOptions = await fetchJSON("/api/admin/plan-simulator/options");
+    const freshOptions = await fetchJSON("/api/admin/plan-simulator/options");
+    if (lastSimulationData || simulationPending) {
+      invalidateSimulation("Configuration tarifaire actualisée. Relancez la simulation.");
+    }
+    simulatorOptions = freshOptions;
     applySimulatorOptions(simulatorOptions);
 
     if (!isSuperadminUser) {
@@ -1062,7 +1100,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     const finalPrice = Number(finalPriceEl?.value);
     const poolId = String(finalPoolEl?.value || "").trim();
 
-    if (!lastSimulationData || lastSimulationData.ok === false) throw new Error("Lancez d’abord une simulation valide.");
+    if (!lastSimulationData || lastSimulationData.ok === false ||
+        !lastSimulationKey || lastSimulationKey !== currentSimulationKey()) {
+      invalidateSimulation("Les paramètres ont changé. Relancez la simulation avant de créer un forfait.");
+      throw new Error("__create_error_shown__");
+    }
+    // Défense supplémentaire : le choix de WiFi en bas du résultat ne peut pas
+    // réutiliser silencieusement le prix calculé pour une autre pool.
+    const simulatedPoolId = String(lastSimulationData?.technical?.pool_id || simPoolId?.value || "");
+    if (poolId && (poolId !== String(simPoolId?.value || "") || poolId !== simulatedPoolId)) {
+      setCreateFieldError("pool", "Ce WiFi diffère de celui simulé. Sélectionnez-le en haut et relancez Simuler.");
+      throw new Error("__create_error_shown__");
+    }
     if (!finalName) { setCreateFieldError("name", cleanErrorMessage("final_name_required")); throw new Error("__create_error_shown__"); }
     if (!Number.isFinite(finalPrice) || finalPrice < 0) { setCreateFieldError("price", cleanErrorMessage("final_price_invalid")); throw new Error("__create_error_shown__"); }
     if (!poolId) { setCreateFieldError("pool", cleanErrorMessage("pool_id_required")); throw new Error("__create_error_shown__"); }
@@ -1130,6 +1179,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   async function simulate() {
+    if (simulationPending) return;
     showError("");
     clearFieldErrors();
     const poolId = String(simPoolId?.value || "").trim();
@@ -1148,13 +1198,18 @@ document.addEventListener("DOMContentLoaded", async () => {
       duration_unit: unit,
       speed_mbps: speed,
     };
-
     if (currentType === "data") {
       const gb = Number(dataGb.value);
       if (!Number.isFinite(gb) || gb <= 0) { setFieldError("data", "Data invalide."); throw new Error("field_error"); }
       payload.data_gb = gb;
     }
 
+    // Aucune ancienne simulation ne doit rester utilisable durant le calcul.
+    lastSimulationData = null;
+    lastSimulationKey = null;
+    const requestKey = JSON.stringify(payload);
+    const requestRevision = ++simulationRevision;
+    simulationPending = true;
     setBusy(simulateBtn, true, "Simulation…");
     resultBox.innerHTML = `<div class="rz-result-empty">Calcul en cours…</div>`;
     try {
@@ -1163,9 +1218,16 @@ document.addEventListener("DOMContentLoaded", async () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+      // Empêche toute réponse tardive de restaurer une ancienne simulation.
+      if (requestRevision !== simulationRevision || requestKey !== currentSimulationKey()) return;
+      if (data?.technical?.pool_id && String(data.technical.pool_id) !== poolId) {
+        throw new Error("Résultat reçu pour un autre WiFi. Relancez la simulation.");
+      }
       renderResult(data);
+      if (lastSimulationData) lastSimulationKey = requestKey;
       scrollResultIntoMobileView();
     } catch (err) {
+      if (requestRevision !== simulationRevision || requestKey !== currentSimulationKey()) return;
       if (err?.data && (err.data.status === "blocked" || err.data.status === "error")) {
         renderResult(err.data);
         scrollResultIntoMobileView();
@@ -1173,12 +1235,23 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
       throw err;
     } finally {
+      simulationPending = false;
       setBusy(simulateBtn, false);
     }
   }
 
-  typeDataBtn.addEventListener("click", () => { if (typeDataBtn.disabled) return; currentType = "data"; lastSimulationData = null; clearFieldErrors(); applyTypeUI(); resultBox.innerHTML = `<div class="rz-result-empty">Remplissez les champs puis cliquez sur Simuler.</div>`; });
-  typeUnlimitedBtn.addEventListener("click", () => { if (typeUnlimitedBtn.disabled) return; currentType = "unlimited"; lastSimulationData = null; clearFieldErrors(); applyTypeUI(); resultBox.innerHTML = `<div class="rz-result-empty">Remplissez les champs puis cliquez sur Simuler.</div>`; });
+  typeDataBtn.addEventListener("click", () => {
+    if (typeDataBtn.disabled || currentType === "data") return;
+    currentType = "data";
+    invalidateSimulation();
+    applyTypeUI();
+  });
+  typeUnlimitedBtn.addEventListener("click", () => {
+    if (typeUnlimitedBtn.disabled || currentType === "unlimited") return;
+    currentType = "unlimited";
+    invalidateSimulation();
+    applyTypeUI();
+  });
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -1189,10 +1262,22 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
-  if (durationUnit) durationUnit.addEventListener("change", syncDurationInputRules);
-  // Aide de débit indépendante du moteur de simulation / création.
-  if (simPoolId) simPoolId.addEventListener("change", loadSpeedAdvice);
-  if (speedMbps) speedMbps.addEventListener("change", renderSpeedAdvice);
+  // Les contrôles Data / durée sont saisis au clavier et invalidés sans attendre le blur.
+  for (const field of [durationValue, dataGb]) {
+    if (field) field.addEventListener("input", () => invalidateSimulation());
+  }
+  if (durationUnit) durationUnit.addEventListener("change", () => {
+    syncDurationInputRules();
+    invalidateSimulation();
+  });
+  if (simPoolId) simPoolId.addEventListener("change", () => {
+    invalidateSimulation();
+    loadSpeedAdvice();
+  });
+  if (speedMbps) speedMbps.addEventListener("change", () => {
+    invalidateSimulation();
+    renderSpeedAdvice();
+  });
 
   if (versionsList) {
     versionsList.addEventListener("click", async (e) => {
