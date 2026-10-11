@@ -120,7 +120,7 @@
     if (timer) {
       timer.textContent = phase === "complete" ? "Mesure reçue" :
         phase === "rejected" || phase === "uncertain" ? "Suivi terminé" :
-        `Temps écoulé · ${elapsedText(Date.now() - state.visual.startedAt)}`;
+        elapsedText(Date.now() - state.visual.startedAt);
     }
   }
 
@@ -154,7 +154,7 @@
     state.visualTicker = setInterval(() => {
       if (state.visual && ["submitting", "tracking"].includes(state.visual.phase)) {
         const timer = $("stLiveElapsed");
-        if (timer) timer.textContent = `Temps écoulé · ${elapsedText(Date.now() - state.visual.startedAt)}`;
+        if (timer) timer.textContent = elapsedText(Date.now() - state.visual.startedAt);
       }
     }, 1000);
   }
@@ -323,9 +323,13 @@
               <div class="rz-st-metric-value">${metricValue(last?.download_mbps, "Mbps")}</div>
             </div>
             <aside id="stLiveTest" class="rz-st-live" role="status" aria-live="polite" aria-atomic="false" aria-label="Suivi de la mesure de débit" hidden>
-              <div class="rz-st-live-orb" aria-hidden="true"><div class="rz-st-live-core"></div></div>
               <div id="stLiveFlag" class="rz-st-live-flag">MESURE ACTIVE</div>
-              <span id="stLiveElapsed" class="rz-st-live-elapsed">Temps écoulé · 00:00</span>
+              <div class="rz-st-live-orb" aria-hidden="true"><div class="rz-st-live-core"></div></div>
+              <div class="rz-st-live-clock">
+                <div class="rz-st-live-waves" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+                <span id="stLiveElapsed" class="rz-st-live-elapsed" aria-label="Temps écoulé">00:00</span>
+              </div>
+              <span class="rz-st-live-clock-label">Temps écoulé</span>
             </aside>
           </div>
         </div>

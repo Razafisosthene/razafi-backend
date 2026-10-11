@@ -75,11 +75,11 @@
     .rz-st-advice strong{color:#14213f;}
     @media(max-width:720px){.rz-st-metric{padding:18px 12px;}.rz-st-history-item{gap:10px;}}
     @media(max-width:500px){.rz-st-card{border-radius:20px;}.rz-st-test-row{flex-direction:column;align-items:stretch;}.rz-st-action{width:100%!important;}.rz-st-detail-head{flex-wrap:wrap;}.rz-st-pool-mbps{font-size:17px;}.rz-st-history-value{font-size:13px;}.rz-st-history-time{font-size:10px;}.rz-st-result{padding:17px 13px;}.rz-st-history,.rz-st-analysis{padding:15px 13px;}.rz-st-analysis-stat{padding:12px 8px;}}
-    /* V4 — Animation épurée, parfaitement centrée (mobile et desktop). */
+    /* V4.1 — Statut en haut, cercle au centre, ondes animées + chronomètre en bas. */
     #stLiveTest[hidden]{display:none!important;}
     .rz-st-result.is-tracking .rz-st-result-title{display:none;}
-    .rz-st-metric.is-running{min-height:224px;}
-    .rz-st-live{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;width:100%;box-sizing:border-box;min-height:186px;padding:12px;margin:0 auto;text-align:center;overflow:hidden;isolation:isolate;}
+    .rz-st-metric.is-running{min-height:250px;}
+    .rz-st-live{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;width:100%;box-sizing:border-box;min-height:220px;padding:12px;margin:0 auto;text-align:center;overflow:hidden;isolation:isolate;}
     .rz-st-live::before{content:"";position:absolute;width:250px;height:250px;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(87,150,255,.16),transparent 70%);pointer-events:none;z-index:-1;}
     .rz-st-live-orb{position:relative;width:104px;height:104px;display:grid;place-items:center;isolation:isolate;flex:0 0 auto;}
     .rz-st-live-orb::before,.rz-st-live-orb::after{content:"";position:absolute;inset:1px;border-radius:50%;}
@@ -88,21 +88,29 @@
     .rz-st-live-core{position:relative;z-index:2;width:36px;height:36px;border-radius:50%;background:radial-gradient(circle at 30% 25%,#fff,#9ecaff 34%,#468cea 78%);box-shadow:0 0 0 9px rgba(99,169,255,.12),0 5px 22px rgba(31,99,209,.24);animation:rz-st-breathe 2s ease-in-out infinite;}
     .rz-st-live-flag{display:inline-flex;align-items:center;justify-content:center;gap:7px;color:#2464c7;font-weight:900;font-size:11px;letter-spacing:.11em;text-align:center;}
     .rz-st-live-flag::before{content:"";display:inline-block;width:7px;height:7px;background:currentColor;border-radius:50%;animation:rz-st-flicker 1.7s ease-in-out infinite;}
-    .rz-st-live-elapsed{display:block;font-size:13px;font-weight:850;color:#2864b8;font-variant-numeric:tabular-nums;text-align:center;}
+    .rz-st-live-clock{display:flex;align-items:center;justify-content:center;gap:12px;min-height:29px;}
+    .rz-st-live-elapsed{display:block;min-width:66px;font-size:26px;line-height:1;font-weight:950;letter-spacing:-.035em;color:#2864b8;font-variant-numeric:tabular-nums;text-align:left;}
+    .rz-st-live-clock-label{font-size:11px;font-weight:800;line-height:1.2;color:#64748b;letter-spacing:.015em;}
+    .rz-st-live-waves{display:flex;align-items:center;justify-content:center;gap:4px;height:26px;}
+    .rz-st-live-waves i{display:block;width:4px;height:22px;flex:0 0 4px;background:linear-gradient(180deg,#a5d6ff,#4b9cf0);border-radius:6px;transform:scaleY(.32);animation:rz-st-wave 1.05s ease-in-out infinite;}
+    .rz-st-live-waves i:nth-child(2){animation-delay:.11s}.rz-st-live-waves i:nth-child(3){animation-delay:.22s}.rz-st-live-waves i:nth-child(4){animation-delay:.33s}.rz-st-live-waves i:nth-child(5){animation-delay:.44s}
     .rz-st-live.is-done .rz-st-live-flag,.rz-st-live.is-done .rz-st-live-elapsed{color:#15836b;}
     .rz-st-live.is-done .rz-st-live-orb::before{animation:none;background:conic-gradient(#10b981,#6ee7b7,#10b981);}
     .rz-st-live.is-done .rz-st-live-core{animation:none;background:radial-gradient(circle at 30% 25%,#fff,#a7f3d0 34%,#12b886 78%);}
+    .rz-st-live.is-done .rz-st-live-waves i{animation:none;background:#10b981;transform:scaleY(.35);}
     .rz-st-live.is-issue .rz-st-live-flag,.rz-st-live.is-issue .rz-st-live-elapsed{color:#b45309;}
     .rz-st-live.is-issue .rz-st-live-orb::before{animation:none;background:conic-gradient(#e9a23b,#fbd795,#e9a23b);}
     .rz-st-live.is-issue .rz-st-live-core{animation:none;background:#e9a23b;}
+    .rz-st-live.is-issue .rz-st-live-waves i{animation:none;background:#e9a23b;transform:scaleY(.35);}
     /* Retour visuel discret si le navigateur ne prend pas en charge la vibration. */
     .rz-st-metric.is-new-result{animation:rz-st-received 1s ease-out;}
     @keyframes rz-st-received{0%{box-shadow:inset 0 0 0 2px rgba(16,185,129,.5);background:rgba(209,250,229,.65)}100%{box-shadow:inset 0 0 0 0 rgba(16,185,129,0);background:rgba(248,250,252,.90)}}
     @keyframes rz-st-orbit{to{transform:rotate(360deg)}}
     @keyframes rz-st-breathe{50%{transform:scale(1.12);box-shadow:0 0 0 13px rgba(99,169,255,.08),0 5px 25px rgba(31,99,209,.3)}}
     @keyframes rz-st-flicker{50%{opacity:.35}}
-    @media(max-width:500px){.rz-st-metric.is-running{min-height:210px;}.rz-st-live{min-height:178px;gap:13px;padding:10px 6px;}.rz-st-live-orb{width:90px;height:90px;}.rz-st-live-orb::after{inset:9px;}.rz-st-live-core{width:30px;height:30px;}}
-    @media(prefers-reduced-motion:reduce){.rz-st-live-orb::before,.rz-st-live-core,.rz-st-live-flag::before,.rz-st-metric.is-new-result{animation:none!important;}}
+    @keyframes rz-st-wave{0%,100%{transform:scaleY(.32);opacity:.65}50%{transform:scaleY(1);opacity:1}}
+    @media(max-width:500px){.rz-st-metric.is-running{min-height:232px;}.rz-st-live{min-height:204px;gap:10px;padding:10px 6px;}.rz-st-live-orb{width:90px;height:90px;}.rz-st-live-orb::after{inset:9px;}.rz-st-live-core{width:30px;height:30px;}.rz-st-live-elapsed{font-size:24px;}}
+    @media(prefers-reduced-motion:reduce){.rz-st-live-orb::before,.rz-st-live-core,.rz-st-live-flag::before,.rz-st-live-waves i,.rz-st-metric.is-new-result{animation:none!important;}}
   </style>
 </head>
 <body class="rz-admin-shell pool-speed-test-page">
@@ -126,6 +134,6 @@
     </div>
   </div>
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="/admin/pool-speed-test.js?v=pool-speed-test-v4-centered-haptic-20261011"></script>
+  <script src="/admin/pool-speed-test.js?v=pool-speed-test-v4-1-wave-chrono-20261012"></script>
 </body>
 </html>
