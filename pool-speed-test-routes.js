@@ -4,6 +4,8 @@
 
 const FEATURE_UI = ["1", "true", "yes", "on"].includes(String(process.env.POOL_SPEED_TEST_UI_ENABLED || "false").toLowerCase());
 const FEATURE_ACTIVE = ["1", "true", "yes", "on"].includes(String(process.env.POOL_SPEED_TEST_ACTIVE_ENABLED || "false").toLowerCase());
+// V4: OFF by default; DB per-pool opt-in is required as a second gate.
+const FEATURE_SMART = ["1", "true", "yes", "on"].includes(String(process.env.POOL_SPEED_TEST_SMART_PROTECTION_ENABLED || "false").toLowerCase());
 const AGENT_ROOT = String(process.env.SPEED_TEST_AGENT_URL || "").trim();
 const AGENT_SECRET = String(process.env.SPEED_TEST_AGENT_SECRET || "").trim();
 const AGENT_MAX_MS = 45000;
@@ -209,15 +211,63 @@ export function registerPoolSpeedTestRoutes({ app, requireAdmin, supabase, canAd
         throw new Error("router_config_unavailable");
       }
       if (!FEATURE_ACTIVE || !agentReady) throw new Error("test_disabled");
+
+      // V4: only the trusted backend reads per-pool policy. Nothing is accepted
+      // from the Admin/browser POST body. When disabled, NO extra DB query or
+      // change to the existing request occurs for legacy pools.
+      let smartProtection = null;
+      if (FEATURE_SMART) {
+        const { data: setting, error: settingErr } = await supabase.from("pool_speed_test_settings")
+          .select("active_enabled,smart_protection_enabled,reference_download_mbps")
+          .eq("pool_id", poolId).maybeSingle();
+        if (settingErr) {
+          // Failed smart policy lookup never relaxes a guard or blocks the
+          // legacy measurement: the 2-Mbps behavior remains the safe fallback.
+          console.warn("[POOL SPEED TEST SMART FALLBACK]", pool.radius_nas_id,
+            "policy_lookup_failed");
+        } else if (!setting || setting.active_enabled !== true) {
+          throw new Error("pool_not_enabled");
+        } else if (setting.smart_protection_enabled === true) {
+          const reference = Number(setting.reference_download_mbps);
+          if (setting.reference_download_mbps !== null &&
+              Number.isFinite(reference) && reference >= 1 && reference <= 1000) {
+            smartProtection = { enabled: true, reference_download_mbps: reference };
+          } else {
+            // Invalid or absent reference: retain the existing 2-Mbps protection.
+            console.warn("[POOL SPEED TEST SMART FALLBACK]", pool.radius_nas_id,
+              "reference_missing_or_invalid");
+          }
+        }
+      }
       const agentUrl = new URL("/pool-speed-test/run", AGENT_ROOT).toString();
       const response = await fetch(agentUrl, {
         method: "POST", signal: AbortSignal.timeout(AGENT_MAX_MS),
         headers: { "Content-Type": "application/json", "x-secret": AGENT_SECRET },
         body: JSON.stringify({ nas_id: pool.radius_nas_id, router_ip: router.api_host,
           router_port: router.api_port || 8728, api_user: router.api_user,
-          api_password: router.api_password, wan_interface: router.wan_interface }),
+          api_password: router.api_password, wan_interface: router.wan_interface,
+          ...(smartProtection ? { smart_protection: smartProtection } : {}) }),
       });
       const data = await response.json().catch(() => ({}));
+      // Production diagnosis: allowlisted status codes only; never log API
+      // passwords, agent secrets or raw router/agent error messages.
+      if (!response.ok || data?.ok !== true) {
+        const safeAgentCodes = new Set([
+          "speed_test_pool_busy", "speed_test_busy_or_cooldown",
+          "speed_test_identity_mismatch", "speed_test_router_forbidden",
+          "speed_test_invalid_smart_policy",
+          "speed_test_invalid_request", "speed_test_unavailable",
+          "speed_test_router_command_failed", "speed_test_wan_unavailable",
+          "speed_test_wan_counters_missing", "speed_test_default_wan_mismatch",
+          "speed_test_cpu_unknown", "speed_test_wan_counters_reset",
+          "speed_test_wan_load_unknown", "speed_test_fetch_failed",
+          "speed_test_incomplete_or_unverifiable",
+        ]);
+        console.warn("[POOL SPEED TEST AGENT REJECTED]", {
+          nas_id: pool.radius_nas_id, http_status: response.status,
+          code: safeAgentCodes.has(data?.error) ? data.error : "agent_error_unclassified",
+        });
+      }
       const mbps = Number(data.download_mbps);
       const elapsed = Number(data.duration_ms);
       if (!response.ok || data.ok !== true || data.test_performed !== true ||
