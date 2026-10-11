@@ -10,7 +10,7 @@
     me: null, pools: [], selectedPoolId: null, detail: null, history: [],
     featureEnabled: false, busy: false, starting: false, historyAvailable: true,
     pollTimer: null, pollDeadline: 0, viewToken: 0,
-    visual: null, visualTicker: null, historyVisible: 10,
+    visual: null, visualTicker: null, historyVisible: 10, successCue: null,
   };
 
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -100,14 +100,14 @@
   function paintVisual(phase) {
     const root = $("stLiveTest");
     if (!root || !state.visual) return;
-    const titles = {
-      submitting: ["Envoi de la demande", "Authentification et réservation du test…", "PRÉPARATION"],
-      tracking: ["Mesure de débit en cours", "Le routeur effectue la mesure. Résultat transmis dès qu’il est disponible.", "MESURE ACTIVE"],
-      complete: ["Mesure enregistrée", "Le nouveau résultat est disponible dans l’historique de la pool.", "TERMINÉ"],
-      uncertain: ["Résultat non confirmé", "Le test ne fournit pas encore de nouveau résultat. Consultez l’historique ou actualisez.", "À VÉRIFIER"],
-      rejected: ["Démarrage non confirmé", "La demande n’a pas été acceptée. Aucun résultat n’est attendu.", "NON DÉMARRÉ"],
+    const flags = {
+      submitting: "PRÉPARATION",
+      tracking: "MESURE ACTIVE",
+      complete: "TERMINÉ",
+      uncertain: "À VÉRIFIER",
+      rejected: "NON DÉMARRÉ",
     };
-    const [title, description, flag] = titles[phase] || titles.tracking;
+    const flag = flags[phase] || flags.tracking;
     root.hidden = false;
     const reading = $("stSpeedReading");
     if (reading) reading.hidden = true;
@@ -115,8 +115,6 @@
     $("stResultCard")?.classList.add("is-tracking");
     root.classList.toggle("is-done", phase === "complete");
     root.classList.toggle("is-issue", phase === "uncertain" || phase === "rejected");
-    $("stLiveTitle").textContent = title;
-    $("stLiveDescription").textContent = description;
     $("stLiveFlag").textContent = flag;
     const timer = $("stLiveElapsed");
     if (timer) {
@@ -170,6 +168,12 @@
   function finishVisual(phase, message, isError = false) {
     if (!state.visual || !["submitting", "tracking"].includes(state.visual.phase)) return;
     stopPolling();
+    // The cue is tied to a verified, new measurement; never to a cached result
+    // or to an HTTP success without a completed Speed Test in the database.
+    if (phase === "complete") {
+      const measurementId = String(state.detail?.measurement?.id || "");
+      if (measurementId) state.successCue = { poolId: String(state.selectedPoolId), measurementId };
+    }
     clearVisual();  // Show the actual Download value immediately, never a stale success animation.
     if (message) statusMessage(message, isError);
     if (phase !== "complete" && state.detail && state.selectedPoolId) renderDetail();
@@ -320,15 +324,8 @@
             </div>
             <aside id="stLiveTest" class="rz-st-live" role="status" aria-live="polite" aria-atomic="false" aria-label="Suivi de la mesure de débit" hidden>
               <div class="rz-st-live-orb" aria-hidden="true"><div class="rz-st-live-core"></div></div>
-              <div class="rz-st-live-copy">
-                <div id="stLiveFlag" class="rz-st-live-flag">MESURE ACTIVE</div>
-                <h2 id="stLiveTitle" class="rz-st-live-title">Mesure en cours</h2>
-                <p id="stLiveDescription" class="rz-st-live-description">Le résultat sera affiché automatiquement.</p>
-                <div class="rz-st-live-bottom">
-                  <div class="rz-st-live-waves" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
-                  <span id="stLiveElapsed" class="rz-st-live-elapsed" aria-hidden="true">Temps écoulé · 00:00</span>
-                </div>
-              </div>
+              <div id="stLiveFlag" class="rz-st-live-flag">MESURE ACTIVE</div>
+              <span id="stLiveElapsed" class="rz-st-live-elapsed">Temps écoulé · 00:00</span>
             </aside>
           </div>
         </div>
@@ -360,9 +357,22 @@
         ${state.historyAvailable && history.length > state.historyVisible ? `<button class="rz-st-more" type="button" data-st-more="1">Afficher ${Math.min(10, history.length - state.historyVisible)} mesure(s) supplémentaires</button>` : ""}
       </section>`;
     if (trackingVisual()) paintVisual(state.visual.phase);
+    // Notify ONLY when the fresh, validated measurement is actually on screen.
+    // Vibration is supported by some Android browsers, not by iOS Safari/PWA.
+    const cue = state.successCue;
+    if (cue && cue.poolId === String(state.selectedPoolId) &&
+        cue.measurementId === String(last?.id || "") &&
+        numberOrNull(last?.download_mbps) !== null) {
+      state.successCue = null; // exactly once per confirmed result
+      $("stDownloadMetric")?.classList.add("is-new-result");
+      if (!document.hidden && typeof navigator.vibrate === "function") {
+        try { navigator.vibrate([80, 50, 110]); } catch (_) { /* not supported by this device */ }
+      }
+    }
   }
 
   async function loadOverview() {
+    state.successCue = null;
     stopPolling();
     clearVisual();
     const token = ++state.viewToken;
@@ -412,7 +422,7 @@
     const token = state.viewToken;
     const id = String(poolId || "");
     if (!state.pools.some((p) => String(p.pool_id || p.id) === id)) return;
-    if (String(state.selectedPoolId) !== id) state.historyVisible = 10;
+    if (String(state.selectedPoolId) !== id) { state.historyVisible = 10; state.successCue = null; }
     state.selectedPoolId = id;
     if (!options.silent) {
       state.busy = true;
@@ -541,7 +551,7 @@
       const pool = event.target.closest("[data-st-pool]");
       if (pool) { void loadDetail(pool.getAttribute("data-st-pool")); return; }
       if (event.target.closest("[data-st-back]")) {
-        stopPolling(); clearVisual(); ++state.viewToken; state.selectedPoolId = null;
+        stopPolling(); clearVisual(); state.successCue = null; ++state.viewToken; state.selectedPoolId = null;
         state.detail = null; state.history = []; renderOverview(); return;
       }
       if (event.target.closest("[data-st-more]")) {
