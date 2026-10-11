@@ -194,6 +194,53 @@
     @media (max-width:520px){.rz-config-edit-grid{grid-template-columns:1fr;}.rz-ref-editor-fields{grid-template-columns:1fr;}.rz-ref-label-field{grid-column:auto;}.rz-ref-editor-actions{width:100%;}.rz-ref-editor-check,.rz-remove-ref-btn{flex:1;justify-content:center;}.rz-ref-editor-toolbar button,.rz-config-save-row button{width:100%;}.rz-config-save-row{justify-content:stretch;}}
     @media (max-width:860px){.rz-simulator-grid{grid-template-columns:1fr;}.rz-simulator-form{grid-template-columns:1fr;}.rz-type-switch{grid-template-columns:1fr 1fr;}.rz-range{grid-template-columns:1fr;}}
     @media (max-width:520px){.rz-price-big{font-size:36px;}.rz-price-breakdown{grid-template-columns:1fr;}.rz-markup-arrow{min-height:42px;}.rz-version-item{flex-direction:column;}.rz-version-actions{width:100%;}.rz-version-actions button{width:100%!important;}}
+
+    /* V3.1 — Simuler en premier, aide facultative repliable (PC + mobile). */
+    .rz-simulator-form{grid-template-columns:repeat(2,minmax(0,1fr));}
+    .rz-simulator-form > *{min-width:0;}
+    .rz-simulator-form .rz-field.full,.rz-simulator-form .rz-speed-field,
+    .rz-simulator-form #dataField,.rz-simulator-form .rz-type-switch,
+    .rz-simulator-form .rz-simulate-btn,.rz-simulator-form .rz-small-note,
+    .rz-simulator-form .rz-speed-advice{grid-column:1/-1;}
+    .rz-simulator-form .rz-field input,.rz-simulator-form .rz-field select{max-width:100%;min-width:0;}
+    .rz-simulator-form #simPoolId{width:100%!important;max-width:100%!important;}
+    .rz-simulator-form .rz-simulate-btn{width:100%!important;margin:0!important;}
+    .rz-speed-advice{padding:0!important;overflow:hidden;}
+    .rz-speed-advice-toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;
+      padding:14px;cursor:pointer;list-style:none;user-select:none;color:#0f172a;
+      font-size:13px;font-weight:950;line-height:1.45;min-width:0;}
+    .rz-speed-advice-toggle::-webkit-details-marker{display:none;}
+    .rz-speed-advice-toggle::marker{content:"";}
+    .rz-speed-advice-toggle:focus-visible{outline:3px solid rgba(37,99,235,.32);outline-offset:-3px;border-radius:19px;}
+    .rz-speed-advice-toggle-label{min-width:0;flex:1;overflow-wrap:anywhere;}
+    .rz-speed-advice-chevron{flex:0 0 auto;display:grid;place-items:center;width:27px;height:27px;
+      border-radius:50%;background:rgba(37,99,235,.07);color:#2563eb;font-size:16px;
+      transition:transform .18s ease;}
+    .rz-speed-advice-chevron::before{content:"";display:block;width:8px;height:8px;
+      border-right:2px solid currentColor;border-bottom:2px solid currentColor;
+      transform:rotate(45deg);transition:transform .18s ease;}
+    .rz-speed-advice[open] .rz-speed-advice-chevron::before{transform:rotate(225deg);}
+    .rz-speed-advice-body{border-top:1px solid rgba(15,23,42,.08);padding:12px 14px 14px;}
+    .rz-speed-advice-body .rz-speed-advice-head{margin-bottom:3px;}
+    .rz-speed-advice-body .rz-speed-advice-level{max-width:100%;white-space:normal;}
+    @media(max-width:860px){
+      /* Ne pas passer à une colonne : sinon « Unité » crée une colonne implicite
+         et tous les champs pleines largeurs deviennent étroits sur téléphone. */
+      .rz-simulator-form{grid-template-columns:repeat(2,minmax(0,1fr));}
+      .rz-simulator-grid{grid-template-columns:minmax(0,1fr);}
+      .rz-simulator-panel,.rz-simulator-result{min-width:0;}
+      .rz-simulator-panel{padding-bottom:13px;}
+      .rz-simulator-shell{margin-bottom:calc(112px + env(safe-area-inset-bottom,0px));}
+    }
+    @media(max-width:520px){
+      .rz-simulator-form{gap:10px;}
+      .rz-simulator-form .rz-field select,.rz-simulator-form .rz-field input{font-size:16px!important;}
+      .rz-speed-advice-toggle{padding:12px 13px;gap:8px;}
+      .rz-speed-advice-body{padding:11px 12px 13px;}
+      .rz-speed-advice-stat{overflow-wrap:normal;word-break:normal;}
+      .rz-simulator-result{margin-top:0;}
+    }
+    @media(prefers-reduced-motion:reduce){.rz-speed-advice-chevron::before{transition:none;}}
   </style>
 </head>
 <body class="rz-admin-shell pricing-simulator-page">
@@ -266,11 +313,17 @@
               <div id="speedMbpsError" class="rz-field-error"></div>
             </div>
 
-            <aside id="rzSpeedCapacityAdvice" class="rz-speed-advice" aria-live="polite" hidden></aside>
+            <button id="simulateBtn" class="filter-btn primary rz-simulate-btn" type="submit">Simuler</button>
+
+            <details id="rzSpeedCapacityAdvice" class="rz-speed-advice" hidden>
+              <summary class="rz-speed-advice-toggle">
+                <span class="rz-speed-advice-toggle-label">💡 Assistant RAZAFI · <span id="rzSpeedAdvicePoolName">WiFi sélectionné</span></span>
+                <span class="rz-speed-advice-chevron" aria-hidden="true"></span>
+              </summary>
+              <div id="rzSpeedAdviceContent" class="rz-speed-advice-body" aria-live="polite"></div>
+            </details>
 
             <div id="personalizedRulesNote" class="rz-small-note">Chargement des règles actives…</div>
-
-            <button id="simulateBtn" class="filter-btn primary rz-simulate-btn" type="submit">Simuler</button>
           </form>
         </section>
 
@@ -421,6 +474,6 @@
   </div>
 
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="./pricing-simulator.js?v=speed-capacity-advice-v3-20261011"></script>
+  <script src="./pricing-simulator.js?v=simulator-polish-v3-1-20261011"></script>
 </body>
 </html>

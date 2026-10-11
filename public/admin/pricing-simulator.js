@@ -263,6 +263,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const durationUnit = document.getElementById("durationUnit");
   const speedMbps = document.getElementById("speedMbps");
   const speedAdviceEl = document.getElementById("rzSpeedCapacityAdvice");
+  const speedAdviceContentEl = document.getElementById("rzSpeedAdviceContent");
+  const speedAdvicePoolNameEl = document.getElementById("rzSpeedAdvicePoolName");
   let speedAdviceRequestId = 0;
   let speedAdviceState = { kind: "idle", poolId: "", measurements: [] };
 
@@ -352,11 +354,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function renderSpeedAdvice() {
-    if (!speedAdviceEl) return;
+    if (!speedAdviceEl || !speedAdviceContentEl || !speedAdvicePoolNameEl) return;
     const poolId = String(simPoolId?.value || "");
     if (!poolId) { speedAdviceEl.hidden = true; return; }
     speedAdviceEl.hidden = false;
-    const poolName = esc(speedAdvicePoolName(poolId));
+    // Mise à jour du titre sans reconstruire <details> : l'état ouvert/fermé reste stable.
+    speedAdvicePoolNameEl.textContent = speedAdvicePoolName(poolId);
     const capacity = selectedPoolCapacity(poolId);
     const capacityText = capacity === null ? "Non renseignée" : String(capacity);
     const allowed = effectiveSpeedChoices();
@@ -365,19 +368,18 @@ document.addEventListener("DOMContentLoaded", async () => {
       : "Aucune vitesse proposée actuellement.";
     const state = speedAdviceState;
     const head = (heading, tone = "neutral") => `<div class="rz-speed-advice-head">
-        <div class="rz-speed-advice-title">💡 Assistant RAZAFI · ${poolName}</div>
         <span class="rz-speed-advice-level ${tone}">${esc(heading)}</span></div>`;
     const capCard = `<div class="rz-speed-advice-stat">Clients max. configurés<strong>${esc(capacityText)}</strong></div>`;
     const optionsHtml = `<div class="rz-speed-advice-options">${esc(optionsLine)}</div>`;
     const note = "Le nombre estimé correspond uniquement à des téléchargements simultanés à pleine vitesse, avec 20 % de réserve indicative. Il ne prédit pas combien de personnes pourront naviguer confortablement. Mesures ponctuelles de téléchargement uniquement (pas d'upload), sans garantie de débit par client. Ce conseil ne modifie ni les prix ni les forfaits.";
     if (state.poolId !== poolId || state.kind === "loading") {
-      speedAdviceEl.innerHTML = `${head("Chargement")}
+      speedAdviceContentEl.innerHTML = `${head("Chargement")}
         <div class="rz-speed-advice-stats">${capCard}</div>
         <div class="rz-speed-advice-copy">Chargement des mesures Speed Test…</div>${optionsHtml}`;
       return;
     }
     if (state.kind === "unavailable") {
-      speedAdviceEl.innerHTML = `${head("Mesures indisponibles")}
+      speedAdviceContentEl.innerHTML = `${head("Mesures indisponibles")}
         <div class="rz-speed-advice-stats">${capCard}</div>
         <div class="rz-speed-advice-copy">Les mesures sont temporairement indisponibles. Aucune estimation ne peut être faite ; la simulation et la création de forfaits restent possibles.</div>${optionsHtml}`;
       return;
@@ -385,7 +387,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const measurements = state.measurements;
     if (!measurements.length) {
-      speedAdviceEl.innerHTML = `${head("Capacité Internet non vérifiée")}
+      speedAdviceContentEl.innerHTML = `${head("Capacité Internet non vérifiée")}
         <div class="rz-speed-advice-stats">${capCard}</div>
         <div class="rz-speed-advice-copy">Aucune mesure Speed Test réelle n'est disponible sur les 30 derniers jours. Le nombre de clients téléchargeant à pleine vitesse ne peut pas être estimé.</div>
         ${optionsHtml}
@@ -402,7 +404,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const enough = measurements.length >= 3;
     const selected = Number(speedMbps?.value);
     if (!enough) {
-      speedAdviceEl.innerHTML = `${head("Mesures encore insuffisantes")}
+      speedAdviceContentEl.innerHTML = `${head("Mesures encore insuffisantes")}
         <div class="rz-speed-advice-stats">${capCard}
           <div class="rz-speed-advice-stat">Débit mesuré le plus faible<strong>${esc(fmtMbps(minimum))} Mbps</strong></div>
           <div class="rz-speed-advice-stat">Mesures récentes<strong>${measurements.length}/10</strong></div>
@@ -418,7 +420,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const estimatedLabel = assessment.estimated === null ? "Non estimable"
       : assessment.estimated === 0 ? "< 1 avec réserve"
       : `≈ ${assessment.estimated}`;
-    speedAdviceEl.innerHTML = `${head(assessment.heading, assessment.tone)}
+    speedAdviceContentEl.innerHTML = `${head(assessment.heading, assessment.tone)}
       <div class="rz-speed-advice-stats">
         ${capCard}
         <div class="rz-speed-advice-stat">À pleine vitesse (estimé)<strong>${esc(estimatedLabel)}</strong></div>
