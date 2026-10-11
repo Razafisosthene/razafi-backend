@@ -104,6 +104,21 @@
     .rz-speed-advice-warning{margin-top:8px;font-size:12px;font-weight:850;color:#92400e;}
     .rz-speed-advice-warning.high{color:#991b1b;}
 
+    /* V3 — conseil capacitaire, responsive et strictement informatif */
+    .rz-speed-advice-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;flex-wrap:wrap;}
+    .rz-speed-advice-head .rz-speed-advice-title{margin-bottom:0;}
+    .rz-speed-advice-level{display:inline-flex;align-items:center;border-radius:999px;padding:5px 9px;font-size:11px;line-height:1.3;font-weight:900;background:rgba(100,116,139,.10);color:#475569;border:1px solid rgba(100,116,139,.15);}
+    .rz-speed-advice-level.good{background:rgba(22,163,74,.09);color:#15803d;border-color:rgba(22,163,74,.18);}
+    .rz-speed-advice-level.caution{background:rgba(245,158,11,.12);color:#92400e;border-color:rgba(245,158,11,.23);}
+    .rz-speed-advice-level.danger{background:rgba(185,28,28,.09);color:#991b1b;border-color:rgba(185,28,28,.2);}
+    .rz-speed-advice-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}
+    .rz-speed-advice-stat{min-width:0;overflow-wrap:break-word;}
+    .rz-speed-advice-stat strong{font-size:clamp(12px,1.5vw,16px);margin-top:3px;}
+    .rz-speed-advice-explanation{margin-top:8px;font-size:12px;line-height:1.5;color:#475569;}
+    .rz-speed-advice-recommendation{margin-top:10px;padding:10px 11px;border-radius:13px;background:rgba(219,234,254,.52);border:1px solid rgba(37,99,235,.12);font-size:12px;line-height:1.5;color:#1e3a5f;}
+    .rz-speed-advice-options{margin-top:10px;color:#475569;font-size:11px;line-height:1.45;font-weight:800;}
+    @media(max-width:400px){.rz-speed-advice-stats{gap:6px;}.rz-speed-advice-stat{padding:7px 8px;font-size:11px;}}
+
     .rz-create-card{margin-top:18px;padding:15px;border-radius:24px;background:linear-gradient(180deg,rgba(239,246,255,.96),rgba(255,255,255,.94));border:1px solid rgba(13,110,253,.22);box-shadow:0 14px 30px rgba(13,110,253,.10);} 
     .rz-create-title{display:flex;align-items:center;gap:8px;color:#0f172a;font-size:13px;font-weight:950;text-transform:uppercase;letter-spacing:.04em;}
     .rz-create-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;}
@@ -406,6 +421,6 @@
   </div>
 
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="./pricing-simulator.js?v=speed-capacity-consistency-2"></script>
+  <script src="./pricing-simulator.js?v=speed-capacity-advice-v3-20261011"></script>
 </body>
 </html>

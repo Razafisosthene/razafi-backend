@@ -271,68 +271,165 @@ document.addEventListener("DOMContentLoaded", async () => {
     return pool ? poolDisplayNameFromRow(pool) : "ce WiFi";
   }
 
+  // V3 — Avis capacitaire indicatif, sans modifier le moteur tarifaire.
+  // La capacité provient de /api/admin/pools et les vitesses du sélecteur actif.
+  const SPEED_CAPACITY_RESERVE = 0.20;
+  const fmtMbps = (value) => Number(value).toLocaleString("fr-FR", { maximumFractionDigits: 2 });
+
+  function effectiveSpeedChoices() {
+    // Les options réellement affichées priment sur une liste codée en dur.
+    // La validation finale d'un forfait appartient toujours au backend.
+    return parseAllowedSpeeds(Array.from(speedMbps?.options || [])
+      .filter((option) => !option.disabled && option.value !== "")
+      .map((option) => option.value));
+  }
+
+  function selectedPoolCapacity(poolId) {
+    const pool = simulatorPools.find((row) => String(row.id) === String(poolId));
+    const raw = pool?.capacity_max;
+    if (raw === null || raw === undefined || String(raw).trim() === "") return null;
+    const capacity = Number(raw);
+    return Number.isSafeInteger(capacity) && capacity > 0 ? capacity : null;
+  }
+
+  function buildSpeedCapacityAssessment({ minimumMbps, selectedMbps, capacityMax, allowedSpeeds }) {
+    const minimum = Number(minimumMbps);
+    const selected = Number(selectedMbps);
+    const validSpeed = Number.isFinite(selected) && selected > 0;
+    const validMinimum = Number.isFinite(minimum) && minimum > 0;
+    const capacity = Number.isSafeInteger(capacityMax) && capacityMax > 0 ? capacityMax : null;
+    const allowed = parseAllowedSpeeds(allowedSpeeds);
+    if (!validSpeed || !validMinimum) {
+      return { tone: "neutral", heading: "Vitesse non évaluée", estimated: null,
+        summary: "Sélectionnez une vitesse autorisée pour afficher le conseil.",
+        detail: "", recommendation: "" };
+    }
+
+    // Hypothèse de dimensionnement, non prédiction réelle du nombre de clients actifs.
+    // Les décimales proches d'un entier exact ne doivent pas sous-estimer d'une unité.
+    const theoretical = Math.max(0, Math.floor((minimum * (1 - SPEED_CAPACITY_RESERVE)) / selected + 1e-9));
+    const estimated = capacity === null ? null : Math.min(capacity, theoretical);
+    const ratio = selected / minimum;
+    const lower = allowed.filter((speed) => speed < selected - 0.001);
+    const lowestLower = lower.length ? lower[0] : null;
+    let tone, heading, detail;
+    if (ratio >= 1) {
+      tone = "danger";
+      heading = "Débit demandé supérieur ou égal au débit observé";
+      detail = `Le forfait autorise jusqu'à ${fmtMbps(selected)} Mbps, alors qu'un test a relevé seulement ${fmtMbps(minimum)} Mbps pour toute la connexion. Le débit maximal peut être difficile à atteindre, même pour un seul client.`;
+    } else if (ratio >= 0.75) {
+      tone = "danger";
+      heading = "Risque élevé de ralentissement";
+      detail = `Un client téléchargeant à ${fmtMbps(selected)} Mbps pourrait utiliser presque toute la connexion observée à son niveau le plus faible (${fmtMbps(minimum)} Mbps).`;
+    } else if (ratio >= 0.50) {
+      tone = "caution";
+      heading = "Capacité Internet à surveiller";
+      detail = `À ${fmtMbps(selected)} Mbps, un client téléchargeant à pleine vitesse occuperait une part importante du débit total observé. Plusieurs téléchargements simultanés risquent de ralentir le WiFi.`;
+    } else {
+      tone = "good";
+      heading = "Vitesse raisonnable selon les mesures";
+      detail = `La vitesse choisie laisse une marge sur le débit observé. Toutefois, les clients partagent toujours la même connexion Internet.`;
+    }
+
+    let summary;
+    if (capacity === null) {
+      summary = "La capacité maximale de clients n'est pas renseignée dans les données de cette pool. Impossible d'estimer le nombre de téléchargements simultanés à pleine vitesse.";
+    } else if (estimated === 0) {
+      summary = `Cette pool est configurée pour ${capacity} client${capacity > 1 ? "s" : ""} maximum. Avec une réserve indicative de 20 %, le débit mesuré ne permet pas de prévoir un client téléchargeant à ${fmtMbps(selected)} Mbps tout en conservant cette réserve. Les clients peuvent néanmoins se connecter et partager le débit.`;
+    } else {
+      summary = `Cette pool est configurée pour ${capacity} client${capacity > 1 ? "s" : ""} maximum. D'après les mesures, environ ${estimated} client${estimated > 1 ? "s" : ""} pourrai${estimated > 1 ? "ent" : "t"} télécharger simultanément jusqu'à ${fmtMbps(selected)} Mbps, en conservant une réserve indicative de 20 %.`;
+    }
+
+    let recommendation;
+    if (tone === "good") {
+      recommendation = "Ce débit semble raisonnable pour un forfait. Vérifiez néanmoins les performances aux périodes chargées, surtout lorsque beaucoup de clients sont connectés.";
+    } else if (lowestLower !== null) {
+      recommendation = `Parmi les vitesses proposées, ${fmtMbps(lowestLower)} Mbps est un choix plus prudent pour laisser davantage de débit aux autres clients. Cela ne garantit pas que tous téléchargeront à pleine vitesse.`;
+    } else {
+      recommendation = `La vitesse sélectionnée est déjà la plus basse proposée dans le simulateur. Aucune option inférieure n'est disponible ici : surveillez la connexion aux heures chargées et faites vérifier sa capacité si nécessaire.`;
+    }
+    return { tone, heading, estimated, summary, detail, recommendation };
+  }
+
   function renderSpeedAdvice() {
     if (!speedAdviceEl) return;
     const poolId = String(simPoolId?.value || "");
     if (!poolId) { speedAdviceEl.hidden = true; return; }
     speedAdviceEl.hidden = false;
     const poolName = esc(speedAdvicePoolName(poolId));
+    const capacity = selectedPoolCapacity(poolId);
+    const capacityText = capacity === null ? "Non renseignée" : String(capacity);
+    const allowed = effectiveSpeedChoices();
+    const optionsLine = allowed.length
+      ? `Vitesses proposées : ${allowed.map(fmtMbps).join(" · ")} Mbps.`
+      : "Aucune vitesse proposée actuellement.";
     const state = speedAdviceState;
+    const head = (heading, tone = "neutral") => `<div class="rz-speed-advice-head">
+        <div class="rz-speed-advice-title">💡 Assistant RAZAFI · ${poolName}</div>
+        <span class="rz-speed-advice-level ${tone}">${esc(heading)}</span></div>`;
+    const capCard = `<div class="rz-speed-advice-stat">Clients max. configurés<strong>${esc(capacityText)}</strong></div>`;
+    const optionsHtml = `<div class="rz-speed-advice-options">${esc(optionsLine)}</div>`;
+    const note = "Le nombre estimé correspond uniquement à des téléchargements simultanés à pleine vitesse, avec 20 % de réserve indicative. Il ne prédit pas combien de personnes pourront naviguer confortablement. Mesures ponctuelles de téléchargement uniquement (pas d'upload), sans garantie de débit par client. Ce conseil ne modifie ni les prix ni les forfaits.";
     if (state.poolId !== poolId || state.kind === "loading") {
-      speedAdviceEl.innerHTML = `<div class="rz-speed-advice-title">Débit Internet · ${poolName}</div>
-        <div class="rz-speed-advice-copy">Chargement des mesures Speed Test…</div>`;
+      speedAdviceEl.innerHTML = `${head("Chargement")}
+        <div class="rz-speed-advice-stats">${capCard}</div>
+        <div class="rz-speed-advice-copy">Chargement des mesures Speed Test…</div>${optionsHtml}`;
       return;
     }
     if (state.kind === "unavailable") {
-      speedAdviceEl.innerHTML = `<div class="rz-speed-advice-title">Débit Internet · ${poolName}</div>
-        <div class="rz-speed-advice-copy">Mesures indisponibles actuellement. La simulation et la création des forfaits restent possibles.</div>`;
+      speedAdviceEl.innerHTML = `${head("Mesures indisponibles")}
+        <div class="rz-speed-advice-stats">${capCard}</div>
+        <div class="rz-speed-advice-copy">Les mesures sont temporairement indisponibles. Aucune estimation ne peut être faite ; la simulation et la création de forfaits restent possibles.</div>${optionsHtml}`;
       return;
     }
+
     const measurements = state.measurements;
     if (!measurements.length) {
-      speedAdviceEl.innerHTML = `<div class="rz-speed-advice-title">Débit Internet · ${poolName}</div>
-        <div class="rz-speed-advice-copy">Aucune mesure réelle disponible pour les 30 derniers jours. Impossible d'estimer la capacité avec fiabilité.</div>
-        <div class="rz-speed-advice-note">Les références provisoires de configuration ne sont pas des mesures Speed Test.</div>`;
+      speedAdviceEl.innerHTML = `${head("Capacité Internet non vérifiée")}
+        <div class="rz-speed-advice-stats">${capCard}</div>
+        <div class="rz-speed-advice-copy">Aucune mesure Speed Test réelle n'est disponible sur les 30 derniers jours. Le nombre de clients téléchargeant à pleine vitesse ne peut pas être estimé.</div>
+        ${optionsHtml}
+        <div class="rz-speed-advice-note">Une valeur provisoire de configuration n'est jamais utilisée comme mesure. La simulation reste possible.</div>`;
       return;
     }
 
     const speeds = measurements.map((row) => row.mbps).sort((a,b) => a-b);
-    const min = speeds[0];
+    const minimum = speeds[0];
     const median = speeds.length % 2
       ? speeds[Math.floor(speeds.length/2)]
-      : (speeds[speeds.length/2-1]+speeds[speeds.length/2])/2;
+      : (speeds[speeds.length/2-1] + speeds[speeds.length/2]) / 2;
     const latest = measurements[0];
-    const selected = Number(speedMbps?.value);
     const enough = measurements.length >= 3;
-    const fmt = (n) => Number(n).toLocaleString("fr-FR", { maximumFractionDigits: 2 });
-    let advice = "Sélectionnez un débit pour comparer avec les mesures.";
-    let high = false;
-
+    const selected = Number(speedMbps?.value);
     if (!enough) {
-      advice = "Moins de trois mesures : données insuffisantes pour conseiller une vitesse. Répétez les mesures à différentes périodes.";
-    } else if (Number.isFinite(selected) && selected > 0) {
-      const share = Math.round(selected/min*100);
-      if (selected >= min) {
-        high = true;
-        advice = `Attention : ${fmt(selected)} Mbps atteint ou dépasse le débit total le plus faible observé (${fmt(min)} Mbps). Choisissez une vitesse plus prudente, surtout avec plusieurs clients.`;
-      } else if (share >= 50) {
-        advice = `Vigilance : ${fmt(selected)} Mbps représente environ ${share} % du plus faible débit total observé. Plusieurs clients simultanés peuvent saturer la connexion.`;
-      } else {
-        advice = `${fmt(selected)} Mbps représente environ ${share} % du plus faible débit total observé. La marge restante dépend du nombre de clients actifs.`;
-      }
+      speedAdviceEl.innerHTML = `${head("Mesures encore insuffisantes")}
+        <div class="rz-speed-advice-stats">${capCard}
+          <div class="rz-speed-advice-stat">Débit mesuré le plus faible<strong>${esc(fmtMbps(minimum))} Mbps</strong></div>
+          <div class="rz-speed-advice-stat">Mesures récentes<strong>${measurements.length}/10</strong></div>
+        </div>
+        <div class="rz-speed-advice-copy">Au moins 3 mesures récentes, à des moments différents, sont nécessaires pour estimer prudemment le nombre de téléchargements simultanés.</div>
+        ${optionsHtml}<div class="rz-speed-advice-note">Dernière mesure : ${esc(formatDateTime(latest.date))}. Les mesures actuelles ne permettent pas encore de conseiller une vitesse de façon fiable.</div>`;
+      return;
     }
 
-    speedAdviceEl.innerHTML = `<div class="rz-speed-advice-title">Débit Internet mesuré · ${poolName}</div>
+    const assessment = buildSpeedCapacityAssessment({
+      minimumMbps: minimum, selectedMbps: selected, capacityMax: capacity, allowedSpeeds: allowed,
+    });
+    const estimatedLabel = assessment.estimated === null ? "Non estimable"
+      : assessment.estimated === 0 ? "< 1 avec réserve"
+      : `≈ ${assessment.estimated}`;
+    speedAdviceEl.innerHTML = `${head(assessment.heading, assessment.tone)}
       <div class="rz-speed-advice-stats">
-        <div class="rz-speed-advice-stat">Médiane<strong>${fmt(median)} Mbps</strong></div>
-        <div class="rz-speed-advice-stat">Plus faible<strong>${fmt(min)} Mbps</strong></div>
-        <div class="rz-speed-advice-stat">Mesures<strong>${measurements.length}/10</strong></div>
+        ${capCard}
+        <div class="rz-speed-advice-stat">À pleine vitesse (estimé)<strong>${esc(estimatedLabel)}</strong></div>
+        <div class="rz-speed-advice-stat">Débit le plus faible<strong>${esc(fmtMbps(minimum))} Mbps</strong></div>
+        <div class="rz-speed-advice-stat">Débit médian<strong>${esc(fmtMbps(median))} Mbps</strong></div>
       </div>
-      <div class="rz-speed-advice-copy">Dernière mesure : ${esc(formatDateTime(latest.date))}. ${
-        enough ? "Analyse indicative de la capacité totale de ce WiFi." : "Historique encore insuffisant."
-      }</div>
-      <div class="rz-speed-advice-warning${high ? " high" : ""}">${esc(advice)}</div>
-      <div class="rz-speed-advice-note">Téléchargement uniquement, mesures ponctuelles sur le MikroTik : ni débit garanti par client, ni mesure de l'upload. Ce conseil ne modifie aucun prix, forfait ou choix de vitesse.</div>`;
+      <div class="rz-speed-advice-copy"><strong>${esc(assessment.summary)}</strong></div>
+      <div class="rz-speed-advice-explanation">${esc(assessment.detail)}</div>
+      <div class="rz-speed-advice-recommendation"><strong>Conseil RAZAFI :</strong> ${esc(assessment.recommendation)}</div>
+      ${optionsHtml}
+      <div class="rz-speed-advice-note">${measurements.length}/10 mesures sur 30 jours · Dernière mesure : ${esc(formatDateTime(latest.date))}. ${esc(note)}</div>`;
   }
 
   async function loadSpeedAdvice() {
@@ -351,10 +448,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         .map((row) => ({
           mbps: Number(row?.download_mbps),
           date: row?.completed_at || row?.created_at,
+          status: String(row?.status || "completed").toLowerCase(),
         }))
         .filter((row) => {
           const time = Date.parse(row.date || "");
-          return Number.isFinite(row.mbps) && row.mbps > 0 &&
+          return row.status === "completed" && Number.isFinite(row.mbps) && row.mbps > 0 &&
             Number.isFinite(time) && time <= now && now-time <= thirtyDays;
         })
         .sort((a,b) => Date.parse(b.date)-Date.parse(a.date))
@@ -986,6 +1084,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     simulatorOptions = freshOptions;
     applySimulatorOptions(simulatorOptions);
+    renderSpeedAdvice(); // Recalcule les options réellement proposées après rechargement.
 
     if (!isSuperadminUser) {
       if (configInfo) configInfo.hidden = true;
@@ -1000,6 +1099,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     ]);
     simulatorConfig = config;
     renderConfig(simulatorConfig);
+    renderSpeedAdvice();
     return simulatorConfig;
   }
 
