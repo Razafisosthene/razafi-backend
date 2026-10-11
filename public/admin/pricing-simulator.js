@@ -494,6 +494,124 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function showError(msg) { if (errorEl) errorEl.textContent = msg || ""; }
   function showConfigStatus(msg) { if (configSaveStatus) configSaveStatus.textContent = msg || ""; }
+  const configValidationNotice = document.getElementById("configValidationNotice");
+  const CONFIG_LIMITS = Object.freeze({
+    price_tolerance_pct:[0,100], realistic_usage_factor_pct:[10,100], warning_usage_factor_pct:[10,150],
+    max_visible_data_plans:[1,100], max_visible_unlimited_plans:[1,100], minimum_price_ar:[0,1000000],
+    max_total_plans:[1,10000], max_data_gb:[1,100000], max_speed_mbps:[1,1000], max_duration_days:[1,3650],
+    personalized_markup_pct:[0,1000], personalized_quote_ttl_minutes:[1,1440],
+    personalized_min_duration_minutes:[1,5256000], personalized_duration_step_minutes:[1,5256000],
+    personalized_min_data_mb:[1,102400000], personalized_data_step_mb:[1,102400000],
+    personalized_min_price_ar:[0,1000000], personalized_max_price_ar:[1,1000000],
+    personalized_quote_retention_days:[1,3650],
+  });
+  const CONFIG_INTEGERS = new Set([
+    "max_visible_data_plans","max_visible_unlimited_plans","minimum_price_ar","max_total_plans",
+    "personalized_quote_ttl_minutes","personalized_min_duration_minutes","personalized_duration_step_minutes",
+    "personalized_min_data_mb","personalized_data_step_mb","personalized_min_price_ar",
+    "personalized_max_price_ar","personalized_quote_retention_days",
+  ]);
+
+  function clearConfigValidation() {
+    if (configValidationNotice) { configValidationNotice.textContent = ""; configValidationNotice.hidden = true; }
+    configForm?.querySelectorAll('[aria-invalid="true"]').forEach((el) => el.removeAttribute("aria-invalid"));
+    configForm?.querySelectorAll(".rz-config-field-error").forEach((el) => el.remove());
+  }
+
+  function showConfigValidation(issues, { scroll = false } = {}) {
+    clearConfigValidation();
+    if (!issues?.length) return;
+    const unique = [...new Map(issues.map((issue) => [`${issue.field || ""}|${issue.message}`, issue])).values()];
+    if (configValidationNotice) {
+      configValidationNotice.textContent = `Impossible d'enregistrer la configuration :\n${unique.map((issue) => `• ${issue.message}`).join("\n")}`;
+      configValidationNotice.hidden = false;
+    }
+    for (const issue of unique) {
+      const element = issue.element || (issue.field ? document.getElementById(`cfg_${issue.field}`) : null);
+      if (!element) continue;
+      element.setAttribute("aria-invalid", "true");
+      const parent = element.closest(".rz-field");
+      if (parent) {
+        const detail = document.createElement("small");
+        detail.className = "rz-config-field-error";
+        detail.textContent = issue.message;
+        parent.appendChild(detail);
+      }
+    }
+    showConfigStatus("Enregistrement bloqué : consultez les explications ci-dessus.");
+    if (scroll) {
+      const target = unique.find((issue) => issue.element)?.element
+        || (unique[0]?.field ? document.getElementById(`cfg_${unique[0].field}`) : null)
+        || configValidationNotice;
+      target?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    }
+  }
+
+  function validateConfigDraft(payload) {
+    const issues = [];
+    const add = (field, message, element) => issues.push({field,message,element});
+    const s = payload.settings || {};
+    const refs = payload.references || [];
+    const label = (field) => document.querySelector(`label[for="cfg_${field}"]`)?.textContent?.trim() || field;
+    for (const [key,[min,max]] of Object.entries(CONFIG_LIMITS)) {
+      const n = Number(s[key]);
+      if (!Number.isFinite(n) || n < min || n > max || (CONFIG_INTEGERS.has(key) && !Number.isInteger(n))) {
+        add(key, `${label(key)} : valeur attendue entre ${min} et ${max}${CONFIG_INTEGERS.has(key) ? " (nombre entier)" : ""}.`);
+      }
+    }
+    const speeds = s.allowed_speeds_mbps || [];
+    if (!speeds.length || speeds.some((n) => !Number.isFinite(n) || n <= 0)) add("allowed_speeds_mbps","Ajoutez au moins un débit positif valide.");
+    if (speeds.some((n) => n > Number(s.max_speed_mbps))) {
+      add("allowed_speeds_mbps",`Un débit autorisé dépasse le débit maximum de ${s.max_speed_mbps} Mbps. Modifiez l'une des deux valeurs.`);
+    }
+    if (Number(s.warning_usage_factor_pct) < Number(s.realistic_usage_factor_pct)) add("warning_usage_factor_pct","Le seuil avertissement doit être supérieur ou égal au facteur réaliste.");
+    if (Number(s.personalized_max_price_ar) < Math.max(Number(s.minimum_price_ar),Number(s.personalized_min_price_ar))) add("personalized_max_price_ar","Le prix personnalisé maximum doit être supérieur ou égal aux prix minimums.");
+    if (Number(s.personalized_min_duration_minutes) > Number(s.max_duration_days)*1440) add("personalized_min_duration_minutes","La durée personnalisée minimale dépasse la durée maximale générale.");
+    if (Number(s.personalized_min_data_mb) > Number(s.max_data_gb)*1024) add("personalized_min_data_mb","La Data personnalisée minimale dépasse la Data maximale générale.");
+    const active = refs.filter((r)=>r.is_active!==false);
+    if (!active.some((r)=>r.type==="data") || !active.some((r)=>r.type==="unlimited")) add(null,"Conservez au moins une référence Data et une référence Illimitée actives.",referencesEditor);
+    const keys=new Set(), technical=new Set();
+    for (const ref of refs) {
+      const row = [...(referencesEditor?.querySelectorAll("[data-ref-key]") || [])].find((el)=>el.dataset.refKey===ref.key);
+      if(keys.has(ref.key)) add(null,`Clé de référence en double : ${ref.key}.`,row);
+      keys.add(ref.key);
+      const sig=[ref.type,ref.duration_minutes,ref.type==="data"?ref.data_gb:"unlimited",ref.speed_mbps].join("|");
+      if(technical.has(sig)) add(null,`Combinaison technique utilisée par plusieurs références, dont « ${ref.label || ref.key} ».`,row);
+      technical.add(sig);
+      if(ref.is_active===false) continue;
+      const name=ref.label || ref.key;
+      if(ref.duration_minutes>Number(s.max_duration_days)*1440) add("max_duration_days",`Référence « ${name} » : durée de ${ref.duration_minutes} min supérieure à la limite. Modifiez ou désactivez cette référence.`,row?.querySelector("[data-ref-duration-value]"));
+      if(ref.speed_mbps>Number(s.max_speed_mbps) || !speeds.some((n)=>Math.abs(n-ref.speed_mbps)<.001)) add("allowed_speeds_mbps",`Référence « ${name} » : ${ref.speed_mbps} Mbps n'est plus autorisé. Modifiez ou désactivez cette référence.`,row?.querySelector("[data-ref-speed]"));
+      if(ref.type==="data" && ref.data_gb>Number(s.max_data_gb)) add("max_data_gb",`Référence « ${name} » : ${ref.data_gb} Go dépasse le maximum. Modifiez ou désactivez cette référence.`,row?.querySelector("[data-ref-data]"));
+    }
+    return issues;
+  }
+
+  function presentConfigError(err) {
+    const msg = String(err?.data?.message || err?.message || "Échec de l'enregistrement.");
+    const field = String(err?.data?.field || "");
+    const code = String(err?.code || "");
+    const messages = {
+      pp2_db_support_missing: "La fonction de versionnement est indisponible en base de données. Aucune configuration n'a été activée.",
+      pricing_version_save_failed: "Le serveur n'a pas pu créer la nouvelle version en base de données. Consultez les logs du serveur.",
+      personalized_pricing_config_invalid: "Le serveur a refusé une configuration incompatible avec le calculateur personnalisé. Aucune nouvelle version n'a été activée.",
+    };
+    showConfigValidation([{field,message:messages[code] || msg}],{scroll:true});
+    showError("");
+  }
+
+  function validateConfigWhileEditing() {
+    if (!configForm || !simulatorConfig) return;
+    try {
+      const payload=buildConfigPayloadFromEditor();
+      const issues=validateConfigDraft(payload);
+      if(issues.length) showConfigValidation(issues);
+      else { clearConfigValidation(); showConfigStatus("Modifications prêtes à enregistrer."); }
+    } catch(err) {
+      showConfigValidation([{message:err.message}],{});
+    }
+  }
+
 
   // Protection UX : un résultat ne vaut que pour les paramètres exacts de sa simulation.
   // Les prix, règles d'autorisation et traitements serveur restent inchangés.
@@ -842,6 +960,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     referencesEditor.innerHTML = editableReferences.map(referenceEditorItemHtml).join("");
+    clearConfigValidation();
+    const roundingField = document.getElementById("cfg_personalized_rounding");
+    if (roundingField) { roundingField.disabled = true; roundingField.title = "Règle fixe du moteur tarifaire (ceil_100)."; }
   }
 
   function currentSimulationPayload() {
@@ -1127,6 +1248,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       const input = document.getElementById(`cfg_${key}`);
       if (!input) continue;
       if (key === "allowed_speeds_mbps") {
+        const rawSpeeds = String(input.value || "").split(",").map((x)=>x.trim());
+        if (rawSpeeds.some((x)=>!x || !Number.isFinite(Number(x)) || Number(x)<=0)) throw new Error("Débits autorisés : utilisez uniquement des nombres positifs séparés par des virgules.");
         const speeds = parseAllowedSpeeds(input.value);
         if (!speeds.length) throw new Error("Ajoutez au moins un débit autorisé.");
         settings[key] = speeds;
@@ -1263,6 +1386,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     showError("");
     showConfigStatus("");
     const payload = buildConfigPayloadFromEditor();
+    const issues = validateConfigDraft(payload);
+    if (issues.length) { showConfigValidation(issues, {scroll:true}); return; }
+    clearConfigValidation();
     const confirmed = window.confirm("Cette action crée et active immédiatement une nouvelle version tarifaire pour le simulateur Admin et le portail client. Continuer ?");
     if (!confirmed) return;
     setBusy(saveConfigBtn, true, "Enregistrement…");
@@ -1272,8 +1398,13 @@ document.addEventListener("DOMContentLoaded", async () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      await loadConfig();
-      showConfigStatus("Nouvelle version enregistrée et activée ✅");
+      try {
+        await loadConfig();
+        showConfigStatus("Nouvelle version enregistrée et activée ✅");
+      } catch (reloadError) {
+        console.warn("RAZAFI CONFIG : version enregistrée, rechargement impossible", reloadError);
+        showConfigStatus("Nouvelle version enregistrée et activée ✅. Le rechargement a échoué : cliquez sur Recharger.");
+      }
       window.setTimeout(() => showConfigStatus(""), 2500);
     } finally {
       setBusy(saveConfigBtn, false);
@@ -1424,6 +1555,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const key = String(removeBtn.dataset.removeRef || "");
       editableReferences = editableReferences.filter((r) => String(r.key || "") !== key);
       removeBtn.closest("[data-ref-key]")?.remove();
+      validateConfigWhileEditing();
     });
   }
 
@@ -1432,6 +1564,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const draft = createReferenceDraft();
       editableReferences.push(draft);
       referencesEditor?.insertAdjacentHTML("beforeend", referenceEditorItemHtml(draft, editableReferences.length - 1));
+      validateConfigWhileEditing();
       const rows = referencesEditor?.querySelectorAll("[data-ref-key]");
       const lastRow = rows?.[rows.length - 1];
       lastRow?.scrollIntoView?.({ behavior: "smooth", block: "center" });
@@ -1439,10 +1572,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   if (configForm) {
+    // Délégation: couvre également les références ajoutées après chargement.
+    configForm.addEventListener("input", validateConfigWhileEditing);
+    configForm.addEventListener("change", validateConfigWhileEditing);
     configForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       try { await saveConfig(); }
-      catch (err) { showError(err.message); showConfigStatus("Échec de l’enregistrement."); }
+      catch (err) { presentConfigError(err); }
     });
   }
 
