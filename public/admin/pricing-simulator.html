@@ -91,6 +91,19 @@
     .rz-assistant-item.suggestion{background:rgba(13,110,253,.08);border-color:rgba(13,110,253,.18);}
     .rz-assistant-item.protection{background:rgba(254,242,242,.92);border-color:rgba(239,68,68,.22);color:#991b1b;}
 
+
+    /* SPEED TEST / SIMULATEUR — aide indicative, lecture seule et par pool */
+    .rz-speed-advice{grid-column:1/-1;padding:13px 14px;border-radius:19px;background:rgba(248,250,252,.90);border:1px solid rgba(15,23,42,.10);color:#334155;}
+    .rz-speed-advice[hidden]{display:none!important;}
+    .rz-speed-advice-title{font-size:13px;font-weight:950;color:#0f172a;margin-bottom:5px;}
+    .rz-speed-advice-copy{font-size:12px;font-weight:750;line-height:1.5;}
+    .rz-speed-advice-stats{display:flex;gap:9px;flex-wrap:wrap;margin:9px 0;}
+    .rz-speed-advice-stat{padding:7px 10px;border-radius:13px;background:#fff;border:1px solid rgba(15,23,42,.07);font-size:12px;line-height:1.35;}
+    .rz-speed-advice-stat strong{display:block;color:#0f172a;font-size:15px;}
+    .rz-speed-advice-note{font-size:11px;color:#64748b;line-height:1.45;margin-top:7px;}
+    .rz-speed-advice-warning{margin-top:8px;font-size:12px;font-weight:850;color:#92400e;}
+    .rz-speed-advice-warning.high{color:#991b1b;}
+
     .rz-create-card{margin-top:18px;padding:15px;border-radius:24px;background:linear-gradient(180deg,rgba(239,246,255,.96),rgba(255,255,255,.94));border:1px solid rgba(13,110,253,.22);box-shadow:0 14px 30px rgba(13,110,253,.10);} 
     .rz-create-title{display:flex;align-items:center;gap:8px;color:#0f172a;font-size:13px;font-weight:950;text-transform:uppercase;letter-spacing:.04em;}
     .rz-create-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;}
@@ -237,6 +250,8 @@
               </select>
               <div id="speedMbpsError" class="rz-field-error"></div>
             </div>
+
+            <aside id="rzSpeedCapacityAdvice" class="rz-speed-advice" aria-live="polite" hidden></aside>
 
             <div id="personalizedRulesNote" class="rz-small-note">Chargement des règles actives…</div>
 
@@ -391,6 +406,6 @@
   </div>
 
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="./pricing-simulator.js?v=pp-pool-markup-1"></script>
+  <script src="./pricing-simulator.js?v=speed-capacity-advice-1"></script>
 </body>
 </html>

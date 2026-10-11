@@ -262,6 +262,111 @@ document.addEventListener("DOMContentLoaded", async () => {
   const durationValue = document.getElementById("durationValue");
   const durationUnit = document.getElementById("durationUnit");
   const speedMbps = document.getElementById("speedMbps");
+  const speedAdviceEl = document.getElementById("rzSpeedCapacityAdvice");
+  let speedAdviceRequestId = 0;
+  let speedAdviceState = { kind: "idle", poolId: "", measurements: [] };
+
+  function speedAdvicePoolName(poolId) {
+    const pool = simulatorPools.find((row) => String(row.id) === String(poolId));
+    return pool ? poolDisplayNameFromRow(pool) : "ce WiFi";
+  }
+
+  function renderSpeedAdvice() {
+    if (!speedAdviceEl) return;
+    const poolId = String(simPoolId?.value || "");
+    if (!poolId) { speedAdviceEl.hidden = true; return; }
+    speedAdviceEl.hidden = false;
+    const poolName = esc(speedAdvicePoolName(poolId));
+    const state = speedAdviceState;
+    if (state.poolId !== poolId || state.kind === "loading") {
+      speedAdviceEl.innerHTML = `<div class="rz-speed-advice-title">Débit Internet · ${poolName}</div>
+        <div class="rz-speed-advice-copy">Chargement des mesures Speed Test…</div>`;
+      return;
+    }
+    if (state.kind === "unavailable") {
+      speedAdviceEl.innerHTML = `<div class="rz-speed-advice-title">Débit Internet · ${poolName}</div>
+        <div class="rz-speed-advice-copy">Mesures indisponibles actuellement. La simulation et la création des forfaits restent possibles.</div>`;
+      return;
+    }
+    const measurements = state.measurements;
+    if (!measurements.length) {
+      speedAdviceEl.innerHTML = `<div class="rz-speed-advice-title">Débit Internet · ${poolName}</div>
+        <div class="rz-speed-advice-copy">Aucune mesure réelle disponible pour les 30 derniers jours. Impossible d'estimer la capacité avec fiabilité.</div>
+        <div class="rz-speed-advice-note">Les références provisoires de configuration ne sont pas des mesures Speed Test.</div>`;
+      return;
+    }
+
+    const speeds = measurements.map((row) => row.mbps).sort((a,b) => a-b);
+    const min = speeds[0];
+    const median = speeds.length % 2
+      ? speeds[Math.floor(speeds.length/2)]
+      : (speeds[speeds.length/2-1]+speeds[speeds.length/2])/2;
+    const latest = measurements[0];
+    const selected = Number(speedMbps?.value);
+    const enough = measurements.length >= 3;
+    const fmt = (n) => Number(n).toLocaleString("fr-FR", { maximumFractionDigits: 2 });
+    let advice = "Sélectionnez un débit pour comparer avec les mesures.";
+    let high = false;
+
+    if (!enough) {
+      advice = "Moins de trois mesures : données insuffisantes pour conseiller une vitesse. Répétez les mesures à différentes périodes.";
+    } else if (Number.isFinite(selected) && selected > 0) {
+      const share = Math.round(selected/min*100);
+      if (selected >= min) {
+        high = true;
+        advice = `Attention : ${fmt(selected)} Mbps atteint ou dépasse le débit total le plus faible observé (${fmt(min)} Mbps). Choisissez une vitesse plus prudente, surtout avec plusieurs clients.`;
+      } else if (share >= 50) {
+        advice = `Vigilance : ${fmt(selected)} Mbps représente environ ${share} % du plus faible débit total observé. Plusieurs clients simultanés peuvent saturer la connexion.`;
+      } else {
+        advice = `${fmt(selected)} Mbps représente environ ${share} % du plus faible débit total observé. La marge restante dépend du nombre de clients actifs.`;
+      }
+    }
+
+    speedAdviceEl.innerHTML = `<div class="rz-speed-advice-title">Débit Internet mesuré · ${poolName}</div>
+      <div class="rz-speed-advice-stats">
+        <div class="rz-speed-advice-stat">Médiane<strong>${fmt(median)} Mbps</strong></div>
+        <div class="rz-speed-advice-stat">Plus faible<strong>${fmt(min)} Mbps</strong></div>
+        <div class="rz-speed-advice-stat">Mesures<strong>${measurements.length}/10</strong></div>
+      </div>
+      <div class="rz-speed-advice-copy">Dernière mesure : ${esc(formatDateTime(latest.date))}. ${
+        enough ? "Analyse indicative de la capacité totale de ce WiFi." : "Historique encore insuffisant."
+      }</div>
+      <div class="rz-speed-advice-warning${high ? " high" : ""}">${esc(advice)}</div>
+      <div class="rz-speed-advice-note">Téléchargement uniquement, mesures ponctuelles sur le MikroTik : ni débit garanti par client, ni mesure de l'upload. Ce conseil ne modifie aucun prix, forfait ou choix de vitesse.</div>`;
+  }
+
+  async function loadSpeedAdvice() {
+    const poolId = String(simPoolId?.value || "");
+    const requestId = ++speedAdviceRequestId;
+    if (!poolId) { speedAdviceState = {kind:"idle",poolId:"",measurements:[]}; renderSpeedAdvice(); return; }
+    speedAdviceState = { kind: "loading", poolId, measurements: [] };
+    renderSpeedAdvice();
+    try {
+      // Endpoint Admin déjà protégé par requireAdmin et canAdminAccessPool.
+      const data = await fetchJSON(`/api/admin/pool-speed-test/history?pool_id=${encodeURIComponent(poolId)}`);
+      if (requestId !== speedAdviceRequestId || String(simPoolId?.value || "") !== poolId) return;
+      const now = Date.now();
+      const thirtyDays = 30 * 24 * 60 * 60 * 1000;
+      const measurements = (Array.isArray(data?.items) ? data.items : [])
+        .map((row) => ({
+          mbps: Number(row?.download_mbps),
+          date: row?.completed_at || row?.created_at,
+        }))
+        .filter((row) => {
+          const time = Date.parse(row.date || "");
+          return Number.isFinite(row.mbps) && row.mbps > 0 &&
+            Number.isFinite(time) && time <= now && now-time <= thirtyDays;
+        })
+        .sort((a,b) => Date.parse(b.date)-Date.parse(a.date))
+        .slice(0,10);
+      speedAdviceState = { kind: "ready", poolId, measurements };
+    } catch (_) {
+      if (requestId !== speedAdviceRequestId || String(simPoolId?.value || "") !== poolId) return;
+      speedAdviceState = { kind: "unavailable", poolId, measurements: [] };
+    }
+    renderSpeedAdvice();
+  }
+
   const dataGbError = document.getElementById("dataGbError");
   const simPoolIdError = document.getElementById("simPoolIdError");
   const durationValueError = document.getElementById("durationValueError");
@@ -1085,6 +1190,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   if (durationUnit) durationUnit.addEventListener("change", syncDurationInputRules);
+  // Aide de débit indépendante du moteur de simulation / création.
+  if (simPoolId) simPoolId.addEventListener("change", loadSpeedAdvice);
+  if (speedMbps) speedMbps.addEventListener("change", renderSpeedAdvice);
 
   if (versionsList) {
     versionsList.addEventListener("click", async (e) => {
@@ -1178,6 +1286,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     applyTypeUI();
     await loadPools();
     await loadConfig();
+    await loadSpeedAdvice();
     closeMobileConfigSections();
   } catch (err) {
     if (String(err?.message || "").includes("Not authenticated")) window.location.href = "/admin/login.html";
