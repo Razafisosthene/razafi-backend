@@ -1357,9 +1357,14 @@ document.addEventListener("DOMContentLoaded", async () => {
       const input = document.getElementById(`cfg_${key}`);
       if (!input) continue;
       if (key === "allowed_speeds_mbps") {
+        // Une virgule finale pendant la saisie n'est pas un débit invalide.
+        // Les séparateurs vides au milieu et les valeurs non numériques restent refusés.
         const rawSpeeds = String(input.value || "").split(",").map((x)=>x.trim());
-        if (rawSpeeds.some((x)=>!x || !Number.isFinite(Number(x)) || Number(x)<=0)) throw new Error("Débits autorisés : utilisez uniquement des nombres positifs séparés par des virgules.");
-        const speeds = parseAllowedSpeeds(input.value);
+        while (rawSpeeds.length && !rawSpeeds[rawSpeeds.length - 1]) rawSpeeds.pop();
+        if (!rawSpeeds.length || rawSpeeds.some((x)=>!x || !/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(x) || !Number.isFinite(Number(x)) || Number(x)<=0)) {
+          throw new Error("Débits autorisés : saisissez des nombres positifs séparés par des virgules (ex. 5, 7, 10).");
+        }
+        const speeds = parseAllowedSpeeds(rawSpeeds);
         if (!speeds.length) throw new Error("Ajoutez au moins un débit autorisé.");
         settings[key] = speeds;
         continue;
@@ -1683,7 +1688,18 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (configForm) {
     // Délégation: couvre également les références ajoutées après chargement.
     configForm.addEventListener("input", (e)=>{if(e.target.closest("#configAssistant")) return;assistanceClosedForDraft=false;validateConfigWhileEditing();});
-    configForm.addEventListener("change", (e)=>{if(e.target.closest("#configAssistant")) return;assistanceClosedForDraft=false;validateConfigWhileEditing();});
+    configForm.addEventListener("change", (e)=>{
+      if(e.target.closest("#configAssistant")) return;
+      // Nettoyer l'affichage seulement à la sortie du champ, jamais pendant la frappe.
+      if (e.target.id === "cfg_allowed_speeds_mbps") {
+        try {
+          const parsed = buildConfigPayloadFromEditor().settings.allowed_speeds_mbps;
+          if (parsed?.length) e.target.value = parsed.join(", ");
+        } catch (_) { /* Conserver la saisie erronée pour que l'utilisateur puisse la corriger. */ }
+      }
+      assistanceClosedForDraft=false;
+      validateConfigWhileEditing();
+    });
     configForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       try { await saveConfig(); }

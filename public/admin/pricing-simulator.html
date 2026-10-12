@@ -26,7 +26,14 @@
     .rz-assist-head{font-weight:900;color:#0f172a;display:flex;align-items:center;gap:8px;}
     .rz-assist-list{margin:0;padding-left:18px;font-size:13px;line-height:1.5;color:#334155;}
     .rz-assist-choices{display:grid;gap:8px;}
-    .rz-assist-choices label{display:flex;align-items:flex-start;gap:8px;line-height:1.4;font-weight:700;font-size:13px;cursor:pointer;}
+    /* Le style global des formulaires impose width:100% aux inputs. Les radios de
+       l'assistance doivent rester compacts et alignés avec leur texte, PC + mobile. */
+    .rz-assist-choices label{display:grid!important;grid-template-columns:18px minmax(0,1fr)!important;align-items:start!important;justify-content:start!important;gap:10px!important;width:100%!important;min-width:0!important;margin:0!important;padding:10px 12px!important;border:1px solid #e2e8f0;border-radius:12px;background:#fff;line-height:1.45;font-weight:700;font-size:13px;cursor:pointer;text-align:left!important;}
+    .rz-assist-choices label[hidden]{display:none!important;}
+    .rz-assist-choices input[type="radio"]{display:block!important;appearance:auto!important;width:17px!important;min-width:17px!important;max-width:17px!important;height:17px!important;min-height:17px!important;margin:1px 0 0!important;padding:0!important;flex:none!important;grid-column:1!important;justify-self:start!important;}
+    .rz-assist-choices .rz-assist-choice-text{display:block!important;grid-column:2!important;min-width:0;overflow-wrap:anywhere;color:#0f172a;}
+    .rz-assist-choices label:has(input:checked){border-color:#93c5fd;background:#eff6ff;}
+    @media(max-width:520px){.rz-assist{padding:11px;}.rz-assist-choices label{padding:10px!important;}.rz-assist-actions button{flex:1 1 100%;}}
     .rz-assist select{max-width:200px;height:40px;border:1px solid #cbd5e1;border-radius:12px;padding:8px;background:white;}
     .rz-assist-preview{border-top:1px solid #cbd5e1;padding-top:10px;font-size:13px;white-space:pre-line;line-height:1.5;color:#334155;}
     .rz-assist-actions{display:flex;gap:8px;flex-wrap:wrap;}
@@ -370,9 +377,9 @@
             <div class="rz-assist-head">🛠️ Assistance de configuration — <span id="assistCount"></span></div>
             <ul id="assistAffected" class="rz-assist-list"></ul>
             <div class="rz-assist-choices">
-              <label><input type="radio" name="assistResolution" value="manual" checked> Modifier manuellement (aucune correction automatique)</label>
-              <label><input type="radio" name="assistResolution" value="disable"> Préparer la désactivation des références concernées (réversible)</label>
-              <label id="assistReplaceChoice" hidden><input type="radio" name="assistResolution" value="replace"> Préparer un remplacement de débit, prix inchangés (revue obligatoire)</label>
+              <label><input type="radio" name="assistResolution" value="manual" checked><span class="rz-assist-choice-text">Modifier manuellement (aucune correction automatique)</span></label>
+              <label><input type="radio" name="assistResolution" value="disable"><span class="rz-assist-choice-text">Préparer la désactivation des références concernées (réversible)</span></label>
+              <label id="assistReplaceChoice" hidden><input type="radio" name="assistResolution" value="replace"><span class="rz-assist-choice-text">Préparer un remplacement de débit, prix inchangés (revue obligatoire)</span></label>
               <select id="assistSpeedTarget" aria-label="Nouveau débit proposé" hidden></select>
             </div>
             <div id="assistPreview" class="rz-assist-preview" role="status" aria-live="polite"></div>
@@ -506,6 +513,6 @@
   </div>
 
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="./pricing-simulator.js?v=simulator-assisted-config-v3-3-20261012"></script>
+  <script src="./pricing-simulator.js?v=simulator-assisted-config-v3-3-1-20261012"></script>
 </body>
 </html>
