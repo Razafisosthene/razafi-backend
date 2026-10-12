@@ -21,6 +21,15 @@
     .rz-field input,.rz-field select{margin:0!important;width:100%;height:48px;border-radius:18px!important;}
     .rz-config-validation-notice{border:1px solid #f59e0b;background:#fffbeb;color:#92400e;border-radius:16px;padding:12px 14px;font-size:13px;line-height:1.5;font-weight:700;margin:0 0 12px;white-space:pre-line;}
     .rz-config-validation-notice[hidden]{display:none;}
+    .rz-assist{border:1px solid #cbd5e1;background:#f8fafc;border-radius:16px;padding:14px;margin:0 0 12px;display:grid;gap:10px;}
+    .rz-assist[hidden]{display:none;}
+    .rz-assist-head{font-weight:900;color:#0f172a;display:flex;align-items:center;gap:8px;}
+    .rz-assist-list{margin:0;padding-left:18px;font-size:13px;line-height:1.5;color:#334155;}
+    .rz-assist-choices{display:grid;gap:8px;}
+    .rz-assist-choices label{display:flex;align-items:flex-start;gap:8px;line-height:1.4;font-weight:700;font-size:13px;cursor:pointer;}
+    .rz-assist select{max-width:200px;height:40px;border:1px solid #cbd5e1;border-radius:12px;padding:8px;background:white;}
+    .rz-assist-preview{border-top:1px solid #cbd5e1;padding-top:10px;font-size:13px;white-space:pre-line;line-height:1.5;color:#334155;}
+    .rz-assist-actions{display:flex;gap:8px;flex-wrap:wrap;}
     .rz-config-field-error{font-size:12px;color:#b91c1c;line-height:1.35;font-weight:800;}
     .rz-config-field-error[hidden]{display:none;}
     .rz-admin-config [aria-invalid="true"]{outline:2px solid #dc2626;outline-offset:1px;}
@@ -357,6 +366,21 @@
 
         <form id="configForm" class="rz-collapse-body">
           <div id="configValidationNotice" class="rz-config-validation-notice" role="alert" aria-live="polite" hidden></div>
+          <section id="configAssistant" class="rz-assist" aria-label="Assistance de configuration" hidden>
+            <div class="rz-assist-head">🛠️ Assistance de configuration — <span id="assistCount"></span></div>
+            <ul id="assistAffected" class="rz-assist-list"></ul>
+            <div class="rz-assist-choices">
+              <label><input type="radio" name="assistResolution" value="manual" checked> Modifier manuellement (aucune correction automatique)</label>
+              <label><input type="radio" name="assistResolution" value="disable"> Préparer la désactivation des références concernées (réversible)</label>
+              <label id="assistReplaceChoice" hidden><input type="radio" name="assistResolution" value="replace"> Préparer un remplacement de débit, prix inchangés (revue obligatoire)</label>
+              <select id="assistSpeedTarget" aria-label="Nouveau débit proposé" hidden></select>
+            </div>
+            <div id="assistPreview" class="rz-assist-preview" role="status" aria-live="polite"></div>
+            <div class="rz-assist-actions">
+              <button type="button" id="assistApply" class="filter-btn primary">Préparer les modifications</button>
+              <button type="button" id="assistCancel" class="filter-btn">Fermer l’assistance</button>
+            </div>
+          </section>
           <div class="rz-config-edit-grid">
             <div class="rz-field">
               <label for="cfg_price_tolerance_pct">Tolérance prix (%)</label>
@@ -482,6 +506,6 @@
   </div>
 
   <script src="/admin/nav.js?v=admin-wide-1"></script>
-  <script src="./pricing-simulator.js?v=simulator-config-validation-v3-2-20261012"></script>
+  <script src="./pricing-simulator.js?v=simulator-assisted-config-v3-3-20261012"></script>
 </body>
 </html>

@@ -512,6 +512,112 @@ document.addEventListener("DOMContentLoaded", async () => {
     "personalized_max_price_ar","personalized_quote_retention_days",
   ]);
 
+  // V3.3 : aide semi-automatique, sans appel API ni mutation tant que le Superadmin n’a pas confirmé.
+  const configAssistant = document.getElementById("configAssistant");
+  const assistAffected = document.getElementById("assistAffected");
+  const assistCount = document.getElementById("assistCount");
+  const assistPreview = document.getElementById("assistPreview");
+  const assistApply = document.getElementById("assistApply");
+  const assistCancel = document.getElementById("assistCancel");
+  const assistReplaceChoice = document.getElementById("assistReplaceChoice");
+  const assistSpeedTarget = document.getElementById("assistSpeedTarget");
+  let assistanceClosedForDraft = false;
+
+  function getReferenceConflicts(payload) {
+    const s=payload.settings || {}, speeds=s.allowed_speeds_mbps || [];
+    return (payload.references || []).filter((r)=>r.is_active!==false).map((r)=>{
+      const reasons=[];
+      if (r.speed_mbps>Number(s.max_speed_mbps) || !speeds.some((v)=>Math.abs(v-r.speed_mbps)<.001)) reasons.push("débit");
+      if (r.duration_minutes>Number(s.max_duration_days)*1440) reasons.push("durée");
+      if (r.type==="data" && r.data_gb>Number(s.max_data_gb)) reasons.push("Data");
+      return {...r, reasons};
+    }).filter((r)=>r.reasons.length);
+  }
+
+  function selectedAssistMode() {
+    return configAssistant?.querySelector('input[name="assistResolution"]:checked')?.value || "manual";
+  }
+
+  function proposalFromAssistant(payload, conflicts, mode, targetSpeed) {
+    const keys=new Set(conflicts.map((r)=>r.key));
+    return {settings:payload.settings,references:payload.references.map((r)=>{
+      if (!keys.has(r.key)) return {...r};
+      if (mode==="disable") return {...r,is_active:false};
+      if (mode==="replace") return {...r,speed_mbps:targetSpeed};
+      return {...r};
+    })};
+  }
+
+  function updateAssistancePreview() {
+    if (!configAssistant || configAssistant.hidden) return;
+    let payload;
+    try { payload=buildConfigPayloadFromEditor(); }
+    catch(e) { assistPreview.textContent=e.message; assistApply.disabled=true;return; }
+    const conflicts=getReferenceConflicts(payload), mode=selectedAssistMode();
+    const target=Number(assistSpeedTarget?.value);
+    const proposed=proposalFromAssistant(payload,conflicts,mode,target);
+    const issues=mode==="manual" ? [] : validateConfigDraft(proposed);
+    assistSpeedTarget.hidden=mode!=="replace";
+    if (mode==="manual") {
+      assistPreview.textContent="Aucune modification automatique. Corrigez les références dans l’éditeur, puis enregistrez.";
+    } else if (mode==="disable") {
+      assistPreview.textContent=`Aperçu : ${conflicts.length} référence(s) passera(ont) de actif à inactif. Aucune suppression, aucun prix modifié.\n${conflicts.map(r=>`• ${r.label||r.key} : actif → inactif`).join("\n")}`;
+    } else {
+      assistPreview.textContent=`Aperçu : ${conflicts.length} référence(s) changeront de débit, sans modification de prix. Vérifiez les prix avant enregistrement.\n${conflicts.map(r=>`• ${r.label||r.key} : ${r.speed_mbps} → ${target} Mbps ; ${r.price_ar} Ar inchangé`).join("\n")}`;
+    }
+    if (issues.length) assistPreview.textContent+=`\n\nAttention : ${issues.map(x=>x.message).join(" ; ")}`;
+    assistApply.disabled=mode==="manual" || !conflicts.length || issues.length>0 || (mode==="replace" && (!Number.isFinite(target)||target<=0));
+  }
+
+  function renderConfigAssistant(payload) {
+    if(!configAssistant || assistanceClosedForDraft) return;
+    const conflicts=getReferenceConflicts(payload);
+    if (!conflicts.length) {configAssistant.hidden=true;return;}
+    configAssistant.hidden=false;
+    assistCount.textContent=`${conflicts.length} référence(s) concernée(s)`;
+    assistAffected.replaceChildren(...conflicts.map((r)=>{
+      const li=document.createElement("li");
+      li.textContent=`${r.label || r.key} — ${r.reasons.join(", ")}`;
+      return li;
+    }));
+    const speeds=(payload.settings.allowed_speeds_mbps||[]).filter(v=>v<=Number(payload.settings.max_speed_mbps));
+    const speedOnly=conflicts.every((r)=>r.reasons.length===1 && r.reasons[0]==="débit");
+    assistReplaceChoice.hidden=!speedOnly || !speeds.length;
+    if (assistReplaceChoice.hidden && selectedAssistMode()==="replace") configAssistant.querySelector('input[value="manual"]').checked=true;
+    const oldSpeed=assistSpeedTarget.value;
+    assistSpeedTarget.replaceChildren(...speeds.map((v)=>{const opt=document.createElement("option");opt.value=String(v);opt.textContent=`${v} Mbps`;return opt;}));
+    if (speeds.some(v=>String(v)===oldSpeed)) assistSpeedTarget.value=oldSpeed;
+    else if(speeds.length) assistSpeedTarget.value=String(Math.max(...speeds));
+    updateAssistancePreview();
+  }
+
+  assistCancel?.addEventListener("click",()=>{assistanceClosedForDraft=true;configAssistant.hidden=true;});
+  configAssistant?.querySelectorAll('input[name="assistResolution"]').forEach((input)=>input.addEventListener("change",updateAssistancePreview));
+  assistSpeedTarget?.addEventListener("change",updateAssistancePreview);
+  assistApply?.addEventListener("click",()=>{
+    if (assistApply.disabled) return;
+    let payload;
+    try {payload=buildConfigPayloadFromEditor();}
+    catch(e){showConfigValidation([{message:e.message}]);return;}
+    const conflicts=getReferenceConflicts(payload),mode=selectedAssistMode();
+    if (!conflicts.length || mode==="manual") return;
+    const proposed=proposalFromAssistant(payload,conflicts,mode,Number(assistSpeedTarget.value));
+    const issues=validateConfigDraft(proposed);
+    if (issues.length){showConfigValidation(issues,{scroll:true});return;}
+    const what=mode==="disable" ? "désactiver" : `passer à ${assistSpeedTarget.value} Mbps`;
+    if(!window.confirm(`Préparer ces changements dans l’éditeur : ${what} pour ${conflicts.length} référence(s) ?\n\nCela ne les enregistre PAS encore. Vous devrez contrôler puis cliquer sur « Enregistrer la configuration ». Les prix restent inchangés.`)) return;
+    for(const r of proposed.references){
+      if(!conflicts.some(c=>c.key===r.key)) continue;
+      const row=[...(referencesEditor?.querySelectorAll('[data-ref-key]')||[])].find(el=>el.dataset.refKey===r.key);
+      if(!row) continue;
+      if(mode==="disable") {const el=row.querySelector('[data-ref-active]');if(el)el.checked=false;}
+      if(mode==="replace") {const el=row.querySelector('[data-ref-speed]');if(el)el.value=String(r.speed_mbps);}
+    }
+    assistanceClosedForDraft=false;
+    validateConfigWhileEditing();
+    showConfigStatus("Corrections préparées (non enregistrées). Vérifiez les références et les prix, puis enregistrez si tout convient.");
+  });
+
   function clearConfigValidation() {
     if (configValidationNotice) { configValidationNotice.textContent = ""; configValidationNotice.hidden = true; }
     configForm?.querySelectorAll('[aria-invalid="true"]').forEach((el) => el.removeAttribute("aria-invalid"));
@@ -607,6 +713,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const issues=validateConfigDraft(payload);
       if(issues.length) showConfigValidation(issues);
       else { clearConfigValidation(); showConfigStatus("Modifications prêtes à enregistrer."); }
+      renderConfigAssistant(payload);
     } catch(err) {
       showConfigValidation([{message:err.message}],{});
     }
@@ -961,6 +1068,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     referencesEditor.innerHTML = editableReferences.map(referenceEditorItemHtml).join("");
     clearConfigValidation();
+    if(configAssistant) configAssistant.hidden=true;
+    assistanceClosedForDraft=false;
     const roundingField = document.getElementById("cfg_personalized_rounding");
     if (roundingField) { roundingField.disabled = true; roundingField.title = "Règle fixe du moteur tarifaire (ceil_100)."; }
   }
@@ -1573,8 +1682,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   if (configForm) {
     // Délégation: couvre également les références ajoutées après chargement.
-    configForm.addEventListener("input", validateConfigWhileEditing);
-    configForm.addEventListener("change", validateConfigWhileEditing);
+    configForm.addEventListener("input", (e)=>{if(e.target.closest("#configAssistant")) return;assistanceClosedForDraft=false;validateConfigWhileEditing();});
+    configForm.addEventListener("change", (e)=>{if(e.target.closest("#configAssistant")) return;assistanceClosedForDraft=false;validateConfigWhileEditing();});
     configForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       try { await saveConfig(); }
