@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 /**
  * RAZAFI Smart QoS V1 Lot E. Superadmin, pool allowlist, TLS-only agent and read-only telemetry.
  * Safe by construction: returns sanitized DTO, never outputs credentials, IP, MAC or voucher codes.
@@ -66,8 +67,20 @@ function validateAndSanitize(raw, nasId, now) {
   };
 }
 
+// TRACE: only fixed event names/status codes, never input bodies, identifiers or exception text.
+const makeTraceId=()=>`qe-${randomBytes(12).toString('hex')}`;
+function diagnosticLog(logger, traceId, phase, outcome, elapsedMs, fields={}) {
+  const record={tag:'RAZAFI_QOS_E_DIAG_V1',side:'render',trace_id:traceId,
+    phase,outcome,elapsed_ms:Math.max(0,Math.round(elapsedMs))};
+  if(fields.code) record.code=fields.code;
+  if(Number.isInteger(fields.http_status)) record.http_status=fields.http_status;
+  if(Number.isInteger(fields.agent_http_status)) record.agent_http_status=fields.agent_http_status;
+  try { logger.info(JSON.stringify(record)); } catch (_) { /* logs never break business flow */ }
+}
+
 export function registerSmartQosTelemetryBackendV1({app, requireAdmin, requireSuperadmin,
-  getRouterForPool, fetchImpl=globalThis.fetch, env=process.env, clock=()=>Date.now()}) {
+  getRouterForPool, fetchImpl=globalThis.fetch, env=process.env, clock=()=>Date.now(),
+  logger=console, timer=()=>performance.now()}) {
   if (!app?.get||typeof requireAdmin!=='function'||typeof requireSuperadmin!=='function'||
       typeof getRouterForPool!=='function'||typeof fetchImpl!=='function') throw new Error('bad_integration');
   const busy=new Set(),last=new Map();
@@ -78,17 +91,32 @@ export function registerSmartQosTelemetryBackendV1({app, requireAdmin, requireSu
   });
   app.get('/api/admin/smart-qos/v1/telemetry',requireAdmin,requireSuperadmin,async (req,res)=>{
     noStore(res);
-    if (!flag(env.SMART_QOS_V1_TELEMETRY_BACKEND_ENABLED))
+    const traceId=makeTraceId();
+    const begun=timer();
+    const report=(phase,outcome,fields)=>diagnosticLog(logger,traceId,phase,outcome,timer()-begun,fields);
+    res.setHeader('X-RAZAFI-QOS-Trace',traceId);
+    report('entry','start');
+    if (!flag(env.SMART_QOS_V1_TELEMETRY_BACKEND_ENABLED)) {
+      report('gate','blocked',{code:'BACKEND_DISABLED',http_status:404});
       return res.status(404).json({error:'not_found'});
+    }
     const id=req?.query?.pool_id;
-    if(typeof id!=='string'||!UUID.test(id)) return res.status(400).json({error:'invalid_pool_id'});
+    if(typeof id!=='string'||!UUID.test(id)) {
+      report('gate','blocked',{code:'INVALID_POOL_ID',http_status:400});
+      return res.status(400).json({error:'invalid_pool_id'});
+    }
     const poolId=id.toLowerCase();
     const allowed=new Set(String(env.SMART_QOS_V1_TELEMETRY_POOL_IDS||'').split(',')
       .map(x=>x.trim().toLowerCase()).filter(x=>UUID.test(x)));
-    if(!allowed.has(poolId)) return res.status(403).json({error:'pilot_pool_not_allowed'});
+    if(!allowed.has(poolId)) {
+      report('gate','blocked',{code:'PILOT_POOL_NOT_ALLOWED',http_status:403});
+      return res.status(403).json({error:'pilot_pool_not_allowed'});
+    }
     const now=clock();
-    if(busy.has(poolId)||now-(last.get(poolId)??-Infinity)<30000)
+    if(busy.has(poolId)||now-(last.get(poolId)??-Infinity)<30000) {
+      report('gate','blocked',{code:'RATE_LIMITED',http_status:429});
       return res.status(429).json({error:'retry_later'});
+    }
     const configured=String(env.SMART_QOS_V1_TELEMETRY_AGENT_URL||'');
     const secret=env.SMART_QOS_V1_TELEMETRY_AGENT_SECRET;
     let url;
@@ -96,31 +124,61 @@ export function registerSmartQosTelemetryBackendV1({app, requireAdmin, requireSu
       url=new URL(configured);
       if(url.protocol!=='https:'||url.username||url.password||url.hash||url.search||
          url.pathname!=='/smart-qos/v1/telemetry') throw new Error('bad_url');
-    } catch (_) {return res.status(503).json({error:'agent_not_configured'});}
-    if(typeof secret!=='string'||secret.length<32)
+    } catch (_) {
+      report('configuration','blocked',{code:'AGENT_URL_INVALID',http_status:503});
       return res.status(503).json({error:'agent_not_configured'});
+    }
+    if(typeof secret!=='string'||secret.length<32) {
+      report('configuration','blocked',{code:'AGENT_SECRET_MISSING',http_status:503});
+      return res.status(503).json({error:'agent_not_configured'});
+    }
     busy.add(poolId);last.set(poolId,now);
+    let phase='pool_lookup', code=null, agentHttpStatus=null;
     try {
+      report('pool_lookup','start');
       const {pool,router}=await getRouterForPool(poolId);
       if(String(pool?.id).toLowerCase()!==poolId || !router?.api_enabled ||
          router?.nas_id!==pool?.radius_nas_id || !router?.api_host ||
-         !router?.api_user || !router?.api_password || !router?.wan_interface)
+         !router?.api_user || !router?.api_password || !router?.wan_interface) {
+        code='POOL_ROUTER_NOT_READY';
         throw new Error('pool_router_not_ready');
+      }
+      report('pool_lookup','ok');
+      phase='agent_http';
+      report('agent_http','start');
       const response=await fetchImpl(url.toString(),{
         method:'POST',signal:AbortSignal.timeout(20000),
-        headers:{'Content-Type':'application/json','x-secret':secret},
+        headers:{'Content-Type':'application/json','x-secret':secret,'x-razafi-qos-trace':traceId},
         body:JSON.stringify({nas_id:pool.radius_nas_id,router_ip:router.api_host,
           router_port:router.api_port||8728,api_user:router.api_user,
           api_password:router.api_password,wan_interface:router.wan_interface}),
       });
-      if(!response.ok) throw new Error('agent_error');
+      agentHttpStatus=Number.isInteger(response?.status) ? response.status : null;
+      if(!response.ok) {
+        code='AGENT_HTTP_NON_2XX';
+        throw new Error('upstream_not_ok');
+      }
+      report('agent_http','ok',{agent_http_status:agentHttpStatus});
+      phase='agent_json';
+      report('agent_json','start');
       const raw=await response.json();
+      report('agent_json','ok');
+      phase='sanitizer';
+      report('sanitizer','start');
       const clean=validateAndSanitize(raw,pool.radius_nas_id,clock());
+      report('sanitizer','ok');
+      report('response','ok',{http_status:200,agent_http_status:agentHttpStatus});
       return res.json({...clean,pool_id:poolId});
-    } catch (_) {
-      // Deliberately do not surface router credentials, network identifiers, stack traces or raw response.
+    } catch (error) {
+      // Never log error.message/stack, URL, pool UUID, NAS, router IP, credentials or payload.
+      const safeCode=code || (phase==='pool_lookup' ? 'POOL_LOOKUP_FAILED' :
+        phase==='agent_http' ? (error?.name==='TimeoutError' || error?.name==='AbortError'
+          ? 'AGENT_TIMEOUT_OR_ABORT' : 'AGENT_TRANSPORT_FAILED') :
+        phase==='agent_json' ? 'AGENT_JSON_INVALID' : 'SNAPSHOT_REJECTED');
+      report(phase,'failed',{code:safeCode,http_status:502,agent_http_status:agentHttpStatus});
       return res.status(502).json({error:'passive_telemetry_unavailable'});
     } finally {busy.delete(poolId);}
   });
 }
+
 export {validateAndSanitize};
