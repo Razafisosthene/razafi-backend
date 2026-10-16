@@ -2,6 +2,7 @@
 // ---------------------------------------------------------------------------
 
 import express from "express";
+import { registerSmartQosTelemetryBackendV1 } from "./smart-qos-v1/telemetry-backend.mjs";
 import PDFDocument from "pdfkit";
 import axios from "axios";
 import cors from "cors";
@@ -43243,6 +43244,9 @@ app.get("/api/hotspot/pending-code", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Lot E passive telemetry registration (OFF by default).
+registerSmartQosTelemetryBackendV1({app, requireAdmin, requireSuperadmin, getRouterForPool});
+
 // ENDPOINT: /api/radius/authorize   (SYSTEM 3: MikroTik)
 // Called by FreeRADIUS (rlm_rest). No UI here: JSON only.
 // Rules:
