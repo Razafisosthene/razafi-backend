@@ -40140,6 +40140,27 @@ function clearMvolaTokenCache() {
   tokenCache.expires_at = 0;
 }
 
+// Invalidate only the bearer that failed. A concurrent request may already
+// have refreshed the cache; never erase that newer token.
+function invalidateRejectedMvolaToken(rejectedToken) {
+  if (rejectedToken && tokenCache.access_token === rejectedToken) {
+    clearMvolaTokenCache();
+    return true;
+  }
+  return false;
+}
+
+// Avoid a concurrent burst of token endpoint requests after a 401.
+let mvolaTokenRefreshPromise = null;
+async function refreshMvolaTokenShared() {
+  if (!mvolaTokenRefreshPromise) {
+    mvolaTokenRefreshPromise = fetchNewToken().finally(() => {
+      mvolaTokenRefreshPromise = null;
+    });
+  }
+  return mvolaTokenRefreshPromise;
+}
+
 async function fetchNewToken() {
   if (!MVOLA_CLIENT_ID || !MVOLA_CLIENT_SECRET) {
     throw new Error("MVOLA credentials missing");
@@ -40176,7 +40197,7 @@ async function getAccessToken() {
   if (tokenCache.access_token && Date.now() < tokenCache.expires_at)
     return tokenCache.access_token;
 
-  return await fetchNewToken();
+  return await refreshMvolaTokenShared();
 }
 
 // ---------------------------------------------------------------------------
@@ -41415,6 +41436,15 @@ async function initiateMvolaPaymentWithRetry({ payload, requestRef, phone, amoun
       clearMvolaTokenCache();
     }
 
+    // A provider quota refusal must not trigger another MerchantPay initiation.
+    // A new initiation may be attempted by the client after the provider's cooldown.
+    if (mapped.type === "MVOLA_THROTTLED") {
+      console.warn("[MVOLA INITIATE][THROTTLED] No immediate retry", {
+        requestRef, correlationId, diagnostic: safeMvolaInitiateDiagnostic(err1),
+      });
+      throw err1;
+    }
+
     console.warn("⚠️ MVola initiate transient failure; retrying once", {
       requestRef,
       correlationId,
@@ -41451,6 +41481,7 @@ async function pollTransactionStatus({
     ? Math.floor(Number(maxAttempts))
     : null;
   let attempt = 0;
+  let statusAuthRefreshUsed = false;
 
   // Keep payment metadata available across success / failed / timeout / catch blocks.
   // This prevents ReferenceError crashes like: "metaPoolId is not defined".
@@ -41464,13 +41495,34 @@ async function pollTransactionStatus({
   while (Date.now() - start < timeoutMs && (!maxAttemptCount || attempt < maxAttemptCount)) {
     attempt++;
     try {
-      const token = await getAccessToken();
       const statusUrl = `${MVOLA_BASE}/mvola/mm/transactions/type/merchantpay/1.0.0/status/${serverCorrelationId}`;
+      let token = await getAccessToken();
       const statusCheckStart = Date.now();
-      const statusResp = await axios.get(statusUrl, {
-        headers: mvolaHeaders(token, crypto.randomUUID()),
-        timeout: 10000,
-      });
+      let statusResp;
+      try {
+        statusResp = await axios.get(statusUrl, {
+          headers: mvolaHeaders(token, crypto.randomUUID()),
+          timeout: 10000,
+        });
+      } catch (statusErr) {
+        const info = getMvolaErrorInfo(statusErr);
+        const rejectedJwt = Number(statusErr?.response?.status) === 401 && (
+          info.code === "900901" || info.rawText.includes("invalid jwt token")
+        );
+        if (!rejectedJwt || statusAuthRefreshUsed) throw statusErr;
+        statusAuthRefreshUsed = true; // one JWT refresh maximum per polling invocation
+        const cleared = invalidateRejectedMvolaToken(token);
+        console.warn("[MVOLA STATUS][JWT REFRESH]", {
+          requestRef, serverCorrelationId, attempt, invalidated_cached_token: cleared,
+        });
+        // If another request already replaced this token, reuse the new one.
+        token = await getAccessToken();
+        // A status GET is read-only: safe to repeat once with a fresh bearer.
+        statusResp = await axios.get(statusUrl, {
+          headers: mvolaHeaders(token, crypto.randomUUID()),
+          timeout: 10000,
+        });
+      }
       const statusCheckDurationMs = Date.now() - statusCheckStart;
       const sdata = statusResp.data || {};
 
@@ -41988,7 +42040,23 @@ async function pollTransactionStatus({
           2000
         ),
       });
-      // continue to retry
+      // Authentication/configuration failures cannot be solved by rapid polling.
+      // Recovery keeps the transaction eligible for a later safe status check.
+      const info = getMvolaErrorInfo(err);
+      if (Number(httpStatus) === 401 &&
+          (info.code === "900901" || info.rawText.includes("invalid jwt token"))) {
+        console.warn("[MVOLA STATUS][AUTH BLOCKED] stopping this polling run", {
+          requestRef, serverCorrelationId, attempt,
+        });
+        break;
+      }
+      if (info.code === "900802" || info.rawText.includes("message throttled")) {
+        console.warn("[MVOLA STATUS][QUOTA BLOCKED] deferring to later recovery", {
+          requestRef, serverCorrelationId, attempt,
+        });
+        break;
+      }
+      // continue to retry for other transient failures
     }
 
     const waitFor = pollScheduleMs[Math.min(Math.max(attempt - 1, 0), pollScheduleMs.length - 1)];
