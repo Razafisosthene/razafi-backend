@@ -41609,8 +41609,30 @@ async function pollTransactionStatus({
           const isNewSystem = !!metaPlanId && !!metaClientMac;
 
           if (isNewSystem) {
-            const voucherCode =
-              (tx?.code || tx?.voucher || null) ||
+            // MVOLA-IDEMPOTENCY V1: recover an existing session before generating a code.
+            // Never silently overwrite a session belonging to another payment.
+            if (!tx?.id) throw new Error("mvola_transaction_missing_for_voucher");
+            const { data: linkedSessions, error: linkedErr } = await supabase
+              .from("voucher_sessions")
+              .select("id,voucher_code,plan_id,pool_id,client_mac")
+              .eq("transaction_id", tx.id)
+              .limit(2);
+            if (linkedErr) throw linkedErr;
+            if ((linkedSessions || []).length > 1) throw new Error("mvola_duplicate_sessions_for_transaction");
+            const existingSession = linkedSessions?.[0] || null;
+            if (existingSession && (
+              String(existingSession.plan_id || "") !== String(metaPlanId || "") ||
+              String(existingSession.pool_id || "") !== String(metaPoolId || "") ||
+              String(existingSession.client_mac || "").toLowerCase() !== String(metaClientMac || "").toLowerCase()
+            )) throw new Error("mvola_linked_session_identity_mismatch");
+            const storedCode = tx?.code || tx?.voucher || null;
+            if (tx?.code && tx?.voucher && tx.code !== tx.voucher) {
+              throw new Error("mvola_transaction_code_mismatch");
+            }
+            if (existingSession && storedCode && storedCode !== existingSession.voucher_code) {
+              throw new Error("mvola_transaction_session_code_mismatch");
+            }
+            const voucherCode = existingSession?.voucher_code || storedCode ||
               ("RAZAFI-" + crypto.randomBytes(4).toString("hex").toUpperCase());
 
             const nowIso = new Date().toISOString();
@@ -41633,25 +41655,31 @@ async function pollTransactionStatus({
               message: "Generating voucher after MVola completion",
               metadata: { voucher_code_hint: String(voucherCode || "").slice(0, 8) + "***" },
             });
-            const { error: vsErr } = await supabase
-              .from("voucher_sessions")
-              .upsert([{
-                voucher_code: voucherCode,
-                plan_id: metaPlanId,
-                pool_id: metaPoolId,
-                client_mac: metaClientMac,
-                ap_mac: metaApMac,
-                mvola_phone: (tx?.phone || baseMeta.phone || null),
-                transaction_id: tx?.id || null,
-                status: "pending",
-                delivered_at: nowIso,
-                updated_at: nowIso,
-              }], { onConflict: "voucher_code" });
+            if (!existingSession) {
+              const { error: vsErr } = await supabase
+                .from("voucher_sessions")
+                .insert([{
+                  voucher_code: voucherCode,
+                  plan_id: metaPlanId,
+                  pool_id: metaPoolId,
+                  client_mac: metaClientMac,
+                  ap_mac: metaApMac,
+                  mvola_phone: (tx?.phone || baseMeta.phone || null),
+                  transaction_id: tx.id,
+                  status: "pending",
+                  delivered_at: nowIso,
+                  updated_at: nowIso,
+                }]);
+              if (vsErr) {
+                // A concurrent finalizer may have inserted the same transaction.
+                // Stop rather than manufacture a second session or claim delivery.
+                throw vsErr;
+              }
+            }
 
-            if (vsErr) throw vsErr;
-
-            // Mark transaction completed & store the generated voucher code.
-            await supabase
+            // A successful voucher insert does NOT prove that the transaction update succeeded.
+            // On failure, keep the voucher linked for the next idempotent retry.
+            const { data: completedTx, error: completedTxErr } = await supabase
               .from("transactions")
               .update({
                 status: "completed",
@@ -41659,9 +41687,17 @@ async function pollTransactionStatus({
                 voucher: voucherCode,
                 metadata: { ...baseMeta, mvolaStatus: statusRaw, completed_at_local: toISOStringMG(new Date()), updated_at_local: toISOStringMG(new Date()) },
               })
-              .eq("request_ref", requestRef);
+              .eq("id", tx.id)
+              .select("id,status,code,voucher");
+            if (completedTxErr) throw completedTxErr;
+            if (!Array.isArray(completedTx) || completedTx.length !== 1 ||
+                completedTx[0].status !== "completed" ||
+                completedTx[0].code !== voucherCode || completedTx[0].voucher !== voucherCode) {
+              throw new Error("mvola_transaction_completion_not_confirmed");
+            }
 
-            // NEW system audit: voucher generated and delivered (code returned later via /api/tx)
+            // NEW system audit: voucher linked and transaction update confirmed.
+            // This is not proof that the customer actually received the code.
             await insertAudit({
               event_type: "voucher_generated",
               status: "success",
