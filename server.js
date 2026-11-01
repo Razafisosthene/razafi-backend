@@ -41406,10 +41406,51 @@ function shouldRetryMvolaInitiate(err) {
   return !!mapMvolaInitiateError(err).transient;
 }
 
+// MVola V2.2: process-wide provider throttle guard. In-memory by design; one Render
+// instance only. This NEVER proves a payment succeeded or failed.
+const MVOLA_QUOTA_SAFETY_MS = 10_000;
+const MVOLA_QUOTA_DEFAULT_MS = 60_000;
+const MVOLA_QUOTA_MAX_MS = 24 * 60 * 60_000;
+let mvolaQuotaBlockedUntil = 0;
+function mvolaQuotaRemainingMs() { return Math.max(0, mvolaQuotaBlockedUntil - Date.now()); }
+function mvolaQuotaObserved(err, scope) {
+  const info = getMvolaErrorInfo(err);
+  const data = err?.response?.data || {};
+  const throttled = Number(err?.response?.status) === 429 ||
+    info.code === "900802" || info.rawText.includes("message throttled") ||
+    info.rawText.includes("exceeded your quota");
+  if (!throttled) return false;
+  const rawTime = String(data?.nextAccessTime || "");
+  // The MVola sample uses: 2026-Nov-01 13:00:00+0000 UTC.
+  const normalized = rawTime.replace(/([+-]\d{2})(\d{2})(?=\s|$)/, "$1:$2").replace(/\s+UTC$/i, "");
+  let nextMs = Date.parse(normalized);
+  const retryAfter = String(err?.response?.headers?.["retry-after"] || "").trim();
+  if (!Number.isFinite(nextMs)) {
+    const seconds = Number(retryAfter);
+    nextMs = Number.isFinite(seconds) && seconds > 0 ? Date.now() + seconds * 1000 : Date.parse(retryAfter);
+  }
+  if (!Number.isFinite(nextMs) || nextMs <= Date.now()) nextMs = Date.now() + MVOLA_QUOTA_DEFAULT_MS;
+  const until = Math.min(Date.now() + MVOLA_QUOTA_MAX_MS, nextMs + MVOLA_QUOTA_SAFETY_MS);
+  if (until > mvolaQuotaBlockedUntil) {
+    mvolaQuotaBlockedUntil = until;
+    console.warn("[MVOLA QUOTA][GLOBAL COOLDOWN]", {
+      scope, blocked_until: new Date(until).toISOString(),
+      provider_next_access_time: rawTime || null,
+    });
+  }
+  return true;
+}
+function mvolaQuotaGuardError() {
+  const e = new Error("MVOLA_GLOBAL_QUOTA_COOLDOWN");
+  e.response = { status: 429, data: { code: "900802", message: "MVola provider quota cooldown active" } };
+  return e;
+}
+
 async function initiateMvolaPaymentWithRetry({ payload, requestRef, phone, amount, correlationId }) {
   const initiateUrl = `${MVOLA_BASE}/mvola/mm/transactions/type/merchantpay/1.0.0/`;
 
   async function doAttempt(attemptNo, attemptCorrelationId) {
+    if (mvolaQuotaRemainingMs() > 0) throw mvolaQuotaGuardError();
     const token = await getAccessToken();
     console.info("📤 Initiating MVola payment", {
       requestRef,
@@ -41418,11 +41459,16 @@ async function initiateMvolaPaymentWithRetry({ payload, requestRef, phone, amoun
       correlationId: attemptCorrelationId,
       attempt: attemptNo,
     });
-    const resp = await axios.post(initiateUrl, payload, {
-      headers: mvolaHeaders(token, attemptCorrelationId),
-      timeout: 20000,
-    });
-    return resp.data || {};
+    try {
+      const resp = await axios.post(initiateUrl, payload, {
+        headers: mvolaHeaders(token, attemptCorrelationId),
+        timeout: 20000,
+      });
+      return resp.data || {};
+    } catch (err) {
+      mvolaQuotaObserved(err, "initiation");
+      throw err;
+    }
   }
 
   try {
@@ -41482,6 +41528,7 @@ async function pollTransactionStatus({
     : null;
   let attempt = 0;
   let statusAuthRefreshUsed = false;
+  let stoppedForQuota = false;
 
   // Keep payment metadata available across success / failed / timeout / catch blocks.
   // This prevents ReferenceError crashes like: "metaPoolId is not defined".
@@ -41493,6 +41540,7 @@ async function pollTransactionStatus({
   let isPersonalizedTx = false;
 
   while (Date.now() - start < timeoutMs && (!maxAttemptCount || attempt < maxAttemptCount)) {
+    if (mvolaQuotaRemainingMs() > 0) { stoppedForQuota = true; break; }
     attempt++;
     try {
       const statusUrl = `${MVOLA_BASE}/mvola/mm/transactions/type/merchantpay/1.0.0/status/${serverCorrelationId}`;
@@ -42076,6 +42124,7 @@ async function pollTransactionStatus({
           2000
         ),
       });
+      if (mvolaQuotaObserved(err, source)) stoppedForQuota = true;
       // Authentication/configuration failures cannot be solved by rapid polling.
       // Recovery keeps the transaction eligible for a later safe status check.
       const info = getMvolaErrorInfo(err);
@@ -42086,7 +42135,7 @@ async function pollTransactionStatus({
         });
         break;
       }
-      if (info.code === "900802" || info.rawText.includes("message throttled")) {
+      if (stoppedForQuota || info.code === "900802" || info.rawText.includes("message throttled")) {
         console.warn("[MVOLA STATUS][QUOTA BLOCKED] deferring to later recovery", {
           requestRef, serverCorrelationId, attempt,
         });
@@ -42101,7 +42150,7 @@ async function pollTransactionStatus({
 
   // Recovery mode: one-shot status checks must not mark the transaction as timeout
   // just because MVola is still pending. The scheduled recovery job will retry later.
-  if (skipTimeoutFinalization) {
+  if (stoppedForQuota || skipTimeoutFinalization) {
     try {
       await insertLog({
         request_ref: requestRef,
@@ -42282,6 +42331,7 @@ async function runMvolaRecoveryOnce({ reason = "interval", maxRows = MVOLA_RECOV
   if (!MVOLA_RECOVERY_ENABLED) return { ok: true, disabled: true, checked: 0, recovered: 0 };
   if (!supabase) return { ok: false, error: "supabase_not_configured", checked: 0, recovered: 0 };
   if (mvolaRecoveryRunning) return { ok: true, skipped: "already_running", checked: 0, recovered: 0 };
+  if (mvolaQuotaRemainingMs() > 0) return { ok: true, skipped: "provider_quota_cooldown", checked: 0, recovered: 0, retry_after_ms: mvolaQuotaRemainingMs() };
 
   mvolaRecoveryRunning = true;
 
@@ -42359,6 +42409,7 @@ async function runMvolaRecoveryOnce({ reason = "interval", maxRows = MVOLA_RECOV
     });
 
     for (const tx of candidates) {
+      if (mvolaQuotaRemainingMs() > 0) break;
       const requestRef = String(tx.request_ref || "").trim();
       const serverCorrelationId = String(tx.server_correlation_id || "").trim();
       const beforeStatus = normalizeTransactionStatusForRecovery(tx.status);
