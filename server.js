@@ -42223,11 +42223,36 @@ function toISOStringMG(d) {
 const MVOLA_RECOVERY_ENABLED = String(process.env.MVOLA_RECOVERY_ENABLED || "true").toLowerCase() !== "false";
 const MVOLA_RECOVERY_INTERVAL_MS = Math.max(30_000, Number(process.env.MVOLA_RECOVERY_INTERVAL_MS || 60_000));
 const MVOLA_RECOVERY_STALE_AFTER_MS = Math.max(60_000, Number(process.env.MVOLA_RECOVERY_STALE_AFTER_MS || 4 * 60_000));
-const MVOLA_RECOVERY_MAX_AGE_MS = Math.max(10 * 60_000, Number(process.env.MVOLA_RECOVERY_MAX_AGE_MS || 24 * 60 * 60_000));
+const MVOLA_RECOVERY_MAX_AGE_MS = Math.max(10 * 60_000, Number(process.env.MVOLA_RECOVERY_MAX_AGE_MS || 7 * 24 * 60 * 60_000));
+const MVOLA_RECOVERY_REVIEW_AFTER_MS = Math.max(10 * 60_000, Number(process.env.MVOLA_RECOVERY_REVIEW_AFTER_MS || 30 * 60_000));
+const MVOLA_RECOVERY_REVIEW_REPEAT_MS = Math.max(60 * 60_000, Number(process.env.MVOLA_RECOVERY_REVIEW_REPEAT_MS || 6 * 60 * 60_000));
 const MVOLA_RECOVERY_BATCH_SIZE = Math.max(1, Math.min(20, Number(process.env.MVOLA_RECOVERY_BATCH_SIZE || 5)));
 
 let mvolaRecoveryRunning = false;
 let mvolaRecoveryIntervalHandle = null;
+// In-process round-robin cursor across the entire eligible 7-day window.
+// Cursor state is advisory and resets on deploy; no payment decisions depend on it.
+let mvolaRecoveryCursor = 0;
+const mvolaRecoveryNextCheck = new Map();
+const MVOLA_RECOVERY_PAGE_SIZE = Math.max(20, Math.min(200, Number(process.env.MVOLA_RECOVERY_PAGE_SIZE || 60)));
+const MVOLA_RECOVERY_BACKOFF_BASE_MS = Math.max(60_000, Number(process.env.MVOLA_RECOVERY_BACKOFF_BASE_MS || 5 * 60_000));
+const MVOLA_RECOVERY_BACKOFF_MAX_MS = Math.max(MVOLA_RECOVERY_BACKOFF_BASE_MS, Number(process.env.MVOLA_RECOVERY_BACKOFF_MAX_MS || 2 * 60 * 60_000));
+function recordMvolaRecoveryAttempt(ref, wasError = false) {
+  const prior = mvolaRecoveryNextCheck.get(ref);
+  const attempts = Math.min(12, (prior?.attempts || 0) + 1);
+  const base = wasError ? Math.max(MVOLA_RECOVERY_BACKOFF_BASE_MS, 10 * 60_000) : MVOLA_RECOVERY_BACKOFF_BASE_MS;
+  const delay = Math.min(MVOLA_RECOVERY_BACKOFF_MAX_MS, base * (2 ** Math.min(attempts - 1, 8)));
+  mvolaRecoveryNextCheck.set(ref, { attempts, nextAt: Date.now() + delay, recordedAt: Date.now() });
+}
+function cleanupMvolaRecoveryCaches() {
+  const cutoff = Date.now() - MVOLA_RECOVERY_MAX_AGE_MS;
+  for (const [key, state] of mvolaRecoveryNextCheck) {
+    if ((state?.recordedAt || 0) < cutoff) mvolaRecoveryNextCheck.delete(key);
+  }
+  if (mvolaRecoveryNextCheck.size > 10000) mvolaRecoveryNextCheck.clear();
+}
+// Advisory state only. Reset on deployment; never used as evidence of payment.
+const mvolaRecoveryReviewLogTimes = new Map();
 
 function normalizeTransactionStatusForRecovery(status) {
   return String(status || "").trim().toLowerCase();
@@ -42269,28 +42294,54 @@ async function runMvolaRecoveryOnce({ reason = "interval", maxRows = MVOLA_RECOV
     still_pending: 0,
     skipped: 0,
     errors: 0,
+    review_required: 0,
   };
 
   try {
     const staleBeforeIso = new Date(Date.now() - MVOLA_RECOVERY_STALE_AFTER_MS).toISOString();
     const notOlderThanIso = new Date(Date.now() - MVOLA_RECOVERY_MAX_AGE_MS).toISOString();
 
-    const { data: rows, error } = await supabase
+    const baseQuery = () => supabase
       .from("transactions")
       .select("id,request_ref,phone,amount,plan,status,server_correlation_id,code,voucher,provider,metadata,created_at,updated_at")
       .eq("provider", "mvola")
       .in("status", ["initiated", "pending", "timeout"])
       .not("server_correlation_id", "is", null)
       .gte("created_at", notOlderThanIso)
-      .lte("created_at", staleBeforeIso)
+      .lte("created_at", staleBeforeIso);
+
+    // Count the entire eligible set, not just the first N rows. Rotate a stable
+    // created_at/id ordered page each pass so middle-aged rows cannot starve.
+    const { count: totalEligible, error: countError } = await supabase
+      .from("transactions")
+      .select("id", { count: "exact", head: true })
+      .eq("provider", "mvola")
+      .in("status", ["initiated", "pending", "timeout"])
+      .not("server_correlation_id", "is", null)
+      .gte("created_at", notOlderThanIso)
+      .lte("created_at", staleBeforeIso);
+    if (countError) throw countError;
+    const total = Number(totalEligible || 0);
+    if (!total) { mvolaRecoveryCursor = 0; return stats; }
+    const offset = mvolaRecoveryCursor >= total ? 0 : mvolaRecoveryCursor;
+    const pageSize = Math.min(MVOLA_RECOVERY_PAGE_SIZE, total - offset);
+    const { data: rows, error } = await baseQuery()
       .order("created_at", { ascending: true })
-      .limit(Math.max(1, Math.min(20, Number(maxRows) || MVOLA_RECOVERY_BATCH_SIZE)));
-
+      .order("id", { ascending: true })
+      .range(offset, offset + pageSize - 1);
     if (error) throw error;
-
-    const candidates = (rows || []).filter(shouldRecoverMvolaTransaction);
-    stats.checked = candidates.length;
+    mvolaRecoveryCursor = offset + pageSize >= total ? 0 : offset + pageSize;
+    const batchLimit = Math.max(1, Math.min(20, Number(maxRows) || MVOLA_RECOVERY_BATCH_SIZE));
+    const nowMs = Date.now();
+    const eligible = (rows || []).filter(shouldRecoverMvolaTransaction);
+    const candidates = eligible.filter(tx => {
+      const nextAt = mvolaRecoveryNextCheck.get(String(tx.request_ref || ""))?.nextAt || 0;
+      return nextAt <= nowMs;
+    }).slice(0, batchLimit);
     stats.skipped = Math.max(0, (rows || []).length - candidates.length);
+    stats.cooling_down = eligible.filter(tx => (mvolaRecoveryNextCheck.get(String(tx.request_ref || ""))?.nextAt || 0) > nowMs).length;
+    stats.checked = candidates.length;
+    cleanupMvolaRecoveryCaches();
 
     if (!candidates.length) return stats;
 
@@ -42303,6 +42354,7 @@ async function runMvolaRecoveryOnce({ reason = "interval", maxRows = MVOLA_RECOV
         stale_before: staleBeforeIso,
         not_older_than: notOlderThanIso,
         candidate_count: candidates.length,
+        scan_cursor: offset, scan_page_size: pageSize, total_eligible: total, cooling_down: stats.cooling_down,
       },
     });
 
@@ -42357,11 +42409,50 @@ async function runMvolaRecoveryOnce({ reason = "interval", maxRows = MVOLA_RECOV
         const afterStatus = normalizeTransactionStatusForRecovery(after?.status);
         const hasVoucher = !!(String(after?.code || "").trim() || String(after?.voucher || "").trim());
 
-        if (afterStatus === "completed" && hasVoucher) stats.recovered++;
-        else if (afterStatus === "failed") stats.failed++;
-        else stats.still_pending++;
+        if (afterStatus === "completed" && hasVoucher) {
+          stats.recovered++;
+          mvolaRecoveryNextCheck.delete(requestRef);
+        } else if (afterStatus === "failed") {
+          stats.failed++;
+          mvolaRecoveryNextCheck.delete(requestRef);
+        } else {
+          // No final provider confirmation. Back off; never manufacture success.
+          recordMvolaRecoveryAttempt(requestRef);
+          stats.still_pending++;
+          // An ambiguous payment is NOT proof of settlement. Surface for manual
+          // merchant reconciliation without changing transaction.status.
+          const ageMs = Date.now() - new Date(tx.created_at || Date.now()).getTime();
+          if (Number.isFinite(ageMs) && ageMs >= MVOLA_RECOVERY_REVIEW_AFTER_MS) {
+            stats.review_required++;
+            const nowMs = Date.now();
+            const previousMs = mvolaRecoveryReviewLogTimes.get(requestRef) || 0;
+            if (nowMs - previousMs >= MVOLA_RECOVERY_REVIEW_REPEAT_MS) {
+              mvolaRecoveryReviewLogTimes.set(requestRef, nowMs);
+              console.warn("[MVOLA RECOVERY][MANUAL REVIEW REQUIRED]", {
+                requestRef, age_minutes: Math.floor(ageMs / 60000),
+                transaction_status: afterStatus || beforeStatus,
+                message: "Provider has not confirmed paid or failed; verify merchant statement/reversal before any manual approval",
+              });
+              try {
+                await insertLog({
+                  request_ref: requestRef,
+                  server_correlation_id: serverCorrelationId,
+                  event_type: "mvola_recovery_manual_review_required",
+                  status: "warning",
+                  masked_phone: maskPhone(tx.phone || ""),
+                  amount: tx.amount ?? null,
+                  short_message: "MVola status ambiguous: manual financial review required",
+                  meta: { reason, age_minutes: Math.floor(ageMs / 60000), provider_status: afterStatus },
+                });
+              } catch (logErr) {
+                console.warn("[MVOLA RECOVERY] advisory log failed", logErr?.message || logErr);
+              }
+            }
+          }
+        }
       } catch (e) {
         stats.errors++;
+        recordMvolaRecoveryAttempt(requestRef, true);
         console.error("[MVOLA RECOVERY] candidate failed", { requestRef, error: e?.message || e });
         await insertLog({
           request_ref: requestRef || null,
@@ -42377,6 +42468,14 @@ async function runMvolaRecoveryOnce({ reason = "interval", maxRows = MVOLA_RECOV
       }
     }
 
+    // Bound advisory cache memory; it has no payment-control meaning.
+    if (mvolaRecoveryReviewLogTimes.size > 2000) {
+      const cutoff = Date.now() - MVOLA_RECOVERY_REVIEW_REPEAT_MS;
+      for (const [key, time] of mvolaRecoveryReviewLogTimes) {
+        if (time < cutoff) mvolaRecoveryReviewLogTimes.delete(key);
+      }
+      if (mvolaRecoveryReviewLogTimes.size > 2000) mvolaRecoveryReviewLogTimes.clear();
+    }
     return stats;
   } catch (e) {
     stats.ok = false;
@@ -42407,6 +42506,11 @@ function startMvolaRecoveryJob() {
     stale_after_ms: MVOLA_RECOVERY_STALE_AFTER_MS,
     max_age_ms: MVOLA_RECOVERY_MAX_AGE_MS,
     batch_size: MVOLA_RECOVERY_BATCH_SIZE,
+    review_after_ms: MVOLA_RECOVERY_REVIEW_AFTER_MS,
+    review_repeat_ms: MVOLA_RECOVERY_REVIEW_REPEAT_MS,
+    page_size: MVOLA_RECOVERY_PAGE_SIZE,
+    backoff_base_ms: MVOLA_RECOVERY_BACKOFF_BASE_MS,
+    backoff_max_ms: MVOLA_RECOVERY_BACKOFF_MAX_MS,
   });
 
   // Give the server a few seconds to finish booting before first scan.
