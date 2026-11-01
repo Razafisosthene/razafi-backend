@@ -41412,6 +41412,18 @@ const MVOLA_QUOTA_SAFETY_MS = 10_000;
 const MVOLA_QUOTA_DEFAULT_MS = 60_000;
 const MVOLA_QUOTA_MAX_MS = 24 * 60 * 60_000;
 let mvolaQuotaBlockedUntil = 0;
+// V2.3: extra recovery-only backoff after provider throttles. Keep the provider-wide
+// guard for live payments, but prevent old transactions from consuming quota as
+// soon as nextAccessTime expires. In-memory; one active Render instance only.
+let mvolaRecoveryAdaptiveUntil = 0;
+let mvolaRecoveryQuotaStrikes = 0;
+let mvolaRecoveryLastThrottleAt = 0;
+const MVOLA_RECOVERY_QUOTA_BASE_MS = 5 * 60_000;
+const MVOLA_RECOVERY_QUOTA_MAX_MS = 60 * 60_000;
+const MVOLA_RECOVERY_QUOTA_STRIKE_RESET_MS = 30 * 60_000;
+function mvolaRecoveryAdaptiveRemainingMs() {
+  return Math.max(0, mvolaRecoveryAdaptiveUntil - Date.now());
+}
 function mvolaQuotaRemainingMs() { return Math.max(0, mvolaQuotaBlockedUntil - Date.now()); }
 function mvolaQuotaObserved(err, scope) {
   const info = getMvolaErrorInfo(err);
@@ -41438,6 +41450,24 @@ function mvolaQuotaObserved(err, scope) {
       provider_next_access_time: rawTime || null,
     });
   }
+  // Distinct recovery-only pause: all provider 429s stop historical polling,
+  // while the live payment path remains governed by the provider's deadline.
+  const nowMs = Date.now();
+  if (nowMs - mvolaRecoveryLastThrottleAt > MVOLA_RECOVERY_QUOTA_STRIKE_RESET_MS) {
+    mvolaRecoveryQuotaStrikes = 0;
+  }
+  mvolaRecoveryLastThrottleAt = nowMs;
+  mvolaRecoveryQuotaStrikes = Math.min(12, mvolaRecoveryQuotaStrikes + 1);
+  const backoffMs = Math.min(
+    MVOLA_RECOVERY_QUOTA_MAX_MS,
+    MVOLA_RECOVERY_QUOTA_BASE_MS * (2 ** Math.min(8, mvolaRecoveryQuotaStrikes - 1))
+  );
+  mvolaRecoveryAdaptiveUntil = Math.max(mvolaRecoveryAdaptiveUntil, until + backoffMs);
+  console.warn("[MVOLA RECOVERY][ADAPTIVE PAUSE]", {
+    scope, strikes: mvolaRecoveryQuotaStrikes,
+    pause_until: new Date(mvolaRecoveryAdaptiveUntil).toISOString(),
+    provider_cooldown_until: new Date(mvolaQuotaBlockedUntil).toISOString(),
+  });
   return true;
 }
 function mvolaQuotaGuardError() {
@@ -42270,12 +42300,12 @@ function toISOStringMG(d) {
 // generation. This job is additive: it does not change MVola initiation, does
 // not change the client portal, and does not touch Orange Money.
 const MVOLA_RECOVERY_ENABLED = String(process.env.MVOLA_RECOVERY_ENABLED || "true").toLowerCase() !== "false";
-const MVOLA_RECOVERY_INTERVAL_MS = Math.max(30_000, Number(process.env.MVOLA_RECOVERY_INTERVAL_MS || 60_000));
+const MVOLA_RECOVERY_INTERVAL_MS = Math.max(60_000, Number(process.env.MVOLA_RECOVERY_INTERVAL_MS || 5 * 60_000));
 const MVOLA_RECOVERY_STALE_AFTER_MS = Math.max(60_000, Number(process.env.MVOLA_RECOVERY_STALE_AFTER_MS || 4 * 60_000));
 const MVOLA_RECOVERY_MAX_AGE_MS = Math.max(10 * 60_000, Number(process.env.MVOLA_RECOVERY_MAX_AGE_MS || 7 * 24 * 60 * 60_000));
 const MVOLA_RECOVERY_REVIEW_AFTER_MS = Math.max(10 * 60_000, Number(process.env.MVOLA_RECOVERY_REVIEW_AFTER_MS || 30 * 60_000));
 const MVOLA_RECOVERY_REVIEW_REPEAT_MS = Math.max(60 * 60_000, Number(process.env.MVOLA_RECOVERY_REVIEW_REPEAT_MS || 6 * 60 * 60_000));
-const MVOLA_RECOVERY_BATCH_SIZE = Math.max(1, Math.min(20, Number(process.env.MVOLA_RECOVERY_BATCH_SIZE || 5)));
+const MVOLA_RECOVERY_BATCH_SIZE = Math.max(1, Math.min(5, Number(process.env.MVOLA_RECOVERY_BATCH_SIZE || 1)));
 
 let mvolaRecoveryRunning = false;
 let mvolaRecoveryIntervalHandle = null;
@@ -42332,6 +42362,10 @@ async function runMvolaRecoveryOnce({ reason = "interval", maxRows = MVOLA_RECOV
   if (!supabase) return { ok: false, error: "supabase_not_configured", checked: 0, recovered: 0 };
   if (mvolaRecoveryRunning) return { ok: true, skipped: "already_running", checked: 0, recovered: 0 };
   if (mvolaQuotaRemainingMs() > 0) return { ok: true, skipped: "provider_quota_cooldown", checked: 0, recovered: 0, retry_after_ms: mvolaQuotaRemainingMs() };
+  if (mvolaRecoveryAdaptiveRemainingMs() > 0) return {
+    ok: true, skipped: "adaptive_recovery_pause", checked: 0, recovered: 0,
+    retry_after_ms: mvolaRecoveryAdaptiveRemainingMs(),
+  };
 
   mvolaRecoveryRunning = true;
 
@@ -42381,7 +42415,7 @@ async function runMvolaRecoveryOnce({ reason = "interval", maxRows = MVOLA_RECOV
       .range(offset, offset + pageSize - 1);
     if (error) throw error;
     mvolaRecoveryCursor = offset + pageSize >= total ? 0 : offset + pageSize;
-    const batchLimit = Math.max(1, Math.min(20, Number(maxRows) || MVOLA_RECOVERY_BATCH_SIZE));
+    const batchLimit = Math.max(1, Math.min(MVOLA_RECOVERY_BATCH_SIZE, Number(maxRows) || MVOLA_RECOVERY_BATCH_SIZE));
     const nowMs = Date.now();
     const eligible = (rows || []).filter(shouldRecoverMvolaTransaction);
     const candidates = eligible.filter(tx => {
@@ -42409,7 +42443,7 @@ async function runMvolaRecoveryOnce({ reason = "interval", maxRows = MVOLA_RECOV
     });
 
     for (const tx of candidates) {
-      if (mvolaQuotaRemainingMs() > 0) break;
+      if (mvolaQuotaRemainingMs() > 0 || mvolaRecoveryAdaptiveRemainingMs() > 0) break;
       const requestRef = String(tx.request_ref || "").trim();
       const serverCorrelationId = String(tx.server_correlation_id || "").trim();
       const beforeStatus = normalizeTransactionStatusForRecovery(tx.status);
@@ -42562,6 +42596,8 @@ function startMvolaRecoveryJob() {
     page_size: MVOLA_RECOVERY_PAGE_SIZE,
     backoff_base_ms: MVOLA_RECOVERY_BACKOFF_BASE_MS,
     backoff_max_ms: MVOLA_RECOVERY_BACKOFF_MAX_MS,
+    adaptive_quota_backoff_base_ms: MVOLA_RECOVERY_QUOTA_BASE_MS,
+    adaptive_quota_backoff_max_ms: MVOLA_RECOVERY_QUOTA_MAX_MS,
   });
 
   // Give the server a few seconds to finish booting before first scan.
