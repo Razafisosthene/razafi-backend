@@ -163,8 +163,18 @@
     return `<details class="sub-invoice-details"><summary>${esc(summaryLabel)}</summary><div class="sub-invoice-technical"><div><strong>Référence</strong></div><div class="sub-invoice-ref">${esc(i.invoice_number||"—")}</div><div>Échéance : ${esc(invoiceDueLabel(i.due_at))}</div></div></details>`;
   }
 
+  // V2.1.1 — Never suggest payment on a terminal/cancelled invoice.
+  // Financial truth, invoice status and payment eligibility remain server-owned.
   function paymentBlock(i){
     const p=i.latest_payment;
+    if(i.status==="cancelled"){
+      const ambiguous=p&&["initiated","pending","completed"].includes(p.status);
+      const message=i.cancel_reason==="billing_change_expired_unpaid"
+        ? "Cette facture a été annulée après l’expiration du changement d’offre. Aucun paiement n’est attendu pour cette facture."
+        : "Cette facture est annulée. Aucun paiement n’est attendu pour cette facture.";
+      return `<div class="sub-status ${ambiguous?"wait":""}"><strong>Facture annulée</strong><br>${message}${ambiguous?"<br>Une opération de paiement apparaît dans l’historique : contactez RAZAFI pour vérification avant toute nouvelle tentative.":""}</div>`;
+    }
+    if(i.status==="refunded")return '<div class="sub-status wait"><strong>Facture remboursée</strong><br>Aucun nouveau paiement n’est attendu pour cette facture. En cas de doute, contactez RAZAFI.</div>';
     if(i.status==="paid"||p?.status==="completed")return `<div class="sub-status ok"><strong>Paiement confirmé</strong><br>La facture est réglée.${p?.request_ref?`<div class="sub-muted">Référence ${esc(p.request_ref)}</div>`:""}</div>`;
     if(p&&["initiated","pending"].includes(p.status))return `<div class="sub-status wait" data-payment-state="${esc(p.request_ref)}"><strong>Confirmation MVola en cours</strong><br>Ne relancez pas le paiement.${steps(p.status)}<div class="sub-muted">Référence ${esc(p.request_ref)}</div></div>`;
     const failure=p?.status==="failed"?'<div class="sub-status bad">La dernière tentative n’a pas été confirmée par MVola. Réessayez seulement si aucun débit n’apparaît.</div>':"";
@@ -176,12 +186,11 @@
     const invoices=(billing?.invoices||[]).filter(i=>i.pool_id===pool.id);
     if(!invoices.length)return '<div class="sub-empty">Aucune facture pour le moment.</div>';
 
-    // Preserve the backend ordering already used by the billing panel:
-    // the first invoice remains the current/latest invoice; older invoices
-    // move into a compact expandable history without changing payment logic.
-    const current=invoices[0];
-    const history=invoices.slice(1);
-    const currentHtml=`
+    // Preserve server ordering, but terminal cancelled/refunded invoices belong
+    // to history, not the actionable "Facture actuelle" card.
+    const current=invoices.find(i=>!["cancelled","refunded"].includes(i.status))||null;
+    const history=invoices.filter(i=>i!==current);
+    const currentHtml=current?`
       <article class="sub-card sub-invoice-current">
         <div class="sub-invoice-eyebrow">Facture actuelle</div>
         <div class="sub-invoice-head">
@@ -198,7 +207,7 @@
         ${paymentBlock(current)}
         ${invoicePdfActions(current)}
         ${invoiceTechnicalDetails(current)}
-      </article>`;
+      </article>`:'<div class="sub-empty">Aucune facture en cours. Les factures clôturées restent consultables dans l’historique.</div>';
 
     if(!history.length)return currentHtml;
 
@@ -206,7 +215,7 @@
       <div class="sub-invoice-history">
         <div class="sub-invoice-history-heading">Historique des factures</div>
         ${history.map(i=>`
-          <details class="sub-invoice-history-item">
+          <details class="sub-invoice-history-item"${!current?" open":""}>
             <summary>
               <span class="sub-invoice-history-main">
                 <span class="sub-invoice-history-period">${esc(invoicePeriodLabel(i))}</span>
