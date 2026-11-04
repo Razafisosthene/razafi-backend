@@ -22082,9 +22082,13 @@ function billingS1383Message(item) {
   const portalUrl = "https://portal.razafistore.com/admin/owner-subscription.html";
   const common = `\n\nPool : ${pool}\nConsulter mon abonnement : ${portalUrl}\n\nRAZAFI`;
   const messages = {
-    change_scheduled: ["Votre changement d’offre RAZAFI est programmé", `Votre changement vers « ${p.offer_title || "la nouvelle offre"} » (${p.billing_mode_label || p.billing_mode || "mode sélectionné"}) est programmé pour le ${p.effective_on || "prochain renouvellement"}. Votre offre actuelle reste active jusque-là.`],
+    change_scheduled: ["Votre changement d’offre RAZAFI est programmé", `Votre changement vers « ${p.offer_title || "la nouvelle offre"} » (${p.billing_mode_label || p.billing_mode || "mode sélectionné"}) est programmé pour le ${p.effective_on || "prochain renouvellement"}. Votre offre actuelle reste active jusque-là.${p.billing_mode === "subscription" ? " Le nouvel abonnement est prépayé : réglez la facture avant sa date limite affichée dans votre espace propriétaire. Sans paiement confirmé à temps, la demande expirera et votre offre actuelle sera conservée. Si un paiement est déjà en cours de confirmation, ne le répétez pas." : ""}`],
     change_cancelled: ["Votre changement d’offre RAZAFI est annulé", `Le changement d’offre programmé pour le ${p.effective_on || "prochain renouvellement"} a été annulé. Votre offre actuelle reste inchangée.`],
     change_applied: ["Votre nouvelle offre RAZAFI est active", `Votre offre « ${p.offer_title || "RAZAFI"} » (${p.billing_mode_label || p.billing_mode || "mode sélectionné"}) est maintenant appliquée à ce pool.`],
+    change_payment_due_j3: ["Rappel : votre changement d’offre attend un paiement", `Votre demande de passage à l’abonnement « ${p.offer_title || "RAZAFI"} » pour le ${p.effective_on || "mois prochain"} attend le paiement de ${p.amount_ar || 0} Ar. Date limite : ${p.due_on || "consultez votre facture"}. Sans paiement confirmé à temps, la demande expirera et votre offre actuelle restera active. Si un paiement est en cours de confirmation, ne le répétez pas.`],
+    change_payment_due_j1: ["Action requise : paiement de votre changement d’offre", `Votre changement vers l’abonnement « ${p.offer_title || "RAZAFI"} » attend encore ${p.amount_ar || 0} Ar. Date limite : ${p.due_on || "consultez votre facture"}. Sans paiement confirmé à temps, votre demande expirera et l’offre actuelle restera active. Ne recommencez pas un paiement encore en cours de confirmation.`],
+    change_payment_due_j0: ["Dernier jour : payer votre changement d’offre", `Votre demande de changement vers l’abonnement « ${p.offer_title || "RAZAFI"} » doit être réglée avant l’échéance indiquée sur votre facture (${p.due_on || "aujourd’hui"}). Montant restant : ${p.amount_ar || 0} Ar. Sans paiement confirmé, le changement expirera et votre offre actuelle sera conservée. Ne doublez pas un paiement en cours de confirmation.`],
+    change_expired_unpaid: ["Votre demande de changement d’offre a expiré", `Votre demande de passage à l’abonnement « ${p.offer_title || "RAZAFI"} » prévu le ${p.effective_on || "mois concerné"} a expiré faute de paiement confirmé à temps. La facture de changement a été annulée et votre ancienne offre est restée applicable. Vous pouvez consulter votre historique dans l’espace propriétaire. Si un débit a pourtant eu lieu, contactez RAZAFI avec la référence de paiement : ne payez pas une deuxième fois.`],
     offer_activated: ["Votre offre RAZAFI est active", `L’offre RAZAFI (${p.billing_mode_label || p.billing_mode || "mode sélectionné"}) est maintenant active pour ce pool.`],
     invoice_issued: ["Votre facture d’abonnement RAZAFI est disponible", `La facture ${p.invoice_number || ""} d’un montant de ${p.amount_ar || 0} Ar est disponible. Échéance : ${p.due_on || "voir la facture"}.`],
     invoice_due_soon: ["Rappel : facture RAZAFI bientôt échue", `La facture ${p.invoice_number || ""} de ${p.amount_ar || 0} Ar arrive à échéance le ${p.due_on || "prochainement"}.`],
@@ -22210,6 +22214,12 @@ async function reconcileBillingS1383Notifications() {
       "fn_billing_v1_s13_10_1_enqueue_change_notifications"
     );
     if (changeEnqueueError) throw changeEnqueueError;
+    // SUBSCRIPTION UX+EMAIL V2.1: additive, opt-in, post-cutover events only.
+    // Existing BAI-2 / S14.5 / invoice generation remain untouched.
+    if (billingEnvFlag("BILLING_OWNER_V21_ENABLED", false)) {
+      const { error: v21EnqueueError } = await supabase.rpc("fn_billing_v21_enqueue_change_alerts");
+      if (v21EnqueueError) throw v21EnqueueError;
+    }
     if (BILLING_V1_COMMISSION_DOCUMENT_NOTIFICATIONS) {
       const { error: payoutEnqueueError } = await supabase.rpc("fn_billing_v1_s13_8_4_4_enqueue_document_notifications");
       if (payoutEnqueueError) throw payoutEnqueueError;
@@ -22222,6 +22232,22 @@ async function reconcileBillingS1383Notifications() {
     let sent = 0, failed = 0;
     for (const item of claimed || []) {
       try {
+        // Revalidate a claimed V2.1 notification immediately before SMTP.
+        // Stale reminders are durably suppressed instead of retried or emailed.
+        if (billingEnvFlag("BILLING_OWNER_V21_ENABLED", false) &&
+            ["change_payment_due_j3", "change_payment_due_j1", "change_payment_due_j0", "change_expired_unpaid"].includes(item.event_type)) {
+          const { data: eligible, error: eligibilityError } = await supabase.rpc(
+            "fn_billing_v21_notification_eligible", { p_id: item.id, p_lease_token: item.lease_token }
+          );
+          if (eligibilityError) throw eligibilityError;
+          if (eligible !== true) {
+            const { error: suppressionError } = await supabase.rpc(
+              "fn_billing_v21_suppress_stale", { p_id: item.id, p_lease_token: item.lease_token }
+            );
+            if (suppressionError) throw suppressionError;
+            continue;
+          }
+        }
         const providerMessageId = await sendBillingS1383Notification(item);
         const { error } = await supabase.rpc("fn_billing_v1_s13_8_3_complete_owner_notification", { p_id: item.id, p_lease_token: item.lease_token, p_sent: true, p_provider_message_id: providerMessageId, p_error: null });
         if (error) throw error;
@@ -23282,7 +23308,7 @@ app.get("/api/owner/billing", requireAdmin, requireBillingOwnerSubscription, asy
     const currentPeriodStart = `${nowDate.slice(0, 7)}-01`;
     const [assignmentsResult, invoicesResult, offersResult, paymentsResult, periodsResult] = await Promise.all([
       supabase.from("pool_billing_assignments").select("id,pool_id,offer_id,billing_status,billing_mode,effective_from,effective_to,created_at").in("pool_id", poolIds).order("effective_from", { ascending: false }),
-      supabase.from("subscription_invoices").select("id,invoice_number,pool_id,billing_period_id,billing_change_id,offer_title_snapshot,period_start,period_end,purpose,amount_due_ar,amount_paid_ar,status,issued_at,due_at,pdf_snapshot,created_at").eq("owner_admin_user_id", ownerId).in("purpose", ["monthly_subscription", "change_subscription"]).order("period_start", { ascending: false }),
+      supabase.from("subscription_invoices").select("id,invoice_number,pool_id,billing_period_id,billing_change_id,offer_title_snapshot,period_start,period_end,purpose,amount_due_ar,amount_paid_ar,status,cancel_reason,issued_at,due_at,pdf_snapshot,created_at").eq("owner_admin_user_id", ownerId).in("purpose", ["monthly_subscription", "change_subscription"]).order("period_start", { ascending: false }),
       supabase.from("billing_offers").select("id,title"),
       supabase.from("subscription_payment_transactions")
         .select("id,invoice_id,request_ref,provider,amount_ar,currency,status,created_at,initiated_at,completed_at,failed_at,updated_at")

@@ -132,6 +132,22 @@
     return new Intl.DateTimeFormat("fr-FR",{day:"2-digit",month:"short",year:"numeric",timeZone:"UTC"}).format(d);
   }
 
+  function billingDeadlineLabel(value){
+    const d=new Date(String(value||""));
+    if(!Number.isFinite(d.getTime()))return "—";
+    return new Intl.DateTimeFormat("fr-FR",{day:"2-digit",month:"long",year:"numeric",timeZone:"Indian/Antananarivo"}).format(d);
+  }
+
+  function changeInvoice(changeId){
+    return (billing?.invoices||[]).find(i=>i.billing_change_id===changeId&&i.purpose==="change_subscription")||null;
+  }
+
+  function latestExpiredChangeInvoice(poolId){
+    return (billing?.invoices||[])
+      .filter(i=>i.pool_id===poolId&&i.purpose==="change_subscription"&&i.status==="cancelled"&&i.cancel_reason==="billing_change_expired_unpaid")
+      .sort((a,b)=>String(b.due_at||"").localeCompare(String(a.due_at||"")))[0]||null;
+  }
+
   function invoiceStatusClass(status){
     if(status==="paid")return "sub-ok";
     if(["failed","cancelled","refunded"].includes(status))return "sub-bad";
@@ -279,9 +295,15 @@
       const note=ownerRequested
         ? ""
         : '<div class="sub-muted" style="margin-top:8px">Ce changement a été programmé par l’administration RAZAFI et ne peut pas être annulé depuis cet espace.</div>';
-      return `<div data-config-pool="${esc(pool.id)}"><div class="sub-status wait"><strong>${title}</strong><br>Nouvelle offre : ${esc(offerDisplayTitle(s.offer_title||"Offre RAZAFI"))}<br>Mode : ${esc(label(open.target_billing_mode))}<br>Prise d’effet : <strong>${esc(open.effective_on)}</strong>${note}</div>${canCancel?`<button class="sub-btn sub-cancel" style="margin-top:10px" data-cancel-change="${esc(open.id)}" type="button">Annuler le changement</button>`:""}</div>`;
+       const invoice=open.target_billing_mode==="subscription"?changeInvoice(open.id):null;
+       const prepaidNote=open.target_billing_mode==="subscription"
+         ? `<div class="sub-status ${open.status==="pending_payment"?"wait":"ok"}" style="margin-top:10px"><strong>${open.status==="pending_payment"?"Paiement obligatoire avant activation":"Changement en attente de prise d’effet"}</strong><br>${invoice?`Facture : ${esc(invoice.invoice_number||"—")} · Montant : ${esc(money(invoice.amount_due_ar))}<br>Date limite : <strong>${esc(billingDeadlineLabel(invoice.due_at))}</strong><br>`:"Consultez la facture de changement pour sa date limite de paiement.<br>"}Le changement vers un abonnement prépayé n’est appliqué qu’après confirmation du paiement. Sans règlement dans le délai, la demande expire et l’offre actuelle reste active. Si vous avez déjà payé, ne recommencez pas avant vérification.</div>`
+         : "";
+      return `<div data-config-pool="${esc(pool.id)}"><div class="sub-status wait"><strong>${title}</strong><br>Nouvelle offre : ${esc(offerDisplayTitle(s.offer_title||"Offre RAZAFI"))}<br>Mode : ${esc(label(open.target_billing_mode))}<br>Prise d’effet : <strong>${esc(open.effective_on)}</strong>${note}</div>${prepaidNote}${canCancel?`<button class="sub-btn sub-cancel" style="margin-top:10px" data-cancel-change="${esc(open.id)}" type="button">Annuler le changement</button>`:""}</div>`;
     }
-    const cards=offers.map(o=>{
+     const expired=latestExpiredChangeInvoice(pool.id);
+     const expiredNotice=expired?`<div class="sub-status bad" style="margin-bottom:10px"><strong>Dernière demande d’abonnement expirée</strong><br>La facture ${esc(expired.invoice_number||"—")} n’a pas été payée à temps (échéance : ${esc(billingDeadlineLabel(expired.due_at))}). Le changement n’a pas été appliqué : l’offre précédente est restée active. Si un débit a eu lieu, contactez RAZAFI avant toute nouvelle tentative.</div>`:"";
+     const cards=offers.map(o=>{
       const v=activeVersion(o.id);if(!v)return"";
       const personalized=(v.features||[]).includes("personalized_plan"),modes=[];
       if(v.commission_enabled&&!(current?.offer_id===o.id&&current?.billing_mode==="commission"))modes.push({value:"commission",text:`Commission · ${Number(v.commission_pct||0)} %`});
@@ -290,7 +312,7 @@
       const initialMode=modes[0].value,sameOffer=current?.offer_id===o.id;
       return `<article class="sub-offer" data-offer="${esc(o.id)}" data-plan="${personalized?"personalized":"base"}" data-same-offer="${sameOffer?"1":"0"}"><div class="sub-offer-head"><div><strong>${esc(offerDisplayTitle({...o,offer_id:o.id}))}</strong><div class="sub-muted">${esc(o.description||"")}</div></div>${sameOffer?'<span class="sub-pill">Offre actuelle · autre mode disponible</span>':""}</div><div class="sub-pills">${personalized?'<span class="sub-pill sub-ok">Plan Personnalisé inclus</span>':'<span class="sub-pill">RAZAFI Base</span>'}</div>${offerDetailsHtml(o.details)}<label>Mode de facturation<select data-field="mode">${modes.map(m=>`<option value="${esc(m.value)}">${esc(m.text)}</option>`).join("")}</select></label><button class="sub-btn" data-create-config type="button">${esc(configCtaLabel(current,o.id,initialMode))}</button></article>`;
     }).filter(Boolean).join("");
-    return `<div data-config-pool="${esc(pool.id)}"><div class="sub-status"><strong>Prise d’effet automatique : ${esc(effective)}</strong><br>${current?"Votre offre actuelle reste active jusque-là.":"Votre première offre prendra effet à cette date."}</div><div class="sub-offers" style="margin-top:12px">${cards||'<div class="sub-empty">Aucun changement différent de votre offre actuelle n’est disponible.</div>'}</div></div>`;
+    return `<div data-config-pool="${esc(pool.id)}"><div class="sub-status"><strong>Prise d’effet automatique : ${esc(effective)}</strong><br>${current?"Votre offre actuelle reste active jusque-là.":"Votre première offre prendra effet à cette date."}</div>${expiredNotice}<div class="sub-offers" style="margin-top:12px">${cards||'<div class="sub-empty">Aucun changement différent de votre offre actuelle n’est disponible.</div>'}</div></div>`;
   }
 
   const DOCUMENT_MONTHS_FR=["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
@@ -417,7 +439,9 @@
       const pool=(configuration.pools||[]).find(x=>x.id===card?.dataset.configPool),offer=(configuration.offers||[]).find(x=>x.id===offerCard?.dataset.offer),version=activeVersion(offer?.id),mode=offerCard?.querySelector('[data-field="mode"]')?.value,plan=offerCard?.dataset.plan,current=(configuration.current_assignments||[]).find(x=>x.pool_id===pool?.id);
       if(!pool||!offer||!version||!mode)throw new Error("offer_no_longer_available");
       const price=mode==="subscription"?`${money(version.subscription_price_ar)}/mois`:`${Number(version.commission_pct||0)} % de commission`;
-      if(!confirm(`Confirmer ce changement ?\n\nPool : ${poolName(pool)}\nNouvelle offre : ${offerDisplayTitle({...offer,offer_id:offer.id})}\nMode : ${label(mode)} — ${price}\nPrise d’effet : ${configuration.rules.effective_on}\n\n${current?"Votre offre actuelle reste active jusque-là.":"Cette offre deviendra votre première offre active."}`))return;
+      if(!confirm(`Confirmer ce changement ?\n\nPool : ${poolName(pool)}\nNouvelle offre : ${offerDisplayTitle({...offer,offer_id:offer.id})}\nMode : ${label(mode)} — ${price}\nPrise d’effet : ${configuration.rules.effective_on}
+
+${current?"Votre offre actuelle reste active jusque-là.":"Cette offre deviendra votre première offre active."}${mode==="subscription"?"\n\nIMPORTANT : l’abonnement prépayé ne sera activé qu’après paiement confirmé avant la date limite figurant sur la facture. Sans paiement, la demande expirera et l’offre actuelle restera active.":""}`))return;
       button.disabled=true;
       await api("/api/owner/billing/changes",{method:"POST",body:JSON.stringify({pool_id:pool.id,offer_id:offer.id,plan_choice:plan,billing_mode:mode,idempotency_key:changeKey(pool.id)})});
       await load();
