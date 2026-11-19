@@ -8,6 +8,24 @@ const IP=/^192\.168\.88\.(?:[1-9]|[1-9]\d|1\d\d|2[0-4]\d|25[0-4])$/;
 function validIp(ip){return IP.test(String(ip||''));}
 function mbps(x){const s=String(x??'').trim();const m=s.match(/^(\d+(?:\.\d+)?)([kKmMgG]?)$/);if(!m)return NaN;const n=Number(m[1]);const factor={k:.001,m:1,g:1000,'':.000001}[m[2].toLowerCase()];return n*factor;}
 function caps(rate){const t=String(rate||'').split('/');if(t.length!==2)return null;const up=mbps(t[0]),down=mbps(t[1]);return Number.isFinite(up)&&up>0&&Number.isFinite(down)&&down>0?{up,down}:null;}
+/** Parse RouterOS duration strings (e.g. 4m18s, 1d22h12m, 01:02:03). Null = unknown, never guess. */
+export function parseRouterOSUptime(value){
+ const v=String(value??'').trim();
+ if(!v)return null;
+ if(/^\d{1,3}:\d{2}:\d{2}$/.test(v)){
+  const parts=v.split(':').map(Number);
+  return parts[1]<60&&parts[2]<60?parts[0]*3600+parts[1]*60+parts[2]:null;
+ }
+ const rx=/(\d+)(w|d|h|m|s)/g; let pos=0, seconds=0, count=0;
+ const scale={w:604800,d:86400,h:3600,m:60,s:1};
+ for(const match of v.matchAll(rx)){
+  if(match.index!==pos)return null;
+  seconds+=Number(match[1])*scale[match[2]];
+  if(!Number.isSafeInteger(seconds)||seconds>365*86400)return null;
+  pos+=match[0].length;count++;
+ }
+ return count>0&&pos===v.length?seconds:null;
+}
 function dyn(v){return v===true||v===1||v==='1'||String(v).toLowerCase()==='true'||String(v).toLowerCase()==='yes';}
 function isTrap(r){return !r||typeof r!=='object'||r['!trap']||r['!fatal']||r.type==='!trap'||r.type==='!fatal'||r['=message'];}
 function forbidden(code){return Object.freeze({ok:false,code,mode:'READ_ONLY',safe_to_apply:false,router_writes:0});}
@@ -27,7 +45,7 @@ export function createLiveReaderF84({readCommand,clock=()=>Date.now(),verifiedRo
    for(const s of hotspot){
     const voucher=String(s.user||'');const mac=String(s['mac-address']||'');const ip=String(s.address||'');
     if(!/^RAZAFI-[A-Za-z0-9_-]{4,60}$/.test(voucher)||!validIp(ip)||!/^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(mac)||dyn(s.blocked))return forbidden('HOTSPOT_UNVERIFIED');
-    sessions.push({authenticated:true,ip,mac,voucher_code:voucher,session_ref:null,observed_at:new Date(after).toISOString()});
+    sessions.push({authenticated:true,ip,mac,voucher_code:voucher,session_ref:null,uptime_seconds:parseRouterOSUptime(s.uptime),observed_at:new Date(after).toISOString()});
    }
    for(const q of rawQueues){
     const qname=String(q.name||'');

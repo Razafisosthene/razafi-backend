@@ -2,6 +2,7 @@
 import {createLiveReaderF84,publicF84Report} from './live-reader-f84.mjs';
 import {createF83LiveAccountingAdapter} from './adapters-f83.mjs';
 import {strictLinkF851,publicF851Report} from './strict-link-f851.mjs';
+import {assessF852,publicF852Report} from './session-continuity-f852.mjs';
 const POOL='573b4f84-3c5a-4bc1-9132-27613e8ccb57';
 const NAS='razafi-pool-4';
 const HOST='10.200.0.4';
@@ -40,10 +41,17 @@ export function registerF84IdentityBackend({app,requireAdmin,requireSuperadmin,g
     const live=await liveReader({nas_id:NAS,pool_id:POOL});
     const now=Date.now();
     const result=await db.from('radius_acct_sessions')
-     .select('nas_id,acct_session_id,voucher_code,client_mac,calling_station_id,framed_ip_address,mikrotik_host_ip,acct_status_type,updated_at')
+     .select('nas_id,acct_session_id,voucher_code,client_mac,calling_station_id,framed_ip_address,mikrotik_host_ip,acct_status_type,updated_at,acct_session_time')
      .eq('nas_id',NAS).gte('updated_at',new Date(now-120000).toISOString()).limit(300);
     if(result?.error||!Array.isArray(result?.data))return res.json(publicF851Report({ok:false,code:'ACCOUNTING_READ_FAILED'}));
-    return res.json(publicF851Report(strictLinkF851({live,rows:result.data,now:Date.now()})));
+    const capturedNow=Date.now();
+    const strict=strictLinkF851({live,rows:result.data,now:capturedNow});
+    // F8.5.2 is an EXTRA diagnostic on the SAME snapshot and SAME DB rows.
+    // Never initiate a second router or accounting read.
+    if(env.SMART_QOS_F852_CONTINUITY_ENABLED==='true'){
+     return res.json(publicF852Report(assessF852({live,rows:result.data,f851:strict,now:capturedNow})));
+    }
+    return res.json(publicF851Report(strict));
    }
    const binding=await createF83LiveAccountingAdapter({db,liveReader}).read({nas_id:NAS,pool_id:POOL});
    const safe=publicF84Report(binding);
