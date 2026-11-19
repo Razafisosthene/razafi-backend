@@ -1,6 +1,7 @@
 // STAGING ONLY. Authenticated server-to-server join. No secrets/private identities in public output.
 import {createLiveReaderF84,publicF84Report} from './live-reader-f84.mjs';
 import {createF83LiveAccountingAdapter} from './adapters-f83.mjs';
+import {strictLinkF851,publicF851Report} from './strict-link-f851.mjs';
 const POOL='573b4f84-3c5a-4bc1-9132-27613e8ccb57';
 const NAS='razafi-pool-4';
 const HOST='10.200.0.4';
@@ -33,6 +34,17 @@ export function registerF84IdentityBackend({app,requireAdmin,requireSuperadmin,g
     switch(path){case '/system/identity/print':return snap.identity;case '/ip/hotspot/active/print':return snap.hotspot;case '/queue/simple/print':return snap.queues;default:throw Error('READ_NOT_ALLOWED');}
    };
    const liveReader=createLiveReaderF84({readCommand,verifiedRouterIdentity:()=>true});
+   // Strict F8.5.1: acquire ONE live RouterOS snapshot and ONE RADIUS accounting read.
+   // F8.4D retains its previously validated path when strict mode is disabled.
+   if(env.SMART_QOS_F851_STRICT_ENABLED==='true'){
+    const live=await liveReader({nas_id:NAS,pool_id:POOL});
+    const now=Date.now();
+    const result=await db.from('radius_acct_sessions')
+     .select('nas_id,acct_session_id,voucher_code,client_mac,calling_station_id,framed_ip_address,mikrotik_host_ip,acct_status_type,updated_at')
+     .eq('nas_id',NAS).gte('updated_at',new Date(now-120000).toISOString()).limit(300);
+    if(result?.error||!Array.isArray(result?.data))return res.json(publicF851Report({ok:false,code:'ACCOUNTING_READ_FAILED'}));
+    return res.json(publicF851Report(strictLinkF851({live,rows:result.data,now:Date.now()})));
+   }
    const binding=await createF83LiveAccountingAdapter({db,liveReader}).read({nas_id:NAS,pool_id:POOL});
    const safe=publicF84Report(binding);
    return res.json(safe);
